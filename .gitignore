@@ -1,0 +1,7 @@
+.env
+/__pycache__
+/Backup
+/cogs/__pycache__
+/rank_bot/__pycache__
+/original_scripts/__pycache__
+/logs

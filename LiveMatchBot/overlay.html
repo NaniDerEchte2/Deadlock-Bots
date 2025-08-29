@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deadlock Performance Bot - Live Overlay</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: rgba(0, 0, 0, 0.85);
+            color: #ffffff;
+            overflow: hidden;
+            backdrop-filter: blur(10px);
+        }
+
+        .overlay-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 420px;
+            background: linear-gradient(135deg, rgba(20, 20, 30, 0.95), rgba(40, 40, 60, 0.95));
+            border: 2px solid #00ff88;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 8px 32px rgba(0, 255, 136, 0.3);
+            backdrop-filter: blur(15px);
+            transition: all 0.3s ease;
+        }
+
+        .overlay-container:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px rgba(0, 255, 136, 0.4);
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #00ff88;
+        }
+
+        .title {
+            font-size: 24px;
+            font-weight: bold;
+            color: #00ff88;
+            text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+        }
+
+        .subtitle {
+            font-size: 14px;
+            color: #aaaaaa;
+            margin-top: 5px;
+        }
+
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 15px;
+            padding: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            font-size: 12px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ff4444;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.connected {
+            background: #00ff88;
+        }
+
+        .player-setup {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .input-field {
+            flex: 1;
+            padding: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid #00ff88;
+            border-radius: 6px;
+            color: #ffffff;
+            font-size: 12px;
+        }
+
+        .input-field::placeholder {
+            color: #aaaaaa;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            text-align: center;
+            border: 1px solid rgba(0, 255, 136, 0.3);
+            transition: all 0.3s ease;
+        }
+
+        .stat-card:hover {
+            background: rgba(0, 255, 136, 0.1);
+            border-color: #00ff88;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #00ff88;
+            text-shadow: 0 0 5px rgba(0, 255, 136, 0.7);
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: #cccccc;
+            margin-top: 5px;
+        }
+
+        .performance-indicator {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 10px;
+        }
+
+        .performance-label {
+            font-size: 12px;
+            color: #cccccc;
+            min-width: 80px;
+        }
+
+        .performance-bar {
+            flex: 1;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 3px;
+            margin: 0 10px;
+            overflow: hidden;
+        }
+
+        .performance-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #ff4444, #ffaa00, #00ff88);
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+
+        .performance-value {
+            font-size: 12px;
+            font-weight: bold;
+            color: #00ff88;
+            min-width: 35px;
+            text-align: right;
+        }
+
+        .chart-container {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            height: 180px;
+        }
+
+        .events-container {
+            max-height: 120px;
+            overflow-y: auto;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+
+        .event-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            animation: slideInRight 0.5s ease;
+        }
+
+        .event-item:last-child {
+            border-bottom: none;
+        }
+
+        .event-text {
+            font-size: 11px;
+            color: #cccccc;
+        }
+
+        .event-time {
+            font-size: 10px;
+            color: #888888;
+        }
+
+        .system-event {
+            color: #00ff88 !important;
+        }
+
+        .combat-event {
+            color: #ff6b6b !important;
+            font-weight: bold;
+        }
+
+        .control-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 6px;
+            margin-top: 15px;
+        }
+
+        .control-buttons .btn:nth-child(6) {
+            grid-column: 1 / -1;
+        }
+
+        .btn {
+            padding: 8px;
+            background: rgba(0, 255, 136, 0.2);
+            border: 1px solid #00ff88;
+            border-radius: 6px;
+            color: #ffffff;
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.3s ease;
+        }
+
+        .btn:hover {
+            background: rgba(0, 255, 136, 0.4);
+            transform: translateY(-1px);
+        }
+
+        .btn.active {
+            background: #00ff88;
+            color: #000000;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        @keyframes slideInRight {
+            from {
+                opacity: 0;
+                transform: translateX(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        /* Scrollbar Styling */
+        ::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #00ff88;
+            border-radius: 2px;
+        }
+
+        .player-list {
+            max-height: 100px;
+            overflow-y: auto;
+            margin-top: 10px;
+        }
+
+        .player-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 6px;
+            margin-bottom: 4px;
+            font-size: 11px;
+        }
+
+        .player-name {
+            color: #00ff88;
+            font-weight: bold;
+        }
+
+        .player-status {
+            color: #aaaaaa;
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay-container">
+        <div class="header">
+            <div class="title">Deadlock Bot</div>
+            <div class="subtitle">Performance Tracker v2.0</div>
+        </div>
+
+        <div class="connection-status">
+            <div class="status-dot" id="connection-dot"></div>
+            <span id="connection-text">Verbinde mit Bot...</span>
+        </div>
+
+        <div class="player-setup">
+            <div class="input-group">
+                <input type="text" class="input-field" id="steam-id-input" 
+                       placeholder="Steam ID (76561198...)">
+                <input type="text" class="input-field" id="username-input" 
+                       placeholder="Username (optional)">
+            </div>
+            <button class="btn" id="add-player-btn">Player Tracken</button>
+            
+            <div class="player-list" id="tracked-players">
+                <!-- Tracked players werden hier angezeigt -->
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="souls-per-min">0</div>
+                <div class="stat-label">Souls/Min</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="kda-ratio">0.0</div>
+                <div class="stat-label">KDA</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="damage-dealt">0</div>
+                <div class="stat-label">Hero Damage</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="overall-score">0</div>
+                <div class="stat-label">Performance</div>
+            </div>
+        </div>
+
+        <div class="performance-indicator">
+            <span class="performance-label">Farm</span>
+            <div class="performance-bar">
+                <div class="performance-fill" id="farm-efficiency" style="width: 0%"></div>
+            </div>
+            <span class="performance-value" id="farm-efficiency-value">0%</span>
+        </div>
+
+        <div class="performance-indicator">
+            <span class="performance-label">Combat</span>
+            <div class="performance-bar">
+                <div class="performance-fill" id="combat-score" style="width: 0%"></div>
+            </div>
+            <span class="performance-value" id="combat-score-value">0%</span>
+        </div>
+
+        <div class="performance-indicator">
+            <span class="performance-label">Damage</span>
+            <div class="performance-bar">
+                <div class="performance-fill" id="damage-score" style="width: 0%"></div>
+            </div>
+            <span class="performance-value" id="damage-score-value">0%</span>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="performanceChart"></canvas>
+        </div>
+
+        <div class="events-container">
+            <div id="events-list">
+                <div class="event-item">
+                    <span class="event-text system-event">Bot gestartet</span>
+                    <span class="event-time">00:00</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="control-buttons">
+            <button class="btn" id="start-bot-btn">🔴 Bot Start</button>
+            <button class="btn" id="stop-bot-btn">⏹️ Bot Stop</button>
+            <button class="btn" id="start-tracking-btn">Start Live</button>
+            <button class="btn" id="test-data-btn">🧪 Test Data</button>
+            <button class="btn" id="leaderboard-btn">Leaderboard</button>
+            <button class="btn" id="reset-btn">Reset</button>
+        </div>
+    </div>
+
+    <script>
+        class DeadlockOverlay {
+            constructor() {
+                this.ws = null;
+                this.isConnected = false;
+                this.currentPlayer = null;
+                this.trackedPlayers = [];
+                this.events = [];
+                this.performanceHistory = [];
+                
+                this.initChart();
+                this.initEventListeners();
+                this.connectToBot();
+                
+                console.log('🎮 Deadlock Overlay initialized');
+            }
+
+            initChart() {
+                const ctx = document.getElementById('performanceChart').getContext('2d');
+                this.chart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [{
+                            label: 'Performance Score',
+                            data: [],
+                            borderColor: '#00ff88',
+                            backgroundColor: 'rgba(0, 255, 136, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                max: 100,
+                                grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                                ticks: { color: '#cccccc', font: { size: 10 } }
+                            },
+                            x: {
+                                grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                                ticks: { color: '#cccccc', font: { size: 10 } }
+                            }
+                        }
+                    }
+                });
+            }
+
+            initEventListeners() {
+                document.getElementById('add-player-btn').addEventListener('click', () => {
+                    this.addPlayer();
+                });
+
+                document.getElementById('start-bot-btn').addEventListener('click', () => {
+                    this.startBotTracking();
+                });
+
+                document.getElementById('stop-bot-btn').addEventListener('click', () => {
+                    this.stopBotTracking();
+                });
+
+                document.getElementById('start-tracking-btn').addEventListener('click', () => {
+                    this.toggleLiveTracking();
+                });
+
+                document.getElementById('test-data-btn').addEventListener('click', () => {
+                    this.testWithDemoData();
+                });
+
+                document.getElementById('leaderboard-btn').addEventListener('click', () => {
+                    this.showLeaderboard();
+                });
+
+                document.getElementById('reset-btn').addEventListener('click', () => {
+                    this.resetStats();
+                });
+
+                // Enter key für Player hinzufügen
+                document.getElementById('steam-id-input').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') this.addPlayer();
+                });
+            }
+
+            connectToBot() {
+                const wsUrl = `ws://localhost:4000`;
+                this.ws = new WebSocket(wsUrl);
+
+                this.ws.onopen = () => {
+                    this.isConnected = true;
+                    this.updateConnectionStatus('Verbunden mit Bot', true);
+                    this.addEvent('Bot-Verbindung hergestellt', 'system');
+                };
+
+                this.ws.onmessage = (event) => {
+                    const message = JSON.parse(event.data);
+                    this.handleBotMessage(message);
+                };
+
+                this.ws.onclose = () => {
+                    this.isConnected = false;
+                    this.updateConnectionStatus('Verbindung verloren', false);
+                    this.addEvent('Bot-Verbindung verloren', 'system');
+                    
+                    // Reconnect nach 3 Sekunden
+                    setTimeout(() => this.connectToBot(), 3000);
+                };
+
+                this.ws.onerror = (error) => {
+                    console.error('WebSocket Error:', error);
+                    this.addEvent('Verbindungsfehler', 'system');
+                };
+            }
+
+            handleBotMessage(message) {
+                switch (message.type) {
+                    case 'stats_update':
+                        this.updateStats(message.data);
+                        break;
+                    case 'live_stats_update':
+                        this.updateLiveStats(message.data);
+                        break;
+                    case 'player_added':
+                        this.onPlayerAdded(message.data);
+                        break;
+                    case 'match_started':
+                        this.onMatchStarted(message.data);
+                        break;
+                    case 'tracking_started':
+                        this.onTrackingStarted(message.data);
+                        break;
+                    case 'tracking_stopped':
+                        this.onTrackingStopped(message.data);
+                        break;
+                    case 'leaderboard_data':
+                        this.displayLeaderboard(message.data);
+                        break;
+                    case 'demo_event':
+                        this.onDemoEvent(message.data);
+                        break;
+                    default:
+                        console.log('Unknown message type:', message.type);
+                }
+            }
+
+            updateConnectionStatus(text, connected) {
+                const dot = document.getElementById('connection-dot');
+                const statusText = document.getElementById('connection-text');
+                
+                dot.className = connected ? 'status-dot connected' : 'status-dot';
+                statusText.textContent = text;
+            }
+
+            addPlayer() {
+                const steamId = document.getElementById('steam-id-input').value.trim();
+                const username = document.getElementById('username-input').value.trim();
+                
+                if (!steamId) {
+                    alert('Bitte Steam ID eingeben!');
+                    return;
+                }
+
+                if (steamId.length < 17) {
+                    alert('Steam ID sollte 17 Ziffern lang sein!');
+                    return;
+                }
+
+                if (this.isConnected) {
+                    this.ws.send(JSON.stringify({
+                        type: 'track_player',
+                        steamId: steamId,
+                        username: username || null
+                    }));
+                    
+                    // Inputs leeren
+                    document.getElementById('steam-id-input').value = '';
+                    document.getElementById('username-input').value = '';
+                    
+                    this.addEvent(`Player ${username || steamId} hinzugefügt`, 'system');
+                    this.addEvent('💡 Klicke "Bot Start" um Tracking zu beginnen', 'system');
+                } else {
+                    alert('Keine Verbindung zum Bot!');
+                }
+            }
+
+            onPlayerAdded(playerData) {
+                this.trackedPlayers.push(playerData);
+                
+                // Wenn das der erste Player ist, setze ihn als aktuellen Player
+                if (!this.currentPlayer || this.trackedPlayers.length === 1) {
+                    this.currentPlayer = playerData.steamId;
+                    this.addEvent(`🎯 ${playerData.username} als aktueller Player ausgewählt`, 'system');
+                }
+                
+                this.updatePlayerList();
+                console.log(`➕ Player added: ${playerData.username} (${playerData.steamId})`);
+            }
+
+            updatePlayerList() {
+                const container = document.getElementById('tracked-players');
+                container.innerHTML = '';
+
+                this.trackedPlayers.forEach((player, index) => {
+                    const playerDiv = document.createElement('div');
+                    playerDiv.className = 'player-item';
+                    
+                    // Highlight aktueller Player
+                    if (player.steamId === this.currentPlayer) {
+                        playerDiv.style.backgroundColor = 'rgba(0, 255, 136, 0.2)';
+                        playerDiv.style.border = '1px solid #00ff88';
+                    }
+                    
+                    const spm = player.lastStats ? 
+                        this.calculateDisplaySPM(player.lastStats) : 0;
+                    
+                    playerDiv.innerHTML = `
+                        <span class="player-name">${player.username}</span>
+                        <span class="player-status">
+                            ${player.isInMatch ? '🎮 Im Spiel' : '⏸️ Lobby'}
+                            ${spm > 0 ? ` | ${spm} SPM` : ''}
+                        </span>
+                    `;
+                    
+                    playerDiv.addEventListener('click', () => {
+                        this.currentPlayer = player.steamId;
+                        this.updatePlayerList(); // Refresh to show selection
+                        this.requestPlayerStats(player.steamId);
+                        this.addEvent(`Switched to ${player.username}`, 'system');
+                    });
+                    
+                    container.appendChild(playerDiv);
+                });
+                
+                console.log(`📝 Player list updated: ${this.trackedPlayers.length} players`);
+            }
+
+            calculateDisplaySPM(stats) {
+                if (!stats) return 0;
+                
+                // Einfache SPM Berechnung für Anzeige
+                if (stats.matchTime && stats.matchTime > 0) {
+                    return Math.round((stats.souls || 0) / (stats.matchTime / 60));
+                } else if (stats.souls > 0) {
+                    // Fallback: Annahme 1 Minute wenn keine Zeit
+                    return Math.round(stats.souls);
+                }
+                return 0;
+            }
+
+            startBotTracking() {
+                if (this.isConnected) {
+                    this.ws.send(JSON.stringify({
+                        type: 'start_tracking'
+                    }));
+                    
+                    const btn = document.getElementById('start-bot-btn');
+                    btn.classList.add('active');
+                    btn.textContent = '▶️ Bot Aktiv';
+                    
+                    this.addEvent('Bot Tracking gestartet', 'system');
+                } else {
+                    alert('Keine Verbindung zum Bot!');
+                }
+            }
+
+            stopBotTracking() {
+                if (this.isConnected) {
+                    this.ws.send(JSON.stringify({
+                        type: 'stop_tracking'
+                    }));
+                    
+                    const btn = document.getElementById('start-bot-btn');
+                    btn.classList.remove('active');
+                    btn.textContent = '🔴 Bot Start';
+                    
+                    this.addEvent('Bot Tracking gestoppt', 'system');
+                } else {
+                    alert('Keine Verbindung zum Bot!');
+                }
+            }
+
+            requestPlayerStats(steamId) {
+                if (this.isConnected) {
+                    this.ws.send(JSON.stringify({
+                        type: 'get_stats',
+                        steamId: steamId
+                    }));
+                }
+            }
+
+            toggleLiveTracking() {
+                const btn = document.getElementById('start-tracking-btn');
+                
+                if (!this.currentPlayer) {
+                    alert('Bitte zuerst einen Player hinzufügen und auswählen!');
+                    return;
+                }
+
+                if (btn.textContent === 'Start Live') {
+                    btn.textContent = 'Stop Live';
+                    btn.classList.add('active');
+                    
+                    if (this.isConnected) {
+                        this.ws.send(JSON.stringify({
+                            type: 'start_live_tracking',
+                            steamId: this.currentPlayer
+                        }));
+                        
+                        const currentPlayerName = this.trackedPlayers.find(p => p.steamId === this.currentPlayer)?.username || 'Unknown';
+                        this.addEvent(`🔴 Live-Tracking für ${currentPlayerName} gestartet`, 'system');
+                    }
+                } else {
+                    btn.textContent = 'Start Live';
+                    btn.classList.remove('active');
+                    
+                    const currentPlayerName = this.trackedPlayers.find(p => p.steamId === this.currentPlayer)?.username || 'Unknown';
+                    this.addEvent(`⏹️ Live-Tracking für ${currentPlayerName} gestoppt`, 'system');
+                }
+            }
+
+            updateStats(data) {
+                console.log('📊 Received stats update:', data);
+                
+                if (!data || !data.stats) {
+                    console.log('⚠️ No stats in data');
+                    return;
+                }
+
+                const stats = data.stats;
+                const performance = data.performance || {};
+
+                console.log('📈 Stats values:', {
+                    souls: stats.souls,
+                    spm: performance.soulsPerMinute,
+                    kda: performance.kda,
+                    damage: stats.heroDamage,
+                    overall: performance.overallScore
+                });
+
+                // Update stat cards
+                document.getElementById('souls-per-min').textContent = performance.soulsPerMinute || 0;
+                document.getElementById('kda-ratio').textContent = performance.kda || 0;
+                document.getElementById('damage-dealt').textContent = this.formatNumber(stats.heroDamage || 0);
+                document.getElementById('overall-score').textContent = performance.overallScore || 0;
+
+                // Update performance bars
+                this.updatePerformanceBar('farm-efficiency', 'farm-efficiency-value', performance.farmEfficiency || 0);
+                this.updatePerformanceBar('combat-score', 'combat-score-value', performance.combatScore || 0);
+                this.updatePerformanceBar('damage-score', 'damage-score-value', performance.damageScore || 0);
+
+                // Update chart
+                this.updateChart(performance.overallScore || 0);
+                
+                // Update current player in tracked list
+                if (data.steamId && data.username) {
+                    const player = this.trackedPlayers.find(p => p.steamId === data.steamId);
+                    if (player) {
+                        player.isInMatch = data.isInMatch || data.isDemoMode || false;
+                        player.lastStats = stats;
+                        this.updatePlayerList();
+                    }
+                }
+            }
+
+            updateLiveStats(data) {
+                console.log('🔴 Live stats received:', data);
+                
+                // Nur updaten wenn es der aktuelle Player ist
+                if (data.steamId === this.currentPlayer) {
+                    this.updateStats(data);
+                    
+                    if (data.isDemoMode) {
+                        this.addEvent('📊 Demo-Daten aktualisiert', 'system');
+                    } else {
+                        this.addEvent('🔴 Live-Update empfangen', 'system');
+                    }
+                } else {
+                    console.log(`⚠️ Received data for ${data.steamId}, but current player is ${this.currentPlayer}`);
+                }
+            }
+
+            updatePerformanceBar(barId, valueId, percentage) {
+                document.getElementById(barId).style.width = percentage + '%';
+                document.getElementById(valueId).textContent = percentage + '%';
+            }
+
+            updateChart(score) {
+                const now = new Date().toLocaleTimeString();
+                this.chart.data.labels.push(now);
+                this.chart.data.datasets[0].data.push(score);
+                
+                // Nur die letzten 15 Datenpunkte behalten
+                if (this.chart.data.labels.length > 15) {
+                    this.chart.data.labels.shift();
+                    this.chart.data.datasets[0].data.shift();
+                }
+                
+                this.chart.update('none');
+            }
+
+            onMatchStarted(data) {
+                this.addEvent(`Match gestartet: ${data.player}`, 'combat');
+                
+                // Update player status
+                const player = this.trackedPlayers.find(p => p.steamId === data.steamId);
+                if (player) {
+                    player.isInMatch = true;
+                    this.updatePlayerList();
+                }
+            }
+
+            onTrackingStarted(data) {
+                this.addEvent('✅ Bot Tracking aktiviert', 'system');
+                document.getElementById('start-bot-btn').classList.add('active');
+                document.getElementById('start-bot-btn').textContent = '▶️ Bot Aktiv';
+                
+                // Enable other controls
+                document.getElementById('start-tracking-btn').disabled = false;
+            }
+
+            onTrackingStopped(data) {
+                this.addEvent('⏹️ Bot Tracking deaktiviert', 'system');
+                document.getElementById('start-bot-btn').classList.remove('active');
+                document.getElementById('start-bot-btn').textContent = '🔴 Bot Start';
+                
+                // Reset live tracking button
+                const liveBtn = document.getElementById('start-tracking-btn');
+                liveBtn.textContent = 'Start Live';
+                liveBtn.classList.remove('active');
+            }
+
+            onDemoEvent(data) {
+                const eventType = data.type === 'kill' ? 'combat' : 
+                                data.type === 'death' ? 'combat' : 'system';
+                this.addEvent(data.message, eventType);
+            }
+
+            showLeaderboard() {
+                if (this.isConnected) {
+                    // Verwende WebSocket statt fetch für bessere Kompatibilität
+                    this.ws.send(JSON.stringify({
+                        type: 'get_leaderboard'
+                    }));
+                } else {
+                    alert('Keine Verbindung zum Bot!');
+                }
+            }
+
+            displayLeaderboard(data) {
+                if (!data || !data.players || data.players.length === 0) {
+                    alert('Keine Spieler im Leaderboard!\n\nFüge erst Spieler hinzu und starte das Tracking.');
+                    return;
+                }
+
+                let leaderboardText = '🏆 DEADLOCK LEADERBOARD 🏆\n\n';
+                
+                data.players.forEach((player, index) => {
+                    const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
+                    leaderboardText += `${medal} ${player.username}\n`;
+                    leaderboardText += `   💰 SPM: ${player.soulsPerMinute} | ⚔️ KDA: ${player.kda}\n`;
+                    leaderboardText += `   📊 Status: ${player.isInMatch ? '🎮 Im Spiel' : '⏸️ Lobby'}\n`;
+                    leaderboardText += `   ⏰ Letztes Update: ${new Date(player.lastUpdate).toLocaleTimeString()}\n\n`;
+                });
+                
+                leaderboardText += `📈 Total: ${data.totalTracked} Spieler | 🔴 Aktive Matches: ${data.activeMatches}`;
+                leaderboardText += `\n⏰ Stand: ${new Date(data.timestamp).toLocaleTimeString()}`;
+                
+                alert(leaderboardText);
+            }
+
+            addEvent(text, type = 'system') {
+                const now = new Date().toLocaleTimeString();
+                const event = { text, type, time: now };
+                
+                this.events.unshift(event);
+                if (this.events.length > 20) {
+                    this.events.pop();
+                }
+                
+                this.updateEventsList();
+            }
+
+            updateEventsList() {
+                const container = document.getElementById('events-list');
+                container.innerHTML = '';
+
+                this.events.forEach(event => {
+                    const eventDiv = document.createElement('div');
+                    eventDiv.className = 'event-item';
+                    eventDiv.innerHTML = `
+                        <span class="event-text ${event.type}-event">${event.text}</span>
+                        <span class="event-time">${event.time}</span>
+                    `;
+                    container.appendChild(eventDiv);
+                });
+            }
+
+            resetStats() {
+                this.performanceHistory = [];
+                this.chart.data.labels = [];
+                this.chart.data.datasets[0].data = [];
+                this.chart.update();
+                
+                // Reset UI
+                document.getElementById('souls-per-min').textContent = '0';
+                document.getElementById('kda-ratio').textContent = '0.0';
+                document.getElementById('damage-dealt').textContent = '0';
+                document.getElementById('overall-score').textContent = '0';
+                
+                this.updatePerformanceBar('farm-efficiency', 'farm-efficiency-value', 0);
+                this.updatePerformanceBar('combat-score', 'combat-score-value', 0);
+                this.updatePerformanceBar('damage-score', 'damage-score-value', 0);
+                
+                this.addEvent('Stats zurückgesetzt', 'system');
+            }
+
+            testWithDemoData() {
+                // Generate test data directly in frontend
+                const testData = {
+                    steamId: this.currentPlayer || '12345',
+                    stats: {
+                        souls: Math.floor(Math.random() * 5000) + 1000,
+                        kills: Math.floor(Math.random() * 10) + 1,
+                        deaths: Math.floor(Math.random() * 5) + 1,
+                        assists: Math.floor(Math.random() * 15) + 2,
+                        heroDamage: Math.floor(Math.random() * 20000) + 5000,
+                        netWorth: Math.floor(Math.random() * 8000) + 2000,
+                        matchTime: 900 // 15 minutes
+                    },
+                    isDemoMode: true
+                };
+
+                // Calculate performance manually
+                const kda = testData.stats.deaths > 0 ? 
+                    ((testData.stats.kills + testData.stats.assists) / testData.stats.deaths) : 
+                    (testData.stats.kills + testData.stats.assists);
+                
+                const soulsPerMin = testData.stats.matchTime > 0 ? 
+                    (testData.stats.souls / (testData.stats.matchTime / 60)) : 0;
+
+                testData.performance = {
+                    kda: parseFloat(kda.toFixed(2)),
+                    soulsPerMinute: parseFloat(soulsPerMin.toFixed(1)),
+                    farmEfficiency: Math.min(100, Math.round((soulsPerMin / 400) * 100)),
+                    combatScore: Math.min(100, Math.round(kda * 20)),
+                    damageScore: Math.min(100, Math.round((testData.stats.heroDamage / 20000) * 100)),
+                    overallScore: 0
+                };
+                
+                testData.performance.overallScore = Math.round(
+                    (testData.performance.farmEfficiency + testData.performance.combatScore + testData.performance.damageScore) / 3
+                );
+
+                console.log('🧪 Testing with data:', testData);
+                
+                this.updateStats(testData);
+                this.addEvent('🧪 Test-Daten geladen!', 'system');
+            }
+
+            formatNumber(num) {
+                if (num >= 1000) {
+                    return (num / 1000).toFixed(1) + 'k';
+                }
+                return num.toString();
+            }
+        }
+
+        // Initialisierung
+        const overlay = new DeadlockOverlay();
+
+        // Responsive Verhalten
+        window.addEventListener('resize', () => {
+            overlay.chart.resize();
+        });
+    </script>
+</body>
+</html>

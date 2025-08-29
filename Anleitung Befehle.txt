@@ -1,0 +1,19 @@
+# Einzelne Systeme neu laden
+!reload dl_coaching
+!reload claim_system
+!reload changelog_discord_bot
+!reload forum_ki_bot
+
+# Alle Systeme neu laden
+!reload
+!reload_all
+
+# Scripts über Kurznamen neu starten
+!restart_script coaching
+!restart_script claim
+!restart_script changelog
+!restart_script forum
+
+# Status-Befehle
+!status          # Detaillierter System-Status
+!cog_status      # Cog-spezifischer Status
