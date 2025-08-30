@@ -103,7 +103,7 @@ class TempVoiceCog(commands.Cog):
             '{date}': lambda u: datetime.now().strftime('%d.%m')
         }
         
-        self.data_file = 'Deadlock/voice_data/tempvoice_data.json'
+        self.data_file = './voice_data/tempvoice_data.json'
         os.makedirs('data', exist_ok=True)
         
         logger.info("TempVoice initialized (rebuilt version)")
