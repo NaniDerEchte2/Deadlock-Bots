@@ -56,10 +56,6 @@ class MasterBot(commands.Bot):
         self.cogs_list = []  # Wird automatisch gefüllt
         self.auto_discover_cogs()
         
-        # Unified Patch Bot Management
-        self.unified_patchbot_process = None
-        self.unified_patchbot_script = Path(__file__).parent / "unified_patchnotes_bot.py"
-        
         # Status tracking
         self.cog_status: Dict[str, str] = {}
         self.startup_time = datetime.datetime.now(pytz.timezone('Europe/Berlin'))
@@ -314,17 +310,6 @@ class MasterBot(commands.Bot):
                         logging.info("Critical Health Check: Core cogs operational")
                     
                     last_critical_check = current_time
-                
-                # General health check every 2 hours (includes unified patch bot monitoring)
-                if current_time - last_general_check >= general_check_interval:
-                    # Check Unified Patch Bot status
-                    is_running, status_msg = await self.get_unified_patchbot_status()
-                    if not is_running:
-                        logging.warning(f"General Health Check: Unified Patch Bot not running - {status_msg}")
-                    else:
-                        logging.info(f"General Health Check: Unified Patch Bot operational - {status_msg}")
-                    
-                    last_general_check = current_time
                     
             except Exception as e:
                 logging.error(f"Health check error: {e}")
@@ -373,15 +358,6 @@ class MasterControlCog(commands.Cog):
                   "`!master reloadall` - Alle Cogs neu laden + Auto-Discovery\n"
                   "`!master discover` - Neue Cogs entdecken (ohne laden)\n"
                   "`!master shutdown` - Bot beenden",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="🎮 Patch Bot Commands",
-            value="`!patchbot start` - Unified Patch Bot starten\n"
-                  "`!patchbot stop` - Unified Patch Bot stoppen\n"
-                  "`!patchbot restart` - Unified Patch Bot neustarten\n"
-                  "`!patchbot status` - Unified Patch Bot Status",
             inline=False
         )
         
@@ -566,126 +542,8 @@ class MasterControlCog(commands.Cog):
         await ctx.send(embed=embed)
         
         logging.info(f"Shutdown initiated by {ctx.author}")
-        
-        # Stoppe Unified Patch Bot vor Master Bot
-        await self.bot.stop_unified_patchbot()
+
         await self.bot.close()
-    
-    @commands.group(name='patchbot', invoke_without_command=True, aliases=['patch'])
-    @is_bot_owner()
-    async def patchbot_control(self, ctx):
-        """Unified Patch Bot Steuerung"""
-        embed = discord.Embed(
-            title="🎮 Unified Patch Bot Kontrolle",
-            description="Steuere den einheitlichen Patchnotes Bot",
-            color=0x00ff99
-        )
-        
-        is_running, status_msg = await self.bot.get_unified_patchbot_status()
-        status_emoji = "🟢" if is_running else "🔴"
-        
-        embed.add_field(
-            name=f"{status_emoji} Status",
-            value=status_msg,
-            inline=False
-        )
-        
-        embed.add_field(
-            name="📋 Verfügbare Commands",
-            value="`!patchbot start` - Bot starten\n"
-                  "`!patchbot stop` - Bot stoppen\n"
-                  "`!patchbot restart` - Bot neustarten\n"
-                  "`!patchbot status` - Detaillierter Status",
-            inline=False
-        )
-        
-        await ctx.send(embed=embed)
-    
-    @patchbot_control.command(name='start')
-    async def patchbot_start(self, ctx):
-        """Startet den Unified Patch Bot"""
-        success, message = await self.bot.start_unified_patchbot()
-        
-        embed = discord.Embed(
-            title="🚀 Unified Patch Bot Start",
-            description=message,
-            color=0x00ff00 if success else 0xff0000
-        )
-        await ctx.send(embed=embed)
-    
-    @patchbot_control.command(name='stop')
-    async def patchbot_stop(self, ctx):
-        """Stoppt den Unified Patch Bot"""
-        success, message = await self.bot.stop_unified_patchbot()
-        
-        embed = discord.Embed(
-            title="🛑 Unified Patch Bot Stop",
-            description=message,
-            color=0x00ff00 if success else 0xff0000
-        )
-        await ctx.send(embed=embed)
-    
-    @patchbot_control.command(name='restart')
-    async def patchbot_restart(self, ctx):
-        """Startet den Unified Patch Bot neu"""
-        # Erst stoppen
-        stop_success, stop_msg = await self.bot.stop_unified_patchbot()
-        
-        # Kurz warten
-        await asyncio.sleep(2)
-        
-        # Dann starten
-        start_success, start_msg = await self.bot.start_unified_patchbot()
-        
-        embed = discord.Embed(
-            title="🔄 Unified Patch Bot Restart",
-            description=f"**Stop:** {stop_msg}\n**Start:** {start_msg}",
-            color=0x00ff00 if start_success else 0xff0000
-        )
-        await ctx.send(embed=embed)
-    
-    @patchbot_control.command(name='status')
-    async def patchbot_status(self, ctx):
-        """Zeigt detaillierten Status des Unified Patch Bot"""
-        is_running, status_msg = await self.bot.get_unified_patchbot_status()
-        
-        embed = discord.Embed(
-            title="📊 Unified Patch Bot Status",
-            color=0x00ff00 if is_running else 0xff0000
-        )
-        
-        status_emoji = "🟢" if is_running else "🔴"
-        embed.add_field(
-            name=f"{status_emoji} Prozess Status",
-            value=status_msg,
-            inline=False
-        )
-        
-        # Zeige Script-Pfad
-        embed.add_field(
-            name="📁 Script",
-            value=f"`{self.bot.unified_patchbot_script}`",
-            inline=False
-        )
-        
-        # Zeige Features
-        embed.add_field(
-            name="⚡ Features",
-            value="• Automatisches Haupt-Patch-Monitoring\n"
-                  "• Automatisches Kommentar-Monitoring\n"
-                  "• Steam-Content-Extraktion\n"
-                  "• Discord-Markdown-Formatierung\n"
-                  "• Intelligente Bild-Unterstützung",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="🎯 Überwacht",
-            value="`https://forums.playdeadlock.com/forums/changelog.10/`",
-            inline=False
-        )
-        
-        await ctx.send(embed=embed)
 
 async def main():
     """Main function to run the bot"""
