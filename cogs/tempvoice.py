@@ -33,6 +33,7 @@ from discord.ext import commands
 from discord import app_commands
 import json
 import os
+from pathlib import Path
 import asyncio
 import aiofiles
 from datetime import datetime
@@ -103,8 +104,12 @@ class TempVoiceCog(commands.Cog):
             '{date}': lambda u: datetime.now().strftime('%d.%m')
         }
         
-        self.data_file = 'Deadlock/voice_data/tempvoice_data.json'
-        os.makedirs('data', exist_ok=True)
+        # Persistent storage path (repo-root/voice_data)
+        root_dir = Path(__file__).resolve().parents[1]
+        self.data_dir = root_dir / "voice_data"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_file = str(self.data_dir / "tempvoice_data.json")
+        logger.info(f"TempVoice persistence path: {self.data_file}")
         
         logger.info("TempVoice initialized (rebuilt version)")
     
@@ -246,6 +251,12 @@ class TempVoiceCog(commands.Cog):
                 'last_updated': datetime.now().isoformat()
             }
             
+            # Ensure directory exists before writing
+            try:
+                Path(self.data_file).parent.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
             async with aiofiles.open(self.data_file, 'w', encoding='utf-8') as f:
                 await f.write(json.dumps(save_data, indent=2, ensure_ascii=False))
             
@@ -258,6 +269,12 @@ class TempVoiceCog(commands.Cog):
     async def load_data_async(self):
         """Async load with validation"""
         try:
+            # Ensure directory exists (first run)
+            try:
+                Path(self.data_file).parent.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
             if os.path.exists(self.data_file):
                 async with aiofiles.open(self.data_file, 'r', encoding='utf-8') as f:
                     content = await f.read()
