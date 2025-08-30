@@ -16,7 +16,7 @@ class DlCoachingCog(commands.Cog):
         # Original-Skript als Subprocess starten
         self.process = subprocess.Popen([
             sys.executable, 
-            r'C:\Users\Nani-Admin\Documents\Deadlock\original_scripts\dl_coaching.py'
+            r'.\original_scripts\dl_coaching.py'
         ])
     
     def cog_unload(self):
