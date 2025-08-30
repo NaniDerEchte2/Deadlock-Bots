@@ -127,89 +127,6 @@ class MasterBot(commands.Bot):
         logging.getLogger('discord.http').setLevel(logging.WARNING)
         
         logging.info("Master Bot logging initialized")
-        
-    async def start_unified_patchbot(self):
-        """Startet den Unified Patch Bot als separaten Prozess"""
-        if self.unified_patchbot_process and self.unified_patchbot_process.poll() is None:
-            logging.warning("Unified Patch Bot bereits gestartet")
-            return False, "Unified Patch Bot läuft bereits"
-        
-        try:
-            import subprocess
-            self.unified_patchbot_process = subprocess.Popen([
-                sys.executable, str(self.unified_patchbot_script)
-            ], cwd=str(self.unified_patchbot_script.parent))
-            
-            logging.info(f"🚀 Unified Patch Bot gestartet (PID: {self.unified_patchbot_process.pid})")
-            return True, f"Unified Patch Bot gestartet (PID: {self.unified_patchbot_process.pid})"
-        except Exception as e:
-            logging.error(f"Fehler beim Starten des Unified Patch Bot: {e}")
-            return False, f"Fehler: {str(e)}"
-    
-    async def stop_unified_patchbot(self):
-        """Stoppt den Unified Patch Bot"""
-        try:
-            import psutil
-            stopped_pids = []
-            
-            # Stoppe alle unified_patchnotes_bot.py Prozesse
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    if proc.info['cmdline'] and len(proc.info['cmdline']) > 1:
-                        if 'unified_patchnotes_bot.py' in ' '.join(proc.info['cmdline']):
-                            proc.terminate()
-                            stopped_pids.append(proc.info['pid'])
-                            logging.info(f"🛑 Unified Patch Bot gestoppt (PID: {proc.info['pid']})")
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-            
-            # Reset process reference
-            self.unified_patchbot_process = None
-            
-            if stopped_pids:
-                return True, f"Unified Patch Bot gestoppt (PIDs: {stopped_pids})"
-            else:
-                return False, "Kein Unified Patch Bot Prozess gefunden"
-                
-        except ImportError:
-            # Fallback ohne psutil
-            if self.unified_patchbot_process:
-                self.unified_patchbot_process.terminate()
-                self.unified_patchbot_process = None
-                return True, "Unified Patch Bot gestoppt"
-            else:
-                return False, "Kein Unified Patch Bot Prozess gefunden"
-        except Exception as e:
-            logging.error(f"Fehler beim Stoppen des Unified Patch Bot: {e}")
-            return False, f"Fehler: {str(e)}"
-    
-    async def get_unified_patchbot_status(self):
-        """Überprüft den Status des Unified Patch Bot"""
-        try:
-            import psutil
-            running_pids = []
-            
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    if proc.info['cmdline'] and len(proc.info['cmdline']) > 1:
-                        if 'unified_patchnotes_bot.py' in ' '.join(proc.info['cmdline']):
-                            running_pids.append(proc.info['pid'])
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-            
-            if running_pids:
-                return True, f"Unified Patch Bot läuft (PIDs: {running_pids})"
-            else:
-                return False, "Unified Patch Bot läuft nicht"
-                
-        except ImportError:
-            # Fallback ohne psutil
-            if self.unified_patchbot_process and self.unified_patchbot_process.poll() is None:
-                return True, f"Unified Patch Bot läuft (PID: {self.unified_patchbot_process.pid})"
-            else:
-                return False, "Unified Patch Bot läuft nicht"
-        except Exception as e:
-            return False, f"Status-Fehler: {str(e)}"
     
     async def setup_hook(self):
         """Setup hook called when bot is starting"""
@@ -777,57 +694,9 @@ async def main():
     # Add master control cog
     await bot.add_cog(MasterControlCog(bot))
     
-    # Auto-start Unified Patch Bot
-    try:
-        success, msg = await bot.start_unified_patchbot()
-        if success:
-            logging.info(f"✅ Auto-started Unified Patch Bot: {msg}")
-        else:
-            logging.warning(f"⚠️ Failed to auto-start Unified Patch Bot: {msg}")
-    except Exception as e:
-        logging.error(f"❌ Error auto-starting Unified Patch Bot: {e}")
-    
     # Graceful shutdown handling
     def signal_handler(signum, frame):
         logging.info(f"Received signal {signum}, shutting down gracefully...")
-        
-        # Stoppe alle unabhängigen Patchnotes Bot Instanzen
-        def stop_patchnotes_bots():
-            try:
-                import psutil
-                import time
-                stopped_pids = []
-                
-                # Finde alle unified_patchnotes_bot.py Prozesse
-                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                    try:
-                        if proc.info['cmdline'] and len(proc.info['cmdline']) > 1:
-                            cmdline_str = ' '.join(proc.info['cmdline'])
-                            if 'unified_patchnotes_bot.py' in cmdline_str and 'python' in cmdline_str.lower():
-                                logging.info(f"🔍 Found Unified Patch Bot PID: {proc.info['pid']} - {cmdline_str}")
-                                proc.terminate()
-                                stopped_pids.append(proc.info['pid'])
-                                logging.info(f"🛑 Terminated Unified Patch Bot PID: {proc.info['pid']}")
-                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                        continue
-                
-                # Warte kurz auf sauberen Shutdown
-                if stopped_pids:
-                    time.sleep(1)
-                    logging.info(f"✅ Auto-stopped {len(stopped_pids)} Unified Patch Bot instances: {stopped_pids}")
-                else:
-                    logging.info("🟡 No Unified Patch Bot instances found to stop")
-                    
-            except ImportError:
-                logging.warning("⚠️ psutil not available, cannot auto-stop Unified Patch Bot instances")
-            except Exception as e:
-                logging.error(f"❌ Error stopping Unified Patch Bot instances: {e}")
-                import traceback
-                logging.error(traceback.format_exc())
-        
-        # Stoppe Unified Patch Bots vor Master Bot
-        stop_patchnotes_bots()
-        
         # Dann stoppe Master Bot
         asyncio.create_task(bot.close())
     
