@@ -3,157 +3,192 @@ from discord.ext import commands
 import asyncio
 import logging
 
+# Rollen IDs
+FUNNY_CUSTOM_ROLE_ID = 1407085699374649364
+GRIND_CUSTOM_ROLE_ID = 1407086020331311144
+PATCHNOTES_ROLE_ID = 1330994309524357140
+
 logger = logging.getLogger(__name__)
+
+
+# ----------- Views -----------
+
+class CustomRoleView(discord.ui.View):
+    """Frage 1: Custom Game Rollen"""
+
+    def __init__(self, member: discord.Member):
+        super().__init__(timeout=120)
+        self.member = member
+
+    async def toggle_role(self, interaction: discord.Interaction, role_id: int):
+        role = self.member.guild.get_role(role_id)
+        if not role:
+            await interaction.response.send_message("❌ Rolle nicht gefunden", ephemeral=True)
+            return
+        if role in self.member.roles:
+            await self.member.remove_roles(role, reason="Welcome DM Auswahl")
+            await interaction.response.send_message(f"❌ {role.name} entfernt", ephemeral=True)
+        else:
+            await self.member.add_roles(role, reason="Welcome DM Auswahl")
+            await interaction.response.send_message(f"✅ {role.name} hinzugefügt", ephemeral=True)
+
+    @discord.ui.button(label="Funny Custom", style=discord.ButtonStyle.secondary)
+    async def funny(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore
+        await self.toggle_role(interaction, FUNNY_CUSTOM_ROLE_ID)
+
+    @discord.ui.button(label="Grind Custom", style=discord.ButtonStyle.secondary)
+    async def grind(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore
+        await self.toggle_role(interaction, GRIND_CUSTOM_ROLE_ID)
+
+    @discord.ui.button(label="Weiter", style=discord.ButtonStyle.success)
+    async def done(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore
+        await interaction.response.send_message("➡️ Weiter zur nächsten Frage", ephemeral=True)
+        self.stop()
+
+
+class PatchnotesView(discord.ui.View):
+    """Frage 2: Patchnotes-Rolle"""
+
+    def __init__(self, member: discord.Member):
+        super().__init__(timeout=120)
+        self.member = member
+
+    async def toggle_patchnotes(self, interaction: discord.Interaction):
+        role = self.member.guild.get_role(PATCHNOTES_ROLE_ID)
+        if not role:
+            await interaction.response.send_message("❌ Rolle nicht gefunden", ephemeral=True)
+            return
+        if role in self.member.roles:
+            await self.member.remove_roles(role, reason="Welcome DM Auswahl")
+            await interaction.response.send_message("❌ Patchnotes entfernt", ephemeral=True)
+        else:
+            await self.member.add_roles(role, reason="Welcome DM Auswahl")
+            await interaction.response.send_message("✅ Patchnotes hinzugefügt", ephemeral=True)
+
+    @discord.ui.button(label="Patchnotes", style=discord.ButtonStyle.secondary)
+    async def patchnotes(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore
+        await self.toggle_patchnotes(interaction)
+
+    @discord.ui.button(label="Weiter", style=discord.ButtonStyle.success)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore
+        await interaction.response.send_message("✅ Auswahl gespeichert", ephemeral=True)
+        self.stop()
+
+    @discord.ui.button(label="Nein danke", style=discord.ButtonStyle.danger)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore
+        role = self.member.guild.get_role(PATCHNOTES_ROLE_ID)
+        if role and role in self.member.roles:
+            await self.member.remove_roles(role, reason="Welcome DM Auswahl")
+        await interaction.response.send_message("🚫 Keine Patchnotes-Benachrichtigungen", ephemeral=True)
+        self.stop()
+
+
+# ----------- Cog -----------
 
 class WelcomeDM(commands.Cog):
     """Cog für automatische Willkommensnachrichten per DM"""
-    
+
     def __init__(self, bot):
         self.bot = bot
-    
+
     @commands.Cog.listener()
     async def on_ready(self):
         print("✅ Welcome DM System geladen")
-    
-    async def send_welcome_messages(self, member):
-        """Sendet Willkommensnachrichten an einen User - Original-Text mit korrekten Links"""
-        
-        # Original-Nachricht aufgeteilt - 2k Zeichen optimal nutzen
+
+    async def send_welcome_messages(self, member: discord.Member):
+        """Sendet Willkommensnachrichten + Fragen"""
+
+        # Begrüßungs-Nachrichten
         messages = [
-            # Nachricht 1: Begrüßung + Regelwerk (~1900 Zeichen)
             "👋 **Willkommen bei Deadlock DACH** 🎮\n\n"
-            "Herzlich willkommen beim größten deutschsprachigen Deadlock Discord! "
             "Hier findest du Mitspieler, Guides, Patchnotes – und eine aktive Community.\n\n"
             "________________________________________\n\n"
-            "📜 **Regelwerk – Das Wichtigste in Kürze**\n\n"
-            "✔ Respektvoller Umgang – keine Beleidigungen oder persönlichen Angriffe\n"
-            "✔ Null Toleranz bei Rassismus, Sexismus oder Hassrede\n"
-            "✔ Keine NSFW / expliziten Inhalte\n"
-            "✔ Privatsphäre respektieren – keine fremden Daten leaken\n"
-            "✔ Kein Spam / unnötige Pings\n"
-            "✔ Keine Fremdwerbung oder Schadsoftware\n\n"
-            "👉 **Universalregel: Sei kein Arschloch.**\n"
-            "👉 Vollständiges Regelwerk findest du in: https://discord.com/channels/1289721245281292288/1315684135175716975\n\n"
-            "________________________________________",
-            
-            # Nachricht 2: Gaming Modi (~1950 Zeichen) 
-            "\n🏆 **Unterschied Casual vs. Ranked**\n\n"
-            "• **Casual Games** 🎉\n"
-            "→ Lockeres Spielen ohne Druck\n"
-            "→ Ideal zum Kennenlernen & Spaß haben\n"
-            "→ Nutze dafür die Casual Lanes\n\n"
-            "• **Ranked Games (Grind)** ⚔️\n"
-            "→ Fokus auf Teamplay, Strategie & besser werden\n"
-            "→ Perfekt zum Elo pushen mit ambitionierten Mates\n"
-            "→ Nutze dafür die Rank Grind Lanes\n"
-            "→ Wähle hier deine Rangrolle: https://discord.com/channels/1289721245281292288/1398021105339334666\n\n"
-            "💡 **Empfehlung:** Starte erst Casual, lerne Leute kennen – danach geh ins Ranked.\n\n"
-            "________________________________________\n\n"
-            "🎮 **Custom Games**\n\n"
-            "**Was sind Custom Games?**\n"
-            "Customs sind selbsterstellte Lobbys, die nichts mit dem normalen Matchmaking zu tun haben. "
-            "Hier legen wir eigene Regeln fest → Fokus auf Spaß, Lernen oder gemeinsames Training.\n\n"
-            "**Dafür gibt es 2 Rollen:**\n"
-            "• @Funny Custom Ping → Für Fun & kreative Custom-Runden 🤪\n"
-            "• @Grind Custom Ping → Für Scrims & ernsthafte Trainings 💪\n\n"
-            "➡ Über Reaktionen kannst du dir die Rolle(n) selbst geben, wenn du mitmachen willst.\n\n"
-            "________________________________________",
-            
-            # Nachricht 3: Info-Kanäle + Mehrwert (~1850 Zeichen)
-            "\n📢 **Wichtige Info-Kanäle**\n\n"
-            "• https://discord.com/channels/1289721245281292288/1326973956825284628 → Offizielle Deadlock Patchnotes (übersetzt auf Deutsch)\n"
-            "• https://discord.com/channels/1289721245281292288/1371952264620806214 → Neuigkeiten & Infos rund um den Server\n\n"
-            "👉 **Hinweis:** Beide Channels sind nur zum Lesen – nicht zum Schreiben.\n\n"
-            "________________________________________\n\n"
-            "🗣️ **Finde deine Mitspieler & Mehrwert**\n\n"
-            "• https://discord.com/channels/1289721245281292288/1326975033838665803 → Lernressourcen & Pro-Tipps\n"
-            "• https://discord.com/channels/1289721245281292288/1376335502919335936 → Such dir Mitspieler für Casual oder Ranked\n"
-            "• https://discord.com/channels/1289721245281292288/1304169815505637458 → Deutsche Deadlock-Streamer live\n"
-            "• https://discord.com/channels/1289721245281292288/1407407213953286258 → Deadlock Leaks & Neuigkeiten\n"
-            "• https://discord.com/channels/1289721245281292288/1357421075188813897 → Match-Reviews & Tipps, um deinen Skill zu verbessern\n\n"
-            "________________________________________",
-            
-            # Nachricht 4: Support + Moderation + Abschluss (~1900 Zeichen)
-            "\n💎 **Support & Extras**\n\n"
-            "• **Nitro-Boosts:** Wenn du den Server boosten willst → gibt dir VIP-Vorteile + "
-            "hilft der Community mit besseren Features (z. B. Banner, Audioqualität & Emotes).\n\n"
-            "• **Beta-Zugang / Keys:** Falls du noch einen Key brauchst oder welchen vergeben willst "
-            "→ frag gern im https://discord.com/channels/1289721245281292288/ nach.\n\n"
-            "________________________________________\n\n"
-            "⚔️ **Moderation & Hilfe**\n\n"
-            "• Probleme? → Wende dich an @Moderatoren oder @Owner\n"
-            "• Regelverstöße = Verwarnung, Timeout oder Bann (ggf. ohne Vorwarnung)\n"
-            "• Feedback oder Ideen? → direkt an @earlysalty\n\n"
-            "________________________________________\n\n"
-            "✅ **Kurz gesagt**\n"
-            "Dieser Server lebt davon, dass alle aktiv mitmachen:\n"
-            "👉 **Sei aktiv, such Mitspieler, bring dich ein – dann macht's am meisten Spaß!**\n\n"
-            "**Willkommen bei Deadlock DACH – let's go!** 🚀"
+            "📜 **Regeln (Kurzfassung):**\n"
+            "✔ Respektvoller Umgang\n"
+            "✔ Keine Diskriminierung / Hassrede\n"
+            "✔ Keine NSFW Inhalte\n"
+            "✔ Keine privaten Daten leaken\n",
+
+            "🎮 **Custom Games:**\n"
+            "Wir veranstalten Funny Customs 🤪 und Grind Customs 💪.\n"
+            "Damit du keine Spiele verpasst, kannst du gleich Rollen auswählen.\n",
+
+            "📢 **Infos & Updates:**\n"
+            "Du kannst dich benachrichtigen lassen, wenn neue Patchnotes erscheinen.\n",
+
+            "🎯 **Rangrollen:**\n"
+            "Wähle deine Rangrolle jederzeit hier: "
+            "https://discord.com/channels/1289721245281292288/1398021105339334666\n\n"
+            "Viel Spaß auf dem Server!"
         ]
-        
-        # Nachrichten senden (nur noch 4 statt 8 - optimiert für ~2k Zeichen)
+
+        # Nachrichten senden
         for i, message in enumerate(messages, 1):
             try:
                 await member.send(message)
-                
-                # Nach der 2. Nachricht das Rollen-Bild senden
-                if i == 2:  # Nach Custom Games Info
-                    try:
-                        await asyncio.sleep(0.5)
-                        await member.send("https://cdn.discordapp.com/attachments/1374364800817303632/1407474771251167509/D84325BE-A40F-4BEF-ACB8-A19E2F6162E5.png?ex=68a63c87&is=68a4eb07&hm=3c6a6a3d3d3a69b85d6ddd6466241e097bca5922abedd183228bd43b090bff88&")
-                        await asyncio.sleep(0.5)
-                    except Exception as e:
-                        logger.warning(f"Konnte Rollen-Bild nicht senden: {e}")
-                
-                # Pause zwischen Nachrichten
-                if i < len(messages):
-                    await asyncio.sleep(0.5)  # Schnellere Versendung
-                    
+                await asyncio.sleep(0.5)
             except discord.Forbidden:
                 logger.warning(f"Konnte keine DM an {member.display_name} ({member.id}) senden - DMs deaktiviert")
-                break
+                return False
             except Exception as e:
-                logger.error(f"Fehler beim Senden von Nachricht {i} an {member.display_name}: {e}")
-                break
-            
-        logger.info(f"Willkommensnachrichten an {member.display_name} ({member.id}) gesendet")
+                logger.error(f"Fehler beim Senden der Nachricht {i} an {member.display_name}: {e}")
+                return False
+
+        # Frage 1: Custom Games
+        try:
+            await member.send(
+                "**Frage 1/2:** Für welche Custom Games möchtest du Ping-Rollen erhalten?\n"
+                "Wähle eine oder beide Rollen aus und klicke anschließend **Weiter**."
+            )
+            custom_view = CustomRoleView(member)
+            msg = await member.send(view=custom_view)
+            await custom_view.wait()
+            await msg.edit(view=None)
+        except Exception as e:
+            logger.warning(f"Fehler bei Frage 1 für {member.display_name}: {e}")
+
+        # Frage 2: Patchnotes
+        try:
+            await member.send("**Frage 2/2:** Möchtest du über neue Patchnotes informiert werden?")
+            patch_view = PatchnotesView(member)
+            msg = await member.send(view=patch_view)
+            await patch_view.wait()
+            await msg.edit(view=None)
+        except Exception as e:
+            logger.warning(f"Fehler bei Frage 2 für {member.display_name}: {e}")
+
+        logger.info(f"Willkommens-DM an {member.display_name} ({member.id}) gesendet")
         return True
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
-        """Event Handler für neue Mitglieder"""
+        """Handler bei neuen Mitgliedern"""
         try:
-            # Warte kurz, damit der User Zeit hat anzukommen
             await asyncio.sleep(2)
             await self.send_welcome_messages(member)
         except Exception as e:
-            logger.error(f"Fehler beim Verarbeiten von on_member_join für {member.display_name}: {e}")
+            logger.error(f"Fehler bei on_member_join für {member.display_name}: {e}")
 
     @commands.command(name='testwelcome')
     @commands.has_permissions(administrator=True)
     async def test_welcome(self, ctx, user: discord.Member = None):
-        """Testet die Willkommensnachrichten für einen User
-        
-        Verwendung: !testwelcome @user
-        """
-        if user is None:
+        """Testet die Willkommensnachricht für einen User"""
+        if not user:
             await ctx.send("❌ Bitte gib einen User an: `!testwelcome @user`")
             return
-        
         try:
             await ctx.send(f"📤 Sende Willkommensnachrichten an {user.mention}...")
             success = await self.send_welcome_messages(user)
-            
             if success:
-                await ctx.send(f"✅ Willkommensnachrichten erfolgreich an {user.mention} gesendet!")
+                await ctx.send(f"✅ Erfolgreich an {user.mention} gesendet!")
             else:
-                await ctx.send(f"⚠️ Fehler beim Senden der Nachrichten an {user.mention}")
-                
+                await ctx.send(f"⚠️ Fehler beim Senden an {user.mention}")
         except discord.Forbidden:
-            await ctx.send(f"❌ {user.mention} hat DMs deaktiviert oder blockiert den Bot")
+            await ctx.send(f"❌ {user.mention} blockiert DMs oder hat sie deaktiviert")
         except Exception as e:
             await ctx.send(f"❌ Fehler: {str(e)}")
-            logger.error(f"Fehler beim Testen der Willkommensnachricht für {user.display_name}: {e}")
+            logger.error(f"Fehler bei Test-Welcome für {user.display_name}: {e}")
+
 
 async def setup(bot):
     """Setup-Funktion für den Cog"""

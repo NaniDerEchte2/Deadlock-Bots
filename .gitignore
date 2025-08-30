@@ -5,3 +5,6 @@
 /rank_bot/__pycache__
 /original_scripts/__pycache__
 /logs
+/voice_data/*db
+/voice_data/*db-wal
+/voice_data/*db-shm

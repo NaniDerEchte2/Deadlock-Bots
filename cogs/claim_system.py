@@ -16,7 +16,7 @@ class ClaimSystemCog(commands.Cog):
         # Original-Skript als Subprocess starten
         self.process = subprocess.Popen([
             sys.executable, 
-            r'C:\Users\Nani-Admin\Documents\Deadlock\original_scripts\Claim-System.py'
+            r'.\original_scripts\Claim-System.py'
         ])
     
     def cog_unload(self):
