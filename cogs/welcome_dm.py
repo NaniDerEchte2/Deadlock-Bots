@@ -34,12 +34,8 @@ class CustomGamesView(discord.ui.View):
     def __init__(self, member: discord.Member):
         super().__init__(timeout=180)
         self.member = member
-        self.state = {
-            "funny": False,
-            "grind": False
-        }
 
-    async def toggle_role(self, interaction, role_id, key, button: discord.ui.Button):
+    async def toggle_role(self, interaction, role_id, button: discord.ui.Button):
         role = self.member.guild.get_role(role_id)
         if not role:
             await interaction.response.send_message("❌ Rolle nicht gefunden", ephemeral=True)
@@ -47,44 +43,51 @@ class CustomGamesView(discord.ui.View):
 
         if role in self.member.roles:
             await self.member.remove_roles(role, reason="Welcome DM Auswahl")
-            self.state[key] = False
             button.style = discord.ButtonStyle.secondary
             button.label = button.label.replace("✔ ", "")
         else:
             await self.member.add_roles(role, reason="Welcome DM Auswahl")
-            self.state[key] = True
             button.style = discord.ButtonStyle.success
             if not button.label.startswith("✔ "):
                 button.label = f"✔ {button.label}"
 
-        await interaction.response.edit_message(view=self)
+        # Update der Buttons statt neuer Nachricht
+        if interaction.response.is_done():
+            await interaction.edit_original_response(view=self)
+        else:
+            await interaction.response.edit_message(view=self)
 
     @discord.ui.button(label="Funny Custom", style=discord.ButtonStyle.secondary)
     async def funny(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.toggle_role(interaction, FUNNY_CUSTOM_ROLE_ID, "funny", button)
+        await self.toggle_role(interaction, FUNNY_CUSTOM_ROLE_ID, button)
 
     @discord.ui.button(label="Grind Custom", style=discord.ButtonStyle.secondary)
     async def grind(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.toggle_role(interaction, GRIND_CUSTOM_ROLE_ID, "grind", button)
+        await self.toggle_role(interaction, GRIND_CUSTOM_ROLE_ID, button)
 
     @discord.ui.button(label="Ne danke", style=discord.ButtonStyle.danger)
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("🚫 Kein Interesse an Custom Games", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        for child in self.children:
+            child.disabled = True
+        await interaction.edit_original_response(view=self)
         self.stop()
 
     @discord.ui.button(label="Weiter", style=discord.ButtonStyle.primary)
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
+        for child in self.children:
+            child.disabled = True
+        await interaction.edit_original_response(view=self)
         self.stop()
 
 
 class PatchnotesView(discord.ui.View):
-    """Frage 2: Patchnotes"""
+    """Frage 2: Patchnotes (mit Toggle-Button)"""
 
     def __init__(self, member: discord.Member):
         super().__init__(timeout=120)
         self.member = member
-        self.active = False
 
     @discord.ui.button(label="Patchnotes", style=discord.ButtonStyle.secondary)
     async def toggle_patch(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -102,16 +105,25 @@ class PatchnotesView(discord.ui.View):
             button.style = discord.ButtonStyle.success
             button.label = "✔ Patchnotes"
 
-        await interaction.response.edit_message(view=self)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(view=self)
+        else:
+            await interaction.response.edit_message(view=self)
 
     @discord.ui.button(label="Ne danke", style=discord.ButtonStyle.danger)
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
+        for child in self.children:
+            child.disabled = True
+        await interaction.edit_original_response(view=self)
         self.stop()
 
     @discord.ui.button(label="Weiter", style=discord.ButtonStyle.primary)
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
+        for child in self.children:
+            child.disabled = True
+        await interaction.edit_original_response(view=self)
         self.stop()
 
 
