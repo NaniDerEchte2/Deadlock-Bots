@@ -3,16 +3,43 @@ from discord.ext import commands
 import asyncio
 import logging
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Optional, Union
 
 # ---------- IDs (bitte prüfen/anpassen) ----------
 FUNNY_CUSTOM_ROLE_ID = 1407085699374649364
 GRIND_CUSTOM_ROLE_ID  = 1407086020331311144
 PATCHNOTES_ROLE_ID    = 1330994309524357140
 PHANTOM_NOTIFICATION_CHANNEL_ID = 1374364800817303632
+THANK_YOU_DELETE_AFTER_SECONDS = 300  # 5 Minuten
 # -------------------------------------------------
 
 logger = logging.getLogger(__name__)
+
+# ========= Emoji-Konfiguration =========
+# Falls eure Emoji-Namen NICHT exakt den Rangnamen entsprechen,
+# kannst du hier Overrides setzen – als Emoji-NAME ODER Emoji-ID.
+RANK_EMOJI_OVERRIDES: Dict[str, Union[str, int]] = {
+    # "initiate": "dl_initiate",
+    # "seeker": "dl_seeker",
+    # ...
+}
+
+# Unicode-Fallbacks für hübsches Dropdown, falls kein Custom-Emoji gefunden wird
+UNICODE_RANK_EMOJI: Dict[str, str] = {
+    "unknown": "❓",
+    "initiate": "🎯",
+    "seeker": "🔎",
+    "alchemist": "⚗️",
+    "arcanist": "🪄",
+    "ritualist": "🔮",
+    "emissary": "📜",
+    "archon": "🏛️",
+    "oracle": "🧿",
+    "phantom": "👻",
+    "ascendant": "🌅",
+    "eternus": "♾️",
+}
+# ======================================
 
 # ---- Helper: alle Deadlock-Rangrollen entfernen ----
 async def remove_all_rank_roles(member: discord.Member, guild: discord.Guild):
@@ -23,6 +50,40 @@ async def remove_all_rank_roles(member: discord.Member, guild: discord.Guild):
     to_remove = [r for r in member.roles if r.name.lower() in ranks]
     if to_remove:
         await member.remove_roles(*to_remove, reason="Welcome DM Rangauswahl")
+
+
+def _find_custom_emoji(guild: discord.Guild, key: Union[str, int]) -> Optional[Union[discord.Emoji, discord.PartialEmoji]]:
+    """Findet ein Custom-Emoji per Name (enthält) oder per ID."""
+    try:
+        if isinstance(key, int) or (isinstance(key, str) and key.isdigit()):
+            emoji_id = int(key)
+            for e in guild.emojis:
+                if e.id == emoji_id:
+                    return e
+            return discord.PartialEmoji(name=None, id=emoji_id, animated=False)
+        else:
+            name = str(key).lower()
+            for e in guild.emojis:
+                if e.name.lower() == name:
+                    return e
+            for e in guild.emojis:
+                if name in e.name.lower():
+                    return e
+    except Exception:
+        return None
+    return None
+
+
+def get_rank_emoji(guild: discord.Guild, rank_key: str) -> Union[str, discord.Emoji, discord.PartialEmoji, None]:
+    """Emoji für Rang: Override → Name/Contains → Unicode."""
+    if rank_key in RANK_EMOJI_OVERRIDES:
+        e = _find_custom_emoji(guild, RANK_EMOJI_OVERRIDES[rank_key])
+        if e:
+            return e
+    e2 = _find_custom_emoji(guild, rank_key)
+    if e2:
+        return e2
+    return UNICODE_RANK_EMOJI.get(rank_key)
 
 
 # =========================
@@ -169,7 +230,7 @@ class PatchnotesView(StepView):
 
 
 class RankSelectDropdown(discord.ui.Select):
-    """Frage 3: Rang-Auswahl (Dropdown)"""
+    """Frage 3: Rang-Auswahl (Dropdown mit Emojis)"""
 
     def __init__(self, member: discord.Member, guild: discord.Guild):
         self.member = member
@@ -179,9 +240,25 @@ class RankSelectDropdown(discord.ui.Select):
             "unknown", "initiate", "seeker", "alchemist", "arcanist", "ritualist",
             "emissary", "archon", "oracle", "phantom", "ascendant", "eternus"
         ]
-        options = [discord.SelectOption(label=r.capitalize(), value=r, description=f"{r.capitalize()} auswählen") for r in ranks]
 
-        super().__init__(placeholder="🎮 Wähle deinen Deadlock-Rang...", min_values=1, max_values=1, options=options)
+        options: list[discord.SelectOption] = []
+        for r in ranks:
+            label = r.capitalize()
+            value = r
+            desc  = f"{label} auswählen"
+            emoji = get_rank_emoji(guild, r)
+            if r == "unknown" and emoji is None:
+                emoji = "❓"
+            if emoji is not None:
+                opt = discord.SelectOption(label=label, value=value, description=desc, emoji=emoji)
+            else:
+                opt = discord.SelectOption(label=label, value=value, description=desc)
+            options.append(opt)
+
+        super().__init__(
+            placeholder="🎮 Wähle deinen Deadlock-Rang…",
+            min_values=1, max_values=1, options=options
+        )
 
     async def callback(self, interaction: discord.Interaction):
         selected = self.values[0]
@@ -189,8 +266,11 @@ class RankSelectDropdown(discord.ui.Select):
 
         if selected == "unknown":
             await interaction.response.send_message(
-                "ℹ️ **Unknown/Neu** gewählt. Schau gern im Tutorial-Kanal vorbei – Mods helfen beim Einstieg. 💡",
-                ephemeral=True
+            '''ℹ️ **Unknown/Neu** gewählt. 
+            **Willkommen an Bord! 😊**
+            Wenn du neu bist: Basics & erste Schritte findest du hier: https://discord.com/channels/1289721245281292288/1326975033838665803
+            Wenn du magst, helfen wir dir beim Reinkommen – sag einfach kurz Bescheid, dann gehen wir in Ruhe alles Wichtige zu Deadlock durch. Schreib dazu einfach @earlysalty aka Nani :)''',
+            #    ephemeral=True
             )
             return
 
@@ -242,9 +322,25 @@ class RulesView(StepView):
     def __init__(self):
         super().__init__(timeout=420)
 
+    @staticmethod
+    async def _delete_later(msg: discord.Message, seconds: int):
+        await asyncio.sleep(seconds)
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+
     @discord.ui.button(label="Habe verstanden :)", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("✅ Danke! Willkommen an Bord!", ephemeral=True)
+        # 1) Danke-Nachricht als EIGENE Nachricht senden (sichtbar)
+        try:
+            thank_msg = await interaction.channel.send("✅ Danke! Willkommen an Bord :)")
+            # 2) Nach 5 Minuten automatisch löschen
+            asyncio.create_task(self._delete_later(thank_msg, THANK_YOU_DELETE_AFTER_SECONDS))
+        except Exception:
+            pass
+
+        # 3) Diesen Step sauber beenden (Buttons disablen + Frage löschen)
         await self._finish(interaction)
 
 
@@ -289,7 +385,6 @@ class WelcomeDM(commands.Cog):
         try:
             await view.wait()  # stop() wird nur in _finish() gerufen
         finally:
-            # Falls die Nachricht noch existiert -> löschen
             try:
                 await msg.delete()
             except Exception:
@@ -299,12 +394,13 @@ class WelcomeDM(commands.Cog):
     async def send_welcome_messages(self, member: discord.Member):
         lock = self._get_lock(member.id)
         async with lock:  # verhindert parallele Sessions je User
+            greet_msg: Optional[discord.Message] = None
             try:
-                # Vorherige Bot-DMs aufräumen, damit keine alten Views übrig sind
+                # Vorherige Bot-DMs aufräumen
                 await self._cleanup_old_bot_dms(member, limit=50)
 
-                # Begrüßung
-                await member.send(
+                # Begrüßung (merken, später entfernen)
+                greet_msg = await member.send(
                     "👋 **Willkommen bei Deadlock DACH!**\n\n"
                     "Diese DM hilft dir beim Start: Wir vergeben dir passende Rollen und zeigen dir die wichtigsten Infos."
                 )
@@ -342,6 +438,13 @@ class WelcomeDM(commands.Cog):
                 )
                 if not await self._send_step(member, rules_text, RulesView()):
                     return False
+
+                # Begrüßungsnachricht am Ende entfernen
+                try:
+                    if greet_msg:
+                        await greet_msg.delete()
+                except Exception:
+                    pass
 
                 logger.info(f"Welcome-DM abgeschlossen für {member} ({member.id})")
                 return True
