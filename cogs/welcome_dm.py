@@ -51,11 +51,7 @@ class CustomGamesView(discord.ui.View):
             if not button.label.startswith("✔ "):
                 button.label = f"✔ {button.label}"
 
-        # Update der Buttons statt neuer Nachricht
-        if interaction.response.is_done():
-            await interaction.edit_original_response(view=self)
-        else:
-            await interaction.response.edit_message(view=self)
+        await interaction.response.edit_message(view=self)
 
     @discord.ui.button(label="Funny Custom", style=discord.ButtonStyle.secondary)
     async def funny(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -67,18 +63,16 @@ class CustomGamesView(discord.ui.View):
 
     @discord.ui.button(label="Ne danke", style=discord.ButtonStyle.danger)
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
         for child in self.children:
             child.disabled = True
-        await interaction.edit_original_response(view=self)
+        await interaction.response.edit_message(view=self)
         self.stop()
 
     @discord.ui.button(label="Weiter", style=discord.ButtonStyle.primary)
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
         for child in self.children:
             child.disabled = True
-        await interaction.edit_original_response(view=self)
+        await interaction.response.edit_message(view=self)
         self.stop()
 
 
@@ -105,25 +99,20 @@ class PatchnotesView(discord.ui.View):
             button.style = discord.ButtonStyle.success
             button.label = "✔ Patchnotes"
 
-        if interaction.response.is_done():
-            await interaction.edit_original_response(view=self)
-        else:
-            await interaction.response.edit_message(view=self)
+        await interaction.response.edit_message(view=self)
 
     @discord.ui.button(label="Ne danke", style=discord.ButtonStyle.danger)
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
         for child in self.children:
             child.disabled = True
-        await interaction.edit_original_response(view=self)
+        await interaction.response.edit_message(view=self)
         self.stop()
 
     @discord.ui.button(label="Weiter", style=discord.ButtonStyle.primary)
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
         for child in self.children:
             child.disabled = True
-        await interaction.edit_original_response(view=self)
+        await interaction.response.edit_message(view=self)
         self.stop()
 
 
