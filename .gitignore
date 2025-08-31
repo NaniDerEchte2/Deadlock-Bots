@@ -8,3 +8,4 @@
 /voice_data/*db
 /voice_data/*db-wal
 /voice_data/*db-shm
+voice_data/tempvoice_data.json
