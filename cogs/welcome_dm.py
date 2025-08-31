@@ -229,7 +229,7 @@ class PatchnotesView(StepView):
 
 
 class RankSelectDropdown(discord.ui.Select):
-    """Frage 3: Rang-Auswahl (Dropdown mit Server-Emojis)"""
+    """Frage 3: Rang-Auswahl (Dropdown mit Server-Emojis, ohne störende Ephemeral-Message)"""
 
     def __init__(self, member: discord.Member, guild: discord.Guild):
         self.member = member
@@ -261,8 +261,18 @@ class RankSelectDropdown(discord.ui.Select):
         selected = self.values[0]
         m: discord.Member = await self.member.guild.fetch_member(self.member.id)
 
+        # Helper: Select deaktivieren + Placeholder setzen + Nachricht updaten
+        async def _lock_select(placeholder_text: str):
+            try:
+                self.placeholder = placeholder_text
+                self.disabled = True
+                # View (mit Weiter-Button) aktualisieren
+                await interaction.message.edit(view=self.view)
+            except Exception:
+                pass
+
         if selected == "unknown":
-            # Freundliche Nachricht (eigene Message, nicht ephemeral)
+            # freundliche „Unknown“-Nachricht als eigene DM
             try:
                 await interaction.channel.send(
                     "ℹ️ **Unknown/Neu** gewählt.\n"
@@ -275,9 +285,13 @@ class RankSelectDropdown(discord.ui.Select):
                 )
             except Exception:
                 pass
-            await interaction.response.send_message("👍 Alles klar – Unknown gesetzt (keine Rangrolle vergeben).", ephemeral=True)
+            # Interaction nur quittieren (keine sichtbare Ephemeral-Message)
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+            await _lock_select("✅ Unknown/Neu gewählt")
             return
 
+        # Konkreten Rang setzen
         try:
             await remove_all_rank_roles(m, self.guild)
             role_name = selected.capitalize()
@@ -286,13 +300,26 @@ class RankSelectDropdown(discord.ui.Select):
                 role = await self.guild.create_role(name=role_name, reason="Welcome DM Rangauswahl")
             await m.add_roles(role, reason="Welcome DM Rangauswahl")
         except discord.Forbidden:
-            await interaction.response.send_message("❌ Rechte fehlen, um Rangrollen zu setzen.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Rechte fehlen, um Rangrollen zu setzen.", ephemeral=True)
             return
         except Exception as e:
             logger.error(f"[Rank Select] {m.id}: {e}")
-            await interaction.response.send_message("⚠️ Fehler beim Rangsetzen.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Fehler beim Rangsetzen.", ephemeral=True)
             return
 
+        # Sichtbares Toast vermeiden → einfach Select sperren & Placeholder setzen
+        placeholder = f"✅ Rang: {role_name}"
+        if not interaction.response.is_done():
+            # Antworte direkt mit Edit der ursprünglichen Nachricht
+            self.placeholder = placeholder
+            self.disabled = True
+            await interaction.response.edit_message(view=self.view)
+        else:
+            await _lock_select(placeholder)
+
+        # Optional: Phantom+ Hinweis in Channel
         if selected in {"phantom", "ascendant", "eternus"}:
             ch = self.guild.get_channel(PHANTOM_NOTIFICATION_CHANNEL_ID)
             if ch:
@@ -306,8 +333,6 @@ class RankSelectDropdown(discord.ui.Select):
                     await ch.send(embed=embed)
                 except Exception:
                     pass
-
-        await interaction.response.send_message(f"✅ Rang **{role_name}** gesetzt!", ephemeral=True)
 
 
 class RankView(StepView):
@@ -404,7 +429,7 @@ class WelcomeDM(commands.Cog):
 
                 # Begrüßung (einfach, wird am Ende entfernt)
                 greet_msg = await member.send(
-                    "👋 **Willkommen bei Deadlock DACH!**\n\n"
+                    "👋 **Willkommen bei der Deutschen Deadlock Community!**\n\n"
                     "Diese DM hilft dir beim Start: Wir vergeben dir passende Rollen und zeigen dir die wichtigsten Infos."
                 )
 
