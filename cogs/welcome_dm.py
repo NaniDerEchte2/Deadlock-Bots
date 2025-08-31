@@ -434,9 +434,17 @@ class WelcomeDM(commands.Cog):
                 )
 
                 # ---- Frage 1 ----
-                q1_desc = (
-                    "➡️ **Funny Customs** – entspannte Fun-Runden\n"
-                    "➡️ **Grind Customs** – Tryhard & Ranglisten-Feeling\n\n"
+                q1_desc = ('''
+                    🎮 Custom Games
+
+Was sind Custom Games?
+Customs sind selbsterstellte Lobbys, die nichts mit dem normalen Matchmaking zu tun haben. Hier legen wir eigene Regeln fest → Fokus auf Spaß, Lernen oder gemeinsames Training.
+
+Dafür gibt es 2 Rollen:
+• @Funny Custom Ping → Für Fun & kreative Custom-Runden 🤪
+• @Grind Custom Ping → Für Scrims & ernsthafte Trainings 💪
+
+➡ Über Reaktionen kannst du dir die Rolle(n) selbst geben, wenn du mitmachen willst.'''
                     "Du kannst beide wählen, nur eine – oder **Ne danke**."
                 )
                 if not await self._send_step_embed(
@@ -480,10 +488,16 @@ class WelcomeDM(commands.Cog):
                     return False
 
                 # ---- Frage 4 ----
-                q4_desc = (
-                    "Bitte lies das **Regelwerk** im Server.\n"
-                    "Bestätige hier, dass du es verstanden hast."
-                )
+                q4_desc = ('''📜 Regelwerk – Das Wichtigste in Kürze
+
+✔ Respektvoller Umgang – keine Beleidigungen oder persönlichen Angriffe
+✔ Null Toleranz bei Rassismus, Sexismus oder Hassrede
+✔ Keine NSFW / expliziten Inhalte
+✔ Privatsphäre respektieren – keine fremden Daten leaken
+✔ Kein Spam / unnötige Pings
+✔ Keine Fremdwerbung oder Schadsoftware
+
+👉 Universalregel: Sei kein Arschloch.''')
                 if not await self._send_step_embed(
                     member,
                     title="Frage 4/4 · Regelwerk bestätigen",
