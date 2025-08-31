@@ -16,44 +16,23 @@ THANK_YOU_DELETE_AFTER_SECONDS = 300  # 5 Minuten
 logger = logging.getLogger(__name__)
 
 # ========= Emoji-Konfiguration =========
-# Falls eure Emoji-Namen NICHT exakt den Rangnamen entsprechen,
-# kannst du hier Overrides setzen – als Emoji-NAME ODER Emoji-ID.
+# Wenn eure Emoji-Namen nicht exakt gleich sind, hier ggf. Overrides setzen
+# (Emoji-Name ODER Emoji-ID). Sonst lässt es der Bot automatisch per Namen finden.
 RANK_EMOJI_OVERRIDES: Dict[str, Union[str, int]] = {
-    # "initiate": "dl_initiate",
-    # "seeker": "dl_seeker",
-    # ...
+    # "phantom": "dl_phantom",
+    # "ascendant": 123456789012345678,
 }
 
-# Unicode-Fallbacks für hübsches Dropdown, falls kein Custom-Emoji gefunden wird
-UNICODE_RANK_EMOJI: Dict[str, str] = {
-    "unknown": "❓",
-    "initiate": "🎯",
-    "seeker": "🔎",
-    "alchemist": "⚗️",
-    "arcanist": "🪄",
-    "ritualist": "🔮",
-    "emissary": "📜",
-    "archon": "🏛️",
-    "oracle": "🧿",
-    "phantom": "👻",
-    "ascendant": "🌅",
-    "eternus": "♾️",
-}
+# Nur für "unknown" ein Unicode-Fallback; alle anderen Ränge haben Server-Emojis
+UNKNOWN_FALLBACK_EMOJI = "❓"
 # ======================================
 
-# ---- Helper: alle Deadlock-Rangrollen entfernen ----
-async def remove_all_rank_roles(member: discord.Member, guild: discord.Guild):
-    ranks = {
-        "initiate", "seeker", "alchemist", "arcanist", "ritualist",
-        "emissary", "archon", "oracle", "phantom", "ascendant", "eternus"
-    }
-    to_remove = [r for r in member.roles if r.name.lower() in ranks]
-    if to_remove:
-        await member.remove_roles(*to_remove, reason="Welcome DM Rangauswahl")
-
+# =========================
+#   Hilfsfunktionen
+# =========================
 
 def _find_custom_emoji(guild: discord.Guild, key: Union[str, int]) -> Optional[Union[discord.Emoji, discord.PartialEmoji]]:
-    """Findet ein Custom-Emoji per Name (enthält) oder per ID."""
+    """Findet ein Custom-Emoji per Name (contains) oder per ID."""
     try:
         if isinstance(key, int) or (isinstance(key, str) and key.isdigit()):
             emoji_id = int(key)
@@ -74,8 +53,8 @@ def _find_custom_emoji(guild: discord.Guild, key: Union[str, int]) -> Optional[U
     return None
 
 
-def get_rank_emoji(guild: discord.Guild, rank_key: str) -> Union[str, discord.Emoji, discord.PartialEmoji, None]:
-    """Emoji für Rang: Override → Name/Contains → Unicode."""
+def get_rank_emoji(guild: discord.Guild, rank_key: str) -> Optional[Union[discord.Emoji, discord.PartialEmoji, str]]:
+    """Liefert Emoji für Rang: Override → Suche per Rangname → None (außer 'unknown' -> ❓)."""
     if rank_key in RANK_EMOJI_OVERRIDES:
         e = _find_custom_emoji(guild, RANK_EMOJI_OVERRIDES[rank_key])
         if e:
@@ -83,7 +62,27 @@ def get_rank_emoji(guild: discord.Guild, rank_key: str) -> Union[str, discord.Em
     e2 = _find_custom_emoji(guild, rank_key)
     if e2:
         return e2
-    return UNICODE_RANK_EMOJI.get(rank_key)
+    if rank_key == "unknown":
+        return UNKNOWN_FALLBACK_EMOJI
+    return None
+
+
+async def remove_all_rank_roles(member: discord.Member, guild: discord.Guild):
+    """Entfernt ggf. vorhandene Deadlock-Rangrollen."""
+    ranks = {
+        "initiate", "seeker", "alchemist", "arcanist", "ritualist",
+        "emissary", "archon", "oracle", "phantom", "ascendant", "eternus"
+    }
+    to_remove = [r for r in member.roles if r.name.lower() in ranks]
+    if to_remove:
+        await member.remove_roles(*to_remove, reason="Welcome DM Rangauswahl")
+
+
+def build_step_embed(title: str, desc: str, step: int, total: int, color: int = 0x5865F2) -> discord.Embed:
+    """Einheitlicher Embed pro Schritt (Discord-blau als Default)."""
+    emb = discord.Embed(title=title, description=desc, color=color, timestamp=datetime.now())
+    emb.set_footer(text=f"Frage {step} von {total} • Deadlock DACH")
+    return emb
 
 
 # =========================
@@ -92,9 +91,9 @@ def get_rank_emoji(guild: discord.Guild, rank_key: str) -> Union[str, discord.Em
 
 class StepView(discord.ui.View):
     """
-    Basisklasse für eine Frage.
-    - proceed: True, sobald 'Weiter' / 'Ne danke' gedrückt wurde.
-    - Toggles beenden den Step NICHT.
+    Basisklasse für eine Frage mit "Weiter"/"Ne danke".
+    - proceed: True, sobald 'Weiter' oder 'Ne danke' gedrückt wurde.
+    - Toggles/Dropdowns beenden den Step NICHT.
     - Beim Abschluss: Buttons disablen + Nachricht löschen.
     """
     def __init__(self, *, timeout: float = 420):
@@ -230,7 +229,7 @@ class PatchnotesView(StepView):
 
 
 class RankSelectDropdown(discord.ui.Select):
-    """Frage 3: Rang-Auswahl (Dropdown mit Emojis)"""
+    """Frage 3: Rang-Auswahl (Dropdown mit Server-Emojis)"""
 
     def __init__(self, member: discord.Member, guild: discord.Guild):
         self.member = member
@@ -246,9 +245,7 @@ class RankSelectDropdown(discord.ui.Select):
             label = r.capitalize()
             value = r
             desc  = f"{label} auswählen"
-            emoji = get_rank_emoji(guild, r)
-            if r == "unknown" and emoji is None:
-                emoji = "❓"
+            emoji = get_rank_emoji(guild, r)  # Server-Emoji (oder ❓ bei unknown)
             if emoji is not None:
                 opt = discord.SelectOption(label=label, value=value, description=desc, emoji=emoji)
             else:
@@ -265,13 +262,20 @@ class RankSelectDropdown(discord.ui.Select):
         m: discord.Member = await self.member.guild.fetch_member(self.member.id)
 
         if selected == "unknown":
-            await interaction.response.send_message(
-            '''ℹ️ **Unknown/Neu** gewählt. 
-            **Willkommen an Bord! 😊**
-            Wenn du neu bist: Basics & erste Schritte findest du hier: https://discord.com/channels/1289721245281292288/1326975033838665803
-            Wenn du magst, helfen wir dir beim Reinkommen – sag einfach kurz Bescheid, dann gehen wir in Ruhe alles Wichtige zu Deadlock durch. Schreib dazu einfach @earlysalty aka Nani :)''',
-            #    ephemeral=True
-            )
+            # Freundliche Nachricht (eigene Message, nicht ephemeral)
+            try:
+                await interaction.channel.send(
+                    "ℹ️ **Unknown/Neu** gewählt.\n"
+                    "**Willkommen an Bord! 😊**\n"
+                    "Wenn du neu bist: Basics & erste Schritte findest du hier: "
+                    "https://discord.com/channels/1289721245281292288/1326975033838665803\n"
+                    "Wenn du magst, helfen wir dir beim Reinkommen – sag einfach kurz Bescheid, "
+                    "dann gehen wir in Ruhe alles Wichtige zu **Deadlock** durch. "
+                    "Schreib dazu einfach **@earlysalty** aka Nani 🙂"
+                )
+            except Exception:
+                pass
+            await interaction.response.send_message("👍 Alles klar – Unknown gesetzt (keine Rangrolle vergeben).", ephemeral=True)
             return
 
         try:
@@ -332,15 +336,13 @@ class RulesView(StepView):
 
     @discord.ui.button(label="Habe verstanden :)", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 1) Danke-Nachricht als EIGENE Nachricht senden (sichtbar)
+        # Danke-Nachricht als eigene DM und nach 5 Min entfernen
         try:
-            thank_msg = await interaction.channel.send("✅ Danke! Willkommen an Bord :)")
-            # 2) Nach 5 Minuten automatisch löschen
+            thank_msg = await interaction.channel.send("✅ Danke! Willkommen an Bord!")
             asyncio.create_task(self._delete_later(thank_msg, THANK_YOU_DELETE_AFTER_SECONDS))
         except Exception:
             pass
 
-        # 3) Diesen Step sauber beenden (Buttons disablen + Frage löschen)
         await self._finish(interaction)
 
 
@@ -349,7 +351,7 @@ class RulesView(StepView):
 # =========================
 
 class WelcomeDM(commands.Cog):
-    """Cog für Willkommens-DM"""
+    """Cog für Willkommens-DM (Embeds + Components)"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -379,9 +381,10 @@ class WelcomeDM(commands.Cog):
         except Exception as e:
             logger.debug(f"DM-Cleanup für {member.id} übersprungen: {e}")
 
-    async def _send_step(self, member: discord.Member, text: str, view: StepView) -> bool:
-        """Sendet eine Frage (Text + View) und wartet, bis 'Weiter/Ne danke' gedrückt wurde oder Timeout."""
-        msg = await member.send(text, view=view)
+    async def _send_step_embed(self, member: discord.Member, *, title: str, desc: str, step: int, total: int, view: StepView, color: int = 0x5865F2) -> bool:
+        """Sendet einen hübschen Embed + View und wartet, bis der Step abgeschlossen wurde."""
+        emb = build_step_embed(title, desc, step, total, color=color)
+        msg = await member.send(embed=emb, view=view)
         try:
             await view.wait()  # stop() wird nur in _finish() gerufen
         finally:
@@ -399,44 +402,71 @@ class WelcomeDM(commands.Cog):
                 # Vorherige Bot-DMs aufräumen
                 await self._cleanup_old_bot_dms(member, limit=50)
 
-                # Begrüßung (merken, später entfernen)
+                # Begrüßung (einfach, wird am Ende entfernt)
                 greet_msg = await member.send(
                     "👋 **Willkommen bei Deadlock DACH!**\n\n"
                     "Diese DM hilft dir beim Start: Wir vergeben dir passende Rollen und zeigen dir die wichtigsten Infos."
                 )
 
                 # ---- Frage 1 ----
-                custom_text = (
-                    "**Frage 1/4:** Lust auf Custom Games?\n\n"
+                q1_desc = (
                     "➡️ **Funny Customs** – entspannte Fun-Runden\n"
                     "➡️ **Grind Customs** – Tryhard & Ranglisten-Feeling\n\n"
                     "Du kannst beide wählen, nur eine – oder **Ne danke**."
                 )
-                if not await self._send_step(member, custom_text, CustomGamesView(member)):
-                    return False  # Timeout -> Abbruch
+                if not await self._send_step_embed(
+                    member,
+                    title="Frage 1/4 · Lust auf Custom Games?",
+                    desc=q1_desc,
+                    step=1, total=4,
+                    view=CustomGamesView(member),
+                    color=0x2ECC71  # grünlich
+                ):
+                    return False
 
                 # ---- Frage 2 ----
-                patch_text = (
-                    "**Frage 2/4:** Patchnotes-Benachrichtigungen aktivieren?\n"
+                q2_desc = (
+                    "Möchtest du über neue **Patchnotes** informiert werden?\n"
                     "So verpasst du keine Balance-Änderungen oder neuen Content."
                 )
-                if not await self._send_step(member, patch_text, PatchnotesView(member)):
+                if not await self._send_step_embed(
+                    member,
+                    title="Frage 2/4 · Patchnotes-Benachrichtigungen",
+                    desc=q2_desc,
+                    step=2, total=4,
+                    view=PatchnotesView(member),
+                    color=0x3498DB  # blau
+                ):
                     return False
 
                 # ---- Frage 3 ----
-                rank_text = (
-                    "**Frage 3/4:** Wähle deinen Deadlock-Rang.\n"
+                q3_desc = (
+                    "Wähle deinen **Deadlock-Rang**.\n"
                     "Bist du neu/unsicher → **Unknown**. Klicke danach **Weiter**."
                 )
-                if not await self._send_step(member, rank_text, RankView(member, member.guild)):
+                if not await self._send_step_embed(
+                    member,
+                    title="Frage 3/4 · Rang auswählen",
+                    desc=q3_desc,
+                    step=3, total=4,
+                    view=RankView(member, member.guild),
+                    color=0x9B59B6  # lila
+                ):
                     return False
 
                 # ---- Frage 4 ----
-                rules_text = (
-                    "**Frage 4/4:** Bitte lies das Regelwerk im Server.\n"
-                    "Bestätige hier, dass du es verstanden hast 👇"
+                q4_desc = (
+                    "Bitte lies das **Regelwerk** im Server.\n"
+                    "Bestätige hier, dass du es verstanden hast."
                 )
-                if not await self._send_step(member, rules_text, RulesView()):
+                if not await self._send_step_embed(
+                    member,
+                    title="Frage 4/4 · Regelwerk bestätigen",
+                    desc=q4_desc,
+                    step=4, total=4,
+                    view=RulesView(),
+                    color=0xE67E22  # orange
+                ):
                     return False
 
                 # Begrüßungsnachricht am Ende entfernen
