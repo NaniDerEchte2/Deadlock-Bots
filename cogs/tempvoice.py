@@ -12,7 +12,7 @@
 #     Row1: ▼ Mindest-Rang (nur Casual; Ranked -> Hinweis)
 #     Row2: 👢 Kick • 🚫 Ban • ♻️ Unban
 #     Row3: ▶ Match gestartet • 🏁 Match beendet  (für alle im Voice möglich)
-# • „Im Match (Min X)“: Timer läuft pro Lane, Name-Update alle 60s (bypass Name-CD)
+# • „Im Match (Min X)“: Timer läuft pro Lane, Name-Update alle 5 Minuten (bypass Name-CD)
 # • Suffix-Reihenfolge: Basis • ab <Rang> • Im Match (Min X) • (voll | vermutlich voll | Spieler gesucht | Wartend)
 # • Anti-429: Locks, Name-Cooldown, atomare Edits, Button-Cooldown, Debounce
 # • Min-Rang (Casual): diff-basierte Overwrites; Ranked unberührt
@@ -40,7 +40,7 @@ RANKED_CATEGORY_ID        = 1357422957017698478      # Ranked Kategorie (Min-Ran
 INTERFACE_TEXT_CHANNEL_ID = 1371927143537315890      # Textkanal, wo UI-Nachricht steht
 LFG_TEXT_CHANNEL_ID       = 1376335502919335936      # Zielkanal für "Spieler gesucht"-Posts
 
-# AFK-Autoshift (NEU/WIEDER DRIN)
+# AFK-Autoshift
 MUTE_MONITOR_CATEGORY_ID  = 1289721245281292290      # In DIESER Kategorie gilt AFK-Autoshift
 AFK_CHANNEL_ID            = 1407787129899057242      # AFK-Voice-Channel
 AFK_MOVE_DELAY_SEC        = 300                      # 5 Minuten
@@ -187,15 +187,17 @@ class TempVoiceCog(commands.Cog):
         await self._ensure_interface()
 
     async def _match_tick_loop(self):
+        """Match-Minuten im Titel nur alle 5 Minuten updaten (schont API)."""
         await self.bot.wait_until_ready()
         while True:
-            await asyncio.sleep(60)  # jede Minute
+            await asyncio.sleep(300)  # <- vorher 60s, jetzt 5 Minuten
             try:
                 for lane_id, active in list(self.lane_match_active.items()):
                     if not active:
                         continue
                     lane = self.bot.get_channel(lane_id)
                     if isinstance(lane, discord.VoiceChannel) and _is_managed_lane(lane):
+                        # force=True: wir wollen trotz Name-CD sicher patchen; Interval ist ohnehin 5 Min
                         await self._refresh_name(lane, force=True)
             except Exception:
                 pass
@@ -207,14 +209,12 @@ class TempVoiceCog(commands.Cog):
             logger.warning("INTERFACE_TEXT_CHANNEL_ID ist kein Textkanal.")
             return
 
-        # Falls schon eine View vom Bot in den letzten Nachrichten hängt → gut.
         try:
             async for msg in ch.history(limit=50):
                 if msg.author == self.bot.user and getattr(msg, "components", None):
                     return
         except Exception:
             pass
-        # Ältere Bot-UI-Nachrichten aufräumen
         try:
             async for msg in ch.history(limit=100):
                 if msg.author == self.bot.user and getattr(msg, "components", None):
@@ -233,7 +233,7 @@ class TempVoiceCog(commands.Cog):
                 "  - **Voll / Nicht voll** (Caps: Casual 8 / Ranked 6, 30s Button-CD)\n"
                 "  - **Mindest-Rang** (nur Casual; Ranked unverändert)\n"
                 "  - **Kick / Ban / Unban** (Ban/Unban per @Mention **oder** ID)\n"
-                "  - **▶ Match gestartet / 🏁 Match beendet** (Status & Timer im Titel)\n\n"
+                "  - **▶ Match gestartet / 🏁 Match beendet** (Status & Timer im Titel, **Update alle 5 Min**)\n\n"
                 "💡 Ab **6 Spielern** erscheint nach kurzer Zeit **„• vermutlich voll“**, sofern kein Status gesetzt ist.\n"
                 "👑 Owner wechselt automatisch an den am längsten anwesenden User, wenn der Owner geht.\n"
                 "🛌 Voll-Mute ≥ **5 Min** → AFK; beim Entmuten zurück zur Lane (oder Staging)."
@@ -327,6 +327,7 @@ class TempVoiceCog(commands.Cog):
             minutes = 0
             if start:
                 minutes = int(max(0, (time.time() - start) // 60))
+                # (Update erfolgt ohnehin nur alle 5 Min; Anzeige bleibt „Min X“)
             parts.append(f"• Im Match (Min {minutes})")
 
         if full_choice is True:
@@ -458,7 +459,7 @@ class TempVoiceCog(commands.Cog):
         except Exception:
             pass
 
-    # ---------- Debounce „vermutlich voll“ ----------
+    # ---------- Debounce für „vermutlich voll“ ----------
     def _schedule_vermutlich_voll(self, lane: discord.VoiceChannel):
         t = self._debounce_tasks.get(lane.id)
         if t and not t.done():
@@ -664,7 +665,7 @@ class TempVoiceCog(commands.Cog):
         except Exception:
             pass
 
-        # AFK-Autoshift nach Voll-Mute (NEU/WIEDER DRIN)
+        # AFK-Autoshift nach Voll-Mute
         try:
             await self._handle_mute_afk(member, before, after)
         except Exception:
