@@ -1,22 +1,21 @@
 # cogs/neu_TempVoice.py
 # ------------------------------------------------------------
 # TempVoice – Auto-Lanes + UI-Management (Casual & Ranked) mit Anti-429
+# + Match-Status (RAM-only): ▶ Match gestartet / 🏁 Match beendet
 #
 # • Join in CASUAL_STAGING_CHANNEL_ID oder RANKED_STAGING_CHANNEL_ID -> Auto-Lane + Move
-# • Bei Lane-Erstellung (Casual):
-#     - Name sofort: "Casual Lane N • Spieler gesucht" (kein Nach-PATCH)
-#     - Limit = Cap direkt beim create (Casual 8 / Ranked 6)
-#     - LFG-Post sofort mit Channel-Link (+XY bis 6), pro Lane 60s Cooldown
+# • Basisname: "Lane N" (kein "Casual" mehr im Namen)
+# • Casual initial: "• Spieler gesucht" (für Sichtbarkeit), Ranked ohne
 # • UI (persistente View in INTERFACE_TEXT_CHANNEL_ID):
 #     Row0: ✅ Voll • ↩️ Nicht voll  (per-Lane Button-Cooldown 30s)
 #     Row1: ▼ Mindest-Rang (nur Casual; Ranked -> Hinweis)
-#     Row2: 👢 Kick • 🚫 Ban • ♻️ Unban  (Ban/Unban via Modal: @Mention oder ID)
-# • „Vermutlich voll“: ab 6 Spielern – 25s Debounce (join/leave Wellen glätten)
-# • „Voll“: Limit = aktuelle Spielerzahl, Name „• voll“, lane_searching=False
-# • „Nicht voll“: Limit = Cap, Name ohne „• voll/• vermutlich voll“, dafür „• Spieler gesucht“, LFG-Post
-# • Anti-429: Locks, Name-Cooldown, atomare Edits, State-Vergleich, Debounce, Button-Cooldown
-# • Min-Rang (Casual): diff-basierte Overwrites (sparsam), Ranked unberührt
-# • Owner-Logik & persistente Owner-Bans in einer JSON
+#     Row2: 👢 Kick • 🚫 Ban • ♻️ Unban
+#     Row3: ▶ Match gestartet • 🏁 Match beendet  (für alle im Voice möglich)
+# • „Im Match (Min X)“: Timer läuft pro Lane, Name-Update alle 60s (bypass Name-CD)
+# • Suffix-Reihenfolge: Basis • ab <Rang> • Im Match (Min X) • (voll | vermutlich voll | Spieler gesucht | Wartend)
+# • Anti-429: Locks, Name-Cooldown, atomare Edits, Button-Cooldown, Debounce
+# • Min-Rang (Casual): diff-basierte Overwrites; Ranked unberührt
+# • Persistenz: nur Owner-Bans in JSON, Match-Status im RAM
 # • Admin: !tempvoice_setup (Interface neu bauen)
 # ------------------------------------------------------------
 
@@ -27,7 +26,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Dict, Tuple, Set
+from typing import Optional, Dict, Set
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -44,9 +43,9 @@ DEFAULT_RANKED_CAP         = 6
 FULL_HINT_THRESHOLD        = 6                        # ab X Leuten Namenszusatz "• vermutlich voll"
 BAN_DATA_PATH              = Path("tempvoice_data.json")
 
-NAME_EDIT_COOLDOWN_SEC     = 120                      # Cooldown pro Channelname-PATCH
+NAME_EDIT_COOLDOWN_SEC     = 120                      # Cooldown pro Channelname-PATCH (Match-Ticker bypassed)
 LFG_POST_COOLDOWN_SEC      = 60                       # Cooldown pro Lane für LFG-Posts
-BUTTON_COOLDOWN_SEC        = 30                       # Pro Lane Anti-Spam für Voll/Nicht voll
+BUTTON_COOLDOWN_SEC        = 30                       # Pro Lane Anti-Spam für Voll/Nicht voll/Match
 DEBOUNCE_VERML_VOLL_SEC    = 25                       # Debounce für „vermutlich voll“
 # ================================================
 
@@ -57,7 +56,7 @@ RANK_ORDER = [
     "ascendant", "eternus"
 ]
 RANK_SET = set(RANK_ORDER)
-SUFFIX_THRESHOLD_RANK = "emissary"  # erst ab diesem Rang Suffix "• ab <Rang>" anzeigen
+SUFFIX_THRESHOLD_RANK = "emissary"  # Suffix „• ab <Rang>“ erst ab diesem Rang
 
 def _rank_index(name: str) -> int:
     n = name.lower()
@@ -72,16 +71,15 @@ def _rank_roles(guild: discord.Guild) -> Dict[str, discord.Role]:
     return out
 
 def _is_managed_lane(ch: Optional[discord.VoiceChannel]) -> bool:
-    return isinstance(ch, discord.VoiceChannel) and (
-        ch.name.startswith("Casual Lane") or ch.name.startswith("Ranked Lane")
-    )
+    return isinstance(ch, discord.VoiceChannel) and ch.name.startswith("Lane ")
 
 def _default_cap(ch: discord.VoiceChannel) -> int:
     return DEFAULT_RANKED_CAP if ch.category_id == RANKED_CATEGORY_ID else DEFAULT_CASUAL_CAP
 
 def _strip_suffixes(current: str) -> str:
     base = current
-    for marker in (" • ab ", " • vermutlich voll", " • voll", " • Spieler gesucht"):
+    # Alle dynamischen Zusätze entfernen, Basis erhalten
+    for marker in (" • ab ", " • Im Match (Min", " • vermutlich voll", " • voll", " • Spieler gesucht", " • Wartend"):
         if marker in base:
             base = base.split(marker)[0]
     return base
@@ -143,8 +141,12 @@ class TempVoiceCog(commands.Cog):
         self.lane_base: Dict[int, str] = {}
         self.lane_min_rank: Dict[int, str] = {}
         self.lane_full_choice: Dict[int, Optional[bool]] = {}  # True/False/None
-        self.lane_searching: Dict[int, bool] = {}              # „• Spieler gesucht“ anzeigen?
+        self.lane_searching: Dict[int, bool] = {}              # „• Spieler gesucht“ aktiv?
         self.join_time: Dict[int, Dict[int, float]] = {}
+
+        # Match-Status (RAM-only)
+        self.lane_match_active: Dict[int, bool] = {}
+        self.lane_match_start_ts: Dict[int, float] = {}
 
         # Anti-429
         self._edit_locks: Dict[int, asyncio.Lock] = {}
@@ -162,10 +164,27 @@ class TempVoiceCog(commands.Cog):
     async def cog_load(self):
         self.bot.add_view(MainView(self))  # persistente UI
         asyncio.create_task(self._startup())
+        asyncio.create_task(self._match_tick_loop())
 
     async def _startup(self):
         await self.bot.wait_until_ready()
         await self._ensure_interface()
+
+    async def _match_tick_loop(self):
+        await self.bot.wait_until_ready()
+        while True:
+            await asyncio.sleep(60)  # jede Minute
+            try:
+                # Alle Lanes mit aktivem Match -> Name aktualisieren (force, bypass cooldown)
+                for lane_id, active in list(self.lane_match_active.items()):
+                    if not active:
+                        continue
+                    lane = self.bot.get_channel(lane_id)
+                    if isinstance(lane, discord.VoiceChannel) and _is_managed_lane(lane):
+                        await self._refresh_name(lane, force=True)
+            except Exception:
+                # Niemals die Schleife sterben lassen
+                pass
 
     # ---------- Interface ----------
     async def _ensure_interface(self):
@@ -192,14 +211,15 @@ class TempVoiceCog(commands.Cog):
             pass
 
         embed = discord.Embed(
-            title="Casual & Ranked • Lanes & Steuerung",
+            title="Lanes & Steuerung (Casual/Ranked)",
             description=(
-                "• **Tritt Casual oder Ranked Staging** bei → ich **erstelle automatisch** deine Lane und move dich rüber.\n"
-                "• **Deine Lane steuerst du hier**:\n"
-                "  - **Voll / Nicht voll** (Caps: Casual 8 / Ranked 6, 30s Button-Cooldown)\n"
+                "• **Join Staging (Casual/Ranked)** → ich **erstelle automatisch** deine Lane und move dich rüber.\n"
+                "• **Steuerung hier im Interface**:\n"
+                "  - **Voll / Nicht voll** (Caps: Casual 8 / Ranked 6, 30s Button-CD)\n"
                 "  - **Mindest-Rang** (nur Casual; Ranked unverändert)\n"
-                "  - **Kick / Ban / Unban** (Ban/Unban per @Mention **oder** ID)\n\n"
-                "💡 Ab **6 Spielern** erscheint nach kurzer Zeit **„• vermutlich voll“**, solange nichts gesetzt ist.\n"
+                "  - **Kick / Ban / Unban** (Ban/Unban per @Mention **oder** ID)\n"
+                "  - **▶ Match gestartet / 🏁 Match beendet** (Status & Timer im Titel)\n\n"
+                "💡 Ab **6 Spielern** erscheint nach kurzer Zeit **„• vermutlich voll“**, sofern kein Status gesetzt ist.\n"
                 "👑 Owner wechselt automatisch an den am längsten anwesenden User, wenn der Owner geht."
             ),
             color=0x2ecc71
@@ -280,20 +300,32 @@ class TempVoiceCog(commands.Cog):
         member_count = len(lane.members)
 
         parts = [base]
+
         # Rang-Suffix nur Casual und ab Emissary+
         if lane.category_id != RANKED_CATEGORY_ID:
             if min_rank and min_rank != "unknown" and _rank_index(min_rank) >= _rank_index(SUFFIX_THRESHOLD_RANK):
                 parts.append(f"• ab {min_rank.capitalize()}")
 
-        # Status-Suffix
+        # Match-Suffix (RAM-only)
+        if self.lane_match_active.get(lane.id, False):
+            start = self.lane_match_start_ts.get(lane.id, None)
+            minutes = 0
+            if start:
+                minutes = int(max(0, (time.time() - start) // 60))
+            parts.append(f"• Im Match (Min {minutes})")
+
+        # Belegungs-/Suche-Status
         if full_choice is True:
             parts.append("• voll")
         else:
-            # wenn kein „voll“, dann entweder „vermutlich voll“ (bei None & >=Threshold) oder „Spieler gesucht“ (wenn aktiv)
             if full_choice is None and member_count >= FULL_HINT_THRESHOLD:
                 parts.append("• vermutlich voll")
             elif self.lane_searching.get(lane.id, False):
                 parts.append("• Spieler gesucht")
+            else:
+                # Nur wenn nichts anderes greift & kein Match
+                if not self.lane_match_active.get(lane.id, False):
+                    parts.append("• Wartend")
 
         return " ".join(parts)
 
@@ -315,14 +347,14 @@ class TempVoiceCog(commands.Cog):
         guild = member.guild
         cat = staging.category
         is_ranked = cat and cat.id == RANKED_CATEGORY_ID
-        prefix = "Ranked Lane" if is_ranked else "Casual Lane"
+        prefix = "Lane"  # neuer Basisname für alle
         base = await self._next_name(cat, prefix)
 
         # Name & Limit direkt beim create
         bitrate = getattr(guild, "bitrate_limit", None) or 256000
         cap = DEFAULT_RANKED_CAP if is_ranked else DEFAULT_CASUAL_CAP
 
-        # Initiale Suche-Suffix nur für Casual
+        # Casual startet mit "Spieler gesucht", Ranked ohne
         initial_name = base if is_ranked else f"{base} • Spieler gesucht"
 
         try:
@@ -346,8 +378,13 @@ class TempVoiceCog(commands.Cog):
         self.lane_base[lane.id] = base
         self.lane_min_rank[lane.id] = "unknown"
         self.lane_full_choice[lane.id] = None
-        self.lane_searching[lane.id] = (not is_ranked)  # Casual startet mit „Spieler gesucht“, Ranked nicht
+        self.lane_searching[lane.id] = (not is_ranked)
         self.join_time.setdefault(lane.id, {})
+
+        # Match-Status (RAM) initial aus
+        self.lane_match_active.pop(lane.id, None)
+        self.lane_match_start_ts.pop(lane.id, None)
+
         # Reset Anti-429/Spam
         self._last_name_desired.pop(lane.id, None)
         self._last_name_patch_ts.pop(lane.id, None)
@@ -366,7 +403,7 @@ class TempVoiceCog(commands.Cog):
         except Exception:
             pass
 
-        # Sofortiger LFG-Post (mit Lane-CD, aber initial setzen wir den Timestamp nach dem Post)
+        # Sofortiger LFG-Post (Lane-CD, initial force)
         await self._post_lfg(lane, force=True)
 
         logger.info(f"Auto-Lane erstellt: {lane.name} (owner={member.id}, cap={cap}, bitrate={bitrate})")
@@ -404,8 +441,6 @@ class TempVoiceCog(commands.Cog):
 
     # ---------- Debounce für „vermutlich voll“ ----------
     def _schedule_vermutlich_voll(self, lane: discord.VoiceChannel):
-        """Plant eine verzögerte Prüfung/Anpassung, um Join/Leave-Wellen zu glätten."""
-        # bestehenden Task abbrechen
         t = self._debounce_tasks.get(lane.id)
         if t and not t.done():
             t.cancel()
@@ -415,7 +450,6 @@ class TempVoiceCog(commands.Cog):
                 await asyncio.sleep(DEBOUNCE_VERML_VOLL_SEC)
                 if not _is_managed_lane(lane):
                     return
-                # nur wenn nicht manuell voll/nicht-voll gewählt wurde
                 if self.lane_full_choice.get(lane.id) is None:
                     await self._refresh_name(lane, force=False)
             except asyncio.CancelledError:
@@ -500,7 +534,8 @@ class TempVoiceCog(commands.Cog):
                         for d in (self.lane_owner, self.lane_base, self.lane_min_rank,
                                   self.lane_full_choice, self.lane_searching, self.join_time,
                                   self._last_name_desired, self._last_name_patch_ts,
-                                  self._last_lfg_ts, self._last_button_ts):
+                                  self._last_lfg_ts, self._last_button_ts,
+                                  self.lane_match_active, self.lane_match_start_ts):
                             d.pop(ch.id, None)
                         t = self._debounce_tasks.pop(ch.id, None)
                         if t:
@@ -542,6 +577,7 @@ class MainView(discord.ui.View):
       Row0: ✅ Voll • ↩️ Nicht voll  (30s Cooldown pro Lane)
       Row1: ▼ Mindest-Rang (nur Casual; Ranked -> Hinweis)
       Row2: 👢 Kick • 🚫 Ban • ♻️ Unban
+      Row3: ▶ Match gestartet • 🏁 Match beendet (für alle im Voice)
     """
     def __init__(self, cog: TempVoiceCog):
         super().__init__(timeout=None)
@@ -616,7 +652,7 @@ class MainView(discord.ui.View):
         self.cog.lane_searching[lane.id] = True
 
         cap = _default_cap(lane)
-        desired_name = self.cog._compose_name(lane)  # ohne „• voll/• vermutlich voll“, mit „• Spieler gesucht“
+        desired_name = self.cog._compose_name(lane)
         await self.cog._safe_edit_channel(
             lane,
             desired_name=desired_name,
@@ -682,6 +718,66 @@ class MainView(discord.ui.View):
             )
         modal = BanModal(self.cog, lane, action="unban")
         await itx.response.send_modal(modal)
+
+    # Row3 – Match-Status (für alle, die im Voice sind)
+    @discord.ui.button(label="▶ Match gestartet", style=discord.ButtonStyle.primary, row=3, custom_id="tv_match_start")
+    async def btn_match_start(self, itx: discord.Interaction, _):
+        lane = self._lane(itx)
+        if not lane or not _is_managed_lane(lane):
+            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
+                "Tritt zuerst **deiner Lane** bei.", ephemeral=True
+            )
+        if not await self._cooldown_ok(lane.id):
+            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
+                "Bitte warte kurz (30s) bevor du erneut klickst.", ephemeral=True
+            )
+
+        try:
+            await itx.response.defer(ephemeral=True, thinking=False)
+        except Exception:
+            pass
+
+        # Match starten (RAM-only)
+        self.cog.lane_match_active[lane.id] = True
+        self.cog.lane_match_start_ts[lane.id] = time.time()
+
+        # Name sofort aktualisieren (Min 0), force um Cooldown zu umgehen
+        await self.cog._refresh_name(lane, force=True)
+
+        # optional: Rückmeldung
+        try:
+            await itx.followup.send("▶ Match gestartet – Timer läuft.", ephemeral=True)
+        except Exception:
+            pass
+
+    @discord.ui.button(label="🏁 Match beendet", style=discord.ButtonStyle.secondary, row=3, custom_id="tv_match_end")
+    async def btn_match_end(self, itx: discord.Interaction, _):
+        lane = self._lane(itx)
+        if not lane or not _is_managed_lane(lane):
+            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
+                "Tritt zuerst **deiner Lane** bei.", ephemeral=True
+            )
+        if not await self._cooldown_ok(lane.id):
+            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
+                "Bitte warte kurz (30s) bevor du erneut klickst.", ephemeral=True
+            )
+
+        try:
+            await itx.response.defer(ephemeral=True, thinking=False)
+        except Exception:
+            pass
+
+        # Match beenden (RAM-only)
+        self.cog.lane_match_active.pop(lane.id, None)
+        self.cog.lane_match_start_ts.pop(lane.id, None)
+
+        # Name zurück (Wartend bzw. andere Suffixe), force
+        await self.cog._refresh_name(lane, force=True)
+
+        try:
+            await itx.followup.send("🏁 Match beendet – Timer gestoppt.", ephemeral=True)
+        except Exception:
+            pass
 
 # ----- Mindest-Rang (Row1) -----
 class MinRankSelect(discord.ui.Select):
