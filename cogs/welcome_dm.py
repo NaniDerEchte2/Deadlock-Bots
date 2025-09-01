@@ -1,3 +1,4 @@
+# cogs/welcome_dm.py
 import discord
 from discord.ext import commands
 import asyncio
@@ -5,28 +6,23 @@ import logging
 from datetime import datetime
 from typing import Dict, Optional, Union
 
-# ---------- IDs (bitte prüfen/anpassen) ----------
-FUNNY_CUSTOM_ROLE_ID = 1407085699374649364
-GRIND_CUSTOM_ROLE_ID  = 1407086020331311144
-PATCHNOTES_ROLE_ID    = 1330994309524357140
+# ---------- IDs (prüfen/anpassen) ----------
+MAIN_GUILD_ID                = 1289721245281292288  # Haupt-Guild (für Member/Rollen in DMs)
+FUNNY_CUSTOM_ROLE_ID         = 1407085699374649364
+GRIND_CUSTOM_ROLE_ID         = 1407086020331311144
+PATCHNOTES_ROLE_ID           = 1330994309524357140
 PHANTOM_NOTIFICATION_CHANNEL_ID = 1374364800817303632
-
-# NEU: Rolle, die nach Regelbestätigung gesetzt werden soll
-ONBOARD_COMPLETE_ROLE_ID = 1304216250649415771
-
+ONBOARD_COMPLETE_ROLE_ID     = 1304216250649415771  # Rolle nach Regelbestätigung
 THANK_YOU_DELETE_AFTER_SECONDS = 300  # 5 Minuten
-# -------------------------------------------------
+# -------------------------------------------
 
 logger = logging.getLogger(__name__)
 
 # ========= Emoji-Konfiguration =========
-# Optional: feste Zuordnung, falls die Emoji-Namen im Server abweichen
 RANK_EMOJI_OVERRIDES: Dict[str, Union[str, int]] = {
     # "phantom": "dl_phantom",
     # "ascendant": 123456789012345678,
 }
-
-# Nur für "unknown" ein Unicode-Fallback; alle anderen Ränge haben Server-Emojis
 UNKNOWN_FALLBACK_EMOJI = "❓"
 # ======================================
 
@@ -35,7 +31,7 @@ UNKNOWN_FALLBACK_EMOJI = "❓"
 # =========================
 
 def _find_custom_emoji(guild: discord.Guild, key: Union[str, int]) -> Optional[Union[discord.Emoji, discord.PartialEmoji]]:
-    """Findet ein Custom-Emoji per Name oder per ID."""
+    """Findet ein Custom-Emoji per Name/ID."""
     try:
         if isinstance(key, int) or (isinstance(key, str) and key.isdigit()):
             emoji_id = int(key)
@@ -56,8 +52,10 @@ def _find_custom_emoji(guild: discord.Guild, key: Union[str, int]) -> Optional[U
     return None
 
 
-def get_rank_emoji(guild: discord.Guild, rank_key: str) -> Optional[Union[discord.Emoji, discord.PartialEmoji, str]]:
-    """Liefert Emoji für Rang: Override → Suche per Rangname → None (außer 'unknown' -> ❓)."""
+def get_rank_emoji(guild: Optional[discord.Guild], rank_key: str) -> Optional[Union[discord.Emoji, discord.PartialEmoji, str]]:
+    """Emoji für Rang: Override → Suche → None (außer 'unknown' -> ❓)."""
+    if guild is None:
+        return UNKNOWN_FALLBACK_EMOJI if rank_key == "unknown" else None
     if rank_key in RANK_EMOJI_OVERRIDES:
         e = _find_custom_emoji(guild, RANK_EMOJI_OVERRIDES[rank_key])
         if e:
@@ -95,16 +93,27 @@ def build_step_embed(title: str, desc: str, step: int, total: int, color: int = 
 class StepView(discord.ui.View):
     """
     Basisklasse für eine Frage mit "Weiter"/"Ne danke".
-    - proceed: True, sobald 'Weiter' oder 'Ne danke' gedrückt wurde.
-    - Toggles/Dropdowns beenden den Step NICHT.
-    - Beim Abschluss: Buttons disablen + Nachricht löschen.
+    Persistenz:
+      • timeout=None
+      • Buttons/Selects haben feste custom_id
+      • View wird in cog_load() global registriert (bot.add_view)
     """
-    def __init__(self, *, timeout: float = 420):
-        super().__init__(timeout=timeout)
-        self.proceed: bool = False
+    def __init__(self):
+        # timeout=None = persistent
+        super().__init__(timeout=None)
+        self.proceed: bool = False  # nur bei flow-instanz relevant
+
+    # Hilfsfunktion: Guild/Member aus der MAIN_GUILD holen (bei DMs hat Interaction keine Guild)
+    @staticmethod
+    def _get_guild_and_member(inter: discord.Interaction) -> tuple[Optional[discord.Guild], Optional[discord.Member]]:
+        guild = inter.client.get_guild(MAIN_GUILD_ID)  # type: ignore
+        if guild is None:
+            return None, None
+        m = guild.get_member(inter.user.id)
+        return guild, m
 
     async def _finish(self, interaction: discord.Interaction):
-        # Buttons deaktivieren, Nachricht aktualisieren & löschen
+        # Buttons deaktivieren, Nachricht aktualisieren & löschen (nur wenn das die "laufende" Flow-Instanz ist)
         for child in self.children:
             child.disabled = True
         try:
@@ -127,117 +136,125 @@ class StepView(discord.ui.View):
 # =========================
 
 class CustomGamesView(StepView):
-    """Frage 1: Custom Games (Toggle-Buttons + Weiter/Ne danke)"""
+    """Frage 1: Custom Games (Toggle-Buttons + Weiter/Ne danke).
+       Persistente Buttons: wdm:q1:*
+    """
 
-    def __init__(self, member: discord.Member):
-        super().__init__(timeout=420)
-        self.member = member
-
-    async def _fresh_member(self) -> discord.Member:
-        return await self.member.guild.fetch_member(self.member.id)
-
-    async def _toggle_role(
-        self,
-        interaction: discord.Interaction,
-        role_id: int,
-        button: discord.ui.Button,
-        base_label: str
-    ):
-        role = self.member.guild.get_role(role_id)
-        if not role:
-            await interaction.response.send_message("❌ Rolle nicht gefunden (ID/Hierarchie prüfen).", ephemeral=True)
+    async def _toggle_role(self, interaction: discord.Interaction, role_id: int, button: discord.ui.Button, base_label: str):
+        guild, member = self._get_guild_and_member(interaction)
+        if not guild or not member:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Konnte Guild/Member nicht bestimmen.", ephemeral=True)
             return
 
-        m = await self._fresh_member()
+        role = guild.get_role(role_id)
+        if not role:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Rolle nicht gefunden (ID/Hierarchie prüfen).", ephemeral=True)
+            return
+
         try:
-            if role in m.roles:
-                await m.remove_roles(role, reason="Welcome DM Auswahl")
+            if role in member.roles:
+                await member.remove_roles(role, reason="Welcome DM Auswahl")
                 button.style = discord.ButtonStyle.secondary
                 button.label = base_label
             else:
-                await m.add_roles(role, reason="Welcome DM Auswahl")
+                await member.add_roles(role, reason="Welcome DM Auswahl")
                 button.style = discord.ButtonStyle.success
                 button.label = f"✔ {base_label}"
         except discord.Forbidden:
-            await interaction.response.send_message("❌ Rechte fehlen (Manage Roles / Rollenhierarchie).", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Rechte fehlen (Manage Roles / Rollenhierarchie).", ephemeral=True)
             return
         except Exception as e:
-            logger.error(f"[Custom Toggle] {m.id}: {e}")
-            await interaction.response.send_message("⚠️ Fehler beim Rollenwechsel.", ephemeral=True)
+            logger.error(f"[Custom Toggle] {member.id}: {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Fehler beim Rollenwechsel.", ephemeral=True)
             return
 
-        await interaction.response.edit_message(view=self)
+        # Button-UI im DM aktualisieren (die View-Instanz an der Nachricht bekommt die geänderten Styles)
+        if not interaction.response.is_done():
+            await interaction.response.edit_message(view=self)
+        else:
+            try:
+                await interaction.message.edit(view=self)
+            except Exception:
+                pass
 
-    @discord.ui.button(label="Funny Custom", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Funny Custom", style=discord.ButtonStyle.secondary, custom_id="wdm:q1:funny")
     async def funny(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._toggle_role(interaction, FUNNY_CUSTOM_ROLE_ID, button, "Funny Custom")
 
-    @discord.ui.button(label="Grind Custom", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Grind Custom", style=discord.ButtonStyle.secondary, custom_id="wdm:q1:grind")
     async def grind(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._toggle_role(interaction, GRIND_CUSTOM_ROLE_ID, button, "Grind Custom")
 
-    @discord.ui.button(label="Ne danke", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Ne danke", style=discord.ButtonStyle.danger, custom_id="wdm:q1:skip")
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._finish(interaction)
 
-    @discord.ui.button(label="Weiter", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Weiter", style=discord.ButtonStyle.primary, custom_id="wdm:q1:next")
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._finish(interaction)
 
 
 class PatchnotesView(StepView):
-    """Frage 2: Patchnotes (gleiches Toggle-Verhalten wie Customs)"""
+    """Frage 2: Patchnotes (Toggle + Weiter/Ne danke).  Persistente Buttons: wdm:q2:*"""
 
-    def __init__(self, member: discord.Member):
-        super().__init__(timeout=420)
-        self.member = member
-
-    async def _fresh_member(self) -> discord.Member:
-        return await self.member.guild.fetch_member(self.member.id)
-
-    @discord.ui.button(label="Patchnotes", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Patchnotes", style=discord.ButtonStyle.secondary, custom_id="wdm:q2:patch")
     async def toggle_patch(self, interaction: discord.Interaction, button: discord.ui.Button):
-        role = self.member.guild.get_role(PATCHNOTES_ROLE_ID)
-        if not role:
-            await interaction.response.send_message("❌ Rolle nicht gefunden (ID/Hierarchie prüfen).", ephemeral=True)
+        guild, member = self._get_guild_and_member(interaction)
+        if not guild or not member:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Konnte Guild/Member nicht bestimmen.", ephemeral=True)
             return
 
-        m = await self._fresh_member()
+        role = guild.get_role(PATCHNOTES_ROLE_ID)
+        if not role:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Rolle nicht gefunden (ID/Hierarchie prüfen).", ephemeral=True)
+            return
+
         try:
-            if role in m.roles:
-                await m.remove_roles(role, reason="Welcome DM Auswahl")
+            if role in member.roles:
+                await member.remove_roles(role, reason="Welcome DM Auswahl")
                 button.style = discord.ButtonStyle.secondary
                 button.label = "Patchnotes"
             else:
-                await m.add_roles(role, reason="Welcome DM Auswahl")
+                await member.add_roles(role, reason="Welcome DM Auswahl")
                 button.style = discord.ButtonStyle.success
                 button.label = "✔ Patchnotes"
         except discord.Forbidden:
-            await interaction.response.send_message("❌ Rechte fehlen (Manage Roles / Rollenhierarchie).", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Rechte fehlen (Manage Roles / Rollenhierarchie).", ephemeral=True)
             return
         except Exception as e:
-            logger.error(f"[Patchnotes Toggle] {m.id}: {e}")
-            await interaction.response.send_message("⚠️ Fehler beim Rollenwechsel.", ephemeral=True)
+            logger.error(f"[Patchnotes Toggle] {member.id}: {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Fehler beim Rollenwechsel.", ephemeral=True)
             return
 
-        await interaction.response.edit_message(view=self)
+        if not interaction.response.is_done():
+            await interaction.response.edit_message(view=self)
+        else:
+            try:
+                await interaction.message.edit(view=self)
+            except Exception:
+                pass
 
-    @discord.ui.button(label="Ne danke", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Ne danke", style=discord.ButtonStyle.danger, custom_id="wdm:q2:skip")
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._finish(interaction)
 
-    @discord.ui.button(label="Weiter", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Weiter", style=discord.ButtonStyle.primary, custom_id="wdm:q2:next")
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._finish(interaction)
 
 
 class RankSelectDropdown(discord.ui.Select):
-    """Frage 3: Rang-Auswahl (Dropdown mit Server-Emojis, ohne störende Ephemeral-Message)"""
+    """Frage 3: Rang-Auswahl (Dropdown mit Server-Emojis, persistent custom_id='wdm:q3:rank')."""
 
-    def __init__(self, member: discord.Member, guild: discord.Guild):
-        self.member = member
-        self.guild = guild
-
+    def __init__(self, guild_for_emojis: Optional[discord.Guild] = None):
         ranks = [
             "unknown", "initiate", "seeker", "alchemist", "arcanist", "ritualist",
             "emissary", "archon", "oracle", "phantom", "ascendant", "eternus"
@@ -246,25 +263,37 @@ class RankSelectDropdown(discord.ui.Select):
         options: list[discord.SelectOption] = []
         for r in ranks:
             label = r.capitalize()
-            value = r
             desc  = f"{label} auswählen"
-            emoji = get_rank_emoji(guild, r)  # Server-Emoji (oder ❓ bei unknown)
+            emoji = get_rank_emoji(guild_for_emojis, r)
             if emoji is not None:
-                opt = discord.SelectOption(label=label, value=value, description=desc, emoji=emoji)
+                options.append(discord.SelectOption(label=label, value=r, description=desc, emoji=emoji))
             else:
-                opt = discord.SelectOption(label=label, value=value, description=desc)
-            options.append(opt)
+                options.append(discord.SelectOption(label=label, value=r, description=desc))
 
         super().__init__(
             placeholder="🎮 Wähle deinen Deadlock-Rang…",
-            min_values=1, max_values=1, options=options
+            min_values=1, max_values=1, options=options,
+            custom_id="wdm:q3:rank"
         )
 
     async def callback(self, interaction: discord.Interaction):
-        selected = self.values[0]
-        m: discord.Member = await self.member.guild.fetch_member(self.member.id)
+        guild = interaction.client.get_guild(MAIN_GUILD_ID)  # type: ignore
+        if guild is None:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Konnte Guild nicht bestimmen.", ephemeral=True)
+            return
+        member = guild.get_member(interaction.user.id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(interaction.user.id)
+            except Exception:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("❌ Konnte Member nicht finden.", ephemeral=True)
+                return
 
-        # Helper: Select deaktivieren + Placeholder setzen + Nachricht updaten
+        selected = self.values[0]
+
+        # Helper: Select sperren + Placeholder setzen
         async def _lock_select(placeholder_text: str):
             try:
                 self.placeholder = placeholder_text
@@ -274,7 +303,6 @@ class RankSelectDropdown(discord.ui.Select):
                 pass
 
         if selected == "unknown":
-            # freundliche „Unknown“-Nachricht als eigene DM
             try:
                 await interaction.channel.send(
                     "ℹ️ **Unknown/Neu** gewählt.\n"
@@ -292,25 +320,25 @@ class RankSelectDropdown(discord.ui.Select):
             await _lock_select("✅ Unknown/Neu gewählt")
             return
 
-        # Konkreten Rang setzen
+        # Rang setzen
+        role_name = selected.capitalize()
         try:
-            await remove_all_rank_roles(m, self.guild)
-            role_name = selected.capitalize()
-            role = discord.utils.get(self.guild.roles, name=role_name)
+            await remove_all_rank_roles(member, guild)
+            role = discord.utils.get(guild.roles, name=role_name)
             if not role:
-                role = await self.guild.create_role(name=role_name, reason="Welcome DM Rangauswahl")
-            await m.add_roles(role, reason="Welcome DM Rangauswahl")
+                role = await guild.create_role(name=role_name, reason="Welcome DM Rangauswahl")
+            await member.add_roles(role, reason="Welcome DM Rangauswahl")
         except discord.Forbidden:
             if not interaction.response.is_done():
                 await interaction.response.send_message("❌ Rechte fehlen, um Rangrollen zu setzen.", ephemeral=True)
             return
         except Exception as e:
-            logger.error(f"[Rank Select] {m.id}: {e}")
+            logger.error(f"[Rank Select] {member.id}: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message("⚠️ Fehler beim Rangsetzen.", ephemeral=True)
             return
 
-        # Sichtbares Toast vermeiden → einfach Select sperren & Placeholder setzen
+        # Sichtbaren Toast vermeiden → nur UI sperren/labeln
         placeholder = f"✅ Rang: {role_name}"
         if not interaction.response.is_done():
             self.placeholder = placeholder
@@ -319,13 +347,13 @@ class RankSelectDropdown(discord.ui.Select):
         else:
             await _lock_select(placeholder)
 
-        # Optional: Phantom+ Hinweis in Channel
+        # Optional: Phantom+ Hinweis
         if selected in {"phantom", "ascendant", "eternus"}:
-            ch = self.guild.get_channel(PHANTOM_NOTIFICATION_CHANNEL_ID)
+            ch = guild.get_channel(PHANTOM_NOTIFICATION_CHANNEL_ID)
             if ch:
                 embed = discord.Embed(
                     title="🔥 Phantom+ Rang Update",
-                    description=f"**{m.display_name}** hat sich den Rang **{role_name}** gesetzt!",
+                    description=f"**{member.display_name}** hat sich den Rang **{role_name}** gesetzt!",
                     color=0xFF6B35,
                     timestamp=datetime.now()
                 )
@@ -336,22 +364,17 @@ class RankSelectDropdown(discord.ui.Select):
 
 
 class RankView(StepView):
-    def __init__(self, member: discord.Member, guild: discord.Guild):
-        super().__init__(timeout=420)
-        self.add_item(RankSelectDropdown(member, guild))
+    def __init__(self, guild_for_emojis: Optional[discord.Guild] = None):
+        super().__init__()
+        self.add_item(RankSelectDropdown(guild_for_emojis))
 
-    @discord.ui.button(label="Weiter", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Weiter", style=discord.ButtonStyle.primary, custom_id="wdm:q3:next")
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._finish(interaction)
 
 
 class RulesView(StepView):
-    """Frage 4: Regelwerk bestätigen + (NEU) Abschluss-Rolle setzen"""
-
-    def __init__(self, member: discord.Member):
-        super().__init__(timeout=420)
-        self.member = member
-        self.guild = member.guild
+    """Frage 4: Regelwerk bestätigen + Abschluss-Rolle setzen (persistenter Button: wdm:q4:confirm)."""
 
     @staticmethod
     async def _delete_later(msg: discord.Message, seconds: int):
@@ -361,30 +384,24 @@ class RulesView(StepView):
         except Exception:
             pass
 
-    @discord.ui.button(label="Habe verstanden :)", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Habe verstanden :)", style=discord.ButtonStyle.success, custom_id="wdm:q4:confirm")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 1) Abschluss-Rolle vergeben
-        try:
-            role = self.guild.get_role(ONBOARD_COMPLETE_ROLE_ID)
-            if role:
-                await self.member.add_roles(role, reason="Welcome DM: Regeln bestätigt")
-            else:
-                # Rolle existiert nicht → leise ignorieren (oder DM-Hinweis)
-                pass
-        except discord.Forbidden:
-            # Rechte fehlen – wir lassen es still durchlaufen, damit der Flow nicht hängen bleibt
-            pass
-        except Exception as e:
-            logger.warning(f"Could not add ONBOARD role to {self.member.id}: {e}")
+        guild, member = self._get_guild_and_member(interaction)
+        if guild and member:
+            try:
+                role = guild.get_role(ONBOARD_COMPLETE_ROLE_ID)
+                if role:
+                    await member.add_roles(role, reason="Welcome DM: Regeln bestätigt")
+            except Exception as e:
+                logger.warning(f"Could not add ONBOARD role to {member.id if member else 'unknown'}: {e}")
 
-        # 2) Danke-Nachricht als eigene DM und nach 5 Min entfernen
+        # Danke-Nachricht separat & nach 5 Min löschen
         try:
             thank_msg = await interaction.channel.send("✅ Danke! Willkommen an Bord!")
             asyncio.create_task(self._delete_later(thank_msg, THANK_YOU_DELETE_AFTER_SECONDS))
         except Exception:
             pass
 
-        # 3) Step abschließen (Buttons ausblenden, Nachricht löschen)
         await self._finish(interaction)
 
 
@@ -393,7 +410,7 @@ class RulesView(StepView):
 # =========================
 
 class WelcomeDM(commands.Cog):
-    """Cog für Willkommens-DM (Embeds + Components)"""
+    """Cog für Willkommens-DM (Embeds + **persistente** Components)"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -406,12 +423,24 @@ class WelcomeDM(commands.Cog):
             self._session_locks[user_id] = lock
         return lock
 
+    async def cog_load(self):
+        """
+        WICHTIG: Persistente Views global registrieren.
+        Diese Instanzen werden nur für die Interaction-Routing benötigt
+        (die „Flow“-Instanzen werden beim Senden separat erzeugt).
+        """
+        # Ohne Guild → Emoji-freie Fallback-Variante ist völlig ok
+        self.bot.add_view(CustomGamesView())
+        self.bot.add_view(PatchnotesView())
+        self.bot.add_view(RankView(guild_for_emojis=None))
+        self.bot.add_view(RulesView())
+
     @commands.Cog.listener()
     async def on_ready(self):
-        print("✅ Welcome DM System geladen")
+        print("✅ Welcome DM System geladen (persistente Views aktiv)")
 
     async def _cleanup_old_bot_dms(self, member: discord.Member, limit: int = 50):
-        """Löscht alte Bot-Nachrichten in der DM, damit keine alten Views stören."""
+        """Optionales Aufräumen (löscht alte Bot-Nachrichten in der DM, damit keine alten Views stören)."""
         try:
             dm = member.dm_channel or await member.create_dm()
             async for msg in dm.history(limit=limit):
@@ -423,13 +452,24 @@ class WelcomeDM(commands.Cog):
         except Exception as e:
             logger.debug(f"DM-Cleanup für {member.id} übersprungen: {e}")
 
-    async def _send_step_embed(self, member: discord.Member, *, title: str, desc: str, step: int, total: int, view: StepView, color: int = 0x5865F2) -> bool:
-        """Sendet einen hübschen Embed + View und wartet, bis der Step abgeschlossen wurde."""
+    async def _send_step_embed(
+        self,
+        member: discord.Member,
+        *,
+        title: str,
+        desc: str,
+        step: int,
+        total: int,
+        view: StepView,
+        color: int = 0x5865F2
+    ) -> bool:
+        """Sendet einen Embed + View und wartet, bis der Step abgeschlossen wurde."""
         emb = build_step_embed(title, desc, step, total, color=color)
         msg = await member.send(embed=emb, view=view)
         try:
             await view.wait()  # stop() wird nur in _finish() gerufen
         finally:
+            # Nach Abschluss den Step wegräumen (die Buttons bleiben persistent, aber die Flow-Nachricht löschen wir)
             try:
                 await msg.delete()
             except Exception:
@@ -441,7 +481,7 @@ class WelcomeDM(commands.Cog):
         async with lock:  # verhindert parallele Sessions je User
             greet_msg: Optional[discord.Message] = None
             try:
-                # Vorherige Bot-DMs aufräumen
+                # Optional: alte Bot-DMs aufräumen
                 await self._cleanup_old_bot_dms(member, limit=50)
 
                 # Begrüßung (wird am Ende entfernt)
@@ -467,7 +507,7 @@ class WelcomeDM(commands.Cog):
                     title="Frage 1/4 · Lust auf Custom Games?",
                     desc=q1_desc,
                     step=1, total=4,
-                    view=CustomGamesView(member),
+                    view=CustomGamesView(),
                     color=0x2ECC71  # grünlich
                 ):
                     return False
@@ -482,12 +522,14 @@ class WelcomeDM(commands.Cog):
                     title="Frage 2/4 · Patchnotes-Benachrichtigungen",
                     desc=q2_desc,
                     step=2, total=4,
-                    view=PatchnotesView(member),
+                    view=PatchnotesView(),
                     color=0x3498DB  # blau
                 ):
                     return False
 
                 # ---- Frage 3 ----
+                # Für hübsche Emojis bauen wir die View hier mit Guild an – die global registrierte (persistente) View routet trotzdem Interactions.
+                guild = self.bot.get_guild(MAIN_GUILD_ID)
                 q3_desc = (
                     "Wähle deinen **Deadlock-Rang**.\n"
                     "Bist du neu/unsicher → **Unknown**. Klicke danach **Weiter**."
@@ -497,7 +539,7 @@ class WelcomeDM(commands.Cog):
                     title="Frage 3/4 · Rang auswählen",
                     desc=q3_desc,
                     step=3, total=4,
-                    view=RankView(member, member.guild),
+                    view=RankView(guild_for_emojis=guild),
                     color=0x9B59B6  # lila
                 ):
                     return False
@@ -518,7 +560,7 @@ class WelcomeDM(commands.Cog):
                     title="Frage 4/4 · Regelwerk bestätigen",
                     desc=q4_desc,
                     step=4, total=4,
-                    view=RulesView(member),  # NEU: Member rein
+                    view=RulesView(),
                     color=0xE67E22  # orange
                 ):
                     return False
