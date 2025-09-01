@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 import time
+import re
 from pathlib import Path
 from typing import Optional, Dict, Set
 from datetime import datetime
@@ -78,7 +79,6 @@ def _default_cap(ch: discord.VoiceChannel) -> int:
 
 def _strip_suffixes(current: str) -> str:
     base = current
-    # Alle dynamischen Zusätze entfernen, Basis erhalten
     for marker in (" • ab ", " • Im Match (Min", " • vermutlich voll", " • voll", " • Spieler gesucht", " • Wartend"):
         if marker in base:
             base = base.split(marker)[0]
@@ -175,7 +175,6 @@ class TempVoiceCog(commands.Cog):
         while True:
             await asyncio.sleep(60)  # jede Minute
             try:
-                # Alle Lanes mit aktivem Match -> Name aktualisieren (force, bypass cooldown)
                 for lane_id, active in list(self.lane_match_active.items()):
                     if not active:
                         continue
@@ -183,7 +182,6 @@ class TempVoiceCog(commands.Cog):
                     if isinstance(lane, discord.VoiceChannel) and _is_managed_lane(lane):
                         await self._refresh_name(lane, force=True)
             except Exception:
-                # Niemals die Schleife sterben lassen
                 pass
 
     # ---------- Interface ----------
@@ -193,15 +191,12 @@ class TempVoiceCog(commands.Cog):
             logger.warning("INTERFACE_TEXT_CHANNEL_ID ist kein Textkanal.")
             return
 
-        # Falls UI-Post existiert, nichts tun
         try:
             async for msg in ch.history(limit=50):
                 if msg.author == self.bot.user and getattr(msg, "components", None):
                     return
         except Exception:
             pass
-
-        # Alte UI-Nachrichten entfernen
         try:
             async for msg in ch.history(limit=100):
                 if msg.author == self.bot.user and getattr(msg, "components", None):
@@ -260,7 +255,6 @@ class TempVoiceCog(commands.Cog):
         reason: Optional[str] = None,
         force_name: bool = False
     ):
-        """Edit mit Lock + Name-Cooldown + State-Shortcircuit, optional kombiniert (Name+Limit)."""
         lock = self._lock_for(lane.id)
         async with lock:
             kwargs = {}
@@ -273,7 +267,7 @@ class TempVoiceCog(commands.Cog):
                     if (not force_name) and last_desired == desired_name:
                         last_ts = self._last_name_patch_ts.get(lane.id, 0.0)
                         if now - last_ts < NAME_EDIT_COOLDOWN_SEC:
-                            pass  # skip Rename
+                            pass
                         else:
                             kwargs["name"] = desired_name
                     else:
@@ -301,12 +295,10 @@ class TempVoiceCog(commands.Cog):
 
         parts = [base]
 
-        # Rang-Suffix nur Casual und ab Emissary+
         if lane.category_id != RANKED_CATEGORY_ID:
             if min_rank and min_rank != "unknown" and _rank_index(min_rank) >= _rank_index(SUFFIX_THRESHOLD_RANK):
                 parts.append(f"• ab {min_rank.capitalize()}")
 
-        # Match-Suffix (RAM-only)
         if self.lane_match_active.get(lane.id, False):
             start = self.lane_match_start_ts.get(lane.id, None)
             minutes = 0
@@ -314,7 +306,6 @@ class TempVoiceCog(commands.Cog):
                 minutes = int(max(0, (time.time() - start) // 60))
             parts.append(f"• Im Match (Min {minutes})")
 
-        # Belegungs-/Suche-Status
         if full_choice is True:
             parts.append("• voll")
         else:
@@ -323,7 +314,6 @@ class TempVoiceCog(commands.Cog):
             elif self.lane_searching.get(lane.id, False):
                 parts.append("• Spieler gesucht")
             else:
-                # Nur wenn nichts anderes greift & kein Match
                 if not self.lane_match_active.get(lane.id, False):
                     parts.append("• Wartend")
 
@@ -335,11 +325,26 @@ class TempVoiceCog(commands.Cog):
 
     # ---------- Lanes ----------
     async def _next_name(self, category: Optional[discord.CategoryChannel], prefix: str) -> str:
+        """
+        Liefert die kleinste freie 'Lane N' Nummer.
+        Robust via Regex: matcht auch 'Lane 3 • Spieler gesucht' usw.
+        """
         if not category:
             return f"{prefix} 1"
-        existing = {c.name for c in category.voice_channels if c.name.startswith(prefix)}
+
+        used: Set[int] = set()
+        pat = re.compile(rf"^{re.escape(prefix)}\s+(\d+)\b")
+
+        for c in category.voice_channels:
+            m = pat.match(c.name)
+            if m:
+                try:
+                    used.add(int(m.group(1)))
+                except ValueError:
+                    continue
+
         n = 1
-        while f"{prefix} {n}" in existing:
+        while n in used:
             n += 1
         return f"{prefix} {n}"
 
@@ -347,14 +352,12 @@ class TempVoiceCog(commands.Cog):
         guild = member.guild
         cat = staging.category
         is_ranked = cat and cat.id == RANKED_CATEGORY_ID
-        prefix = "Lane"  # neuer Basisname für alle
+        prefix = "Lane"
         base = await self._next_name(cat, prefix)
 
-        # Name & Limit direkt beim create
         bitrate = getattr(guild, "bitrate_limit", None) or 256000
         cap = DEFAULT_RANKED_CAP if is_ranked else DEFAULT_CASUAL_CAP
 
-        # Casual startet mit "Spieler gesucht", Ranked ohne
         initial_name = base if is_ranked else f"{base} • Spieler gesucht"
 
         try:
@@ -390,20 +393,17 @@ class TempVoiceCog(commands.Cog):
         self._last_name_patch_ts.pop(lane.id, None)
         self._last_lfg_ts.pop(lane.id, None)
         self._last_button_ts.pop(lane.id, None)
-        # Debounce Task ggf. killen
         t = self._debounce_tasks.pop(lane.id, None)
         if t:
             t.cancel()
 
         await self._apply_owner_bans(lane, member.id)
 
-        # Move
         try:
             await member.move_to(lane, reason="Auto-Lane")
         except Exception:
             pass
 
-        # Sofortiger LFG-Post (Lane-CD, initial force)
         await self._post_lfg(lane, force=True)
 
         logger.info(f"Auto-Lane erstellt: {lane.name} (owner={member.id}, cap={cap}, bitrate={bitrate})")
@@ -419,7 +419,6 @@ class TempVoiceCog(commands.Cog):
                 pass
 
     async def _post_lfg(self, lane: discord.VoiceChannel, *, force: bool = False):
-        """Postet in LFG-Channel; beachtet Cooldown, außer force=True."""
         now = time.time()
         last = self._last_lfg_ts.get(lane.id, 0.0)
         if not force and now - last < LFG_POST_COOLDOWN_SEC:
@@ -502,7 +501,6 @@ class TempVoiceCog(commands.Cog):
     # ---------- Events ----------
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        # Auto-Lane auf Join in Staging
         try:
             if after and after.channel and isinstance(after.channel, discord.VoiceChannel):
                 if after.channel.id in (CASUAL_STAGING_CHANNEL_ID, RANKED_STAGING_CHANNEL_ID):
@@ -510,7 +508,6 @@ class TempVoiceCog(commands.Cog):
         except Exception as e:
             logger.warning(f"Auto-lane create failed: {e}")
 
-        # Leaving vorheriger Channel
         try:
             if before and before.channel and isinstance(before.channel, discord.VoiceChannel):
                 ch = before.channel
@@ -524,7 +521,6 @@ class TempVoiceCog(commands.Cog):
                         candidates.sort(key=lambda m: tsmap.get(m.id, float("inf")))
                         self.lane_owner[ch.id] = candidates[0].id
                     else:
-                        # Cleanup leere Lane
                         if ch.id in self.created_channels:
                             try:
                                 await ch.delete(reason="TempVoice: Lane leer")
@@ -546,14 +542,12 @@ class TempVoiceCog(commands.Cog):
         except Exception:
             pass
 
-        # Enter neuer Channel
         try:
             if after and after.channel and isinstance(after.channel, discord.VoiceChannel):
                 ch = after.channel
                 self.join_time.setdefault(ch.id, {})
                 self.join_time[ch.id][member.id] = datetime.utcnow().timestamp()
 
-                # Owner-Ban erzwingen
                 owner_id = self.lane_owner.get(ch.id)
                 if owner_id and self.bans.is_banned_by_owner(owner_id, member.id):
                     staging = member.guild.get_channel(CASUAL_STAGING_CHANNEL_ID)
@@ -564,7 +558,6 @@ class TempVoiceCog(commands.Cog):
                             pass
 
                 if _is_managed_lane(ch):
-                    # Debounce „vermutlich voll“-Check
                     self._schedule_vermutlich_voll(ch)
         except Exception:
             pass
@@ -617,11 +610,10 @@ class MainView(discord.ui.View):
             pass
 
         current = max(1, len(lane.members))
-        # setze Status
         self.cog.lane_full_choice[lane.id] = True
         self.cog.lane_searching[lane.id] = False
 
-        desired_name = self.cog._compose_name(lane)  # enthält „• voll“
+        desired_name = self.cog._compose_name(lane)
         await self.cog._safe_edit_channel(
             lane,
             desired_name=desired_name,
@@ -647,7 +639,6 @@ class MainView(discord.ui.View):
         except Exception:
             pass
 
-        # öffne Limit + aktiviere Suche
         self.cog.lane_full_choice[lane.id] = False
         self.cog.lane_searching[lane.id] = True
 
@@ -661,7 +652,6 @@ class MainView(discord.ui.View):
             force_name=True
         )
 
-        # LFG-Post (Lane-CD)
         await self.cog._post_lfg(lane, force=False)
 
     # Row2 – Moderation
@@ -737,14 +727,10 @@ class MainView(discord.ui.View):
         except Exception:
             pass
 
-        # Match starten (RAM-only)
         self.cog.lane_match_active[lane.id] = True
         self.cog.lane_match_start_ts[lane.id] = time.time()
 
-        # Name sofort aktualisieren (Min 0), force um Cooldown zu umgehen
         await self.cog._refresh_name(lane, force=True)
-
-        # optional: Rückmeldung
         try:
             await itx.followup.send("▶ Match gestartet – Timer läuft.", ephemeral=True)
         except Exception:
@@ -767,13 +753,10 @@ class MainView(discord.ui.View):
         except Exception:
             pass
 
-        # Match beenden (RAM-only)
         self.cog.lane_match_active.pop(lane.id, None)
         self.cog.lane_match_start_ts.pop(lane.id, None)
 
-        # Name zurück (Wartend bzw. andere Suffixe), force
         await self.cog._refresh_name(lane, force=True)
-
         try:
             await itx.followup.send("🏁 Match beendet – Timer gestoppt.", ephemeral=True)
         except Exception:
