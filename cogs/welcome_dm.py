@@ -10,14 +10,17 @@ FUNNY_CUSTOM_ROLE_ID = 1407085699374649364
 GRIND_CUSTOM_ROLE_ID  = 1407086020331311144
 PATCHNOTES_ROLE_ID    = 1330994309524357140
 PHANTOM_NOTIFICATION_CHANNEL_ID = 1374364800817303632
+
+# NEU: Rolle, die nach Regelbestätigung gesetzt werden soll
+ONBOARD_COMPLETE_ROLE_ID = 1304216250649415771
+
 THANK_YOU_DELETE_AFTER_SECONDS = 300  # 5 Minuten
 # -------------------------------------------------
 
 logger = logging.getLogger(__name__)
 
 # ========= Emoji-Konfiguration =========
-# Wenn eure Emoji-Namen nicht exakt gleich sind, hier ggf. Overrides setzen
-# (Emoji-Name ODER Emoji-ID). Sonst lässt es der Bot automatisch per Namen finden.
+# Optional: feste Zuordnung, falls die Emoji-Namen im Server abweichen
 RANK_EMOJI_OVERRIDES: Dict[str, Union[str, int]] = {
     # "phantom": "dl_phantom",
     # "ascendant": 123456789012345678,
@@ -32,7 +35,7 @@ UNKNOWN_FALLBACK_EMOJI = "❓"
 # =========================
 
 def _find_custom_emoji(guild: discord.Guild, key: Union[str, int]) -> Optional[Union[discord.Emoji, discord.PartialEmoji]]:
-    """Findet ein Custom-Emoji per Name (contains) oder per ID."""
+    """Findet ein Custom-Emoji per Name oder per ID."""
     try:
         if isinstance(key, int) or (isinstance(key, str) and key.isdigit()):
             emoji_id = int(key)
@@ -266,7 +269,6 @@ class RankSelectDropdown(discord.ui.Select):
             try:
                 self.placeholder = placeholder_text
                 self.disabled = True
-                # View (mit Weiter-Button) aktualisieren
                 await interaction.message.edit(view=self.view)
             except Exception:
                 pass
@@ -285,7 +287,6 @@ class RankSelectDropdown(discord.ui.Select):
                 )
             except Exception:
                 pass
-            # Interaction nur quittieren (keine sichtbare Ephemeral-Message)
             if not interaction.response.is_done():
                 await interaction.response.defer()
             await _lock_select("✅ Unknown/Neu gewählt")
@@ -312,7 +313,6 @@ class RankSelectDropdown(discord.ui.Select):
         # Sichtbares Toast vermeiden → einfach Select sperren & Placeholder setzen
         placeholder = f"✅ Rang: {role_name}"
         if not interaction.response.is_done():
-            # Antworte direkt mit Edit der ursprünglichen Nachricht
             self.placeholder = placeholder
             self.disabled = True
             await interaction.response.edit_message(view=self.view)
@@ -346,10 +346,12 @@ class RankView(StepView):
 
 
 class RulesView(StepView):
-    """Frage 4: Regelwerk bestätigen"""
+    """Frage 4: Regelwerk bestätigen + (NEU) Abschluss-Rolle setzen"""
 
-    def __init__(self):
+    def __init__(self, member: discord.Member):
         super().__init__(timeout=420)
+        self.member = member
+        self.guild = member.guild
 
     @staticmethod
     async def _delete_later(msg: discord.Message, seconds: int):
@@ -361,13 +363,28 @@ class RulesView(StepView):
 
     @discord.ui.button(label="Habe verstanden :)", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Danke-Nachricht als eigene DM und nach 5 Min entfernen
+        # 1) Abschluss-Rolle vergeben
+        try:
+            role = self.guild.get_role(ONBOARD_COMPLETE_ROLE_ID)
+            if role:
+                await self.member.add_roles(role, reason="Welcome DM: Regeln bestätigt")
+            else:
+                # Rolle existiert nicht → leise ignorieren (oder DM-Hinweis)
+                pass
+        except discord.Forbidden:
+            # Rechte fehlen – wir lassen es still durchlaufen, damit der Flow nicht hängen bleibt
+            pass
+        except Exception as e:
+            logger.warning(f"Could not add ONBOARD role to {self.member.id}: {e}")
+
+        # 2) Danke-Nachricht als eigene DM und nach 5 Min entfernen
         try:
             thank_msg = await interaction.channel.send("✅ Danke! Willkommen an Bord!")
             asyncio.create_task(self._delete_later(thank_msg, THANK_YOU_DELETE_AFTER_SECONDS))
         except Exception:
             pass
 
+        # 3) Step abschließen (Buttons ausblenden, Nachricht löschen)
         await self._finish(interaction)
 
 
@@ -427,24 +444,22 @@ class WelcomeDM(commands.Cog):
                 # Vorherige Bot-DMs aufräumen
                 await self._cleanup_old_bot_dms(member, limit=50)
 
-                # Begrüßung (einfach, wird am Ende entfernt)
+                # Begrüßung (wird am Ende entfernt)
                 greet_msg = await member.send(
                     "👋 **Willkommen bei der Deutschen Deadlock Community!**\n\n"
                     "Diese DM hilft dir beim Start: Wir vergeben dir passende Rollen und zeigen dir die wichtigsten Infos."
                 )
 
                 # ---- Frage 1 ----
-                q1_desc = ('''
-                    🎮 Custom Games
-
-Was sind Custom Games?
-Customs sind selbsterstellte Lobbys, die nichts mit dem normalen Matchmaking zu tun haben. Hier legen wir eigene Regeln fest → Fokus auf Spaß, Lernen oder gemeinsames Training.
-
-Dafür gibt es 2 Rollen:
-• @Funny Custom Ping → Für Fun & kreative Custom-Runden 🤪
-• @Grind Custom Ping → Für Scrims & ernsthafte Trainings 💪
-
-➡ Über Reaktionen kannst du dir die Rolle(n) selbst geben, wenn du mitmachen willst.'''
+                q1_desc = (
+                    "🎮 **Custom Games**\n\n"
+                    "**Was sind Custom Games?**\n"
+                    "Customs sind selbsterstellte Lobbys, die nichts mit dem normalen Matchmaking zu tun haben. "
+                    "Hier legen wir eigene Regeln fest → Fokus auf Spaß, Lernen oder gemeinsames Training.\n\n"
+                    "Dafür gibt es 2 Rollen:\n"
+                    f"• <@&{FUNNY_CUSTOM_ROLE_ID}> → Für Fun & kreative Custom-Runden 🤪\n"
+                    f"• <@&{GRIND_CUSTOM_ROLE_ID}> → Für Scrims & ernsthafte Trainings 💪\n\n"
+                    "➡ Über die **Buttons** kannst du dir die Rolle(n) selbst geben, wenn du mitmachen willst.\n\n"
                     "Du kannst beide wählen, nur eine – oder **Ne danke**."
                 )
                 if not await self._send_step_embed(
@@ -488,22 +503,22 @@ Dafür gibt es 2 Rollen:
                     return False
 
                 # ---- Frage 4 ----
-                q4_desc = ('''📜 Regelwerk – Das Wichtigste in Kürze
-
-✔ Respektvoller Umgang – keine Beleidigungen oder persönlichen Angriffe
-✔ Null Toleranz bei Rassismus, Sexismus oder Hassrede
-✔ Keine NSFW / expliziten Inhalte
-✔ Privatsphäre respektieren – keine fremden Daten leaken
-✔ Kein Spam / unnötige Pings
-✔ Keine Fremdwerbung oder Schadsoftware
-
-👉 Universalregel: Sei kein Arschloch.''')
+                q4_desc = (
+                    "📜 **Regelwerk – Das Wichtigste in Kürze**\n\n"
+                    "✔ Respektvoller Umgang – keine Beleidigungen oder persönlichen Angriffe\n"
+                    "✔ Null Toleranz bei Rassismus, Sexismus oder Hassrede\n"
+                    "✔ Keine NSFW / expliziten Inhalte\n"
+                    "✔ Privatsphäre respektieren – keine fremden Daten leaken\n"
+                    "✔ Kein Spam / unnötige Pings\n"
+                    "✔ Keine Fremdwerbung oder Schadsoftware\n\n"
+                    "👉 Universalregel: **Sei kein Arschloch.**"
+                )
                 if not await self._send_step_embed(
                     member,
                     title="Frage 4/4 · Regelwerk bestätigen",
                     desc=q4_desc,
                     step=4, total=4,
-                    view=RulesView(),
+                    view=RulesView(member),  # NEU: Member rein
                     color=0xE67E22  # orange
                 ):
                     return False

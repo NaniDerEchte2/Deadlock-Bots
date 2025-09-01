@@ -2,6 +2,7 @@
 # ------------------------------------------------------------
 # TempVoice – Auto-Lanes + UI-Management (Casual & Ranked) mit Anti-429
 # + Match-Status (RAM-only): ▶ Match gestartet / 🏁 Match beendet
+# + AFK-Autoshift: Voll-Mute ≥5 Min -> AFK; beim Entmuten zurück in Lane/Staging
 #
 # • Join in CASUAL_STAGING_CHANNEL_ID oder RANKED_STAGING_CHANNEL_ID -> Auto-Lane + Move
 # • Basisname: "Lane N" (kein "Casual" mehr im Namen)
@@ -27,7 +28,7 @@ import logging
 import time
 import re
 from pathlib import Path
-from typing import Optional, Dict, Set
+from typing import Optional, Dict, Set, Tuple
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -35,19 +36,24 @@ logger = logging.getLogger(__name__)
 # ============ KONFIG (IDs anpassen) ============
 CASUAL_STAGING_CHANNEL_ID = 1330278323145801758      # Casual Staging Voice
 RANKED_STAGING_CHANNEL_ID = 1357422958544420944      # Ranked Staging Voice
-RANKED_CATEGORY_ID         = 1357422957017698478      # Ranked Kategorie (Min-Rang ignorieren)
-INTERFACE_TEXT_CHANNEL_ID  = 1371927143537315890      # Textkanal, wo UI-Nachricht steht
-LFG_TEXT_CHANNEL_ID        = 1376335502919335936      # Zielkanal für "Spieler gesucht"-Posts
+RANKED_CATEGORY_ID        = 1357422957017698478      # Ranked Kategorie (Min-Rang ignorieren)
+INTERFACE_TEXT_CHANNEL_ID = 1371927143537315890      # Textkanal, wo UI-Nachricht steht
+LFG_TEXT_CHANNEL_ID       = 1376335502919335936      # Zielkanal für "Spieler gesucht"-Posts
 
-DEFAULT_CASUAL_CAP         = 8
-DEFAULT_RANKED_CAP         = 6
-FULL_HINT_THRESHOLD        = 6                        # ab X Leuten Namenszusatz "• vermutlich voll"
-BAN_DATA_PATH              = Path("tempvoice_data.json")
+# AFK-Autoshift (NEU/WIEDER DRIN)
+MUTE_MONITOR_CATEGORY_ID  = 1289721245281292290      # In DIESER Kategorie gilt AFK-Autoshift
+AFK_CHANNEL_ID            = 1407787129899057242      # AFK-Voice-Channel
+AFK_MOVE_DELAY_SEC        = 300                      # 5 Minuten
 
-NAME_EDIT_COOLDOWN_SEC     = 120                      # Cooldown pro Channelname-PATCH (Match-Ticker bypassed)
-LFG_POST_COOLDOWN_SEC      = 60                       # Cooldown pro Lane für LFG-Posts
-BUTTON_COOLDOWN_SEC        = 30                       # Pro Lane Anti-Spam für Voll/Nicht voll/Match
-DEBOUNCE_VERML_VOLL_SEC    = 25                       # Debounce für „vermutlich voll“
+DEFAULT_CASUAL_CAP        = 8
+DEFAULT_RANKED_CAP        = 6
+FULL_HINT_THRESHOLD       = 6                        # ab X Leuten Namenszusatz "• vermutlich voll"
+BAN_DATA_PATH             = Path("tempvoice_data.json")
+
+NAME_EDIT_COOLDOWN_SEC    = 120                      # Cooldown pro Channelname-PATCH (Match-Ticker bypassed)
+LFG_POST_COOLDOWN_SEC     = 60                       # Cooldown pro Lane für LFG-Posts
+BUTTON_COOLDOWN_SEC       = 30                       # Pro Lane Anti-Spam für Voll/Nicht voll/Match
+DEBOUNCE_VERML_VOLL_SEC   = 25                       # Debounce für „vermutlich voll“
 # ================================================
 
 # Ränge (Rollennamen 1:1 im Server, case-insensitiv)
@@ -83,6 +89,12 @@ def _strip_suffixes(current: str) -> str:
         if marker in base:
             base = base.split(marker)[0]
     return base
+
+def _is_full_muted_state(vs: Optional[discord.VoiceState]) -> bool:
+    if not vs:
+        return False
+    # self/server mute OR deaf gilt als „voll gemutet“
+    return bool(vs.self_mute or vs.self_deaf or vs.mute or vs.deaf)
 
 # ---------- Persistente Bans ----------
 class BanStore:
@@ -160,6 +172,10 @@ class TempVoiceCog(commands.Cog):
         # Debounce „vermutlich voll“
         self._debounce_tasks: Dict[int, asyncio.Task] = {}
 
+        # AFK-Autoshift (RAM)
+        self._afk_tasks: Dict[Tuple[int, int], asyncio.Task] = {}  # (guild_id, user_id) -> Task
+        self._return_lane: Dict[Tuple[int, int], int] = {}         # Rückkehr-Ziel
+
     # ---------- Lifecycle ----------
     async def cog_load(self):
         self.bot.add_view(MainView(self))  # persistente UI
@@ -191,17 +207,21 @@ class TempVoiceCog(commands.Cog):
             logger.warning("INTERFACE_TEXT_CHANNEL_ID ist kein Textkanal.")
             return
 
+        # Falls schon eine View vom Bot in den letzten Nachrichten hängt → gut.
         try:
             async for msg in ch.history(limit=50):
                 if msg.author == self.bot.user and getattr(msg, "components", None):
                     return
         except Exception:
             pass
+        # Ältere Bot-UI-Nachrichten aufräumen
         try:
             async for msg in ch.history(limit=100):
                 if msg.author == self.bot.user and getattr(msg, "components", None):
-                    try: await msg.delete()
-                    except Exception: pass
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -215,7 +235,8 @@ class TempVoiceCog(commands.Cog):
                 "  - **Kick / Ban / Unban** (Ban/Unban per @Mention **oder** ID)\n"
                 "  - **▶ Match gestartet / 🏁 Match beendet** (Status & Timer im Titel)\n\n"
                 "💡 Ab **6 Spielern** erscheint nach kurzer Zeit **„• vermutlich voll“**, sofern kein Status gesetzt ist.\n"
-                "👑 Owner wechselt automatisch an den am längsten anwesenden User, wenn der Owner geht."
+                "👑 Owner wechselt automatisch an den am längsten anwesenden User, wenn der Owner geht.\n"
+                "🛌 Voll-Mute ≥ **5 Min** → AFK; beim Entmuten zurück zur Lane (oder Staging)."
             ),
             color=0x2ecc71
         )
@@ -231,8 +252,10 @@ class TempVoiceCog(commands.Cog):
         try:
             async for msg in ch.history(limit=200):
                 if msg.author == self.bot.user and getattr(msg, "components", None):
-                    try: await msg.delete()
-                    except Exception: pass
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
         except Exception:
             pass
         await self._ensure_interface()
@@ -325,10 +348,7 @@ class TempVoiceCog(commands.Cog):
 
     # ---------- Lanes ----------
     async def _next_name(self, category: Optional[discord.CategoryChannel], prefix: str) -> str:
-        """
-        Liefert die kleinste freie 'Lane N' Nummer.
-        Robust via Regex: matcht auch 'Lane 3 • Spieler gesucht' usw.
-        """
+        """Liefert die kleinste freie 'Lane N' Nummer. Robust via Regex (matcht auch 'Lane 3 • ...')."""
         if not category:
             return f"{prefix} 1"
 
@@ -384,7 +404,7 @@ class TempVoiceCog(commands.Cog):
         self.lane_searching[lane.id] = (not is_ranked)
         self.join_time.setdefault(lane.id, {})
 
-        # Match-Status (RAM) initial aus
+        # Match-Status init
         self.lane_match_active.pop(lane.id, None)
         self.lane_match_start_ts.pop(lane.id, None)
 
@@ -438,7 +458,7 @@ class TempVoiceCog(commands.Cog):
         except Exception:
             pass
 
-    # ---------- Debounce für „vermutlich voll“ ----------
+    # ---------- Debounce „vermutlich voll“ ----------
     def _schedule_vermutlich_voll(self, lane: discord.VoiceChannel):
         t = self._debounce_tasks.get(lane.id)
         if t and not t.done():
@@ -498,9 +518,89 @@ class TempVoiceCog(commands.Cog):
                     await self._set_connect_if_diff(lane, None, role)
             await asyncio.sleep(0.02)
 
+    # ---------- AFK-Autoshift ----------
+    def _in_mute_scope(self, ch: Optional[discord.VoiceChannel]) -> bool:
+        return isinstance(ch, discord.VoiceChannel) and ch.category_id == MUTE_MONITOR_CATEGORY_ID
+
+    async def _ensure_afk_task(self, member: discord.Member):
+        key = (member.guild.id, member.id)
+        if key in self._afk_tasks and not self._afk_tasks[key].done():
+            return
+
+        async def _job():
+            try:
+                await asyncio.sleep(AFK_MOVE_DELAY_SEC)
+                m = member.guild.get_member(member.id)
+                if not m or not m.voice:
+                    return
+                vs = m.voice
+                ch = vs.channel
+                if not self._in_mute_scope(ch):
+                    return
+                if not _is_full_muted_state(vs):
+                    return
+                if ch and ch.id == AFK_CHANNEL_ID:
+                    return
+
+                # Rückkehr-Ziel merken & nach AFK verschieben
+                if isinstance(ch, discord.VoiceChannel):
+                    self._return_lane[(m.guild.id, m.id)] = ch.id
+                afk = m.guild.get_channel(AFK_CHANNEL_ID)
+                if isinstance(afk, discord.VoiceChannel):
+                    try:
+                        await m.move_to(afk, reason="TempVoice: Voll-Mute ≥5 Min → AFK")
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.debug(f"AFK task error for {member.id}: {e}")
+
+        self._afk_tasks[key] = asyncio.create_task(_job())
+
+    async def _cancel_afk_task(self, guild_id: int, user_id: int):
+        key = (guild_id, user_id)
+        t = self._afk_tasks.pop(key, None)
+        if t and not t.done():
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+    async def _handle_mute_afk(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        # Entmuten im AFK → zurück in vorherige Lane oder Staging
+        if after and after.channel:
+            if after.channel.id == AFK_CHANNEL_ID and not _is_full_muted_state(after):
+                key = (member.guild.id, member.id)
+                back_id = self._return_lane.pop(key, None)
+                dest = None
+                if back_id:
+                    dest = member.guild.get_channel(back_id)
+                if not isinstance(dest, discord.VoiceChannel):
+                    dest = member.guild.get_channel(CASUAL_STAGING_CHANNEL_ID)
+                if isinstance(dest, discord.VoiceChannel):
+                    try:
+                        await member.move_to(dest, reason="TempVoice: AFK verlassen (Entmuten)")
+                    except Exception:
+                        pass
+                await self._cancel_afk_task(member.guild.id, member.id)
+                return
+
+        # Task-Handling je nach Scope & Mute-Status
+        if after and isinstance(after.channel, discord.VoiceChannel) and self._in_mute_scope(after.channel):
+            if _is_full_muted_state(after):
+                await self._ensure_afk_task(member)
+            else:
+                await self._cancel_afk_task(member.guild.id, member.id)
+        else:
+            await self._cancel_afk_task(member.guild.id, member.id)
+            # Rückkanal vergessen, wenn man die Kategorie verlässt
+            self._return_lane.pop((member.guild.id, member.id), None)
+
     # ---------- Events ----------
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        # Auto-Lane bei Staging-Join
         try:
             if after and after.channel and isinstance(after.channel, discord.VoiceChannel):
                 if after.channel.id in (CASUAL_STAGING_CHANNEL_ID, RANKED_STAGING_CHANNEL_ID):
@@ -508,6 +608,7 @@ class TempVoiceCog(commands.Cog):
         except Exception as e:
             logger.warning(f"Auto-lane create failed: {e}")
 
+        # Owner-Transfer / Cleanup & Debounce
         try:
             if before and before.channel and isinstance(before.channel, discord.VoiceChannel):
                 ch = before.channel
@@ -542,6 +643,7 @@ class TempVoiceCog(commands.Cog):
         except Exception:
             pass
 
+        # Join in Lane: Join-Zeit & Bans checken + „vermutlich voll“-Debounce
         try:
             if after and after.channel and isinstance(after.channel, discord.VoiceChannel):
                 ch = after.channel
@@ -559,6 +661,12 @@ class TempVoiceCog(commands.Cog):
 
                 if _is_managed_lane(ch):
                     self._schedule_vermutlich_voll(ch)
+        except Exception:
+            pass
+
+        # AFK-Autoshift nach Voll-Mute (NEU/WIEDER DRIN)
+        try:
+            await self._handle_mute_afk(member, before, after)
         except Exception:
             pass
 
@@ -836,7 +944,7 @@ class KickSelectView(discord.ui.View):
         try:
             await target.move_to(staging, reason=f"Kick durch {itx.user}")
             await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                f"👢 **{target.display_name}** wurde in **Casual Lane** verschoben.", ephemeral=True
+                f"👢 **{target.display_name}** wurde in **Casual Staging** verschoben.", ephemeral=True
             )
         except Exception:
             await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
