@@ -1,6 +1,6 @@
 # ------------------------------------------------------------
 # TempVoice – Auto-Lanes + UI-Management (Casual & Ranked) mit Anti-429
-# (siehe Kopf-Kommentar in deiner Vorlage)
+# Persistentes Interface (merkt sich Message-ID) + DE/EU-Regionsfilter
 # ------------------------------------------------------------
 
 import discord
@@ -13,7 +13,6 @@ import re
 from pathlib import Path
 from typing import Optional, Dict, Set, Tuple, Any, List
 from datetime import datetime
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +33,10 @@ RANKED_CATEGORY_ID        = 1357422957017698478
 INTERFACE_TEXT_CHANNEL_ID = 1371927143537315890
 LFG_TEXT_CHANNEL_ID       = 1376335502919335936
 
+# AFK komplett deaktiviert (Logik auskommentiert)
 MUTE_MONITOR_CATEGORY_ID  = 1289721245281292290
 AFK_CHANNEL_ID            = 1407787129899057242
 AFK_MOVE_DELAY_SEC        = 300
-
-AFK_ESCAPE_FIRST_WINDOW_SEC = 30 * 60
-AFK_ESCAPE_REPEAT_WINDOW_SEC = 60 * 60
 
 DEFAULT_CASUAL_CAP        = 8
 DEFAULT_RANKED_CAP        = 6
@@ -51,7 +48,13 @@ LFG_POST_COOLDOWN_SEC     = 60
 LFG_DELETE_AFTER_SEC      = 20 * 60
 BUTTON_COOLDOWN_SEC       = 30
 DEBOUNCE_VERML_VOLL_SEC   = 25
+
+# Persistenter Speicher für Interface-Message
+INTERFACE_STATE_PATH      = Path("tempvoice_interface.json")
 # =================================
+
+# Feste ID der "English Only"-Rolle (Regionsfilter)
+ENGLISH_ONLY_ROLE_ID = 1309741866098491479
 
 RANK_ORDER = [
     "unknown", "initiate", "seeker", "alchemist", "arcanist",
@@ -85,6 +88,34 @@ def _strip_suffixes(current: str) -> str:
         if marker in base:
             base = base.split(marker)[0]
     return base
+
+# ----------------- Persistenz Interface-ID -----------------
+
+def _load_interface_state() -> Dict[str, int]:
+    try:
+        if INTERFACE_STATE_PATH.exists():
+            raw = json.loads(INTERFACE_STATE_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                out = {}
+                if "message_id" in raw:
+                    out["message_id"] = int(raw["message_id"])
+                if "channel_id" in raw:
+                    out["channel_id"] = int(raw["channel_id"])
+                return out
+    except Exception as e:
+        logger.warning(f"Interface state load error: {e}")
+    return {}
+
+def _save_interface_state(message_id: int, channel_id: int) -> None:
+    try:
+        INTERFACE_STATE_PATH.write_text(
+            json.dumps({"message_id": int(message_id), "channel_id": int(channel_id)}, indent=2),
+            encoding="utf-8"
+        )
+    except Exception as e:
+        logger.warning(f"Interface state save error: {e}")
+
+# ----------------------------------------------------------
 
 def _is_full_muted_state(vs: Optional[discord.VoiceState]) -> bool:
     if not vs:
@@ -202,12 +233,14 @@ class TempVoiceCog(commands.Cog):
         self._last_button_ts: Dict[int, float] = {}
         self._debounce_tasks: Dict[int, asyncio.Task] = {}
 
+        # AFK-Strukturen bleiben bestehen, Logik ist unten auskommentiert
         self._afk_tasks: Dict[Tuple[int, int], asyncio.Task] = {}
         self._return_lane: Dict[Tuple[int, int], int] = {}
         self._afk_escape_tasks: Dict[Tuple[int, int], asyncio.Task] = {}
         self._afk_penalty_level: Dict[Tuple[int, int], int] = {}
 
     async def cog_load(self):
+        # Persistente View registrieren (wichtig für Restart)
         self.bot.add_view(MainView(self))
         asyncio.create_task(self._startup())
         asyncio.create_task(self._match_tick_loop())
@@ -230,21 +263,20 @@ class TempVoiceCog(commands.Cog):
             except Exception:
                 pass
 
-    async def _ensure_interface(self):
-        ch = self.bot.get_channel(INTERFACE_TEXT_CHANNEL_ID)
-        if not isinstance(ch, discord.TextChannel):
-            logger.warning("INTERFACE_TEXT_CHANNEL_ID ist kein Textkanal.")
-            return
+    async def _ensure_interface(self, *, target_channel_id: Optional[int] = None, force_recreate: bool = False):
+        """
+        Stellt sicher, dass GENAU EINE Interface-Message existiert.
+        - Wenn gespeichert: re-use, nur Embed aktualisieren (KEIN neuer Post).
+        - Wenn fehlt oder force_recreate: neu posten und IDs speichern.
+        """
+        # Zielkanal bestimmen (explizit > gespeichert > config)
+        state = _load_interface_state()
+        ch_id = target_channel_id or state.get("channel_id") or INTERFACE_TEXT_CHANNEL_ID
+        ch = self.bot.get_channel(ch_id)
 
-        try:
-            async for msg in ch.history(limit=100):
-                if msg.author == self.bot.user and getattr(msg, "components", None):
-                    try:
-                        await msg.delete()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        if not isinstance(ch, discord.TextChannel):
+            logger.warning("Interface-Textkanal %s nicht gefunden/kein Textkanal.", ch_id)
+            return
 
         embed = discord.Embed(
             title="Lanes & Steuerung (Casual/Ranked)",
@@ -252,35 +284,60 @@ class TempVoiceCog(commands.Cog):
                 "• **Join Staging (Casual/Ranked)** → ich **erstelle automatisch** deine Lane und move dich rüber.\n"
                 "• **Steuerung hier im Interface**:\n"
                 "  - **Voll / Nicht voll** (Caps: Casual 8 / Ranked 6, 30s Button-CD)\n"
-                "  - **Mindest-Rang** (nur Casual; Ranked unverändert)\n"
+                "  - **🇩🇪 DE / 🇪🇺 EU** (Regionsfilter: *English Only* in Lane sperren/aufheben)\n"
+                "  - **Mindest-Rang** (nur Casual; setzt nur *deny* für zu niedrige Ränge)\n"
                 "  - **Kick / Ban / Unban** (Ban/Unban per @Mention **oder** ID)\n"
                 "  - **▶ Match gestartet / 🏁 Match beendet** (Status & Timer im Titel, **Update alle 5 Min**)\n\n"
                 "💡 Ab **6 Spielern** erscheint nach kurzer Zeit **„• vermutlich voll“**, sofern kein Status gesetzt ist.\n"
                 "👑 Owner wechselt automatisch an den am längsten anwesenden User, wenn der Owner geht.\n"
-                "🛌 Voll-Mute ≥ **5 Min** → AFK; AFK-Escape im Mute: 30 min / danach 60 min Beobachtung."
+                "🛌 AFK-Automatik ist derzeit **deaktiviert** (Mute/Deaf wird nicht verschoben)."
             ),
             color=0x2ecc71
         )
         embed.set_footer(text="Deadlock DACH • TempVoice")
-        await ch.send(embed=embed, view=MainView(self))
 
-    @commands.command(name="tempvoice_setup")
-    @commands.has_permissions(administrator=True)
-    async def tempvoice_setup(self, ctx: commands.Context):
-        ch = ctx.guild.get_channel(INTERFACE_TEXT_CHANNEL_ID) if ctx.guild else None
-        if not isinstance(ch, discord.TextChannel):
-            return await ctx.reply("❌ INTERFACE_TEXT_CHANNEL_ID ist kein Textkanal.", delete_after=10)
+        msg_id = state.get("message_id")
+
+        if not force_recreate and msg_id:
+            # Versuche, bestehende Message zu verwenden
+            try:
+                msg = await ch.fetch_message(msg_id)
+                # Nur Embed aktualisieren; View ist persistent über bot.add_view()
+                try:
+                    await msg.edit(embed=embed)
+                except Exception:
+                    pass
+                return  # fertig, NICHT neu posten
+            except Exception:
+                logger.info("Gespeicherte Interface-Message-ID %s nicht gefunden – wird neu erstellt.", msg_id)
+
+        # Neu erstellen (entweder fehlend oder force)
         try:
-            async for msg in ch.history(limit=200):
-                if msg.author == self.bot.user and getattr(msg, "components", None):
-                    try:
-                        await msg.delete()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-        await self._ensure_interface()
-        await ctx.reply("✅ TempVoice-Interface neu erstellt.", delete_after=8)
+            msg = await ch.send(embed=embed, view=MainView(self))
+            _save_interface_state(message_id=msg.id, channel_id=ch.id)
+        except Exception as e:
+            logger.warning(f"Konnte Interface nicht posten: {e}")
+
+    # ----- Admin: gezielt neu erstellen/verschieben -----
+    @commands.command(name="tempvoice_setup", help="Interface neu erstellen (optional: #channel erwähnen)")
+    @commands.has_permissions(administrator=True)
+    async def tempvoice_setup(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        await self._ensure_interface(target_channel_id=(channel.id if channel else None), force_recreate=True)
+        await ctx.reply("✅ TempVoice-Interface neu (er)stellt und gespeichert.", delete_after=8)
+
+    # ----- Slash-Command: Panel setzen/verschieben -----
+    @discord.app_commands.command(name="tempvoice", description="TempVoice Interface setzen/verschieben")
+    @discord.app_commands.describe(channel="Textkanal, in den das Interface gepostet werden soll")
+    @discord.app_commands.checks.has_permissions(manage_channels=True)
+    async def tempvoice_panel(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+        await interaction.response.defer(ephemeral=True, thinking=False)
+        if channel is None:
+            # Nur sicherstellen, NICHT neu posten
+            await self._ensure_interface(force_recreate=False)
+            return await interaction.followup.send("ℹ️ Interface geprüft – bestehende Message weiterverwendet.", ephemeral=True)
+        # explizit in anderen Kanal verschieben/neu erstellen
+        await self._ensure_interface(target_channel_id=channel.id, force_recreate=True)
+        await interaction.followup.send(f"✅ Interface in {channel.mention} (neu) erstellt und gespeichert.", ephemeral=True)
 
     def _lock_for(self, channel_id: int) -> asyncio.Lock:
         lock = self._edit_locks.get(channel_id)
@@ -524,22 +581,23 @@ class TempVoiceCog(commands.Cog):
                 pass
         self._debounce_tasks[lane.id] = asyncio.create_task(_job())
 
-    async def _set_connect_if_diff(self, channel: discord.VoiceChannel, target: Optional[bool], target_obj: discord.abc.Snowflake):
+    async def _set_connect_if_diff(self, lane: discord.VoiceChannel, target: Optional[bool], target_obj: discord.abc.Snowflake):
         if self.worker.enabled:
-            ok = await self.worker.set_connect(channel.id, target_obj.id, target)
+            ok = await self.worker.set_connect(lane.id, target_obj.id, target)
             if (not ok) and target is None:
-                await self.worker.clear_overwrite(channel.id, target_obj.id)
+                await self.worker.clear_overwrite(lane.id, target_obj.id)
             return
-        current = channel.overwrites_for(target_obj)
+        current = lane.overwrites_for(target_obj)
         cur = current.connect
         if cur is target:
             return
         current.connect = target
         try:
-            await channel.set_permissions(target_obj, overwrite=current)
+            await lane.set_permissions(target_obj, overwrite=current)
         except Exception:
             pass
 
+    # Mindest-Rang: NUR deny für zu niedrige Ränge, KEINE expliziten allows
     async def _apply_min_rank(self, lane: discord.VoiceChannel, min_rank: str):
         if lane.category_id == RANKED_CATEGORY_ID:
             return
@@ -547,7 +605,7 @@ class TempVoiceCog(commands.Cog):
         ranks = _rank_roles(guild)
 
         if min_rank == "unknown":
-            await self._set_connect_if_diff(lane, True, guild.default_role)
+            # alle Denies entfernen, Default greifen lassen
             for role in ranks.values():
                 ow = lane.overwrites_for(role)
                 if ow.connect is not None:
@@ -556,133 +614,25 @@ class TempVoiceCog(commands.Cog):
             return
 
         min_idx = _rank_index(min_rank)
-        await self._set_connect_if_diff(lane, False, guild.default_role)
 
         for name, role in ranks.items():
             idx = _rank_index(name)
-            if idx >= min_idx:
-                await self._set_connect_if_diff(lane, True, role)
+            if idx < min_idx:
+                await self._set_connect_if_diff(lane, False, role)  # deny für zu niedrige
             else:
                 ow = lane.overwrites_for(role)
                 if ow.connect is not None:
-                    await self._set_connect_if_diff(lane, None, role)
+                    await self._set_connect_if_diff(lane, None, role)  # Overwrite entfernen
             await asyncio.sleep(0.02)
 
-    def _in_mute_scope(self, ch: Optional[discord.VoiceChannel]) -> bool:
-        return isinstance(ch, discord.VoiceChannel) and ch.category_id == MUTE_MONITOR_CATEGORY_ID
-
-    async def _ensure_afk_task(self, member: discord.Member):
-        key = (member.guild.id, member.id)
-        if key in self._afk_tasks and not self._afk_tasks[key].done():
-            return
-        async def _job():
-            try:
-                await asyncio.sleep(AFK_MOVE_DELAY_SEC)
-                m = member.guild.get_member(member.id)
-                if not m or not m.voice:
-                    return
-                vs = m.voice
-                ch = vs.channel
-                if not self._in_mute_scope(ch):
-                    return
-                if not _is_full_muted_state(vs):
-                    return
-                if ch and ch.id == AFK_CHANNEL_ID:
-                    return
-                if isinstance(ch, discord.VoiceChannel):
-                    self._return_lane[(m.guild.id, m.id)] = ch.id
-                afk = m.guild.get_channel(AFK_CHANNEL_ID)
-                if isinstance(afk, discord.VoiceChannel):
-                    try:
-                        await m.move_to(afk, reason="TempVoice: Voll-Mute ≥5 Min → AFK")
-                    except Exception:
-                        pass
-            except asyncio.CancelledError:
-                return
-            except Exception as e:
-                logger.debug(f"AFK task error for {member.id}: {e}")
-        self._afk_tasks[key] = asyncio.create_task(_job())
-
-    async def _cancel_afk_task(self, guild_id: int, user_id: int):
-        key = (guild_id, user_id)
-        t = self._afk_tasks.pop(key, None)
-        if t and not t.done():
-            try:
-                t.cancel()
-            except Exception:
-                pass
-
-    async def _ensure_escape_task(self, member: discord.Member):
-        key = (member.guild.id, member.id)
-        t = self._afk_escape_tasks.get(key)
-        if t and not t.done():
-            return
-        level = self._afk_penalty_level.get(key, 0)
-        wait_sec = AFK_ESCAPE_FIRST_WINDOW_SEC if level <= 0 else AFK_ESCAPE_REPEAT_WINDOW_SEC
-        async def _job():
-            try:
-                await asyncio.sleep(wait_sec)
-                m = member.guild.get_member(member.id)
-                if not m or not m.voice:
-                    return
-                vs = m.voice
-                ch = vs.channel
-                if (not _is_full_muted_state(vs)) or (ch and ch.id == AFK_CHANNEL_ID):
-                    self._afk_penalty_level[key] = 0
-                    return
-                afk = m.guild.get_channel(AFK_CHANNEL_ID)
-                if isinstance(afk, discord.VoiceChannel):
-                    try:
-                        await m.move_to(afk, reason="TempVoice: AFK-Escape im Mute -> zurück in AFK")
-                    except Exception:
-                        pass
-                self._afk_penalty_level[key] = 1
-            except asyncio.CancelledError:
-                return
-            except Exception as e:
-                logger.debug(f"AFK-escape task error for {member.id}: {e}")
-        self._afk_escape_tasks[key] = asyncio.create_task(_job())
-
-    async def _cancel_escape_task(self, guild_id: int, user_id: int):
-        key = (guild_id, user_id)
-        t = self._afk_escape_tasks.pop(key, None)
-        if t and not t.done():
-            try:
-                t.cancel()
-            except Exception:
-                pass
-
-    async def _handle_mute_afk(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        gid_uid = (member.guild.id, member.id)
-        if after and (not _is_full_muted_state(after)):
-            await self._cancel_afk_task(*gid_uid)
-            await self._cancel_escape_task(*gid_uid)
-            self._afk_penalty_level[gid_uid] = 0
-            if after.channel and after.channel.id == AFK_CHANNEL_ID:
-                back_id = self._return_lane.pop(gid_uid, None)
-                dest = member.guild.get_channel(back_id) if back_id else member.guild.get_channel(CASUAL_STAGING_CHANNEL_ID)
-                if isinstance(dest, discord.VoiceChannel):
-                    try:
-                        await member.move_to(dest, reason="TempVoice: AFK verlassen (Entmuten)")
-                    except Exception:
-                        pass
-            return
-
-        if before and before.channel and before.channel.id == AFK_CHANNEL_ID:
-            if after and after.channel and after.channel.id != AFK_CHANNEL_ID and _is_full_muted_state(after):
-                await self._ensure_escape_task(member)
-            else:
-                await self._cancel_escape_task(*gid_uid)
-                self._afk_penalty_level[gid_uid] = 0
-
-        if after and isinstance(after.channel, discord.VoiceChannel) and self._in_mute_scope(after.channel):
-            if _is_full_muted_state(after):
-                await self._ensure_afk_task(member)
-            else:
-                await self._cancel_afk_task(*gid_uid)
-        else:
-            await self._cancel_afk_task(*gid_uid)
-            self._return_lane.pop(gid_uid, None)
+    # ---- AFK LOGIK (AUF WUNSCH DEAKTIVIERT) ----
+    # def _in_mute_scope(self, ch: Optional[discord.VoiceChannel]) -> bool:
+    #     return isinstance(ch, discord.VoiceChannel) and ch.category_id == MUTE_MONITOR_CATEGORY_ID
+    # async def _ensure_afk_task(self, member: discord.Member): ...
+    # async def _cancel_afk_task(self, guild_id: int, user_id: int): ...
+    # async def _ensure_escape_task(self, member: discord.Member): ...
+    # async def _cancel_escape_task(self, guild_id: int, user_id: int): ...
+    # async def _handle_mute_afk(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState): ...
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -746,10 +696,13 @@ class TempVoiceCog(commands.Cog):
         except Exception:
             pass
 
-        try:
-            await self._handle_mute_afk(member, before, after)
-        except Exception:
-            pass
+        # AFK-Handling AUS:
+        # try:
+        #     await self._handle_mute_afk(member, before, after)
+        # except Exception:
+        #     pass
+
+# ===================== UI =====================
 
 class MainView(discord.ui.View):
     def __init__(self, cog: TempVoiceCog):
@@ -821,6 +774,45 @@ class MainView(discord.ui.View):
             force_name=True
         )
         await self.cog._post_lfg(lane, force=False)
+
+    # Regionsfilter-Buttons 🇩🇪 / 🇪🇺
+    @discord.ui.button(label="🇩🇪 DE", style=discord.ButtonStyle.primary, row=0, custom_id="tv_region_de")
+    async def btn_region_de(self, itx: discord.Interaction, _button: discord.ui.Button):
+        lane = self._lane(itx)
+        if not lane or not _is_managed_lane(lane):
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Tritt zuerst **deiner Lane** bei.", ephemeral=True)
+        user: discord.Member = itx.user  # type: ignore
+        perms = lane.permissions_for(user)
+        if not (self.cog.lane_owner.get(lane.id) == user.id or perms.manage_channels or perms.administrator):
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Nur **Owner** der Lane (oder Mods) dürfen den Regionsfilter ändern.", ephemeral=True)
+        role = lane.guild.get_role(ENGLISH_ONLY_ROLE_ID)
+        if not role:
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Rolle **English Only** nicht gefunden. Bitte ID prüfen.", ephemeral=True)
+        await self.cog._set_connect_if_diff(lane, False, role)  # deny connect
+        sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+        await sender("🇩🇪 **Deutsch-Only** aktiv – *English Only* ist in dieser Lane gesperrt.", ephemeral=True)
+
+    @discord.ui.button(label="🇪🇺 EU", style=discord.ButtonStyle.secondary, row=0, custom_id="tv_region_eu")
+    async def btn_region_eu(self, itx: discord.Interaction, _button: discord.ui.Button):
+        lane = self._lane(itx)
+        if not lane or not _is_managed_lane(lane):
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Tritt zuerst **deiner Lane** bei.", ephemeral=True)
+        user: discord.Member = itx.user  # type: ignore
+        perms = lane.permissions_for(user)
+        if not (self.cog.lane_owner.get(lane.id) == user.id or perms.manage_channels or perms.administrator):
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Nur **Owner** der Lane (oder Mods) dürfen den Regionsfilter ändern.", ephemeral=True)
+        role = lane.guild.get_role(ENGLISH_ONLY_ROLE_ID)
+        if not role:
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Rolle **English Only** nicht gefunden. Bitte ID prüfen.", ephemeral=True)
+        await self.cog._set_connect_if_diff(lane, None, role)  # remove overwrite
+        sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+        await sender("🌐 **Sprachfilter aufgehoben** – *English Only* darf wieder joinen.", ephemeral=True)
 
     @discord.ui.button(label="👢 Kick", style=discord.ButtonStyle.secondary, row=2, custom_id="tv_kick")
     async def btn_kick(self, itx: discord.Interaction, _button: discord.ui.Button):

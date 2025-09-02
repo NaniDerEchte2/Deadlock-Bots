@@ -11,3 +11,5 @@
 /voice_data/*db-wal
 /voice_data/*db-shm
 /voice_data/*json
+tempvoice_interface.json
+*.json
