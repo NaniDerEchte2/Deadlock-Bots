@@ -3,37 +3,25 @@ import socket
 import threading
 from typing import Callable, Optional
 
-# Einfaches JSON-Lines Protokoll:
-# - Jede Nachricht ist ein JSON-Objekt und endet mit '\n'
-# - Dadurch ist Framing trivial und robust.
-
-
 def send_json(sock: socket.socket, obj: dict) -> None:
     data = (json.dumps(obj, separators=(",", ":")) + "\n").encode("utf-8")
     sock.sendall(data)
 
-
 def recv_json(sock: socket.socket, bufsize: int = 65536) -> Optional[dict]:
-    """
-    Liest bis zum nächsten '\n' und parsed JSON.
-    Gibt None zurück, wenn die Verbindung endet.
-    """
     chunks = []
     while True:
         chunk = sock.recv(bufsize)
         if not chunk:
-            return None  # Verbindung beendet
+            return None
         chunks.append(chunk)
         if b"\n" in chunk:
             break
     raw = b"".join(chunks)
-    # Nur bis zum ersten Newline
     line, _, _rest = raw.partition(b"\n")
     try:
         return json.loads(line.decode("utf-8"))
     except json.JSONDecodeError:
         return {"ok": False, "error": "invalid_json"}
-
 
 class JSONLineServer:
     def __init__(self, host: str, port: int, handler: Callable[[dict], dict], backlog: int = 20):

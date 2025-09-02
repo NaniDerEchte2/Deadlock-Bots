@@ -8,6 +8,7 @@ import socket
 import threading
 import queue
 from pathlib import Path
+import os
 
 # Event Loop Policy für Windows setzen
 if sys.platform == 'win32':
@@ -374,4 +375,28 @@ async def process_notification(ctx, *, notification_text):
         print(f"Fehler bei der manuellen Verarbeitung: {e}")
         await ctx.send(f"Fehler: {e}")
 
-bot.run('MTM1NTA3ODE4OTg5NDA3ODU5Nw.GgkZvF.W6pmBEBMYCj9wYhOVHchNFQk6Q0Cod94Y0deAo')
+if __name__ == "__main__":
+    try:
+        from dotenv import load_dotenv
+    except Exception:
+        load_dotenv = None
+
+    if load_dotenv:
+        # 1) Standard .env im aktuellen Arbeitsverzeichnis
+        load_dotenv()
+        # 2) Projektwurzel (eine Ebene höher): Deadlock/.env
+        try:
+            load_dotenv(Path(__file__).resolve().parent.parent / '.env')
+        except Exception:
+            pass
+        # 3) Zentrale .env unter C:\Users\<User>\Documents\.env
+        try:
+            from pathlib import Path as _P
+            load_dotenv(_P.home() / 'Documents' / '.env')
+        except Exception:
+            pass
+
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        raise SystemExit("DISCORD_TOKEN nicht gesetzt. Bitte .env konfigurieren.")
+    bot.run(token)
