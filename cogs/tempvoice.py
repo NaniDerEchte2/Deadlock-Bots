@@ -3,6 +3,9 @@
 # TempVoice – Auto-Lanes + UI-Management (Casual & Ranked) mit Anti-429
 # + Match-Status (RAM-only): ▶ Match gestartet / 🏁 Match beendet
 # + AFK-Autoshift: Voll-Mute ≥5 Min -> AFK; beim Entmuten zurück in Lane/Staging
+#   Erweiterung: Wer AFK verlässt und weiter voll gemutet bleibt:
+#     • 1. Mal: 30 Min Beobachtung; bei weiterem Full-Mute -> zurück in AFK
+#     • Danach: 60 Min Beobachtung; bei weiterem Full-Mute -> zurück in AFK (persistiert bis Entmute)
 #
 # • Join in CASUAL_STAGING_CHANNEL_ID oder RANKED_STAGING_CHANNEL_ID -> Auto-Lane + Move
 # • Basisname: "Lane N" (kein "Casual" mehr im Namen)
@@ -17,6 +20,7 @@
 # • Anti-429: Locks, Name-Cooldown, atomare Edits, Button-Cooldown, Debounce
 # • Min-Rang (Casual): diff-basierte Overwrites; Ranked unberührt
 # • Persistenz: nur Owner-Bans in JSON, Match-Status im RAM
+# • LFG-Auto-Cleanup: „Lane sucht Spieler“-Posts werden nach 20 Min gelöscht
 # • Admin: !tempvoice_setup (Interface neu bauen)
 # ------------------------------------------------------------
 
@@ -31,8 +35,8 @@ from pathlib import Path
 from typing import Optional, Dict, Set, Tuple
 from datetime import datetime
 import os
-from shared.worker_client import WorkerProxy
 
+from shared.worker_client import WorkerProxy
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +50,11 @@ LFG_TEXT_CHANNEL_ID       = 1376335502919335936      # Zielkanal für "Spieler g
 # AFK-Autoshift
 MUTE_MONITOR_CATEGORY_ID  = 1289721245281292290      # In DIESER Kategorie gilt AFK-Autoshift
 AFK_CHANNEL_ID            = 1407787129899057242      # AFK-Voice-Channel
-AFK_MOVE_DELAY_SEC        = 300                      # 5 Minuten
+AFK_MOVE_DELAY_SEC        = 300                      # 5 Minuten bis Auto-AFK bei Full-Mute
+
+# AFK-Escape Beobachtungsfenster (wenn jemand AFK verlässt, aber weiterhin Full-Mute ist)
+AFK_ESCAPE_FIRST_WINDOW_SEC = 30 * 60                # 30 Minuten
+AFK_ESCAPE_REPEAT_WINDOW_SEC = 60 * 60               # 60 Minuten
 
 DEFAULT_CASUAL_CAP        = 8
 DEFAULT_RANKED_CAP        = 6
@@ -55,6 +63,7 @@ BAN_DATA_PATH             = Path("tempvoice_data.json")
 
 NAME_EDIT_COOLDOWN_SEC    = 120                      # Cooldown pro Channelname-PATCH (Match-Ticker bypassed)
 LFG_POST_COOLDOWN_SEC     = 60                       # Cooldown pro Lane für LFG-Posts
+LFG_DELETE_AFTER_SEC      = 20 * 60                  # LFG-Post nach 20 Min löschen
 BUTTON_COOLDOWN_SEC       = 30                       # Pro Lane Anti-Spam für Voll/Nicht voll/Match
 DEBOUNCE_VERML_VOLL_SEC   = 25                       # Debounce für „vermutlich voll“
 # ================================================
@@ -148,6 +157,7 @@ class TempVoiceCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.bans = BanStore(BAN_DATA_PATH)
+        self.worker = WorkerProxy(bot)  # nutzt TV_WORKER_* ENV
 
         # Laufzeit-States
         self.created_channels: Set[int] = set()
@@ -169,6 +179,9 @@ class TempVoiceCog(commands.Cog):
         self._last_name_patch_ts: Dict[int, float] = {}
         self._last_lfg_ts: Dict[int, float] = {}
 
+        # LFG-Cleanup
+        self._lfg_cleanup_tasks: Set[int] = set()  # message_id, nur zur doppelten Planungsschutz
+
         # Anti-Spam Buttons
         self._last_button_ts: Dict[int, float] = {}
 
@@ -176,8 +189,10 @@ class TempVoiceCog(commands.Cog):
         self._debounce_tasks: Dict[int, asyncio.Task] = {}
 
         # AFK-Autoshift (RAM)
-        self._afk_tasks: Dict[Tuple[int, int], asyncio.Task] = {}  # (guild_id, user_id) -> Task
-        self._return_lane: Dict[Tuple[int, int], int] = {}         # Rückkehr-Ziel
+        self._afk_tasks: Dict[Tuple[int, int], asyncio.Task] = {}          # (guild_id, user_id) -> Task (5m Vollmute -> AFK)
+        self._return_lane: Dict[Tuple[int, int], int] = {}                 # Rückkehr-Ziel
+        self._afk_escape_tasks: Dict[Tuple[int, int], asyncio.Task] = {}   # (guild_id, user_id) -> Task (30/60m Beobachtung)
+        self._afk_penalty_level: Dict[Tuple[int, int], int] = {}           # 0 => 30m, >=1 => 60m bis Entmute-Reset
 
     # ---------- Lifecycle ----------
     async def cog_load(self):
@@ -193,14 +208,13 @@ class TempVoiceCog(commands.Cog):
         """Match-Minuten im Titel nur alle 5 Minuten updaten (schont API)."""
         await self.bot.wait_until_ready()
         while True:
-            await asyncio.sleep(300)  # <- vorher 60s, jetzt 5 Minuten
+            await asyncio.sleep(300)  # 5 Minuten
             try:
                 for lane_id, active in list(self.lane_match_active.items()):
                     if not active:
                         continue
                     lane = self.bot.get_channel(lane_id)
                     if isinstance(lane, discord.VoiceChannel) and _is_managed_lane(lane):
-                        # force=True: wir wollen trotz Name-CD sicher patchen; Interval ist ohnehin 5 Min
                         await self._refresh_name(lane, force=True)
             except Exception:
                 pass
@@ -239,7 +253,7 @@ class TempVoiceCog(commands.Cog):
                 "  - **▶ Match gestartet / 🏁 Match beendet** (Status & Timer im Titel, **Update alle 5 Min**)\n\n"
                 "💡 Ab **6 Spielern** erscheint nach kurzer Zeit **„• vermutlich voll“**, sofern kein Status gesetzt ist.\n"
                 "👑 Owner wechselt automatisch an den am längsten anwesenden User, wenn der Owner geht.\n"
-                "🛌 Voll-Mute ≥ **5 Min** → AFK; beim Entmuten zurück zur Lane (oder Staging)."
+                "🛌 Voll-Mute ≥ **5 Min** → AFK; AFK-Escape im Mute: 30 min / danach 60 min Beobachtung."
             ),
             color=0x2ecc71
         )
@@ -332,7 +346,6 @@ class TempVoiceCog(commands.Cog):
             except discord.HTTPException as e:
                 logger.warning(f"channel.edit {lane.id} failed: {e}")
 
-
     def _compose_name(self, lane: discord.VoiceChannel) -> str:
         base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
         min_rank = self.lane_min_rank.get(lane.id, "unknown")
@@ -350,7 +363,6 @@ class TempVoiceCog(commands.Cog):
             minutes = 0
             if start:
                 minutes = int(max(0, (time.time() - start) // 60))
-                # (Update erfolgt ohnehin nur alle 5 Min; Anzeige bleibt „Min X“)
             parts.append(f"• Im Match (Min {minutes})")
 
         if full_choice is True:
@@ -404,21 +416,42 @@ class TempVoiceCog(commands.Cog):
 
         initial_name = base if is_ranked else f"{base} • Spieler gesucht"
 
-        try:
-            lane = await guild.create_voice_channel(
+        lane: Optional[discord.VoiceChannel] = None
+
+        # --- via Worker, mit Fallback ---
+        if self.worker.enabled:
+            ch_id = await self.worker.create_voice(
+                guild_id=member.guild.id,
+                category_id=cat.id if cat else None,
                 name=initial_name,
-                category=cat,
                 user_limit=cap,
                 bitrate=bitrate,
-                reason=f"Auto-Lane für {member.display_name}",
-                overwrites=cat.overwrites if cat else None
+                reason=f"Auto-Lane für {member.display_name}"
             )
-        except discord.Forbidden:
-            logger.error("Fehlende Rechte: VoiceChannel erstellen.")
-            return
-        except Exception as e:
-            logger.error(f"create_lane error: {e}")
-            return
+            if ch_id:
+                # Warte kurz bis Cache den Channel sieht
+                for _ in range(15):
+                    lane = guild.get_channel(ch_id)  # type: ignore
+                    if isinstance(lane, discord.VoiceChannel):
+                        break
+                    await asyncio.sleep(0.2)
+
+        if lane is None:
+            try:
+                lane = await guild.create_voice_channel(
+                    name=initial_name,
+                    category=cat,
+                    user_limit=cap,
+                    bitrate=bitrate,
+                    reason=f"Auto-Lane für {member.display_name}",
+                    overwrites=cat.overwrites if cat else None
+                )
+            except discord.Forbidden:
+                logger.error("Fehlende Rechte: VoiceChannel erstellen.")
+                return
+            except Exception as e:
+                logger.error(f"create_lane error: {e}")
+                return
 
         self.created_channels.add(lane.id)
         self.lane_owner[lane.id] = member.id
@@ -443,8 +476,14 @@ class TempVoiceCog(commands.Cog):
 
         await self._apply_owner_bans(lane, member.id)
 
+        # Move Member in die neue Lane
         try:
-            await member.move_to(lane, reason="Auto-Lane")
+            if self.worker.enabled:
+                ok = await self.worker.move_member(member.guild.id, member.id, lane.id, reason="Auto-Lane")
+                if not ok:
+                    await member.move_to(lane, reason="Auto-Lane (fallback)")
+            else:
+                await member.move_to(lane, reason="Auto-Lane")
         except Exception:
             pass
 
@@ -455,12 +494,33 @@ class TempVoiceCog(commands.Cog):
     async def _apply_owner_bans(self, lane: discord.VoiceChannel, owner_id: int):
         banned = self.bans.data["bans"].get(str(owner_id), [])
         for uid in banned:
-            obj = lane.guild.get_member(int(uid)) or discord.Object(id=int(uid))
             try:
-                await lane.set_permissions(obj, connect=False, reason="Owner-Ban (persistent)")
+                if self.worker.enabled:
+                    await self.worker.set_connect(lane.id, int(uid), False)
+                else:
+                    obj = lane.guild.get_member(int(uid)) or discord.Object(id=int(uid))
+                    current = lane.overwrites_for(obj)
+                    current.connect = False
+                    await lane.set_permissions(obj, overwrite=current, reason="Owner-Ban (persistent)")
                 await asyncio.sleep(0.02)
             except Exception:
                 pass
+
+    async def _delete_after(self, msg: discord.Message, seconds: int):
+        if not isinstance(msg, discord.Message):
+            return
+        mid = msg.id
+        if mid in self._lfg_cleanup_tasks:
+            return
+        self._lfg_cleanup_tasks.add(mid)
+        try:
+            await asyncio.sleep(seconds)
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+        finally:
+            self._lfg_cleanup_tasks.discard(mid)
 
     async def _post_lfg(self, lane: discord.VoiceChannel, *, force: bool = False):
         now = time.time()
@@ -478,7 +538,9 @@ class TempVoiceCog(commands.Cog):
         else:
             txt = f"🔎 {lane.mention}: **Es werden noch Spieler gesucht**."
         try:
-            await lfg.send(txt)
+            msg = await lfg.send(txt)
+            # Auto-Cleanup nach 20 Minuten
+            asyncio.create_task(self._delete_after(msg, LFG_DELETE_AFTER_SEC))
         except Exception:
             pass
 
@@ -505,9 +567,8 @@ class TempVoiceCog(commands.Cog):
     # ---------- Min-Rang Overwrites ----------
     async def _set_connect_if_diff(self, channel: discord.VoiceChannel, target: Optional[bool], target_obj: discord.abc.Snowflake):
         if self.worker.enabled:
-            # Worker Pfad
             ok = await self.worker.set_connect(channel.id, target_obj.id, target)
-            if not ok and target is None:
+            if (not ok) and target is None:
                 await self.worker.clear_overwrite(channel.id, target_obj.id)
             return
         # Local Fallback
@@ -520,7 +581,6 @@ class TempVoiceCog(commands.Cog):
             await channel.set_permissions(target_obj, overwrite=current)
         except Exception:
             pass
-
 
     async def _apply_min_rank(self, lane: discord.VoiceChannel, min_rank: str):
         if lane.category_id == RANKED_CATEGORY_ID:
@@ -555,6 +615,7 @@ class TempVoiceCog(commands.Cog):
         return isinstance(ch, discord.VoiceChannel) and ch.category_id == MUTE_MONITOR_CATEGORY_ID
 
     async def _ensure_afk_task(self, member: discord.Member):
+        """Starte 5-Minuten-Timer, nach dem ein voll gemuteter User in AFK verschoben wird."""
         key = (member.guild.id, member.id)
         if key in self._afk_tasks and not self._afk_tasks[key].done():
             return
@@ -580,7 +641,12 @@ class TempVoiceCog(commands.Cog):
                 afk = m.guild.get_channel(AFK_CHANNEL_ID)
                 if isinstance(afk, discord.VoiceChannel):
                     try:
-                        await m.move_to(afk, reason="TempVoice: Voll-Mute ≥5 Min → AFK")
+                        if self.worker.enabled:
+                            ok = await self.worker.move_member(m.guild.id, m.id, afk.id, reason="TempVoice: Voll-Mute ≥5 Min → AFK")
+                            if not ok:
+                                await m.move_to(afk, reason="TempVoice: Voll-Mute ≥5 Min → AFK (fallback)")
+                        else:
+                            await m.move_to(afk, reason="TempVoice: Voll-Mute ≥5 Min → AFK")
                     except Exception:
                         pass
             except asyncio.CancelledError:
@@ -599,35 +665,103 @@ class TempVoiceCog(commands.Cog):
             except Exception:
                 pass
 
-    async def _handle_mute_afk(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        # Entmuten im AFK → zurück in vorherige Lane oder Staging
-        if after and after.channel:
-            if after.channel.id == AFK_CHANNEL_ID and not _is_full_muted_state(after):
-                key = (member.guild.id, member.id)
-                back_id = self._return_lane.pop(key, None)
-                dest = None
-                if back_id:
-                    dest = member.guild.get_channel(back_id)
-                if not isinstance(dest, discord.VoiceChannel):
-                    dest = member.guild.get_channel(CASUAL_STAGING_CHANNEL_ID)
-                if isinstance(dest, discord.VoiceChannel):
+    async def _ensure_escape_task(self, member: discord.Member):
+        """Wenn jemand AFK verlässt, aber weiterhin full-mute ist: 30m / 60m Beobachtung -> ggf. zurück nach AFK."""
+        key = (member.guild.id, member.id)
+        # Bereits laufend?
+        t = self._afk_escape_tasks.get(key)
+        if t and not t.done():
+            return
+
+        level = self._afk_penalty_level.get(key, 0)
+        wait_sec = AFK_ESCAPE_FIRST_WINDOW_SEC if level <= 0 else AFK_ESCAPE_REPEAT_WINDOW_SEC
+
+        async def _job():
+            try:
+                await asyncio.sleep(wait_sec)
+                m = member.guild.get_member(member.id)
+                if not m or not m.voice:
+                    return
+                vs = m.voice
+                ch = vs.channel
+                # Wenn inzwischen entmutet ODER wieder im AFK → nichts tun + Reset auf Level 0
+                if (not _is_full_muted_state(vs)) or (ch and ch.id == AFK_CHANNEL_ID):
+                    self._afk_penalty_level[key] = 0
+                    return
+                # Noch immer full-mute außerhalb AFK -> zurück in AFK & Penalty-Level auf "60m"
+                afk = m.guild.get_channel(AFK_CHANNEL_ID)
+                if isinstance(afk, discord.VoiceChannel):
                     try:
-                        await member.move_to(dest, reason="TempVoice: AFK verlassen (Entmuten)")
+                        if self.worker.enabled:
+                            ok = await self.worker.move_member(m.guild.id, m.id, afk.id, reason="TempVoice: AFK-Escape im Mute -> zurück in AFK")
+                            if not ok:
+                                await m.move_to(afk, reason="TempVoice: AFK-Escape im Mute -> zurück in AFK (fallback)")
+                        else:
+                            await m.move_to(afk, reason="TempVoice: AFK-Escape im Mute -> zurück in AFK")
                     except Exception:
                         pass
-                await self._cancel_afk_task(member.guild.id, member.id)
+                # Eskalationslevel setzen: ab jetzt 60m (bis Entmute)
+                self._afk_penalty_level[key] = 1
+            except asyncio.CancelledError:
                 return
+            except Exception as e:
+                logger.debug(f"AFK-escape task error for {member.id}: {e}")
 
-        # Task-Handling je nach Scope & Mute-Status
+        self._afk_escape_tasks[key] = asyncio.create_task(_job())
+
+    async def _cancel_escape_task(self, guild_id: int, user_id: int):
+        key = (guild_id, user_id)
+        t = self._afk_escape_tasks.pop(key, None)
+        if t and not t.done():
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+    async def _handle_mute_afk(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        gid_uid = (member.guild.id, member.id)
+
+        # Entmuten irgendwo -> jegliche Escape-Timer abbrechen und Penalty-Level resetten
+        if after and (not _is_full_muted_state(after)):
+            await self._cancel_afk_task(*gid_uid)
+            await self._cancel_escape_task(*gid_uid)
+            self._afk_penalty_level[gid_uid] = 0
+
+            # Falls man gerade im AFK ist und entmutet, zurück in vorherige Lane/Staging
+            if after.channel and after.channel.id == AFK_CHANNEL_ID:
+                back_id = self._return_lane.pop(gid_uid, None)
+                dest = member.guild.get_channel(back_id) if back_id else member.guild.get_channel(CASUAL_STAGING_CHANNEL_ID)
+                if isinstance(dest, discord.VoiceChannel):
+                    try:
+                        if self.worker.enabled:
+                            ok = await self.worker.move_member(member.guild.id, member.id, dest.id, reason="TempVoice: AFK verlassen (Entmuten)")
+                            if not ok:
+                                await member.move_to(dest, reason="TempVoice: AFK verlassen (Entmuten) (fallback)")
+                        else:
+                            await member.move_to(dest, reason="TempVoice: AFK verlassen (Entmuten)")
+                    except Exception:
+                        pass
+            return
+
+        # AFK verlassen, aber weiterhin full-mute -> Beobachtungsfenster starten (30m / 60m)
+        if before and before.channel and before.channel.id == AFK_CHANNEL_ID:
+            if after and after.channel and after.channel.id != AFK_CHANNEL_ID and _is_full_muted_state(after):
+                await self._ensure_escape_task(member)
+            else:
+                # Nicht muted beim Rausgehen → sicherheitshalber alles canceln & reset
+                await self._cancel_escape_task(*gid_uid)
+                self._afk_penalty_level[gid_uid] = 0
+
+        # In Scope: 5m Voll-Mute -> AFK
         if after and isinstance(after.channel, discord.VoiceChannel) and self._in_mute_scope(after.channel):
             if _is_full_muted_state(after):
                 await self._ensure_afk_task(member)
             else:
-                await self._cancel_afk_task(member.guild.id, member.id)
+                await self._cancel_afk_task(*gid_uid)
         else:
-            await self._cancel_afk_task(member.guild.id, member.id)
+            await self._cancel_afk_task(*gid_uid)
             # Rückkanal vergessen, wenn man die Kategorie verlässt
-            self._return_lane.pop((member.guild.id, member.id), None)
+            self._return_lane.pop(gid_uid, None)
 
     # ---------- Events ----------
     @commands.Cog.listener()
@@ -655,10 +789,14 @@ class TempVoiceCog(commands.Cog):
                         self.lane_owner[ch.id] = candidates[0].id
                     else:
                         if ch.id in self.created_channels:
-                            try:
-                                await ch.delete(reason="TempVoice: Lane leer")
-                            except Exception:
-                                pass
+                            if self.worker.enabled:
+                                ok = await self.worker.delete_channel(ch.id, reason="TempVoice: Lane leer")
+                                if not ok:
+                                    try: await ch.delete(reason="TempVoice: Lane leer (fallback)")
+                                    except Exception: pass
+                            else:
+                                try: await ch.delete(reason="TempVoice: Lane leer")
+                                except Exception: pass
                         self.created_channels.discard(ch.id)
                         for d in (self.lane_owner, self.lane_base, self.lane_min_rank,
                                   self.lane_full_choice, self.lane_searching, self.join_time,
@@ -687,7 +825,12 @@ class TempVoiceCog(commands.Cog):
                     staging = member.guild.get_channel(CASUAL_STAGING_CHANNEL_ID)
                     if isinstance(staging, discord.VoiceChannel):
                         try:
-                            await member.move_to(staging, reason="Owner-Ban aktiv")
+                            if self.worker.enabled:
+                                ok = await self.worker.move_member(member.guild.id, member.id, staging.id, reason="Owner-Ban aktiv")
+                                if not ok:
+                                    await member.move_to(staging, reason="Owner-Ban aktiv (fallback)")
+                            else:
+                                await member.move_to(staging, reason="Owner-Ban aktiv")
                         except Exception:
                             pass
 
@@ -696,7 +839,7 @@ class TempVoiceCog(commands.Cog):
         except Exception:
             pass
 
-        # AFK-Autoshift nach Voll-Mute
+        # AFK-Autoshift / Escape
         try:
             await self._handle_mute_afk(member, before, after)
         except Exception:
@@ -974,7 +1117,12 @@ class KickSelectView(discord.ui.View):
                 "Staging-Channel nicht gefunden.", ephemeral=True
             )
         try:
-            await target.move_to(staging, reason=f"Kick durch {itx.user}")
+            if self.cog.worker.enabled:
+                ok = await self.cog.worker.move_member(self.lane.guild.id, target.id, staging.id, reason=f"Kick durch {itx.user}")
+                if not ok:
+                    await target.move_to(staging, reason=f"Kick durch {itx.user} (fallback)")
+            else:
+                await target.move_to(staging, reason=f"Kick durch {itx.user}")
             await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
                 f"👢 **{target.display_name}** wurde in **Casual Staging** verschoben.", ephemeral=True
             )
@@ -1031,12 +1179,25 @@ class BanModal(discord.ui.Modal, title="User (Un)Ban"):
         if self.action == "ban":
             self.cog.bans.add_ban(owner_id, uid)  # type: ignore
             try:
-                await self.lane.set_permissions(target_member or discord.Object(id=uid), connect=False, reason=f"Owner-Ban durch {user}")
+                # Overwrite setzen (connect=False)
+                if self.cog.worker.enabled:
+                    ok = await self.cog.worker.set_connect(self.lane.id, uid, False)
+                    if not ok:
+                        await self.lane.set_permissions(target_member or discord.Object(id=uid), connect=False, reason=f"Owner-Ban durch {user} (fallback)")
+                else:
+                    await self.lane.set_permissions(target_member or discord.Object(id=uid), connect=False, reason=f"Owner-Ban durch {user}")
+
+                # Falls gerade in Lane -> in Staging moven
                 if target_member and target_member.voice and target_member.voice.channel == self.lane:
                     staging = guild.get_channel(CASUAL_STAGING_CHANNEL_ID)
                     if isinstance(staging, discord.VoiceChannel):
                         try:
-                            await target_member.move_to(staging, reason="Owner-Ban")
+                            if self.cog.worker.enabled:
+                                ok = await self.cog.worker.move_member(guild.id, target_member.id, staging.id, reason="Owner-Ban")
+                                if not ok:
+                                    await target_member.move_to(staging, reason="Owner-Ban (fallback)")
+                            else:
+                                await target_member.move_to(staging, reason="Owner-Ban")
                         except Exception:
                             pass
                 await itx.followup.send("🚫 Nutzer gebannt.", ephemeral=True)
@@ -1045,7 +1206,12 @@ class BanModal(discord.ui.Modal, title="User (Un)Ban"):
         else:
             self.cog.bans.remove_ban(owner_id, uid)  # type: ignore
             try:
-                await self.lane.set_permissions(target_member or discord.Object(id=uid), overwrite=None, reason=f"Owner-Unban durch {user}")
+                if self.cog.worker.enabled:
+                    ok = await self.cog.worker.clear_overwrite(self.lane.id, uid)
+                    if not ok:
+                        await self.lane.set_permissions(target_member or discord.Object(id=uid), overwrite=None, reason=f"Owner-Unban durch {user} (fallback)")
+                else:
+                    await self.lane.set_permissions(target_member or discord.Object(id=uid), overwrite=None, reason=f"Owner-Unban durch {user}")
                 await itx.followup.send("♻️ Nutzer entbannt.", ephemeral=True)
             except Exception:
                 await itx.followup.send("Konnte Unban nicht setzen.", ephemeral=True)
