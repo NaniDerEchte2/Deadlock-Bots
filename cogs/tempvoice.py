@@ -30,6 +30,9 @@ import re
 from pathlib import Path
 from typing import Optional, Dict, Set, Tuple
 from datetime import datetime
+import os
+from shared.worker_client import WorkerProxy
+
 
 logger = logging.getLogger(__name__)
 
