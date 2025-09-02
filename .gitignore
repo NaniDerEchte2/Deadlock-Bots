@@ -1,4 +1,6 @@
 .env
+.env.worker
+.env.*
 /__pycache__
 /Backup
 /cogs/__pycache__

@@ -1,66 +1,98 @@
-# shared/worker_client.py
-import os, asyncio, logging
-from typing import Optional
-from shared.socket_bus import SocketClient
+import os
+import socket
+import time
+from typing import Any, Dict, Optional
 
-log = logging.getLogger(__name__)
+from .socket_bus import send_json, recv_json
+
+
+class WorkerUnavailable(Exception):
+    """Wird geworfen, wenn keine Verbindung zum Worker hergestellt werden kann."""
+    pass
+
 
 class WorkerProxy:
     """
-    Dünner Proxy für Bot1 -> Bot2. Wenn TV_WORKER_ENABLED != "1", fällt er auf "local" zurück (Caller soll das dann direkt machen).
+    Leichtgewichtiger Client, der Requests als JSON-Lines an den Worker-Bot sendet
+    und auf eine JSON-Antwort wartet.
     """
-    def __init__(self, bot, host: Optional[str]=None, port: Optional[int]=None, secret: Optional[str]=None):
-        self.bot = bot
-        self.enabled = os.getenv("TV_WORKER_ENABLED", "0") == "1"
-        self.client = SocketClient(
-            host or os.getenv("TV_WORKER_HOST", "127.0.0.1"),
-            int(port or os.getenv("TV_WORKER_PORT", "45678")),
-            secret or os.getenv("TV_WORKER_SECRET", "")
-        )
+    def __init__(self, host: str = None, port: int = None, connect_timeout: float = 1.0, io_timeout: float = 5.0, retries: int = 1):
+        self.host = host or os.getenv("SOCKET_HOST", "127.0.0.1")
+        self.port = port or int(os.getenv("SOCKET_PORT", "45679"))
+        self.connect_timeout = connect_timeout
+        self.io_timeout = io_timeout
+        self.retries = retries
+        self._sock: Optional[socket.socket] = None
 
-    async def edit_channel(self, channel_id: int, *, name: Optional[str]=None, user_limit: Optional[int]=None,
-                           bitrate: Optional[int]=None, reason: Optional[str]=None) -> bool:
-        if not self.enabled:
-            return False
-        payload = {"channel_id": channel_id, "name": name, "user_limit": user_limit, "bitrate": bitrate, "reason": reason}
-        resp = await self.client.send("channel_edit", payload)
-        return bool(resp.get("ok"))
+        # Beim Init nicht hart fehlschlagen – Main Bot soll weiterlaufen und ggf. Fallback machen.
+        self._ensure_connected(silent=True)
 
-    async def set_connect(self, channel_id: int, target_id: int, state: Optional[bool]) -> bool:
-        if not self.enabled:
-            return False
-        payload = {"channel_id": channel_id, "target_id": target_id, "connect": state}
-        resp = await self.client.send("set_permissions_connect", payload)
-        return bool(resp.get("ok"))
+    def _ensure_connected(self, silent: bool = False) -> None:
+        if self._sock:
+            return
+        last_err: Optional[Exception] = None
+        for _ in range(self.retries + 1):
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(self.connect_timeout)
+                s.connect((self.host, self.port))
+                s.settimeout(self.io_timeout)
+                self._sock = s
+                return
+            except Exception as e:
+                last_err = e
+                time.sleep(0.2)
+        if not silent:
+            raise WorkerUnavailable(f"Worker nicht erreichbar auf {self.host}:{self.port} - {last_err}")
 
-    async def clear_overwrite(self, channel_id: int, target_id: int) -> bool:
-        if not self.enabled:
-            return False
-        payload = {"channel_id": channel_id, "target_id": target_id}
-        resp = await self.client.send("clear_overwrite", payload)
-        return bool(resp.get("ok"))
+    @property
+    def is_connected(self) -> bool:
+        return self._sock is not None
 
-    async def create_voice(self, guild_id: int, category_id: Optional[int], name: str, *,
-                           user_limit: Optional[int], bitrate: Optional[int], reason: Optional[str]) -> Optional[int]:
-        if not self.enabled:
-            return None
-        payload = {"guild_id": guild_id, "category_id": category_id, "name": name,
-                   "user_limit": user_limit, "bitrate": bitrate, "reason": reason}
-        resp = await self.client.send("create_voice", payload)
-        if resp.get("ok"):
-            return int(resp["data"]["channel_id"])
-        return None
+    def _reset(self) -> None:
+        if self._sock:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+        self._sock = None
 
-    async def delete_channel(self, channel_id: int, reason: Optional[str]=None) -> bool:
-        if not self.enabled:
-            return False
-        payload = {"channel_id": channel_id, "reason": reason}
-        resp = await self.client.send("delete_channel", payload)
-        return bool(resp.get("ok"))
+    def request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Sendet eine Operation an den Worker.
+        Gibt {"ok": False, "error": "..."} zurück, wenn kein Worker erreichbar ist
+        (damit der Aufrufer lokal fallbacken kann).
+        """
+        try:
+            self._ensure_connected(silent=False)
+        except WorkerUnavailable as e:
+            return {"ok": False, "error": str(e)}
 
-    async def move_member(self, guild_id: int, user_id: int, dest_channel_id: int, reason: Optional[str]=None) -> bool:
-        if not self.enabled:
-            return False
-        payload = {"guild_id": guild_id, "user_id": user_id, "dest_channel_id": dest_channel_id, "reason": reason}
-        resp = await self.client.send("move_member", payload)
-        return bool(resp.get("ok"))
+        try:
+            send_json(self._sock, payload)
+            resp = recv_json(self._sock)
+            if resp is None:
+                # Verbindung abgerissen – nächster Call versucht Reconnect
+                self._reset()
+                return {"ok": False, "error": "Worker-Verbindung abgebrochen"}
+            return resp
+        except Exception as e:
+            # I/O-Fehler -> Verbindung resetten, damit nächster Versuch reconnectet
+            self._reset()
+            return {"ok": False, "error": f"I/O-Fehler: {type(e).__name__}: {e}"}
+
+    # Komfort-Wrapper
+    def edit_channel(self, channel_id: int, *, name: Optional[str] = None,
+                     user_limit: Optional[int] = None, bitrate: Optional[int] = None) -> Dict[str, Any]:
+        payload = {"op": "edit_channel", "channel_id": channel_id}
+        if name is not None:
+            payload["name"] = name
+        if user_limit is not None:
+            payload["user_limit"] = user_limit
+        if bitrate is not None:
+            payload["bitrate"] = bitrate
+        return self.request(payload)
+
+    def set_permissions(self, channel_id: int, target_id: int, overwrite: Dict[str, Any]) -> Dict[str, Any]:
+        payload = {"op": "set_permissions", "channel_id": channel_id, "target_id": target_id, "overwrite": overwrite}
+        return self.request(payload)

@@ -32,13 +32,21 @@ import logging
 import time
 import re
 from pathlib import Path
-from typing import Optional, Dict, Set, Tuple
+from typing import Optional, Dict, Set, Tuple, Any, List
 from datetime import datetime
 import os
 
-from shared.worker_client import WorkerProxy
-
 logger = logging.getLogger(__name__)
+
+# ---- Sicherer Import von WorkerProxy mit Fallback-Stub (verhindert NameError) ----
+try:
+    from shared.worker_client import WorkerProxy  # type: ignore
+except Exception:  # pragma: no cover
+    class WorkerProxy:  # type: ignore
+        def __init__(self, *a, **kw): pass
+        def request(self, *a, **kw): return {"ok": False, "error": "worker_stub"}
+        def edit_channel(self, *a, **kw): return {"ok": False, "error": "worker_stub"}
+        def set_permissions(self, *a, **kw): return {"ok": False, "error": "worker_stub"}
 
 # ============ KONFIG (IDs anpassen) ============
 CASUAL_STAGING_CHANNEL_ID = 1330278323145801758      # Casual Staging Voice
@@ -108,11 +116,73 @@ def _is_full_muted_state(vs: Optional[discord.VoiceState]) -> bool:
     # self/server mute OR deaf gilt als „voll gemutet“
     return bool(vs.self_mute or vs.self_deaf or vs.mute or vs.deaf)
 
+# ---------- Worker-Adapter (nutzt WorkerProxy) ----------
+class TVWorker:
+    """
+    Dünne Async-Hülle um den synchronen WorkerProxy.
+    Unterstützt:
+      - edit_channel (name/user_limit/bitrate)
+      - set_connect / clear_overwrite (über set_permissions)
+    Nicht unterstützt (return False/None -> Main fällt lokal zurück):
+      - create_voice
+      - delete_channel
+      - move_member
+    """
+    def __init__(self):
+        # Host/Port aus ENV (WorkerProxy zieht die Defaults selbst)
+        self._proxy = WorkerProxy()
+        # Teste Verfügbarkeit per ping (Worker implementiert 'ping'; Stub liefert ok=False)
+        try:
+            resp = self._proxy.request({"op": "ping"})
+            self.enabled: bool = bool(resp and resp.get("ok"))
+        except Exception:
+            self.enabled = False
+
+    async def edit_channel(self, channel_id: int,
+                           name: Optional[str] = None,
+                           user_limit: Optional[int] = None,
+                           bitrate: Optional[int] = None,
+                           reason: Optional[str] = None) -> bool:
+        if not self.enabled:
+            return False
+        def _call():
+            resp = self._proxy.edit_channel(channel_id, name=name,
+                                            user_limit=user_limit, bitrate=bitrate)
+            return bool(resp.get("ok"))
+        return await asyncio.to_thread(_call)
+
+    async def set_connect(self, channel_id: int, target_id: int, allow: Optional[bool]) -> bool:
+        if not self.enabled:
+            return False
+        def _call():
+            ow = {"connect": allow}
+            resp = self._proxy.set_permissions(channel_id, target_id, ow)
+            return bool(resp.get("ok"))
+        return await asyncio.to_thread(_call)
+
+    async def clear_overwrite(self, channel_id: int, target_id: int) -> bool:
+        if not self.enabled:
+            return False
+        def _call():
+            resp = self._proxy.set_permissions(channel_id, target_id, {})
+            return bool(resp.get("ok"))
+        return await asyncio.to_thread(_call)
+
+    # Nicht unterstützt vom Worker – Main macht Fallback:
+    async def create_voice(self, **kwargs) -> Optional[int]:
+        return None
+
+    async def delete_channel(self, channel_id: int, reason: Optional[str] = None) -> bool:
+        return False
+
+    async def move_member(self, guild_id: int, user_id: int, dest_channel_id: int, reason: Optional[str] = None) -> bool:
+        return False
+
 # ---------- Persistente Bans ----------
 class BanStore:
     def __init__(self, path: Path):
         self.path = path
-        self.data: Dict[str, Dict[str, list]] = {"bans": {}}
+        self.data: Dict[str, Dict[str, List[int]]] = {"bans": {}}
         self._load()
 
     def _load(self):
@@ -120,7 +190,7 @@ class BanStore:
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
                 if isinstance(raw, dict) and "bans" in raw and isinstance(raw["bans"], dict):
-                    self.data = {"bans": {str(k): list(map(int, v)) for k, v in raw["bans"].items()}}
+                    self.data = {"bans": {str(k): [int(x) for x in v] for k, v in raw["bans"].items()}}
                 else:
                     self.data = {"bans": {}}
             except Exception as e:
@@ -157,7 +227,7 @@ class TempVoiceCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.bans = BanStore(BAN_DATA_PATH)
-        self.worker = WorkerProxy(bot)  # nutzt TV_WORKER_* ENV
+        self.worker = TVWorker()  # nutzt WorkerProxy intern, prüft ping
 
         # Laufzeit-States
         self.created_channels: Set[int] = set()
@@ -226,12 +296,7 @@ class TempVoiceCog(commands.Cog):
             logger.warning("INTERFACE_TEXT_CHANNEL_ID ist kein Textkanal.")
             return
 
-        try:
-            async for msg in ch.history(limit=50):
-                if msg.author == self.bot.user and getattr(msg, "components", None):
-                    return
-        except Exception:
-            pass
+        # Alte UI-Nachrichten aufräumen
         try:
             async for msg in ch.history(limit=100):
                 if msg.author == self.bot.user and getattr(msg, "components", None):
@@ -418,40 +483,23 @@ class TempVoiceCog(commands.Cog):
 
         lane: Optional[discord.VoiceChannel] = None
 
-        # --- via Worker, mit Fallback ---
-        if self.worker.enabled:
-            ch_id = await self.worker.create_voice(
-                guild_id=member.guild.id,
-                category_id=cat.id if cat else None,
+        # Worker unterstützt (in der bereitgestellten Version) KEIN create_voice.
+        # Wir erstellen daher lokal und offloaden spätere Edits/Overwrites an den Worker.
+        try:
+            lane = await guild.create_voice_channel(
                 name=initial_name,
+                category=cat,
                 user_limit=cap,
                 bitrate=bitrate,
-                reason=f"Auto-Lane für {member.display_name}"
+                reason=f"Auto-Lane für {member.display_name}",
+                overwrites=cat.overwrites if cat else None
             )
-            if ch_id:
-                # Warte kurz bis Cache den Channel sieht
-                for _ in range(15):
-                    lane = guild.get_channel(ch_id)  # type: ignore
-                    if isinstance(lane, discord.VoiceChannel):
-                        break
-                    await asyncio.sleep(0.2)
-
-        if lane is None:
-            try:
-                lane = await guild.create_voice_channel(
-                    name=initial_name,
-                    category=cat,
-                    user_limit=cap,
-                    bitrate=bitrate,
-                    reason=f"Auto-Lane für {member.display_name}",
-                    overwrites=cat.overwrites if cat else None
-                )
-            except discord.Forbidden:
-                logger.error("Fehlende Rechte: VoiceChannel erstellen.")
-                return
-            except Exception as e:
-                logger.error(f"create_lane error: {e}")
-                return
+        except discord.Forbidden:
+            logger.error("Fehlende Rechte: VoiceChannel erstellen.")
+            return
+        except Exception as e:
+            logger.error(f"create_lane error: {e}")
+            return
 
         self.created_channels.add(lane.id)
         self.lane_owner[lane.id] = member.id
@@ -476,14 +524,9 @@ class TempVoiceCog(commands.Cog):
 
         await self._apply_owner_bans(lane, member.id)
 
-        # Move Member in die neue Lane
+        # Move Member in die neue Lane (Worker hat kein move_member -> lokal)
         try:
-            if self.worker.enabled:
-                ok = await self.worker.move_member(member.guild.id, member.id, lane.id, reason="Auto-Lane")
-                if not ok:
-                    await member.move_to(lane, reason="Auto-Lane (fallback)")
-            else:
-                await member.move_to(lane, reason="Auto-Lane")
+            await member.move_to(lane, reason="Auto-Lane")
         except Exception:
             pass
 
@@ -641,12 +684,8 @@ class TempVoiceCog(commands.Cog):
                 afk = m.guild.get_channel(AFK_CHANNEL_ID)
                 if isinstance(afk, discord.VoiceChannel):
                     try:
-                        if self.worker.enabled:
-                            ok = await self.worker.move_member(m.guild.id, m.id, afk.id, reason="TempVoice: Voll-Mute ≥5 Min → AFK")
-                            if not ok:
-                                await m.move_to(afk, reason="TempVoice: Voll-Mute ≥5 Min → AFK (fallback)")
-                        else:
-                            await m.move_to(afk, reason="TempVoice: Voll-Mute ≥5 Min → AFK")
+                        # Worker unterstützt move nicht -> lokal
+                        await m.move_to(afk, reason="TempVoice: Voll-Mute ≥5 Min → AFK")
                     except Exception:
                         pass
             except asyncio.CancelledError:
@@ -692,12 +731,7 @@ class TempVoiceCog(commands.Cog):
                 afk = m.guild.get_channel(AFK_CHANNEL_ID)
                 if isinstance(afk, discord.VoiceChannel):
                     try:
-                        if self.worker.enabled:
-                            ok = await self.worker.move_member(m.guild.id, m.id, afk.id, reason="TempVoice: AFK-Escape im Mute -> zurück in AFK")
-                            if not ok:
-                                await m.move_to(afk, reason="TempVoice: AFK-Escape im Mute -> zurück in AFK (fallback)")
-                        else:
-                            await m.move_to(afk, reason="TempVoice: AFK-Escape im Mute -> zurück in AFK")
+                        await m.move_to(afk, reason="TempVoice: AFK-Escape im Mute -> zurück in AFK")
                     except Exception:
                         pass
                 # Eskalationslevel setzen: ab jetzt 60m (bis Entmute)
@@ -733,12 +767,7 @@ class TempVoiceCog(commands.Cog):
                 dest = member.guild.get_channel(back_id) if back_id else member.guild.get_channel(CASUAL_STAGING_CHANNEL_ID)
                 if isinstance(dest, discord.VoiceChannel):
                     try:
-                        if self.worker.enabled:
-                            ok = await self.worker.move_member(member.guild.id, member.id, dest.id, reason="TempVoice: AFK verlassen (Entmuten)")
-                            if not ok:
-                                await member.move_to(dest, reason="TempVoice: AFK verlassen (Entmuten) (fallback)")
-                        else:
-                            await member.move_to(dest, reason="TempVoice: AFK verlassen (Entmuten)")
+                        await member.move_to(dest, reason="TempVoice: AFK verlassen (Entmuten)")
                     except Exception:
                         pass
             return
@@ -789,14 +818,11 @@ class TempVoiceCog(commands.Cog):
                         self.lane_owner[ch.id] = candidates[0].id
                     else:
                         if ch.id in self.created_channels:
-                            if self.worker.enabled:
-                                ok = await self.worker.delete_channel(ch.id, reason="TempVoice: Lane leer")
-                                if not ok:
-                                    try: await ch.delete(reason="TempVoice: Lane leer (fallback)")
-                                    except Exception: pass
-                            else:
-                                try: await ch.delete(reason="TempVoice: Lane leer")
-                                except Exception: pass
+                            # Worker kann delete nicht -> lokal löschen
+                            try:
+                                await ch.delete(reason="TempVoice: Lane leer")
+                            except Exception:
+                                pass
                         self.created_channels.discard(ch.id)
                         for d in (self.lane_owner, self.lane_base, self.lane_min_rank,
                                   self.lane_full_choice, self.lane_searching, self.join_time,
@@ -825,12 +851,7 @@ class TempVoiceCog(commands.Cog):
                     staging = member.guild.get_channel(CASUAL_STAGING_CHANNEL_ID)
                     if isinstance(staging, discord.VoiceChannel):
                         try:
-                            if self.worker.enabled:
-                                ok = await self.worker.move_member(member.guild.id, member.id, staging.id, reason="Owner-Ban aktiv")
-                                if not ok:
-                                    await member.move_to(staging, reason="Owner-Ban aktiv (fallback)")
-                            else:
-                                await member.move_to(staging, reason="Owner-Ban aktiv")
+                            await member.move_to(staging, reason="Owner-Ban aktiv")
                         except Exception:
                             pass
 
@@ -858,6 +879,7 @@ class MainView(discord.ui.View):
     def __init__(self, cog: TempVoiceCog):
         super().__init__(timeout=None)
         self.cog = cog
+        # Reihenfolge beachten (persistente custom_id)
         self.add_item(MinRankSelect(cog))
 
     def _lane(self, itx: discord.Interaction) -> Optional[discord.VoiceChannel]:
@@ -876,16 +898,14 @@ class MainView(discord.ui.View):
 
     # Row0
     @discord.ui.button(label="✅ Voll", style=discord.ButtonStyle.success, row=0, custom_id="tv_full")
-    async def btn_full(self, itx: discord.Interaction, _):
+    async def btn_full(self, itx: discord.Interaction, _button: discord.ui.Button):
         lane = self._lane(itx)
         if not lane or not _is_managed_lane(lane):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Tritt zuerst **deiner Lane** bei.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Tritt zuerst **deiner Lane** bei.", ephemeral=True)
         if not await self._cooldown_ok(lane.id):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Bitte warte kurz (30s) bevor du erneut klickst.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Bitte warte kurz (30s) bevor du erneut klickst.", ephemeral=True)
 
         try:
             await itx.response.defer(ephemeral=True, thinking=False)
@@ -906,16 +926,14 @@ class MainView(discord.ui.View):
         )
 
     @discord.ui.button(label="↩️ Nicht voll", style=discord.ButtonStyle.secondary, row=0, custom_id="tv_notfull")
-    async def btn_notfull(self, itx: discord.Interaction, _):
+    async def btn_notfull(self, itx: discord.Interaction, _button: discord.ui.Button):
         lane = self._lane(itx)
         if not lane or not _is_managed_lane(lane):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Tritt zuerst **deiner Lane** bei.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Tritt zuerst **deiner Lane** bei.", ephemeral=True)
         if not await self._cooldown_ok(lane.id):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Bitte warte kurz (30s) bevor du erneut klickst.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Bitte warte kurz (30s) bevor du erneut klickst.", ephemeral=True)
 
         try:
             await itx.response.defer(ephemeral=True, thinking=False)
@@ -939,23 +957,21 @@ class MainView(discord.ui.View):
 
     # Row2 – Moderation
     @discord.ui.button(label="👢 Kick", style=discord.ButtonStyle.secondary, row=2, custom_id="tv_kick")
-    async def btn_kick(self, itx: discord.Interaction, _):
+    async def btn_kick(self, itx: discord.Interaction, _button: discord.ui.Button):
         lane = self._lane(itx)
         if not lane or not _is_managed_lane(lane):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Du musst in einer Lane sein.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Du musst in einer Lane sein.", ephemeral=True)
         user: discord.Member = itx.user  # type: ignore
-        if not (self.cog.lane_owner.get(lane.id) == user.id or lane.permissions_for(user).manage_channels or lane.permissions_for(user).administrator):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Nur **Owner** der Lane (oder Mods) dürfen kicken.", ephemeral=True
-            )
+        perms = lane.permissions_for(user)
+        if not (self.cog.lane_owner.get(lane.id) == user.id or perms.manage_channels or perms.administrator):
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Nur **Owner** der Lane (oder Mods) dürfen kicken.", ephemeral=True)
 
         options = [discord.SelectOption(label=m.display_name, value=str(m.id)) for m in lane.members if m.id != user.id]
         if not options:
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Niemand zum Kicken vorhanden.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Niemand zum Kicken vorhanden.", ephemeral=True)
         view = KickSelectView(self.cog, lane, options)
         try:
             await itx.response.send_message("Wen möchtest du kicken?", view=view, ephemeral=True)
@@ -963,47 +979,43 @@ class MainView(discord.ui.View):
             await itx.followup.send("Wen möchtest du kicken?", view=view, ephemeral=True)
 
     @discord.ui.button(label="🚫 Ban", style=discord.ButtonStyle.danger, row=2, custom_id="tv_ban")
-    async def btn_ban(self, itx: discord.Interaction, _):
+    async def btn_ban(self, itx: discord.Interaction, _button: discord.ui.Button):
         lane = self._lane(itx)
         if not lane or not _is_managed_lane(lane):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Du musst in einer Lane sein.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Du musst in einer Lane sein.", ephemeral=True)
         user: discord.Member = itx.user  # type: ignore
-        if not (self.cog.lane_owner.get(lane.id) == user.id or lane.permissions_for(user).manage_channels or lane.permissions_for(user).administrator):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Nur **Owner** der Lane (oder Mods) dürfen bannen.", ephemeral=True
-            )
+        perms = lane.permissions_for(user)
+        if not (self.cog.lane_owner.get(lane.id) == user.id or perms.manage_channels or perms.administrator):
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Nur **Owner** der Lane (oder Mods) dürfen bannen.", ephemeral=True)
         modal = BanModal(self.cog, lane, action="ban")
         await itx.response.send_modal(modal)
 
     @discord.ui.button(label="♻️ Unban", style=discord.ButtonStyle.primary, row=2, custom_id="tv_unban")
-    async def btn_unban(self, itx: discord.Interaction, _):
+    async def btn_unban(self, itx: discord.Interaction, _button: discord.ui.Button):
         lane = self._lane(itx)
         if not lane or not _is_managed_lane(lane):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Du musst in einer Lane sein.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Du musst in einer Lane sein.", ephemeral=True)
         user: discord.Member = itx.user  # type: ignore
-        if not (self.cog.lane_owner.get(lane.id) == user.id or lane.permissions_for(user).manage_channels or lane.permissions_for(user).administrator):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Nur **Owner** der Lane (oder Mods) dürfen entbannen.", ephemeral=True
-            )
+        perms = lane.permissions_for(user)
+        if not (self.cog.lane_owner.get(lane.id) == user.id or perms.manage_channels or perms.administrator):
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Nur **Owner** der Lane (oder Mods) dürfen entbannen.", ephemeral=True)
         modal = BanModal(self.cog, lane, action="unban")
         await itx.response.send_modal(modal)
 
     # Row3 – Match-Status (für alle, die im Voice sind)
     @discord.ui.button(label="▶ Match gestartet", style=discord.ButtonStyle.primary, row=3, custom_id="tv_match_start")
-    async def btn_match_start(self, itx: discord.Interaction, _):
+    async def btn_match_start(self, itx: discord.Interaction, _button: discord.ui.Button):
         lane = self._lane(itx)
         if not lane or not _is_managed_lane(lane):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Tritt zuerst **deiner Lane** bei.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Tritt zuerst **deiner Lane** bei.", ephemeral=True)
         if not await self._cooldown_ok(lane.id):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Bitte warte kurz (30s) bevor du erneut klickst.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Bitte warte kurz (30s) bevor du erneut klickst.", ephemeral=True)
 
         try:
             await itx.response.defer(ephemeral=True, thinking=False)
@@ -1020,16 +1032,14 @@ class MainView(discord.ui.View):
             pass
 
     @discord.ui.button(label="🏁 Match beendet", style=discord.ButtonStyle.secondary, row=3, custom_id="tv_match_end")
-    async def btn_match_end(self, itx: discord.Interaction, _):
+    async def btn_match_end(self, itx: discord.Interaction, _button: discord.ui.Button):
         lane = self._lane(itx)
         if not lane or not _is_managed_lane(lane):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Tritt zuerst **deiner Lane** bei.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Tritt zuerst **deiner Lane** bei.", ephemeral=True)
         if not await self._cooldown_ok(lane.id):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Bitte warte kurz (30s) bevor du erneut klickst.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Bitte warte kurz (30s) bevor du erneut klickst.", ephemeral=True)
 
         try:
             await itx.response.defer(ephemeral=True, thinking=False)
@@ -1069,15 +1079,13 @@ class MinRankSelect(discord.ui.Select):
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         if not (m.voice and isinstance(m.voice.channel, discord.VoiceChannel)):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Tritt zuerst **deiner Lane** bei.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Tritt zuerst **deiner Lane** bei.", ephemeral=True)
         lane: discord.VoiceChannel = m.voice.channel
 
         if lane.category_id == RANKED_CATEGORY_ID:
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "ℹ️ **Ranked** wird extern verwaltet – Mindest-Rang hier nicht anwendbar.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("ℹ️ **Ranked** wird extern verwaltet – Mindest-Rang hier nicht anwendbar.", ephemeral=True)
 
         choice = self.values[0]
         try:
@@ -1095,7 +1103,7 @@ class KickSelect(discord.ui.Select):
         super().__init__(min_values=1, max_values=1, options=options, placeholder=placeholder)
 
     async def callback(self, itx: discord.Interaction):
-        view: KickSelectView = self.view  # type: ignore
+        view: "KickSelectView" = self.view  # type: ignore
         await view.handle_kick(itx, int(self.values[0]))
 
 class KickSelectView(discord.ui.View):
@@ -1108,28 +1116,19 @@ class KickSelectView(discord.ui.View):
     async def handle_kick(self, itx: discord.Interaction, target_id: int):
         target = self.lane.guild.get_member(target_id)
         if not target or not target.voice or target.voice.channel != self.lane:
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "User ist nicht (mehr) in der Lane.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("User ist nicht (mehr) in der Lane.", ephemeral=True)
         staging = self.lane.guild.get_channel(CASUAL_STAGING_CHANNEL_ID)
         if not isinstance(staging, discord.VoiceChannel):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Staging-Channel nicht gefunden.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Staging-Channel nicht gefunden.", ephemeral=True)
         try:
-            if self.cog.worker.enabled:
-                ok = await self.cog.worker.move_member(self.lane.guild.id, target.id, staging.id, reason=f"Kick durch {itx.user}")
-                if not ok:
-                    await target.move_to(staging, reason=f"Kick durch {itx.user} (fallback)")
-            else:
-                await target.move_to(staging, reason=f"Kick durch {itx.user}")
-            await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                f"👢 **{target.display_name}** wurde in **Casual Staging** verschoben.", ephemeral=True
-            )
+            await target.move_to(staging, reason=f"Kick durch {itx.user}")
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            await sender(f"👢 **{target.display_name}** wurde in **Casual Staging** verschoben.", ephemeral=True)
         except Exception:
-            await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Konnte nicht verschieben.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            await sender("Konnte nicht verschieben.", ephemeral=True)
 
 # ----- Ban/Unban Modal -----
 class BanModal(discord.ui.Modal, title="User (Un)Ban"):
@@ -1151,9 +1150,8 @@ class BanModal(discord.ui.Modal, title="User (Un)Ban"):
         owner_id = self.cog.lane_owner.get(self.lane.id)
         perms = self.lane.permissions_for(user)
         if not (owner_id == user.id or perms.manage_channels or perms.administrator):
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Nur **Owner** der Lane (oder Mods) dürfen (un)bannen.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Nur **Owner** der Lane (oder Mods) dürfen (un)bannen.", ephemeral=True)
 
         raw = str(self.target.value).strip()
         uid = None
@@ -1164,9 +1162,8 @@ class BanModal(discord.ui.Modal, title="User (Un)Ban"):
         elif raw.isdigit():
             uid = int(raw)
         if not uid:
-            return await (itx.response.send_message if not itx.response.is_done() else itx.followup.send)(
-                "Bitte @Mention ODER numerische ID angeben.", ephemeral=True
-            )
+            sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
+            return await sender("Bitte @Mention ODER numerische ID angeben.", ephemeral=True)
 
         guild = self.lane.guild
         target_member = guild.get_member(uid)
@@ -1192,12 +1189,7 @@ class BanModal(discord.ui.Modal, title="User (Un)Ban"):
                     staging = guild.get_channel(CASUAL_STAGING_CHANNEL_ID)
                     if isinstance(staging, discord.VoiceChannel):
                         try:
-                            if self.cog.worker.enabled:
-                                ok = await self.cog.worker.move_member(guild.id, target_member.id, staging.id, reason="Owner-Ban")
-                                if not ok:
-                                    await target_member.move_to(staging, reason="Owner-Ban (fallback)")
-                            else:
-                                await target_member.move_to(staging, reason="Owner-Ban")
+                            await target_member.move_to(staging, reason="Owner-Ban")
                         except Exception:
                             pass
                 await itx.followup.send("🚫 Nutzer gebannt.", ephemeral=True)

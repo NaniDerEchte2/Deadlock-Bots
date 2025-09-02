@@ -1,115 +1,110 @@
-# service/tempvoice_worker_bot.py
-import os, asyncio, logging
+import asyncio
+import logging
+import os
+from typing import Any, Dict
+
 import discord
 from discord.ext import commands
-from shared.socket_bus import SocketServer
+
+from shared.socket_bus import JSONLineServer
+from shared.worker_client import WorkerProxy  # nur für Typen/Protokoll-Referenz, nicht genutzt
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("worker")
+logger = logging.getLogger("tempvoice_worker")
 
-INTENTS = discord.Intents.none()
-INTENTS.guilds = True
-INTENTS.members = True
-INTENTS.voice_states = True  # für move
+TOKEN = os.getenv("DISCORD_TOKEN")
+HOST = os.getenv("SOCKET_HOST", "127.0.0.1")
+PORT = int(os.getenv("SOCKET_PORT", "45679"))
 
-TOKEN = os.getenv("DISCORD_TOKEN_WORKER", "")
-WORKER_HOST = os.getenv("TV_WORKER_HOST", "127.0.0.1")
-WORKER_PORT = int(os.getenv("TV_WORKER_PORT", "45678"))
-WORKER_SECRET = os.getenv("TV_WORKER_SECRET", "")
+# Minimaler Intents-Satz, da der Worker keine Messages o.ä. senden muss.
+intents = discord.Intents.none()
+# Er braucht Guilds + Channels, um Channels zu finden/bearbeiten
+intents.guilds = True
+intents.voice_states = True
 
-bot = commands.Bot(command_prefix="!", intents=INTENTS)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-async def _get_channel(channel_id: int):
-    ch = bot.get_channel(int(channel_id))
-    if not isinstance(ch, (discord.VoiceChannel, discord.StageChannel)):
-        raise RuntimeError("channel_not_found_or_not_voice")
-    return ch
 
-async def _get_guild(guild_id: int):
-    g = bot.get_guild(int(guild_id))
-    if not isinstance(g, discord.Guild):
-        raise RuntimeError("guild_not_found")
-    return g
+async def handle_op(payload: Dict[str, Any]) -> Dict[str, Any]:
+    op = payload.get("op")
+    if op == "ping":
+        return {"ok": True, "pong": True}
 
-# Handlers
-async def h_channel_edit(data):
-    ch = await _get_channel(data["channel_id"])
-    kw = {}
-    if data.get("name") is not None:
-        kw["name"] = data["name"]
-    if data.get("user_limit") is not None:
-        kw["user_limit"] = int(data["user_limit"])
-    if data.get("bitrate") is not None:
-        kw["bitrate"] = int(data["bitrate"])
-    if not kw:
-        return {"changed": False}
-    await ch.edit(**kw, reason=data.get("reason") or "Worker: channel_edit")
-    return {"changed": True}
+    # Wir benötigen eine Guild-agnostische Suche nach Channel-ID
+    channel_id = payload.get("channel_id")
+    if not channel_id:
+        return {"ok": False, "error": "channel_id fehlt"}
 
-async def h_set_permissions_connect(data):
-    ch = await _get_channel(data["channel_id"])
-    tgt_id = int(data["target_id"])
-    tgt = ch.guild.get_member(tgt_id) or ch.guild.get_role(tgt_id) or discord.Object(id=tgt_id)
-    ow = ch.overwrites_for(tgt)
-    state = data.get("connect")  # True/False/None
-    ow.connect = (None if state is None else bool(state))
-    await ch.set_permissions(tgt, overwrite=ow, reason="Worker: set_permissions_connect")
-    return {"ok": True}
+    channel = bot.get_channel(int(channel_id))
+    if channel is None:
+        # Versuch: über alle Guilds fetchen
+        try:
+            channel = await bot.fetch_channel(int(channel_id))
+        except Exception as e:
+            return {"ok": False, "error": f"Channel nicht gefunden: {e}"}
 
-async def h_clear_overwrite(data):
-    ch = await _get_channel(data["channel_id"])
-    tgt_id = int(data["target_id"])
-    tgt = ch.guild.get_member(tgt_id) or ch.guild.get_role(tgt_id) or discord.Object(id=tgt_id)
-    await ch.set_permissions(tgt, overwrite=None, reason="Worker: clear_overwrite")
-    return {"ok": True}
+    if op == "edit_channel":
+        # Nur VoiceChannel zulassen (TempVoice)
+        if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+            return {"ok": False, "error": f"Channel {channel.id} ist kein Voice/StageChannel"}
+        kw = {}
+        if "name" in payload:
+            kw["name"] = payload["name"]
+        if "user_limit" in payload:
+            kw["user_limit"] = payload["user_limit"]
+        if "bitrate" in payload:
+            kw["bitrate"] = payload["bitrate"]
+        try:
+            await channel.edit(**kw, reason="TempVoice Worker")
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": f"edit_channel fehlgeschlagen: {type(e).__name__}: {e}"}
 
-async def h_create_voice(data):
-    g = await _get_guild(data["guild_id"])
-    cat = g.get_channel(int(data["category_id"])) if data.get("category_id") else None
-    overwrites = getattr(cat, "overwrites", None)
-    ch = await g.create_voice_channel(
-        name=data["name"],
-        category=cat if isinstance(cat, discord.CategoryChannel) else None,
-        user_limit=int(data.get("user_limit") or 0),
-        bitrate=int(data.get("bitrate") or 64000),
-        overwrites=overwrites,
-        reason=data.get("reason") or "Worker: create_voice"
-    )
-    return {"channel_id": ch.id}
+    if op == "set_permissions":
+        target_id = payload.get("target_id")
+        overwrite = payload.get("overwrite")
+        if target_id is None or not isinstance(overwrite, dict):
+            return {"ok": False, "error": "target_id oder overwrite fehlt/ungültig"}
+        # target kann Member- oder Role-ID sein:
+        guild = channel.guild
+        target = guild.get_member(target_id) or guild.get_role(target_id)
+        if target is None:
+            return {"ok": False, "error": "target nicht gefunden"}
+        try:
+            # overwrite-Keys: view_channel, connect, speak, etc. (True/False/None)
+            perms = discord.PermissionOverwrite(**overwrite)
+            await channel.set_permissions(target, overwrite=perms, reason="TempVoice Worker")
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": f"set_permissions fehlgeschlagen: {type(e).__name__}: {e}"}
 
-async def h_delete_channel(data):
-    ch = await _get_channel(data["channel_id"])
-    await ch.delete(reason=data.get("reason") or "Worker: delete_channel")
-    return {"deleted": True}
+    return {"ok": False, "error": f"unbekannte op: {op}"}
 
-async def h_move_member(data):
-    g = await _get_guild(data["guild_id"])
-    member = g.get_member(int(data["user_id"]))
-    if not isinstance(member, discord.Member):
-        raise RuntimeError("member_not_found")
-    dest = g.get_channel(int(data["dest_channel_id"]))
-    if not isinstance(dest, (discord.VoiceChannel, discord.StageChannel)):
-        raise RuntimeError("dest_not_voice")
-    await member.move_to(dest, reason=data.get("reason") or "Worker: move_member")
-    return {"moved": True}
+
+def start_socket_server(loop: asyncio.AbstractEventLoop) -> None:
+    # Handler im Server-Thread -> delegiert in den Bot-Loop
+    def handler(req: Dict[str, Any]) -> Dict[str, Any]:
+        fut = asyncio.run_coroutine_threadsafe(handle_op(req), loop)
+        return fut.result(timeout=10.0)
+
+    server = JSONLineServer(HOST, PORT, handler)
+    server.start()
+    logger.info(f"Worker Socket-Server läuft auf {HOST}:{PORT}")
+
 
 @bot.event
 async def on_ready():
-    log.info(f"Worker logged in as {bot.user} | guilds={len(bot.guilds)}")
-    # Socket Server starten
-    server = SocketServer(WORKER_HOST, WORKER_PORT, WORKER_SECRET)
-    server.add_handler("channel_edit", h_channel_edit)
-    server.add_handler("set_permissions_connect", h_set_permissions_connect)
-    server.add_handler("clear_overwrite", h_clear_overwrite)
-    server.add_handler("create_voice", h_create_voice)
-    server.add_handler("delete_channel", h_delete_channel)
-    server.add_handler("move_member", h_move_member)
-    await server.start()
+    logger.info(f"Worker Bot eingeloggt als {bot.user} (ID: {bot.user.id})")
+    # Socket-Server nach Bot-Loop-Start hochfahren
+    loop = asyncio.get_running_loop()
+    start_socket_server(loop)
+
 
 def main():
     if not TOKEN:
-        raise RuntimeError("Set DISCORD_TOKEN_WORKER env")
+        raise SystemExit("DISCORD_TOKEN für Worker fehlt (z.B. in .env.worker)")
     bot.run(TOKEN)
+
 
 if __name__ == "__main__":
     main()
