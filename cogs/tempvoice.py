@@ -279,7 +279,8 @@ class TempVoiceCog(commands.Cog):
         desired_name: Optional[str] = None,
         desired_limit: Optional[int] = None,
         reason: Optional[str] = None,
-        force_name: bool = False
+        force_name: bool = False,
+        desired_bitrate: Optional[int] = None,
     ):
         lock = self._lock_for(lane.id)
         async with lock:
@@ -292,9 +293,7 @@ class TempVoiceCog(commands.Cog):
                     last_desired = self._last_name_desired.get(lane.id)
                     if (not force_name) and last_desired == desired_name:
                         last_ts = self._last_name_patch_ts.get(lane.id, 0.0)
-                        if now - last_ts < NAME_EDIT_COOLDOWN_SEC:
-                            pass
-                        else:
+                        if now - last_ts >= NAME_EDIT_COOLDOWN_SEC:
                             kwargs["name"] = desired_name
                     else:
                         kwargs["name"] = desired_name
@@ -303,15 +302,36 @@ class TempVoiceCog(commands.Cog):
             if desired_limit is not None and desired_limit != lane.user_limit:
                 kwargs["user_limit"] = desired_limit
 
+            if desired_bitrate is not None and desired_bitrate != lane.bitrate:
+                kwargs["bitrate"] = desired_bitrate
+
             if not kwargs:
                 return
 
+            # 1) Versuch über Worker
+            used_worker = False
+            if self.worker.enabled:
+                ok = await self.worker.edit_channel(
+                    lane.id,
+                    name=kwargs.get("name"),
+                    user_limit=kwargs.get("user_limit"),
+                    bitrate=kwargs.get("bitrate"),
+                    reason=reason or "TempVoice: Update (via worker)"
+                )
+                used_worker = True
+                if ok:
+                    if "name" in kwargs:
+                        self._last_name_patch_ts[lane.id] = now
+                    return
+
+            # 2) Fallback local (falls Worker aus / failed)
             try:
-                await lane.edit(**kwargs, reason=reason or "TempVoice: Update")
+                await lane.edit(**kwargs, reason=reason or ("TempVoice: Update" + (" (fallback)" if used_worker else "")))
                 if "name" in kwargs:
                     self._last_name_patch_ts[lane.id] = now
             except discord.HTTPException as e:
                 logger.warning(f"channel.edit {lane.id} failed: {e}")
+
 
     def _compose_name(self, lane: discord.VoiceChannel) -> str:
         base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
@@ -484,6 +504,13 @@ class TempVoiceCog(commands.Cog):
 
     # ---------- Min-Rang Overwrites ----------
     async def _set_connect_if_diff(self, channel: discord.VoiceChannel, target: Optional[bool], target_obj: discord.abc.Snowflake):
+        if self.worker.enabled:
+            # Worker Pfad
+            ok = await self.worker.set_connect(channel.id, target_obj.id, target)
+            if not ok and target is None:
+                await self.worker.clear_overwrite(channel.id, target_obj.id)
+            return
+        # Local Fallback
         current = channel.overwrites_for(target_obj)
         cur = current.connect
         if cur is target:
@@ -493,6 +520,7 @@ class TempVoiceCog(commands.Cog):
             await channel.set_permissions(target_obj, overwrite=current)
         except Exception:
             pass
+
 
     async def _apply_min_rank(self, lane: discord.VoiceChannel, min_rank: str):
         if lane.category_id == RANKED_CATEGORY_ID:
