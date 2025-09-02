@@ -11,3 +11,4 @@
 /voice_data/*json
 tempvoice_data.json
 .env2
+.env.worker
