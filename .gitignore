@@ -13,3 +13,4 @@
 /voice_data/*json
 tempvoice_interface.json
 *.json
+install_windows_service.py
