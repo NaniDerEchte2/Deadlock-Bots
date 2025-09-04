@@ -181,9 +181,8 @@ class StepView(discord.ui.View):
 
 class IntroView(StepView):
     """
-    Informelle Begrüßung mit Anti-Skip:
-      • Erster "Weiter": nur Nachfrage „Sicher, dass du’s gelesen hast?“
-      • Zweiter "Weiter": frühestens nach 5s (ohne Countdown-Text)
+    Informelle Begrüßung — der erste „Weiter“-Klick geht jetzt OHNE Cooldown direkt weiter.
+    (Alle anderen Schritte behalten die Mindestwartezeit bei.)
     """
     def __init__(self):
         super().__init__()
@@ -192,26 +191,7 @@ class IntroView(StepView):
 
     @discord.ui.button(label="Weiter ➜", style=discord.ButtonStyle.primary, custom_id="wdm:q0:intro_next")
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.first_click_done:
-            self.first_click_done = True
-            self.first_click_time = datetime.now()
-            self.created_at = self.first_click_time
-            txt = (
-                "📖 **Sicher, dass du’s gelesen hast?**\n"
-                "Nimm dir bitte **2–3 Minuten**, um die Fragen in Ruhe zu lesen und zu verstehen, "
-                "damit ich dein Spielerlebnis hier optimal einstellen kann. 💙"
-            )
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(txt, ephemeral=True)
-                else:
-                    await interaction.followup.send(txt, ephemeral=True)
-            except Exception:
-                pass
-            return
-
-        if not await self._enforce_min_wait(interaction):
-            return
+        # Direkt weiter – kein Anti-Skip, keine 5s Wartezeit beim ersten Klick.
         await self._finish(interaction)
 
 
@@ -743,10 +723,11 @@ class WelcomeDM(commands.Cog):
                 greet_msg = await member.send(
                     "👋 **Herzlich willkommen in der Deutschen Deadlock Community!**\n\n"
                     "Ich helfe dir jetzt, dein Spielerlebnis hier **bestmöglich** einzustellen. "
-                    "Dazu brauche ich **kurz** deine Aufmerksamkeit. 💙"
+                    "Dazu brauche ich **kurz** deine Aufmerksamkeit. 💙\n\n"
+                    "**:bangbang: __Ohne diese Schritte hast du keinen Zugriff auf den Server.__:bangbang: **"
                 )
 
-                # (0.5) NEUE Intro-Nachricht (Anti-Skip ohne Countdown-Anweisung)
+                # (0.5) Intro-Nachricht (jetzt ohne Anti-Skip beim ersten Klick)
                 intro_desc = (
                     "Hey, schön dass du da bist! 🫶\n\n"
                     "Bitte nimm dir **2–3 Minuten** Zeit, die nächsten Fragen **in Ruhe** zu lesen "
@@ -873,7 +854,7 @@ class WelcomeDM(commands.Cog):
                 if status_choice == STATUS_NEED_BETA:
                     closing_lines.append(
                         "🎟️ **Beta-Invite benötigt?** Super, dass du spielen willst! Deine Einladung bekommst du hier:\n"
-                        "<https://discord.com/channels/1289721245281292288/1410754840706945034>\n\n"
+                        "https://discord.com/channels/1289721245281292288/1410754840706945034\n\n"
                         "Bitte poste dort eine kurze Nachricht, z. B.:\n"
                         "```\n"
                         "Hey :)\n"
@@ -923,7 +904,7 @@ class WelcomeDM(commands.Cog):
     async def test_welcome(self, ctx: commands.Context, user: discord.Member = None):
         if not user:
             await ctx.send("❌ Bitte gib einen User an: `!testwelcome @user`")
-            return
+        ...
         await ctx.send(f"📤 Sende Welcome-DM an {user.mention} …")
         ok = await self.send_welcome_messages(user)
         await ctx.send("✅ Erfolgreich gesendet!" if ok else "⚠️ Senden fehlgeschlagen.")
