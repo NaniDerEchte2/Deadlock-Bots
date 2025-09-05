@@ -155,6 +155,11 @@ class Database:
 
     async def close(self) -> None:
         if self.conn is not None:
+            try:
+                await self.conn.execute("VACUUM")
+                await self.conn.commit()
+            except Exception:
+                pass
             await self.conn.close()
             self.conn = None
 
