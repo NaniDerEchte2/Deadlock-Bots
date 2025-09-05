@@ -1,25 +1,21 @@
 import discord
 from discord.ext import commands, tasks
-from discord.ui import Button, View, Modal, TextInput
-import asyncio
+from discord.ui import Button, View, Modal, TextInput, Select
 import datetime
 import json
-import re
 import socket
 from pathlib import Path
 
 
 class DlCoachingCog(commands.Cog):
-    """DL Coaching System als vollwertiger Cog (portiert aus original_scripts/dl_coaching.py)."""
+    """DL Coaching System mit Dropdowns (keine Emoji-Reaktionen)."""
 
-    # IDs anpassen, falls erforderlich
     CHANNEL_ID = 1357421075188813897
     EXISTING_MESSAGE_ID = 1383883328385454210
 
     SOCKET_HOST = "localhost"
-    SOCKET_PORT = 45678
+    SOCKET_PORT = 45680
 
-    # Deadlock-Ränge mit Emoji-IDs
     RANKS = {
         "initiate": "<:initiate:1316457822518775869>",
         "seeker": "<:seeker:1316458138886475876>",
@@ -70,22 +66,50 @@ class DlCoachingCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-        # Datenpfade
         self.base_dir = Path(__file__).resolve().parent.parent
         self.data_dir = self.base_dir / "coaching_data"
         self.logs_dir = self.base_dir / "logs"
         self._ensure_directories()
         self._create_default_files()
 
-        # Temporäre Speicherung der Nutzerdaten
         self.user_data: dict[int, dict] = {}
         self.active_threads: dict[int, int] = {}
         self.thread_last_activity: dict[int, datetime.datetime] = {}
 
-        # Background loop
-        self._check_loop = self._build_check_loop()
+        self._timeout_loop = self._build_timeout_loop()
 
-    # ---------- FS helpers ----------
+    # ---------- Helpers ----------
+    @staticmethod
+    def _to_partial_emoji(mention: str) -> discord.PartialEmoji | None:
+        try:
+            if not mention:
+                return None
+            # format: <:{name}:{id}>
+            if mention.startswith("<:") and mention.endswith(">"):
+                inner = mention[2:-1]
+                name, sid = inner.split(":", 1)
+                return discord.PartialEmoji(name=name, id=int(sid))
+        except Exception:
+            return None
+        return None
+
+    @staticmethod
+    def _safe_option_emoji(guild: discord.Guild | None, mention: str) -> discord.PartialEmoji | None:
+        try:
+            if not guild:
+                return None
+            if not mention or not mention.startswith("<:"):
+                return None
+            inner = mention[2:-1]
+            _name, sid = inner.split(":", 1)
+            em = guild.get_emoji(int(sid))
+            if em:
+                return discord.PartialEmoji(name=em.name, id=em.id)
+        except Exception:
+            return None
+        return None
+
+    # ---------- Filesystem helpers ----------
     def _ensure_directories(self) -> None:
         for d in (self.data_dir, self.logs_dir):
             d.mkdir(parents=True, exist_ok=True)
@@ -96,11 +120,11 @@ class DlCoachingCog(commands.Cog):
             (self.data_dir / "active_threads.json", "{}"),
             (self.logs_dir / "coaching_logs.txt", ""),
         ]
-        for path, content in defaults:
-            if not path.exists():
-                path.write_text(content, encoding="utf-8")
+        for p, content in defaults:
+            if not p.exists():
+                p.write_text(content, encoding="utf-8")
 
-    # ---------- Utilities ----------
+    # ---------- Socket notify ----------
     def _notify_claim_bot(self, thread_data: dict) -> None:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -125,88 +149,272 @@ class DlCoachingCog(commands.Cog):
         except Exception:
             return None
 
-    # ---------- UI Classes ----------
+    # ---------- UI Components ----------
     class MatchIDModal(Modal):
         def __init__(self, cog: "DlCoachingCog"):
-            super().__init__(title="Match ID Eingabe")
+            super().__init__(title="Match ID Eingeben")
             self.cog = cog
-            self.match_id = TextInput(
-                label="Bitte gib die Match ID ein",
-                placeholder="Match ID hier eingeben...",
-                max_length=20,
-            )
+            self.match_id = TextInput(label="Match ID", placeholder="z.B. 12345-ABCDE", max_length=50)
             self.add_item(self.match_id)
 
         async def on_submit(self, interaction: discord.Interaction):
             user_id = interaction.user.id
-            if user_id not in self.cog.user_data:
-                self.cog.user_data[user_id] = {}
+            self.cog.user_data.setdefault(user_id, {})
+            self.cog.user_data[user_id]["match_id"] = str(self.match_id.value)
 
-            self.cog.user_data[user_id]["match_id"] = self.match_id.value
+            # Reagiere schnell, dann arbeite weiter (vermeidet Interaktions-Timeout)
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.defer(ephemeral=True)
+            except Exception:
+                pass
 
+            # Thread erstellen und erste View senden
             thread = await interaction.channel.create_thread(
                 name=f"Match-Coaching: {interaction.user.display_name}",
                 type=discord.ChannelType.private_thread,
             )
 
             self.cog.active_threads[user_id] = thread.id
+            self.cog.user_data[user_id]["thread_id"] = thread.id
             self.cog.thread_last_activity[thread.id] = datetime.datetime.now()
-            await thread.add_user(interaction.user)
+            try:
+                await thread.add_user(interaction.user)
+            except Exception:
+                pass
 
-            await interaction.response.send_message(
-                f"Ein Thread für dein Match-Coaching wurde erstellt. Bitte gehe zu {thread.mention}.",
-                ephemeral=True,
+            emb = discord.Embed(
+                title="Deadlock Match-Coaching",
+                description=f"Match-ID: {self.match_id.value}\n\nBitte wähle deinen Rang.",
+                color=discord.Color.blue(),
             )
+            await thread.send(embed=emb, view=DlCoachingCog.RankView(self.cog, thread.guild))
 
-            await self.cog._start_analysis_in_thread(thread, interaction.user, self.match_id.value)
+            # Bestätigung als Followup
+            try:
+                await interaction.followup.send(f"Thread erstellt: {thread.mention}", ephemeral=True)
+            except Exception:
+                pass
 
     class StartView(View):
         def __init__(self, cog: "DlCoachingCog"):
             super().__init__(timeout=None)
             self.cog = cog
 
-            start_button = Button(
-                label="Match-Coaching starten",
-                style=discord.ButtonStyle.primary,
-                custom_id="start_analysis",
-            )
-            start_button.callback = self.start_analysis
-            self.add_item(start_button)
-
-        async def start_analysis(self, interaction: discord.Interaction):
+        @discord.ui.button(label="Match-Coaching starten", style=discord.ButtonStyle.primary, custom_id="dl_start")
+        async def start(self, interaction: discord.Interaction, button: Button):
             await interaction.response.send_modal(DlCoachingCog.MatchIDModal(self.cog))
 
-    # ---------- Flow helpers ----------
-    async def _start_analysis_in_thread(self, thread: discord.Thread, user: discord.User | discord.Member, match_id: str):
-        user_id = user.id
-        self.user_data.setdefault(user_id, {})
-        self.user_data[user_id]["match_id"] = match_id
-        self.user_data[user_id]["step"] = "rank"
-        self.user_data[user_id]["thread_id"] = thread.id
+class RankSelect(Select):
+        def __init__(self, cog: "DlCoachingCog", guild: discord.Guild | None):
+            self.cog = cog
+            self.guild = guild
+            options = []
+            for key, mention in cog.RANKS.items():
+                em = DlCoachingCog._safe_option_emoji(guild, mention)
+                options.append(discord.SelectOption(label=key.title(), value=key, emoji=em))
+            super().__init__(placeholder="Wähle deinen Rang", min_values=1, max_values=1, options=options, custom_id="dl_rank")
 
-        embed = discord.Embed(
+        async def callback(self, interaction: discord.Interaction):
+            uid = interaction.user.id
+            d = self.cog.user_data.setdefault(uid, {})
+            d["rank"] = self.values[0]
+            d["step"] = "subrank"
+            if d.get("thread_id"):
+                self.cog.thread_last_activity[d["thread_id"]] = datetime.datetime.now()
+            emb = discord.Embed(
+                title="Deadlock Match-Coaching",
+                description=f"Match-ID: {d.get('match_id')}\nRang: {d['rank']} {self.cog.RANKS.get(d['rank'],'')}\n\nBitte wähle deinen Subrang.",
+                color=discord.Color.blue(),
+            )
+            await interaction.response.edit_message(embed=emb, view=DlCoachingCog.SubrankView(self.cog))
+
+class RankView(View):
+        def __init__(self, cog: "DlCoachingCog", guild: discord.Guild | None):
+            super().__init__(timeout=None)
+            self.add_item(DlCoachingCog.RankSelect(cog, guild))
+
+    class SubrankSelect(Select):
+        def __init__(self, cog: "DlCoachingCog"):
+            self.cog = cog
+            options = [
+                discord.SelectOption(label="I", value="i"),
+                discord.SelectOption(label="II", value="ii"),
+                discord.SelectOption(label="III", value="iii"),
+                discord.SelectOption(label="IV", value="iv"),
+                discord.SelectOption(label="V", value="v"),
+                discord.SelectOption(label="✶", value="✶"),
+            ]
+            super().__init__(placeholder="Wähle deinen Subrang", min_values=1, max_values=1, options=options, custom_id="dl_subrank")
+
+        async def callback(self, interaction: discord.Interaction):
+            uid = interaction.user.id
+            d = self.cog.user_data.setdefault(uid, {})
+            d["subrank"] = self.values[0]
+            d["step"] = "hero"
+            if d.get("thread_id"):
+                self.cog.thread_last_activity[d["thread_id"]] = datetime.datetime.now()
+            emb = discord.Embed(
+                title="Deadlock Match-Coaching",
+                description=f"Match-ID: {d.get('match_id')}\nRang: {d.get('rank')} {self.cog.RANKS.get(d.get('rank'),'')}\nSubrang: {d['subrank']}\n\nBitte wähle deinen Helden.",
+                color=discord.Color.blue(),
+            )
+            await interaction.response.edit_message(embed=emb, view=DlCoachingCog.HeroView(self.cog, interaction.guild))
+
+    class SubrankView(View):
+        def __init__(self, cog: "DlCoachingCog"):
+            super().__init__(timeout=None)
+            self.add_item(DlCoachingCog.SubrankSelect(cog))
+
+    class HeroSelectPage1(Select):
+        def __init__(self, cog: "DlCoachingCog", guild: discord.Guild | None):
+            self.cog = cog
+            options = []
+            for name, mention in cog.HEROES_PAGE_1.items():
+                em = DlCoachingCog._safe_option_emoji(guild, mention)
+                options.append(discord.SelectOption(label=name.replace('_',' ').title(), value=name, emoji=em))
+            super().__init__(placeholder="Helden (A–M)", min_values=1, max_values=1, options=options, custom_id="dl_hero_p1")
+
+        async def callback(self, interaction: discord.Interaction):
+            await DlCoachingCog._hero_selected(self.cog, interaction, self.values[0])
+
+    class HeroSelectPage2(Select):
+        def __init__(self, cog: "DlCoachingCog", guild: discord.Guild | None):
+            self.cog = cog
+            options = []
+            for name, mention in cog.HEROES_PAGE_2.items():
+                em = DlCoachingCog._safe_option_emoji(guild, mention)
+                options.append(discord.SelectOption(label=name.replace('_',' ').title(), value=name, emoji=em))
+            super().__init__(placeholder="Helden (N–Z)", min_values=1, max_values=1, options=options, custom_id="dl_hero_p2")
+
+        async def callback(self, interaction: discord.Interaction):
+            await DlCoachingCog._hero_selected(self.cog, interaction, self.values[0])
+
+    class HeroView(View):
+        def __init__(self, cog: "DlCoachingCog", guild: discord.Guild | None):
+            super().__init__(timeout=None)
+            self.add_item(DlCoachingCog.HeroSelectPage1(cog, guild))
+            self.add_item(DlCoachingCog.HeroSelectPage2(cog, guild))
+
+    @staticmethod
+    async def _hero_selected(cog: "DlCoachingCog", interaction: discord.Interaction, hero_value: str):
+        uid = interaction.user.id
+        d = cog.user_data.setdefault(uid, {})
+        d["hero"] = hero_value
+        d["step"] = "comment"
+        if d.get("thread_id"):
+            cog.thread_last_activity[d["thread_id"]] = datetime.datetime.now()
+        emb = discord.Embed(
             title="Deadlock Match-Coaching",
             description=(
-                f"Match-ID: {match_id}\n\nBitte reagiere mit deinem Rang auf diese Nachricht."
+                f"Match-ID: {d.get('match_id')}\\nRang: {d.get('rank')} {cog.RANKS.get(d.get('rank'),'')}\\nSubrang: {d.get('subrank')}\\nHeld: {d['hero']}\\n\\nKlicke auf den Button, um deinen Kommentar einzugeben."
             ),
             color=discord.Color.blue(),
         )
+        await interaction.response.edit_message(embed=emb, view=DlCoachingCog.CommentView(cog))
 
-        rank_message = await thread.send(embed=embed)
-        self.user_data[user_id]["rank_message_id"] = rank_message.id
+    class CommentModal(Modal):
+        def __init__(self, cog: "DlCoachingCog"):
+            super().__init__(title="Kommentar eingeben")
+            self.cog = cog
+            self.comment = TextInput(label="Kommentar", style=discord.TextStyle.paragraph, max_length=1000)
+            self.add_item(self.comment)
 
-        for _, emoji_str in self.RANKS.items():
-            m = re.search(r"<:([^:]+):(\d+)>", emoji_str)
-            if m:
-                emoji_id = int(m.group(2))
-                emoji = discord.utils.get(thread.guild.emojis, id=emoji_id)
-                if emoji:
-                    await rank_message.add_reaction(emoji)
+        async def on_submit(self, interaction: discord.Interaction):
+            uid = interaction.user.id
+            d = self.cog.user_data.setdefault(uid, {})
+            d["comment"] = str(self.comment.value)
+            d["step"] = "finish"
+            if d.get("thread_id"):
+                self.cog.thread_last_activity[d["thread_id"]] = datetime.datetime.now()
 
+            emb = discord.Embed(title="Zusammenfassung deines Coachings", color=discord.Color.green())
+            emb.add_field(name="Match ID", value=d.get("match_id"), inline=False)
+            emb.add_field(name="Rang", value=f"{d.get('rank')} {self.cog.RANKS.get(d.get('rank'),'')}", inline=False)
+            emb.add_field(name="Subrang", value=d.get("subrank"), inline=False)
+            emb.add_field(name="Held", value=d.get("hero"), inline=False)
+            emb.add_field(name="Kommentar", value=d.get("comment", "-"), inline=False)
+            await interaction.response.send_message(embed=emb, view=DlCoachingCog.FinishView(self.cog))
+
+    class CommentView(View):
+        def __init__(self, cog: "DlCoachingCog"):
+            super().__init__(timeout=None)
+            self.cog = cog
+
+        @discord.ui.button(label="Kommentar eingeben", style=discord.ButtonStyle.primary, custom_id="dl_comment")
+        async def open_comment(self, interaction: discord.Interaction, button: Button):
+            await interaction.response.send_modal(DlCoachingCog.CommentModal(self.cog))
+
+    class FinishView(View):
+        def __init__(self, cog: "DlCoachingCog"):
+            super().__init__(timeout=None)
+            self.cog = cog
+
+        @discord.ui.button(label="Abschließen", style=discord.ButtonStyle.success, custom_id="dl_finish")
+        async def finish(self, interaction: discord.Interaction, button: Button):
+            uid = interaction.user.id
+            d = self.cog.user_data.get(uid)
+            if not d:
+                await interaction.response.send_message("Keine Daten gefunden.", ephemeral=True)
+                return
+            channel = interaction.channel
+            if not isinstance(channel, (discord.Thread, discord.TextChannel)):
+                await interaction.response.send_message("Ungültiger Kanal.", ephemeral=True)
+                return
+            content = (
+                f"**Match-Coaching**\n\n"
+                f"**Match ID:** {d.get('match_id')}\n"
+                f"**Rang:** {d.get('rank')} {self.cog.RANKS.get(d.get('rank',''), '')}\n"
+                f"**Subrang:** {d.get('subrank')}\n"
+                f"**Held:** {d.get('hero')}\n"
+                f"**Kommentar:** {d.get('comment', '-')}\n\n"
+                f"_______________________________\n"
+                f"Analysiert von: <@{uid}>\n"
+                f"Coaching abgeschlossen! Danke für deine Eingaben."
+            )
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.edit_message(view=None)
+            except Exception:
+                pass
+            await channel.send(content)
+
+            notif = {
+                "thread_id": channel.id,
+                "match_id": d.get("match_id"),
+                "rank": d.get("rank"),
+                "subrank": d.get("subrank"),
+                "hero": d.get("hero"),
+                "user_id": uid,
+            }
+            self.cog._notify_claim_bot(notif)
+
+            self.cog.user_data.pop(uid, None)
+            self.cog.active_threads.pop(uid, None)
+            self.cog.thread_last_activity.pop(getattr(channel, 'id', None), None)
+            try:
+                await interaction.message.delete()
+            except Exception:
+                pass
+
+    # ---------- Flow starters ----------
+    async def _start_analysis_in_thread(self, thread: discord.Thread, user: discord.User | discord.Member, match_id: str):
+        uid = user.id
+        self.user_data.setdefault(uid, {})
+        self.user_data[uid]["match_id"] = match_id
+        self.user_data[uid]["thread_id"] = thread.id
+        self.user_data[uid]["step"] = "rank"
+
+        emb = discord.Embed(
+            title="Deadlock Match-Coaching",
+            description=f"Match-ID: {match_id}\n\nBitte wähle deinen Rang.",
+            color=discord.Color.blue(),
+        )
+        await thread.send(embed=emb, view=DlCoachingCog.RankView(self))
         self.thread_last_activity[thread.id] = datetime.datetime.now()
 
-    # ---------- Periodic checks ----------
-    def _build_check_loop(self):
+    # ---------- Timeout loop ----------
+    def _build_timeout_loop(self):
         @tasks.loop(seconds=1)
         async def _loop():
             now = datetime.datetime.now()
@@ -228,272 +436,15 @@ class DlCoachingCog(commands.Cog):
                             self.active_threads.pop(uid, None)
                 except Exception:
                     pass
-
-            # Step checks
-            for user_id, data in list(self.user_data.items()):
-                step = data.get("step")
-                thread_id = data.get("thread_id")
-                if not step or not thread_id:
-                    continue
-                channel = self.bot.get_channel(thread_id)
-                if not channel:
-                    continue
-                try:
-                    if step == "rank" and "rank_message_id" in data:
-                        msg = await channel.fetch_message(data["rank_message_id"])
-                        await self._check_rank_reactions(msg, user_id)
-                    elif step == "subrank" and "subrank_message_id" in data:
-                        msg = await channel.fetch_message(data["subrank_message_id"])
-                        await self._check_subrank_reactions(msg, user_id)
-                    elif step == "hero" and "hero_message_id" in data:
-                        msg = await channel.fetch_message(data["hero_message_id"])
-                        await self._check_hero_reactions(msg, user_id)
-                    elif step == "finish" and "summary_message_id" in data:
-                        msg = await channel.fetch_message(data["summary_message_id"])
-                        await self._check_finish_reactions(msg, user_id)
-                except Exception:
-                    continue
-
         return _loop
-
-    async def _check_rank_reactions(self, message: discord.Message, user_id: int):
-        if user_id not in self.user_data:
-            return
-        data = self.user_data[user_id]
-        message = await message.channel.fetch_message(message.id)
-        async for reaction in message.reactions:
-            pass
-        for reaction in message.reactions:
-            async for user in reaction.users():
-                if user.id != user_id:
-                    continue
-                emoji = reaction.emoji
-                selected_rank = None
-                for rank, emoji_str in self.RANKS.items():
-                    if isinstance(emoji, discord.Emoji) and str(emoji.id) in emoji_str:
-                        selected_rank = rank
-                        break
-                if selected_rank:
-                    data["rank"] = selected_rank
-                    data["step"] = "subrank"
-                    embed = discord.Embed(
-                        title="Deadlock Match-Coaching",
-                        description=(
-                            f"Match-ID: {data['match_id']}\nRang: {selected_rank} {self.RANKS[selected_rank]}\n\nBitte reagiere mit deinem Subrang auf diese Nachricht."
-                        ),
-                        color=discord.Color.blue(),
-                    )
-                    subrank_message = await message.channel.send(embed=embed)
-                    data["subrank_message_id"] = subrank_message.id
-                    # Use numeric emojis 1-5 and star for ✶
-                    number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "✶"]
-                    for idx, sub in enumerate(self.SUBRANKS):
-                        await subrank_message.add_reaction(number_emojis[idx])
-                    self.thread_last_activity[message.channel.id] = datetime.datetime.now()
-                    return
-
-    async def _check_subrank_reactions(self, message: discord.Message, user_id: int):
-        if user_id not in self.user_data:
-            return
-        data = self.user_data[user_id]
-        message = await message.channel.fetch_message(message.id)
-        number_map = {"1️⃣": "i", "2️⃣": "ii", "3️⃣": "iii", "4️⃣": "iv", "5️⃣": "v", "✶": "✶"}
-        for reaction in message.reactions:
-            async for user in reaction.users():
-                if user.id != user_id:
-                    continue
-                emoji = str(reaction.emoji)
-                if emoji in number_map:
-                    data["subrank"] = number_map[emoji]
-                    data["step"] = "hero"
-                    embed = discord.Embed(
-                        title="Deadlock Match-Coaching",
-                        description=(
-                            f"Match-ID: {data['match_id']}\nRang: {data['rank']} {self.RANKS[data['rank']]}\nSubrang: {data['subrank']}\n\nBitte reagiere mit deinem Helden auf diese Nachricht (Seite 1/2)."
-                        ),
-                        color=discord.Color.blue(),
-                    )
-                    hero_message = await message.channel.send(embed=embed)
-                    data["hero_message_id"] = hero_message.id
-                    data["hero_page"] = 1
-                    for _, emoji_str in self.HEROES_PAGE_1.items():
-                        m = re.search(r"<:([^:]+):(\d+)>", emoji_str)
-                        if m:
-                            emoji = discord.utils.get(message.guild.emojis, id=int(m.group(2)))
-                            if emoji:
-                                await hero_message.add_reaction(emoji)
-                    await hero_message.add_reaction("➡️")
-                    self.thread_last_activity[message.channel.id] = datetime.datetime.now()
-                    return
-
-    async def _check_hero_reactions(self, message: discord.Message, user_id: int):
-        if user_id not in self.user_data:
-            return
-        data = self.user_data[user_id]
-        message = await message.channel.fetch_message(message.id)
-        for reaction in message.reactions:
-            async for user in reaction.users():
-                if user.id != user_id:
-                    continue
-                emoji = reaction.emoji
-                # Pagination
-                if str(emoji) == "➡️" and data.get("hero_page") == 1:
-                    await message.clear_reactions()
-                    embed = discord.Embed(
-                        title="Deadlock Match-Coaching",
-                        description=(
-                            f"Match-ID: {data['match_id']}\nRang: {data['rank']} {self.RANKS[data['rank']]}\nSubrang: {data['subrank']}\n\nBitte reagiere mit deinem Helden auf diese Nachricht (Seite 2/2)."
-                        ),
-                        color=discord.Color.blue(),
-                    )
-                    await message.edit(embed=embed)
-                    data["hero_page"] = 2
-                    for _, emoji_str in self.HEROES_PAGE_2.items():
-                        m = re.search(r"<:([^:]+):(\d+)>", emoji_str)
-                        if m:
-                            emoji = discord.utils.get(message.guild.emojis, id=int(m.group(2)))
-                            if emoji:
-                                await message.add_reaction(emoji)
-                    await message.add_reaction("⬅️")
-                    await message.remove_reaction("➡️", user)
-                    self.thread_last_activity[message.channel.id] = datetime.datetime.now()
-                    return
-                elif str(emoji) == "⬅️" and data.get("hero_page") == 2:
-                    await message.clear_reactions()
-                    embed = discord.Embed(
-                        title="Deadlock Match-Coaching",
-                        description=(
-                            f"Match-ID: {data['match_id']}\nRang: {data['rank']} {self.RANKS[data['rank']]}\nSubrang: {data['subrank']}\n\nBitte reagiere mit deinem Helden auf diese Nachricht (Seite 1/2)."
-                        ),
-                        color=discord.Color.blue(),
-                    )
-                    await message.edit(embed=embed)
-                    data["hero_page"] = 1
-                    for _, emoji_str in self.HEROES_PAGE_1.items():
-                        m = re.search(r"<:([^:]+):(\d+)>", emoji_str)
-                        if m:
-                            emoji = discord.utils.get(message.guild.emojis, id=int(m.group(2)))
-                            if emoji:
-                                await message.add_reaction(emoji)
-                    await message.add_reaction("➡️")
-                    await message.remove_reaction("⬅️", user)
-                    self.thread_last_activity[message.channel.id] = datetime.datetime.now()
-                    return
-                else:
-                    selected_hero = None
-                    heroes = self.HEROES_PAGE_1 if data.get("hero_page") == 1 else self.HEROES_PAGE_2
-                    for hero, emoji_str in heroes.items():
-                        if isinstance(emoji, discord.Emoji) and str(emoji.id) in emoji_str:
-                            selected_hero = hero
-                            break
-                    if selected_hero:
-                        data["hero"] = selected_hero
-                        data["step"] = "comment"
-                        embed = discord.Embed(
-                            title="Deadlock Match-Coaching",
-                            description=(
-                                f"Match-ID: {data['match_id']}\nRang: {data['rank']} {self.RANKS[data['rank']]}\nSubrang: {data['subrank']}\nHeld: {selected_hero} {heroes[selected_hero]}\n\nBitte gib einen Kommentar zur Spielsituation ein (**antworte auf diese Nachricht**)."
-                            ),
-                            color=discord.Color.blue(),
-                        )
-                        comment_message = await message.channel.send(embed=embed)
-                        data["comment_message_id"] = comment_message.id
-                        self.thread_last_activity[message.channel.id] = datetime.datetime.now()
-                        return
-
-    async def _check_finish_reactions(self, message: discord.Message, user_id: int):
-        if user_id not in self.user_data:
-            return
-        data = self.user_data[user_id]
-        message = await message.channel.fetch_message(message.id)
-        for reaction in message.reactions:
-            async for user in reaction.users():
-                if user.id == user_id and str(reaction.emoji) == "✅":
-                    channel = message.channel
-                    # Clean up previous messages
-                    async for old in channel.history(limit=100):
-                        try:
-                            await old.delete()
-                        except discord.HTTPException:
-                            pass
-                    content = (
-                        f"**Match-Coaching**\n\n"
-                        f"**Match ID:** {data.get('match_id')}\n"
-                        f"**Rang:** {data.get('rank')} {self.RANKS.get(data.get('rank', ''), '')}\n"
-                        f"**Subrang:** {data.get('subrank')}\n"
-                    )
-                    hero = data.get("hero", "")
-                    hero_emoji = ""
-                    if hero in self.HEROES_PAGE_1:
-                        hero_emoji = self.HEROES_PAGE_1[hero]
-                    elif hero in self.HEROES_PAGE_2:
-                        hero_emoji = self.HEROES_PAGE_2[hero]
-                    content += f"**Held:** {hero} {hero_emoji}\n"
-                    content += f"**Kommentar:** {data.get('comment', 'Kein Kommentar angegeben.')}\n\n"
-                    content += f"_______________________________\n"
-                    content += f"Analysiert von: <@{user_id}>\n"
-                    content += f"Coaching abgeschlossen! Danke für deine Eingaben."
-                    await channel.send(content)
-
-                    notif = {
-                        "thread_id": channel.id,
-                        "match_id": data.get("match_id"),
-                        "rank": data.get("rank"),
-                        "subrank": data.get("subrank"),
-                        "hero": data.get("hero"),
-                        "user_id": user_id,
-                    }
-                    self._notify_claim_bot(notif)
-
-                    self.user_data.pop(user_id, None)
-                    self.active_threads.pop(user_id, None)
-                    self.thread_last_activity.pop(message.channel.id, None)
-                    return
 
     # ---------- Events ----------
     @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if message.author.bot:
-            return
-        if message.reference and message.reference.message_id:
-            user_id = message.author.id
-            if user_id in self.user_data and self.user_data[user_id].get("step") == "comment":
-                data = self.user_data[user_id]
-                channel = message.channel
-                data["comment"] = message.content
-
-                embed = discord.Embed(title="Zusammenfassung deines Coachings", color=discord.Color.green())
-                embed.add_field(name="Match ID", value=data.get("match_id"), inline=False)
-                embed.add_field(
-                    name="Rang",
-                    value=f"{data.get('rank')} {self.RANKS.get(data.get('rank', ''), '')}",
-                    inline=False,
-                )
-                embed.add_field(name="Subrang", value=data.get("subrank"), inline=False)
-                hero = data.get("hero", "")
-                hero_emoji = ""
-                if hero in self.HEROES_PAGE_1:
-                    hero_emoji = self.HEROES_PAGE_1[hero]
-                elif hero in self.HEROES_PAGE_2:
-                    hero_emoji = self.HEROES_PAGE_2[hero]
-                embed.add_field(name="Held", value=f"{hero} {hero_emoji}", inline=False)
-                embed.add_field(
-                    name="Kommentar", value=data.get("comment", "Kein Kommentar angegeben."), inline=False
-                )
-                summary_message = await channel.send(embed=embed)
-                data["summary_message_id"] = summary_message.id
-                await summary_message.add_reaction("✅")
-                try:
-                    await message.delete()
-                except discord.HTTPException:
-                    pass
-                self.thread_last_activity[channel.id] = datetime.datetime.now()
-        # HINWEIS: Kein process_commands() Aufruf hier, um Doppel-Ausführung zu vermeiden
-
-    @commands.Cog.listener()
     async def on_ready(self):
-        if not self._check_loop.is_running():
-            self._check_loop.start()
+        if not self._timeout_loop.is_running():
+            self._timeout_loop.start()
+        # Persistente Views für Reloads/Restarts registrieren
+        self._register_persistent_views()
         channel = self.bot.get_channel(self.CHANNEL_ID)
         if isinstance(channel, (discord.TextChannel, discord.Thread)):
             try:
@@ -503,13 +454,44 @@ class DlCoachingCog(commands.Cog):
             except Exception:
                 pass
 
+    def cog_load(self) -> None:
+        # Wird auch bei Reload aufgerufen – Views registrieren und Bestandsnachricht später anhängen
+        try:
+            self._register_persistent_views()
+            # Bestandsnachricht asynchron aktualisieren
+            async def _reattach():
+                await self.bot.wait_until_ready()
+                ch = self.bot.get_channel(self.CHANNEL_ID)
+                if isinstance(ch, discord.TextChannel):
+                    try:
+                        msg = await self._find_coaching_message_in_channel(ch)
+                        if msg:
+                            await msg.edit(view=DlCoachingCog.StartView(self))
+                    except Exception:
+                        pass
+            self.bot.loop.create_task(_reattach())
+        except Exception:
+            pass
+
+    def _register_persistent_views(self) -> None:
+        try:
+            # Nur StartView registrieren (persistente Interaktion). Die weiteren Views
+            # werden kontextbezogen im Thread mit Guild-gebundenen Emojis erzeugt.
+            self.bot.add_view(DlCoachingCog.StartView(self))
+        except Exception:
+            pass
+
     def cog_unload(self) -> None:
         try:
-            if self._check_loop.is_running():
-                self._check_loop.cancel()
+            if self._timeout_loop.is_running():
+                self._timeout_loop.cancel()
         except Exception:
             pass
 
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DlCoachingCog(bot))
+
+
+
+
