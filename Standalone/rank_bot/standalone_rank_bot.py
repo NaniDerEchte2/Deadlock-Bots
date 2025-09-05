@@ -11,6 +11,12 @@ import asyncio
 from datetime import datetime, timedelta
 import os
 import logging
+import sys
+from pathlib import Path
+import atexit
+
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+from utils.deadlock_db import DB_PATH
 
 # NEU (direkt nach den Imports einfügen oder vorhandenes load_dotenv ersetzen):
 from dotenv import load_dotenv
@@ -122,8 +128,18 @@ NOTIFICATION_START_HOUR = 8
 NOTIFICATION_END_HOUR = 22
 
 # Database setup
-db_path = os.path.join(os.path.dirname(__file__), 'rank_data', 'standalone_rank_bot.db')
-os.makedirs(os.path.dirname(db_path), exist_ok=True)
+db_path = str(DB_PATH)
+
+
+def _vacuum_db():
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("VACUUM")
+    except sqlite3.Error as e:
+        logger.warning(f"Database vacuum failed: {e}")
+
+
+atexit.register(_vacuum_db)
 
 def init_database():
     """Initialisiert die SQLite Datenbank"""

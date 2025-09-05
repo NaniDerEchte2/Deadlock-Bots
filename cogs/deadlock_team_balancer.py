@@ -4,6 +4,7 @@ import random
 import logging
 from typing import Dict, List, Tuple, Optional
 import sqlite3
+from utils.deadlock_db import DB_PATH
 import os
 import asyncio
 from datetime import datetime, timedelta
@@ -217,7 +218,7 @@ class DeadlockTeamBalancer(commands.Cog):
     def get_rank_from_db(self, user_id: int) -> Tuple[str, int]:
         """Holt Rang aus der standalone_rank_bot Datenbank als Fallback"""
         try:
-            db_path = os.path.join(os.path.dirname(__file__), '..', 'rank_bot', 'rank_data', 'standalone_rank_bot.db')
+            db_path = str(DB_PATH)
             if os.path.exists(db_path):
                 with sqlite3.connect(db_path) as conn:
                     cursor = conn.cursor()
