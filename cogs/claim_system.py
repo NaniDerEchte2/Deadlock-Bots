@@ -6,7 +6,8 @@ import queue
 import re
 import socket
 import threading
-from pathlib import Path
+
+from utils.deadlock_db import Database
 
 
 class ClaimSystemCog(commands.Cog):
@@ -49,46 +50,27 @@ class ClaimSystemCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-        # Datenpfade
-        self.base_dir = Path(__file__).resolve().parent.parent
-        self.claim_data_dir = self.base_dir / "claim_data"
-        self.logs_dir = self.base_dir / "logs"
-        self._ensure_directories()
-        self._create_default_files()
-
         # State
-        self.claimed_threads = self._load_claimed_threads()
+        self.claimed_threads: dict[str, int | None] = {}
         self.notification_queue: "queue.Queue[dict]" = queue.Queue()
+
+        # DB init
+        self.db: Database | None = None
+        self.bot.loop.create_task(self._init_db())
 
         # Background loop
         self._queue_loop = self._build_queue_loop()
         self._socket_thread: threading.Thread | None = None
 
-    # ---------- FS helpers ----------
-    def _ensure_directories(self) -> None:
-        for d in (self.claim_data_dir, self.logs_dir):
-            d.mkdir(parents=True, exist_ok=True)
+    async def _init_db(self) -> None:
+        self.db = await Database.instance()
+        data = await self.db.kv_get("claim_system_claimed_threads")
+        self.claimed_threads = json.loads(data) if data else {}
 
-    def _create_default_files(self) -> None:
-        defaults = [
-            (self.claim_data_dir / "claimed_threads.json", "{}"),
-            (self.claim_data_dir / "user_assignments.json", "{}"),
-            (self.logs_dir / "claim_logs.txt", ""),
-        ]
-        for path, content in defaults:
-            if not path.exists():
-                path.write_text(content, encoding="utf-8")
-
-    def _load_claimed_threads(self) -> dict:
-        try:
-            p = self.claim_data_dir / "claimed_threads.json"
-            return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-        except Exception:
-            return {}
-
-    def _save_claimed_threads(self) -> None:
-        p = self.claim_data_dir / "claimed_threads.json"
-        p.write_text(json.dumps(self.claimed_threads, indent=2), encoding="utf-8")
+    async def _save_claimed_threads(self) -> None:
+        if self.db is None:
+            self.db = await Database.instance()
+        await self.db.kv_set("claim_system_claimed_threads", json.dumps(self.claimed_threads))
 
     # ---------- Routing ----------
     @staticmethod
@@ -150,7 +132,7 @@ class ClaimSystemCog(commands.Cog):
                 return
 
             self.cog.claimed_threads[str(self.thread_id)] = interaction.user.id
-            self.cog._save_claimed_threads()
+            await self.cog._save_claimed_threads()
             thread = interaction.client.get_channel(self.thread_id)
             if thread:
                 await thread.send(f"<@{interaction.user.id}> hat dieses Coaching übernommen.")
@@ -163,7 +145,7 @@ class ClaimSystemCog(commands.Cog):
                 return
             if str(self.thread_id) in self.cog.claimed_threads:
                 self.cog.claimed_threads[self.thread_id] = None
-                self.cog._save_claimed_threads()
+                await self.cog._save_claimed_threads()
             thread = interaction.client.get_channel(self.thread_id)
             if thread:
                 await thread.send(
@@ -242,7 +224,7 @@ class ClaimSystemCog(commands.Cog):
                 view=view,
             )
             self.claimed_threads[str(thread_id)] = None
-            self._save_claimed_threads()
+            await self._save_claimed_threads()
         except Exception:
             pass
 
