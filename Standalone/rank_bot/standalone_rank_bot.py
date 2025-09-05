@@ -11,6 +11,11 @@ import asyncio
 from datetime import datetime, timedelta
 import os
 import logging
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+from shared.database import get_db_path
 
 # NEU (direkt nach den Imports einfügen oder vorhandenes load_dotenv ersetzen):
 from dotenv import load_dotenv
@@ -122,8 +127,7 @@ NOTIFICATION_START_HOUR = 8
 NOTIFICATION_END_HOUR = 22
 
 # Database setup
-db_path = os.path.join(os.path.dirname(__file__), 'rank_data', 'standalone_rank_bot.db')
-os.makedirs(os.path.dirname(db_path), exist_ok=True)
+db_path = get_db_path()
 
 def init_database():
     """Initialisiert die SQLite Datenbank"""
