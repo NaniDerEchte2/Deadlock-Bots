@@ -18,7 +18,7 @@ from functools import lru_cache
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
-from shared.database import get_db_path
+from utils.deadlock_db import DB_PATH
 
 # Setup enhanced logging
 logger = logging.getLogger(__name__)
@@ -388,7 +388,7 @@ class VoiceActivityTrackerCog(commands.Cog):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.voice_data_dir = os.path.join(base_dir, "voice_data")
         self.config_path = os.path.join(self.voice_data_dir, "config.json")
-        self.db_path = get_db_path()
+        self.db_path = str(DB_PATH)
 
         # Ensure directories exist
         os.makedirs(self.voice_data_dir, exist_ok=True)

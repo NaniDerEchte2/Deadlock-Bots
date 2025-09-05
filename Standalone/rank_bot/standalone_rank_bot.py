@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
-from shared.database import get_db_path
+from utils.deadlock_db import DB_PATH
 
 # NEU (direkt nach den Imports einfügen oder vorhandenes load_dotenv ersetzen):
 from dotenv import load_dotenv
@@ -127,7 +127,7 @@ NOTIFICATION_START_HOUR = 8
 NOTIFICATION_END_HOUR = 22
 
 # Database setup
-db_path = get_db_path()
+db_path = str(DB_PATH)
 
 def init_database():
     """Initialisiert die SQLite Datenbank"""
