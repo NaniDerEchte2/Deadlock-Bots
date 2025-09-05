@@ -18,6 +18,8 @@ from functools import lru_cache
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
+from utils.deadlock_db import DB_PATH
+
 # Setup enhanced logging
 logger = logging.getLogger(__name__)
 
@@ -369,6 +371,10 @@ class DatabaseManager:
     async def close(self):
         """Close database connection"""
         if self.db:
+            try:
+                await self.db.execute("VACUUM")
+            except Exception:
+                pass
             await self.db.close()
             logger.info("Database connection closed")
 
@@ -382,15 +388,15 @@ class VoiceActivityTrackerCog(commands.Cog):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.voice_data_dir = os.path.join(base_dir, "voice_data")
         self.config_path = os.path.join(self.voice_data_dir, "config.json")
-        self.db_path = os.path.join(self.voice_data_dir, "voice_tracker.db")
-        
+        self.db_path = str(DB_PATH)
+
         # Ensure directories exist
         os.makedirs(self.voice_data_dir, exist_ok=True)
-        
+
         # Load configuration
         self.config = VoiceTrackerConfig()
         self.config.load_from_file(self.config_path)
-        
+
         # Initialize database manager
         self.db_manager = DatabaseManager(self.db_path, self.config)
         

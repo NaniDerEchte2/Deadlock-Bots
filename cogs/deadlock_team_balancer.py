@@ -3,7 +3,7 @@ from discord.ext import commands
 import random
 import logging
 from typing import Dict, List, Tuple, Optional
-import sqlite3
+from utils.deadlock_db import DB_PATH, connect_sync
 import os
 import asyncio
 from datetime import datetime, timedelta
@@ -217,9 +217,8 @@ class DeadlockTeamBalancer(commands.Cog):
     def get_rank_from_db(self, user_id: int) -> Tuple[str, int]:
         """Holt Rang aus der standalone_rank_bot Datenbank als Fallback"""
         try:
-            db_path = os.path.join(os.path.dirname(__file__), '..', 'rank_bot', 'rank_data', 'standalone_rank_bot.db')
-            if os.path.exists(db_path):
-                with sqlite3.connect(db_path) as conn:
+            if DB_PATH.exists():
+                with connect_sync() as conn:
                     cursor = conn.cursor()
                     cursor.execute("SELECT rank FROM user_ranks WHERE user_id = ?", (user_id,))
                     result = cursor.fetchone()

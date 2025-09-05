@@ -11,6 +11,12 @@ import asyncio
 from datetime import datetime, timedelta
 import os
 import logging
+import sys
+from pathlib import Path
+import atexit
+
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+from utils.deadlock_db import DB_PATH, connect_sync
 
 # NEU (direkt nach den Imports einfügen oder vorhandenes load_dotenv ersetzen):
 from dotenv import load_dotenv
@@ -122,12 +128,21 @@ NOTIFICATION_START_HOUR = 8
 NOTIFICATION_END_HOUR = 22
 
 # Database setup
-db_path = os.path.join(os.path.dirname(__file__), 'rank_data', 'standalone_rank_bot.db')
-os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
+
+def _vacuum_db():
+    try:
+        with connect_sync() as conn:
+            conn.execute("VACUUM")
+    except sqlite3.Error as e:
+        logger.warning(f"Database vacuum failed: {e}")
+
+
+atexit.register(_vacuum_db)
 
 def init_database():
     """Initialisiert die SQLite Datenbank"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -197,7 +212,7 @@ def init_database():
 # Database helper functions
 def get_user_data(user_id: str) -> dict:
     """Lädt User-Daten aus der Datenbank"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT custom_interval, paused_until FROM user_data WHERE user_id = ?', (user_id,))
         result = cursor.fetchone()
@@ -212,7 +227,7 @@ def get_user_data(user_id: str) -> dict:
 
 def save_user_data(user_id: str, data: dict):
     """Speichert User-Daten in der Datenbank"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO user_data (user_id, custom_interval, paused_until, updated_at)
@@ -222,7 +237,7 @@ def save_user_data(user_id: str, data: dict):
 
 def save_persistent_view(message_id: str, channel_id: str, guild_id: str, view_type: str, user_id: str = None):
     """Speichert persistent view in der Datenbank"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO persistent_views (message_id, channel_id, guild_id, view_type, user_id)
@@ -232,14 +247,14 @@ def save_persistent_view(message_id: str, channel_id: str, guild_id: str, view_t
 
 def remove_persistent_view(message_id: str):
     """Entfernt eine persistent view aus der Datenbank"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM persistent_views WHERE message_id = ?', (message_id,))
         conn.commit()
 
 def load_persistent_views():
     """Lädt alle persistent views aus der Datenbank"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         # Prüfe zuerst ob user_id Spalte existiert
         cursor.execute("PRAGMA table_info(persistent_views)")
@@ -258,7 +273,7 @@ def load_persistent_views():
 
 def cleanup_old_views(guild_id: str, view_type: str):
     """Entfernt alte Views für eine Guild/View-Type Kombination"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             DELETE FROM persistent_views 
@@ -524,7 +539,7 @@ class NoNotificationButton(discord.ui.Button):
         
         # DM View aus persistent views entfernen
         try:
-            with sqlite3.connect(db_path) as conn:
+            with connect_sync() as conn:
                 cursor = conn.cursor()
                 cursor.execute('DELETE FROM persistent_views WHERE message_id = ? AND view_type = ?', 
                               (str(interaction.message.id), 'dm_rank_select'))
@@ -592,7 +607,7 @@ class NoDeadlockButton(discord.ui.Button):
         
         # DM View aus persistent views entfernen
         try:
-            with sqlite3.connect(db_path) as conn:
+            with connect_sync() as conn:
                 cursor = conn.cursor()
                 cursor.execute('DELETE FROM persistent_views WHERE message_id = ? AND view_type = ?', 
                               (str(interaction.message.id), 'dm_rank_select'))
@@ -633,7 +648,7 @@ class FinishedButton(discord.ui.Button):
         
         # DM View aus persistent views entfernen
         try:
-            with sqlite3.connect(db_path) as conn:
+            with connect_sync() as conn:
                 cursor = conn.cursor()
                 cursor.execute('DELETE FROM persistent_views WHERE message_id = ? AND view_type = ?', 
                               (str(interaction.message.id), 'dm_rank_select'))
@@ -739,7 +754,7 @@ class ServerRankSelectDropdown(discord.ui.Select):
 
 async def get_existing_dm_view(user_id: str):
     """Prüft ob User bereits eine aktive DM View hat und gibt Message-Info zurück"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT message_id, channel_id FROM persistent_views WHERE user_id = ? AND view_type = ? LIMIT 1', 
                       (user_id, 'dm_rank_select'))
@@ -765,7 +780,7 @@ async def get_existing_dm_view(user_id: str):
 
 async def cleanup_old_dm_views(user_id: str):
     """Löscht alte DM Views für einen User"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT message_id, channel_id FROM persistent_views WHERE user_id = ? AND view_type = ?', 
                       (user_id, 'dm_rank_select'))
@@ -793,7 +808,7 @@ async def cleanup_old_dm_views(user_id: str):
 
 def track_dm_sent(user_id: str):
     """Trackt dass eine DM an User gesendet wurde"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO dm_response_tracking 
@@ -804,7 +819,7 @@ def track_dm_sent(user_id: str):
 
 def track_dm_response(user_id: str):
     """Trackt dass User auf DM geantwortet hat"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             UPDATE dm_response_tracking 
@@ -820,7 +835,7 @@ async def cleanup_old_dm_views_auto():
     cutoff_date = (datetime.now() - timedelta(days=7)).isoformat()
     cleaned_count = 0
     
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         
         # Finde DM Views älter als 7 Tage
@@ -1173,7 +1188,7 @@ async def create_queue_manually(ctx):
     await create_daily_queue()
     
     # Anzahl der Queue-Einträge prüfen
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM notification_queue WHERE queue_date = ?', (datetime.now().strftime('%Y-%m-%d'),))
         queue_count = cursor.fetchone()[0]
@@ -1202,7 +1217,7 @@ async def create_remaining_queue(ctx):
     today = datetime.now().strftime('%Y-%m-%d')
     
     # Lade noch nicht verarbeitete User aus heutiger Queue
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT user_id, guild_id, rank FROM notification_queue WHERE queue_date = ? AND processed = FALSE', (today,))
         remaining_users = cursor.fetchall()
@@ -1223,7 +1238,7 @@ async def create_remaining_queue(ctx):
         new_queue_data.append((user_id, guild_id, rank, today, False))
     
     # Lösche alte Queue und erstelle neue
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM notification_queue WHERE queue_date = ?', (today,))
         cursor.executemany('''
@@ -1262,7 +1277,7 @@ async def create_never_contacted_queue(ctx):
     all_members = [member for member in guild.members if not member.bot]
     
     # Bereits kontaktierte User aus notification_log laden
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT DISTINCT user_id FROM notification_log')
         contacted_users = {row[0] for row in cursor.fetchall()}
@@ -1293,7 +1308,7 @@ async def create_never_contacted_queue(ctx):
         return
     
     # Queue erstellen
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         # Alte Queue für heute löschen
         cursor.execute('DELETE FROM notification_queue WHERE queue_date = ?', (today,))
@@ -1345,7 +1360,7 @@ async def check_never_contacted(ctx):
             user_mapping[str(member.id)] = (member, user_rank)
     
     # Bereits kontaktierte User aus notification_log
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT DISTINCT user_id FROM notification_log')
         contacted_users = {row[0] for row in cursor.fetchall()}
@@ -1440,7 +1455,7 @@ async def add_user_to_queue(ctx, user: discord.Member):
         return
     
     # User zur Queue hinzufügen
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO notification_queue (user_id, guild_id, rank, queue_date)
@@ -1462,7 +1477,7 @@ async def view_database(ctx, table: str = None):
     """Zeigt Datenbank-Inhalte an"""
     if not table:
         # Übersicht aller Tabellen
-        with sqlite3.connect(db_path) as conn:
+        with connect_sync() as conn:
             cursor = conn.cursor()
             
             # Count entries in each table
@@ -1489,7 +1504,7 @@ async def view_database(ctx, table: str = None):
     
     elif table.lower() == 'users':
         # User Data
-        with sqlite3.connect(db_path) as conn:
+        with connect_sync() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT user_id, custom_interval, paused_until FROM user_data LIMIT 10')
             results = cursor.fetchall()
@@ -1517,7 +1532,7 @@ async def view_database(ctx, table: str = None):
     
     elif table.lower() == 'notifications':
         # Notification Log
-        with sqlite3.connect(db_path) as conn:
+        with connect_sync() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT user_id, rank, notification_time, count FROM notification_log ORDER BY notification_time DESC LIMIT 10')
             results = cursor.fetchall()
@@ -1544,7 +1559,7 @@ async def view_database(ctx, table: str = None):
     
     elif table.lower() == 'queue':
         # Notification Queue
-        with sqlite3.connect(db_path) as conn:
+        with connect_sync() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT user_id, rank, queue_date FROM notification_queue WHERE queue_date = ? ORDER BY user_id', (datetime.now().strftime('%Y-%m-%d'),))
             results = cursor.fetchall()
@@ -1574,7 +1589,7 @@ async def view_database(ctx, table: str = None):
     
     elif table.lower() == 'views':
         # Persistent Views
-        with sqlite3.connect(db_path) as conn:
+        with connect_sync() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT message_id, channel_id, guild_id, view_type, user_id FROM persistent_views')
             results = cursor.fetchall()
@@ -1644,7 +1659,7 @@ async def test_view_registration(ctx, message_id: str):
                     break
         
         # Prüfe Datenbank
-        with sqlite3.connect(db_path) as conn:
+        with connect_sync() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM persistent_views WHERE message_id = ?', (message_id,))
             db_result = cursor.fetchone()
@@ -1701,7 +1716,7 @@ async def test_register_view(ctx, user_id: str, guild_id: str):
 async def clean_duplicate_views(ctx):
     """Bereinigt doppelte Server Views aus der Datenbank"""
     try:
-        with sqlite3.connect(db_path) as conn:
+        with connect_sync() as conn:
             cursor = conn.cursor()
             
             # Finde doppelte Server Views
@@ -1749,7 +1764,7 @@ async def clean_duplicate_views(ctx):
 @commands.has_permissions(administrator=True)
 async def clean_dm_views(ctx):
     """Entfernt alle DM Views aus der Datenbank"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM persistent_views WHERE view_type = ?', ('dm_rank_select',))
         dm_count = cursor.fetchone()[0]
@@ -1789,7 +1804,7 @@ async def fix_existing_views(ctx):
     message = await ctx.send(embed=embed)
     
     # Alle existierenden DM Views aus der Datenbank laden
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT message_id, channel_id, user_id FROM persistent_views WHERE view_type = ?', ('dm_rank_select',))
         existing_views = cursor.fetchall()
@@ -1937,7 +1952,7 @@ async def fix_all_dm_messages(ctx):
     
     # Existierende Messages aus DB laden für Vergleich
     existing_message_ids = set()
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT message_id FROM persistent_views WHERE view_type = ?', ('dm_rank_select',))
         existing_message_ids = {row[0] for row in cursor.fetchall()}
@@ -1977,7 +1992,7 @@ async def fix_all_dm_messages(ctx):
                             new_messages += 1
                             
                             # Message zur DB hinzufügen
-                            with sqlite3.connect(db_path) as conn:
+                            with connect_sync() as conn:
                                 cursor = conn.cursor()
                                 cursor.execute('''
                                     INSERT OR IGNORE INTO persistent_views 
@@ -2041,7 +2056,7 @@ async def fix_all_dm_messages(ctx):
 @commands.has_permissions(administrator=True)
 async def dm_response_stats(ctx):
     """Zeigt DM Response Statistiken"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         
         # Gesamtstatistiken
@@ -2127,7 +2142,7 @@ async def on_ready():
 # DM Scheduling Tasks
 def log_notification(user_id: str, rank: str):
     """Loggt eine gesendete Benachrichtigung"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO notification_log (user_id, rank) VALUES (?, ?)
@@ -2148,7 +2163,7 @@ def is_notification_time() -> bool:
 
 def save_queue_data(queue_data: list, date: str):
     """Speichert Queue-Daten in der Datenbank"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         
         # Alte Queue für das Datum löschen
@@ -2165,7 +2180,7 @@ def save_queue_data(queue_data: list, date: str):
 
 def load_queue_data(date: str) -> list:
     """Lädt Queue-Daten aus der Datenbank"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             SELECT user_id, guild_id, rank 
@@ -2179,7 +2194,7 @@ def load_queue_data(date: str) -> list:
 
 def mark_queue_item_processed(user_id: str, guild_id: str, date: str):
     """Markiert Queue-Item als verarbeitet"""
-    with sqlite3.connect(db_path) as conn:
+    with connect_sync() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             UPDATE notification_queue 
@@ -2240,7 +2255,7 @@ async def create_daily_queue():
             interval_days = custom_interval if custom_interval else RANK_INTERVALS.get(current_rank, 30)
             
             # Letzte Benachrichtigung prüfen
-            with sqlite3.connect(db_path) as conn:
+            with connect_sync() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     SELECT notification_time FROM notification_log 
