@@ -15,3 +15,8 @@ tempvoice_interface.json
 *.json
 install_windows_service.py
 *db
+*__pycache__
+*pyc
+*sqlite3-wal
+*sqlite3
+*sqlite3-shm
