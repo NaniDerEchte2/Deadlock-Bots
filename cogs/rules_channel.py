@@ -467,8 +467,7 @@ class ConfirmRankView(StepView):
                 await pv.bound_message.delete()
         except Exception:
             pass
-        # stop() -> send_step_embed_thread kann weiterlaufen und die nächste Phase starten
-        pv.force_finish()
+        pv.force_finish()  # send_step_embed_thread kann weiterlaufen
 
         # 3) Danach den Folge-Schritt ausführen (Regelwerk o.ä.)
         try:
@@ -504,8 +503,7 @@ class ConfirmRankView(StepView):
             await interaction.message.delete()
         except Exception:
             pass
-        # WICHTIG: Parent-View offen lassen (nicht finishen!), damit der User neu wählen kann
-
+        # Parent-View bleibt offen (kein finish), Nutzer kann neu wählen
 
 class RankView(StepView):
     def __init__(self, guild_for_emojis: Optional[discord.Guild] = None, *, proceed_callback=None):
@@ -532,11 +530,11 @@ class RankView(StepView):
         except Exception:
             pass
 
-        # UBK -> direkt Abschluss (Regeln bestätigen)
+        # UBK -> direkt Abschluss (Regeln bestätigen) – erst Frage 4 schließen, dann Regelwerk senden
         if self.selected_key == "ubk":
+            await self._finish(interaction)  # Frage-4-Message schließen & waiter freigeben
             if self._proceed_callback:
                 await self._proceed_callback()
-            await self._finish(interaction)
             return
 
         # Peak-Check (separates Prompt im selben Thread)
@@ -550,7 +548,7 @@ class RankView(StepView):
             if self._proceed_callback:
                 await self._proceed_callback()
 
-        view = ConfirmRankView(on_confirm)
+        view = ConfirmRankView(on_confirm, parent_view=self)
         msg = await interaction.channel.send(embed=emb, view=view)  # type: ignore
         view.bound_message = msg
 
