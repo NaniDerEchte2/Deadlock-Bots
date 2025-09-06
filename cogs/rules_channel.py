@@ -155,7 +155,7 @@ class StepView(discord.ui.View):
         elapsed = (datetime.now() - self.created_at).total_seconds()
         remain = int(MIN_NEXT_SECONDS - elapsed)
         if remain > 0:
-            txt = custom_txt or "⏳ Kurzer Moment… bitte noch kurz lesen. Du schaffst das. 💙"
+            txt = custom_txt or "👀 Sicher, dass du in so kurzer Zeit schon alles gelesen hast?"
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(txt, ephemeral=True)
