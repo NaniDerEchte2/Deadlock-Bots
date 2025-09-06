@@ -1,6 +1,7 @@
 # ------------------------------------------------------------
 # TempVoice – Auto-Lanes + UI-Management (Casual & Ranked) mit Anti-429
 # Persistentes Interface (merkt sich Message-ID) + DE/EU-Regionsfilter
+# >>> DB-Zentralisiert: Interface & Owner-Bans in gemeinsamer DB <<<
 # ------------------------------------------------------------
 
 import discord
@@ -10,9 +11,11 @@ import json
 import logging
 import time
 import re
-from pathlib import Path
 from typing import Optional, Dict, Set, Tuple, Any, List
 from datetime import datetime
+
+import aiosqlite
+from utils.deadlock_db import DB_PATH  # zentrale DB
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +44,12 @@ AFK_MOVE_DELAY_SEC        = 300
 DEFAULT_CASUAL_CAP        = 8
 DEFAULT_RANKED_CAP        = 6
 FULL_HINT_THRESHOLD       = 6
-BAN_DATA_PATH             = Path("tempvoice_data.json")
 
 NAME_EDIT_COOLDOWN_SEC    = 120
 LFG_POST_COOLDOWN_SEC     = 60
 LFG_DELETE_AFTER_SEC      = 20 * 60
 BUTTON_COOLDOWN_SEC       = 30
 DEBOUNCE_VERML_VOLL_SEC   = 25
-
-# Persistenter Speicher für Interface-Message
-INTERFACE_STATE_PATH      = Path("tempvoice_interface.json")
 # =================================
 
 # Feste ID der "English Only"-Rolle (Regionsfilter)
@@ -89,38 +88,130 @@ def _strip_suffixes(current: str) -> str:
             base = base.split(marker)[0]
     return base
 
-# ----------------- Persistenz Interface-ID -----------------
-
-def _load_interface_state() -> Dict[str, int]:
-    try:
-        if INTERFACE_STATE_PATH.exists():
-            raw = json.loads(INTERFACE_STATE_PATH.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                out = {}
-                if "message_id" in raw:
-                    out["message_id"] = int(raw["message_id"])
-                if "channel_id" in raw:
-                    out["channel_id"] = int(raw["channel_id"])
-                return out
-    except Exception as e:
-        logger.warning(f"Interface state load error: {e}")
-    return {}
-
-def _save_interface_state(message_id: int, channel_id: int) -> None:
-    try:
-        INTERFACE_STATE_PATH.write_text(
-            json.dumps({"message_id": int(message_id), "channel_id": int(channel_id)}, indent=2),
-            encoding="utf-8"
-        )
-    except Exception as e:
-        logger.warning(f"Interface state save error: {e}")
-
-# ----------------------------------------------------------
-
 def _is_full_muted_state(vs: Optional[discord.VoiceState]) -> bool:
     if not vs:
         return False
     return bool(vs.self_mute or vs.self_deaf or vs.mute or vs.deaf)
+
+# ===================== DB-Layer (zentral) =====================
+
+class TVDB:
+    """Minimales DB-Layer für TempVoice (Interface-State & Owner-Bans)."""
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self.db: Optional[aiosqlite.Connection] = None
+
+    async def connect(self):
+        self.db = await aiosqlite.connect(self.db_path)
+        self.db.row_factory = aiosqlite.Row
+        await self.db.execute('PRAGMA journal_mode=WAL')
+        await self.db.execute('PRAGMA synchronous=NORMAL')
+        await self.create_tables()
+
+    async def create_tables(self):
+        # Owner-Bans (pro Owner mehrere User)
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS tempvoice_bans (
+                owner_id    BIGINT NOT NULL,
+                banned_id   BIGINT NOT NULL,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (owner_id, banned_id)
+            )
+        ''')
+        # Interface-State pro Guild
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS tempvoice_interface (
+                guild_id    BIGINT PRIMARY KEY,
+                channel_id  BIGINT NOT NULL,
+                message_id  BIGINT NOT NULL,
+                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        await self.db.commit()
+
+    async def fetchone(self, q: str, p: tuple = ()):
+        cur = await self.db.execute(q, p)
+        row = await cur.fetchone()
+        await cur.close()
+        return row
+
+    async def fetchall(self, q: str, p: tuple = ()):
+        cur = await self.db.execute(q, p)
+        rows = await cur.fetchall()
+        await cur.close()
+        return rows
+
+    async def exec(self, q: str, p: tuple = ()):
+        await self.db.execute(q, p)
+        await self.db.commit()
+
+    async def close(self):
+        if self.db:
+            try:
+                await self.db.execute("VACUUM")
+            except Exception:
+                pass
+            await self.db.close()
+
+class AsyncBanStore:
+    """DB-basierter Owner-Ban-Store (statt JSON)."""
+    def __init__(self, db: TVDB):
+        self.db = db
+
+    async def is_banned_by_owner(self, owner_id: int, user_id: int) -> bool:
+        row = await self.db.fetchone(
+            "SELECT 1 FROM tempvoice_bans WHERE owner_id=? AND banned_id=?",
+            (int(owner_id), int(user_id))
+        )
+        return row is not None
+
+    async def list_bans(self, owner_id: int) -> List[int]:
+        rows = await self.db.fetchall(
+            "SELECT banned_id FROM tempvoice_bans WHERE owner_id=?",
+            (int(owner_id),)
+        )
+        return [int(r["banned_id"]) for r in rows]
+
+    async def add_ban(self, owner_id: int, user_id: int):
+        await self.db.exec(
+            "INSERT OR IGNORE INTO tempvoice_bans(owner_id, banned_id) VALUES(?,?)",
+            (int(owner_id), int(user_id))
+        )
+
+    async def remove_ban(self, owner_id: int, user_id: int):
+        await self.db.exec(
+            "DELETE FROM tempvoice_bans WHERE owner_id=? AND banned_id=?",
+            (int(owner_id), int(user_id))
+        )
+
+class InterfaceStateStore:
+    """DB-basierte Speicherung der Interface-Message pro Guild (statt JSON)."""
+    def __init__(self, db: TVDB):
+        self.db = db
+
+    async def get(self, guild_id: int) -> Dict[str, int]:
+        row = await self.db.fetchone(
+            "SELECT channel_id, message_id FROM tempvoice_interface WHERE guild_id=?",
+            (int(guild_id),)
+        )
+        if not row:
+            return {}
+        return {"channel_id": int(row["channel_id"]), "message_id": int(row["message_id"])}
+
+    async def set(self, guild_id: int, channel_id: int, message_id: int):
+        await self.db.exec(
+            """
+            INSERT INTO tempvoice_interface(guild_id, channel_id, message_id, updated_at)
+            VALUES(?,?,?,CURRENT_TIMESTAMP)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                channel_id=excluded.channel_id,
+                message_id=excluded.message_id,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (int(guild_id), int(channel_id), int(message_id))
+        )
+
+# ===================== Worker =====================
 
 class TVWorker:
     def __init__(self):
@@ -168,48 +259,17 @@ class TVWorker:
     async def move_member(self, guild_id: int, user_id: int, dest_channel_id: int, reason: Optional[str] = None) -> bool:
         return False
 
-class BanStore:
-    def __init__(self, path: Path):
-        self.path = path
-        self.data: Dict[str, Dict[str, List[int]]] = {"bans": {}}
-        self._load()
-    def _load(self):
-        if self.path.exists():
-            try:
-                raw = json.loads(self.path.read_text(encoding="utf-8"))
-                if isinstance(raw, dict) and "bans" in raw and isinstance(raw["bans"], dict):
-                    self.data = {"bans": {str(k): [int(x) for x in v] for k, v in raw["bans"].items()}}
-                else:
-                    self.data = {"bans": {}}
-            except Exception as e:
-                logger.warning(f"BanStore load error: {e}")
-                self.data = {"bans": {}}
-        else:
-            self._save()
-    def _save(self):
-        try:
-            self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as e:
-            logger.warning(f"BanStore save error: {e}")
-    def is_banned_by_owner(self, owner_id: int, user_id: int) -> bool:
-        return int(user_id) in self.data["bans"].get(str(owner_id), [])
-    def add_ban(self, owner_id: int, user_id: int):
-        key = str(owner_id)
-        arr = self.data["bans"].setdefault(key, [])
-        if int(user_id) not in arr:
-            arr.append(int(user_id))
-            self._save()
-    def remove_ban(self, owner_id: int, user_id: int):
-        key = str(owner_id)
-        arr = self.data["bans"].get(key, [])
-        if int(user_id) in arr:
-            arr.remove(int(user_id))
-            self._save()
+# ===================== TempVoice Cog =====================
 
 class TempVoiceCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.bans = BanStore(BAN_DATA_PATH)
+
+        # DB
+        self._tvdb = TVDB(str(DB_PATH))
+        self.bans = AsyncBanStore(self._tvdb)
+        self.ifstore = InterfaceStateStore(self._tvdb)
+
         self.worker = TVWorker()
 
         self.created_channels: Set[int] = set()
@@ -240,10 +300,19 @@ class TempVoiceCog(commands.Cog):
         self._afk_penalty_level: Dict[Tuple[int, int], int] = {}
 
     async def cog_load(self):
+        # DB init
+        await self._tvdb.connect()
+
         # Persistente View registrieren (wichtig für Restart)
         self.bot.add_view(MainView(self))
         asyncio.create_task(self._startup())
         asyncio.create_task(self._match_tick_loop())
+
+    async def cog_unload(self):
+        try:
+            await self._tvdb.close()
+        except Exception:
+            pass
 
     async def _startup(self):
         await self.bot.wait_until_ready()
@@ -265,18 +334,24 @@ class TempVoiceCog(commands.Cog):
 
     async def _ensure_interface(self, *, target_channel_id: Optional[int] = None, force_recreate: bool = False):
         """
-        Stellt sicher, dass GENAU EINE Interface-Message existiert.
-        - Wenn gespeichert: re-use, nur Embed aktualisieren (KEIN neuer Post).
-        - Wenn fehlt oder force_recreate: neu posten und IDs speichern.
+        Stellt sicher, dass GENAU EINE Interface-Message existiert (pro Guild).
+        Persistenz: tempvoice_interface in zentraler DB.
         """
         # Zielkanal bestimmen (explizit > gespeichert > config)
-        state = _load_interface_state()
-        ch_id = target_channel_id or state.get("channel_id") or INTERFACE_TEXT_CHANNEL_ID
+        saved = {}
+        ch_id = target_channel_id or INTERFACE_TEXT_CHANNEL_ID
         ch = self.bot.get_channel(ch_id)
 
         if not isinstance(ch, discord.TextChannel):
             logger.warning("Interface-Textkanal %s nicht gefunden/kein Textkanal.", ch_id)
             return
+
+        # gespeicherten Zustand laden (per Guild)
+        try:
+            saved = await self.ifstore.get(ch.guild.id)
+        except Exception as e:
+            logger.warning(f"Interface state read error: {e}")
+            saved = {}
 
         embed = discord.Embed(
             title="Lanes & Steuerung (Casual/Ranked)",
@@ -296,25 +371,27 @@ class TempVoiceCog(commands.Cog):
         )
         embed.set_footer(text="Deadlock DACH • TempVoice")
 
-        msg_id = state.get("message_id")
+        msg_id = saved.get("message_id")
+        saved_ch_id = saved.get("channel_id")
 
-        if not force_recreate and msg_id:
+        if not force_recreate and msg_id and saved_ch_id:
             # Versuche, bestehende Message zu verwenden
             try:
-                msg = await ch.fetch_message(msg_id)
-                # Nur Embed aktualisieren; View ist persistent über bot.add_view()
-                try:
-                    await msg.edit(embed=embed)
-                except Exception:
-                    pass
-                return  # fertig, NICHT neu posten
+                use_ch = self.bot.get_channel(saved_ch_id) or ch
+                if isinstance(use_ch, discord.TextChannel):
+                    msg = await use_ch.fetch_message(msg_id)
+                    try:
+                        await msg.edit(embed=embed)
+                    except Exception:
+                        pass
+                    return
             except Exception:
-                logger.info("Gespeicherte Interface-Message-ID %s nicht gefunden – wird neu erstellt.", msg_id)
+                logger.info("Gespeicherte Interface-Message nicht gefunden – wird neu erstellt.")
 
         # Neu erstellen (entweder fehlend oder force)
         try:
             msg = await ch.send(embed=embed, view=MainView(self))
-            _save_interface_state(message_id=msg.id, channel_id=ch.id)
+            await self.ifstore.set(ch.guild.id, ch.id, msg.id)
         except Exception as e:
             logger.warning(f"Konnte Interface nicht posten: {e}")
 
@@ -332,10 +409,8 @@ class TempVoiceCog(commands.Cog):
     async def tempvoice_panel(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
         await interaction.response.defer(ephemeral=True, thinking=False)
         if channel is None:
-            # Nur sicherstellen, NICHT neu posten
             await self._ensure_interface(force_recreate=False)
             return await interaction.followup.send("ℹ️ Interface geprüft – bestehende Message weiterverwendet.", ephemeral=True)
-        # explizit in anderen Kanal verschieben/neu erstellen
         await self._ensure_interface(target_channel_id=channel.id, force_recreate=True)
         await interaction.followup.send(f"✅ Interface in {channel.mention} (neu) erstellt und gespeichert.", ephemeral=True)
 
@@ -466,7 +541,6 @@ class TempVoiceCog(commands.Cog):
 
         bitrate = getattr(guild, "bitrate_limit", None) or 256000
         cap = DEFAULT_RANKED_CAP if is_ranked else DEFAULT_CASUAL_CAP
-
         initial_name = base if is_ranked else f"{base} • Spieler gesucht"
 
         lane: Optional[discord.VoiceChannel] = None
@@ -516,7 +590,7 @@ class TempVoiceCog(commands.Cog):
         logger.info(f"Auto-Lane erstellt: {lane.name} (owner={member.id}, cap={cap}, bitrate={bitrate})")
 
     async def _apply_owner_bans(self, lane: discord.VoiceChannel, owner_id: int):
-        banned = self.bans.data["bans"].get(str(owner_id), [])
+        banned = await self.bans.list_bans(owner_id)
         for uid in banned:
             try:
                 if self.worker.enabled:
@@ -626,13 +700,7 @@ class TempVoiceCog(commands.Cog):
             await asyncio.sleep(0.02)
 
     # ---- AFK LOGIK (AUF WUNSCH DEAKTIVIERT) ----
-    # def _in_mute_scope(self, ch: Optional[discord.VoiceChannel]) -> bool:
-    #     return isinstance(ch, discord.VoiceChannel) and ch.category_id == MUTE_MONITOR_CATEGORY_ID
-    # async def _ensure_afk_task(self, member: discord.Member): ...
-    # async def _cancel_afk_task(self, guild_id: int, user_id: int): ...
-    # async def _ensure_escape_task(self, member: discord.Member): ...
-    # async def _cancel_escape_task(self, guild_id: int, user_id: int): ...
-    # async def _handle_mute_afk(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState): ...
+    # ... (unverändert auskommentiert) ...
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -683,7 +751,7 @@ class TempVoiceCog(commands.Cog):
                 self.join_time[ch.id][member.id] = datetime.utcnow().timestamp()
 
                 owner_id = self.lane_owner.get(ch.id)
-                if owner_id and self.bans.is_banned_by_owner(owner_id, member.id):
+                if owner_id and await self.bans.is_banned_by_owner(owner_id, member.id):
                     staging = member.guild.get_channel(CASUAL_STAGING_CHANNEL_ID)
                     if isinstance(staging, discord.VoiceChannel):
                         try:
@@ -695,12 +763,6 @@ class TempVoiceCog(commands.Cog):
                     self._schedule_vermutlich_voll(ch)
         except Exception:
             pass
-
-        # AFK-Handling AUS:
-        # try:
-        #     await self._handle_mute_afk(member, before, after)
-        # except Exception:
-        #     pass
 
 # ===================== UI =====================
 
@@ -1019,7 +1081,7 @@ class BanModal(discord.ui.Modal, title="User (Un)Ban"):
             pass
 
         if self.action == "ban":
-            self.cog.bans.add_ban(owner_id, uid)  # type: ignore
+            await self.cog.bans.add_ban(owner_id, uid)  # DB
             try:
                 if self.cog.worker.enabled:
                     ok = await self.cog.worker.set_connect(self.lane.id, uid, False)
@@ -1038,7 +1100,7 @@ class BanModal(discord.ui.Modal, title="User (Un)Ban"):
             except Exception:
                 await itx.followup.send("Konnte Ban nicht setzen.", ephemeral=True)
         else:
-            self.cog.bans.remove_ban(owner_id, uid)  # type: ignore
+            await self.cog.bans.remove_ban(owner_id, uid)  # DB
             try:
                 if self.cog.worker.enabled:
                     ok = await self.cog.worker.clear_overwrite(self.lane.id, uid)
