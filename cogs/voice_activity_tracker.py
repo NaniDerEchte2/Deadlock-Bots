@@ -20,6 +20,9 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, asdict
 
 from utils.deadlock_db import DB_PATH
+import sqlite3
+from pathlib import Path
+
 
 # Setup enhanced logging
 logger = logging.getLogger(__name__)
@@ -115,31 +118,36 @@ class DatabaseManager:
         return False
 
     async def safe_execute(self, query: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = False):
-        """Safe database execution with retry logic"""
+        """Safe database execution with retry logic; always finalizes cursors."""
         if not self.db:
             logger.error("Database not connected")
             return None
 
         max_retries = 3
         for attempt in range(max_retries):
+            cursor = None
             try:
                 cursor = await self.db.execute(query, params or ())
+                result = None
 
                 if fetch_one:
                     result = await cursor.fetchone()
                 elif fetch_all:
                     result = await cursor.fetchall()
-                else:
-                    result = cursor
 
                 await self.db.commit()
                 return result
-
             except Exception as e:
                 logger.error(f"Database error (attempt {attempt + 1}): {e}")
                 if attempt == max_retries - 1:
                     raise e
                 await asyncio.sleep(1)
+            finally:
+                if cursor is not None:
+                    try:
+                        await cursor.close()
+                    except Exception:
+                        pass
         return None
 
     async def batch_execute(self, query: str, params_list: list):
@@ -324,19 +332,23 @@ class DatabaseManager:
                 logger.warning(f"Index creation warning: {e}")
 
     async def backup_database(self):
-        """Create database backup (konsistent via VACUUM INTO)"""
+        """Create database backup using SQLite's online backup API (robust with WAL)."""
         try:
             backup_dir = os.path.dirname(self.db_path)
+            Path(backup_dir).mkdir(parents=True, exist_ok=True)
             backup_filename = f"shared_db_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
             backup_path = os.path.join(backup_dir, backup_filename)
 
-            # VACUUM INTO erzeugt eine konsistente Kopie (auch bei WAL)
-            await self.db.execute(f"VACUUM INTO ?", (backup_path,))
-            await self.db.commit()
+            def do_backup(src_path: str, dst_path: str):
+                # Separate connections, autocommit mode
+                with sqlite3.connect(src_path, timeout=30, isolation_level=None) as src, \
+                     sqlite3.connect(dst_path, timeout=30, isolation_level=None) as dst:
+                    # Online backup (consistent snapshot), safe with WAL and concurrent readers/writers
+                    src.backup(dst)
+
+            await asyncio.to_thread(do_backup, self.db_path, backup_path)
 
             self.last_backup = datetime.now()
-
-            # Keep only last 7 backups
             await self.cleanup_old_backups(backup_dir, 7)
 
             logger.info(f"Database backup created: {backup_path}")
@@ -344,6 +356,7 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Backup creation failed: {e}")
             return None
+
 
     async def cleanup_old_backups(self, backup_dir: str, keep_count: int):
         """Remove old backup files"""
@@ -362,11 +375,11 @@ class DatabaseManager:
         """Close database connection"""
         if self.db:
             try:
-                await self.db.execute("VACUUM")
+                await self.db.close()
             except Exception:
                 pass
-            await self.db.close()
             logger.info("Database connection closed")
+
 
 # ========= Config Manager (zentrale DB statt JSON-Datei) =========
 

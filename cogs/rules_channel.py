@@ -447,35 +447,65 @@ class RankSelectDropdown(discord.ui.Select):
             pass
 
 class ConfirmRankView(StepView):
-    def __init__(self, on_confirm_coro):
+    def __init__(self, on_confirm_coro, parent_view: "RankView"):
         super().__init__()
         self.on_confirm_coro = on_confirm_coro  # coroutine to call on confirm
+        self.parent_view = parent_view          # Referenz auf das Rang-View
 
     @discord.ui.button(label="Sicher 👍", style=discord.ButtonStyle.success, custom_id="rp:q4:confirm_yes")
     async def confirm_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # WICHTIG: sofort bestätigen, sonst "Interaktion fehlgeschlagen"
+        # 1) sofort defern, damit die Interaktion nicht ausläuft
         try:
             await interaction.response.defer() if not interaction.response.is_done() else None
         except Exception:
             pass
-        # Danach weiterarbeiten
+
+        # 2) Eltern-View (Frage 4) sauber schließen: Message löschen + waiter freigeben
+        pv = self.parent_view
+        try:
+            if pv.bound_message:
+                await pv.bound_message.delete()
+        except Exception:
+            pass
+        # stop() -> send_step_embed_thread kann weiterlaufen und die nächste Phase starten
+        pv.force_finish()
+
+        # 3) Danach den Folge-Schritt ausführen (Regelwerk o.ä.)
         try:
             await self.on_confirm_coro()
         except Exception as e:
             logger.error(f"on_confirm_coro error: {e}")
+
+        # 4) Dieses Bestätigungs-Panel aufräumen (eigene Nachricht)
         await self._finish(interaction)
 
     @discord.ui.button(label="Nochmal ändern", style=discord.ButtonStyle.secondary, custom_id="rp:q4:confirm_change")
     async def confirm_change(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Interaktion bestätigen
         try:
             await interaction.response.defer() if not interaction.response.is_done() else None
         except Exception:
             pass
+
+        # Eltern-View (Frage 4) wieder aktivieren
+        pv = self.parent_view
+        try:
+            pv.selected_key = None
+            pv._enable_next(False)                # "Weiter" wieder deaktivieren
+            pv.dropdown.disabled = False          # Dropdown wieder freischalten
+            pv.dropdown.placeholder = "🎮 Wähle deinen *aktuellen* Deadlock-Rang …"
+            if pv.bound_message:
+                await pv.bound_message.edit(view=pv)
+        except Exception as e:
+            logger.warning(f"Could not re-enable rank view: {e}")
+
+        # Bestätigungs-Nachricht entfernen
         try:
             await interaction.message.delete()
         except Exception:
             pass
-        # User ändert im Rang-Step erneut.
+        # WICHTIG: Parent-View offen lassen (nicht finishen!), damit der User neu wählen kann
+
 
 class RankView(StepView):
     def __init__(self, guild_for_emojis: Optional[discord.Guild] = None, *, proceed_callback=None):

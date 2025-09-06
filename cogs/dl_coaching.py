@@ -20,7 +20,6 @@ import json
 import logging
 import socket
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional, Dict, Any
 
 import aiosqlite
@@ -98,8 +97,8 @@ class DlCoachingCog(commands.Cog):
         # DB connection
         self.db: Optional[aiosqlite.Connection] = None
 
-        # persistente Views
-        self.bot.add_view(self.StartView(self))  # nur der Start-Button ist persistent
+        # persistente View (Start-Button)
+        self.bot.add_view(self.StartView(self))
 
         # Timeout loop (arbeitet DB-basiert)
         self._timeout_loop.start()
@@ -147,13 +146,11 @@ class DlCoachingCog(commands.Cog):
         vals = [fields[k] for k in keys]
         placeholders = ", ".join([f"{k}=?" for k in keys])
 
-        # try update, if not exists -> insert
         cur = await self.db.execute(
             f"UPDATE coaching_sessions SET {placeholders}, updated_at=CURRENT_TIMESTAMP WHERE user_id=?",
             (*vals, user_id),
         )
         if cur.rowcount == 0:
-            # Insert
             cols = ", ".join(["user_id"] + keys)
             qmarks = ", ".join(["?"] * (len(keys) + 1))
             await self.db.execute(
@@ -230,14 +227,12 @@ class DlCoachingCog(commands.Cog):
         async def on_submit(self, interaction: discord.Interaction):
             await self.cog._db_connect()
 
-            # Antwort zügig: deferren
             try:
                 if not interaction.response.is_done():
                     await interaction.response.defer(ephemeral=True)
             except Exception:
                 pass
 
-            # Thread anlegen
             base_channel = interaction.channel
             if not isinstance(base_channel, discord.TextChannel):
                 try:
@@ -255,7 +250,6 @@ class DlCoachingCog(commands.Cog):
             except Exception:
                 pass
 
-            # DB: Session upsert
             await self.cog._db_upsert(
                 interaction.user.id,
                 thread_id=thread.id,
@@ -264,7 +258,6 @@ class DlCoachingCog(commands.Cog):
                 is_active=1,
             )
 
-            # Erste View
             emb = discord.Embed(
                 title="Deadlock Match-Coaching",
                 description=f"Match-ID: **{self.match_id.value}**\n\nBitte wähle deinen Rang.",
@@ -394,18 +387,40 @@ class DlCoachingCog(commands.Cog):
             self.add_item(self.comment)
 
         async def on_submit(self, interaction: discord.Interaction):
-            await self.cog._db_connect()
-            uid = interaction.user.id
-            await self.cog._db_upsert(uid, comment=str(self.comment.value), step="finish")
+            try:
+                await self.cog._db_connect()
+                uid = interaction.user.id
 
-            row = await self.cog._db_get(uid)
-            emb = discord.Embed(title="Zusammenfassung deines Coachings", color=discord.Color.green())
-            emb.add_field(name="Match ID", value=row.get("match_id"), inline=False)
-            emb.add_field(name="Rang", value=f"{row.get('rank')} {self.cog.RANKS.get(row.get('rank',''), '')}", inline=False)
-            emb.add_field(name="Subrang", value=row.get("subrank"), inline=False)
-            emb.add_field(name="Held", value=row.get("hero"), inline=False)
-            emb.add_field(name="Kommentar", value=row.get("comment") or "-", inline=False)
-            await interaction.response.send_message(embed=emb, view=DlCoachingCog.FinishView(self.cog))
+                # Sofort deferren → stabilere UX
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.defer(ephemeral=True, thinking=False)
+                except Exception:
+                    pass
+
+                await self.cog._db_upsert(uid, comment=str(self.comment.value), step="finish")
+                row = await self.cog._db_get(uid)
+
+                rank_key = row["rank"] or ""
+                rank_emoji = self.cog.RANKS.get(rank_key, "")
+
+                emb = discord.Embed(title="Zusammenfassung deines Coachings", color=discord.Color.green())
+                emb.add_field(name="Match ID", value=row["match_id"], inline=False)
+                emb.add_field(name="Rang", value=f"{row['rank']} {rank_emoji}", inline=False)
+                emb.add_field(name="Subrang", value=row["subrank"], inline=False)
+                emb.add_field(name="Held", value=row["hero"], inline=False)
+                emb.add_field(name="Kommentar", value=row["comment"] or "-", inline=False)
+
+                await interaction.followup.send(embed=emb, view=DlCoachingCog.FinishView(self.cog), ephemeral=True)
+
+            except Exception as e:
+                logger.exception("Comment submit failed: %s", e)
+                # Fallback-Fehlerausgabe
+                sender = interaction.followup.send if interaction.response.is_done() else interaction.response.send_message
+                try:
+                    await sender("❌ Etwas ist schiefgelaufen. Bitte erneut versuchen.", ephemeral=True)
+                except Exception:
+                    pass
 
     class CommentView(View):
         def __init__(self, cog: "DlCoachingCog"):
@@ -449,6 +464,7 @@ class DlCoachingCog(commands.Cog):
                     await interaction.response.edit_message(view=None)
             except Exception:
                 pass
+
             await channel.send(content)
 
             # Optional: externen Bot informieren
@@ -470,7 +486,6 @@ class DlCoachingCog(commands.Cog):
             except Exception:
                 pass
 
-            # Bestätigungs-Reply klein halten
             try:
                 await interaction.followup.send("✅ Coaching abgeschlossen.", ephemeral=True)
             except Exception:
@@ -515,7 +530,6 @@ class DlCoachingCog(commands.Cog):
         await self._db_connect()
         ch = self.bot.get_channel(self.cfg.channel_id)
         if isinstance(ch, discord.TextChannel):
-            # Versuche per ID, sonst suche nach Embed-Titel
             msg = None
             if self.cfg.existing_message_id:
                 try:

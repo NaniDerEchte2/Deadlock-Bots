@@ -19,7 +19,7 @@ from utils.deadlock_db import DB_PATH  # zentrale DB
 
 logger = logging.getLogger(__name__)
 
-# ---- Sicherer Import von WorkerProxy mit Fallback (zusätzlich zum globalen Shim) ----
+# ---- Sicherer Import von WorkerProxy mit Fallback ----
 try:
     from shared.worker_client import WorkerProxy  # type: ignore
 except Exception:  # pragma: no cover
@@ -148,10 +148,9 @@ class TVDB:
     async def close(self):
         if self.db:
             try:
-                await self.db.execute("VACUUM")
+                await self.db.close()
             except Exception:
                 pass
-            await self.db.close()
 
 class AsyncBanStore:
     """DB-basierter Owner-Ban-Store (statt JSON)."""
@@ -337,8 +336,6 @@ class TempVoiceCog(commands.Cog):
         Stellt sicher, dass GENAU EINE Interface-Message existiert (pro Guild).
         Persistenz: tempvoice_interface in zentraler DB.
         """
-        # Zielkanal bestimmen (explizit > gespeichert > config)
-        saved = {}
         ch_id = target_channel_id or INTERFACE_TEXT_CHANNEL_ID
         ch = self.bot.get_channel(ch_id)
 
@@ -647,6 +644,8 @@ class TempVoiceCog(commands.Cog):
                 await asyncio.sleep(DEBOUNCE_VERML_VOLL_SEC)
                 if not _is_managed_lane(lane):
                     return
+                if self.cog is not None:  # guard when reused
+                    pass
                 if self.lane_full_choice.get(lane.id) is None:
                     await self._refresh_name(lane, force=False)
             except asyncio.CancelledError:
