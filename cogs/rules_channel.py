@@ -19,7 +19,7 @@ UBK_ROLE_ID                     = 1397687886580547745
 ONBOARD_COMPLETE_ROLE_ID        = 1304216250649415771
 
 THANK_YOU_DELETE_AFTER_SECONDS  = 300   # 5 Minuten
-MIN_NEXT_SECONDS                = 5     # wie im DM-Flow
+MIN_NEXT_SECONDS                = 7     # wie im DM-Flow
 
 # ========= Emoji-Konfiguration =========
 RANK_EMOJI_OVERRIDES: Dict[str, Union[str, int]] = {
@@ -889,12 +889,12 @@ class RulesPanel(commands.Cog):
         if not ok:
             return
 
-        # Abschluss-Hinweise je nach Status
+        # Abschluss-Hinweise je nach Statusd
         closing_lines = []
         if status_choice == STATUS_NEW_PLAYER:
             closing_lines.append(
-                "✨ **Schön, dass du neu bist!** Frag die Community – die hilft gern. "
-                "Für eine kleine Einführung schreib **@earlysalty** oder poste in **#allgemein**."
+                "✨ **Schön, dich hier zu sehen :light_blue_heart: ** Wenn irgendwelche Fragen oder Probleme auftauchen, sag einfach bescheid. "
+                "Für eine kleine Einführung schreib **@earlysalty** oder frag in https://discord.com/channels/1289721245281292288/1289721245281292291."
             )
         if status_choice == STATUS_NEED_BETA:
             closing_lines.append(
@@ -902,9 +902,9 @@ class RulesPanel(commands.Cog):
                 "(Steam → Freunde → Freund hinzufügen). Annehmen: https://store.steampowered.com/account/playtestinvites"
             )
         if status_choice == STATUS_RETURNING:
-            closing_lines.append("🔁 **Willkommen zurück!** Fürs Reinkommen: **Scrims/Grind-Runden** oder **Customs** nutzen.")
+            closing_lines.append("🔁 **Willkommen zurück!** Fürs Reinkommen: Nutze die Voice Kanäle aktiv und neueste Infos und Tipps findest du hier https://discord.com/channels/1289721245281292288/1326975033838665803.")
         if status_choice == STATUS_PLAYING:
-            closing_lines.append("✅ **Viel Spaß!** Nutz **Customs**, **Patchnotes** & **Guides** – und ping uns, wenn du was brauchst.")
+            closing_lines.append("✅ **Viel Spaß!** Nutze die Voice Kanäle aktiv und neueste Infos und Tipps findest du hier https://discord.com/channels/1289721245281292288/1326975033838665803. Und wenn etwas sein sollte ping uns, wenn du was brauchst.")
 
         if closing_lines:
             try:
