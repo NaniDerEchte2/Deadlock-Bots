@@ -1,13 +1,17 @@
+# cogs/live_match_master.py
 # ------------------------------------------------------------
 # LiveMatchMaster – Steam-Status auswerten & pro Voice-Lane gruppieren
-# Schreibt in shared DB-Tabellen (aus shared/db.py):
-#   - steam_links           (wird nur gelesen)
-#   - live_lane_members     (per-User Cache je Channel, inkl. server_id)
-#   - live_lane_state       (pro Channel: is_active, suffix, last_update, reason)
+# (Keine Channel-Umbenennungen hier! Das macht der Worker-Bot.)
 #
-# Anzeige-Idee im Worker:
-#   Suffix: "• n/cap im Match", aktiv wenn >= MIN_MATCH_GROUP Spieler
-#   dieselbe gameserversteamid teilen.
+# DB-Tabellen (erwartet):
+#   steam_links(user_id BIGINT, steam_id TEXT, ...)
+#   live_lane_members(channel_id BIGINT, user_id BIGINT, in_match INT, server_id TEXT, checked_ts INT)
+#   live_lane_state(channel_id BIGINT PRIMARY KEY, is_active INT, last_update INT, suffix TEXT, reason TEXT)
+#
+# Anzeige/Suffix:
+#   • n/cap Im Match        -> Mehrheit (>= MIN_MATCH_GROUP) teilt gameserversteamid
+#   • x/cap Im Spiel        -> einige sind auf Servern, aber ohne stabile Mehrheit
+#   • x/cap Lobby/Queue     -> in Deadlock, aber ohne Server-ID (Queue/Lobby/Loading)
 # ------------------------------------------------------------
 
 import os
@@ -20,7 +24,10 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 
-from shared import db
+try:
+    from shared import db  # synchrones Wrapper-Modul (execute/query_all/executemany)
+except Exception as e:
+    raise SystemExit("shared.db nicht gefunden – bitte Projektstruktur prüfen.") from e
 
 log = logging.getLogger("LiveMatchMaster")
 
@@ -33,21 +40,32 @@ LIVE_CATEGORIES = [int(x) for x in os.getenv(
 DEADLOCK_APP_ID = os.getenv("DEADLOCK_APP_ID", "1422450")
 STEAM_API_KEY   = os.getenv("STEAM_API_KEY", "")
 
-CHECK_INTERVAL_SEC = int(os.getenv("LIVE_CHECK_INTERVAL_SEC", "60"))
-MIN_MATCH_GROUP    = int(os.getenv("MIN_MATCH_GROUP", "2"))
+CHECK_INTERVAL_SEC       = int(os.getenv("LIVE_CHECK_INTERVAL_SEC", "30"))
+MIN_MATCH_GROUP          = int(os.getenv("MIN_MATCH_GROUP", "2"))
 
-DEFAULT_CASUAL_CAP = int(os.getenv("DEFAULT_CASUAL_CAP", "8"))
-RANKED_CATEGORY_ID = int(os.getenv("RANKED_CATEGORY_ID", "1357422957017698478"))
-DEFAULT_RANKED_CAP = int(os.getenv("DEFAULT_RANKED_CAP", "6"))
+DEFAULT_CASUAL_CAP       = int(os.getenv("DEFAULT_CASUAL_CAP", "8"))
+RANKED_CATEGORY_ID       = int(os.getenv("RANKED_CATEGORY_ID", "1357422957017698478"))
+DEFAULT_RANKED_CAP       = int(os.getenv("DEFAULT_RANKED_CAP", "6"))
+
+# Heuristik-Parameter
+REQUIRE_STABILITY_SEC    = int(os.getenv("REQUIRE_STABILITY_SEC", "30"))   # Mehrheit muss so lange stabil sein
+LOBBY_GRACE_SEC          = int(os.getenv("LOBBY_GRACE_SEC", "90"))        # kurze Lücke (Ladebildschirm)
+MATCH_MIN_MINUTES        = int(os.getenv("MATCH_MIN_MINUTES", "15"))      # informativ
+
+PHASE_OFF   = "OFF"
+PHASE_LOBBY = "LOBBY"   # in DL, aber keine Server-ID -> Queue/Lobby/Loading
+PHASE_GAME  = "GAME"    # verstreut auf Servern, keine stabile Mehrheit
+PHASE_MATCH = "MATCH"   # stabile Mehrheit auf einem Server
 
 
 class LiveMatchMaster(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._started = False
+        # channel_id -> {"phase": str, "server_id": Optional[str], "since": int, "last_seen": int, "stable_since": int}
+        self._lane_cache: Dict[int, Dict[str, Optional[int | str]]] = {}
 
     async def cog_load(self):
-        # shared DB initialisiert sich selbst (Schema etc.)
         db.connect()
         if not self._started:
             self.scan_loop.start()
@@ -105,7 +123,7 @@ class LiveMatchMaster(commands.Cog):
         await self._run_once()
 
     async def _run_once(self):
-        # Alle Voice Channels aus konfigurierten Kategorien
+        # 1) Alle Voice Channels aus konfigurierten Kategorien
         lanes: List[discord.VoiceChannel] = []
         for g in self.bot.guilds:
             for cat_id in LIVE_CATEGORIES:
@@ -113,7 +131,7 @@ class LiveMatchMaster(commands.Cog):
                 if isinstance(cat, discord.CategoryChannel):
                     lanes.extend(cat.voice_channels)
 
-        # Discord->Steam Links sammeln
+        # 2) Discord->Steam Links sammeln
         members = [m for ch in lanes for m in ch.members if not m.bot]
         user_ids = sorted({m.id for m in members})
         links = defaultdict(list)  # user_id -> [steam_id,...]
@@ -126,59 +144,153 @@ class LiveMatchMaster(commands.Cog):
             for r in rows:
                 links[int(r["user_id"])].append(str(r["steam_id"]))
 
-        # Steam zusammengefasst abfragen
+        # 3) Steam zusammengefasst abfragen
         all_steam = sorted({sid for arr in links.values() for sid in arr})
         async with aiohttp.ClientSession() as session:
             summaries = await self._steam_summaries(session, all_steam)
 
         now = int(time.time())
 
-        # Pro Lane auswerten & in DB schreiben
+        # 4) Pro Lane auswerten & in DB schreiben
         for ch in lanes:
             nonbots = [m for m in ch.members if not m.bot]
             if not nonbots:
                 self._write_lane_state(ch.id, active=0, suffix=None, ts=now, reason="empty")
                 self._clear_lane_members(ch.id)
+                self._lane_cache.pop(ch.id, None)
                 continue
 
-            # pro User: Server-ID, wenn in Deadlock
-            server_ids = []
+            # pro User: In DL? server_id?
+            ig_with_server = []     # Mitglieder mit Server-ID
+            deadlockers = []        # in Deadlock (mit oder ohne Server-ID)
             lane_members_rows = []
             for m in nonbots:
                 found_sid = None
+                in_dl = False
                 for sid in links.get(m.id, []):
                     s = summaries.get(sid)
                     if not s:
                         continue
                     if self._in_deadlock(s):
-                        found_sid = self._server_id(s)
-                        break
-                # in DB live_lane_members speichern (auch None zulassen)
+                        in_dl = True
+                        sid_server = self._server_id(s)
+                        if sid_server:
+                            found_sid = sid_server
+                            break
                 lane_members_rows.append((ch.id, m.id, 1 if found_sid else 0, found_sid, now))
+                if in_dl:
+                    deadlockers.append(m.id)
                 if found_sid:
-                    server_ids.append(found_sid)
+                    ig_with_server.append((m.id, found_sid))
 
             # Cache lane members aktualisieren
             self._upsert_lane_members(lane_members_rows)
 
             # Gruppierung per Server-ID
-            active_suffix = None
-            is_active = 0
+            server_ids = [sid for _, sid in ig_with_server]
+            majority_id: Optional[str] = None
+            majority_n = 0
             if server_ids:
                 cnt = Counter(server_ids)
-                srv_id, n = cnt.most_common(1)[0]
-                if n >= max(1, MIN_MATCH_GROUP):
-                    cap = self._cap(ch)
-                    active_suffix = f"• {n}/{cap} im Match"
-                    is_active = 1
+                majority_id, majority_n = cnt.most_common(1)[0]
+
+            cap = self._cap(ch)
+            ig_count = len(ig_with_server)
+            dl_count = len(deadlockers)
+
+            # --- Heuristik-Entscheidung ---
+            prev = self._lane_cache.get(ch.id, {"phase": PHASE_OFF, "server_id": None, "since": None, "stable_since": None, "last_seen": None})
+            phase = PHASE_OFF
+            server_for_phase: Optional[str] = None
+            since = int(prev.get("since") or now)
+            stable_since = int(prev.get("stable_since") or now)
+
+            # Zustände ermitteln
+            if majority_id and majority_n >= max(1, MIN_MATCH_GROUP):
+                # Mehrheit existiert -> stabilisieren
+                if prev.get("server_id") == majority_id and prev.get("phase") in (PHASE_MATCH, PHASE_GAME, PHASE_LOBBY):
+                    # gleicher Server wie vorher -> Stabilitätszeit laufen lassen
+                    if (now - int(prev.get("stable_since") or now)) >= REQUIRE_STABILITY_SEC:
+                        phase = PHASE_MATCH
+                    else:
+                        phase = PHASE_GAME  # pre-match, noch nicht stabil genug
+                else:
+                    # neuer (oder erster) Mehrheitsserver -> Stabilität neu starten
+                    stable_since = now
+                    since = now
+                    phase = PHASE_GAME  # wechsle zunächst auf GAME, springe später auf MATCH
+                server_for_phase = majority_id
+
+                # Wenn Stabilität erreicht, zu MATCH befördern
+                if phase == PHASE_GAME and (now - stable_since) >= REQUIRE_STABILITY_SEC:
+                    phase = PHASE_MATCH
+
+            elif ig_count > 0:
+                # Leute sind auf Servern, aber keine stabile Mehrheit
+                # Grace: war vorher MATCH und Lücke ist sehr kurz? -> halte MATCH
+                if prev.get("phase") == PHASE_MATCH and (now - int(prev.get("last_seen") or now)) <= LOBBY_GRACE_SEC:
+                    phase = PHASE_MATCH
+                    server_for_phase = prev.get("server_id")  # behalte bisherigen
+                else:
+                    phase = PHASE_GAME
+                    server_for_phase = None
+                    since = prev.get("since") or now  # egal
+
+            elif dl_count > 0:
+                # In Deadlock ohne Server-ID -> Lobby/Queue
+                if prev.get("phase") == PHASE_MATCH and (now - int(prev.get("last_seen") or now)) <= LOBBY_GRACE_SEC:
+                    phase = PHASE_MATCH
+                    server_for_phase = prev.get("server_id")
+                else:
+                    phase = PHASE_LOBBY
+                    server_for_phase = None
+                    since = prev.get("since") or now
+
+            else:
+                phase = PHASE_OFF
+                server_for_phase = None
+                since = now
+
+            # Sichtbarer Suffix + Aktiv-Flag ableiten
+            suffix: Optional[str] = None
+            is_active = 0
+            if phase == PHASE_MATCH:
+                n = majority_n if majority_n else ig_count
+                suffix = f"• {n}/{cap} Im Match"
+                is_active = 1
+            elif phase == PHASE_GAME:
+                suffix = f"• {ig_count}/{cap} Im Spiel"
+            elif phase == PHASE_LOBBY:
+                suffix = f"• {dl_count}/{cap} Lobby/Queue"
+            else:
+                suffix = None
+
+            # Debug/Reason setzen (hilfreich fürs Loggen)
+            reason_bits = [f"phase={phase}"]
+            if server_for_phase:
+                reason_bits.append(f"srv={server_for_phase}")
+            reason_bits.append(f"cap={cap}")
+            reason_bits.append(f"nMaj={majority_n}")
+            reason_bits.append(f"nIG={ig_count}")
+            reason_bits.append(f"nDL={dl_count}")
+            reason = ";".join(reason_bits)
 
             self._write_lane_state(
                 ch.id,
                 active=is_active,
-                suffix=active_suffix,
+                suffix=suffix,
                 ts=now,
-                reason="same_server" if is_active else "no_group"
+                reason=reason
             )
+
+            # Cache aktualisieren
+            self._lane_cache[ch.id] = {
+                "phase": phase,
+                "server_id": server_for_phase,
+                "since": since,
+                "stable_since": stable_since,
+                "last_seen": now,
+            }
 
     def _cap(self, ch: discord.VoiceChannel) -> int:
         if ch.user_limit and ch.user_limit > 0:

@@ -3,7 +3,10 @@
 # DB (shared/db.py):
 #   live_lane_state.channel_id, is_active, suffix
 #
-# Suffix: "• n/cap im Match" (falls aktiv), sonst Basisname ohne Match-Suffix.
+# Neu:
+# - Suffix wird IMMER angewandt, wenn vorhanden (auch bei is_active=0),
+#   damit z. B. "1/6 Im Spiel" sichtbar ist.
+# - Robustes Entfernen alter Suffixe (Match/Spiel/Lobby).
 # ------------------------------------------------------------
 
 import os
@@ -21,8 +24,11 @@ log = logging.getLogger("LiveMatchWorker")
 TICK_SEC               = int(os.getenv("LMW_TICK_SEC", "30"))
 NAME_EDIT_COOLDOWN_SEC = int(os.getenv("LMW_NAME_COOLDOWN_SEC", "90"))
 
-MATCH_SUFFIX_RX = re.compile(r"\s+•\s+\d+/\d+\s+im\s+match", re.IGNORECASE)
-
+# Entferne bekannte Suffixe: "• n/cap Im Match|Im Spiel|Lobby/Queue"
+MATCH_SUFFIX_RX = re.compile(
+    r"\s+•\s+\d+/\d+\s+(im\s+match|im\s+spiel|lobby/queue)",
+    re.IGNORECASE
+)
 
 class LiveMatchWorker(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -54,11 +60,9 @@ class LiveMatchWorker(commands.Cog):
                 continue
 
             base = MATCH_SUFFIX_RX.sub("", ch.name).strip()
-            desired = base
-            if int(r["is_active"] or 0):
-                suf = str(r["suffix"] or "").strip()
-                if suf:
-                    desired = f"{base} {suf}"
+
+            suf = (r.get("suffix") or "").strip()
+            desired = base if not suf else f"{base} {suf}"
 
             await self._safe_rename(ch, desired)
 
