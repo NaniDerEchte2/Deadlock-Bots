@@ -19,7 +19,7 @@ UBK_ROLE_ID                     = 1397687886580547745
 ONBOARD_COMPLETE_ROLE_ID        = 1304216250649415771
 
 THANK_YOU_DELETE_AFTER_SECONDS  = 300   # 5 Minuten
-MIN_NEXT_SECONDS                = 7     # wie im DM-Flow
+MIN_NEXT_SECONDS                = 6     # wie im DM-Flow
 
 # ========= Emoji-Konfiguration =========
 RANK_EMOJI_OVERRIDES: Dict[str, Union[str, int]] = {
