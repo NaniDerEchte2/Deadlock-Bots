@@ -1,25 +1,32 @@
-import discord
-from discord.ext import commands
 import asyncio
 import logging
 from typing import Dict, Tuple, List, Optional, Set
 from datetime import datetime
 
+import aiosqlite
+import discord
+from discord.ext import commands
+
+from utils.deadlock_db import DB_PATH
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 class RolePermissionVoiceManager(commands.Cog):
-    """Rollen-basierte Sprachkanal-Verwaltung über Discord-Rollen-Berechtigungen"""
+    """Rollen-basierte Sprachkanal-Verwaltung über Discord-Rollen-Berechtigungen
+    Persistenz (Toggle & Anker) über zentrale DB (aiosqlite / DB_PATH).
+    """
 
     def __init__(self, bot):
         self.bot = bot
         self.monitored_category_id = 1357422957017698478
-        
+
         # Ausnahme-Kanäle die NICHT überwacht werden sollen
         self.excluded_channel_ids = {
             1375933460841234514,
             1375934283931451512,
-            1357422958544420944
+            1357422958544420944,
         }
 
         # Discord Rollen-IDs zu Rang-Mapping
@@ -34,7 +41,7 @@ class RolePermissionVoiceManager(commands.Cog):
             1316966867033653338: ("Oracle", 8),
             1331458016356208680: ("Phantom", 9),
             1331458049637875785: ("Ascendant", 10),
-            1331458087349129296: ("Eternus", 11)
+            1331458087349129296: ("Eternus", 11),
         }
 
         # Deadlock Rang-System (für interne Berechnungen)
@@ -50,7 +57,7 @@ class RolePermissionVoiceManager(commands.Cog):
             "Oracle": 8,
             "Phantom": 9,
             "Ascendant": 10,
-            "Eternus": 11
+            "Eternus": 11,
         }
 
         # Balancing-Regeln (Rang -> (minus, plus))
@@ -65,932 +72,796 @@ class RolePermissionVoiceManager(commands.Cog):
             "Oracle": (-1, 2),
             "Phantom": (-1, 2),
             "Ascendant": (-1, 1),
-            "Eternus": (-1, 1)
+            "Eternus": (-1, 1),
         }
 
-        # Cache für Performance
-        self.user_rank_cache = {}
-        self.guild_roles_cache = {}
-        
-        # Channel-Anker System: Speichert ersten User pro Kanal
-        self.channel_anchors = {}  # {channel_id: (user_id, rank_name, rank_value, allowed_min, allowed_max)}
-        
-        # Channel-spezifische Einstellungen
-        self.channel_settings = {}  # {channel_id: {"enabled": True/False}}
+        # Cache
+        self.user_rank_cache: Dict[str, Tuple[str, int]] = {}
+        self.guild_roles_cache: Dict[int, Dict[int, discord.Role]] = {}
+
+        # Laufzeit-State (wird beim Start aus DB geladen)
+        # {channel_id: (user_id, rank_name, rank_value, allowed_min, allowed_max)}
+        self.channel_anchors: Dict[int, Tuple[int, str, int, int, int]] = {}
+        # {channel_id: {"enabled": bool}}
+        self.channel_settings: Dict[int, Dict[str, bool]] = {}
+
+        # DB
+        self.db: Optional[aiosqlite.Connection] = None
+
+    # -------------------- DB Layer --------------------
+
+    async def _db_connect(self):
+        if self.db:
+            return
+        self.db = await aiosqlite.connect(str(DB_PATH))
+        self.db.row_factory = aiosqlite.Row
+        await self._db_ensure_schema()
+
+    async def _db_ensure_schema(self):
+        assert self.db
+        await self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS voice_channel_settings (
+                channel_id  INTEGER PRIMARY KEY,
+                guild_id    INTEGER NOT NULL,
+                enabled     INTEGER NOT NULL DEFAULT 1,
+                created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at  TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS voice_channel_anchors (
+                channel_id   INTEGER PRIMARY KEY,
+                guild_id     INTEGER NOT NULL,
+                user_id      INTEGER NOT NULL,
+                rank_name    TEXT NOT NULL,
+                rank_value   INTEGER NOT NULL,
+                allowed_min  INTEGER NOT NULL,
+                allowed_max  INTEGER NOT NULL,
+                created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await self.db.commit()
+
+    async def _db_load_state_for_guild(self, guild: discord.Guild):
+        """Lädt Settings & Anker der Gilde in die In-Memory-Maps."""
+        await self._db_connect()
+        assert self.db
+
+        # Settings
+        cur = await self.db.execute(
+            "SELECT channel_id, enabled FROM voice_channel_settings WHERE guild_id=?",
+            (guild.id,),
+        )
+        rows = await cur.fetchall()
+        for r in rows:
+            self.channel_settings[int(r["channel_id"])] = {"enabled": bool(r["enabled"])}
+
+        # Anchors
+        cur = await self.db.execute(
+            """
+            SELECT channel_id, user_id, rank_name, rank_value, allowed_min, allowed_max
+            FROM voice_channel_anchors WHERE guild_id=?
+            """,
+            (guild.id,),
+        )
+        rows = await cur.fetchall()
+        for r in rows:
+            self.channel_anchors[int(r["channel_id"])] = (
+                int(r["user_id"]),
+                str(r["rank_name"]),
+                int(r["rank_value"]),
+                int(r["allowed_min"]),
+                int(r["allowed_max"]),
+            )
+
+    async def _db_upsert_setting(self, channel: discord.VoiceChannel, enabled: bool):
+        await self._db_connect()
+        assert self.db
+        await self.db.execute(
+            """
+            INSERT INTO voice_channel_settings(channel_id, guild_id, enabled)
+            VALUES (?, ?, ?)
+            ON CONFLICT(channel_id) DO UPDATE SET
+                enabled=excluded.enabled,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (channel.id, channel.guild.id, int(enabled)),
+        )
+        await self.db.commit()
+
+    async def _db_upsert_anchor(
+        self,
+        channel: discord.VoiceChannel,
+        user_id: int,
+        rank_name: str,
+        rank_value: int,
+        allowed_min: int,
+        allowed_max: int,
+    ):
+        await self._db_connect()
+        assert self.db
+        await self.db.execute(
+            """
+            INSERT INTO voice_channel_anchors(channel_id, guild_id, user_id, rank_name, rank_value, allowed_min, allowed_max)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(channel_id) DO UPDATE SET
+                user_id=excluded.user_id,
+                rank_name=excluded.rank_name,
+                rank_value=excluded.rank_value,
+                allowed_min=excluded.allowed_min,
+                allowed_max=excluded.allowed_max,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                channel.id,
+                channel.guild.id,
+                user_id,
+                rank_name,
+                rank_value,
+                allowed_min,
+                allowed_max,
+            ),
+        )
+        await self.db.commit()
+
+    async def _db_delete_anchor(self, channel: discord.VoiceChannel):
+        await self._db_connect()
+        assert self.db
+        await self.db.execute(
+            "DELETE FROM voice_channel_anchors WHERE channel_id=?", (channel.id,)
+        )
+        await self.db.commit()
+
+    # -------------------- Lifecycle --------------------
 
     async def cog_load(self):
-        """Wird beim Laden des Cogs aufgerufen"""
         try:
+            await self._db_connect()
+            # Bei Start für alle bekannten Guilds laden
+            for guild in self.bot.guilds:
+                await self._db_load_state_for_guild(guild)
+
             logger.info("RolePermissionVoiceManager Cog erfolgreich geladen")
-            print(f"✅ RolePermissionVoiceManager Cog geladen")
+            print("✅ RolePermissionVoiceManager Cog geladen")
             print(f"   Überwachte Kategorie: {self.monitored_category_id}")
             print(f"   Überwachte Rollen: {len(self.discord_rank_roles)}")
             print(f"   Ausgeschlossene Kanäle: {len(self.excluded_channel_ids)}")
-            print(f"   🔧 Arbeitet mit Rollen-Berechtigungen (nicht User-Berechtigungen)")
+            print("   🔧 Persistenz: zentrale DB (Settings & Anker)")
         except Exception as e:
             logger.error(f"Fehler beim Laden des RolePermissionVoiceManager Cogs: {e}")
-            print(f"❌ Fehler beim Laden von RolePermissionVoiceManager: {e}")
             raise
 
     async def cog_unload(self):
-        """Wird beim Entladen des Cogs aufgerufen"""
         try:
             self.user_rank_cache.clear()
             self.guild_roles_cache.clear()
             self.channel_anchors.clear()
             self.channel_settings.clear()
+            if self.db:
+                await self.db.close()
             logger.info("RolePermissionVoiceManager Cog erfolgreich entladen")
             print("✅ RolePermissionVoiceManager Cog entladen")
         except Exception as e:
             logger.error(f"Fehler beim Entladen des RolePermissionVoiceManager Cogs: {e}")
-            print(f"❌ Fehler beim Entladen von RolePermissionVoiceManager: {e}")
+
+    # -------------------- Helpers --------------------
 
     def get_guild_roles(self, guild: discord.Guild) -> Dict[int, discord.Role]:
-        """Cached Guild-Rollen für Performance"""
         if guild.id not in self.guild_roles_cache:
             self.guild_roles_cache[guild.id] = {role.id: role for role in guild.roles}
         return self.guild_roles_cache[guild.id]
 
     def get_user_rank_from_roles(self, member: discord.Member) -> Tuple[str, int]:
-        """Ermittelt Benutzer-Rang basierend auf Discord-Rollen mit Debug-Ausgabe"""
         cache_key = f"{member.id}:{member.guild.id}"
-        
         if cache_key in self.user_rank_cache:
             return self.user_rank_cache[cache_key]
 
-        # Debug: Alle Rollen des Users loggen
-        user_role_ids = [role.id for role in member.roles]
-        logger.debug(f"User {member.display_name} hat Rollen: {user_role_ids}")
-
-        # Prüfe alle Rollen des Benutzers
         highest_rank = ("Obscurus", 0)
         highest_rank_value = 0
-        found_rank_roles = []
 
         for role in member.roles:
             if role.id in self.discord_rank_roles:
                 rank_name, rank_value = self.discord_rank_roles[role.id]
-                found_rank_roles.append(f"{rank_name}({rank_value})")
                 if rank_value > highest_rank_value:
                     highest_rank = (rank_name, rank_value)
                     highest_rank_value = rank_value
 
-        # Debug-Ausgabe
-        if found_rank_roles:
-            logger.info(f"User {member.display_name}: Gefundene Ränge={found_rank_roles}, Höchster={highest_rank[0]}")
-        else:
-            logger.debug(f"User {member.display_name}: Keine Rang-Rollen gefunden")
-
-        # Cache aktualisieren
         self.user_rank_cache[cache_key] = highest_rank
         return highest_rank
 
-    async def get_channel_members_ranks(self, channel: discord.VoiceChannel) -> Dict[discord.Member, Tuple[str, int]]:
-        """Holt Ränge aller Mitglieder in einem Sprachkanal"""
-        members_ranks = {}
-        
+    async def get_channel_members_ranks(
+        self, channel: discord.VoiceChannel
+    ) -> Dict[discord.Member, Tuple[str, int]]:
+        members_ranks: Dict[discord.Member, Tuple[str, int]] = {}
         for member in channel.members:
             if member.bot:
                 continue
-                
-            rank_name, rank_value = self.get_user_rank_from_roles(member)
-            members_ranks[member] = (rank_name, rank_value)
-        
-        logger.debug(f"Kanal {channel.name}: {len(members_ranks)} Mitglieder mit Rängen")
+            members_ranks[member] = self.get_user_rank_from_roles(member)
         return members_ranks
 
-    def calculate_balancing_range_from_anchor(self, channel: discord.VoiceChannel) -> Tuple[int, int]:
-        """Berechnet Balancing-Bereich basierend auf Anker-User (NICHT alle User)"""
+    def calculate_balancing_range_from_anchor(
+        self, channel: discord.VoiceChannel
+    ) -> Tuple[int, int]:
         anchor = self.get_channel_anchor(channel)
-        
         if anchor is None:
-            # Kein Anker gesetzt - Kanal ist leer oder System gerade gestartet
             return 0, 11
-        
-        user_id, rank_name, rank_value, allowed_min, allowed_max = anchor
-        logger.debug(f"Anker-basierte Berechnung für {channel.name}: {rank_name}({rank_value}) → {allowed_min}-{allowed_max}")
+        _user_id, _rank_name, _rank_value, allowed_min, allowed_max = anchor
         return allowed_min, allowed_max
 
     def get_allowed_role_ids(self, allowed_min: int, allowed_max: int) -> Set[int]:
-        """Ermittelt welche Discord-Rollen im erlaubten Bereich liegen"""
-        allowed_roles = set()
-        
-        for role_id, (rank_name, rank_value) in self.discord_rank_roles.items():
-            if allowed_min <= rank_value <= allowed_max:
-                allowed_roles.add(role_id)
-        
-        return allowed_roles
+        return {
+            role_id
+            for role_id, (_rn, rv) in self.discord_rank_roles.items()
+            if allowed_min <= rv <= allowed_max
+        }
 
-    async def set_everyone_deny_connect(self, channel: discord.VoiceChannel):
-        """Setzt @everyone auf Connect=False"""
+    async def set_everyone_deny_connect(self, channel: discord.VoiceChannel) -> bool:
         try:
-            # Prüfe ob Kanal noch existiert
             if not await self.channel_exists(channel):
-                logger.warning(f"Kanal {channel.id} existiert nicht mehr - Überspringe @everyone Update")
                 return False
-
             everyone_role = channel.guild.default_role
-            current_overwrites = channel.overwrites_for(everyone_role)
-            
-            # Nur setzen wenn nicht bereits Connect=False
-            if current_overwrites.connect is not False:
+            ow = channel.overwrites_for(everyone_role)
+            if ow.connect is not False:
                 await channel.set_permissions(
-                    everyone_role, 
-                    overwrite=discord.PermissionOverwrite(
-                        connect=False,
-                        view_channel=True
-                    )
+                    everyone_role,
+                    overwrite=discord.PermissionOverwrite(connect=False, view_channel=True),
                 )
-                logger.debug(f"@everyone auf Connect=False gesetzt für {channel.name}")
             return True
         except discord.NotFound:
-            logger.warning(f"Kanal {channel.id} wurde gelöscht - Überspringe @everyone Update")
             return False
         except Exception as e:
-            logger.error(f"Fehler beim Setzen der @everyone Berechtigung: {e}")
+            logger.error(f"@everyone setzen fehlgeschlagen: {e}")
             return False
 
     async def channel_exists(self, channel: discord.VoiceChannel) -> bool:
-        """Prüft ob Kanal noch existiert"""
         try:
-            # Versuche den Kanal vom Guild zu holen
-            fresh_channel = channel.guild.get_channel(channel.id)
-            return fresh_channel is not None and isinstance(fresh_channel, discord.VoiceChannel)
-        except:
+            fresh = channel.guild.get_channel(channel.id)
+            return isinstance(fresh, discord.VoiceChannel)
+        except Exception:
             return False
 
     async def update_channel_permissions_via_roles(self, channel: discord.VoiceChannel):
-        """Aktualisiert Kanal-Berechtigungen über Discord-Rollen (nicht User)"""
         try:
-            # Prüfe ob Kanal noch existiert
             if not await self.channel_exists(channel):
-                logger.warning(f"Kanal {channel.id} existiert nicht mehr - Überspringe Update")
                 return
 
-            # Prüfe ob System für diesen Kanal aktiviert ist
             if not self.is_channel_system_enabled(channel):
-                logger.debug(f"Rang-System für {channel.name} deaktiviert - Überspringe Update")
                 return
 
-            # 1. @everyone auf Connect=False setzen
-            everyone_success = await self.set_everyone_deny_connect(channel)
-            if not everyone_success:
-                return  # Kanal existiert nicht mehr
+            ok = await self.set_everyone_deny_connect(channel)
+            if not ok:
+                return
 
             members_ranks = await self.get_channel_members_ranks(channel)
-            
             if not members_ranks:
-                # Kanal ist leer - Anker entfernen und alle Rollen-Berechtigungen entfernen
-                self.remove_channel_anchor(channel)
+                # leer -> Anker entfernen + Rollen-Overwrites entfernen
+                await self.remove_channel_anchor(channel)
                 await self.clear_role_permissions(channel)
                 return
 
-            # 2. Berechne erlaubten Bereich basierend auf ANKER (nicht alle User)
             allowed_min, allowed_max = self.calculate_balancing_range_from_anchor(channel)
             allowed_role_ids = self.get_allowed_role_ids(allowed_min, allowed_max)
 
-            logger.info(f"Kanal {channel.name}: Anker-basierte Ränge {allowed_min}-{allowed_max}, Rollen-IDs: {allowed_role_ids}")
-
-            # 3. Hole Guild-Rollen für Performance
             guild_roles = self.get_guild_roles(channel.guild)
 
-            # 4. Setze Connect=True für erlaubte Rollen
-            updated_roles = []
+            # allow für erlaubte Rollen
             for role_id in allowed_role_ids:
-                if role_id in guild_roles:
-                    role = guild_roles[role_id]
-                    current_overwrites = channel.overwrites_for(role)
-                    
-                    # Nur setzen wenn nicht bereits Connect=True
-                    if current_overwrites.connect is not True:
-                        await channel.set_permissions(
-                            role, 
-                            overwrite=discord.PermissionOverwrite(
-                                connect=True,
-                                speak=True,
-                                view_channel=True
-                            )
-                        )
-                        updated_roles.append(role.name)
-                        
-                        # Rate-Limiting
-                        await asyncio.sleep(0.5)
+                role = guild_roles.get(role_id)
+                if not role:
+                    continue
+                ow = channel.overwrites_for(role)
+                if ow.connect is not True:
+                    await channel.set_permissions(
+                        role,
+                        overwrite=discord.PermissionOverwrite(
+                            connect=True, speak=True, view_channel=True
+                        ),
+                    )
+                    await asyncio.sleep(0.4)
 
-            # 5. Entferne Connect=True von nicht mehr erlaubten Rollen
+            # remove von nicht erlaubten Rollen
             await self.remove_disallowed_role_permissions(channel, allowed_role_ids)
 
-            if updated_roles:
-                logger.info(f"Connect=True gesetzt für Rollen: {updated_roles}")
-
         except Exception as e:
-            logger.error(f"Fehler beim Aktualisieren der Rollen-Berechtigungen: {e}")
+            logger.error(f"update_channel_permissions_via_roles Fehler: {e}")
 
-    async def remove_disallowed_role_permissions(self, channel: discord.VoiceChannel, allowed_role_ids: Set[int]):
-        """Entfernt Connect-Berechtigungen von Rollen die nicht mehr erlaubt sind"""
+    async def remove_disallowed_role_permissions(
+        self, channel: discord.VoiceChannel, allowed_role_ids: Set[int]
+    ):
         try:
-            removed_roles = []
-            
-            for overwrite_target, overwrite in channel.overwrites.items():
-                # Nur Discord-Rollen prüfen (nicht @everyone, nicht User)
-                if (isinstance(overwrite_target, discord.Role) and 
-                    overwrite_target.id != channel.guild.default_role.id and
-                    overwrite_target.id in self.discord_rank_roles):
-                    
-                    # Wenn Rolle nicht mehr erlaubt ist, entferne Berechtigung
-                    if overwrite_target.id not in allowed_role_ids:
-                        await channel.set_permissions(overwrite_target, overwrite=None)
-                        removed_roles.append(overwrite_target.name)
-                        await asyncio.sleep(0.5)  # Rate-Limiting
-
-            if removed_roles:
-                logger.info(f"Berechtigungen entfernt von Rollen: {removed_roles}")
-
+            for target, _ow in list(channel.overwrites.items()):
+                if (
+                    isinstance(target, discord.Role)
+                    and target.id != channel.guild.default_role.id
+                    and target.id in self.discord_rank_roles
+                    and target.id not in allowed_role_ids
+                ):
+                    await channel.set_permissions(target, overwrite=None)
+                    await asyncio.sleep(0.3)
         except Exception as e:
-            logger.error(f"Fehler beim Entfernen von Rollen-Berechtigungen: {e}")
+            logger.error(f"remove_disallowed_role_permissions Fehler: {e}")
 
     async def clear_role_permissions(self, channel: discord.VoiceChannel):
-        """Entfernt alle Rang-Rollen-Berechtigungen (Kanal leer)"""
         try:
-            cleared_roles = []
-            
-            for overwrite_target, overwrite in channel.overwrites.items():
-                if (isinstance(overwrite_target, discord.Role) and 
-                    overwrite_target.id != channel.guild.default_role.id and
-                    overwrite_target.id in self.discord_rank_roles):
-                    
-                    await channel.set_permissions(overwrite_target, overwrite=None)
-                    cleared_roles.append(overwrite_target.name)
-                    await asyncio.sleep(0.5)
-
-            if cleared_roles:
-                logger.info(f"Alle Rollen-Berechtigungen entfernt: {cleared_roles}")
-
+            for target, _ow in list(channel.overwrites.items()):
+                if (
+                    isinstance(target, discord.Role)
+                    and target.id != channel.guild.default_role.id
+                    and target.id in self.discord_rank_roles
+                ):
+                    await channel.set_permissions(target, overwrite=None)
+                    await asyncio.sleep(0.3)
         except Exception as e:
-            logger.error(f"Fehler beim Leeren der Rollen-Berechtigungen: {e}")
+            logger.error(f"clear_role_permissions Fehler: {e}")
 
     async def update_channel_name(self, channel: discord.VoiceChannel):
-        """Aktualisiert Kanal-Name basierend auf ANKER-User (erster User), nicht allen Usern"""
         try:
-            # Prüfe ob Kanal noch existiert
             if not await self.channel_exists(channel):
-                logger.warning(f"Kanal {channel.id} existiert nicht mehr - Überspringe Name-Update")
                 return
 
             members_ranks = await self.get_channel_members_ranks(channel)
-            
             if not members_ranks:
                 new_name = "Rang-Sprachkanal"
             else:
-                # Verwende ANKER-USER für Kanal-Namen, nicht alle User
                 anchor = self.get_channel_anchor(channel)
-                
                 if anchor:
-                    user_id, anchor_rank_name, anchor_rank_value, allowed_min, allowed_max = anchor
-                    
-                    # Kanal-Name basiert auf Anker-User und erlaubtem Bereich
+                    _uid, anchor_rank_name, _rv, allowed_min, allowed_max = anchor
                     min_rank_name = self.get_rank_name_from_value(allowed_min)
                     max_rank_name = self.get_rank_name_from_value(allowed_max)
-                    
                     if allowed_min == allowed_max:
-                        # Nur ein Rang erlaubt
                         new_name = f"{anchor_rank_name} Lobby"
                     elif allowed_max - allowed_min <= 1:
-                        # Enger Bereich
                         new_name = f"{anchor_rank_name} Elo"
                     else:
-                        # Breiter Bereich - zeige Spanne mit Anker als Basis
                         new_name = f"{min_rank_name}-{max_rank_name} ({anchor_rank_name})"
-                    
-                    logger.debug(f"Anker-basierter Name: {anchor_rank_name} → {new_name}")
                 else:
-                    # Fallback: Verwende ersten User im Kanal
+                    # Fallback: erster User
                     first_member = next(iter(members_ranks.keys()))
-                    rank_name, rank_value = members_ranks[first_member]
+                    rank_name, _rv2 = members_ranks[first_member]
                     new_name = f"{rank_name} Lobby"
-                    logger.warning(f"Kein Anker gefunden für {channel.name}, verwende ersten User: {rank_name}")
 
             if channel.name != new_name:
-                try:
-                    await channel.edit(name=new_name)
-                    logger.info(f"Kanal-Name aktualisiert: {new_name}")
-                except discord.NotFound:
-                    logger.warning(f"Kanal {channel.id} wurde während Name-Update gelöscht")
-                    return
-                
+                await channel.edit(name=new_name)
+        except discord.NotFound:
+            return
         except Exception as e:
-            logger.error(f"Fehler beim Aktualisieren des Kanal-Namens: {e}")
+            logger.error(f"update_channel_name Fehler: {e}")
 
     def get_rank_name_from_value(self, rank_value: int) -> str:
-        """Konvertiert Rang-Wert zu Rang-Name"""
-        for rank_name, value in self.deadlock_ranks.items():
-            if value == rank_value:
-                return rank_name
+        for rn, val in self.deadlock_ranks.items():
+            if val == rank_value:
+                return rn
         return "Obscurus"
 
-    def set_channel_anchor(self, channel: discord.VoiceChannel, user: discord.Member, rank_name: str, rank_value: int):
-        """Setzt den Anker-User für einen Kanal (erster User bestimmt Regeln)"""
+    async def set_channel_anchor(
+        self, channel: discord.VoiceChannel, user: discord.Member, rank_name: str, rank_value: int
+    ):
         if rank_name in self.balancing_rules:
-            minus_range, plus_range = self.balancing_rules[rank_name]
-            allowed_min = max(0, rank_value + minus_range)
-            allowed_max = min(11, rank_value + plus_range)
+            minus, plus = self.balancing_rules[rank_name]
+            allowed_min = max(0, rank_value + minus)
+            allowed_max = min(11, rank_value + plus)
         else:
             allowed_min = allowed_max = rank_value
-        
-        self.channel_anchors[channel.id] = (user.id, rank_name, rank_value, allowed_min, allowed_max)
-        logger.info(f"🔗 Anker gesetzt für {channel.name}: {user.display_name} ({rank_name}) → Bereich {allowed_min}-{allowed_max}")
 
-    def get_channel_anchor(self, channel: discord.VoiceChannel) -> Optional[Tuple[int, str, int, int, int]]:
-        """Holt den Anker-User für einen Kanal"""
+        self.channel_anchors[channel.id] = (
+            user.id,
+            rank_name,
+            rank_value,
+            allowed_min,
+            allowed_max,
+        )
+        await self._db_upsert_anchor(channel, user.id, rank_name, rank_value, allowed_min, allowed_max)
+        logger.info(
+            f"🔗 Anker gesetzt für {channel.name}: {user.display_name} ({rank_name}) → {allowed_min}-{allowed_max}"
+        )
+
+    def get_channel_anchor(
+        self, channel: discord.VoiceChannel
+    ) -> Optional[Tuple[int, str, int, int, int]]:
         return self.channel_anchors.get(channel.id)
 
-    def remove_channel_anchor(self, channel: discord.VoiceChannel):
-        """Entfernt den Anker für einen Kanal (wenn leer)"""
+    async def remove_channel_anchor(self, channel: discord.VoiceChannel):
         if channel.id in self.channel_anchors:
-            anchor_data = self.channel_anchors[channel.id]
-            del self.channel_anchors[channel.id]
-            logger.info(f"🔗 Anker entfernt für {channel.name}: {anchor_data[1]} ({anchor_data[2]})")
+            old = self.channel_anchors.pop(channel.id)
+            logger.info(f"🔗 Anker entfernt für {channel.name}: {old[1]} ({old[2]})")
+            await self._db_delete_anchor(channel)
 
     def is_channel_system_enabled(self, channel: discord.VoiceChannel) -> bool:
-        """Prüft ob das Rang-System für einen Kanal aktiviert ist"""
-        return self.channel_settings.get(channel.id, {}).get("enabled", True)  # Default: Aktiviert
+        return self.channel_settings.get(channel.id, {}).get("enabled", True)
 
-    def set_channel_system_enabled(self, channel: discord.VoiceChannel, enabled: bool):
-        """Aktiviert/Deaktiviert das Rang-System für einen Kanal"""
-        if channel.id not in self.channel_settings:
-            self.channel_settings[channel.id] = {}
-        
-        self.channel_settings[channel.id]["enabled"] = enabled
-        status = "aktiviert" if enabled else "deaktiviert"
-        logger.info(f"🔧 Rang-System für {channel.name} {status}")
+    async def set_channel_system_enabled(self, channel: discord.VoiceChannel, enabled: bool):
+        self.channel_settings.setdefault(channel.id, {})["enabled"] = enabled
+        await self._db_upsert_setting(channel, enabled)
+        logger.info(f"🔧 Rang-System für {channel.name} {'aktiviert' if enabled else 'deaktiviert'}")
 
-    def get_channel_system_status(self, channel: discord.VoiceChannel) -> str:
-        """Holt den System-Status für einen Kanal"""
-        enabled = self.is_channel_system_enabled(channel)
-        return "✅ Aktiviert" if enabled else "❌ Deaktiviert"
+    # -------------------- Monitoring --------------------
 
     def is_monitored_channel(self, channel: discord.VoiceChannel) -> bool:
-        """Prüft ob Kanal überwacht wird (ausgenommen Ausnahme-Kanäle)"""
         if channel.id in self.excluded_channel_ids:
             return False
-        return (channel.category_id == self.monitored_category_id if channel.category else False)
+        return channel.category_id == self.monitored_category_id if channel.category else False
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild):
+        # Falls der Bot später hinzugefügt wird – Lade DB-Status für diese Guild
+        try:
+            await self._db_load_state_for_guild(guild)
+        except Exception as e:
+            logger.warning(f"on_guild_join load state failed: {e}")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        """Behandelt Sprachkanal-Änderungen"""
         try:
-            # Cache bei Änderung löschen
+            # Cache invalidieren
             cache_key = f"{member.id}:{member.guild.id}"
-            if cache_key in self.user_rank_cache:
-                del self.user_rank_cache[cache_key]
+            self.user_rank_cache.pop(cache_key, None)
+            self.guild_roles_cache.pop(member.guild.id, None)
 
-            # Guild-Rollen-Cache bei Änderung aktualisieren
-            if member.guild.id in self.guild_roles_cache:
-                del self.guild_roles_cache[member.guild.id]
-
-            # Kanal beigetreten oder gewechselt
+            # Join/Move
             if after.channel and self.is_monitored_channel(after.channel):
                 await self.handle_voice_join(member, after.channel)
-            
-            # Kanal verlassen
+
+            # Leave
             if before.channel and self.is_monitored_channel(before.channel):
                 await self.handle_voice_leave(member, before.channel)
-                
+
         except Exception as e:
-            logger.error(f"Fehler bei voice_state_update: {e}")
+            logger.error(f"voice_state_update Fehler: {e}")
 
     async def handle_voice_join(self, member: discord.Member, channel: discord.VoiceChannel):
-        """Behandelt Beitritt zu überwachtem Sprachkanal mit Anker-System (OHNE Kicks)"""
         try:
-            # Prüfe ob System für diesen Kanal aktiviert ist
             if not self.is_channel_system_enabled(channel):
-                logger.debug(f"Rang-System für {channel.name} deaktiviert - User {member.display_name} darf bleiben")
                 return
 
-            # Rang des Benutzers prüfen
             rank_name, rank_value = self.get_user_rank_from_roles(member)
-            logger.info(f"User {member.display_name} betritt {channel.name} mit Rang {rank_name}({rank_value})")
 
-            # Prüfe ob Anker existiert
             anchor = self.get_channel_anchor(channel)
-            
             if anchor is None:
-                # Kein Anker → Dieser User ist der ERSTE und wird zum Anker
-                self.set_channel_anchor(channel, member, rank_name, rank_value)
-                logger.info(f"🔗 {member.display_name} wird Anker für {channel.name} ({rank_name})")
-                
-                # Berechtigungen und Name sofort aktualisieren
+                await self.set_channel_anchor(channel, member, rank_name, rank_value)
                 await self.update_channel_permissions_via_roles(channel)
                 await self.update_channel_name(channel)
                 return
-            
-            # Anker existiert → User darf bleiben, aber logge ob er "passt"
-            user_id, anchor_rank_name, anchor_rank_value, allowed_min, allowed_max = anchor
-            
+
+            # Nur logs – niemals kicken
+            _uid, _arname, _arval, allowed_min, allowed_max = anchor
             if not (allowed_min <= rank_value <= allowed_max):
-                # User passt NICHT in Anker-Bereich → ABER KEIN KICK! Nur Info-Log
-                logger.info(f"ℹ️ {member.display_name} ({rank_name}) passt nicht in Anker-Bereich {allowed_min}-{allowed_max}, bleibt aber (durch Admin-Move?)")
-            else:
-                # User passt in Anker-Bereich → Alles OK
-                logger.info(f"✅ {member.display_name} ({rank_name}) passt in Anker-Bereich {allowed_min}-{allowed_max}")
-            
-            # Berechtigungen aktualisieren (Name ändert sich NICHT, da Anker-basiert)
+                logger.info(
+                    f"ℹ️ {member.display_name} ({rank_name}) passt nicht in {allowed_min}-{allowed_max}, bleibt aber."
+                )
+
             await self.update_channel_permissions_via_roles(channel)
             await self.update_channel_name(channel)
-            
+
         except Exception as e:
-            logger.error(f"Fehler beim Behandeln des Sprachkanal-Beitritts: {e}")
+            logger.error(f"handle_voice_join Fehler: {e}")
 
     async def handle_voice_leave(self, member: discord.Member, channel: discord.VoiceChannel):
-        """Behandelt Verlassen von überwachtem Sprachkanal mit Anker-Management"""
         try:
-            logger.info(f"User {member.display_name} verlässt {channel.name}")
-            
-            # Kurze Verzögerung für konsistente Daten
-            await asyncio.sleep(1)
-            
-            # Prüfe ob System für diesen Kanal aktiviert ist
+            await asyncio.sleep(1)  # etwas Luft für Discord-Events
+
             if not self.is_channel_system_enabled(channel):
-                logger.debug(f"Rang-System für {channel.name} deaktiviert - Überspringe Leave-Update")
                 return
-            
-            # Prüfe ob Kanal leer ist
+
             members_ranks = await self.get_channel_members_ranks(channel)
-            
             if not members_ranks:
-                # Kanal ist leer → Anker entfernen
-                self.remove_channel_anchor(channel)
-                logger.info(f"🔗 Kanal {channel.name} ist leer - Anker entfernt")
+                await self.remove_channel_anchor(channel)
             else:
-                # Kanal nicht leer → Prüfe ob der ANKER-USER verlassen hat
                 anchor = self.get_channel_anchor(channel)
                 if anchor and anchor[0] == member.id:
-                    # Der Anker-User hat verlassen! → Anker an nächsten User übertragen
-                    logger.info(f"🔗 Anker-User {member.display_name} hat {channel.name} verlassen - Übertrage Anker")
-                    
-                    # Entferne alten Anker
-                    self.remove_channel_anchor(channel)
-                    
-                    # Setze ersten verbleibenden User als neuen Anker
-                    first_remaining_member = next(iter(members_ranks.keys()))
-                    rank_name, rank_value = members_ranks[first_remaining_member]
-                    self.set_channel_anchor(channel, first_remaining_member, rank_name, rank_value)
-                    
-                    logger.info(f"🔗 Neuer Anker gesetzt: {first_remaining_member.display_name} ({rank_name})")
-            
-            # Berechtigungen und Name aktualisieren
+                    # Anker übertragen
+                    await self.remove_channel_anchor(channel)
+                    first_remaining = next(iter(members_ranks.keys()))
+                    rn, rv = members_ranks[first_remaining]
+                    await self.set_channel_anchor(channel, first_remaining, rn, rv)
+
             await self.update_channel_permissions_via_roles(channel)
             await self.update_channel_name(channel)
-            
-        except Exception as e:
-            logger.error(f"Fehler beim Behandeln des Sprachkanal-Verlassens: {e}")
 
-    # Admin-Befehle
+        except Exception as e:
+            logger.error(f"handle_voice_leave Fehler: {e}")
+
+    # -------------------- Admin Commands --------------------
+
     @commands.group(name="rrang", invoke_without_command=True)
     @commands.has_permissions(manage_guild=True)
     async def rank_command(self, ctx):
-        """Rollen-basierte Rang-Management-Befehle"""
         embed = discord.Embed(
             title="🎭 Rollen-Berechtigungen Rang-System",
-            description="Verwaltet Sprachkanäle über Discord-Rollen-Berechtigungen",
-            color=0x0099ff
+            description="Verwaltet Sprachkanäle über Discord-Rollen-Berechtigungen (mit DB-Persistenz)",
+            color=0x0099FF,
         )
-        
         embed.add_field(
-            name="📋 Verfügbare Befehle",
-            value="`info` - Zeigt Rang-Info eines Benutzers\n"
-                  "`debug` - Debug-Info für User-Rollen\n"
-                  "`anker` - Zeigt aktuelle Kanal-Anker\n"
-                  "`toggle` - Aktiviert/Deaktiviert System für aktuellen VC\n"
-                  "`vcstatus` - Status des aktuellen Voice Channels\n"
-                  "`status` - System-Status und Version\n"
-                  "`rollen` - Zeigt alle überwachten Rollen\n"
-                  "`kanäle` - Zeigt überwachte/ausgeschlossene Kanäle\n"
-                  "`aktualisieren` - Erzwingt Kanal-Update\n"
-                  "`system` - Aktiviert/Deaktiviert System",
-            inline=False
+            name="📋 Befehle",
+            value=(
+                "`info` • Rang-Info eines Users\n"
+                "`debug` • Debug zu User-Rollen\n"
+                "`anker` • Zeigt Kanal-Anker\n"
+                "`toggle [ein/aus]` • System für aktuellen VC\n"
+                "`vcstatus` • Status des aktuellen VC\n"
+                "`status` • Systemstatus\n"
+                "`rollen` • Liste der Rang-Rollen\n"
+                "`kanäle` • Überwachte/ausgeschlossene Kanäle\n"
+                "`aktualisieren [#vc]` • Forced Update"
+            ),
+            inline=False,
         )
-        
         await ctx.send(embed=embed)
 
     @rank_command.command(name="status")
     async def system_status(self, ctx):
-        """Zeigt System-Status und Version"""
         embed = discord.Embed(
             title="📊 System-Status",
             description="Rollen-Berechtigungen Voice Manager",
-            color=discord.Color.green()
+            color=discord.Color.green(),
         )
-        
+        enabled_cnt = sum(1 for st in self.channel_settings.values() if st.get("enabled", True))
         embed.add_field(
-            name="🔧 System-Version",
-            value="**Sanftes Anker-System v4.0**\n✅ Keine User-Kicks (nur Rollen-Berechtigungen)\n✅ Pro-Kanal Toggle-System\n✅ Erster-User-Anker System\n✅ Kanal-Löschung-Schutz\n✅ Rate-Limiting optimiert",
-            inline=False
+            name="🔧 Version",
+            value="Sanftes Anker-System v4.0 (DB-persistiert)",
+            inline=False,
         )
-        
         embed.add_field(
             name="📁 Überwachung",
-            value=f"Kategorie: {self.monitored_category_id}\nAusgeschlossen: {len(self.excluded_channel_ids)} Kanäle\nRollen: {len(self.discord_rank_roles)}",
-            inline=True
+            value=f"Kategorie: {self.monitored_category_id}\nAusgeschlossen: {len(self.excluded_channel_ids)}\nRollen: {len(self.discord_rank_roles)}",
+            inline=True,
         )
-        
         embed.add_field(
-            name="💾 Cache",
-            value=f"User-Ränge: {len(self.user_rank_cache)}\nGuild-Rollen: {len(self.guild_roles_cache)}\nKanal-Anker: {len(self.channel_anchors)}\nKanal-Settings: {len(self.channel_settings)}",
-            inline=True
+            name="💾 Cache/State",
+            value=(
+                f"User-Ränge: {len(self.user_rank_cache)}\n"
+                f"Guild-Rollen: {len(self.guild_roles_cache)}\n"
+                f"Anker: {len(self.channel_anchors)}\n"
+                f"Channel-Settings: {len(self.channel_settings)} (enabled: {enabled_cnt})"
+            ),
+            inline=True,
         )
-        
-        # Teste aktuellen Benutzer
+
         try:
-            rank_name, rank_value = self.get_user_rank_from_roles(ctx.author)
-            embed.add_field(
-                name="🎯 Ihr Rang",
-                value=f"{rank_name} (Wert: {rank_value})",
-                inline=True
-            )
+            rn, rv = self.get_user_rank_from_roles(ctx.author)
+            embed.add_field(name="🎯 Dein Rang", value=f"{rn} ({rv})", inline=True)
         except Exception as e:
-            embed.add_field(
-                name="⚠️ Rang-Test",
-                value=f"Fehler: {e}",
-                inline=True
-            )
-        
+            embed.add_field(name="🎯 Dein Rang", value=f"Fehler: {e}", inline=True)
+
         await ctx.send(embed=embed)
 
     @rank_command.command(name="anker")
     async def show_channel_anchors(self, ctx):
-        """Zeigt aktuelle Kanal-Anker"""
         embed = discord.Embed(
             title="🔗 Kanal-Anker Übersicht",
-            description="Aktive Erst-User-Anker in überwachten Kanälen",
-            color=discord.Color.purple()
+            description="Aktive Erst-User-Anker (DB-persistiert)",
+            color=discord.Color.purple(),
         )
-        
+
         if not self.channel_anchors:
             embed.description = "❌ Keine aktiven Kanal-Anker"
-            await ctx.send(embed=embed)
-            return
-        
-        anchor_info = []
-        for channel_id, (user_id, rank_name, rank_value, allowed_min, allowed_max) in self.channel_anchors.items():
-            channel = ctx.guild.get_channel(channel_id)
+            return await ctx.send(embed=embed)
+
+        lines: List[str] = []
+        for ch_id, (user_id, rank_name, rank_value, amin, amax) in self.channel_anchors.items():
+            ch = ctx.guild.get_channel(ch_id)
             user = ctx.guild.get_member(user_id)
-            
-            if channel and user:
-                min_rank = self.get_rank_name_from_value(allowed_min)
-                max_rank = self.get_rank_name_from_value(allowed_max)
-                
-                # Aktuelle Member-Anzahl
-                current_members = len([m for m in channel.members if not m.bot])
-                
-                anchor_info.append(
-                    f"**{channel.name}**\n"
-                    f"🔗 Anker: {user.display_name} ({rank_name})\n"
-                    f"📊 Bereich: {min_rank}-{max_rank} ({allowed_min}-{allowed_max})\n"
-                    f"👥 Aktuelle User: {current_members}\n"
-                )
-            else:
-                # Kanal oder User existiert nicht mehr
-                anchor_info.append(f"❓ **Veralteter Anker** (Kanal: {channel_id}, User: {user_id})")
-        
-        embed.description = "\n".join(anchor_info)
-        
-        if len(anchor_info) > 10:
-            embed.set_footer(text="Zeige erste 10 Anker")
-        
+            if not ch or not user:
+                lines.append(f"❓ Veralteter Eintrag (Kanal {ch_id}, User {user_id})")
+                continue
+            min_rank = self.get_rank_name_from_value(amin)
+            max_rank = self.get_rank_name_from_value(amax)
+            cur_members = len([m for m in ch.members if not m.bot])
+            lines.append(
+                f"**{ch.name}**\n"
+                f"🔗 Anker: {user.display_name} ({rank_name})\n"
+                f"📊 Bereich: {min_rank}-{max_rank} ({amin}-{amax})\n"
+                f"👥 Aktuelle User: {cur_members}\n"
+            )
+        embed.description = "\n".join(lines[:10])
+        if len(lines) > 10:
+            embed.set_footer(text=f"{len(lines) - 10} weitere …")
         await ctx.send(embed=embed)
 
     @rank_command.command(name="toggle")
     async def toggle_channel_system(self, ctx, action: str = None):
-        """Aktiviert/Deaktiviert das Rang-System für den aktuellen Voice Channel"""
-        # Prüfe ob User in Voice Channel ist
         if not ctx.author.voice or not ctx.author.voice.channel:
-            await ctx.send("❌ Sie müssen sich in einem Voice Channel befinden um das System zu togglen.")
-            return
-        
+            return await ctx.send("❌ Du musst in einem Voice Channel sein.")
         channel = ctx.author.voice.channel
-        
-        # Prüfe ob Channel überwacht wird
+
         if not self.is_monitored_channel(channel):
-            await ctx.send(f"❌ **{channel.name}** wird nicht vom Rang-System überwacht.")
-            return
-        
-        # Aktueller Status
-        current_status = self.is_channel_system_enabled(channel)
-        
+            return await ctx.send(f"❌ **{channel.name}** wird nicht überwacht.")
+
+        current = self.is_channel_system_enabled(channel)
         if action is None:
-            # Nur Status anzeigen
-            status_text = "✅ Aktiviert" if current_status else "❌ Deaktiviert"
-            await ctx.send(f"🔧 Rang-System für **{channel.name}**: {status_text}")
-            return
-        
-        # Action verarbeiten
-        if action.lower() in ["ein", "on", "aktivieren", "enable"]:
-            if current_status:
-                await ctx.send(f"ℹ️ Rang-System für **{channel.name}** ist bereits aktiviert.")
+            return await ctx.send(f"🔧 Rang-System für **{channel.name}**: {'✅ Aktiviert' if current else '❌ Deaktiviert'}")
+
+        action_l = action.lower()
+        if action_l in ["ein", "on", "aktivieren", "enable"]:
+            if current:
+                await ctx.send(f"ℹ️ Bereits aktiviert für **{channel.name}**.")
             else:
-                self.set_channel_system_enabled(channel, True)
-                await ctx.send(f"✅ Rang-System für **{channel.name}** aktiviert.")
-                
-                # Sofort aktualisieren
+                await self.set_channel_system_enabled(channel, True)
+                await ctx.send(f"✅ Aktiviert: **{channel.name}**")
                 await self.update_channel_permissions_via_roles(channel)
                 await self.update_channel_name(channel)
-                
-        elif action.lower() in ["aus", "off", "deaktivieren", "disable"]:
-            if not current_status:
-                await ctx.send(f"ℹ️ Rang-System für **{channel.name}** ist bereits deaktiviert.")
+        elif action_l in ["aus", "off", "deaktivieren", "disable"]:
+            if not current:
+                await ctx.send(f"ℹ️ Bereits deaktiviert für **{channel.name}**.")
             else:
-                self.set_channel_system_enabled(channel, False)
-                await ctx.send(f"❌ Rang-System für **{channel.name}** deaktiviert.")
-                
-                # Anker entfernen und Berechtigungen zurücksetzen
-                self.remove_channel_anchor(channel)
+                await self.set_channel_system_enabled(channel, False)
+                await ctx.send(f"❌ Deaktiviert: **{channel.name}**")
+                await self.remove_channel_anchor(channel)
                 await self.clear_role_permissions(channel)
-                
         else:
-            await ctx.send("❌ Verwenden Sie: `ein`/`on` oder `aus`/`off`")
+            await ctx.send("❌ Verwende: `ein`/`on` oder `aus`/`off`")
 
     @rank_command.command(name="vcstatus")
     async def voice_channel_status(self, ctx):
-        """Zeigt Status des aktuellen Voice Channels"""
-        # Prüfe ob User in Voice Channel ist
         if not ctx.author.voice or not ctx.author.voice.channel:
-            await ctx.send("❌ Sie müssen sich in einem Voice Channel befinden.")
-            return
-        
+            return await ctx.send("❌ Du musst in einem Voice Channel sein.")
         channel = ctx.author.voice.channel
-        
-        embed = discord.Embed(
-            title=f"🔊 Status: {channel.name}",
-            color=discord.Color.blue()
-        )
-        
-        # Basis-Infos
+
+        embed = discord.Embed(title=f"🔊 Status: {channel.name}", color=discord.Color.blue())
         embed.add_field(
             name="📊 Kanal-Info",
-            value=f"ID: {channel.id}\nKategorie: {channel.category.name if channel.category else 'Keine'}\nMitglieder: {len(channel.members)}",
-            inline=True
+            value=f"ID: {channel.id}\nKategorie: {channel.category.name if channel.category else '–'}\nMitglieder: {len(channel.members)}",
+            inline=True,
         )
-        
-        # Überwachung
-        is_monitored = self.is_monitored_channel(channel)
-        embed.add_field(
-            name="👁️ Überwachung",
-            value="✅ Überwacht" if is_monitored else "❌ Nicht überwacht",
-            inline=True
-        )
-        
-        if is_monitored:
-            # System-Status
-            system_enabled = self.is_channel_system_enabled(channel)
-            embed.add_field(
-                name="🔧 Rang-System",
-                value="✅ Aktiviert" if system_enabled else "❌ Deaktiviert",
-                inline=True
-            )
-            
-            # Anker-Info
+        is_mon = self.is_monitored_channel(channel)
+        embed.add_field(name="👁️ Überwachung", value="✅ Überwacht" if is_mon else "❌ Nicht überwacht", inline=True)
+
+        if is_mon:
+            sys_en = self.is_channel_system_enabled(channel)
+            embed.add_field(name="🔧 Rang-System", value="✅ Aktiviert" if sys_en else "❌ Deaktiviert", inline=True)
             anchor = self.get_channel_anchor(channel)
-            if anchor and system_enabled:
-                user_id, rank_name, rank_value, allowed_min, allowed_max = anchor
-                anchor_user = ctx.guild.get_member(user_id)
-                anchor_name = anchor_user.display_name if anchor_user else f"User ID {user_id}"
-                
-                min_rank = self.get_rank_name_from_value(allowed_min)
-                max_rank = self.get_rank_name_from_value(allowed_max)
-                
+            if anchor and sys_en:
+                uid, rn, _rv, amin, amax = anchor
+                user = ctx.guild.get_member(uid)
+                min_rank = self.get_rank_name_from_value(amin)
+                max_rank = self.get_rank_name_from_value(amax)
                 embed.add_field(
                     name="🔗 Anker",
-                    value=f"{anchor_name} ({rank_name})\nBereich: {min_rank}-{max_rank}",
-                    inline=False
+                    value=f"{user.display_name if user else uid} ({rn})\nBereich: {min_rank}-{max_rank}",
+                    inline=False,
                 )
             else:
-                embed.add_field(
-                    name="🔗 Anker",
-                    value="Kein Anker gesetzt" if system_enabled else "System deaktiviert",
-                    inline=False
-                )
-        
+                embed.add_field(name="🔗 Anker", value="Kein Anker gesetzt" if sys_en else "System deaktiviert", inline=False)
+
         await ctx.send(embed=embed)
 
     @rank_command.command(name="debug")
     async def debug_user_roles(self, ctx, member: discord.Member = None):
-        """Debug-Informationen für User-Rollen-Erkennung"""
-        if member is None:
-            member = ctx.author
-        
+        member = member or ctx.author
         try:
-            # Cache leeren für frische Daten
-            cache_key = f"{member.id}:{member.guild.id}"
-            if cache_key in self.user_rank_cache:
-                del self.user_rank_cache[cache_key]
-            
-            # Alle Rollen des Users
-            user_roles = [(role.id, role.name) for role in member.roles]
-            
-            # Rang-Rollen finden
-            found_rank_roles = []
+            self.user_rank_cache.pop(f"{member.id}:{member.guild.id}", None)
+            user_roles = [(r.id, r.name) for r in member.roles]
+            found = []
             for role in member.roles:
                 if role.id in self.discord_rank_roles:
-                    rank_name, rank_value = self.discord_rank_roles[role.id]
-                    found_rank_roles.append(f"**{role.name}** (ID: {role.id}) -> {rank_name} ({rank_value})")
-            
-            # Höchsten Rang ermitteln
-            rank_name, rank_value = self.get_user_rank_from_roles(member)
-            
-            embed = discord.Embed(
-                title=f"🔍 Debug: {member.display_name}",
-                color=discord.Color.orange()
-            )
-            
-            embed.add_field(
-                name="👤 User-Info",
-                value=f"ID: {member.id}\nRollen-Anzahl: {len(member.roles)}",
-                inline=True
-            )
-            
-            embed.add_field(
-                name="🎯 Erkannter Rang",
-                value=f"**{rank_name}** (Wert: {rank_value})",
-                inline=True
-            )
-            
-            if found_rank_roles:
-                embed.add_field(
-                    name="🎭 Gefundene Rang-Rollen",
-                    value="\n".join(found_rank_roles),
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name="🎭 Rang-Rollen",
-                    value="❌ Keine Rang-Rollen gefunden!",
-                    inline=False
-                )
-            
-            # Alle Rollen (gekürzt)
-            all_roles_text = "\n".join([f"{role_id}: {role_name}" for role_id, role_name in user_roles[:10]])
+                    rn, rv = self.discord_rank_roles[role.id]
+                    found.append(f"**{role.name}** (ID {role.id}) -> {rn} ({rv})")
+            rn, rv = self.get_user_rank_from_roles(member)
+
+            embed = discord.Embed(title=f"🔍 Debug: {member.display_name}", color=discord.Color.orange())
+            embed.add_field(name="👤 User-Info", value=f"ID: {member.id}\nRollen: {len(member.roles)}", inline=True)
+            embed.add_field(name="🎯 Erkannter Rang", value=f"**{rn}** ({rv})", inline=True)
+            embed.add_field(name="🎭 Gefundene Rang-Rollen", value="\n".join(found) if found else "❌ Keine", inline=False)
+
+            all_roles_text = "\n".join([f"{rid}: {name}" for rid, name in user_roles[:10]])
             if len(user_roles) > 10:
-                all_roles_text += f"\n... und {len(user_roles) - 10} weitere"
-            
-            embed.add_field(
-                name="📋 Alle Rollen (erste 10)",
-                value=all_roles_text,
-                inline=False
-            )
-            
+                all_roles_text += f"\n… und {len(user_roles)-10} weitere"
+            embed.add_field(name="📋 Alle Rollen (erste 10)", value=all_roles_text, inline=False)
+
             await ctx.send(embed=embed)
-            
         except Exception as e:
-            logger.error(f"Fehler bei Debug-Ausgabe: {e}")
+            logger.error(f"debug_user_roles Fehler: {e}")
             await ctx.send(f"❌ Debug-Fehler: {e}")
 
     @rank_command.command(name="info")
     async def rank_info(self, ctx, member: discord.Member = None):
-        """Zeigt Rang-Informationen basierend auf Discord-Rollen"""
-        if member is None:
-            member = ctx.author
-        
+        member = member or ctx.author
         try:
-            rank_name, rank_value = self.get_user_rank_from_roles(member)
-            
-            embed = discord.Embed(
-                title=f"🎭 Rang-Information für {member.display_name}",
-                color=discord.Color.blue()
-            )
-            embed.add_field(name="Höchster Rang", value=rank_name, inline=True)
-            embed.add_field(name="Rang-Wert", value=rank_value, inline=True)
-
-            # Balancing-Regeln anzeigen
-            if rank_name in self.balancing_rules:
-                minus, plus = self.balancing_rules[rank_name]
-                embed.add_field(
-                    name="Balancing-Regel",
-                    value=f"{minus:+d} bis {plus:+d} Ränge",
-                    inline=True
-                )
-            
+            rn, rv = self.get_user_rank_from_roles(member)
+            embed = discord.Embed(title=f"🎭 Rang-Information: {member.display_name}", color=discord.Color.blue())
+            embed.add_field(name="Höchster Rang", value=rn, inline=True)
+            embed.add_field(name="Rang-Wert", value=rv, inline=True)
+            if rn in self.balancing_rules:
+                minus, plus = self.balancing_rules[rn]
+                embed.add_field(name="Balancing-Regel", value=f"{minus:+d} bis {plus:+d} Ränge", inline=True)
             await ctx.send(embed=embed)
-            
         except Exception as e:
-            logger.error(f"Fehler beim Abrufen der Rang-Information: {e}")
+            logger.error(f"rank_info Fehler: {e}")
             await ctx.send("❌ Fehler beim Abrufen der Rang-Information.")
 
     @rank_command.command(name="aktualisieren")
     @commands.has_permissions(manage_guild=True)
     async def force_update(self, ctx, channel: discord.VoiceChannel = None):
-        """Erzwingt Aktualisierung von Kanal-Berechtigungen und -Name"""
         if channel is None:
             if not ctx.author.voice or not ctx.author.voice.channel:
-                await ctx.send("❌ Sie müssen sich in einem Sprachkanal befinden oder einen Kanal angeben.")
-                return
+                return await ctx.send("❌ In einem Sprachkanal sein oder Kanal angeben.")
             channel = ctx.author.voice.channel
-        
+
         if not self.is_monitored_channel(channel):
-            await ctx.send("❌ Dieser Kanal wird nicht überwacht.")
-            return
-        
+            return await ctx.send("❌ Dieser Kanal wird nicht überwacht.")
+
         try:
-            # Cache leeren
             self.user_rank_cache.clear()
             self.guild_roles_cache.clear()
-            
-            # Anker neu setzen falls Kanal nicht leer
+
             members_ranks = await self.get_channel_members_ranks(channel)
             if members_ranks:
-                # Entferne alten Anker
-                self.remove_channel_anchor(channel)
-                
-                # Setze ersten User als neuen Anker
+                # alten Anker verwerfen & ersten User setzen (persistiert)
+                await self.remove_channel_anchor(channel)
                 first_member = next(iter(members_ranks.keys()))
-                rank_name, rank_value = members_ranks[first_member]
-                self.set_channel_anchor(channel, first_member, rank_name, rank_value)
-                logger.info(f"🔄 Anker neu gesetzt bei Force-Update: {first_member.display_name} ({rank_name})")
-            
+                rn, rv = members_ranks[first_member]
+                await self.set_channel_anchor(channel, first_member, rn, rv)
+
             await self.update_channel_permissions_via_roles(channel)
             await self.update_channel_name(channel)
-            await ctx.send(f"✅ Kanal **{channel.name}** erfolgreich aktualisiert.")
-            
+            await ctx.send(f"✅ Kanal **{channel.name}** aktualisiert.")
         except Exception as e:
-            logger.error(f"Fehler beim Aktualisieren des Kanals: {e}")
+            logger.error(f"force_update Fehler: {e}")
             await ctx.send("❌ Fehler beim Aktualisieren des Kanals.")
 
     @rank_command.command(name="rollen")
     async def show_tracked_roles(self, ctx):
-        """Zeigt alle überwachten Discord-Rollen"""
         embed = discord.Embed(
             title="🎭 Überwachte Rang-Rollen",
             description="Discord-Rollen für das Rang-System",
-            color=discord.Color.gold()
+            color=discord.Color.gold(),
         )
-        
-        role_info = []
-        for role_id, (rank_name, rank_value) in self.discord_rank_roles.items():
+        lines = []
+        for role_id, (rn, rv) in self.discord_rank_roles.items():
             role = ctx.guild.get_role(role_id)
             if role:
-                member_count = len(role.members)
-                role_info.append(f"**{rank_name}** ({rank_value}): {role.mention} - {member_count} Mitglieder")
+                lines.append(f"**{rn}** ({rv}): {role.mention} – {len(role.members)} Mitglieder")
             else:
-                role_info.append(f"**{rank_name}** ({rank_value}): ❌ Rolle nicht gefunden (ID: {role_id})")
-        
-        embed.description = "\n".join(role_info)
+                lines.append(f"**{rn}** ({rv}): ❌ Rolle nicht gefunden (ID {role_id})")
+        embed.description = "\n".join(lines)
         await ctx.send(embed=embed)
 
     @rank_command.command(name="kanäle")
     async def show_channel_config(self, ctx):
-        """Zeigt überwachte und ausgeschlossene Kanäle"""
         embed = discord.Embed(
             title="🔊 Kanal-Konfiguration",
-            description="Übersicht der Sprachkanal-Überwachung",
-            color=discord.Color.blue()
+            description="Sprachkanal-Überwachung",
+            color=discord.Color.blue(),
         )
-        
         category = ctx.guild.get_channel(self.monitored_category_id)
         if category:
-            voice_channels = [ch for ch in category.channels if isinstance(ch, discord.VoiceChannel)]
-            monitored_channels = [ch for ch in voice_channels if ch.id not in self.excluded_channel_ids]
-            
+            vcs = [c for c in category.channels if isinstance(c, discord.VoiceChannel)]
+            monitored = [c for c in vcs if c.id not in self.excluded_channel_ids]
             embed.add_field(
-                name=f"📁 Überwachte Kategorie: {category.name}",
-                value=f"Gesamt-Kanäle: {len(voice_channels)}\nÜberwacht: {len(monitored_channels)}",
-                inline=False
+                name=f"📁 Kategorie: {category.name}",
+                value=f"Gesamt: {len(vcs)}\nÜberwacht: {len(monitored)}",
+                inline=False,
             )
-        
-        excluded_info = []
-        for channel_id in self.excluded_channel_ids:
-            channel = ctx.guild.get_channel(channel_id)
-            if channel:
-                excluded_info.append(f"🔇 {channel.name}")
-            else:
-                excluded_info.append(f"❓ Unbekannter Kanal (ID: {channel_id})")
-        
-        if excluded_info:
-            embed.add_field(
-                name="🚫 Ausgeschlossene Kanäle",
-                value="\n".join(excluded_info),
-                inline=False
-            )
-        
+        ex_lines = []
+        for cid in self.excluded_channel_ids:
+            ch = ctx.guild.get_channel(cid)
+            ex_lines.append(f"🔇 {ch.name}" if ch else f"❓ Unbekannt (ID {cid})")
+        if ex_lines:
+            embed.add_field(name="🚫 Ausgeschlossene Kanäle", value="\n".join(ex_lines), inline=False)
         await ctx.send(embed=embed)
 
     async def cog_command_error(self, ctx, error):
-        """Behandelt Befehl-Fehler innerhalb des Cogs"""
         if isinstance(error, commands.MissingPermissions):
-            await ctx.send("❌ Unzureichende Berechtigungen für diesen Befehl.")
+            await ctx.send("❌ Unzureichende Berechtigungen.")
         elif isinstance(error, commands.BadArgument):
-            await ctx.send("❌ Ungültige Argumente angegeben.")
+            await ctx.send("❌ Ungültige Argumente.")
         elif isinstance(error, commands.MemberNotFound):
             await ctx.send("❌ Benutzer nicht gefunden.")
         else:
             logger.error(f"Unerwarteter Fehler in {ctx.command}: {error}")
             await ctx.send("❌ Ein unerwarteter Fehler ist aufgetreten.")
 
+
 async def setup(bot):
-    """Setup-Funktion für das Cog"""
     await bot.add_cog(RolePermissionVoiceManager(bot))
     logger.info("RolePermissionVoiceManager Cog hinzugefügt")
 
+
 async def teardown(bot):
-    """Teardown-Funktion für das Cog"""
     try:
         cog = bot.get_cog("RolePermissionVoiceManager")
         if cog:

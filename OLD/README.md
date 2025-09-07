@@ -7,6 +7,10 @@
 
 Das Discord Bot System besteht aus **2 Hauptkomponenten**:
 
+Alle Module greifen auf **eine gemeinsame SQLite-Datenbank** zu:
+`%USERPROFILE%/Documents/Deadlock/service/deadlock.sqlite3` (überschreibbar über `DEADLOCK_DB_DIR`).
+Diese Datei wird beim Herunterfahren automatisch aufgeräumt (VACUUM).
+
 ### **1. Master Bot (main_bot.py)**
 - **Pfad:** `C:\Users\Nani-Admin\Documents\Deadlock\main_bot.py`
 - **Funktion:** Verwaltet alle anderen Bot-Module (Cogs)
@@ -53,8 +57,8 @@ Der Master Bot lädt folgende **Cogs (Module)**:
   - Trackt Zeit in Voice-Channels
   - Vergibt Punkte für Aktivität
   - Spezielle Belohnungen für bestimmte Rollen
-  - SQLite Datenbank für Statistiken
-- **Wichtig:** Datenbank in `Deadlock/voice_data/`
+  - Speicherung aller Statistiken in gemeinsamer SQLite-Datenbank
+- **Wichtig:** Nutzt zentrale DB unter `%USERPROFILE%/Documents/Deadlock/service/deadlock.sqlite3`
 - **Notfall:** Backup der Datenbank täglich automatisch
 
 ### **6. 🎖️ Rank Voice Manager (`rank_voice_manager.py`)**
@@ -92,7 +96,7 @@ Der Master Bot lädt folgende **Cogs (Module)**:
 - **Dropdown-Interface** für Rank-Auswahl
 - **Automatische Rollen-Verwaltung**
 - **Persistent Views** (überleben Bot-Neustarts)
-- **SQLite Datenbank** für Rank-Tracking
+- **Gemeinsame SQLite Datenbank** für Rank-Tracking (`%USERPROFILE%/Documents/Deadlock/service/deadlock.sqlite3`)
 
 ### **Ranks System:**
 ```

@@ -1,30 +1,77 @@
-# In separater Datei shared/socket_bus.py
+import json
 import socket
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Optional
 
-class SocketMessageBus:
-    def __init__(self):
-        self.handlers = {}
-        self.executor = ThreadPoolExecutor(max_workers=10)
-        
-    def add_handler(self, event_type, handler):
-        self.handlers.setdefault(event_type, []).append(handler)
-        
-    def start_server(self, port=45678):
-        def run():
-            with socket.socket() as s:
-                s.bind(('localhost', port))
-                s.listen()
-                while True:
-                    conn, addr = s.accept()
-                    self.executor.submit(self.handle_connection, conn)
-        
-        threading.Thread(target=run, daemon=True).start()
-    
-    def handle_connection(self, conn):
-        with conn:
-            data = conn.recv(4096)
-            message = json.loads(data)
-            for handler in self.handlers.get(message['type'], []):
-                handler(message)
+def send_json(sock: socket.socket, obj: dict) -> None:
+    data = (json.dumps(obj, separators=(",", ":")) + "\n").encode("utf-8")
+    sock.sendall(data)
+
+def recv_json(sock: socket.socket, bufsize: int = 65536) -> Optional[dict]:
+    chunks = []
+    while True:
+        chunk = sock.recv(bufsize)
+        if not chunk:
+            return None
+        chunks.append(chunk)
+        if b"\n" in chunk:
+            break
+    raw = b"".join(chunks)
+    line, _, _rest = raw.partition(b"\n")
+    try:
+        return json.loads(line.decode("utf-8"))
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "invalid_json"}
+
+class JSONLineServer:
+    def __init__(self, host: str, port: int, handler: Callable[[dict], dict], backlog: int = 20):
+        self.host = host
+        self.port = port
+        self.handler = handler
+        self.backlog = backlog
+        self._sock: Optional[socket.socket] = None
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        if self._sock:
+            return
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind((self.host, self.port))
+        self._sock.listen(self.backlog)
+        self._thread = threading.Thread(target=self._serve_forever, name="JSONLineServer", daemon=True)
+        self._thread.start()
+
+    def _serve_forever(self) -> None:
+        while not self._stop.is_set():
+            try:
+                client, _addr = self._sock.accept()
+            except OSError:
+                break
+            threading.Thread(target=self._serve_client, args=(client,), daemon=True).start()
+
+    def _serve_client(self, client: socket.socket) -> None:
+        with client:
+            while not self._stop.is_set():
+                req = recv_json(client)
+                if req is None:
+                    break
+                try:
+                    resp = self.handler(req) or {"ok": True}
+                except Exception as e:
+                    resp = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                try:
+                    send_json(client, resp)
+                except OSError:
+                    break
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._sock:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
