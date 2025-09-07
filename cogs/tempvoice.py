@@ -1,18 +1,15 @@
 import discord
 from discord.ext import commands
 import asyncio, logging, time, re
-from typing import Optional, Dict, Set, Tuple, List
+from typing import Optional, Dict, Set, List, Awaitable, Any
 from datetime import datetime
 import aiosqlite
 from utils.deadlock_db import DB_PATH
 
 logger = logging.getLogger(__name__)
 
-STAGING_CHANNEL_IDS = {
-    1330278323145801758,
-    1357422958544420944,
-    1412804671432818890,
-}
+# ---------- Konfiguration ----------
+STAGING_CHANNEL_IDS = {1330278323145801758, 1357422958544420944, 1412804671432818890}
 MINRANK_CATEGORY_ID = 1412804540994162789
 RANKED_CATEGORY_ID  = 1357422957017698478
 INTERFACE_TEXT_CHANNEL_ID = 1371927143537315890
@@ -23,11 +20,7 @@ DEFAULT_RANKED_CAP = 6
 NAME_EDIT_COOLDOWN_SEC = 120
 STARTUP_PURGE_DELAY_SEC = 3
 
-RANK_ORDER = [
-    "unknown","initiate","seeker","alchemist","arcanist",
-    "ritualist","emissary","archon","oracle","phantom",
-    "ascendant","eternus"
-]
+RANK_ORDER = ["unknown","initiate","seeker","alchemist","arcanist","ritualist","emissary","archon","oracle","phantom","ascendant","eternus"]
 RANK_SET = set(RANK_ORDER)
 SUFFIX_THRESHOLD_RANK = "emissary"
 
@@ -61,12 +54,35 @@ def _strip_suffixes(current: str) -> str:
             base = base.split(marker)[0]
     return base
 
+async def _resolve_user_id_from_text(guild: discord.Guild, raw: str) -> Optional[int]:
+    s = raw.strip()
+    if s.startswith("<@") and s.endswith(">"):
+        digits = "".join(ch for ch in s if ch.isdigit())
+        if digits: return int(digits)
+    if s.startswith("@"): s = s[1:].strip()
+    if s.isdigit(): return int(s)
+    cand = []
+    low = s.lower()
+    for m in guild.members:
+        names = {m.name, getattr(m, "global_name", None), m.display_name}
+        if any((n and n.lower() == low) for n in names):
+            cand.append(m.id)
+    if len(cand) == 1: return cand[0]
+    return None
+
+# ---------- DB Layer (robust) ----------
 class TVDB:
     def __init__(self, db_path: str):
         self.db_path = db_path
         self.db: Optional[aiosqlite.Connection] = None
 
+    @property
+    def connected(self) -> bool:
+        return self.db is not None
+
     async def connect(self):
+        if self.db is not None:
+            return
         self.db = await aiosqlite.connect(self.db_path)
         self.db.row_factory = aiosqlite.Row
         await self.db.execute("PRAGMA journal_mode=WAL")
@@ -74,6 +90,7 @@ class TVDB:
         await self.create_tables()
 
     async def create_tables(self):
+        assert self.db is not None
         await self.db.execute("""
             CREATE TABLE IF NOT EXISTS tempvoice_bans (
                 owner_id    INTEGER NOT NULL,
@@ -111,44 +128,84 @@ class TVDB:
         await self.db.commit()
 
     async def fetchone(self, q: str, p: tuple = ()):
-        cur = await self.db.execute(q, p)
+        if not self.connected:
+            raise ValueError("no active connection")
+        cur = await self.db.execute(q, p)  # type: ignore
         row = await cur.fetchone()
         await cur.close()
         return row
 
     async def fetchall(self, q: str, p: tuple = ()):
-        cur = await self.db.execute(q, p)
+        if not self.connected:
+            raise ValueError("no active connection")
+        cur = await self.db.execute(q, p)  # type: ignore
         rows = await cur.fetchall()
         await cur.close()
         return rows
 
     async def exec(self, q: str, p: tuple = ()):
-        await self.db.execute(q, p)
+        if not self.connected:
+            raise ValueError("no active connection")
+        await self.db.execute(q, p)  # type: ignore
         await self.db.commit()
 
     async def close(self):
         if self.db:
-            try: await self.db.close()
-            except: pass
+            try:
+                await self.db.close()
+            finally:
+                self.db = None
 
+# ---------- Ban Store ----------
 class AsyncBanStore:
     def __init__(self, db: TVDB): self.db = db
-    async def is_banned_by_owner(self, owner_id: int, user_id: int) -> bool:
-        row = await self.db.fetchone("SELECT 1 FROM tempvoice_bans WHERE owner_id=? AND banned_id=?", (int(owner_id), int(user_id)))
-        return row is not None
-    async def list_bans(self, owner_id: int) -> List[int]:
-        rows = await self.db.fetchall("SELECT banned_id FROM tempvoice_bans WHERE owner_id=?", (int(owner_id),))
-        return [int(r["banned_id"]) for r in rows]
-    async def add_ban(self, owner_id: int, user_id: int):
-        await self.db.exec("INSERT OR IGNORE INTO tempvoice_bans(owner_id, banned_id) VALUES(?,?)", (int(owner_id), int(user_id)))
-    async def remove_ban(self, owner_id: int, user_id: int):
-        await self.db.exec("DELETE FROM tempvoice_bans WHERE owner_id=? AND banned_id=?", (int(owner_id), int(user_id)))
 
+    async def is_banned_by_owner(self, owner_id: int, user_id: int) -> bool:
+        try:
+            row = await self.db.fetchone(
+                "SELECT 1 FROM tempvoice_bans WHERE owner_id=? AND banned_id=?",
+                (int(owner_id), int(user_id))
+            )
+            return row is not None
+        except Exception:
+            return False
+
+    async def list_bans(self, owner_id: int) -> List[int]:
+        try:
+            rows = await self.db.fetchall(
+                "SELECT banned_id FROM tempvoice_bans WHERE owner_id=?",
+                (int(owner_id),)
+            )
+            return [int(r["banned_id"]) for r in rows]
+        except Exception:
+            return []
+
+    async def add_ban(self, owner_id: int, user_id: int):
+        try:
+            await self.db.exec(
+                "INSERT OR IGNORE INTO tempvoice_bans(owner_id, banned_id) VALUES(?,?)",
+                (int(owner_id), int(user_id))
+            )
+        except Exception:
+            pass
+
+    async def remove_ban(self, owner_id: int, user_id: int):
+        try:
+            await self.db.exec(
+                "DELETE FROM tempvoice_bans WHERE owner_id=? AND banned_id=?",
+                (int(owner_id), int(user_id))
+            )
+        except Exception:
+            pass
+
+# ---------- Cog ----------
 class TempVoiceCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._tvdb = TVDB(str(DB_PATH))
         self.bans = AsyncBanStore(self._tvdb)
+
+        # Laufzeit-State (nicht persistent)
         self.created_channels: Set[int] = set()
         self.lane_owner: Dict[int, int] = {}
         self.lane_base: Dict[int, str] = {}
@@ -157,40 +214,87 @@ class TempVoiceCog(commands.Cog):
         self._edit_locks: Dict[int, asyncio.Lock] = {}
         self._last_name_desired: Dict[int, str] = {}
         self._last_name_patch_ts: Dict[int, float] = {}
+        self._bg_tasks: Set[asyncio.Task] = set()
+        self._shutting_down: bool = False
 
+    # ----- Task Tracking -----
+    def _track_task(self, aw: Awaitable[Any]) -> None:
+        t = asyncio.create_task(aw)
+        self._bg_tasks.add(t)
+        def _done(_):
+            self._bg_tasks.discard(t)
+        t.add_done_callback(_done)
+
+    # ----- Lifecycle -----
     async def cog_load(self):
         await self._tvdb.connect()
+
+        # Staging-Channel im DB-Index verankern
         guild = self._first_guild()
         gid = guild.id if guild else 0
         for scid in STAGING_CHANNEL_IDS:
-            await self._tvdb.exec("INSERT OR IGNORE INTO tempvoice_staging_channels(guild_id, channel_id) VALUES(?,?)", (gid, int(scid)))
+            try:
+                await self._tvdb.exec(
+                    "INSERT OR IGNORE INTO tempvoice_staging_channels(guild_id, channel_id) VALUES(?,?)",
+                    (gid, int(scid))
+                )
+            except Exception:
+                pass
+
+        # Persistente View
         self.bot.add_view(MainView(self))
-        asyncio.create_task(self._startup())
+
+        # Startup-Prozedur
+        self._track_task(self._startup())
 
     async def cog_unload(self):
-        try: await self._tvdb.close()
-        except: pass
+        self._shutting_down = True
+        for t in list(self._bg_tasks):
+            t.cancel()
+        if self._bg_tasks:
+            await asyncio.gather(*list(self._bg_tasks), return_exceptions=True)
+        await self._tvdb.close()
 
+    # ----- Startup Sequenz -----
     async def _startup(self):
-        await self.bot.wait_until_ready()
-        await asyncio.sleep(STARTUP_PURGE_DELAY_SEC)
-        await self._ensure_interface()
-        await self._startup_cleanup()
+        try:
+            await self.bot.wait_until_ready()
+            await asyncio.sleep(STARTUP_PURGE_DELAY_SEC)
+
+            await self._ensure_interface()
+            await self._hydrate_from_db()    # Re-attach zu bestehenden Lanes
+            await self._startup_cleanup()    # Entsorge Staging-Leichen & purge einmal
+
+            # zwei gestaffelte Sweeps
+            self._track_task(self._delayed_purge(20))
+            self._track_task(self._delayed_purge(90))
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("TempVoice startup failed")
 
     def _first_guild(self) -> Optional[discord.Guild]:
         return self.bot.guilds[0] if self.bot.guilds else None
 
+    # ----- UI/Interface -----
     async def _ensure_interface(self):
         ch = self.bot.get_channel(INTERFACE_TEXT_CHANNEL_ID)
         if not isinstance(ch, discord.TextChannel):
-            logger.warning("Interface-Channel %s nicht gefunden.", INTERFACE_TEXT_CHANNEL_ID)
             return
-        saved = await self._tvdb.fetchone("SELECT channel_id, message_id FROM tempvoice_interface WHERE guild_id=?", (int(ch.guild.id),))
+        saved = None
+        try:
+            saved = await self._tvdb.fetchone(
+                "SELECT channel_id, message_id FROM tempvoice_interface WHERE guild_id=?",
+                (int(ch.guild.id),)
+            )
+        except Exception:
+            pass
+
         embed = discord.Embed(
             title="TempVoice Interface",
             description=(
                 "• Join einen Staging-Channel → deine Lane wird erstellt und du wirst gemoved.\n"
-                "• Steuerung hier:\n"
+                "• Steuerung:\n"
                 "  - 🇩🇪/🇪🇺 Sprachfilter (Rolle „English Only“)\n"
                 "  - Mindest-Rang (nur in spezieller Kategorie)\n"
                 "  - 👢 Kick / 🚫 Ban / ♻️ Unban\n"
@@ -199,6 +303,7 @@ class TempVoiceCog(commands.Cog):
             color=0x2ecc71
         )
         embed.set_footer(text="Deadlock DACH • TempVoice")
+
         if saved:
             try:
                 use_ch = self.bot.get_channel(int(saved["channel_id"])) or ch
@@ -207,38 +312,155 @@ class TempVoiceCog(commands.Cog):
                     await msg.edit(embed=embed, view=MainView(self))
                     return
             except Exception:
-                logger.info("Interface-Message fehlt – neu erstellen.")
+                pass
         try:
             msg = await ch.send(embed=embed, view=MainView(self))
-            await self._tvdb.exec(
-                "INSERT INTO tempvoice_interface(guild_id, channel_id, message_id, updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) "
-                "ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id, message_id=excluded.message_id, updated_at=CURRENT_TIMESTAMP",
-                (int(ch.guild.id), int(ch.id), int(msg.id))
+            try:
+                await self._tvdb.exec(
+                    "INSERT INTO tempvoice_interface(guild_id, channel_id, message_id, updated_at) "
+                    "VALUES(?,?,?,CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(guild_id) DO UPDATE SET "
+                    "channel_id=excluded.channel_id, message_id=excluded.message_id, updated_at=CURRENT_TIMESTAMP",
+                    (int(ch.guild.id), int(ch.id), int(msg.id))
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # ----- DB → RAM Rehydrierung -----
+    async def _hydrate_from_db(self):
+        guild = self._first_guild()
+        if not guild:
+            return
+        rows = []
+        try:
+            rows = await self._tvdb.fetchall(
+                "SELECT channel_id, owner_id, base_name, category_id "
+                "FROM tempvoice_lanes WHERE guild_id=?",
+                (int(guild.id),)
             )
-        except Exception as e:
-            logger.warning(f"Interface posten fehlgeschlagen: {e}")
+        except Exception:
+            return
+
+        for r in rows:
+            lane_id = int(r["channel_id"])
+            lane: Optional[discord.VoiceChannel] = guild.get_channel(lane_id)  # type: ignore
+            if not isinstance(lane, discord.VoiceChannel):
+                # Channel existiert nicht mehr → DB säubern
+                try:
+                    await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
+                except Exception:
+                    pass
+                continue
+
+            # RAM-State wiederherstellen
+            self.created_channels.add(lane.id)
+            self.lane_owner[lane.id] = int(r["owner_id"])
+            self.lane_base[lane.id] = str(r["base_name"])
+            self.lane_min_rank.setdefault(lane.id, "unknown")
+            self.join_time.setdefault(lane.id, {})
+
+            # Bans und Name aktualisieren
+            await self._apply_owner_bans(lane, self.lane_owner[lane.id])
+            await self._refresh_name(lane)
+
+    # ----- Purges / Cleanup -----
+    async def _delayed_purge(self, delay: int):
+        try:
+            await asyncio.sleep(delay)
+            if self._shutting_down:
+                return
+            if not self._tvdb.connected:
+                return
+            await self._purge_empty_lanes_once()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("TempVoice delayed purge failed")
 
     async def _startup_cleanup(self):
         guild = self._first_guild()
-        if not guild: return
-        rows = await self._tvdb.fetchall("SELECT channel_id FROM tempvoice_staging_channels WHERE guild_id=?", (int(guild.id),))
-        for r in rows:
-            cid = int(r["channel_id"])
-            ch = guild.get_channel(cid)
-            if not isinstance(ch, discord.VoiceChannel):
-                await self._tvdb.exec("DELETE FROM tempvoice_staging_channels WHERE guild_id=? AND channel_id=?", (int(guild.id), cid))
-        rows = await self._tvdb.fetchall("SELECT channel_id FROM tempvoice_lanes WHERE guild_id=?", (int(guild.id),))
+        if not guild or not self._tvdb.connected:
+            return
+
+        # Säubere Staging-Einträge, die keine VoiceChannels sind
+        try:
+            rows = await self._tvdb.fetchall(
+                "SELECT channel_id FROM tempvoice_staging_channels WHERE guild_id=?",
+                (int(guild.id),)
+            )
+            for r in rows:
+                cid = int(r["channel_id"])
+                ch = guild.get_channel(cid)
+                if not isinstance(ch, discord.VoiceChannel):
+                    try:
+                        await self._tvdb.exec(
+                            "DELETE FROM tempvoice_staging_channels WHERE guild_id=? AND channel_id=?",
+                            (int(guild.id), cid)
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        await self._purge_empty_lanes_once()
+
+    async def _purge_empty_lanes_once(self):
+        guild = self._first_guild()
+        if not guild or not self._tvdb.connected:
+            return
+
+        # 1) DB-registrierte Lanes prüfen
+        try:
+            rows = await self._tvdb.fetchall(
+                "SELECT channel_id FROM tempvoice_lanes WHERE guild_id=?",
+                (int(guild.id),)
+            )
+        except Exception:
+            return
+
         for r in rows:
             lane_id = int(r["channel_id"])
             lane = guild.get_channel(lane_id)
             if not isinstance(lane, discord.VoiceChannel):
-                await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
+                # DB-Leiche
+                try:
+                    await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
+                except Exception:
+                    pass
                 continue
-            if len(lane.members) == 0:
-                try: await lane.delete(reason="TempVoice: Startup-Cleanup (leer)")
-                except: pass
-                await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
 
+            try:
+                if len(lane.members) == 0:
+                    try:
+                        await lane.delete(reason="TempVoice: Cleanup (leer)")
+                    except Exception:
+                        pass
+                    try:
+                        await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # 2) Fallback-Sweep: alle „Lane *“-Channels ohne DB-Eintrag killen, wenn leer
+        for ch in list(guild.voice_channels):
+            if _is_managed_lane(ch):
+                try:
+                    if len(ch.members) == 0:
+                        try:
+                            await ch.delete(reason="TempVoice: Sweep (leer)")
+                        except Exception:
+                            pass
+                        try:
+                            await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (int(ch.id),))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+    # ----- Channel Updates -----
     def _lock_for(self, channel_id: int) -> asyncio.Lock:
         lock = self._edit_locks.get(channel_id)
         if lock is None:
@@ -266,8 +488,8 @@ class TempVoiceCog(commands.Cog):
             try:
                 await lane.edit(**kwargs, reason=reason or "TempVoice: Update")
                 if "name" in kwargs: self._last_name_patch_ts[lane.id] = now
-            except discord.HTTPException as e:
-                logger.warning(f"channel.edit {lane.id} failed: {e}")
+            except discord.HTTPException:
+                pass
 
     def _compose_name(self, lane: discord.VoiceChannel) -> str:
         base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
@@ -275,8 +497,8 @@ class TempVoiceCog(commands.Cog):
         if lane.category_id == MINRANK_CATEGORY_ID:
             min_rank = self.lane_min_rank.get(lane.id, "unknown")
             if min_rank and min_rank != "unknown" and _rank_index(min_rank) >= _rank_index(SUFFIX_THRESHOLD_RANK):
-                parts.append(f"• ab {min_rank.capitalize()}")
-        return " ".join(parts)
+                parts.append(f" • ab {min_rank.capitalize()}")
+        return "".join(parts)
 
     async def _refresh_name(self, lane: discord.VoiceChannel):
         await self._safe_edit_channel(lane, desired_name=self._compose_name(lane), reason="TempVoice: Name aktualisiert")
@@ -302,7 +524,8 @@ class TempVoiceCog(commands.Cog):
                 ow = lane.overwrites_for(obj); ow.connect = False
                 await lane.set_permissions(obj, overwrite=ow, reason="Owner-Ban (persistent)")
                 await asyncio.sleep(0.02)
-            except: pass
+            except:
+                pass
 
     async def _apply_min_rank(self, lane: discord.VoiceChannel, min_rank: str):
         if lane.category_id != MINRANK_CATEGORY_ID: return
@@ -336,39 +559,54 @@ class TempVoiceCog(commands.Cog):
         base = await self._next_name(cat, "Lane")
         bitrate = getattr(guild, "bitrate_limit", None) or 256000
         cap = _default_cap(staging)
-        initial_name = base
         try:
             lane = await guild.create_voice_channel(
-                name=initial_name, category=cat, user_limit=cap, bitrate=bitrate,
+                name=base, category=cat, user_limit=cap, bitrate=bitrate,
                 reason=f"Auto-Lane für {member.display_name}", overwrites=cat.overwrites if cat else None
             )
         except discord.Forbidden:
-            logger.error("Fehlende Rechte: VoiceChannel erstellen."); return
+            logger.error("Fehlende Rechte: VoiceChannel erstellen.")
+            return
         except Exception as e:
-            logger.error(f"create_lane error: {e}"); return
+            logger.error(f"create_lane error: {e}")
+            return
+
         self.created_channels.add(lane.id)
         self.lane_owner[lane.id] = member.id
         self.lane_base[lane.id] = base
         self.lane_min_rank[lane.id] = "unknown"
         self.join_time.setdefault(lane.id, {})
-        await self._tvdb.exec(
-            "INSERT OR REPLACE INTO tempvoice_lanes(channel_id, guild_id, owner_id, base_name, category_id) VALUES(?,?,?,?,?)",
-            (int(lane.id), int(guild.id), int(member.id), base, int(cat.id) if cat else 0)
-        )
-        await self._apply_owner_bans(lane, member.id)
-        try: await member.move_to(lane, reason="TempVoice: Auto-Lane erstellt")
-        except: pass
-        await self._refresh_name(lane)
-        logger.info(f"Auto-Lane erstellt: {lane.name} (owner={member.id}, cap={cap}, bitrate={bitrate})")
 
+        try:
+            await self._tvdb.exec(
+                "INSERT OR REPLACE INTO tempvoice_lanes(channel_id, guild_id, owner_id, base_name, category_id) "
+                "VALUES(?,?,?,?,?)",
+                (int(lane.id), int(guild.id), int(member.id), base, int(cat.id) if cat else 0)
+            )
+        except Exception:
+            pass
+
+        await self._apply_owner_bans(lane, member.id)
+
+        try:
+            await member.move_to(lane, reason="TempVoice: Auto-Lane erstellt")
+        except:
+            pass
+
+        await self._refresh_name(lane)
+
+    # ----- Events -----
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        # Auto-Lane erstellen bei Join in Staging
         try:
             if after and after.channel and isinstance(after.channel, discord.VoiceChannel):
                 if after.channel.id in STAGING_CHANNEL_IDS:
                     await self._create_lane(member, after.channel)
         except Exception as e:
             logger.warning(f"Auto-lane create failed: {e}")
+
+        # Owner verlassen / Lane ggf. löschen
         try:
             if before and before.channel and isinstance(before.channel, discord.VoiceChannel):
                 ch = before.channel
@@ -382,20 +620,26 @@ class TempVoiceCog(commands.Cog):
                     else:
                         try: await ch.delete(reason="TempVoice: Lane leer")
                         except: pass
-                        await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (int(ch.id),))
+                        try: await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (int(ch.id),))
+                        except Exception: pass
                         self.created_channels.discard(ch.id)
                         for d in (self.lane_owner, self.lane_base, self.lane_min_rank, self.join_time,
                                   self._last_name_desired, self._last_name_patch_ts):
                             d.pop(ch.id, None)
-        except Exception: pass
+        except Exception:
+            pass
+
+        # Join-Zeit & Name aktuell halten
         try:
             if after and after.channel and isinstance(after.channel, discord.VoiceChannel):
                 ch = after.channel
                 self.join_time.setdefault(ch.id, {})
                 self.join_time[ch.id][member.id] = datetime.utcnow().timestamp()
                 if _is_managed_lane(ch): await self._refresh_name(ch)
-        except Exception: pass
+        except Exception:
+            pass
 
+# ---------- UI ----------
 class MainView(discord.ui.View):
     def __init__(self, cog: TempVoiceCog):
         super().__init__(timeout=None)
@@ -527,21 +771,6 @@ class KickButton(discord.ui.Button):
         try: await itx.response.send_message("Wen möchtest du kicken?", view=view, ephemeral=True)
         except discord.InteractionResponded: await itx.followup.send("Wen möchtest du kicken?", view=view, ephemeral=True)
 
-class BanButton(discord.ui.Button):
-    def __init__(self, cog: TempVoiceCog):
-        super().__init__(label="🚫 Ban", style=discord.ButtonStyle.danger, row=2, custom_id="tv_ban")
-        self.cog = cog
-    async def callback(self, itx: discord.Interaction):
-        m: discord.Member = itx.user  # type: ignore
-        lane = m.voice.channel if (m.voice and isinstance(m.voice.channel, discord.VoiceChannel)) else None
-        if not isinstance(lane, discord.VoiceChannel) or not _is_managed_lane(lane):
-            return await itx.response.send_message("Du musst in einer Lane sein.", ephemeral=True)
-        owner_id = self.cog.lane_owner.get(lane.id)
-        perms = lane.permissions_for(m)
-        if not (owner_id == m.id or perms.manage_channels or perms.administrator):
-            return await itx.response.send_message("Nur Owner/Mods dürfen bannen.", ephemeral=True)
-        await itx.response.send_modal(BanModal(self.cog, lane, action="ban"))
-
 class UnbanButton(discord.ui.Button):
     def __init__(self, cog: TempVoiceCog):
         super().__init__(label="♻️ Unban", style=discord.ButtonStyle.primary, row=2, custom_id="tv_unban")
@@ -556,6 +785,21 @@ class UnbanButton(discord.ui.Button):
         if not (owner_id == m.id or perms.manage_channels or perms.administrator):
             return await itx.response.send_message("Nur Owner/Mods dürfen entbannen.", ephemeral=True)
         await itx.response.send_modal(BanModal(self.cog, lane, action="unban"))
+
+class BanButton(discord.ui.Button):
+    def __init__(self, cog: TempVoiceCog):
+        super().__init__(label="🚫 Ban", style=discord.ButtonStyle.danger, row=2, custom_id="tv_ban")
+        self.cog = cog
+    async def callback(self, itx: discord.Interaction):
+        m: discord.Member = itx.user  # type: ignore
+        lane = m.voice.channel if (m.voice and isinstance(m.voice.channel, discord.VoiceChannel)) else None
+        if not isinstance(lane, discord.VoiceChannel) or not _is_managed_lane(lane):
+            return await itx.response.send_message("Du musst in einer Lane sein.", ephemeral=True)
+        owner_id = self.cog.lane_owner.get(lane.id)
+        perms = lane.permissions_for(m)
+        if not (owner_id == m.id or perms.manage_channels or perms.administrator):
+            return await itx.response.send_message("Nur Owner/Mods dürfen bannen.", ephemeral=True)
+        await itx.response.send_modal(BanModal(self.cog, lane, action="ban"))
 
 class KickSelect(discord.ui.Select):
     def __init__(self, options, placeholder="Mitglied wählen …"):
@@ -579,10 +823,11 @@ class KickSelectView(discord.ui.View):
         try:
             await target.move_to(staging, reason=f"Kick durch {itx.user}")
             await itx.response.send_message(f"👢 {target.display_name} → {staging.name}.", ephemeral=True)
-        except: await itx.response.send_message("Konnte nicht verschieben.", ephemeral=True)
+        except:
+            await itx.response.send_message("Konnte nicht verschieben.", ephemeral=True)
 
 class BanModal(discord.ui.Modal, title="User (Un)Ban"):
-    target = discord.ui.TextInput(label="User (@Mention ODER numerische ID)", placeholder="@Name oder 123456789012345678", required=True, max_length=64)
+    target = discord.ui.TextInput(label="User (@Mention/Name ODER numerische ID)", placeholder="@Name oder 123456789012345678", required=True, max_length=64)
     def __init__(self, cog: TempVoiceCog, lane: discord.VoiceChannel, action: str):
         super().__init__(timeout=120); self.cog = cog; self.lane = lane; self.action = action
     async def on_submit(self, itx: discord.Interaction):
@@ -592,12 +837,9 @@ class BanModal(discord.ui.Modal, title="User (Un)Ban"):
         if not (owner_id == user.id or perms.manage_channels or perms.administrator):
             return await itx.response.send_message("Nur Owner/Mods dürfen (un)bannen.", ephemeral=True)
         raw = str(self.target.value).strip()
-        uid = None
-        if raw.startswith("<@") and raw.endswith(">"):
-            digits = "".join(ch for ch in raw if ch.isdigit())
-            if digits: uid = int(digits)
-        elif raw.isdigit(): uid = int(raw)
-        if not uid: return await itx.response.send_message("Bitte @Mention ODER numerische ID angeben.", ephemeral=True)
+        uid: Optional[int] = await _resolve_user_id_from_text(self.lane.guild, raw)
+        if not uid:
+            return await itx.response.send_message("Konnte den Nutzer nicht eindeutig erkennen. Bitte @Mention oder numerische ID angeben.", ephemeral=True)
         guild = self.lane.guild
         target_member = guild.get_member(uid)
         try: await itx.response.defer(ephemeral=True, thinking=False)
@@ -615,13 +857,16 @@ class BanModal(discord.ui.Modal, title="User (Un)Ban"):
                         try: await target_member.move_to(staging, reason="Owner-Ban")
                         except: pass
                 await itx.followup.send("Nutzer gebannt (owner-persistent).", ephemeral=True)
-            except: await itx.followup.send("Konnte Ban nicht setzen.", ephemeral=True)
+            except:
+                await itx.followup.send("Konnte Ban nicht setzen.", ephemeral=True)
         else:
             await self.cog.bans.remove_ban(owner_id, uid)
             try:
                 await self.lane.set_permissions(target_member or discord.Object(id=uid), overwrite=None, reason=f"Owner-Unban durch {user}")
                 await itx.followup.send("Nutzer entbannt.", ephemeral=True)
-            except: await itx.followup.send("Konnte Unban nicht setzen.", ephemeral=True)
+            except:
+                await itx.followup.send("Konnte Unban nicht setzen.", ephemeral=True)
 
+# ---------- Extension Setup ----------
 async def setup(bot: commands.Bot):
     await bot.add_cog(TempVoiceCog(bot))
