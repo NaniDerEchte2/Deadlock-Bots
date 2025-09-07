@@ -91,15 +91,51 @@ class SteamLink(commands.Cog):
     """
     Flow:
       1) /link → Discord OAuth2 (identify + connections)
-      2) Wenn 0 Steam-Accounts in Discord: Fallback-Seite → Steam OpenID
-      3) Optional: /link_steam → direkt Steam OpenID
-      4) /steam/return → SteamID64 extrahieren → speichern
-      5) Nach Erfolg: DM an den User
+      2) 0 Treffer → Fallback-Seite → Steam OpenID
+      3) /steam/return → SteamID64 extrahieren → speichern
+      4) Erfolg → DM an den User
+      5) Security-Hardening: Logs entschärft, Security-Header, generische Fehlerseiten
     """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.app = web.Application()
+
+        # Security-Header Middleware
+        @web.middleware
+        async def security_headers_mw(request: web.Request, handler):
+            try:
+                resp = await handler(request)
+            except Exception:
+                # Wir loggen intern, zeigen dem User aber keine Details
+                log.exception("Unhandled error in request")
+                return web.Response(
+                    text=(
+                        "<html><body style='font-family: system-ui, sans-serif'>"
+                        "<h3>❌ Unerwarteter Fehler</h3>"
+                        "<p>Bitte versuche es erneut. Wenn das Problem bleibt, kontaktiere den Admin.</p>"
+                        "</body></html>"
+                    ),
+                    content_type="text/html",
+                    status=500,
+                )
+            # Security Headers (keine sensiblen Responses cachen, kein Einbetten, restriktive CSP)
+            resp.headers["Cache-Control"] = "no-store"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+            resp.headers["X-Frame-Options"] = "DENY"
+            resp.headers["Referrer-Policy"] = "no-referrer"
+            resp.headers["X-Robots-Tag"] = "noindex, nofollow"
+            # Inline-Styles nutzen wir minimal in HTML → style-src 'unsafe-inline'
+            resp.headers["Content-Security-Policy"] = (
+                "default-src 'none'; "
+                "style-src 'unsafe-inline'; "
+                "form-action https://steamcommunity.com; "
+                "base-uri 'none'; "
+                "frame-ancestors 'none'"
+            )
+            return resp
+
+        self.app = web.Application(middlewares=[security_headers_mw])
         # HTTP-Routen
         self.app.router.add_get("/", self.handle_index)
         self.app.router.add_get("/health", self.handle_health)
@@ -114,6 +150,9 @@ class SteamLink(commands.Cog):
     # --------------- Lifecycle -----------------------------------------------
     async def cog_load(self) -> None:
         _ensure_schema()
+
+        # Access-Logs stark reduzieren (keine Querystrings/Callback-Codes im Log)
+        logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
         cid = _env_client_id(self.bot)
         if not cid:
@@ -155,16 +194,15 @@ class SteamLink(commands.Cog):
         return int(data["uid"])
 
     async def _notify_user_linked(self, user_id: int, steam_ids: List[str]) -> None:
-        """Schickt dem User eine DM über den Bot. Ignoriert Fehler still (DMs ggf. deaktiviert)."""
         try:
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
             if not user:
                 return
             if steam_ids:
                 sids = ", ".join(steam_ids)
-                txt = f"✅ Deine Verknüpfung war erfolgreich.\nVerknüpfte SteamID(s): **{sids}**"
+                txt = f"✅ Verknüpfung erfolgreich. Verknüpfte SteamID(s): **{sids}**"
             else:
-                txt = "✅ Deine Verknüpfung war erfolgreich."
+                txt = "✅ Verknüpfung erfolgreich."
             await user.send(txt)
         except Exception as e:
             log.info("Konnte User-DM nicht senden (id=%s): %s", user_id, e)
@@ -222,7 +260,6 @@ class SteamLink(commands.Cog):
                 return await r.json()
 
     async def _save_steam_links_from_discord(self, user_id: int, conns: List[dict]) -> List[str]:
-        """Speichert Steam-Links und gibt die gespeicherten SteamIDs zurück."""
         saved_ids: List[str] = []
         if not conns:
             return saved_ids
@@ -238,7 +275,7 @@ class SteamLink(commands.Cog):
             saved_ids.append(steam_id)
         return saved_ids
 
-    # ---- Steam OpenID helpers (HART auf PUBLIC_BASE_URL) ---------------------
+    # ---- Steam OpenID helpers (hart an PUBLIC_BASE_URL gebunden) -------------
     def _require_public_base(self) -> None:
         if not PUBLIC_BASE_URL:
             raise RuntimeError(
@@ -328,7 +365,6 @@ class SteamLink(commands.Cog):
 
         saved_ids = await self._save_steam_links_from_discord(uid, conns)
         if saved_ids:
-            # DM senden
             await self._notify_user_linked(uid, saved_ids)
             html = (
                 "<html><body style='font-family: system-ui, sans-serif'>"
@@ -339,7 +375,7 @@ class SteamLink(commands.Cog):
             )
             return web.Response(text=html, content_type="text/html")
 
-        # --- Fallback: Steam OpenID über Zwischenseite (Meta-Refresh + Button)
+        # Fallback: Steam OpenID (Meta-Refresh + Button)
         steam_state = self._mk_state(uid)
         steam_login = self._build_steam_login_url(steam_state)
         html = (
@@ -356,7 +392,6 @@ class SteamLink(commands.Cog):
         return web.Response(text=html, content_type="text/html")
 
     async def handle_steam_login(self, request: web.Request) -> web.Response:
-        # Optional: manuell anstoßbar – erwartet ?uid=<discord_id>
         uid_q = request.query.get("uid")
         if not uid_q or not uid_q.isdigit():
             return web.Response(text="missing uid", status=400)
@@ -383,8 +418,6 @@ class SteamLink(commands.Cog):
                 return web.Response(text="OpenID validation failed", status=400)
 
             _save_steam_link_row(uid, steam_id)
-
-            # DM senden
             await self._notify_user_linked(uid, [steam_id])
 
             body = (
@@ -394,9 +427,18 @@ class SteamLink(commands.Cog):
             )
             return web.Response(text=body, content_type="text/html")
 
-        except Exception as e:
+        except Exception:
             log.exception("Fehler im Steam-Return")
-            return web.Response(text=f"Fehler: {e}", status=500)
+            return web.Response(
+                text=(
+                    "<html><body style='font-family: system-ui, sans-serif'>"
+                    "<h3>❌ Unerwarteter Fehler</h3>"
+                    "<p>Bitte versuche es erneut. Wenn das Problem bleibt, kontaktiere den Admin.</p>"
+                    "</body></html>"
+                ),
+                content_type="text/html",
+                status=500,
+            )
 
     # --------------- Commands -------------------------------------------------
     @commands.hybrid_command(name="link", description="Verknüpfe deine Steam-Accounts (Discord → connections; Fallback Steam OpenID)")
