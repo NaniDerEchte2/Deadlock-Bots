@@ -164,6 +164,49 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               id        TEXT PRIMARY KEY,
               posted_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+            -- Steam-Links: mehrere Steam-Accounts pro Discord-User
+            CREATE TABLE IF NOT EXISTS steam_links(
+            user_id    INTEGER NOT NULL,
+            steam_id   TEXT    NOT NULL,
+            name       TEXT,
+            verified   INTEGER DEFAULT 0,
+            primary_account INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(user_id, steam_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_steam_links_user ON steam_links(user_id);
+
+            -- Live-Player-State (Cache der letzten Steam-API-Auswertung)
+            CREATE TABLE IF NOT EXISTS live_player_state(
+            steam_id TEXT PRIMARY KEY,
+            last_gameid TEXT,
+            last_server_id TEXT,
+            last_seen_ts INTEGER,
+            in_deadlock_now INTEGER DEFAULT 0,
+            in_match_now_strict INTEGER DEFAULT 0
+            );
+
+            -- Live-Lane-Status (pro Voice-Channel)
+            CREATE TABLE IF NOT EXISTS live_lane_state(
+            channel_id INTEGER PRIMARY KEY,
+            is_active  INTEGER DEFAULT 0,
+            started_at INTEGER,
+            last_update INTEGER,
+            minutes INTEGER DEFAULT 0,
+            suffix TEXT,
+            reason TEXT
+            );
+
+            -- Optional: pro Lane und Member letzter Check
+            CREATE TABLE IF NOT EXISTS live_lane_members(
+            channel_id INTEGER NOT NULL,
+            user_id    INTEGER NOT NULL,
+            in_match   INTEGER DEFAULT 0,
+            server_id  TEXT,
+            checked_ts INTEGER,
+            PRIMARY KEY(channel_id, user_id)
+            );
             """
         )
 
