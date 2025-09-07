@@ -1,79 +1,85 @@
-# cogs/live_match_worker.py
-import os, re, time, logging
+# ------------------------------------------------------------
+# LiveMatchWorker – benennt Voice-Channels gemäß live_lane_state
+# DB (shared/db.py):
+#   live_lane_state.channel_id, is_active, suffix
+#
+# Suffix: "• n/cap im Match" (falls aktiv), sonst Basisname ohne Match-Suffix.
+# ------------------------------------------------------------
+
+import os
+import re
+import time
+import logging
+
 import discord
 from discord.ext import commands, tasks
+
 from shared import db
 
 log = logging.getLogger("LiveMatchWorker")
 
-NAME_EDIT_COOLDOWN_SEC = int(os.getenv("NAME_EDIT_COOLDOWN_SEC", "120"))
-TIMER_TICK_SEC = int(os.getenv("TIMER_TICK_SEC", "60"))
-RENAME_STEP_MIN = int(os.getenv("RENAME_STEP_MIN", "5"))  # alle 5 Minuten Namen aktualisieren
+TICK_SEC               = int(os.getenv("LMW_TICK_SEC", "30"))
+NAME_EDIT_COOLDOWN_SEC = int(os.getenv("LMW_NAME_COOLDOWN_SEC", "90"))
 
-SUFFIX_PATTERN = re.compile(r"(?:\s*•\s*Im Match\s*\(Min\s*\d+\))$", re.IGNORECASE)
+MATCH_SUFFIX_RX = re.compile(r"\s+•\s+\d+/\d+\s+im\s+match", re.IGNORECASE)
+
 
 class LiveMatchWorker(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._last_edit: dict[int, int] = {}  # channel_id -> ts
-        self.tick.start()
+        self._last_patch_ts: dict[int, float] = {}
+        self._started = False
 
-    def cog_unload(self):
-        self.tick.cancel()
+    async def cog_load(self):
+        db.connect()
+        if not self._started:
+            self.tick.start()
+            self._started = True
+        log.info("LiveMatchWorker gestartet (Tick=%ss)", TICK_SEC)
 
-    def _strip_suffix(self, name: str) -> str:
-        return re.sub(SUFFIX_PATTERN, "", name).strip()
-
-    def _can_edit(self, channel_id: int) -> bool:
-        last = self._last_edit.get(channel_id, 0)
-        return (time.time() - last) >= NAME_EDIT_COOLDOWN_SEC
-
-    async def _rename(self, ch: discord.VoiceChannel, base: str, minutes: int):
-        if not self._can_edit(ch.id):
-            return
-        new = f"{base} • Im Match (Min {minutes})"
-        if ch.name == new:
-            return
+    async def cog_unload(self):
         try:
-            await ch.edit(name=new, reason="LiveMatch status update")
-            self._last_edit[ch.id] = int(time.time())
-        except Exception as e:
-            log.warning("Rename failed %s: %s", ch.id, e)
+            if self._started:
+                self.tick.cancel()
+        except Exception:
+            pass
 
-    async def _remove_suffix(self, ch: discord.VoiceChannel):
-        base = self._strip_suffix(ch.name)
-        if base != ch.name and self._can_edit(ch.id):
-            try:
-                await ch.edit(name=base, reason="LiveMatch clear")
-                self._last_edit[ch.id] = int(time.time())
-            except Exception as e:
-                log.warning("Clear failed %s: %s", ch.id, e)
-
-    @tasks.loop(seconds=TIMER_TICK_SEC)
+    @tasks.loop(seconds=TICK_SEC)
     async def tick(self):
-        now = int(time.time())
-        # alle Lanes aus DB holen, die existieren (wir editieren nur, wenn der Channel noch da ist)
-        for row in db.query_all("SELECT channel_id,is_active,started_at,last_update,minutes FROM live_lane_state"):
-            ch = self.bot.get_channel(int(row["channel_id"]))
+        await self.bot.wait_until_ready()
+        rows = db.query_all("SELECT channel_id, is_active, suffix FROM live_lane_state")
+        for r in rows:
+            ch = self.bot.get_channel(int(r["channel_id"]))
             if not isinstance(ch, discord.VoiceChannel):
                 continue
-            is_active = int(row["is_active"]) == 1
-            minutes = int(row["minutes"] or 0)
 
-            if is_active:
-                # Minuten hochzählen
-                minutes += int(TIMER_TICK_SEC // 60)
-                # nur alle RENAME_STEP_MIN Minuten umbenennen (Rate-Limit)
-                rename_now = (minutes % RENAME_STEP_MIN == 0)
-                db.execute("UPDATE live_lane_state SET minutes=?, last_update=? WHERE channel_id=?",
-                           (minutes, now, ch.id))
-                if rename_now:
-                    await self._rename(ch, self._strip_suffix(ch.name), minutes)
-            else:
-                # inaktiv → Suffix entfernen + Minuten resetten
-                if minutes != 0:
-                    db.execute("UPDATE live_lane_state SET minutes=0, last_update=? WHERE channel_id=?", (now, ch.id))
-                await self._remove_suffix(ch)
+            base = MATCH_SUFFIX_RX.sub("", ch.name).strip()
+            desired = base
+            if int(r["is_active"] or 0):
+                suf = str(r["suffix"] or "").strip()
+                if suf:
+                    desired = f"{base} {suf}"
+
+            await self._safe_rename(ch, desired)
+
+    async def _safe_rename(self, ch: discord.VoiceChannel, desired: str):
+        if not desired or desired == ch.name:
+            return
+        last = self._last_patch_ts.get(ch.id, 0.0)
+        if time.time() - last < NAME_EDIT_COOLDOWN_SEC:
+            return
+        try:
+            await ch.edit(name=desired, reason="LiveMatchWorker")
+            self._last_patch_ts[ch.id] = time.time()
+        except discord.HTTPException:
+            # kurzer Retry
+            await discord.utils.sleep_until(discord.utils.utcnow() + discord.utils.timedelta(seconds=1.2))
+            try:
+                await ch.edit(name=desired, reason="LiveMatchWorker (retry)")
+                self._last_patch_ts[ch.id] = time.time()
+            except Exception as e:
+                log.info("Rename fehlgeschlagen (%s): %s", ch.id, e)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(LiveMatchWorker(bot))

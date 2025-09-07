@@ -1,166 +1,223 @@
-# cogs/live_match_master.py
-import os, time, logging, re
+# ------------------------------------------------------------
+# LiveMatchMaster – Steam-Status auswerten & pro Voice-Lane gruppieren
+# Schreibt in shared DB-Tabellen (aus shared/db.py):
+#   - steam_links           (wird nur gelesen)
+#   - live_lane_members     (per-User Cache je Channel, inkl. server_id)
+#   - live_lane_state       (pro Channel: is_active, suffix, last_update, reason)
+#
+# Anzeige-Idee im Worker:
+#   Suffix: "• n/cap im Match", aktiv wenn >= MIN_MATCH_GROUP Spieler
+#   dieselbe gameserversteamid teilen.
+# ------------------------------------------------------------
+
+import os
+import time
+import logging
 from collections import Counter, defaultdict
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional
+
 import aiohttp
 import discord
 from discord.ext import commands, tasks
-from shared import db
-from shared.steam import batch_get_summaries, eval_live_state, cache_player_state
-from dotenv import load_dotenv
-from pathlib import Path
 
-# .env explizit laden
-DOTENV_PATH = Path(r"C:\Users\Nani-Admin\Documents\.env")
-load_dotenv(dotenv_path=DOTENV_PATH, override=True)
+from shared import db
 
 log = logging.getLogger("LiveMatchMaster")
 
-LIVE_CATEGORIES = [int(x) for x in os.getenv("LIVE_CATEGORIES", "1289721245281292290,1357422957017698478").split(",")]
-DEADLOCK_APP_ID = os.getenv("DEADLOCK_APP_ID", "1422450")
-STEAM_API_KEY = os.getenv("STEAM_API_KEY") or ""
+# ===== Konfiguration über ENV =====
+LIVE_CATEGORIES = [int(x) for x in os.getenv(
+    "LIVE_CATEGORIES",
+    "1289721245281292290,1357422957017698478"
+).split(",") if x.strip()]
 
-CHECK_INTERVAL_SEC = int(os.getenv("LIVE_CHECK_INTERVAL_SEC", "60"))  # minütlich
+DEADLOCK_APP_ID = os.getenv("DEADLOCK_APP_ID", "1422450")
+STEAM_API_KEY   = os.getenv("STEAM_API_KEY", "")
+
+CHECK_INTERVAL_SEC = int(os.getenv("LIVE_CHECK_INTERVAL_SEC", "60"))
+MIN_MATCH_GROUP    = int(os.getenv("MIN_MATCH_GROUP", "2"))
+
+DEFAULT_CASUAL_CAP = int(os.getenv("DEFAULT_CASUAL_CAP", "8"))
+RANKED_CATEGORY_ID = int(os.getenv("RANKED_CATEGORY_ID", "1357422957017698478"))
+DEFAULT_RANKED_CAP = int(os.getenv("DEFAULT_RANKED_CAP", "6"))
+
 
 class LiveMatchMaster(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.scan_loop.start()
+        self._started = False
 
-    def cog_unload(self):
-        self.scan_loop.cancel()
-
-    @tasks.loop(seconds=CHECK_INTERVAL_SEC)
-    async def scan_loop(self):
-        if not STEAM_API_KEY:
-            log.warning("STEAM_API_KEY fehlt – überspringe Scan.")
-            return
-        guilds = list(self.bot.guilds)
-        channels: List[discord.VoiceChannel] = []
-        for g in guilds:
-            for cat_id in LIVE_CATEGORIES:
-                cat = g.get_channel(cat_id)
-                if not cat: continue
-                for ch in getattr(cat, "channels", []):
-                    if isinstance(ch, discord.VoiceChannel):
-                        channels.append(ch)
-
-        # Alle SteamIDs der Members sammeln (Mehrfach-Links möglich)
-        chan_members: Dict[int, List[discord.Member]] = {ch.id: [m for m in ch.members if not m.bot] for ch in channels}
-        all_user_ids = {m.id for members in chan_members.values() for m in members}
-        # Fetch links
-        user_links: Dict[int, List[str]] = defaultdict(list)
-        if all_user_ids:
-            qs = ",".join("?" for _ in all_user_ids)
-            rows = db.query_all(f"SELECT user_id, steam_id FROM steam_links WHERE user_id IN ({qs})", tuple(all_user_ids))
-            for r in rows:
-                user_links[int(r["user_id"])].append(str(r["steam_id"]))
-
-        # Steam summaries (batched)
-        all_steam_ids = sorted({sid for arr in user_links.values() for sid in arr})
-        async with aiohttp.ClientSession() as session:
-            summaries = await batch_get_summaries(session, STEAM_API_KEY, all_steam_ids)
-
-        # pro SteamID bewerten + cachen
-        now = int(time.time())
-        steam_states: Dict[str, dict] = {}
-        for sid in all_steam_ids:
-            summary = summaries.get(sid) or {}
-            row = eval_live_state(summary, DEADLOCK_APP_ID)
-            row["ts"] = now
-            steam_states[sid] = row
-            cache_player_state(row)
-
-        # pro User: true, wenn irgendeiner seiner Accounts gerade im Match (strict)
-        user_in_match: Dict[int, Tuple[bool, str|None]] = {}
-        for uid, sids in user_links.items():
-            any_true = False
-            server_ids: List[str] = []
-            for sid in sids:
-                st = steam_states.get(sid)
-                if not st: continue
-                if st["in_match_now_strict"]:
-                    any_true = True
-                    if st["last_server_id"]:
-                        server_ids.append(st["last_server_id"])
-            common_server = None
-            if server_ids:
-                common_server = Counter(server_ids).most_common(1)[0][0]
-            user_in_match[uid] = (any_true, common_server)
-
-        # Lane-Mehrheit ermitteln und DB-Status setzen
-        for ch, members in chan_members.items():
-            if not members:
-                # Lane leer → Status resetten
-                self._set_lane_inactive(ch, reason="empty")
-                continue
-            votes = []
-            server_votes = []
-            for m in members:
-                ok, srv = user_in_match.get(m.id, (False, None))
-                votes.append(1 if ok else 0)
-                if ok and srv:
-                    server_votes.append(srv)
-            yes = sum(votes)
-            no = len(votes) - yes
-
-            # Mehrheit: >= 50% (bei 1 Person reicht 1/1)
-            majority = yes >= max(1, (len(votes)+1)//2)
-
-            # Gleicher Server? (mind. 2 gleiche server_ids)
-            same_server_ok = False
-            if len(server_votes) >= 2:
-                top, cnt = Counter(server_votes).most_common(1)[0]
-                same_server_ok = cnt >= 2
-
-            activate = False
-            reason = ""
-            if len(votes) == 1:
-                # Solo: reicht, wenn der eine wirklich in Match (strict)
-                activate = (yes == 1)
-                reason = "solo" if activate else "solo-not"
-            else:
-                # Team: Mehrheit muss im Match sein UND (falls verfügbar) idealerweise gleicher Server
-                activate = majority and (same_server_ok or len(server_votes) == 0)
-                reason = "majority+server" if activate and same_server_ok else ("majority" if activate else "no-majority")
-
-            if activate:
-                self._set_lane_active(ch, reason)
-            else:
-                self._set_lane_inactive(ch, reason)
-
-    def _set_lane_active(self, channel_id: int, reason: str):
-        row = db.query_one("SELECT is_active, started_at, minutes FROM live_lane_state WHERE channel_id=?", (channel_id,))
-        now = int(time.time())
-        if row and row["is_active"]:
-            db.execute("UPDATE live_lane_state SET last_update=?, reason=? WHERE channel_id=?",
-                       (now, reason, channel_id))
-            return
-        # neu aktiv
-        db.execute(
-            """
-            INSERT INTO live_lane_state(channel_id,is_active,started_at,last_update,minutes,suffix,reason)
-            VALUES(?,?,?,?,?,?,?)
-            ON CONFLICT(channel_id) DO UPDATE SET
-              is_active=1, last_update=excluded.last_update, reason=excluded.reason
-            """,
-            (channel_id, 1, now, now, 0, "Im Match", reason)
+    async def cog_load(self):
+        # shared DB initialisiert sich selbst (Schema etc.)
+        db.connect()
+        if not self._started:
+            self.scan_loop.start()
+            self._started = True
+        log.info(
+            "LiveMatchMaster bereit (Categories=%s, Interval=%ss, MinGroup=%d)",
+            LIVE_CATEGORIES, CHECK_INTERVAL_SEC, MIN_MATCH_GROUP
         )
 
-    def _set_lane_inactive(self, channel_id: int, reason: str):
-        row = db.query_one("SELECT is_active, minutes FROM live_lane_state WHERE channel_id=?", (channel_id,))
-        now = int(time.time())
-        if not row:
-            db.execute("INSERT INTO live_lane_state(channel_id,is_active,last_update,minutes,reason) VALUES(?,?,?,?,?)",
-                       (channel_id, 0, now, 0, reason))
+    async def cog_unload(self):
+        try:
+            if self._started:
+                self.scan_loop.cancel()
+        except Exception:
+            pass
+
+    # ========== Steam Helpers ==========
+    @staticmethod
+    def _in_deadlock(summary: dict) -> bool:
+        gid = str(summary.get("gameid", "") or "")
+        gex = str(summary.get("gameextrainfo", "") or "")
+        return gid == DEADLOCK_APP_ID or gex.lower() == "deadlock"
+
+    @staticmethod
+    def _server_id(summary: dict) -> Optional[str]:
+        sid = summary.get("gameserversteamid")
+        return str(sid) if sid else None
+
+    async def _steam_summaries(self, session: aiohttp.ClientSession, steam_ids: List[str]) -> Dict[str, dict]:
+        out: Dict[str, dict] = {}
+        if not steam_ids:
+            return out
+        for i in range(0, len(steam_ids), 100):
+            chunk = steam_ids[i:i+100]
+            url = ("https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/"
+                   f"?key={STEAM_API_KEY}&steamids={','.join(chunk)}")
+            try:
+                async with session.get(url, timeout=10) as resp:
+                    data = await resp.json()
+                    for p in data.get("response", {}).get("players", []):
+                        sid = str(p.get("steamid"))
+                        if sid:
+                            out[sid] = p
+            except Exception as e:
+                log.info("Steam GetPlayerSummaries Fehler: %s", e)
+        return out
+
+    # ========== Hauptschleife ==========
+    @tasks.loop(seconds=CHECK_INTERVAL_SEC)
+    async def scan_loop(self):
+        await self.bot.wait_until_ready()
+        if not STEAM_API_KEY:
+            log.warning("STEAM_API_KEY fehlt – Scan übersprungen.")
             return
-        if row["is_active"]:
-            # deaktiveren + Minuten stehen lassen; Worker entfernt Suffix
-            db.execute("UPDATE live_lane_state SET is_active=0, last_update=?, reason=? WHERE channel_id=?",
-                       (now, reason, channel_id))
-        else:
-            db.execute("UPDATE live_lane_state SET last_update=?, reason=? WHERE channel_id=?",
-                       (now, reason, channel_id))
+        await self._run_once()
+
+    async def _run_once(self):
+        # Alle Voice Channels aus konfigurierten Kategorien
+        lanes: List[discord.VoiceChannel] = []
+        for g in self.bot.guilds:
+            for cat_id in LIVE_CATEGORIES:
+                cat = g.get_channel(cat_id)
+                if isinstance(cat, discord.CategoryChannel):
+                    lanes.extend(cat.voice_channels)
+
+        # Discord->Steam Links sammeln
+        members = [m for ch in lanes for m in ch.members if not m.bot]
+        user_ids = sorted({m.id for m in members})
+        links = defaultdict(list)  # user_id -> [steam_id,...]
+        if user_ids:
+            qs = ",".join("?" for _ in user_ids)
+            rows = db.query_all(
+                f"SELECT user_id, steam_id FROM steam_links WHERE user_id IN ({qs})",
+                tuple(user_ids)
+            )
+            for r in rows:
+                links[int(r["user_id"])].append(str(r["steam_id"]))
+
+        # Steam zusammengefasst abfragen
+        all_steam = sorted({sid for arr in links.values() for sid in arr})
+        async with aiohttp.ClientSession() as session:
+            summaries = await self._steam_summaries(session, all_steam)
+
+        now = int(time.time())
+
+        # Pro Lane auswerten & in DB schreiben
+        for ch in lanes:
+            nonbots = [m for m in ch.members if not m.bot]
+            if not nonbots:
+                self._write_lane_state(ch.id, active=0, suffix=None, ts=now, reason="empty")
+                self._clear_lane_members(ch.id)
+                continue
+
+            # pro User: Server-ID, wenn in Deadlock
+            server_ids = []
+            lane_members_rows = []
+            for m in nonbots:
+                found_sid = None
+                for sid in links.get(m.id, []):
+                    s = summaries.get(sid)
+                    if not s:
+                        continue
+                    if self._in_deadlock(s):
+                        found_sid = self._server_id(s)
+                        break
+                # in DB live_lane_members speichern (auch None zulassen)
+                lane_members_rows.append((ch.id, m.id, 1 if found_sid else 0, found_sid, now))
+                if found_sid:
+                    server_ids.append(found_sid)
+
+            # Cache lane members aktualisieren
+            self._upsert_lane_members(lane_members_rows)
+
+            # Gruppierung per Server-ID
+            active_suffix = None
+            is_active = 0
+            if server_ids:
+                cnt = Counter(server_ids)
+                srv_id, n = cnt.most_common(1)[0]
+                if n >= max(1, MIN_MATCH_GROUP):
+                    cap = self._cap(ch)
+                    active_suffix = f"• {n}/{cap} im Match"
+                    is_active = 1
+
+            self._write_lane_state(
+                ch.id,
+                active=is_active,
+                suffix=active_suffix,
+                ts=now,
+                reason="same_server" if is_active else "no_group"
+            )
+
+    def _cap(self, ch: discord.VoiceChannel) -> int:
+        if ch.user_limit and ch.user_limit > 0:
+            return int(ch.user_limit)
+        return DEFAULT_RANKED_CAP if ch.category_id == RANKED_CATEGORY_ID else DEFAULT_CASUAL_CAP
+
+    # ========== DB-Helper (shared.db, synchron) ==========
+    def _write_lane_state(self, channel_id: int, *, active: int, suffix: Optional[str], ts: int, reason: str):
+        db.execute(
+            """
+            INSERT INTO live_lane_state(channel_id, is_active, last_update, suffix, reason)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(channel_id) DO UPDATE SET
+              is_active=excluded.is_active,
+              last_update=excluded.last_update,
+              suffix=excluded.suffix,
+              reason=excluded.reason
+            """,
+            (int(channel_id), int(active), int(ts), suffix or None, reason)
+        )
+
+    def _clear_lane_members(self, channel_id: int):
+        db.execute("DELETE FROM live_lane_members WHERE channel_id=?", (int(channel_id),))
+
+    def _upsert_lane_members(self, rows: List[tuple]):
+        if not rows:
+            return
+        db.executemany(
+            """
+            INSERT INTO live_lane_members(channel_id, user_id, in_match, server_id, checked_ts)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(channel_id, user_id) DO UPDATE SET
+              in_match=excluded.in_match,
+              server_id=excluded.server_id,
+              checked_ts=excluded.checked_ts
+            """,
+            rows
+        )
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(LiveMatchMaster(bot))

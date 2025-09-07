@@ -1,24 +1,25 @@
 # ------------------------------------------------------------
-# TempVoice – Auto-Lanes + UI-Management (Casual & Ranked) mit Anti-429
-# Persistentes Interface (merkt sich Message-ID) + DE/EU-Regionsfilter
-# >>> DB-Zentralisiert: Interface & Owner-Bans in gemeinsamer DB <<<
+# TempVoice – Auto-Lanes + UI-Management (Casual & Ranked)
+# Bereinigt: KEINE Channel-Status-Anzeigen (kein "Spieler gesucht",
+# kein "vermutlich voll", kein "Voll/Nicht voll", kein Match-Timer).
+# AFK-Auto-Shift entfernt.
+# Bleibt: Auto-Lane, Owner-Wechsel, DE/EU-Filter, Mindest-Rang, Kick/Ban/Unban.
+# Persistentes Panel in zentraler DB.
 # ------------------------------------------------------------
 
 import discord
 from discord.ext import commands
 import asyncio
-import json
 import logging
 import time
 import re
 from typing import Optional, Dict, Set, Tuple, Any, List
-from datetime import datetime
+from pathlib import Path
+import aiosqlite
 
-# ===================== Logging =====================
 log = logging.getLogger("TempVoice")
 
-# ===================== IDs & Konstanten =====================
-# WICHTIG: Diese IDs wurden NICHT verändert – exakt beibehalten.
+# ===================== IDs & Konstanten (UNVERÄNDERT) =====================
 GUILD_ID                   = 1289721245281292290
 INTERFACE_TEXT_CHANNEL_ID  = 1289721245281292293
 CASUAL_STAGING_CHANNEL_ID  = 1289721245281292291
@@ -26,10 +27,8 @@ RANKED_STAGING_CHANNEL_ID  = 1357422957017698476
 CASUAL_CATEGORY_ID         = 1289721245281292290
 RANKED_CATEGORY_ID         = 1357422957017698478
 
-# Regionen-Rolle (English Only) – unverändert
 ENGLISH_ONLY_ROLE_ID       = 1309741866098491479
 
-# Ränge (unverändert)
 RANK_ORDER = [
     "novice","recruit","seeker","observer","enforcer","adjudicator",
     "arbiter","catalyst","harbinger","emissary","protector","warden",
@@ -37,19 +36,12 @@ RANK_ORDER = [
 ]
 SUFFIX_THRESHOLD_RANK = "emissary"
 
-# Limits / Heuristiken (unverändert)
 DEFAULT_CASUAL_CAP        = 8
 DEFAULT_RANKED_CAP        = 6
-FULL_HINT_THRESHOLD       = 6
 
 NAME_EDIT_COOLDOWN_SEC    = 120
-LFG_POST_COOLDOWN_SEC     = 60
-LFG_DELETE_AFTER_SEC      = 20 * 60
 BUTTON_COOLDOWN_SEC       = 30
-DEBOUNCE_VERML_VOLL_SEC   = 25
-# =================================
-
-# ===================== Hilfsfunktionen =====================
+# ==========================================================================
 
 def _rank_index(name: str) -> int:
     try:
@@ -58,10 +50,9 @@ def _rank_index(name: str) -> int:
         return -1
 
 def _strip_suffixes(name: str) -> str:
-    """Entfernt bekannte Suffixe wie '• ab X', '• vermutlich voll', '• Spieler gesucht', etc."""
+    """Entfernt bekannte Suffixe wie '• ab X' und evtl. altes Match-Suffix."""
     s = re.sub(r"\s+•\s+ab\s+\w+", "", name, flags=re.IGNORECASE)
-    s = re.sub(r"\s+•\s+vermutlich voll", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s+•\s+Spieler gesucht", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+•\s+\d+/\d+\s+im\s+match", "", s, flags=re.IGNORECASE)  # falls Live-Match-Worker mal was dran ließ
     return s.strip()
 
 def _default_cap(ch: discord.VoiceChannel) -> int:
@@ -71,11 +62,7 @@ def _is_managed_lane(ch: discord.abc.GuildChannel) -> bool:
     return isinstance(ch, discord.VoiceChannel) and ch.category_id in (CASUAL_CATEGORY_ID, RANKED_CATEGORY_ID)
 
 # ===================== DB (zentral) =====================
-
-import aiosqlite
-from pathlib import Path
-
-DB_PATH = Path("central.db")  # unverändert: zentrale DB
+DB_PATH = Path("central.db")  # zentrale DB wie bei dir im Projekt
 
 class TVDB:
     def __init__(self, path: str):
@@ -152,7 +139,6 @@ class AsyncBanStore:
         )
 
 class InterfaceStateStore:
-    """DB-basierte Speicherung der Interface-Message pro Guild (statt JSON)."""
     def __init__(self, db: TVDB):
         self.db = db
 
@@ -171,44 +157,17 @@ class InterfaceStateStore:
             INSERT INTO tempvoice_interface(guild_id, channel_id, message_id)
             VALUES(?,?,?)
             ON CONFLICT(guild_id) DO UPDATE SET
-                channel_id=excluded.channel_id,
-                message_id=excluded.message_id,
-                updated_at=CURRENT_TIMESTAMP
+              channel_id=excluded.channel_id,
+              message_id=excluded.message_id,
+              updated_at=CURRENT_TIMESTAMP
             """,
             (int(guild_id), int(channel_id), int(message_id))
         )
 
-# ===================== Worker-Proxy (Rename etc.) =====================
-
-class WorkerProxy:
-    """Hier wäre Platz für die Kommunikation mit deinem separaten Worker-Bot.
-    In dieser TempVoice-Datei nutzen wir aber weiterhin direkte Discord-Calls
-    mit sanfter Rate-Limitierung (Anti-429)."""
-    def __init__(self):
-        pass
-
-    # Platzhalter – hier könnte man später IPC / Socket einbauen
-    def ready(self) -> bool:
-        return True
+# ===================== Worker-Wrapper =====================
 
 class TVWorker:
-    def __init__(self):
-        self._proxy = WorkerProxy()
-        try:
-            resp = self._proxy.ready()
-            if not resp:
-                log.info("WorkerProxy nicht bereit (placeholder).")
-        except Exception:
-            log.info("WorkerProxy-Verbindung nicht verfügbar (placeholder).")
-
-    async def safe_edit(
-        self,
-        ch: discord.VoiceChannel,
-        *,
-        name: Optional[str] = None,
-        user_limit: Optional[int] = None,
-        reason: str = "",
-    ):
+    async def safe_edit(self, ch: discord.VoiceChannel, *, name: Optional[str] = None, user_limit: Optional[int] = None, reason: str = ""):
         kw = {}
         if name is not None:
             kw["name"] = name
@@ -218,21 +177,19 @@ class TVWorker:
             return
         try:
             await ch.edit(**kw, reason=reason or "TempVoice")
-        except discord.HTTPException as e:
-            # Sanftes Retry bei 429 oder edit race
+        except discord.HTTPException:
+            await asyncio.sleep(1.5)
             try:
-                await asyncio.sleep(1.5)
                 await ch.edit(**kw, reason=reason or "TempVoice (Retry)")
-            except Exception:
+            except Exception as e:
                 log.info(f"Edit fehlgeschlagen ({ch.id}): {e}")
 
-# ===================== TempVoice Cog =====================
+# ===================== Cog =====================
 
 class TempVoiceCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-        # DB
         self._tvdb = TVDB(str(DB_PATH))
         self.bans = AsyncBanStore(self._tvdb)
         self.ifstore = InterfaceStateStore(self._tvdb)
@@ -240,34 +197,18 @@ class TempVoiceCog(commands.Cog):
         self.worker = TVWorker()
 
         self.created_channels: Set[int] = set()
-        self.create_channels = self.created_channels  # Back-compat
         self.lane_owner: Dict[int, int] = {}
         self.lane_base: Dict[int, str] = {}
         self.lane_min_rank: Dict[int, str] = {}
-        self.lane_full_choice: Dict[int, Optional[bool]] = {}
-        self.lane_searching: Dict[int, bool] = {}
         self.join_time: Dict[int, Dict[int, float]] = {}
 
         self._edit_locks: Dict[int, asyncio.Lock] = {}
         self._last_name_desired: Dict[int, str] = {}
         self._last_name_patch_ts: Dict[int, float] = {}
-        self._last_lfg_ts: Dict[int, float] = {}
-
-        self._lfg_cleanup_tasks: Set[int] = set()
         self._last_button_ts: Dict[int, float] = {}
-        self._debounce_tasks: Dict[int, asyncio.Task] = {}
-
-        # AFK-Strukturen bleiben bestehen, Logik ist unten auskommentiert
-        self._afk_tasks: Dict[Tuple[int, int], asyncio.Task] = {}
-        self._return_lane: Dict[Tuple[int, int], int] = {}
-        self._afk_escape_tasks: Dict[Tuple[int, int], asyncio.Task] = {}
-        self._afk_penalty_level: Dict[Tuple[int, int], int] = {}
 
     async def cog_load(self):
-        # DB init
         await self._tvdb.connect()
-
-        # Persistente View registrieren (wichtig für Restart)
         self.bot.add_view(MainView(self))
         asyncio.create_task(self._startup())
 
@@ -281,16 +222,10 @@ class TempVoiceCog(commands.Cog):
         await self.bot.wait_until_ready()
         await self._ensure_interface()
 
-    # ===================== Interface / Embed =====================
-
+    # -------- Interface --------
     async def _ensure_interface(self, *, target_channel_id: Optional[int] = None, force_recreate: bool = False):
-        """
-        Stellt sicher, dass GENAU EINE Interface-Message existiert (pro Guild).
-        Persistenz: tempvoice_interface in zentraler DB.
-        """
         ch_id = target_channel_id or INTERFACE_TEXT_CHANNEL_ID
         ch = self.bot.get_channel(ch_id)
-
         if not isinstance(ch, discord.TextChannel):
             log.warning(f"Interface-Channel {ch_id} nicht gefunden oder kein Textkanal.")
             return
@@ -310,59 +245,39 @@ class TempVoiceCog(commands.Cog):
                 "  - **🇩🇪 DE / 🇪🇺 EU** (Regionsfilter: *English Only* in Lane sperren/aufheben)\n"
                 "  - **Mindest-Rang** (nur Casual; setzt nur *deny* für zu niedrige Ränge)\n"
                 "  - **Kick / Ban / Unban** (Ban/Unban per @Mention **oder** ID)\n\n"
-                "💡 Ab **6 Spielern** erscheint nach kurzer Zeit **„• vermutlich voll“**, sofern kein Status gesetzt ist.\n"
-                "👑 Owner wechselt automatisch an den am längsten anwesenden User, wenn der Owner geht.\n"
-                "🛌 AFK-Automatik ist derzeit **deaktiviert** (Mute/Deaf wird nicht verschoben)."
+                "👑 Owner wechselt automatisch an den am längsten anwesenden User, wenn der Owner geht."
             ),
             color=0x2ecc71
         )
 
         if not saved or force_recreate:
-            # altes Pane löschen, neues posten
-            try:
-                msg = await ch.send(embed=embed, view=view)
-            except discord.HTTPException as e:
-                log.info(f"Interface-Message konnte nicht gesendet werden: {e}")
-                return
+            msg = await ch.send(embed=embed, view=view)
             await self.ifstore.set(GUILD_ID, ch.id, msg.id)
             log.info("TempVoice Interface wurde (neu) erstellt.")
             return
 
-        # bestehende Message aktualisieren/ersetzen
         try:
             msg = await ch.fetch_message(int(saved["message_id"]))
-            try:
-                await msg.edit(embed=embed, view=view)
-                log.info("TempVoice Interface aktualisiert (persistente View).")
-            except discord.NotFound:
-                msg = await ch.send(embed=embed, view=view)
-                await self.ifstore.set(GUILD_ID, ch.id, msg.id)
-                log.info("TempVoice Interface neu gesendet (alte Message fehlte).")
+            await msg.edit(embed=embed, view=view)
+            log.info("TempVoice Interface aktualisiert (persistente View).")
+        except discord.NotFound:
+            msg = await ch.send(embed=embed, view=view)
+            await self.ifstore.set(GUILD_ID, ch.id, msg.id)
+            log.info("TempVoice Interface neu gesendet (alte Message fehlte).")
         except Exception as e:
             log.info(f"Fetch/Edit Interface fehlgeschlagen, poste neu: {e}")
             msg = await ch.send(embed=embed, view=view)
             await self.ifstore.set(GUILD_ID, ch.id, msg.id)
 
-    # ===================== Name-Logik =====================
-
+    # -------- Name-Logik --------
     def _compose_name(self, lane: discord.VoiceChannel) -> str:
         base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
         min_rank = self.lane_min_rank.get(lane.id, "unknown")
-        member_count = len(lane.members)
 
         parts = [base]
-
-        # Rang-Suffix (nur Casual; ab Emissary)
         if lane.category_id != RANKED_CATEGORY_ID:
             if min_rank and min_rank != "unknown" and _rank_index(min_rank) >= _rank_index(SUFFIX_THRESHOLD_RANK):
                 parts.append(f"• ab {min_rank.capitalize()}")
-
-        # Kein Match-/Voll-Status mehr; nur Heuristik & „Spieler gesucht“
-        if member_count >= FULL_HINT_THRESHOLD:
-            parts.append("• vermutlich voll")
-        else:
-            if self.lane_searching.get(lane.id, False):
-                parts.append("• Spieler gesucht")
 
         return " ".join(parts)
 
@@ -398,7 +313,6 @@ class TempVoiceCog(commands.Cog):
     ):
         lock = self._edit_locks.setdefault(lane.id, asyncio.Lock())
         async with lock:
-            # Cooldown gegen Name-Spam
             if desired_name:
                 last_name = self._last_name_desired.get(lane.id)
                 if last_name and last_name == desired_name and not force_name:
@@ -406,93 +320,37 @@ class TempVoiceCog(commands.Cog):
                 last_patch = self._last_name_patch_ts.get(lane.id, 0.0)
                 if not force_name and (time.time() - last_patch) < NAME_EDIT_COOLDOWN_SEC:
                     return
-
             try:
-                await self.worker.safe_edit(
-                    lane,
-                    name=desired_name,
-                    user_limit=desired_limit,
-                    reason=reason or "TempVoice"
-                )
+                await self.worker.safe_edit(lane, name=desired_name, user_limit=desired_limit, reason=reason or "TempVoice")
                 if desired_name:
                     self._last_name_desired[lane.id] = desired_name
                     self._last_name_patch_ts[lane.id] = time.time()
             except Exception as e:
                 log.info(f"safe_edit fehlgeschlagen ({lane.id}): {e}")
 
-    async def _post_lfg(self, lane: discord.VoiceChannel, *, force: bool = False):
-        """Casual: optionaler LFG-Post im Interface-Channel."""
-        if lane.category_id == RANKED_CATEGORY_ID:
-            return
-        now = time.time()
-        last = self._last_lfg_ts.get(lane.id, 0.0)
-        if not force and (now - last) < LFG_POST_COOLDOWN_SEC:
-            return
-        ch = self.bot.get_channel(INTERFACE_TEXT_CHANNEL_ID)
-        if not isinstance(ch, discord.TextChannel):
-            return
-        try:
-            msg = await ch.send(f"🔎 **Spieler gesucht** in `{lane.name}` – joint gerne dazu!")
-            self._last_lfg_ts[lane.id] = now
-            async def cleanup(mid: int):
-                try:
-                    await asyncio.sleep(LFG_DELETE_AFTER_SEC)
-                    m = await ch.fetch_message(mid)
-                    await m.delete()
-                except Exception:
-                    pass
-            if msg and msg.id not in self._lfg_cleanup_tasks:
-                asyncio.create_task(cleanup(msg.id))
-        except Exception:
-            pass
-
-    # ===================== Events =====================
-
+    # -------- Events --------
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        # Ignore Bots
         if member.bot:
             return
-
-        # Verlassen/Joinen behandeln
         try:
-            # LEFT: räumen
+            # verlassen
             if before and before.channel and isinstance(before.channel, discord.VoiceChannel):
                 ch = before.channel
-                # Owner neu bestimmen, wenn Owner gegangen ist
                 if self.lane_owner.get(ch.id) == member.id:
                     new_owner = await self._pick_new_owner(ch)
                     if new_owner:
                         self.lane_owner[ch.id] = new_owner.id
-                # Aufräumen der Member-Join-Zeit
                 jt = self.join_time.get(ch.id)
                 if jt and member.id in jt:
                     jt.pop(member.id, None)
-                # Debounce-Task abbrechen
-                t = self._debounce_tasks.pop(ch.id, None)
-                if t:
-                    try: t.cancel()
-                    except Exception: pass
-
-                # Name ggf. aktualisieren (vermutlich voll/Spieler gesucht)
-                if self.lane_full_choice.get(ch.id) is None:
-                    await self._refresh_name(ch, force=False)
-
-                # Lane löschen, wenn leer und von uns erstellt
+                # ggf. Lane löschen
                 if ch.id in self.created_channels and not ch.members:
                     try:
-                        # alle Traces zu dieser Lane löschen
                         for d in (self.lane_owner, self.lane_base, self.lane_min_rank,
-                                  self.lane_full_choice, self.lane_searching, self.join_time,
-                                  self._last_name_desired, self._last_name_patch_ts,
-                                  self._last_lfg_ts, self._last_button_ts):
+                                  self.join_time, self._last_name_desired, self._last_name_patch_ts,
+                                  self._last_button_ts):
                             d.pop(ch.id, None)
-                        t = self._debounce_tasks.pop(ch.id, None)
-                        if t:
-                            try:
-                                t.cancel()
-                            except Exception:
-                                pass
                     except Exception:
                         pass
                     try:
@@ -501,64 +359,94 @@ class TempVoiceCog(commands.Cog):
                         pass
                     self.created_channels.discard(ch.id)
 
-            # JOINED
+            # beitreten
             if after and after.channel and isinstance(after.channel, discord.VoiceChannel):
                 ch = after.channel
                 self.join_time.setdefault(ch.id, {})
-                self.join_time[ch.id][member.id] = datetime.utcnow().timestamp()
-
-                owner_id = self.lane_owner.get(ch.id)
-                if owner_id and await self.bans.is_banned(owner_id, member.id):
-                    # Move sofort zurück (oder in Staging)
-                    try:
-                        staging = self.bot.get_channel(CASUAL_STAGING_CHANNEL_ID if ch.category_id == CASUAL_CATEGORY_ID else RANKED_STAGING_CHANNEL_ID)
-                        if isinstance(staging, discord.VoiceChannel):
-                            await member.move_to(staging, reason="TempVoice: Ban des Lanes-Owners")
-                            return
-                    except Exception:
-                        pass
-
-                # „vermutlich voll“-Debounce
-                if self.lane_full_choice.get(ch.id) is None:
-                    task = self._debounce_tasks.get(ch.id)
-                    if task and not task.done():
-                        try:
-                            task.cancel()
-                        except Exception:
-                            pass
-                    async def later_refresh(chan_id: int):
-                        try:
-                            await asyncio.sleep(DEBOUNCE_VERML_VOLL_SEC)
-                            lane = self.bot.get_channel(chan_id)
-                            if isinstance(lane, discord.VoiceChannel) and _is_managed_lane(lane):
-                                await self._refresh_name(lane, force=False)
-                        except asyncio.CancelledError:
-                            return
-                        except Exception:
-                            pass
-                    self._debounce_tasks[ch.id] = asyncio.create_task(later_refresh(ch.id))
+                self.join_time[ch.id][member.id] = time.time()
 
         except Exception as e:
             log.info(f"on_voice_state_update Fehler: {e}")
 
     async def _pick_new_owner(self, lane: discord.VoiceChannel) -> Optional[discord.Member]:
-        """Einfach der am längsten anwesende, nicht gemutete/deafte Member."""
         try:
             jt = self.join_time.get(lane.id, {})
             if not jt:
                 return None
-            # sort by oldest join ts
+            # ältester Aufenthalt zuerst
             sorted_ids = sorted([m for m in lane.members if not m.bot], key=lambda u: jt.get(u.id, time.time()))
             return sorted_ids[0] if sorted_ids else None
         except Exception:
             return None
 
-    # ===================== UI =====================
+    # -------- Rank / Permissions --------
+    async def _set_connect_if_diff(self, lane: discord.VoiceChannel, allow: bool, role: discord.Role):
+        overwrites = lane.overwrites
+        current = overwrites.get(role)
+        target = discord.PermissionOverwrite()
+        target.connect = True if allow else False
+        if current and current.connect == target.connect:
+            return
+        overwrites[role] = target
+        try:
+            await lane.edit(overwrites=overwrites, reason=f"TempVoice: Regionsfilter {'EU' if allow else 'DE'}")
+        except Exception as e:
+            log.info(f"set_connect_if_diff fehlgeschlagen: {e}")
 
-    class _KickSelect(discord.ui.Select):
-        pass
+    async def _apply_min_rank(self, lane: discord.VoiceChannel, min_rank: str):
+        if lane.category_id == RANKED_CATEGORY_ID:
+            return
+        try:
+            overwrites = lane.overwrites
+            for rank_name in RANK_ORDER:
+                role = discord.utils.get(lane.guild.roles, name=rank_name.capitalize())
+                if not role:
+                    continue
+                if _rank_index(rank_name) < _rank_index(min_rank):
+                    overwrites[role] = discord.PermissionOverwrite(connect=False)
+                else:
+                    if role in overwrites:
+                        try:
+                            del overwrites[role]
+                        except Exception:
+                            pass
+            await lane.edit(overwrites=overwrites, reason=f"TempVoice: Mindest-Rang {min_rank}")
+        except Exception as e:
+            log.info(f"_apply_min_rank Fehler: {e}")
 
-# ---------- Kick/Unban Modal & Views ----------
+    # -------- Commands --------
+    @commands.hybrid_command(name="tempvoice_panel", description="TempVoice Panel neu erstellen/aktualisieren")
+    @commands.has_guild_permissions(manage_guild=True)
+    async def tempvoice_panel(self, ctx: commands.Context):
+        await self._ensure_interface(force_recreate=True)
+        if getattr(ctx, "interaction", None):
+            await ctx.reply("✅ Panel aktualisiert.", ephemeral=True)
+
+    # -------- Auto-Lane aus Staging (Call von externem Join-Handler) --------
+    async def create_lane_for(self, member: discord.Member, ranked: bool) -> Optional[discord.VoiceChannel]:
+        try:
+            category = member.guild.get_channel(RANKED_CATEGORY_ID if ranked else CASUAL_CATEGORY_ID)
+            if not isinstance(category, discord.CategoryChannel):
+                return None
+            prefix = "Ranked" if ranked else "Casual"
+            base = await self._next_name(category, prefix)
+            lane = await category.create_voice_channel(
+                name=base, user_limit=_default_cap(category), reason="TempVoice: Auto-Lane"
+            )
+            self.created_channels.add(lane.id)
+            self.lane_owner[lane.id] = member.id
+            self.lane_base[lane.id] = base
+            self.lane_min_rank[lane.id] = "unknown"
+            self.join_time.setdefault(lane.id, {})
+            try:
+                await member.move_to(lane, reason="TempVoice: Auto-Lane erstellt")
+            except Exception:
+                pass
+            await self._refresh_name(lane, force=True)
+            return lane
+        except Exception as e:
+            log.info(f"create_lane_for Fehler: {e}")
+            return None
 
 class BanModal(discord.ui.Modal, title="Ban/Unban (ID oder Mention)"):
     def __init__(self, cog: "TempVoiceCog", lane: discord.VoiceChannel, action: str):
@@ -593,6 +481,7 @@ class BanModal(discord.ui.Modal, title="Ban/Unban (ID oder Mention)"):
                 uid = int(m.group(1))
             except Exception:
                 pass
+
         if not uid:
             try:
                 if interaction.message and interaction.message.mentions:
@@ -625,14 +514,8 @@ class KickView(discord.ui.View):
         super().__init__(timeout=120)
         self.cog = cog
         self.lane = lane
-
-        # dynamische Memberliste
-        options = []
-        for m in lane.members:
-            if not m.bot:
-                options.append(discord.SelectOption(label=m.display_name, value=str(m.id)))
-        if not options:
-            options.append(discord.SelectOption(label="(keine Mitglieder)", value="0", default=True))
+        options = [discord.SelectOption(label=m.display_name, value=str(m.id)) for m in lane.members if not m.bot] or \
+                  [discord.SelectOption(label="(keine Mitglieder)", value="0", default=True)]
         self.select = discord.ui.Select(placeholder="Wen kicken?", options=options, min_values=1, max_values=1)
         self.add_item(self.select)
 
@@ -670,10 +553,7 @@ class KickView(discord.ui.View):
 class MinRankSelect(discord.ui.Select):
     def __init__(self, cog: "TempVoiceCog"):
         self.cog = cog
-        guild: Optional[discord.Guild] = cog.bot.get_guild(GUILD_ID)
-        opts = []
-        for name in RANK_ORDER:
-            opts.append(discord.SelectOption(label=name.capitalize(), value=name))
+        opts = [discord.SelectOption(label=name.capitalize(), value=name) for name in RANK_ORDER]
         super().__init__(
             placeholder="Mindest-Rang (nur Casual; Ranked bleibt wie ist)",
             options=opts,
@@ -727,7 +607,6 @@ class MainView(discord.ui.View):
         self.cog._last_button_ts[lane_id] = now
         return True
 
-    # Regionsfilter-Buttons 🇩🇪 / 🇪🇺 (BLEIBEN)
     @discord.ui.button(label="🇩🇪 DE", style=discord.ButtonStyle.primary, row=0, custom_id="tv_region_de")
     async def btn_region_de(self, itx: discord.Interaction, _button: discord.ui.Button):
         lane = self._lane(itx)
@@ -766,7 +645,6 @@ class MainView(discord.ui.View):
         sender = itx.response.send_message if not itx.response.is_done() else itx.followup.send
         await sender("🇪🇺 **EU/EN** offen – *English Only* darf in die Lane.", ephemeral=True)
 
-    # Kick / Ban / Unban
     @discord.ui.button(label="👟 Kick", style=discord.ButtonStyle.secondary, row=2, custom_id="tv_kick")
     async def btn_kick(self, itx: discord.Interaction, _button: discord.ui.Button):
         lane = self._lane(itx)
@@ -806,108 +684,6 @@ class MainView(discord.ui.View):
             return await sender("Nur **Owner** der Lane (oder Mods) dürfen entbannen.", ephemeral=True)
         modal = BanModal(self.cog, lane, action="unban")
         await itx.response.send_modal(modal)
-
-    # ===================== Rank / Permissions =====================
-
-    async def _set_connect_if_diff(self, lane: discord.VoiceChannel, allow: bool, role: discord.Role):
-        overwrites = lane.overwrites
-        current = overwrites.get(role)
-        target = discord.PermissionOverwrite()
-        target.connect = True if allow else False
-        if current and current.connect == target.connect:
-            return
-        overwrites[role] = target
-        try:
-            await lane.edit(overwrites=overwrites, reason=f"TempVoice: Regionsfilter {'EU' if allow else 'DE'}")
-        except Exception as e:
-            log.info(f"set_connect_if_diff fehlgeschlagen: {e}")
-
-    async def _apply_min_rank(self, lane: discord.VoiceChannel, min_rank: str):
-        """Setzt 'connect deny' für alle zu niedrigen Ränge (nur Casual)."""
-        if lane.category_id == RANKED_CATEGORY_ID:
-            return
-        try:
-            overwrites = lane.overwrites
-            # Hier würdest du deine Rollen-IDs je Rang mappen; Platzhalter:
-            # Beispiel: Rollen heißen exakt wie Ränge (Capitalized)
-            for rank_name in RANK_ORDER:
-                role = discord.utils.get(lane.guild.roles, name=rank_name.capitalize())
-                if not role:
-                    continue
-                if _rank_index(rank_name) < _rank_index(min_rank):
-                    overwrites[role] = discord.PermissionOverwrite(connect=False)
-                else:
-                    # erlauben/neutral
-                    if role in overwrites:
-                        try:
-                            del overwrites[role]
-                        except Exception:
-                            pass
-            await lane.edit(overwrites=overwrites, reason=f"TempVoice: Mindest-Rang {min_rank}")
-        except Exception as e:
-            log.info(f"_apply_min_rank Fehler: {e}")
-
-    # ===================== Commands =====================
-
-    @commands.hybrid_command(name="tempvoice_panel", description="TempVoice Panel neu erstellen/aktualisieren")
-    @commands.has_guild_permissions(manage_guild=True)
-    async def tempvoice_panel(self, ctx: commands.Context):
-        await self._ensure_interface(force_recreate=True)
-        await ctx.reply("✅ Panel aktualisiert.", ephemeral=True) if getattr(ctx, "interaction", None) else None
-
-    # ===================== Staging-Handler =====================
-
-    @commands.Cog.listener()
-    async def on_voice_presence_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        """Nur als Beispiel – in dieser Datei wird Join/Leave bereits in on_voice_state_update behandelt."""
-        pass
-
-    @commands.Cog.listener()
-    async def on_voice_channel_create(self, channel: discord.abc.GuildChannel):
-        pass
-
-    # ===================== Lane-Erstellung aus Staging =====================
-
-    @commands.Cog.listener()
-    async def on_voice_state_update_create_lane(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        """Optionaler Listener – falls du getrennte Listener nutzt. In dieser Fassung nutzen wir den Standard-Listener oben."""
-        pass
-
-    # ============ Hilfsroutinen für Auto-Lane ============
-
-    async def create_lane_for(self, member: discord.Member, ranked: bool) -> Optional[discord.VoiceChannel]:
-        """Erstellt eine neue Lane und movt den Member hinein."""
-        try:
-            category = member.guild.get_channel(RANKED_CATEGORY_ID if ranked else CASUAL_CATEGORY_ID)
-            if not isinstance(category, discord.CategoryChannel):
-                return None
-            prefix = "Ranked" if ranked else "Casual"
-            base = await self._next_name(category, prefix)
-            lane = await category.create_voice_channel(
-                name=base, user_limit=_default_cap(category), reason="TempVoice: Auto-Lane"
-            )
-            self.created_channels.add(lane.id)
-            self.lane_owner[lane.id] = member.id
-            self.lane_base[lane.id] = base
-            self.lane_min_rank[lane.id] = "unknown"
-            self.lane_full_choice[lane.id] = None
-            self.lane_searching[lane.id] = (not ranked)
-            self.join_time.setdefault(lane.id, {})
-            try:
-                await member.move_to(lane, reason="TempVoice: Auto-Lane erstellt")
-            except Exception:
-                pass
-            # Name initial
-            await self._refresh_name(lane, force=True)
-            # LFG-Post bei Casual
-            if not ranked:
-                await self._post_lfg(lane, force=True)
-            return lane
-        except Exception as e:
-            log.info(f"create_lane_for Fehler: {e}")
-            return None
-
-# ===================== Cog-Setup =====================
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TempVoiceCog(bot))
