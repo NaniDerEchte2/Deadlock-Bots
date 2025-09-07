@@ -34,8 +34,6 @@ def _env_redirect() -> str:
     public_base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
     if public_base:
         return f"{public_base}/discord/callback"
-    # Harte Ansage: Für Discord können wir zur Not noch lokal arbeiten,
-    # aber für Steam OpenID erzwingen wir PUBLIC_BASE_URL. (Siehe unten.)
     host = os.getenv("HTTP_HOST", "127.0.0.1").strip()
     port = int(os.getenv("STEAM_OAUTH_PORT", os.getenv("HTTP_PORT", "8888")))
     scheme = "http" if host.startswith(("127.", "0.", "localhost")) else "https"
@@ -96,6 +94,7 @@ class SteamLink(commands.Cog):
       2) Wenn 0 Steam-Accounts in Discord: Fallback-Seite → Steam OpenID
       3) Optional: /link_steam → direkt Steam OpenID
       4) /steam/return → SteamID64 extrahieren → speichern
+      5) Nach Erfolg: DM an den User
     """
 
     def __init__(self, bot: commands.Bot):
@@ -155,6 +154,21 @@ class SteamLink(commands.Cog):
             return None
         return int(data["uid"])
 
+    async def _notify_user_linked(self, user_id: int, steam_ids: List[str]) -> None:
+        """Schickt dem User eine DM über den Bot. Ignoriert Fehler still (DMs ggf. deaktiviert)."""
+        try:
+            user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+            if not user:
+                return
+            if steam_ids:
+                sids = ", ".join(steam_ids)
+                txt = f"✅ Deine Verknüpfung war erfolgreich.\nVerknüpfte SteamID(s): **{sids}**"
+            else:
+                txt = "✅ Deine Verknüpfung war erfolgreich."
+            await user.send(txt)
+        except Exception as e:
+            log.info("Konnte User-DM nicht senden (id=%s): %s", user_id, e)
+
     def _build_discord_auth_url(self, uid: int) -> str:
         client_id = _env_client_id(self.bot)
         redirect_uri = _env_redirect()
@@ -207,10 +221,11 @@ class SteamLink(commands.Cog):
                     return None
                 return await r.json()
 
-    async def _save_steam_links_from_discord(self, user_id: int, conns: List[dict]) -> int:
+    async def _save_steam_links_from_discord(self, user_id: int, conns: List[dict]) -> List[str]:
+        """Speichert Steam-Links und gibt die gespeicherten SteamIDs zurück."""
+        saved_ids: List[str] = []
         if not conns:
-            return 0
-        cnt = 0
+            return saved_ids
         for c in conns:
             if c.get("type") != "steam":
                 continue
@@ -220,8 +235,8 @@ class SteamLink(commands.Cog):
             name = (c.get("name") or "").strip()
             verified = 1 if c.get("verified") else 0
             _save_steam_link_row(user_id, steam_id, name, verified)
-            cnt += 1
-        return cnt
+            saved_ids.append(steam_id)
+        return saved_ids
 
     # ---- Steam OpenID helpers (HART auf PUBLIC_BASE_URL) ---------------------
     def _require_public_base(self) -> None:
@@ -311,46 +326,34 @@ class SteamLink(commands.Cog):
         if conns is None:
             return web.Response(text="connections fetch failed", status=400)
 
-        saved = await self._save_steam_links_from_discord(uid, conns)
-        if saved > 0:
+        saved_ids = await self._save_steam_links_from_discord(uid, conns)
+        if saved_ids:
+            # DM senden
+            await self._notify_user_linked(uid, saved_ids)
             html = (
                 "<html><body style='font-family: system-ui, sans-serif'>"
                 "<h3>✅ Verknüpfung abgeschlossen</h3>"
-                f"<p>{saved} Steam-Account(s) wurden gespeichert.</p>"
+                f"<p>{len(saved_ids)} Steam-Account(s) wurden gespeichert.</p>"
                 "<p>Du kannst dieses Fenster jetzt schließen.</p>"
                 "</body></html>"
             )
             return web.Response(text=html, content_type="text/html")
 
         # --- Fallback: Steam OpenID über Zwischenseite (Meta-Refresh + Button)
-        try:
-            steam_state = self._mk_state(uid)
-            steam_login = self._build_steam_login_url(steam_state)
-            html = (
-                "<html><head>"
-                "<meta http-equiv='refresh' content='1; url=" + steam_login + "'/>"
-                "</head><body style='font-family: system-ui, sans-serif'>"
-                "<h3>Kein Steam-Account in deinen Discord-Verknüpfungen gefunden.</h3>"
-                "<p>Bitte melde dich kurz bei Steam an, um deinen Account zu bestätigen.</p>"
-                f"<p><a href='{steam_login}' style='padding:10px 14px;"
-                "background:#2a475e;color:#fff;border-radius:6px;text-decoration:none;'>Bei Steam anmelden</a></p>"
-                "<p><small>Wenn der Login blockiert wird, probiere ein privates Fenster oder Mobilnetz.</small></p>"
-                "</body></html>"
-            )
-            return web.Response(text=html, content_type="text/html")
-        except Exception as e:
-            # Öffentliche, klare Fehlseite bei fehlender PUBLIC_BASE_URL
-            html = (
-                "<html><body style='font-family: system-ui, sans-serif'>"
-                "<h3>❌ Steam-Login momentan nicht möglich</h3>"
-                "<p><b>PUBLIC_BASE_URL</b> ist nicht gesetzt oder ungültig. "
-                "Bitte setze sie in der .env, z. B.:<br>"
-                "<code>PUBLIC_BASE_URL=https://link.earlysalty.com</code></p>"
-                "<p>Danach Bot neu starten und erneut versuchen.</p>"
-                f"<p><small>Technischer Hinweis: {e}</small></p>"
-                "</body></html>"
-            )
-            return web.Response(text=html, content_type="text/html", status=500)
+        steam_state = self._mk_state(uid)
+        steam_login = self._build_steam_login_url(steam_state)
+        html = (
+            "<html><head>"
+            "<meta http-equiv='refresh' content='1; url=" + steam_login + "'/>"
+            "</head><body style='font-family: system-ui, sans-serif'>"
+            "<h3>Kein Steam-Account in deinen Discord-Verknüpfungen gefunden.</h3>"
+            "<p>Bitte melde dich kurz bei Steam an, um deinen Account zu bestätigen.</p>"
+            f"<p><a href='{steam_login}' style='padding:10px 14px;"
+            "background:#2a475e;color:#fff;border-radius:6px;text-decoration:none;'>Bei Steam anmelden</a></p>"
+            "<p><small>Falls eine Schutzsoftware blockt, öffne den Link ggf. in einem privaten Fenster oder über Mobilnetz.</small></p>"
+            "</body></html>"
+        )
+        return web.Response(text=html, content_type="text/html")
 
     async def handle_steam_login(self, request: web.Request) -> web.Response:
         # Optional: manuell anstoßbar – erwartet ?uid=<discord_id>
@@ -359,10 +362,7 @@ class SteamLink(commands.Cog):
             return web.Response(text="missing uid", status=400)
         uid = int(uid_q)
         s = self._mk_state(uid)
-        try:
-            login_url = self._build_steam_login_url(s)
-        except Exception as e:
-            return web.Response(text=f"Steam Login nicht möglich: {e}", status=500)
+        login_url = self._build_steam_login_url(s)
         html = (
             "<html><body style='font-family: system-ui, sans-serif'>"
             "<h3>Weiter zu Steam</h3>"
@@ -383,6 +383,9 @@ class SteamLink(commands.Cog):
                 return web.Response(text="OpenID validation failed", status=400)
 
             _save_steam_link_row(uid, steam_id)
+
+            # DM senden
+            await self._notify_user_linked(uid, [steam_id])
 
             body = (
                 "<h3>✅ Verknüpfung abgeschlossen</h3>"
@@ -408,19 +411,16 @@ class SteamLink(commands.Cog):
             "🔗 **Klicke zum Verknüpfen (Discord OAuth2):**\n"
             f"{url}\n\n"
             "• Scopes: `identify`, `connections`\n"
-            "• Falls dort **kein Steam** hinterlegt ist, leite ich dich auf die Steam-Anmeldeseite weiter."
+            "• Falls dort **kein Steam** hinterlegt ist, leite ich dich auf die Steam-Anmeldeseite weiter.\n"
+            "• **Ich schicke dir eine DM**, sobald die Verknüpfung durch ist."
         )
         await self._send_ephemeral(ctx, msg)
 
     @commands.hybrid_command(name="link_steam", description="Direkt: Steam-Login (OpenID) starten")
     async def link_steam(self, ctx: commands.Context) -> None:
-        try:
-            s = self._mk_state(ctx.author.id)
-            login_url = self._build_steam_login_url(s)
-        except Exception as e:
-            await self._send_ephemeral(ctx, f"❌ Steam-Login nicht möglich: `{e}` – setze PUBLIC_BASE_URL.")
-            return
-        await self._send_ephemeral(ctx, f"🔗 **Direkt zu Steam:**\n{login_url}")
+        s = self._mk_state(ctx.author.id)
+        login_url = self._build_steam_login_url(s)
+        await self._send_ephemeral(ctx, f"🔗 **Direkt zu Steam:**\n{login_url}\n\n• **Ich schicke dir eine DM**, sobald die Verknüpfung durch ist.")
 
     @commands.hybrid_command(name="links", description="Zeigt deine gespeicherten Steam-Links")
     async def links(self, ctx: commands.Context) -> None:
