@@ -1,4 +1,4 @@
-# main_bot.py
+# main_bot.py 
 # Deadlock Master Bot – sichere Secrets, zentrale DB, rekursive Cog-Auto-Discovery
 
 from __future__ import annotations
@@ -496,6 +496,39 @@ class MasterBot(commands.Bot):
             except Exception as e:
                 logging.error(f"Health check error: {e}")
 
+    # --------- NEU: gezielter Reload für den Ordner cogs/live_match ----------
+    async def reload_live_match_folder(self) -> Dict[str, str]:
+        """
+        Lädt alle Cogs neu, deren Modulpfad mit 'cogs.live_match.' beginnt,
+        ausgenommen Worker-Module (siehe _should_exclude).
+        Nutzt aktuelle Auto-Discovery, damit neu hinzugekommene Dateien
+        berücksichtigt werden.
+        """
+        self.auto_discover_cogs()
+        targets = [
+            mod for mod in self.cogs_list
+            if mod.startswith("cogs.live_match.")
+            and not self._should_exclude(mod)
+        ]
+
+        results: Dict[str, str] = {}
+        for mod in targets:
+            try:
+                if mod in self.extensions:
+                    await self.reload_extension(mod)
+                    results[mod] = "reloaded"
+                    logging.info(f"🔁 Reloaded {mod}")
+                else:
+                    await self.load_extension(mod)
+                    results[mod] = "loaded"
+                    logging.info(f"✅ Loaded {mod}")
+                self.cog_status[mod] = "loaded"
+            except Exception as e:
+                results[mod] = f"error: {str(e)[:200]}"
+                self.cog_status[mod] = f"error: {str(e)[:100]}"
+                logging.error(f"❌ Reload error for {mod}: {e}")
+        return results
+
     async def close(self):
         logging.info("Master Bot shutting down...")
         for ext_name in [ext for ext in list(self.extensions.keys()) if ext.startswith("cogs.")]:
@@ -536,6 +569,7 @@ class MasterControlCog(commands.Cog):
                 f"`{p}master status` - Bot Status\n"
                 f"`{p}master reload [cog]` - Cog neu laden\n"
                 f"`{p}master reloadall` - Alle Cogs neu laden + Auto-Discovery\n"
+                f"`{p}master reloadlive` - Alle Live-Match Cogs neu laden (Ordner)\n"
                 f"`{p}master discover` - Neue Cogs entdecken (ohne laden)\n"
                 f"`{p}master shutdown` - Bot beenden"
             ),
@@ -636,6 +670,26 @@ class MasterControlCog(commands.Cog):
 
         await msg.edit(embed=final)
 
+    # --------- NEU: zentraler Reload für cogs/live_match ----------
+    @master_control.command(name="reloadlive", aliases=["rllm", "reload_livematch", "reload_lm"])
+    async def master_reload_live_folder(self, ctx):
+        results = await self.bot.reload_live_match_folder()
+
+        ok = [k for k, v in results.items() if v in ("reloaded", "loaded")]
+        err = {k: v for k, v in results.items() if v.startswith("error:")}
+
+        embed = discord.Embed(
+            title="🎯 Reload: cogs/live_match",
+            description="Alle Live-Match Cogs neu geladen.",
+            color=0x00FF00 if not err else 0xFFAA00,
+        )
+        if ok:
+            embed.add_field(name="✅ Erfolgreich", value="\n".join(f"• {k.split('.')[-1]} ({results[k]})" for k in ok), inline=False)
+        if err:
+            embed.add_field(name="⚠️ Fehler", value="\n".join(f"• {k.split('.')[-1]}: {v}" for k, v in err.items()), inline=False)
+
+        await ctx.send(embed=embed)
+
     @master_control.command(name="discover", aliases=["disc"])
     async def master_discover(self, ctx):
         old_count = len(self.bot.cogs_list)
@@ -672,15 +726,72 @@ class MasterControlCog(commands.Cog):
 
 
 # =====================================================================
+# Graceful Shutdown Hilfsroutine (NEU)
+# =====================================================================
+_shutdown_started = False
+
+async def _graceful_shutdown(bot: MasterBot, reason: str = "signal", timeout: float = 5.0):
+    """
+    Sorgt für ein sauberes Beenden:
+      - bot.close()
+      - restliche Tasks abbrechen
+      - kurze Wartezeit für Cleanup
+      - als eiserne Reserve harter Exit nach Timeout
+    """
+    global _shutdown_started
+    if _shutdown_started:
+        return
+    _shutdown_started = True
+
+    logging.info(f"Graceful shutdown initiated ({reason}) ...")
+    try:
+        await bot.close()
+    except Exception as e:
+        logging.error(f"Error during bot.close(): {e}")
+
+    # Übrige Tasks abbrechen (außer dieser)
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    for t in pending:
+        t.cancel()
+    try:
+        await asyncio.gather(*pending, return_exceptions=True)
+    except Exception:
+        pass
+
+    # Mini-Verschnaufpause fürs Runtime-Cleanup
+    try:
+        await asyncio.sleep(0)
+    except Exception:
+        pass
+
+    # Sicherheit: falls noch irgendwas hängt, hart beenden
+    try:
+        loop = asyncio.get_running_loop()
+        stopper = loop.create_future()
+        loop.call_later(timeout, lambda: (not stopper.done()) and stopper.set_result(True))
+        await stopper
+    except Exception:
+        pass
+    finally:
+        # Ultima Ratio: harter Exit, falls Prozess wider Erwarten nicht endet
+        os._exit(0)
+
+
+# =====================================================================
 # main
 # =====================================================================
 async def main():
     bot = MasterBot()
     await bot.add_cog(MasterControlCog(bot))
 
+    # Signal-Handler: Strg+C / kill -> sauberer Shutdown
     def _sig_handler(signum, frame):
         logging.info(f"Received signal {signum}, shutting down gracefully...")
-        asyncio.create_task(bot.close())
+        try:
+            asyncio.get_running_loop().create_task(_graceful_shutdown(bot, reason=f"signal {signum}"))
+        except RuntimeError:
+            # Falls kein Loop läuft (sehr unwahrscheinlich hier), sofort hart beenden
+            os._exit(0)
 
     try:
         signal.signal(signal.SIGINT, _sig_handler)
@@ -696,13 +807,15 @@ async def main():
     try:
         await bot.start(token)
     except KeyboardInterrupt:
+        # Falls Python selbst den KeyboardInterrupt wirft: ebenfalls sauber schließen
         logging.info("Keyboard interrupt received, shutting down...")
+        await _graceful_shutdown(bot, reason="KeyboardInterrupt")
     except Exception as e:
         logging.error(f"Bot crashed: {e}")
         logging.error(traceback.format_exc())
     finally:
         if not bot.is_closed():
-            await bot.close()
+            await _graceful_shutdown(bot, reason="finally-clause")
 
 
 if __name__ == "__main__":
