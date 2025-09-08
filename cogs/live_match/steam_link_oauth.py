@@ -86,6 +86,54 @@ def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: 
         (int(user_id), str(steam_id), name or "", int(verified)),
     )
 
+# ----------------------- Middleware (Top-Level) -------------------------------
+@web.middleware
+async def security_headers_mw(request: web.Request, handler):
+    try:
+        resp = await handler(request)
+
+    except web.HTTPException as ex:
+        # 404/405 sind normal – keine ERROR-Logs, eigene kurze Antwort
+        if ex.status in (404, 405):
+            resp = web.Response(
+                text="Not Found" if ex.status == 404 else "Method Not Allowed",
+                status=ex.status,
+                content_type="text/plain",
+            )
+        else:
+            # andere HTTP-Fehler als Response weiterreichen, damit wir Header setzen können
+            resp = ex
+
+    except Exception:
+        # Nur echte 5xx-Ausreißer loggen
+        log.exception("Unhandled error in request")
+        resp = web.Response(
+            text=(
+                "<html><body style='font-family: system-ui, sans-serif'>"
+                "<h3>❌ Unerwarteter Fehler</h3>"
+                "<p>Bitte versuche es erneut. Wenn das Problem bleibt, kontaktiere den Admin.</p>"
+                "</body></html>"
+            ),
+            content_type="text/html",
+            status=500,
+        )
+
+    # Security Headers (auch bei 404 etc.)
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["X-Robots-Tag"] = "noindex, nofollow"
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'none'; "
+        "style-src 'unsafe-inline'; "
+        "form-action https://steamcommunity.com; "
+        "base-uri 'none'; "
+        "frame-ancestors 'none'"
+    )
+    return resp
+
 # ----------------------- Cog --------------------------------------------------
 class SteamLink(commands.Cog):
     """
@@ -100,48 +148,20 @@ class SteamLink(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-        # Security-Header Middleware
-        @web.middleware
-        async def security_headers_mw(request: web.Request, handler):
-            try:
-                resp = await handler(request)
-            except Exception:
-                # Wir loggen intern, zeigen dem User aber keine Details
-                log.exception("Unhandled error in request")
-                return web.Response(
-                    text=(
-                        "<html><body style='font-family: system-ui, sans-serif'>"
-                        "<h3>❌ Unerwarteter Fehler</h3>"
-                        "<p>Bitte versuche es erneut. Wenn das Problem bleibt, kontaktiere den Admin.</p>"
-                        "</body></html>"
-                    ),
-                    content_type="text/html",
-                    status=500,
-                )
-            # Security Headers (keine sensiblen Responses cachen, kein Einbetten, restriktive CSP)
-            resp.headers["Cache-Control"] = "no-store"
-            resp.headers["Pragma"] = "no-cache"
-            resp.headers["X-Content-Type-Options"] = "nosniff"
-            resp.headers["X-Frame-Options"] = "DENY"
-            resp.headers["Referrer-Policy"] = "no-referrer"
-            resp.headers["X-Robots-Tag"] = "noindex, nofollow"
-            # Inline-Styles nutzen wir minimal in HTML → style-src 'unsafe-inline'
-            resp.headers["Content-Security-Policy"] = (
-                "default-src 'none'; "
-                "style-src 'unsafe-inline'; "
-                "form-action https://steamcommunity.com; "
-                "base-uri 'none'; "
-                "frame-ancestors 'none'"
-            )
-            return resp
-
+        # Aiohttp-App mit Middleware
         self.app = web.Application(middlewares=[security_headers_mw])
+
         # HTTP-Routen
         self.app.router.add_get("/", self.handle_index)
         self.app.router.add_get("/health", self.handle_health)
         self.app.router.add_get("/discord/callback", self.handle_discord_callback)
-        self.app.router.add_get("/steam/login", self.handle_steam_login)     # manuell anstoßbar
-        self.app.router.add_get(STEAM_RETURN_PATH, self.handle_steam_return) # OpenID-Return
+        self.app.router.add_get("/steam/login", self.handle_steam_login)      # manuell anstoßbar
+        self.app.router.add_get(STEAM_RETURN_PATH, self.handle_steam_return)  # OpenID-Return
+
+        # „Weiches“ Handling für Browser-Anfragen
+        self.app.router.add_get("/favicon.ico", self.handle_favicon)
+        self.app.router.add_get("/robots.txt", self.handle_robots)
+
         self._runner: Optional[web.AppRunner] = None
 
         # In-Memory states (10 min)
@@ -340,6 +360,13 @@ class SteamLink(commands.Cog):
 
     async def handle_health(self, request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "ts": int(time.time())})
+
+    async def handle_favicon(self, request: web.Request) -> web.Response:
+        # Wir liefern bewusst kein Icon aus (still)
+        return web.Response(status=204)
+
+    async def handle_robots(self, request: web.Request) -> web.Response:
+        return web.Response(text="User-agent: *\nDisallow: /\n", content_type="text/plain")
 
     async def handle_discord_callback(self, request: web.Request) -> web.Response:
         code = request.query.get("code")
