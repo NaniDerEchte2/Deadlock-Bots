@@ -11,8 +11,9 @@ from pathlib import Path
 DOTENV_PATH = Path(r"C:\Users\Nani-Admin\Documents\.env")
 load_dotenv(dotenv_path=DOTENV_PATH, override=True)
 
-
 STEAM_API = "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/"
+DEADLOCK_APP_ID = "1422450"
+TEAM_SIZE = 6  # Deadlock 6er Teams
 
 def get_env(name: str, default: str = "") -> str:
     v = os.getenv(name, default)
@@ -20,50 +21,58 @@ def get_env(name: str, default: str = "") -> str:
         return default
     return v.strip()
 
-def fetch_player_summary(steam_api_key: str, steam_id: str, timeout: float = 10.0) -> dict:
+def fetch_player_summaries(steam_api_key: str, steam_ids: list[str], timeout: float = 10.0) -> list[dict]:
     params = {
         "key": steam_api_key,
-        "steamids": steam_id,
+        "steamids": ",".join(steam_ids),
     }
     r = requests.get(STEAM_API, params=params, timeout=timeout)
     r.raise_for_status()
     data = r.json()
-    players = data.get("response", {}).get("players", [])
-    return players[0] if players else {}
+    return data.get("response", {}).get("players", [])
 
 def decide_match_state(p: dict, deadlock_app_id: str) -> dict:
-    # Fields of interest
     gameid = str(p.get("gameid", "")) if p.get("gameid") is not None else ""
-    gameextrainfo = p.get("gameextrainfo")
     lobby = p.get("lobbysteamid")
     server = p.get("gameserversteamid")
-    visibility = p.get("communityvisibilitystate")  # 3=public, 1=private
-    profile_state = p.get("profilestate")          # 1=setup complete
 
     in_deadlock_now = (gameid == str(deadlock_app_id))
-    # "Streng": wir werten "im Match" nur dann als True,
-    # wenn zusätzlich Lobby ODER Server-ID gesetzt ist.
-    in_match_now_strict = in_deadlock_now and (bool(lobby) or bool(server))
+    in_lobby = in_deadlock_now and lobby and not server
+    in_match = in_deadlock_now and bool(server)
 
     return {
         "steam_id": p.get("steamid"),
         "personaname": p.get("personaname"),
-        "communityvisibilitystate": visibility,
-        "profilestate": profile_state,
         "in_deadlock_now": in_deadlock_now,
-        "in_match_now_strict": in_match_now_strict,
-        "gameid": gameid or None,
-        "gameextrainfo": gameextrainfo,
+        "in_lobby": in_lobby,
+        "in_match": in_match,
         "lobbysteamid": lobby,
         "gameserversteamid": server,
         "ts": int(time.time()),
     }
 
+def analyze_group(results: list[dict]) -> dict:
+    """ Analysiert ob Spieler in gleicher Lobby oder Match sind """
+    lobby_groups = {}
+    match_groups = {}
+
+    for r in results:
+        if r["in_lobby"]:
+            lobby_groups.setdefault(r["lobbysteamid"], []).append(r)
+        if r["in_match"]:
+            match_groups.setdefault(r["gameserversteamid"], []).append(r)
+
+    return {
+        "lobby_groups": lobby_groups,
+        "match_groups": match_groups,
+    }
+
 def main():
     load_dotenv()
-    parser = argparse.ArgumentParser(description="Check: Is player in a Deadlock match (now)?")
-    parser.add_argument("--steam-id", dest="steam_id", help="SteamID64 (17-stellig). Falls leer, wird .env STEAM_ID genutzt.")
-    parser.add_argument("--app-id", dest="app_id", default=get_env("DEADLOCK_APP_ID", "1422450"),
+    parser = argparse.ArgumentParser(description="Check group Deadlock status")
+    parser.add_argument("--steam-ids", dest="steam_ids", nargs="+",
+                        help="SteamID64 Liste (17-stellig). Falls leer, wird .env STEAM_ID genutzt.")
+    parser.add_argument("--app-id", dest="app_id", default=get_env("DEADLOCK_APP_ID", DEADLOCK_APP_ID),
                         help="Deadlock AppID (default 1422450).")
     parser.add_argument("--pretty", action="store_true", help="Hübsch formatiertes JSON ausgeben.")
     args = parser.parse_args()
@@ -73,27 +82,39 @@ def main():
         print("ERROR: STEAM_API_KEY fehlt (in .env setzen).", file=sys.stderr)
         sys.exit(2)
 
-    steam_id = args.steam_id or get_env("STEAM_ID")
-    if not steam_id:
-        print("ERROR: SteamID fehlt (Argument --steam-id oder .env STEAM_ID).", file=sys.stderr)
+    steam_ids = args.steam_ids or [get_env("STEAM_ID")]
+    if not steam_ids or not steam_ids[0]:
+        print("ERROR: SteamIDs fehlen (Argument --steam-ids oder .env STEAM_ID).", file=sys.stderr)
         sys.exit(2)
 
     try:
-        p = fetch_player_summary(steam_api_key, steam_id)
-        if not p:
-            print("WARN: Kein Player gefunden. Ist die SteamID korrekt/öffentlich?")
-            sys.exit(3)
+        players = fetch_player_summaries(steam_api_key, steam_ids)
+        results = [decide_match_state(p, args.app_id) for p in players]
+        group_info = analyze_group(results)
 
-        result = decide_match_state(p, args.app_id)
+        # Konsolen-Ausgabe
+        for r in results:
+            if r["in_match"]:
+                status = "✅ Im Match"
+            elif r["in_lobby"]:
+                status = "🟡 In Lobby"
+            elif r["in_deadlock_now"]:
+                status = "⚪ Spiel offen, aber idle"
+            else:
+                status = "❌ Nicht im Spiel"
+            print(f"[{r['steam_id']}] {r['personaname']}: {status}")
 
-        # Kurzer Klartext + JSON
-        status_txt = "✅ JA (streng)" if result["in_match_now_strict"] else ("🟡 Im Spiel, aber nicht eindeutig im Match" if result["in_deadlock_now"] else "❌ NEIN")
-        print(f"[{steam_id}] Deadlock-Match jetzt? {status_txt}")
+        # Gruppenauswertung für Voice-Channel
+        for lobby_id, members in group_info["lobby_groups"].items():
+            print(f"🎮 Lobby {lobby_id}: {len(members)}/{TEAM_SIZE} Spieler ({TEAM_SIZE - len(members)} frei)")
+        for server_id, members in group_info["match_groups"].items():
+            print(f"🔥 Match {server_id}: {len(members)} Spieler im gleichen Match")
+
         if args.pretty:
-            print(json.dumps(result, ensure_ascii=False, indent=2))
+            print(json.dumps({"results": results, "groups": group_info}, ensure_ascii=False, indent=2))
         else:
-            print(json.dumps(result, ensure_ascii=False))
-        # Exit-Code: 0 = erreichbar, 1 = nicht im Match, 0 bleibt sinnvoll
+            print(json.dumps({"results": results, "groups": group_info}, ensure_ascii=False))
+
         sys.exit(0)
 
     except requests.HTTPError as e:

@@ -322,7 +322,8 @@ class SteamLink(commands.Cog):
             "openid.claimed_id": IDENTIFIER_SELECT,
         }
         url = f"{STEAM_OPENID_ENDPOINT}?{urlencode(params)}"
-        safe = url.replace(state, "[state]")
+        safe = url.replace(state, "[state]"
+        )
         log.info("Steam OpenID URL (safe): %s", safe)
         return url
 

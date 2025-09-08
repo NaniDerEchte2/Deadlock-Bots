@@ -3,15 +3,15 @@
 # LiveMatchMaster – Steam-Status auswerten & pro Voice-Lane gruppieren
 # (Keine Channel-Umbenennungen hier! Das macht der Worker-Bot.)
 #
-# DB-Tabellen (erwartet):
+# DB-Tabellen (werden automatisch angelegt):
 #   steam_links(user_id BIGINT, steam_id TEXT, ...)
 #   live_lane_members(channel_id BIGINT, user_id BIGINT, in_match INT, server_id TEXT, checked_ts INT)
 #   live_lane_state(channel_id BIGINT PRIMARY KEY, is_active INT, last_update INT, suffix TEXT, reason TEXT)
 #
 # Anzeige/Suffix:
-#   • n/cap Im Match        -> Mehrheit (>= MIN_MATCH_GROUP) teilt gameserversteamid
-#   • x/cap Im Spiel        -> einige sind auf Servern, aber ohne stabile Mehrheit
-#   • x/cap Lobby/Queue     -> in Deadlock, aber ohne Server-ID (Queue/Lobby/Loading)
+#   • n/cap Im Match        -> stabile Mehrheit (>= MIN_MATCH_GROUP) teilt gameserversteamid über REQUIRE_STABILITY_SEC
+#   • x/cap Im Spiel        -> mind. ein Server, aber keine stabile Mehrheit (Queue/Pre-Game/verschiedene Server)
+#   • x/cap Lobby/Queue     -> in Deadlock, aber ohne Server-ID (reine Lobby/Loading)
 # ------------------------------------------------------------
 
 import os
@@ -34,7 +34,7 @@ log = logging.getLogger("LiveMatchMaster")
 # ===== Konfiguration über ENV =====
 LIVE_CATEGORIES = [int(x) for x in os.getenv(
     "LIVE_CATEGORIES",
-    "1289721245281292290,1357422957017698478"
+    "1289721245281292290,1357422957017698478"  # Beispiel: Casual, Ranked
 ).split(",") if x.strip()]
 
 DEADLOCK_APP_ID = os.getenv("DEADLOCK_APP_ID", "1422450")
@@ -50,13 +50,50 @@ DEFAULT_RANKED_CAP       = int(os.getenv("DEFAULT_RANKED_CAP", "6"))
 # Heuristik-Parameter
 REQUIRE_STABILITY_SEC    = int(os.getenv("REQUIRE_STABILITY_SEC", "30"))   # Mehrheit muss so lange stabil sein
 LOBBY_GRACE_SEC          = int(os.getenv("LOBBY_GRACE_SEC", "90"))        # kurze Lücke (Ladebildschirm)
-MATCH_MIN_MINUTES        = int(os.getenv("MATCH_MIN_MINUTES", "15"))      # informativ
+MATCH_MIN_MINUTES        = int(os.getenv("MATCH_MIN_MINUTES", "15"))      # rein informativ
 
 PHASE_OFF   = "OFF"
 PHASE_LOBBY = "LOBBY"   # in DL, aber keine Server-ID -> Queue/Lobby/Loading
-PHASE_GAME  = "GAME"    # verstreut auf Servern, keine stabile Mehrheit
+PHASE_GAME  = "GAME"    # Leute auf Servern, aber keine stabile Mehrheit
 PHASE_MATCH = "MATCH"   # stabile Mehrheit auf einem Server
 
+# ===== Schema automatisch sicherstellen =====
+def _ensure_schema() -> None:
+    # steam_links kann aus dem Link-Cog kommen – hier nur zur Sicherheit schlank anlegen
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS steam_links(
+          user_id         INTEGER NOT NULL,
+          steam_id        TEXT    NOT NULL,
+          name            TEXT,
+          verified        INTEGER DEFAULT 0,
+          primary_account INTEGER DEFAULT 0,
+          created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (user_id, steam_id)
+        )
+    """)
+    db.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_user ON steam_links(user_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)")
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS live_lane_members(
+          channel_id  INTEGER NOT NULL,
+          user_id     INTEGER NOT NULL,
+          in_match    INTEGER NOT NULL DEFAULT 0,
+          server_id   TEXT,
+          checked_ts  INTEGER NOT NULL,
+          PRIMARY KEY (channel_id, user_id)
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS live_lane_state(
+          channel_id  INTEGER PRIMARY KEY,
+          is_active   INTEGER NOT NULL DEFAULT 0,
+          last_update INTEGER NOT NULL,
+          suffix      TEXT,
+          reason      TEXT
+        )
+    """)
 
 class LiveMatchMaster(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -67,6 +104,7 @@ class LiveMatchMaster(commands.Cog):
 
     async def cog_load(self):
         db.connect()
+        _ensure_schema()
         if not self._started:
             self.scan_loop.start()
             self._started = True
