@@ -726,17 +726,16 @@ class MasterControlCog(commands.Cog):
 
 
 # =====================================================================
-# Graceful Shutdown Hilfsroutine (NEU)
+# Graceful Shutdown Hilfsroutine (robust + Timeout + Doppel-SIGINT)
 # =====================================================================
 _shutdown_started = False
 
-async def _graceful_shutdown(bot: MasterBot, reason: str = "signal", timeout: float = 5.0):
+async def _graceful_shutdown(bot: MasterBot, reason: str = "signal", timeout_close: float = 5.0, timeout_total: float = 8.0):
     """
-    Sorgt für ein sauberes Beenden:
-      - bot.close()
-      - restliche Tasks abbrechen
-      - kurze Wartezeit für Cleanup
-      - als eiserne Reserve harter Exit nach Timeout
+    Sauberes Beenden mit Notbremse:
+      - bot.close() mit Timeout
+      - restliche Tasks canceln + kurze Wartezeit
+      - Ultima Ratio: harter Exit
     """
     global _shutdown_started
     if _shutdown_started:
@@ -744,36 +743,30 @@ async def _graceful_shutdown(bot: MasterBot, reason: str = "signal", timeout: fl
     _shutdown_started = True
 
     logging.info(f"Graceful shutdown initiated ({reason}) ...")
+
+    # 1) Bot sauber schließen (mit Timeout)
     try:
-        await bot.close()
+        await asyncio.wait_for(bot.close(), timeout=timeout_close)
+        logging.info("bot.close() returned")
+    except asyncio.TimeoutError:
+        logging.error(f"bot.close() timed out after {timeout_close:.1f}s")
     except Exception as e:
         logging.error(f"Error during bot.close(): {e}")
 
-    # Übrige Tasks abbrechen (außer dieser)
+    # 2) Übrige Tasks abbrechen (außer dieser)
     pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     for t in pending:
         t.cancel()
     try:
-        await asyncio.gather(*pending, return_exceptions=True)
+        await asyncio.wait(pending, timeout=max(0.0, timeout_total - timeout_close))
     except Exception:
         pass
 
-    # Mini-Verschnaufpause fürs Runtime-Cleanup
-    try:
-        await asyncio.sleep(0)
-    except Exception:
-        pass
-
-    # Sicherheit: falls noch irgendwas hängt, hart beenden
+    # 3) Sicherheit: harter Exit (falls noch was hängt)
     try:
         loop = asyncio.get_running_loop()
-        stopper = loop.create_future()
-        loop.call_later(timeout, lambda: (not stopper.done()) and stopper.set_result(True))
-        await stopper
+        loop.call_soon(os._exit, 0)
     except Exception:
-        pass
-    finally:
-        # Ultima Ratio: harter Exit, falls Prozess wider Erwarten nicht endet
         os._exit(0)
 
 
@@ -786,11 +779,14 @@ async def main():
 
     # Signal-Handler: Strg+C / kill -> sauberer Shutdown
     def _sig_handler(signum, frame):
+        # Doppeltes Strg+C -> sofort harter Exit (wie man’s schon immer gemacht hat, wenn’s klemmt)
+        if _shutdown_started:
+            logging.error("Second signal received -> hard exit now.")
+            os._exit(1)
         logging.info(f"Received signal {signum}, shutting down gracefully...")
         try:
             asyncio.get_running_loop().create_task(_graceful_shutdown(bot, reason=f"signal {signum}"))
         except RuntimeError:
-            # Falls kein Loop läuft (sehr unwahrscheinlich hier), sofort hart beenden
             os._exit(0)
 
     try:
@@ -807,7 +803,6 @@ async def main():
     try:
         await bot.start(token)
     except KeyboardInterrupt:
-        # Falls Python selbst den KeyboardInterrupt wirft: ebenfalls sauber schließen
         logging.info("Keyboard interrupt received, shutting down...")
         await _graceful_shutdown(bot, reason="KeyboardInterrupt")
     except Exception as e:
