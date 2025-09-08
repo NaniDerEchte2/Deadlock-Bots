@@ -86,10 +86,10 @@ def _log_secret_present(name: str, env_keys: List[str], mode: str = "off") -> No
                 break
         if not val or mode == "off":
             return
-        if mode == "present":
+        if mode in ("present", "masked"):
             logging.info("%s: vorhanden (Wert wird nicht geloggt)", name)
-        elif mode == "masked":
-            logging.info("%s: %s", name, _mask_tail(val))
+        # Niemals Secret-Wert loggen, selbst teilweise nicht!
+        # "masked"-Modus loggt nur die Existenz wie "present"
     except Exception:
         # Niemals Exceptions werfen beim Secret-Logging
         pass
