@@ -4,6 +4,7 @@ import re
 import time
 import uuid
 import logging
+import html
 from typing import Dict, Optional, List
 from urllib.parse import urlencode, urljoin
 
@@ -93,7 +94,7 @@ async def security_headers_mw(request: web.Request, handler):
         resp = await handler(request)
 
     except web.HTTPException as ex:
-        # 404/405 sind normal – keine ERROR-Logs, eigene kurze Antwort
+        # 404/405 sind normal – keine ERROR-Logs, kurze Antwort
         if ex.status in (404, 405):
             resp = web.Response(
                 text="Not Found" if ex.status == 404 else "Method Not Allowed",
@@ -101,7 +102,7 @@ async def security_headers_mw(request: web.Request, handler):
                 content_type="text/plain",
             )
         else:
-            # andere HTTP-Fehler als Response weiterreichen, damit wir Header setzen können
+            # andere HTTP-Fehler als Response weiterreichen
             resp = ex
 
     except Exception:
@@ -171,7 +172,7 @@ class SteamLink(commands.Cog):
     async def cog_load(self) -> None:
         _ensure_schema()
 
-        # Access-Logs stark reduzieren (keine Querystrings/Callback-Codes im Log)
+        # Access-Logs reduzieren
         logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
         cid = _env_client_id(self.bot)
@@ -343,20 +344,26 @@ class SteamLink(commands.Cog):
         claimed_id = query.get("openid.claimed_id", "")
         m = re.search(r"/openid/id/(\d+)$", claimed_id)
         if m:
-            return m.group(1)
-        m = re.search(r"/id/(\d+)$", claimed_id)
-        return m.group(1) if m else None
+            sid = m.group(1)
+        else:
+            m = re.search(r"/id/(\d+)$", claimed_id)
+            sid = m.group(1) if m else None
+
+        # Strikte Validierung – trotzdem in der Ausgabe weiter escapen
+        if sid and re.fullmatch(r"\d{17}", sid):
+            return sid
+        return None
 
     # --------------- HTTP-Handler --------------------------------------------
     async def handle_index(self, request: web.Request) -> web.Response:
-        html = (
+        html_doc = (
             "<html><body style='font-family: system-ui, sans-serif'>"
             "<h2>Deadlock Bot – Link Service</h2>"
             "<p>✅ Server läuft. Nutze im Discord <code>/link</code> oder <code>/link_steam</code>.</p>"
             "<p><a href='/health'>Health-Check</a></p>"
             "</body></html>"
         )
-        return web.Response(text=html, content_type="text/html")
+        return web.Response(text=html_doc, content_type="text/html")
 
     async def handle_health(self, request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "ts": int(time.time())})
@@ -393,30 +400,32 @@ class SteamLink(commands.Cog):
         saved_ids = await self._save_steam_links_from_discord(uid, conns)
         if saved_ids:
             await self._notify_user_linked(uid, saved_ids)
-            html = (
+            html_doc = (
                 "<html><body style='font-family: system-ui, sans-serif'>"
                 "<h3>✅ Verknüpfung abgeschlossen</h3>"
                 f"<p>{len(saved_ids)} Steam-Account(s) wurden gespeichert.</p>"
                 "<p>Du kannst dieses Fenster jetzt schließen.</p>"
                 "</body></html>"
             )
-            return web.Response(text=html, content_type="text/html")
+            return web.Response(text=html_doc, content_type="text/html")
 
         # Fallback: Steam OpenID (Meta-Refresh + Button)
         steam_state = self._mk_state(uid)
         steam_login = self._build_steam_login_url(steam_state)
-        html = (
+        steam_login_safe = html.escape(steam_login, quote=True)
+
+        html_doc = (
             "<html><head>"
-            "<meta http-equiv='refresh' content='1; url=" + steam_login + "'/>"
+            f"<meta http-equiv='refresh' content=\"1; url={steam_login_safe}\"/>"
             "</head><body style='font-family: system-ui, sans-serif'>"
             "<h3>Kein Steam-Account in deinen Discord-Verknüpfungen gefunden.</h3>"
             "<p>Bitte melde dich kurz bei Steam an, um deinen Account zu bestätigen.</p>"
-            f"<p><a href='{steam_login}' style='padding:10px 14px;"
+            f"<p><a href=\"{steam_login_safe}\" style='padding:10px 14px;"
             "background:#2a475e;color:#fff;border-radius:6px;text-decoration:none;'>Bei Steam anmelden</a></p>"
             "<p><small>Falls eine Schutzsoftware blockt, öffne den Link ggf. in einem privaten Fenster oder über Mobilnetz.</small></p>"
             "</body></html>"
         )
-        return web.Response(text=html, content_type="text/html")
+        return web.Response(text=html_doc, content_type="text/html")
 
     async def handle_steam_login(self, request: web.Request) -> web.Response:
         uid_q = request.query.get("uid")
@@ -425,13 +434,14 @@ class SteamLink(commands.Cog):
         uid = int(uid_q)
         s = self._mk_state(uid)
         login_url = self._build_steam_login_url(s)
-        html = (
+        login_url_safe = html.escape(login_url, quote=True)
+        html_doc = (
             "<html><body style='font-family: system-ui, sans-serif'>"
             "<h3>Weiter zu Steam</h3>"
-            f"<p><a href='{login_url}'>Steam Login öffnen</a></p>"
+            f"<p><a href=\"{login_url_safe}\">Steam Login öffnen</a></p>"
             "</body></html>"
         )
-        return web.Response(text=html, content_type="text/html")
+        return web.Response(text=html_doc, content_type="text/html")
 
     async def handle_steam_return(self, request: web.Request) -> web.Response:
         try:
@@ -447,9 +457,10 @@ class SteamLink(commands.Cog):
             _save_steam_link_row(uid, steam_id)
             await self._notify_user_linked(uid, [steam_id])
 
+            steam_id_safe = html.escape(steam_id, quote=True)
             body = (
                 "<h3>✅ Verknüpfung abgeschlossen</h3>"
-                f"<p>Deine SteamID64 ist: <b>{steam_id}</b>.</p>"
+                f"<p>Deine SteamID64 ist: <b>{steam_id_safe}</b>.</p>"
                 "<p>Du kannst dieses Fenster schließen und zu Discord zurückkehren.</p>"
             )
             return web.Response(text=body, content_type="text/html")
