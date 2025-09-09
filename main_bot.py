@@ -1,5 +1,9 @@
-# main_bot.py 
-# Deadlock Master Bot – sichere Secrets, zentrale DB, rekursive Cog-Auto-Discovery
+# main_bot.py — angepasst für das neue TempVoice-Paket (Core + Interface)
+# - Präzisere Auto-Discovery:
+#     * Lädt Pakete (Ordner mit __init__.py) nur, wenn __init__.py ein setup() enthält.
+#     * Lädt einzelne .py-Cogs nur, wenn sie ein setup() enthalten.
+#     * Verhindert Doppel-Loads, indem Unterdateien eines Paket-Cogs mit setup() übersprungen werden.
+# - Health-Checks & Logs auf TempVoiceCore/TempVoiceInterface aktualisiert.
 
 from __future__ import annotations
 
@@ -35,10 +39,8 @@ def _load_env_robust() -> str | None:
     try:
         from dotenv import load_dotenv
     except Exception:
-        # dotenv nicht installiert -> nichts laden
         return None
 
-    # Reihenfolge der Kandidaten
     candidates: List[Path] = []
     custom = os.getenv("DOTENV_PATH")
     if custom:
@@ -46,7 +48,6 @@ def _load_env_robust() -> str | None:
 
     here = Path(__file__).resolve()
     candidates.append(here.parent / ".env")
-    # Windows-Documents (roh, keine \-Escapes)
     candidates.append(Path(os.path.expandvars(r"%USERPROFILE%")) / "Documents" / ".env")
 
     for p in candidates:
@@ -56,7 +57,6 @@ def _load_env_robust() -> str | None:
                 logging.getLogger().info(f".env geladen: {p}")
                 return str(p)
         except Exception:
-            # still & safe
             pass
     return None
 
@@ -71,12 +71,6 @@ def _mask_tail(secret: str, keep: int = 4) -> str:
 
 
 def _log_secret_present(name: str, env_keys: List[str], mode: str = "off") -> None:
-    """
-    Sichere Secret-Logger:
-      mode = "off"      -> nie loggen (Default)
-      mode = "present"  -> nur melden, dass Secret vorhanden ist, ohne Wert
-      mode = "masked"   -> letzten 4 Zeichen maskiert loggen (nicht für Prod empfohlen)
-    """
     try:
         val = None
         for k in env_keys:
@@ -88,18 +82,11 @@ def _log_secret_present(name: str, env_keys: List[str], mode: str = "off") -> No
             return
         if mode in ("present", "masked"):
             logging.info("%s: vorhanden (Wert wird nicht geloggt)", name)
-        # Niemals Secret-Wert loggen, selbst teilweise nicht!
-        # "masked"-Modus loggt nur die Existenz wie "present"
     except Exception:
-        # Niemals Exceptions werfen beim Secret-Logging
         pass
 
 
 class _RedactSecretsFilter(logging.Filter):
-    """
-    Optionaler Redact-Filter: ersetzt bekannte Secret-Werte in *allen* Logs
-    durch ***REDACTED***. Aktivierung via ENV: REDACT_SECRETS=1
-    """
     def __init__(self, keys: List[str]):
         super().__init__()
         self.secrets = [os.getenv(k) for k in keys if os.getenv(k)]
@@ -111,28 +98,20 @@ class _RedactSecretsFilter(logging.Filter):
             for s in self.secrets:
                 if s and s in redacted:
                     redacted = redacted.replace(s, "***REDACTED***")
-            # record.msg austauschen, args beibehalten
             record.msg = redacted
         except Exception:
             pass
         return True
 
 
-# Früh Logging basic konfigurieren, um .env-Load zu sehen
 logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout)])
-_load_env_robust()  # einmalig; im setup_hook NICHT erneut
+_load_env_robust()
 
 
 # =========================
 # WorkerProxy Shim (fallback-sicher)
 # =========================
 def _install_workerproxy_shim():
-    """
-    Stellt sicher, dass:
-      - builtins.WorkerProxy existiert
-      - Modul 'shared.worker_client' existiert
-    Falls echtes shared/worker_client.py existiert, wird das verwendet.
-    """
     try:
         from shared.worker_client import WorkerProxy  # type: ignore
         setattr(builtins, "WorkerProxy", WorkerProxy)
@@ -158,7 +137,6 @@ def _install_workerproxy_shim():
         setattr(wc_mod, "WorkerProxy", _WorkerProxyStub)
         sys.modules["shared.worker_client"] = wc_mod
 
-
 _install_workerproxy_shim()
 
 
@@ -180,7 +158,7 @@ def _init_db_if_available():
 class MasterBot(commands.Bot):
     """
     Master Discord Bot:
-     - Rekursive Auto-Discovery (cogs/**.py)
+     - Präzise Auto-Discovery (Cogs & Paket-Cogs)
      - Exclude Worker-Cogs
      - ENV-Filter: COG_EXCLUDE, COG_ONLY
      - sichere Secret-Logs
@@ -217,12 +195,6 @@ class MasterBot(commands.Bot):
 
     # --------------------- Discovery & Filters -------------------------
     def _should_exclude(self, module_path: str) -> bool:
-        """
-        Exklusionslogik:
-        - Default: Worker-Cogs aussperren (z. B. cogs.live_match.live_match_worker)
-        - ENV COG_EXCLUDE="mod1,mod2"
-        - ENV COG_ONLY -> Whitelist
-        """
         default_excludes = {
             "cogs.live_match.live_match_worker",
         }
@@ -238,44 +210,72 @@ class MasterBot(commands.Bot):
         if module_path in default_excludes:
             return True
 
-        # Heuristik: alles mit "worker" im Modulnamen blocken
         if ".worker" in module_path or "worker." in module_path or module_path.endswith("_worker"):
             return True
 
         return False
 
     def auto_discover_cogs(self):
-        """Rekursives Entdecken aller Cogs in cogs/"""
+        """
+        Neue Discovery-Logik:
+          1) Pakete (Ordner mit __init__.py) werden als EIN Extension-Modul geladen,
+             wenn __init__.py ein setup() enthält (z.B. cogs.tempvoice).
+          2) Normale .py-Dateien werden nur geladen, wenn sie ein setup() enthalten.
+          3) Unterdateien eines Paket-Cogs mit setup(__init__) werden NICHT zusätzlich geladen.
+        """
         try:
             if not self.cogs_dir.exists():
                 logging.warning(f"Cogs directory not found: {self.cogs_dir}")
                 return
 
             discovered: List[str] = []
+            pkg_dirs_with_setup: List[Path] = []
 
+            # Pass 1: Paket-Cogs mit setup() in __init__.py
+            for init_file in self.cogs_dir.rglob("__init__.py"):
+                if any(part == "__pycache__" for part in init_file.parts):
+                    continue
+                try:
+                    content = init_file.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    continue
+                has_setup = ("async def setup(" in content) or ("def setup(" in content)
+                if not has_setup:
+                    continue
+                rel = init_file.relative_to(self.cogs_dir.parent)  # e.g. cogs/tempvoice/__init__.py
+                # Modulpfad der Package-Extension: ohne "__init__.py"
+                module_path = ".".join(rel.parts[:-1])  # -> cogs.tempvoice
+                if self._should_exclude(module_path):
+                    logging.info(f"🚫 Excluded cog (package): {module_path}")
+                    continue
+                discovered.append(module_path)
+                pkg_dirs_with_setup.append(init_file.parent)
+                logging.info(f"🔍 Auto-discovered package cog: {module_path}")
+
+            # Pass 2: Einzelne .py-Dateien mit setup()
             for cog_file in self.cogs_dir.rglob("*.py"):
-                if cog_file.name.startswith("_") or cog_file.name == "__init__.py":
+                if cog_file.name == "__init__.py":
                     continue
                 if any(part == "__pycache__" for part in cog_file.parts):
+                    continue
+                # Dateien unter Paketen mit eigenem setup(__init__) überspringen
+                if any(cog_file.is_relative_to(pkg_dir) for pkg_dir in pkg_dirs_with_setup):
+                    continue
+
+                try:
+                    content = cog_file.read_text(encoding="utf-8", errors="ignore")
+                except Exception as e:
+                    logging.warning(f"⚠️ Error checking {cog_file.name}: {e}")
+                    continue
+
+                # WICHTIG: Nur Module mit setup() laden – keine Heuristik über "class ... Cog"
+                has_setup = ("async def setup(" in content) or ("def setup(" in content)
+                if not has_setup:
+                    logging.info(f"⏭️ Skipped {cog_file}: no setup() found")
                     continue
 
                 rel = cog_file.relative_to(self.cogs_dir.parent)
                 module_path = ".".join(rel.with_suffix("").parts)
-
-                try:
-                    with open(cog_file, "r", encoding="utf-8") as f:
-                        content = f.read()
-                        looks_like_cog = (
-                            "async def setup(" in content
-                            or "def setup(" in content
-                            or ("class " in content and "Cog" in content)
-                        )
-                        if not looks_like_cog:
-                            logging.info(f"⏭️ Skipped {cog_file}: no setup/Cog detected")
-                            continue
-                except Exception as e:
-                    logging.warning(f"⚠️ Error checking {cog_file.name}: {e}")
-                    continue
 
                 if self._should_exclude(module_path):
                     logging.info(f"🚫 Excluded cog: {module_path}")
@@ -294,7 +294,6 @@ class MasterBot(commands.Bot):
 
     # --------------------- Logging ------------------------------------
     def setup_logging(self):
-        """Logging (Rotation + optionaler Redact-Filter)"""
         log_dir = Path(__file__).parent / "logs"
         log_dir.mkdir(exist_ok=True)
 
@@ -311,13 +310,15 @@ class MasterBot(commands.Bot):
         ]
 
         logging.getLogger().handlers.clear()
-        logging.basicConfig(level=level, handlers=root_handlers, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        logging.basicConfig(
+            level=level,
+            handlers=root_handlers,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        )
 
-        # Discord-Noise reduzieren
         logging.getLogger("discord").setLevel(logging.WARNING)
         logging.getLogger("discord.http").setLevel(logging.WARNING)
 
-        # Optional: globale Redaction echter Secret-Werte
         if (os.getenv("REDACT_SECRETS") or "0") in ("1", "true", "TRUE", "yes", "YES"):
             redact_keys = [
                 "DISCORD_TOKEN",
@@ -337,18 +338,13 @@ class MasterBot(commands.Bot):
     async def setup_hook(self):
         logging.info("Master Bot setup starting...")
 
-        # Sichere Secret-Logs (Default: off)
         secret_mode = (os.getenv("SECRET_LOG_MODE") or "off").lower()
         _log_secret_present("Steam API Key", ["STEAM_API_KEY", "STEAM_WEB_API_KEY"], mode=secret_mode)
-        _log_secret_present("Discord Token (Master)", ["DISCORD_TOKEN", "BOT_TOKEN"], mode="off")  # prinzipiell nie loggen
+        _log_secret_present("Discord Token (Master)", ["DISCORD_TOKEN", "BOT_TOKEN"], mode="off")
 
-        # Zentrale DB initialisieren (falls verfügbar)
         _init_db_if_available()
-
-        # Cogs laden
         await self.load_all_cogs()
 
-        # Slash Commands syncen
         try:
             synced = await self.tree.sync()
             logging.info(f"Synced {len(synced)} slash commands")
@@ -370,15 +366,19 @@ class MasterBot(commands.Bot):
         loaded_cogs = [name for name, status in self.cog_status.items() if status == "loaded"]
         logging.info(f"Loaded cogs: {len(loaded_cogs)}/{len(self.cogs_list)}")
 
+        # TempVoice Log (neu)
         try:
-            tempvoice_cog = self.get_cog("TempVoiceCog")
-            if tempvoice_cog and hasattr(tempvoice_cog, "create_channels"):
-                cnt = len(getattr(tempvoice_cog, "create_channels") or [])
-                logging.info(f"TempVoice ready with {cnt} create channels")
+            tv_core = self.get_cog("TempVoiceCore")
+            if tv_core:
+                cnt = len(getattr(tv_core, "created_channels", set()))
+                logging.info(f"TempVoiceCore bereit • verwaltete Lanes: {cnt}")
+            tv_if = self.get_cog("TempVoiceInterface")
+            if tv_if:
+                logging.info("TempVoiceInterface bereit • Interface-View registriert")
         except Exception:
             pass
 
-        self.loop.create_task(self.hourly_health_check())
+        asyncio.create_task(self.hourly_health_check())
 
     async def load_all_cogs(self):
         logging.info("Loading all cogs in parallel...")
@@ -427,7 +427,7 @@ class MasterBot(commands.Bot):
             self.cog_status = {}
             await self.load_all_cogs()
 
-            loaded_count = len([s for s in self.cog_status.values() if s == "loaded"])
+            loaded_count = len([s for s in self.bot.cog_status.values() if s == "loaded"]) if hasattr(self, "bot") else len([s for s in self.cog_status.values() if s == "loaded"])
 
             summary = {
                 "unloaded": len(unload_results),
@@ -479,10 +479,10 @@ class MasterBot(commands.Bot):
                 if current - last_critical_check >= critical_check_interval:
                     issues = []
 
-                    if not self.get_cog("TempVoiceCog"):
-                        issues.append("TempVoice not loaded")
-                    if not self.get_cog("VoiceActivityTrackerCog"):
-                        issues.append("VoiceActivityTracker not loaded")
+                    if not self.get_cog("TempVoiceCore"):
+                        issues.append("TempVoiceCore not loaded")
+                    if not self.get_cog("TempVoiceInterface"):
+                        issues.append("TempVoiceInterface not loaded")
                     if "cogs.live_match.live_match_master" not in self.extensions:
                         issues.append("LiveMatchMaster (module) not loaded")
 
@@ -496,14 +496,8 @@ class MasterBot(commands.Bot):
             except Exception as e:
                 logging.error(f"Health check error: {e}")
 
-    # --------- NEU: gezielter Reload für den Ordner cogs/live_match ----------
+    # --------- Reload für den Ordner cogs/live_match ----------
     async def reload_live_match_folder(self) -> Dict[str, str]:
-        """
-        Lädt alle Cogs neu, deren Modulpfad mit 'cogs.live_match.' beginnt,
-        ausgenommen Worker-Module (siehe _should_exclude).
-        Nutzt aktuelle Auto-Discovery, damit neu hinzugekommene Dateien
-        berücksichtigt werden.
-        """
         self.auto_discover_cogs()
         targets = [
             mod for mod in self.cogs_list
@@ -531,6 +525,7 @@ class MasterBot(commands.Bot):
 
     async def close(self):
         logging.info("Master Bot shutting down...")
+        # 1) Alle Cogs entladen
         for ext_name in [ext for ext in list(self.extensions.keys()) if ext.startswith("cogs.")]:
             try:
                 await self.unload_extension(ext_name)
@@ -538,7 +533,19 @@ class MasterBot(commands.Bot):
             except Exception as e:
                 logging.error(f"Error unloading extension {ext_name}: {e}")
 
-        await super().close()
+        # 2) discord.Client.close() mit Timeout schützen
+        try:
+            timeout = float(os.getenv("DISCORD_CLOSE_TIMEOUT", "5"))
+        except ValueError:
+            timeout = 5.0
+        try:
+            await asyncio.wait_for(super().close(), timeout=timeout)
+            logging.info("discord.Client.close() returned")
+        except asyncio.TimeoutError:
+            logging.error(f"discord.Client.close() timed out after {timeout:.1f}s; continuing shutdown")
+        except Exception as e:
+            logging.error(f"Error in discord.Client.close(): {e}")
+
         logging.info("Master Bot shutdown complete")
 
 
@@ -670,7 +677,6 @@ class MasterControlCog(commands.Cog):
 
         await msg.edit(embed=final)
 
-    # --------- NEU: zentraler Reload für cogs/live_match ----------
     @master_control.command(name="reloadlive", aliases=["rllm", "reload_livematch", "reload_lm"])
     async def master_reload_live_folder(self, ctx):
         results = await self.bot.reload_live_match_folder()
@@ -726,17 +732,12 @@ class MasterControlCog(commands.Cog):
 
 
 # =====================================================================
-# Graceful Shutdown Hilfsroutine (robust + Timeout + Doppel-SIGINT)
+# Graceful Shutdown (Timeout + Doppel-SIGINT + harter Fallback)
 # =====================================================================
 _shutdown_started = False
 
-async def _graceful_shutdown(bot: MasterBot, reason: str = "signal", timeout_close: float = 5.0, timeout_total: float = 8.0):
-    """
-    Sauberes Beenden mit Notbremse:
-      - bot.close() mit Timeout
-      - restliche Tasks canceln + kurze Wartezeit
-      - Ultima Ratio: harter Exit
-    """
+async def _graceful_shutdown(bot: MasterBot, reason: str = "signal",
+                             timeout_close: float = 6.0, timeout_total: float = 10.0):
     global _shutdown_started
     if _shutdown_started:
         return
@@ -762,10 +763,11 @@ async def _graceful_shutdown(bot: MasterBot, reason: str = "signal", timeout_clo
     except Exception:
         pass
 
-    # 3) Sicherheit: harter Exit (falls noch was hängt)
+    # 3) Loop stoppen + harter Exit als letzte Eskalationsstufe
     try:
         loop = asyncio.get_running_loop()
-        loop.call_soon(os._exit, 0)
+        loop.stop()
+        loop.call_later(0.2, lambda: os._exit(0))
     except Exception:
         os._exit(0)
 
@@ -777,9 +779,8 @@ async def main():
     bot = MasterBot()
     await bot.add_cog(MasterControlCog(bot))
 
-    # Signal-Handler: Strg+C / kill -> sauberer Shutdown
     def _sig_handler(signum, frame):
-        # Doppeltes Strg+C -> sofort harter Exit (wie man’s schon immer gemacht hat, wenn’s klemmt)
+        # Zweites Strg+C => sofortiger Hard-Exit
         if _shutdown_started:
             logging.error("Second signal received -> hard exit now.")
             os._exit(1)
@@ -793,8 +794,7 @@ async def main():
         signal.signal(signal.SIGINT, _sig_handler)
         signal.signal(signal.SIGTERM, _sig_handler)
     except Exception:
-        # Windows kann SIGTERM/Signals einschränken – ignorieren
-        pass
+        pass  # Windows: SIGTERM ggf. nicht verfügbar
 
     token = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
     if not token:
