@@ -1,6 +1,5 @@
 # cogs/tempvoice/core.py
 # TempVoiceCore – Auto-Lanes, Owner-Logik, Persistenz (zentrale DB)
-
 from __future__ import annotations
 
 import asyncio
@@ -34,13 +33,21 @@ DEFAULT_RANKED_CAP = 6
 NAME_EDIT_COOLDOWN_SEC = 120
 STARTUP_PURGE_DELAY_SEC = 3
 
+# LiveMatch-Suffix (vom Worker) – NICHT von TempVoice anfassen
+LIVE_SUFFIX_RX = re.compile(
+    r"\s+•\s+\d+/\d+\s+(Im\s+Match|Im\s+Spiel|Lobby/Queue)",
+    re.IGNORECASE
+)
+# TempVoice darf nur in diesem Zeitfenster nach Erstellung Namen setzen
+ONLY_SET_NAME_ON_CREATE = True
+CREATE_RENAME_WINDOW_SEC = 45
+
 RANK_ORDER = [
     "unknown","initiate","seeker","alchemist","arcanist",
     "ritualist","emissary","archon","oracle","phantom","ascendant","eternus"
 ]
 RANK_SET = set(RANK_ORDER)
 SUFFIX_THRESHOLD_RANK = "emissary"
-
 
 # --------- Hilfen ---------
 def _is_managed_lane(ch: Optional[discord.VoiceChannel]) -> bool:
@@ -69,6 +76,14 @@ def _strip_suffixes(current: str) -> str:
             base = base.split(marker)[0]
     return base
 
+def _has_live_suffix(name: str) -> bool:
+    return LIVE_SUFFIX_RX.search(name) is not None
+
+def _age_seconds(ch: discord.VoiceChannel) -> float:
+    try:
+        return (discord.utils.utcnow() - ch.created_at).total_seconds()
+    except Exception:
+        return 999999.0
 
 # --------- DB-Layer (zentral) ---------
 class TVDB:
@@ -155,7 +170,6 @@ class TVDB:
             finally:
                 self.db = None
 
-
 # --------- Ban-Store ---------
 class AsyncBanStore:
     def __init__(self, db: TVDB): self.db = db
@@ -197,7 +211,6 @@ class AsyncBanStore:
             )
         except Exception:
             pass
-
 
 # --------- Core-Cog ---------
 class TempVoiceCore(commands.Cog):
@@ -243,7 +256,6 @@ class TempVoiceCore(commands.Cog):
         await asyncio.sleep(STARTUP_PURGE_DELAY_SEC)
         await self._rehydrate_from_db()
         await self._purge_empty_lanes_once()
-        # zweiter Sweep (manchmal fehlen Member nach Cold-Start)
         self._track(self._delayed_purge(30))
         log.info("TempVoiceCore bereit • verwaltete Lanes: %d", len(self.created_channels))
 
@@ -291,6 +303,7 @@ class TempVoiceCore(commands.Cog):
             self.join_time.setdefault(lane.id, {})
 
             await self._apply_owner_bans(lane, self.lane_owner[lane.id])
+            # KEIN aggressives Rename hier – _refresh_name() prüft Schutzbedingungen
             await self._refresh_name(lane)
 
     async def _purge_empty_lanes_once(self):
@@ -329,7 +342,6 @@ class TempVoiceCore(commands.Cog):
             except Exception:
                 pass
 
-        # Fallback: alle Lane * ohne DB-Eintrag löschen, wenn leer
         for ch in list(guild.voice_channels):
             if _is_managed_lane(ch):
                 try:
@@ -416,45 +428,36 @@ class TempVoiceCore(commands.Cog):
             )
         except Exception:
             pass
-                    
-# ===== Öffentliche Facade für das Interface =====
 
+# ===== Öffentliche Fassade für das Interface =====
     @property
     def db(self):
-        """DB-Zugriff für das Interface (zentral, shared.db)."""
         return self._tvdb
 
     def first_guild(self):
-        """Öffentliche Variante von _first_guild()."""
         return self._first_guild()
 
     async def safe_edit_channel(self, lane: discord.VoiceChannel,
                                 *, desired_name: str | None = None,
                                 desired_limit: int | None = None,
                                 reason: str | None = None):
-        """Wrapper für _safe_edit_channel()."""
         await self._safe_edit_channel(lane, desired_name=desired_name,
                                       desired_limit=desired_limit, reason=reason)
 
     async def refresh_name(self, lane: discord.VoiceChannel):
-        """Wrapper für _refresh_name()."""
         await self._refresh_name(lane)
 
     async def set_owner_region(self, owner_id: int, region: str):
-        """Wrapper: persistiert Region (DE/EU) pro Owner."""
-        await self.set_region_pref(owner_id, region)  # nutzt bestehende Logik
+        await self.set_region_pref(owner_id, region)
 
     async def apply_owner_region_to_lane(self, lane: discord.VoiceChannel, owner_id: int):
-        """Wrapper: liest Owner-Region und setzt Channel-Permissions entsprechend."""
         region = await self.get_region_pref(owner_id)
         await self.apply_region(lane, region)
 
     async def transfer_owner(self, lane: discord.VoiceChannel, member_id: int):
-        """Wrapper: Owner-Claim / Transfer (ohne Zeitfenster)."""
         m = lane.guild.get_member(int(member_id))
         if m:
             await self.claim_owner(lane, m)
-
 
     # --------- Channel Updates ---------
     def _lock_for(self, channel_id: int) -> asyncio.Lock:
@@ -472,15 +475,26 @@ class TempVoiceCore(commands.Cog):
         async with lock:
             kwargs: Dict[str, Any] = {}
             now = time.time()
+
+            # ===== Name bearbeiten? Nur beim Erstellen & wenn KEIN Live-Match-Suffix vorhanden ist =====
             if desired_name is not None and lane.name != desired_name:
-                last_desired = self._last_name_desired.get(lane.id)
-                if last_desired == desired_name:
-                    last_ts = self._last_name_patch_ts.get(lane.id, 0.0)
-                    if now - last_ts >= NAME_EDIT_COOLDOWN_SEC:
+                may_rename = True
+                if ONLY_SET_NAME_ON_CREATE:
+                    if _age_seconds(lane) > CREATE_RENAME_WINDOW_SEC:
+                        may_rename = False
+                if _has_live_suffix(lane.name):
+                    may_rename = False
+
+                if may_rename:
+                    last_desired = self._last_name_desired.get(lane.id)
+                    if last_desired == desired_name:
+                        last_ts = self._last_name_patch_ts.get(lane.id, 0.0)
+                        if now - last_ts >= NAME_EDIT_COOLDOWN_SEC:
+                            kwargs["name"] = desired_name
+                    else:
                         kwargs["name"] = desired_name
-                else:
-                    kwargs["name"] = desired_name
-                self._last_name_desired[lane.id] = desired_name
+                    self._last_name_desired[lane.id] = desired_name
+                # sonst: Name bleibt in Ruhe
 
             if desired_limit is not None and desired_limit != lane.user_limit:
                 kwargs["user_limit"] = max(0, min(99, desired_limit))
@@ -506,6 +520,11 @@ class TempVoiceCore(commands.Cog):
         return "".join(parts)
 
     async def _refresh_name(self, lane: discord.VoiceChannel):
+        # Schutz: Nie rumpfuschen, wenn LiveMatch-Suffix dran ist oder Channel nicht frisch ist
+        if _has_live_suffix(lane.name):
+            return
+        if ONLY_SET_NAME_ON_CREATE and _age_seconds(lane) > CREATE_RENAME_WINDOW_SEC:
+            return
         await self._safe_edit_channel(
             lane,
             desired_name=self._compose_name(lane),
@@ -559,8 +578,7 @@ class TempVoiceCore(commands.Cog):
 
         min_idx = _rank_index(min_rank)
         for name, role in ranks.items():
-            idx = _rank_index(name)
-            if idx < min_idx:
+            if _rank_index(name) < min_idx:
                 try:
                     ow = lane.overwrites_for(role); ow.connect = False
                     await lane.set_permissions(role, overwrite=ow, reason="TempVoice: MinRank deny")
@@ -613,10 +631,8 @@ class TempVoiceCore(commands.Cog):
         except Exception:
             pass
 
-        # Owner-Prefs (Region) anwenden
         region = await self.get_region_pref(member.id)
         await self.apply_region(lane, region)
-
         await self._apply_owner_bans(lane, member.id)
 
         try:
@@ -624,6 +640,7 @@ class TempVoiceCore(commands.Cog):
         except Exception:
             pass
 
+        # NUR hier initial den Namen setzen (innerhalb des Create-Fensters)
         await self._refresh_name(lane)
 
     # --------- Events ---------
@@ -673,7 +690,7 @@ class TempVoiceCore(commands.Cog):
         except Exception:
             pass
 
-        # Join-Zeit & Bannprüfung
+        # Join-Zeit & Bannprüfung; KEIN Namens-Refresh mehr außer im Create-Fenster
         try:
             if after and after.channel and isinstance(after.channel, discord.VoiceChannel):
                 ch = after.channel
@@ -682,7 +699,6 @@ class TempVoiceCore(commands.Cog):
 
                 owner_id = self.lane_owner.get(ch.id)
                 if owner_id and await self.bans.is_banned_by_owner(owner_id, member.id):
-                    # In verfügbaren Staging verschieben (erste passende ID)
                     staging = None
                     for cid in STAGING_CHANNEL_IDS:
                         s = ch.guild.get_channel(cid)
@@ -695,11 +711,11 @@ class TempVoiceCore(commands.Cog):
                         except Exception:
                             pass
 
+                # Nur falls sehr frisch und noch ohne Live-Suffix – s. _refresh_name
                 if _is_managed_lane(ch):
                     await self._refresh_name(ch)
         except Exception:
             pass
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TempVoiceCore(bot))

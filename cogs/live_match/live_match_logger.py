@@ -4,18 +4,18 @@
 #   - lane_snapshot             (ein Datensatz pro Voice-Channel)
 #   - lane_snapshot_member      (ein Datensatz pro Mitglied im Channel)
 #
-# Unabhängig von der Erkennung. Es werden ALLE Voice-Mitglieder geprüft:
-#   Steam-Links -> GetPlayerSummaries -> Deadlock/Server-Status.
+# Unabhängig vom Renamer. Es werden ALLE Voice-Mitglieder geprüft:
+#   steam_links -> GetPlayerSummaries -> Deadlock/Server-Status.
 #
-# Feste Defaults, KEINE ENV. Teamgröße = 6.
-# Bugfix: sqlite3.Row hat kein .get() -> Zugriff per ["spalte"] + sichere Fallbacks.
+# Feste Defaults, KEINE ENV-Schlacht. Teamgröße = 6.
+# sqlite3.Row: Zugriff nur per ["spalte"], kein .get().
 # ------------------------------------------------------------
 
 import os
 import time
 import logging
 from collections import Counter, defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import aiohttp
 import discord
@@ -25,12 +25,9 @@ from shared import db
 
 log = logging.getLogger("LiveMatchLogger")
 
-# Feste Parameter (keine ENV)
-SCAN_INTERVAL_SEC = 120          # alle 2 Minuten
+SCAN_INTERVAL_SEC = 120
 TEAM_SIZE = 6
 STEAM_APP_DEADLOCK = "1422450"
-
-# Steam Web API Key (falls vorhanden; wenn nicht, wird ohne Steam-Status geloggt)
 STEAM_API_KEY = os.getenv("STEAM_API_KEY", "").strip()
 
 def _ensure_schema():
@@ -73,7 +70,7 @@ class LiveMatchLogger(commands.Cog):
         db.connect()
         _ensure_schema()
         if not STEAM_API_KEY:
-            log.warning("STEAM_API_KEY fehlt – LiveMatchLogger prüft Steam-Status nicht (Snapshots laufen trotzdem).")
+            log.warning("STEAM_API_KEY fehlt – Snapshots laufen, aber ohne Steam-Status.")
         if not self._started:
             self.scan.start()
             self._started = True
@@ -91,24 +88,22 @@ class LiveMatchLogger(commands.Cog):
         await self.bot.wait_until_ready()
         now = int(time.time())
 
-        # 1) Alle Voice-Channels aller Guilds
+        # 1) Alle Voice-Channels
         voice_channels: List[discord.VoiceChannel] = []
         for g in self.bot.guilds:
             voice_channels.extend(g.voice_channels)
-
         if not voice_channels:
             return
 
-        # 2) Alle User in Voices (ohne Bots)
+        # 2) Voice-Mitglieder (ohne Bots)
         members: List[discord.Member] = []
         for ch in voice_channels:
             members.extend([m for m in ch.members if not m.bot])
-
         user_ids = sorted({m.id for m in members})
         if not user_ids:
             return
 
-        # 3) Discord->Steam Links
+        # 3) steam_links mappen
         links = defaultdict(list)  # user_id -> [steam_id,...]
         qs = ",".join("?" for _ in user_ids)
         rows = db.query_all(
@@ -116,7 +111,6 @@ class LiveMatchLogger(commands.Cog):
             tuple(user_ids)
         )
         for r in rows:
-            # r ist sqlite3.Row -> Index-Zugriff
             links[int(r["user_id"])].append(str(r["steam_id"]))
 
         # 4) Steam Summaries (chunkweise)
@@ -136,25 +130,23 @@ class LiveMatchLogger(commands.Cog):
                     except Exception as e:
                         log.warning("Steam Summaries Fehler: %s", e)
 
-        # 5) Pro Voice-Channel Snapshot erstellen
+        # 5) Snapshot pro Channel
         for ch in voice_channels:
             nonbots = [m for m in ch.members if not m.bot]
             if not nonbots:
                 continue
 
-            # live_lane_state lesen (Suffix/Phase vom Master) – sqlite3.Row sicher lesen
             lane_row = db.query_one(
                 "SELECT is_active, suffix, reason FROM live_lane_state WHERE channel_id=?",
                 (ch.id,)
             )
+            lane_suffix = ""
+            lane_reason = None
             if lane_row:
-                lane_suffix = (lane_row["suffix"] or "").strip() if lane_row["suffix"] is not None else ""
+                if lane_row["suffix"] is not None:
+                    lane_suffix = str(lane_row["suffix"]).strip()
                 lane_reason = lane_row["reason"]
-            else:
-                lane_suffix = ""
-                lane_reason = None
 
-            # pro Member Status
             in_game_with_server: List[str] = []
             in_deadlock_users: List[int] = []
             member_rows: List[tuple] = []
@@ -200,19 +192,17 @@ class LiveMatchLogger(commands.Cog):
                     best_server
                 ))
 
-            # Mehrheits-Server
             maj_server = None
             maj_n = 0
             if in_game_with_server:
-                c = Counter(in_game_with_server)
-                maj_server, maj_n = c.most_common(1)[0]
+                cnt = Counter(in_game_with_server)
+                maj_server, maj_n = cnt.most_common(1)[0]
 
             cap = TEAM_SIZE
             voice_n = len(nonbots)
             in_game_n = len(in_game_with_server)
             in_deadlock_n = len(in_deadlock_users)
 
-            # Phase grob ableiten (nur fürs Logging; Master ist führend)
             if "Im Match" in lane_suffix:
                 phase = "MATCH"
             elif "Im Spiel" in lane_suffix:
@@ -222,7 +212,6 @@ class LiveMatchLogger(commands.Cog):
             else:
                 phase = "OFF"
 
-            # Snapshot Kopf speichern
             db.execute(
                 """
                 INSERT INTO lane_snapshot(
@@ -233,31 +222,20 @@ class LiveMatchLogger(commands.Cog):
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    ch.id,
-                    ch.name,
-                    now,
-                    phase,
-                    lane_suffix or None,
-                    maj_server,
-                    maj_n,
-                    in_game_n,
-                    in_deadlock_n,
-                    voice_n,
-                    cap,
-                    lane_reason
+                    ch.id, ch.name, now, phase, (lane_suffix or None),
+                    maj_server, maj_n, in_game_n, in_deadlock_n,
+                    voice_n, cap, lane_reason
                 )
             )
             snap_id = db.query_one("SELECT last_insert_rowid() AS id")["id"]
 
-            # Mitglieder speichern
             for (uid, sid, pname, in_dl, in_match, srv) in member_rows:
                 db.execute(
                     """
                     INSERT INTO lane_snapshot_member(
                         snapshot_id, user_id, steam_id, personaname,
                         in_deadlock, in_match, server_id
-                    )
-                    VALUES(?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?)
                     """,
                     (snap_id, int(uid), sid, pname, int(in_dl), int(in_match), srv)
                 )

@@ -46,18 +46,18 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ===== Socket-Server ENV =====
+# ===== Socket-Server =====
 HOST = os.getenv("SOCKET_HOST", "127.0.0.1")
 PORT = int(os.getenv("SOCKET_PORT", "45679"))
 
-# ===== LiveMatch-Renamer =====
-LIVE_MATCH_ENABLE = os.getenv("LIVE_MATCH_ENABLE", "1") == "1"
+# ===== LiveMatch-Renamer (feste Defaults, keine ENV-Konfig-Schlacht) =====
+LIVE_MATCH_ENABLE = (os.getenv("LIVE_MATCH_ENABLE", "1") == "1")
 LIVE_DB_PATH = (os.getenv("DEADLOCK_DB_PATH") or
                 os.getenv("LIVE_DB_PATH") or
                 os.path.expandvars(r"%USERPROFILE%/Documents/Deadlock/service/deadlock.sqlite3")).strip()
-LIVE_TICK_SEC = int(os.getenv("LIVE_TICK_SEC", "20"))
-NAME_EDIT_COOLDOWN_SEC = int(os.getenv("NAME_EDIT_COOLDOWN_SEC", "120"))
-RATE_LIMIT_BACKOFF_SEC = int(os.getenv("RATE_LIMIT_BACKOFF_SEC", "380"))  # bei 429
+LIVE_TICK_SEC = 20
+NAME_EDIT_COOLDOWN_SEC = 300        # << pro Channel 1 Rename / 5 Minuten
+RATE_LIMIT_BACKOFF_SEC = 380        # Backoff bei 429
 
 # Regex: „ • n/cap Im Match|Im Spiel|Lobby/Queue“
 MATCH_SUFFIX_RX = re.compile(
@@ -123,20 +123,18 @@ def _ensure_schema(con: sqlite3.Connection, *, log_once: bool = True) -> None:
     if log_once:
         logger.info("🗄️  DB-Schema gewährleistet (live_lane_state, live_lane_members, steam_links).")
 
-# ===== Utils (Normalisierung) =====
+# ===== Utils =====
 def _norm(s: str) -> str:
-    """Unicode-Normalisierung + Whitespace kollabieren + Casefold."""
     if not s:
         return ""
     s = unicodedata.normalize("NFKC", s)
-    s = " ".join(s.split())  # alle Whitespaces zu einfachen Spaces zusammenfassen
+    s = " ".join(s.split())
     return s.casefold()
 
 def _strip_suffix(name: str) -> str:
     return MATCH_SUFFIX_RX.sub("", name).strip()
 
 def _extract_suffix(name: str) -> str:
-    """Gibt den gefundenen Match-Suffix zurück (oder '')."""
     m = MATCH_SUFFIX_RX.search(name)
     return m.group(0).strip() if m else ""
 
@@ -183,24 +181,24 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         else:
             logger.error("JOIN: %s | linked: (DB-ERR)", _join_log_prefix(member, after.channel))    # type: ignore
 
-# ===== Safe Rename =====
+# ===== Safe Rename (mit Coalescing + 5-Min Cooldown) =====
 async def _safe_rename(ch: discord.VoiceChannel, desired: str, *, reason: str) -> bool:
     if not desired:
         return False
 
     now = asyncio.get_event_loop().time()
 
-    # Respect Rate-Limit backoff
+    # Backoff nach 429
     until = _ratelimit_until.get(ch.id, 0.0)
     if now < until:
         return False
 
-    # Normalize compare – vermeidet identische PATCHes
+    # Delta-Check
     current = ch.name
     if _norm(current) == _norm(desired):
         return False
 
-    # Cooldown pro Channel
+    # Per-Channel Cooldown
     last = _last_rename_ts.get(ch.id, 0.0)
     if (now - last) < NAME_EDIT_COOLDOWN_SEC:
         return False
@@ -211,7 +209,6 @@ async def _safe_rename(ch: discord.VoiceChannel, desired: str, *, reason: str) -
         logger.info("Umbenannt: %s -> %s", current, desired)
         return True
     except discord.HTTPException as e:
-        # harter Backoff bei 429
         if getattr(e, "status", None) == 429:
             _ratelimit_until[ch.id] = now + RATE_LIMIT_BACKOFF_SEC
             logger.warning("Rate-limit 429 auf %s – pausiere %ss", ch.id, RATE_LIMIT_BACKOFF_SEC)
@@ -434,15 +431,12 @@ async def _live_match_tick():
         if not isinstance(ch, (discord.VoiceChannel, discord.StageChannel)):
             continue
 
-        # Aktuellen Suffix extrahieren und mit DB-Ziel vergleichen
-        current_suffix = _extract_suffix(ch.name)          # z.B. "• 1/8 Im Spiel"
+        current_suffix = _extract_suffix(ch.name)    # z.B. "• 1/8 Im Spiel"
         db_suffix = (r["suffix"] or "").strip() if r["suffix"] is not None else ""
 
-        # Wenn gleich (normalisiert), NICHT umbenennen
         if _norm(current_suffix) == _norm(db_suffix):
             continue
 
-        # Andernfalls: Basisname + DB-Suffix zusammenbauen
         base = _strip_suffix(ch.name)
         desired = base if not db_suffix else f"{base} {db_suffix}"
         await _safe_rename(ch, desired, reason="LiveMatch-Renamer")
@@ -468,14 +462,12 @@ async def on_ready():
     logger.info("✅ Worker Bot eingeloggt als %s (ID: %s)", bot.user, bot.user.id)  # type: ignore
     g = ", ".join(f"{guild.name}({guild.id})" for guild in bot.guilds)
     logger.info("   Guilds: %s", g or "–")
-    # Schema nur EINMAL loggen
     con = _db_connect()
     if con:
         try:
             _ensure_schema(con, log_once=True)
         finally:
             con.close()
-    # Socket & Renamer starten
     loop = asyncio.get_running_loop()
     start_socket_server(loop)
     bot.loop.create_task(live_match_runner())
