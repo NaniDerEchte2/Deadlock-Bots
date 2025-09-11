@@ -1,3 +1,4 @@
+# cogs/live_match_worker.py
 # ------------------------------------------------------------
 # LiveMatchWorker – benennt Voice-Channels gemäß live_lane_state
 # DB (shared/db.py):
@@ -60,7 +61,6 @@ class LiveMatchWorker(commands.Cog):
                 continue
 
             base = MATCH_SUFFIX_RX.sub("", ch.name).strip()
-
             suf = (r.get("suffix") or "").strip()
             desired = base if not suf else f"{base} {suf}"
 

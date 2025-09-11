@@ -6,7 +6,7 @@ import uuid
 import logging
 import html
 from typing import Dict, Optional, List
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlparse
 
 import aiohttp
 from aiohttp import web
@@ -19,8 +19,22 @@ from shared import db
 log = logging.getLogger("SteamLink")
 
 DISCORD_API = "https://discord.com/api"
+STEAM_API_BASE = "https://api.steampowered.com"
+STEAM_OPENID_ENDPOINT = "https://steamcommunity.com/openid/login"
+OPENID_NS = "http://specs.openid.net/auth/2.0"
+IDENTIFIER_SELECT = "http://specs.openid.net/auth/2.0/identifier_select"
 
-# ----------------------- ENV / Defaults --------------------------------------
+PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+STEAM_RETURN_PATH = os.getenv("STEAM_RETURN_PATH", "/steam/return")
+STEAM_RETURN_URL = (
+    urljoin(PUBLIC_BASE_URL + "/", STEAM_RETURN_PATH.lstrip("/"))
+    if PUBLIC_BASE_URL else ""
+)
+
+HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")
+HTTP_PORT = int(os.getenv("STEAM_OAUTH_PORT", os.getenv("HTTP_PORT", "8888")))
+CLIENT_SECRET = (os.getenv("DISCORD_OAUTH_CLIENT_SECRET") or "").strip()
+
 def _env_client_id(bot: commands.Bot) -> str:
     cid = (os.getenv("DISCORD_OAUTH_CLIENT_ID") or "").strip()
     if cid:
@@ -39,21 +53,6 @@ def _env_redirect() -> str:
     port = int(os.getenv("STEAM_OAUTH_PORT", os.getenv("HTTP_PORT", "8888")))
     scheme = "http" if host.startswith(("127.", "0.", "localhost")) else "https"
     return f"{scheme}://{host}:{port}/discord/callback"
-
-HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")
-HTTP_PORT = int(os.getenv("STEAM_OAUTH_PORT", os.getenv("HTTP_PORT", "8888")))
-CLIENT_SECRET = (os.getenv("DISCORD_OAUTH_CLIENT_SECRET") or "").strip()
-
-# ---- Steam OpenID Settings ---------------------------------------------------
-STEAM_OPENID_ENDPOINT = "https://steamcommunity.com/openid/login"  # zwingend https!
-OPENID_NS = "http://specs.openid.net/auth/2.0"
-IDENTIFIER_SELECT = "http://specs.openid.net/auth/2.0/identifier_select"
-PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
-STEAM_RETURN_PATH = os.getenv("STEAM_RETURN_PATH", "/steam/return")
-STEAM_RETURN_URL = (
-    urljoin(PUBLIC_BASE_URL + "/", STEAM_RETURN_PATH.lstrip("/"))
-    if PUBLIC_BASE_URL else ""
-)
 
 # ----------------------- DB-Schema -------------------------------------------
 def _ensure_schema() -> None:
@@ -92,9 +91,7 @@ def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: 
 async def security_headers_mw(request: web.Request, handler):
     try:
         resp = await handler(request)
-
     except web.HTTPException as ex:
-        # 404/405 sind normal – keine ERROR-Logs, kurze Antwort
         if ex.status in (404, 405):
             resp = web.Response(
                 text="Not Found" if ex.status == 404 else "Method Not Allowed",
@@ -102,11 +99,8 @@ async def security_headers_mw(request: web.Request, handler):
                 content_type="text/plain",
             )
         else:
-            # andere HTTP-Fehler als Response weiterreichen
             resp = ex
-
     except Exception:
-        # Nur echte 5xx-Ausreißer loggen
         log.exception("Unhandled error in request")
         resp = web.Response(
             text=(
@@ -119,7 +113,6 @@ async def security_headers_mw(request: web.Request, handler):
             status=500,
         )
 
-    # Security Headers (auch bei 404 etc.)
     resp.headers["Cache-Control"] = "no-store"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -127,52 +120,46 @@ async def security_headers_mw(request: web.Request, handler):
     resp.headers["Referrer-Policy"] = "no-referrer"
     resp.headers["X-Robots-Tag"] = "noindex, nofollow"
     resp.headers["Content-Security-Policy"] = (
-        "default-src 'none'; "
-        "style-src 'unsafe-inline'; "
-        "form-action https://steamcommunity.com; "
-        "base-uri 'none'; "
-        "frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; "
+        "form-action https://steamcommunity.com; base-uri 'none'; frame-ancestors 'none'"
     )
     return resp
 
 # ----------------------- Cog --------------------------------------------------
 class SteamLink(commands.Cog):
     """
-    Flow:
+    Linking-Flow:
       1) /link → Discord OAuth2 (identify + connections)
       2) 0 Treffer → Fallback-Seite → Steam OpenID
       3) /steam/return → SteamID64 extrahieren → speichern
       4) Erfolg → DM an den User
-      5) Security-Hardening: Logs entschärft, Security-Header, generische Fehlerseiten
+
+    Erweiterungen:
+      - /addsteam akzeptiert SteamID64, Vanity oder vollständige steamcommunity-Links.
+      - /setprimary akzeptiert dasselbe; legt die ID bei Bedarf (verified=0) an und setzt sie als primär.
+      - /whoami prüft eine Eingabe (ID/Vanity/Link) und zeigt Persona + SteamID.
+      - /unlink akzeptiert jetzt auch Vanity/Links.
     """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-
-        # Aiohttp-App mit Middleware
         self.app = web.Application(middlewares=[security_headers_mw])
 
         # HTTP-Routen
         self.app.router.add_get("/", self.handle_index)
         self.app.router.add_get("/health", self.handle_health)
         self.app.router.add_get("/discord/callback", self.handle_discord_callback)
-        self.app.router.add_get("/steam/login", self.handle_steam_login)      # manuell anstoßbar
-        self.app.router.add_get(STEAM_RETURN_PATH, self.handle_steam_return)  # OpenID-Return
-
-        # „Weiches“ Handling für Browser-Anfragen
+        self.app.router.add_get("/steam/login", self.handle_steam_login)
+        self.app.router.add_get(STEAM_RETURN_PATH, self.handle_steam_return)
         self.app.router.add_get("/favicon.ico", self.handle_favicon)
         self.app.router.add_get("/robots.txt", self.handle_robots)
 
         self._runner: Optional[web.AppRunner] = None
-
-        # In-Memory states (10 min)
         self._states: Dict[str, Dict[str, float]] = {}  # state -> {uid, ts}
 
     # --------------- Lifecycle -----------------------------------------------
     async def cog_load(self) -> None:
         _ensure_schema()
-
-        # Access-Logs reduzieren
         logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
         cid = _env_client_id(self.bot)
@@ -182,7 +169,7 @@ class SteamLink(commands.Cog):
             log.warning("DISCORD_OAUTH_CLIENT_SECRET fehlt – Token-Exchange wird scheitern.")
 
         if not PUBLIC_BASE_URL:
-            log.error("PUBLIC_BASE_URL ist NICHT gesetzt – Steam OpenID wird verweigert. Setze z. B. https://link.earlysalty.com")
+            log.error("PUBLIC_BASE_URL ist NICHT gesetzt – Steam OpenID wird verweigert.")
         else:
             log.info("Steam OpenID return_to: %s", STEAM_RETURN_URL)
 
@@ -190,10 +177,7 @@ class SteamLink(commands.Cog):
         await self._runner.setup()
         site = web.TCPSite(self._runner, host=HTTP_HOST, port=HTTP_PORT)
         await site.start()
-        log.info(
-            "OAuth/OpenID Callback-Server läuft auf %s:%s (Discord redirect=%s)",
-            HTTP_HOST, HTTP_PORT, _env_redirect()
-        )
+        log.info("OAuth/OpenID Callback-Server läuft auf %s:%s (Discord redirect=%s)", HTTP_HOST, HTTP_PORT, _env_redirect())
 
     async def cog_unload(self) -> None:
         if self._runner:
@@ -280,28 +264,81 @@ class SteamLink(commands.Cog):
                     return None
                 return await r.json()
 
-    async def _save_steam_links_from_discord(self, user_id: int, conns: List[dict]) -> List[str]:
-        saved_ids: List[str] = []
-        if not conns:
-            return saved_ids
-        for c in conns:
-            if c.get("type") != "steam":
-                continue
-            steam_id = str(c.get("id") or "").strip()
-            if not steam_id:
-                continue
-            name = (c.get("name") or "").strip()
-            verified = 1 if c.get("verified") else 0
-            _save_steam_link_row(user_id, steam_id, name, verified)
-            saved_ids.append(steam_id)
-        return saved_ids
+    # ---------- Steam resolving helpers --------------------------------------
+    async def _resolve_vanity(self, vanity: str) -> Optional[str]:
+        key = (os.getenv("STEAM_API_KEY") or "").strip()
+        if not key:
+            return None
+        url = f"{STEAM_API_BASE}/ISteamUser/ResolveVanityURL/v0001/"
+        params = {"key": key, "vanityurl": vanity}
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url, params=params, timeout=10) as r:
+                    if r.status != 200:
+                        return None
+                    data = await r.json()
+                    resp = data.get("response", {})
+                    if resp.get("success") == 1:
+                        sid = resp.get("steamid")
+                        if sid and re.fullmatch(r"\d{17}", sid):
+                            return sid
+        except Exception:
+            return None
+        return None
 
-    # ---- Steam OpenID helpers (hart an PUBLIC_BASE_URL gebunden) -------------
+    async def _resolve_steam_input(self, raw: str) -> Optional[str]:
+        """Akzeptiert: 17-stellige ID, steamcommunity-URL (/profiles/<id> oder /id/<vanity>), oder Vanity-String."""
+        s = (raw or "").strip()
+        if not s:
+            return None
+
+        # 1) 17-stellige ID
+        if re.fullmatch(r"\d{17}", s):
+            return s
+
+        # 2) URL?
+        try:
+            u = urlparse(s)
+        except Exception:
+            u = None
+        if u and u.netloc and "steamcommunity.com" in u.netloc:
+            path = (u.path or "").rstrip("/")
+            m = re.search(r"/profiles/(\d{17})$", path)
+            if m:
+                return m.group(1)
+            m = re.search(r"/id/([^/]+)$", path)
+            if m:
+                return await self._resolve_vanity(m.group(1))
+
+        # 3) nackter Vanity-Kandidat
+        if re.fullmatch(r"[A-Za-z0-9_.\-]+", s):
+            return await self._resolve_vanity(s)
+
+        return None
+
+    async def _fetch_persona(self, steam_id: str) -> Optional[str]:
+        key = (os.getenv("STEAM_API_KEY") or "").strip()
+        if not key:
+            return None
+        url = f"{STEAM_API_BASE}/ISteamUser/GetPlayerSummaries/v0002/"
+        params = {"key": key, "steamids": steam_id}
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url, params=params, timeout=10) as r:
+                    if r.status != 200:
+                        return None
+                    data = await r.json()
+                    players = data.get("response", {}).get("players", [])
+                    if players:
+                        return players[0].get("personaname") or None
+        except Exception:
+            return None
+        return None
+
+    # ---- Steam OpenID helpers -----------------------------------------------
     def _require_public_base(self) -> None:
         if not PUBLIC_BASE_URL:
-            raise RuntimeError(
-                "PUBLIC_BASE_URL ist nicht gesetzt. Setze z. B. PUBLIC_BASE_URL=https://link.earlysalty.com"
-            )
+            raise RuntimeError("PUBLIC_BASE_URL ist nicht gesetzt.")
 
     def _steam_return_to(self, state: str) -> str:
         self._require_public_base()
@@ -309,7 +346,7 @@ class SteamLink(commands.Cog):
 
     def _steam_realm(self) -> str:
         self._require_public_base()
-        return PUBLIC_BASE_URL  # z. B. https://link.earlysalty.com
+        return PUBLIC_BASE_URL
 
     def _build_steam_login_url(self, state: str) -> str:
         self._require_public_base()
@@ -343,13 +380,7 @@ class SteamLink(commands.Cog):
 
         claimed_id = query.get("openid.claimed_id", "")
         m = re.search(r"/openid/id/(\d+)$", claimed_id)
-        if m:
-            sid = m.group(1)
-        else:
-            m = re.search(r"/id/(\d+)$", claimed_id)
-            sid = m.group(1) if m else None
-
-        # Strikte Validierung – trotzdem in der Ausgabe weiter escapen
+        sid = m.group(1) if m else None
         if sid and re.fullmatch(r"\d{17}", sid):
             return sid
         return None
@@ -359,7 +390,8 @@ class SteamLink(commands.Cog):
         html_doc = (
             "<html><body style='font-family: system-ui, sans-serif'>"
             "<h2>Deadlock Bot – Link Service</h2>"
-            "<p>✅ Server läuft. Nutze im Discord <code>/link</code> oder <code>/link_steam</code>.</p>"
+            "<p>✅ Server läuft. Nutze im Discord <code>/link</code>, "
+            "<code>/addsteam</code>, <code>/setprimary</code> oder <code>/link_steam</code>.</p>"
             "<p><a href='/health'>Health-Check</a></p>"
             "</body></html>"
         )
@@ -369,7 +401,6 @@ class SteamLink(commands.Cog):
         return web.json_response({"ok": True, "ts": int(time.time())})
 
     async def handle_favicon(self, request: web.Request) -> web.Response:
-        # Wir liefern bewusst kein Icon aus (still)
         return web.Response(status=204)
 
     async def handle_robots(self, request: web.Request) -> web.Response:
@@ -409,11 +440,10 @@ class SteamLink(commands.Cog):
             )
             return web.Response(text=html_doc, content_type="text/html")
 
-        # Fallback: Steam OpenID (Meta-Refresh + Button)
+        # Fallback: Steam OpenID
         steam_state = self._mk_state(uid)
         steam_login = self._build_steam_login_url(steam_state)
         steam_login_safe = html.escape(steam_login, quote=True)
-
         html_doc = (
             "<html><head>"
             f"<meta http-equiv='refresh' content=\"1; url={steam_login_safe}\"/>"
@@ -422,7 +452,6 @@ class SteamLink(commands.Cog):
             "<p>Bitte melde dich kurz bei Steam an, um deinen Account zu bestätigen.</p>"
             f"<p><a href=\"{steam_login_safe}\" style='padding:10px 14px;"
             "background:#2a475e;color:#fff;border-radius:6px;text-decoration:none;'>Bei Steam anmelden</a></p>"
-            "<p><small>Falls eine Schutzsoftware blockt, öffne den Link ggf. in einem privaten Fenster oder über Mobilnetz.</small></p>"
             "</body></html>"
         )
         return web.Response(text=html_doc, content_type="text/html")
@@ -486,7 +515,6 @@ class SteamLink(commands.Cog):
         except Exception as e:
             await self._send_ephemeral(ctx, f"❌ OAuth-Fehler: `{e}` – prüfe .env & Dev-Portal Redirect.")
             return
-
         msg = (
             "🔗 **Klicke zum Verknüpfen (Discord OAuth2):**\n"
             f"{url}\n\n"
@@ -511,7 +539,7 @@ class SteamLink(commands.Cog):
             (ctx.author.id,),
         )
         if not rows:
-            await self._send_ephemeral(ctx, "Keine Steam-Links gefunden. Nutze `/link` oder `/link_steam`.")
+            await self._send_ephemeral(ctx, "Keine Steam-Links gefunden. Nutze `/link`, `/addsteam` oder `/link_steam`.")
             return
         lines = []
         for r in rows:
@@ -522,20 +550,62 @@ class SteamLink(commands.Cog):
             lines.append(f"- **{sid}** ({nm}){chk}{prim}")
         await self._send_ephemeral(ctx, "Deine verknüpften Accounts:\n" + "\n".join(lines))
 
-    @commands.hybrid_command(name="unlink", description="Entfernt einen Steam-Link")
-    async def unlink(self, ctx: commands.Context, steam_id: str) -> None:
-        db.execute("DELETE FROM steam_links WHERE user_id=? AND steam_id=?", (ctx.author.id, steam_id))
-        await self._send_ephemeral(ctx, f"Entfernt: `{steam_id}`")
+    @commands.hybrid_command(name="whoami", description="Prüft ID/Vanity/Profil-Link und zeigt Persona + SteamID")
+    async def whoami(self, ctx: commands.Context, steam: str) -> None:
+        sid = await self._resolve_steam_input(steam)
+        if not sid:
+            await self._send_ephemeral(ctx, "❌ Konnte aus deiner Eingabe keine SteamID bestimmen.")
+            return
+        persona = await self._fetch_persona(sid)
+        if persona:
+            await self._send_ephemeral(ctx, f"👤 **{persona}** → SteamID64: `{sid}`")
+        else:
+            await self._send_ephemeral(ctx, f"SteamID64: `{sid}` (Persona nicht abrufbar)")
 
-    @commands.hybrid_command(name="setprimary", description="Markiert einen Steam-Account als Primär")
-    async def setprimary(self, ctx: commands.Context, steam_id: str) -> None:
+    @commands.hybrid_command(name="addsteam", description="Inoffiziell: fügt manuell eine SteamID hinzu – akzeptiert ID, Vanity oder Profil-Link.")
+    async def addsteam(self, ctx: commands.Context, steam: str, name: Optional[str] = None, primary: Optional[bool] = False) -> None:
+        sid = await self._resolve_steam_input(steam)
+        if not sid:
+            await self._send_ephemeral(ctx, "❌ Ungültige Eingabe. Erwarte SteamID64, Vanity oder steamcommunity-Link.")
+            return
+        display_name = name or (await self._fetch_persona(sid) or "")
+        _save_steam_link_row(ctx.author.id, sid, display_name, verified=0)
+        if primary:
+            db.execute("UPDATE steam_links SET primary_account=0 WHERE user_id=?", (ctx.author.id,))
+            db.execute(
+                "UPDATE steam_links SET primary_account=1, updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND steam_id=?",
+                (ctx.author.id, sid),
+            )
+            await self._send_ephemeral(ctx, f"✅ Hinzugefügt & als Primär gesetzt: `{sid}` (manuell, unverified)")
+        else:
+            await self._send_ephemeral(ctx, f"✅ Hinzugefügt: `{sid}` (manuell, unverified)")
+
+    @commands.hybrid_command(name="setprimary", description="Markiert einen Steam-Account als Primär (akzeptiert ID/Vanity/Link; legt bei Bedarf an).")
+    async def setprimary(self, ctx: commands.Context, steam: str, name: Optional[str] = None) -> None:
+        sid = await self._resolve_steam_input(steam)
+        if not sid:
+            await self._send_ephemeral(ctx, "❌ Ungültige Eingabe. Erwarte SteamID64, Vanity oder steamcommunity-Link.")
+            return
+        display_name = name or (await self._fetch_persona(sid) or "")
+        _save_steam_link_row(ctx.author.id, sid, display_name, verified=0)
         db.execute("UPDATE steam_links SET primary_account=0 WHERE user_id=?", (ctx.author.id,))
         db.execute(
-            "UPDATE steam_links SET primary_account=1, updated_at=CURRENT_TIMESTAMP "
-            "WHERE user_id=? AND steam_id=?",
-            (ctx.author.id, steam_id),
+            "UPDATE steam_links SET primary_account=1, updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND steam_id=?",
+            (ctx.author.id, sid),
         )
-        await self._send_ephemeral(ctx, f"✅ Primär gesetzt: `{steam_id}`")
+        await self._send_ephemeral(ctx, f"✅ Primär gesetzt: `{sid}`")
+
+    @commands.hybrid_command(name="unlink", description="Entfernt einen Steam-Link (ID/Vanity/Profil-Link möglich)")
+    async def unlink(self, ctx: commands.Context, steam: str) -> None:
+        # Auch hier flexibel: Vanity/URL auflösen
+        sid = await self._resolve_steam_input(steam)
+        if not sid and re.fullmatch(r"\d{17}", steam or ""):
+            sid = steam
+        if not sid:
+            await self._send_ephemeral(ctx, "❌ Ungültige Eingabe. Erwarte SteamID64, Vanity oder steamcommunity-Link.")
+            return
+        db.execute("DELETE FROM steam_links WHERE user_id=? AND steam_id=?", (ctx.author.id, sid))
+        await self._send_ephemeral(ctx, f"Entfernt: `{sid}`")
 
     async def _send_ephemeral(self, ctx: commands.Context, content: str) -> None:
         if getattr(ctx, "interaction", None) and not ctx.interaction.response.is_done():
@@ -544,7 +614,6 @@ class SteamLink(commands.Cog):
             await ctx.interaction.followup.send(content, ephemeral=True)
         else:
             await ctx.reply(content)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SteamLink(bot))
