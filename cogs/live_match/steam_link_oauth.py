@@ -264,6 +264,55 @@ class SteamLink(commands.Cog):
                     return None
                 return await r.json()
 
+    async def _save_steam_links_from_discord(self, uid: int, conns: List[dict]) -> List[str]:
+        """
+        Nimmt die Verbindungen von Discord (/users/@me/connections),
+        filtert Steam-Accounts heraus und speichert sie in die DB.
+        Gibt die gespeicherten SteamIDs (17-stellig) zurück.
+        """
+        saved: List[str] = []
+        if not conns:
+            return saved
+
+        for c in conns:
+            try:
+                if str(c.get("type", "")).lower() != "steam":
+                    continue
+
+                # Discord liefert für Steam i.d.R. die 17-stellige SteamID64 in "id"
+                sid_raw = str(c.get("id") or "").strip()
+                steam_id: Optional[str] = None
+
+                if re.fullmatch(r"\d{17}", sid_raw):
+                    steam_id = sid_raw
+                else:
+                    # Fallback: manchmal ist nur ein Vanity-Name greifbar (oder Link im "name")
+                    name_or_vanity = str(c.get("name") or "").strip()
+                    steam_id = await self._resolve_steam_input(sid_raw) or await self._resolve_steam_input(name_or_vanity)
+
+                if not steam_id:
+                    # Eventueller weiterer Fallback: manche Integrationen hängen Metadaten an
+                    meta = c.get("metadata") or {}
+                    meta_sid = str(meta.get("steam_id") or "").strip()
+                    if re.fullmatch(r"\d{17}", meta_sid):
+                        steam_id = meta_sid
+
+                if not steam_id:
+                    log.info("Ignoriere Verbindung ohne gültige SteamID: %s", c)
+                    continue
+
+                # Anzeigenamen (Persona) ziehen – nur nice-to-have, scheitert still
+                persona = await self._fetch_persona(steam_id) or (c.get("name") or "")
+                verified = 1 if c.get("verified") else 0
+
+                _save_steam_link_row(uid, steam_id, persona, verified)
+                saved.append(steam_id)
+
+            except Exception:
+                log.exception("Fehler beim Speichern der Steam-Verknüpfung: user_id=%s, conn=%s", uid, c)
+
+        return saved
+
     # ---------- Steam resolving helpers --------------------------------------
     async def _resolve_vanity(self, vanity: str) -> Optional[str]:
         key = (os.getenv("STEAM_API_KEY") or "").strip()
