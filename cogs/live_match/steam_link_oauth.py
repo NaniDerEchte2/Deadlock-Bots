@@ -302,6 +302,30 @@ class SteamLink(commands.Cog):
         }
         return f"{DISCORD_API}/oauth2/authorize?{urlencode(params)}"
 
+    # ---- Öffentliche Helper für andere Cogs (Welcome-DM etc.) -------------
+    def build_discord_link_for(self, uid: int) -> str:
+        """
+        Gibt eine komplette Discord-OAuth2-URL (inkl. state) für den User zurück.
+        Fällt bei Fehlern auf leeren String zurück.
+        """
+        try:
+            return self._build_discord_auth_url(int(uid))
+        except Exception:
+            log.exception("build_discord_link_for failed (uid=%s)", uid)
+            return ""
+
+    def build_steam_openid_for(self, uid: int) -> str:
+        """
+        Gibt eine komplette Steam-OpenID-Login-URL (inkl. state) für den User zurück.
+        Fällt bei Fehlern auf leeren String zurück.
+        """
+        try:
+            s = self._mk_state(int(uid))
+            return self._build_steam_login_url(s)
+        except Exception:
+            log.exception("build_steam_openid_for failed (uid=%s)", uid)
+            return ""
+
     # ---------- Discord OAuth helpers ----------------------------------------
     async def _discord_token_exchange(self, code: str) -> Optional[dict]:
         client_id = _env_client_id(self.bot)
@@ -351,19 +375,16 @@ class SteamLink(commands.Cog):
                 if str(c.get("type", "")).lower() != "steam":
                     continue
 
-                # Discord liefert für Steam i.d.R. die 17-stellige SteamID64 in "id"
                 sid_raw = str(c.get("id") or "").strip()
                 steam_id: Optional[str] = None
 
                 if re.fullmatch(r"\d{17}", sid_raw):
                     steam_id = sid_raw
                 else:
-                    # Fallback: manchmal ist nur ein Vanity-Name greifbar (oder Link im "name")
                     name_or_vanity = str(c.get("name") or "").strip()
                     steam_id = await self._resolve_steam_input(sid_raw) or await self._resolve_steam_input(name_or_vanity)
 
                 if not steam_id:
-                    # Eventueller weiterer Fallback: manche Integrationen hängen Metadaten an
                     meta = c.get("metadata") or {}
                     meta_sid = str(meta.get("steam_id") or "").strip()
                     if re.fullmatch(r"\d{17}", meta_sid):
@@ -373,7 +394,6 @@ class SteamLink(commands.Cog):
                     log.info("Ignoriere Verbindung ohne gültige SteamID: %s", c)
                     continue
 
-                # Anzeigenamen (Persona) ziehen – nur nice-to-have, scheitert still
                 persona = await self._fetch_persona(steam_id) or (c.get("name") or "")
                 verified = 1 if c.get("verified") else 0
 
@@ -561,14 +581,12 @@ class SteamLink(commands.Cog):
             )
             return web.Response(text=html_doc, content_type="text/html")
 
-        # ---------- NEU: Seamless Redirect zu Steam OpenID (kein hässliches Fallback-HTML) ----------
+        # ---------- Seamless Redirect zu Steam OpenID ----------
         try:
             steam_state = self._mk_state(uid)
             steam_login = self._build_steam_login_url(steam_state)
-            # 302/Found → sofortige Weiterleitung
             raise web.HTTPFound(location=steam_login)
         except Exception:
-            # Falls PUBLIC_BASE_URL o.ä. fehlt → sichere, alte Fallback-Seite
             steam_state = self._mk_state(uid)
             steam_login = self._build_steam_login_url(steam_state) if PUBLIC_BASE_URL else "#"
             steam_login_safe = html.escape(steam_login, quote=True)
@@ -651,7 +669,6 @@ class SteamLink(commands.Cog):
             "• Ich schicke dir eine DM, sobald die Verknüpfung durch ist."
         )
 
-        # Embed „grün“ akzentuieren, Button bleibt (Discord-bedingt) grau.
         embed = discord.Embed(title="Steam/Discord verknüpfen", description=desc, color=discord.Color.green())
         if LINK_COVER_IMAGE:
             embed.set_image(url=LINK_COVER_IMAGE)
@@ -662,7 +679,6 @@ class SteamLink(commands.Cog):
             await self._send_ephemeral(ctx, embed=embed, view=view)
             return
 
-        # one_click:
         try:
             url = self._build_discord_auth_url(ctx.author.id)
         except Exception as e:
@@ -689,7 +705,6 @@ class SteamLink(commands.Cog):
             await self._send_ephemeral(ctx, embed=embed, view=view)
             return
 
-        # one_click:
         s = self._mk_state(ctx.author.id)
         url = self._build_steam_login_url(s)
         view = discord.ui.View()
