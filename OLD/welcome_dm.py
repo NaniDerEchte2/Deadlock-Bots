@@ -5,6 +5,8 @@ import asyncio
 import logging
 from datetime import datetime
 from typing import Dict, Optional, Union
+from cogs.steam_link_dm import send_steam_link_step
+
 
 # ---------- IDs (prüfen/anpassen) ----------
 MAIN_GUILD_ID                   = 1289721245281292288  # Haupt-Guild (für Member/Rollen in DMs)
@@ -602,7 +604,45 @@ class RankView(StepView):
 
 
 # =========================
-#   FRAGE 5: REGELN
+#   FRAGE 5: STEAM-LINK (NUDGE)
+# =========================
+
+class SteamLinkNudgeView(StepView):
+    """
+    Leichte Empfehlung (skippbar) + Button, der die eigentliche Steam-Link-View sendet.
+    Persistente Buttons: wdm:q5:*
+    """
+    @discord.ui.button(label="Jetzt verknüpfen (empfohlen)", style=discord.ButtonStyle.success, custom_id="wdm:q5:linknow", emoji="🔗")
+    async def link_now(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            # Öffnet die „3 Optionen“-View aus dem Steam-Link-DM-Modul (Discord/Steam/Manuell)
+            await send_steam_link_step(interaction.client, interaction.user)  # type: ignore
+            # Kein Finish – User kann danach „Weiter“ klicken, wenn gelesen.
+            if not interaction.response.is_done():
+                await interaction.response.send_message("📨 Link-Fenster geöffnet. Du kannst hier gleich **Weiter** klicken.", ephemeral=True)
+            else:
+                await interaction.followup.send("📨 Link-Fenster geöffnet. Du kannst hier gleich **Weiter** klicken.", ephemeral=True)
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Konnte die Verknüpfung gerade nicht öffnen. Probier später **/link**.", ephemeral=True)
+            else:
+                await interaction.followup.send("⚠️ Konnte die Verknüpfung gerade nicht öffnen. Probier später **/link**.", ephemeral=True)
+
+    @discord.ui.button(label="Später", style=discord.ButtonStyle.secondary, custom_id="wdm:q5:skip", emoji="⏭️")
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._enforce_min_wait(interaction):
+            return
+        await self._finish(interaction)
+
+    @discord.ui.button(label="Weiter", style=discord.ButtonStyle.primary, custom_id="wdm:q5:next")
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._enforce_min_wait(interaction):
+            return
+        await self._finish(interaction)
+
+
+# =========================
+#   FRAGE 6: REGELN
 # =========================
 
 class RulesView(StepView):
@@ -664,6 +704,7 @@ class WelcomeDM(commands.Cog):
         self.bot.add_view(CustomGamesView())
         self.bot.add_view(PatchnotesView())
         self.bot.add_view(RankView(guild_for_emojis=None))
+        self.bot.add_view(SteamLinkNudgeView())
         self.bot.add_view(RulesView())
 
     @commands.Cog.listener()
@@ -740,26 +781,26 @@ class WelcomeDM(commands.Cog):
                     member,
                     title="Willkommen 💙",
                     desc=intro_desc,
-                    step=None, total=5,
+                    step=None, total=6,
                     view=IntroView(),
                     color=0x00AEEF
                 ):
                     return False
 
-                # ---- Frage 1/5: Status
+                # ---- Frage 1/6: Status
                 status_view = PlayerStatusView()
                 if not await self._send_step_embed(
                     member,
-                    title="Frage 1/5 · Spielst du schon Deadlock – oder wieder?",
+                    title="Frage 1/6 · Spielst du schon Deadlock – oder wieder?",
                     desc="Sag mir kurz, wo du stehst – dann passe ich alles besser für dich an.",
-                    step=1, total=5,
+                    step=1, total=6,
                     view=status_view,
                     color=0x95A5A6
                 ):
                     return False
                 status_choice = status_view.choice or STATUS_PLAYING
 
-                # ---- Frage 2/5: Custom Games
+                # ---- Frage 2/6: Custom Games
                 q2_desc = (
                     "🎮 **Custom Games**\n\n"
                     "**Was sind Custom Games?**\n"
@@ -772,30 +813,30 @@ class WelcomeDM(commands.Cog):
                 )
                 if not await self._send_step_embed(
                     member,
-                    title="Frage 2/5 · Lust auf Custom Games?",
+                    title="Frage 2/6 · Lust auf Custom Games?",
                     desc=q2_desc,
-                    step=2, total=5,
+                    step=2, total=6,
                     view=CustomGamesView(),
                     color=0x2ECC71
                 ):
                     return False
 
-                # ---- Frage 3/5: Patchnotes
+                # ---- Frage 3/6: Patchnotes
                 q3_desc = (
                     "Möchtest du über neue **Patchnotes** informiert werden?\n"
                     "So verpasst du keine Balance-Änderungen oder neuen Content."
                 )
                 if not await self._send_step_embed(
                     member,
-                    title="Frage 3/5 · Patchnotes-Benachrichtigungen",
+                    title="Frage 3/6 · Patchnotes-Benachrichtigungen",
                     desc=q3_desc,
-                    step=3, total=5,
+                    step=3, total=6,
                     view=PatchnotesView(),
                     color=0x3498DB
                 ):
                     return False
 
-                # ---- Frage 4/5: Rang
+                # ---- Frage 4/6: Rang
                 q4_desc = (
                     "Bitte wähle hier deinen **AKTUELLEN RANG**\n"
                     "**Kein MAX RANG, NICHT PEAK, auch NICHT WEIHNACHTEN IN AFRIKA**\n"
@@ -812,16 +853,38 @@ class WelcomeDM(commands.Cog):
                 )
                 if not await self._send_step_embed(
                     member,
-                    title="Frage 4/5 · Rang auswählen (Pflicht)",
+                    title="Frage 4/6 · Rang auswählen (Pflicht)",
                     desc=q4_desc,
-                    step=4, total=5,
+                    step=4, total=6,
                     view=RankView(guild_for_emojis=guild),
                     color=0x9B59B6
                 ):
                     return False
 
-                # ---- Frage 5/5: Regeln
+                # ---- Frage 5/6: Steam-Verknüpfung (Empfehlung)
                 q5_desc = (
+                    "**Empfehlung für besseres Erlebnis:**\n"
+                    "• **Wozu ist das gut?** Wir können dadurch einen **exakten Voice-Status** "
+                    "(z. B. *Lobby/In-Game*, **Anzahl im Match**) als Kanalbeschreibung bereitstellen.\n"
+                    "• Zudem ermöglicht es **sauberere Orga & Balancing** bei Events.\n\n"
+                    "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → "
+                    "**Spieldetails = Öffentlich** (und **Gesamtspielzeit** nicht auf „immer privat“)."
+                )
+                if not await self._send_step_embed(
+                    member,
+                    title="Frage 5/6 · Steam verknüpfen (empfohlen, skippbar)",
+                    desc=q5_desc,
+                    step=5, total=6,
+                    view=SteamLinkNudgeView(),
+                    color=0x5865F2
+                ):
+                    return False
+
+                # Zusätzlich: Öffne direkt die Link-View, falls der User „Jetzt verknüpfen“ gedrückt hat
+                # (Die Nudge-View ruft send_steam_link_step bereits – hier kein weiterer Call nötig.)
+
+                # ---- Frage 6/6: Regeln
+                q6_desc = (
                     "📜 **Regelwerk – Das Wichtigste in Kürze**\n\n"
                     "✔ Respektvoller Umgang – keine Beleidigungen oder persönlichen Angriffe\n"
                     "✔ Null Toleranz bei Rassismus, Sexismus oder Hassrede\n"
@@ -833,9 +896,9 @@ class WelcomeDM(commands.Cog):
                 )
                 if not await self._send_step_embed(
                     member,
-                    title="Frage 5/5 · Regelwerk bestätigen",
-                    desc=q5_desc,
-                    step=5, total=5,
+                    title="Frage 6/6 · Regelwerk bestätigen",
+                    desc=q6_desc,
+                    step=6, total=6,
                     view=RulesView(),
                     color=0xE67E22
                 ):
