@@ -567,8 +567,9 @@ class SteamLink(commands.Cog):
         msg = (
             "🔗 **Klicke zum Verknüpfen (Discord OAuth2):**\n"
             f"{url}\n\n"
-            "• Scopes: `identify`, `connections`\n"
-            "• Falls dort **kein Steam** hinterlegt ist, leite ich dich auf die Steam-Anmeldeseite weiter.\n"
+            "• Falls in deinem Discord Profil keine Steam Verknüpfung eingetragen ist, leite ich dich auf die Steam-Anmeldeseite weiter.\n"
+            "• Deine Steam-Anmeldedaten werden nicht weitergegeben.\n"
+            "• Durch die Anmeldung können wir dein Steam-Community-Profil identifizieren und gemäß deiner Profileinstellungen, Informationen die für die Öffentlichkeit sichtbar sind, abrufen.\n"
             "• **Ich schicke dir eine DM**, sobald die Verknüpfung durch ist."
         )
         await self._send_ephemeral(ctx, msg)

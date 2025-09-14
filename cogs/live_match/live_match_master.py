@@ -33,8 +33,8 @@ log = logging.getLogger("LiveMatchMaster")
 
 # ===== Konfiguration über ENV =====
 LIVE_CATEGORIES = [int(x) for x in os.getenv(
-    "LIVE_CATEGORIES",
-    "1289721245281292290,1357422957017698478"  # Beispiel: Casual, Ranked
+    "1412804540994162789",
+    "1289721245281292290"  # Beispiel: Casual, Ranked
 ).split(",") if x.strip()]
 
 DEADLOCK_APP_ID = os.getenv("DEADLOCK_APP_ID", "1422450")
@@ -43,7 +43,7 @@ STEAM_API_KEY   = os.getenv("STEAM_API_KEY", "")
 CHECK_INTERVAL_SEC       = int(os.getenv("LIVE_CHECK_INTERVAL_SEC", "30"))
 MIN_MATCH_GROUP          = int(os.getenv("MIN_MATCH_GROUP", "2"))
 
-DEFAULT_CASUAL_CAP       = int(os.getenv("DEFAULT_CASUAL_CAP", "8"))
+DEFAULT_CASUAL_CAP       = int(os.getenv("DEFAULT_CASUAL_CAP", "6"))
 RANKED_CATEGORY_ID       = int(os.getenv("RANKED_CATEGORY_ID", "1357422957017698478"))
 DEFAULT_RANKED_CAP       = int(os.getenv("DEFAULT_RANKED_CAP", "6"))
 
