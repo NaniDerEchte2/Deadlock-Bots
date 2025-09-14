@@ -145,7 +145,7 @@ class SteamLink(commands.Cog):
     """
     Linking-Flow:
       1) /link → Discord OAuth2 (identify + connections)
-      2) 0 Treffer → Fallback-Seite → Steam OpenID
+      2) 0 Treffer → Fallback-Seite → Steam OpenID (JETZT: automatische Weiterleitung)
       3) /steam/return → SteamID64 extrahieren → speichern
       4) Erfolg → DM an den User
 
@@ -351,16 +351,19 @@ class SteamLink(commands.Cog):
                 if str(c.get("type", "")).lower() != "steam":
                     continue
 
+                # Discord liefert für Steam i.d.R. die 17-stellige SteamID64 in "id"
                 sid_raw = str(c.get("id") or "").strip()
                 steam_id: Optional[str] = None
 
                 if re.fullmatch(r"\d{17}", sid_raw):
                     steam_id = sid_raw
                 else:
+                    # Fallback: manchmal ist nur ein Vanity-Name greifbar (oder Link im "name")
                     name_or_vanity = str(c.get("name") or "").strip()
                     steam_id = await self._resolve_steam_input(sid_raw) or await self._resolve_steam_input(name_or_vanity)
 
                 if not steam_id:
+                    # Eventueller weiterer Fallback: manche Integrationen hängen Metadaten an
                     meta = c.get("metadata") or {}
                     meta_sid = str(meta.get("steam_id") or "").strip()
                     if re.fullmatch(r"\d{17}", meta_sid):
@@ -370,6 +373,7 @@ class SteamLink(commands.Cog):
                     log.info("Ignoriere Verbindung ohne gültige SteamID: %s", c)
                     continue
 
+                # Anzeigenamen (Persona) ziehen – nur nice-to-have, scheitert still
                 persona = await self._fetch_persona(steam_id) or (c.get("name") or "")
                 verified = 1 if c.get("verified") else 0
 
@@ -409,10 +413,11 @@ class SteamLink(commands.Cog):
         if not s:
             return None
 
+        # 1) 17-stellige ID
         if re.fullmatch(r"\d{17}", s):
             return s
 
-        # URL?
+        # 2) URL?
         try:
             u = urlparse(s)
         except Exception:
@@ -426,7 +431,7 @@ class SteamLink(commands.Cog):
             if m:
                 return await self._resolve_vanity(m.group(1))
 
-        # nackter Vanity-Kandidat
+        # 3) nackter Vanity-Kandidat
         if re.fullmatch(r"[A-Za-z0-9_.\-]+", s):
             return await self._resolve_vanity(s)
 
@@ -556,21 +561,27 @@ class SteamLink(commands.Cog):
             )
             return web.Response(text=html_doc, content_type="text/html")
 
-        # Fallback: Steam OpenID
-        steam_state = self._mk_state(uid)
-        steam_login = self._build_steam_login_url(steam_state)
-        steam_login_safe = html.escape(steam_login, quote=True)
-        html_doc = (
-            "<html><head>"
-            f"<meta http-equiv='refresh' content=\"1; url={steam_login_safe}\"/>"
-            "</head><body style='font-family: system-ui, sans-serif'>"
-            "<h3>Kein Steam-Account in deinen Discord-Verknüpfungen gefunden.</h3>"
-            "<p>Bitte melde dich kurz bei Steam an, um deinen Account zu bestätigen.</p>"
-            f"<p><a href=\"{steam_login_safe}\" style='padding:10px 14px;"
-            "background:#2a475e;color:#fff;border-radius:6px;text-decoration:none;'>Bei Steam anmelden</a></p>"
-            "</body></html>"
-        )
-        return web.Response(text=html_doc, content_type="text/html")
+        # ---------- NEU: Seamless Redirect zu Steam OpenID (kein hässliches Fallback-HTML) ----------
+        try:
+            steam_state = self._mk_state(uid)
+            steam_login = self._build_steam_login_url(steam_state)
+            # 302/Found → sofortige Weiterleitung
+            raise web.HTTPFound(location=steam_login)
+        except Exception:
+            # Falls PUBLIC_BASE_URL o.ä. fehlt → sichere, alte Fallback-Seite
+            steam_state = self._mk_state(uid)
+            steam_login = self._build_steam_login_url(steam_state) if PUBLIC_BASE_URL else "#"
+            steam_login_safe = html.escape(steam_login, quote=True)
+            html_doc = (
+                "<html><head>"
+                f"<meta http-equiv='refresh' content=\"0; url={steam_login_safe}\"/>"
+                "</head><body style='font-family: system-ui, sans-serif'>"
+                "<h3>Weiterleitung zu Steam …</h3>"
+                f"<p><a href=\"{steam_login_safe}\" style='padding:10px 14px;"
+                "background:#2a475e;color:#fff;border-radius:6px;text-decoration:none;'>Falls nichts passiert, hier klicken</a></p>"
+                "</body></html>"
+            )
+            return web.Response(text=html_doc, content_type="text/html")
 
     async def handle_steam_login(self, request: web.Request) -> web.Response:
         uid_q = request.query.get("uid")
@@ -758,6 +769,7 @@ class SteamLink(commands.Cog):
 
     @commands.hybrid_command(name="unlink", description="Entfernt einen Steam-Link (ID/Vanity/Profil-Link möglich)")
     async def unlink(self, ctx: commands.Context, steam: str) -> None:
+        # Auch hier flexibel: Vanity/URL auflösen
         sid = await self._resolve_steam_input(steam)
         if not sid and re.fullmatch(r"\d{17}", steam or ""):
             sid = steam
