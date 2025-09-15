@@ -192,7 +192,10 @@ class DlCoachingCog(commands.Cog):
             em = guild.get_emoji(int(sid))
             if em:
                 return discord.PartialEmoji(name=em.name, id=em.id)
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("safe_option_emoji failed: %r", e)
             return None
         return None
 
@@ -204,8 +207,8 @@ class DlCoachingCog(commands.Cog):
                 payload = json.dumps(thread_data).encode("utf-8")
                 s.sendall(len(payload).to_bytes(4, byteorder="big"))
                 s.sendall(payload)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("notify claim bot failed: %r", e)
 
     # ----------------- UI -----------------
     class StartView(View):
@@ -230,15 +233,19 @@ class DlCoachingCog(commands.Cog):
             try:
                 if not interaction.response.is_done():
                     await interaction.response.defer(ephemeral=True)
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("match modal defer failed: %r", e)
 
             base_channel = interaction.channel
             if not isinstance(base_channel, discord.TextChannel):
                 try:
                     await interaction.followup.send("❌ Bitte im Textkanal ausführen.", ephemeral=True)
-                except Exception:
-                    pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.debug("match modal followup failed: %r", e)
                 return
 
             thread = await base_channel.create_thread(
@@ -247,8 +254,10 @@ class DlCoachingCog(commands.Cog):
             )
             try:
                 await thread.add_user(interaction.user)
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("add_user to thread failed: %r", e)
 
             await self.cog._db_upsert(
                 interaction.user.id,
@@ -267,8 +276,10 @@ class DlCoachingCog(commands.Cog):
 
             try:
                 await interaction.followup.send(f"Thread erstellt: {thread.mention}", ephemeral=True)
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("match modal followup send failed: %r", e)
 
     class RankSelect(Select):
         def __init__(self, cog: "DlCoachingCog", guild: Optional[discord.Guild]):
@@ -395,8 +406,10 @@ class DlCoachingCog(commands.Cog):
                 try:
                     if not interaction.response.is_done():
                         await interaction.response.defer(ephemeral=True, thinking=False)
-                except Exception:
-                    pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.debug("comment modal defer failed: %r", e)
 
                 await self.cog._db_upsert(uid, comment=str(self.comment.value), step="finish")
                 row = await self.cog._db_get(uid)
@@ -413,14 +426,18 @@ class DlCoachingCog(commands.Cog):
 
                 await interaction.followup.send(embed=emb, view=DlCoachingCog.FinishView(self.cog), ephemeral=True)
 
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.exception("Comment submit failed: %s", e)
                 # Fallback-Fehlerausgabe
                 sender = interaction.followup.send if interaction.response.is_done() else interaction.response.send_message
                 try:
                     await sender("❌ Etwas ist schiefgelaufen. Bitte erneut versuchen.", ephemeral=True)
-                except Exception:
-                    pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e2:
+                    logger.debug("comment modal error reply failed: %r", e2)
 
     class CommentView(View):
         def __init__(self, cog: "DlCoachingCog"):
@@ -442,11 +459,13 @@ class DlCoachingCog(commands.Cog):
             uid = interaction.user.id
             row = await self.cog._db_get(uid)
             if not row:
-                return await interaction.response.send_message("Keine Daten gefunden.", ephemeral=True)
+                await interaction.response.send_message("Keine Daten gefunden.", ephemeral=True)
+                return  # <- kein Wert zurückgeben (CodeQL fix)
 
             channel = interaction.channel
             if not isinstance(channel, (discord.Thread, discord.TextChannel)):
-                return await interaction.response.send_message("Ungültiger Kanal.", ephemeral=True)
+                await interaction.response.send_message("Ungültiger Kanal.", ephemeral=True)
+                return  # <- kein Wert zurückgeben (CodeQL fix)
 
             content = (
                 f"**Match-Coaching**\n\n"
@@ -462,8 +481,10 @@ class DlCoachingCog(commands.Cog):
             try:
                 if not interaction.response.is_done():
                     await interaction.response.edit_message(view=None)
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("finish edit clear view failed: %r", e)
 
             await channel.send(content)
 
@@ -483,13 +504,17 @@ class DlCoachingCog(commands.Cog):
             try:
                 if isinstance(channel, discord.Thread):
                     await channel.edit(archived=True, locked=True)
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("thread archive failed: %r", e)
 
             try:
                 await interaction.followup.send("✅ Coaching abgeschlossen.", ephemeral=True)
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("finish followup failed: %r", e)
 
     # ----------------- Timeout & Lifecycle -----------------
     @tasks.loop(seconds=5)
@@ -512,11 +537,17 @@ class DlCoachingCog(commands.Cog):
                             try:
                                 await thread.send("⏱️ Timeout erreicht. Thread wird geschlossen.")
                                 await thread.edit(archived=True, locked=True)
-                            except Exception:
-                                pass
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception as e:
+                                logger.debug("timeout thread notify/edit failed: %r", e)
                         await self._db_close_session(int(r["user_id"]))
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
                     logger.warning(f"Timeout check row failed: {e}")
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.warning(f"Timeout loop error: {e}")
 
@@ -534,7 +565,10 @@ class DlCoachingCog(commands.Cog):
             if self.cfg.existing_message_id:
                 try:
                     msg = await ch.fetch_message(self.cfg.existing_message_id)
-                except Exception:
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.debug("fetch existing coaching message failed: %r", e)
                     msg = None
             if not msg:
                 try:
@@ -546,20 +580,25 @@ class DlCoachingCog(commands.Cog):
                         ):
                             msg = m
                             break
-                except Exception:
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.debug("scan channel history failed: %r", e)
                     msg = None
             try:
                 if msg:
                     await msg.edit(view=self.StartView(self))
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("attach StartView to message failed: %r", e)
 
     def cog_unload(self):
         try:
             if self._timeout_loop.is_running():
                 self._timeout_loop.cancel()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("timeout loop cancel failed: %r", e)
         if self.db:
             asyncio.create_task(self.db.close())
 
@@ -579,8 +618,8 @@ def _parse_ts(val) -> datetime.datetime:
             try:
                 # ISO fallback
                 return datetime.datetime.fromisoformat(val.replace("Z", "+00:00")).replace(tzinfo=None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("parse_ts iso parse failed: %r", e)
     return datetime.datetime.utcnow()
 
 
