@@ -392,22 +392,30 @@ class SteamLink(commands.Cog):
         if not s:
             return None
 
+        # 1) 17-stellige ID direkt akzeptieren
         if re.fullmatch(r"\d{17}", s):
             return s
 
+        # 2) URL?
         try:
             u = urlparse(s)
         except Exception:
             u = None
-        if u and u.netloc and "steamcommunity.com" in u.netloc:
-            path = (u.path or "").rstrip("/")
-            m = re.search(r"/profiles/(\d{17})$", path)
-            if m:
-                return m.group(1)
-            m = re.search(r"/id/([^/]+)$", path)
-            if m:
-                return await self._resolve_vanity(m.group(1))
 
+        # ---- FIX: sichere Host-Prüfung statt Substring in netloc ----
+        if u and (u.hostname or "").lower():
+            host = (u.hostname or "").lower().strip(".")
+            # erlaubte Hosts: steamcommunity.com oder Subdomains davon
+            if host == "steamcommunity.com" or host.endswith(".steamcommunity.com"):
+                path = (u.path or "").rstrip("/")
+                m = re.search(r"/profiles/(\d{17})$", path)
+                if m:
+                    return m.group(1)
+                m = re.search(r"/id/([^/]+)$", path)
+                if m:
+                    return await self._resolve_vanity(m.group(1))
+
+        # 3) nackter Vanity-Kandidat
         if re.fullmatch(r"[A-Za-z0-9_.\-]+", s):
             return await self._resolve_vanity(s)
 

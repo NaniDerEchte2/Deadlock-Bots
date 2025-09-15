@@ -11,6 +11,7 @@ import re
 import logging
 import asyncio
 from typing import Optional
+from urllib.parse import urlparse  # <- fürs saubere Host-Checking
 
 import discord
 from .base import StepView
@@ -70,21 +71,46 @@ class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
         self.user = user
 
     async def _fallback_resolve(self, raw: str) -> Optional[str]:
+        """
+        Härtung: kein Substring-Match mehr.
+        Akzeptiere nur http/https-URLs deren hostname == steamcommunity.com
+        oder *.steamcommunity.com. Extrahiere dann /profiles/<17-stellige-ID>.
+        """
         s = (raw or "").strip()
         if not s:
             return None
+
+        # 1) Reine 17-stellige SteamID64
         if re.fullmatch(r"\d{17}", s):
             return s
+
+        # 2) Sauber geparste URL mit echtem Host-Check
         try:
-            from urllib.parse import urlparse
             u = urlparse(s)
         except Exception:
             u = None
-        if u and u.netloc and "steamcommunity.com" in u.netloc:
-            path = (u.path or "").rstrip("/")
-            m = re.search(r"/profiles/(\d{17})$", path)
-            if m:
-                return m.group(1)
+
+        if not u:
+            return None
+
+        # nur http/https
+        if str(u.scheme).lower() not in ("http", "https"):
+            return None
+
+        host = (u.hostname or "").lower().rstrip(".")  # hostname ist bereits bereinigt (ohne Port/Userinfo)
+        if not host:
+            return None
+
+        if not (host == "steamcommunity.com" or host.endswith(".steamcommunity.com")):
+            return None
+
+        path = (u.path or "").rstrip("/")
+        # exakte Pfadprüfung (kein loseres search auf beliebiger Position)
+        m = re.fullmatch(r"/profiles/(\d{17})", path)
+        if m:
+            return m.group(1)
+
+        # Vanity wird hier nicht aufgelöst – das macht der eigentliche Steam-Cog.
         return None
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
