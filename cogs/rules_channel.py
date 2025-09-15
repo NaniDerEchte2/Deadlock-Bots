@@ -106,7 +106,10 @@ def _find_custom_emoji(guild: discord.Guild, key: Union[str, int]) -> Optional[U
             for e in guild.emojis:
                 if name in e.name.lower():
                     return e
-    except Exception:
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.debug("find_custom_emoji failed: %r", e)
         return None
     return None
 
@@ -161,8 +164,10 @@ class StepView(discord.ui.View):
                     await interaction.response.send_message(txt, ephemeral=True)
                 else:
                     await interaction.followup.send(txt, ephemeral=True)
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except (discord.HTTPException, discord.NotFound) as e:
+                logger.debug("min-wait notify failed: %r", e)
             return False
         return True
 
@@ -178,12 +183,16 @@ class StepView(discord.ui.View):
                 await interaction.response.edit_message(view=self)
             else:
                 await interaction.message.edit(view=self)
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.NotFound) as e:
+            logger.debug("finish edit failed: %r", e)
         try:
             await interaction.message.delete()
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.Forbidden, discord.NotFound) as e:
+            logger.debug("finish delete failed: %r", e)
         self.force_finish()
 
 # ---- Schritt 1: Status ----
@@ -229,8 +238,10 @@ class PlayerStatusView(StepView):
                 await interaction.response.edit_message(view=self)
             else:
                 await interaction.message.edit(view=self)
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.NotFound) as e:
+            logger.debug("status_select edit failed: %r", e)
 
     async def next(self, interaction: discord.Interaction):
         if not await self._enforce_min_wait(interaction):
@@ -284,6 +295,8 @@ class CustomGamesView(StepView):
         except discord.Forbidden:
             await interaction.response.send_message("❌ Rechte fehlen (Manage Roles / Rollenhierarchie).", ephemeral=True)
             return
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"[Custom Toggle] {member.id}: {e}")
             await interaction.response.send_message("⚠️ Fehler beim Rollenwechsel.", ephemeral=True)
@@ -294,8 +307,10 @@ class CustomGamesView(StepView):
                 await interaction.response.edit_message(view=self)
             else:
                 await interaction.message.edit(view=self)
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.NotFound) as e:
+            logger.debug("custom toggle edit failed: %r", e)
 
     @discord.ui.button(label="Funny Custom", style=discord.ButtonStyle.secondary, custom_id="rp:q2:funny")
     async def funny(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -344,6 +359,8 @@ class PatchnotesView(StepView):
         except discord.Forbidden:
             await interaction.response.send_message("❌ Rechte fehlen (Manage Roles / Rollenhierarchie).", ephemeral=True)
             return
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"[Patchnotes Toggle] {member.id}: {e}")
             await interaction.response.send_message("⚠️ Fehler beim Rollenwechsel.", ephemeral=True)
@@ -354,8 +371,10 @@ class PatchnotesView(StepView):
                 await interaction.response.edit_message(view=self)
             else:
                 await interaction.message.edit(view=self)
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.NotFound) as e:
+            logger.debug("patch toggle edit failed: %r", e)
 
     async def next(self, interaction: discord.Interaction):
         if not await self._enforce_min_wait(interaction):
@@ -405,6 +424,8 @@ class RankSelectDropdown(discord.ui.Select):
         if member is None:
             try:
                 member = await guild.fetch_member(interaction.user.id)
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 await interaction.response.send_message("❌ Konnte Member nicht finden.", ephemeral=True)
                 return
@@ -428,6 +449,8 @@ class RankSelectDropdown(discord.ui.Select):
         except discord.Forbidden:
             await interaction.response.send_message("❌ Rechte fehlen, um Rangrollen zu setzen.", ephemeral=True)
             return
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"[Rank Select] {member.id}: {e}")
             await interaction.response.send_message("⚠️ Fehler beim Rangsetzen.", ephemeral=True)
@@ -443,8 +466,10 @@ class RankSelectDropdown(discord.ui.Select):
                 await interaction.response.edit_message(view=self.parent_view)
             else:
                 await interaction.message.edit(view=self.parent_view)
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.NotFound) as e:
+            logger.debug("rank select edit failed: %r", e)
 
 class ConfirmRankView(StepView):
     def __init__(self, on_confirm_coro, parent_view: "RankView"):
@@ -457,21 +482,27 @@ class ConfirmRankView(StepView):
         # 1) sofort defern, damit die Interaktion nicht ausläuft
         try:
             await interaction.response.defer() if not interaction.response.is_done() else None
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.NotFound) as e:
+            logger.debug("confirm_yes initial defer failed: %r", e)
 
         # 2) Eltern-View (Frage 4) sauber schließen: Message löschen + waiter freigeben
         pv = self.parent_view
         try:
             if pv.bound_message:
                 await pv.bound_message.delete()
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.Forbidden, discord.NotFound) as e:
+            logger.debug("confirm_yes delete parent view failed: %r", e)
         pv.force_finish()  # send_step_embed_thread kann weiterlaufen
 
         # 3) Danach den Folge-Schritt ausführen (Regelwerk o.ä.)
         try:
             await self.on_confirm_coro()
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"on_confirm_coro error: {e}")
 
@@ -483,8 +514,10 @@ class ConfirmRankView(StepView):
         # Interaktion bestätigen
         try:
             await interaction.response.defer() if not interaction.response.is_done() else None
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.NotFound) as e:
+            logger.debug("confirm_change defer failed: %r", e)
 
         # Eltern-View (Frage 4) wieder aktivieren
         pv = self.parent_view
@@ -495,14 +528,18 @@ class ConfirmRankView(StepView):
             pv.dropdown.placeholder = "🎮 Wähle deinen *aktuellen* Deadlock-Rang …"
             if pv.bound_message:
                 await pv.bound_message.edit(view=pv)
-        except Exception as e:
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.NotFound) as e:
             logger.warning(f"Could not re-enable rank view: {e}")
 
         # Bestätigungs-Nachricht entfernen
         try:
             await interaction.message.delete()
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.Forbidden, discord.NotFound) as e:
+            logger.debug("confirm_change delete failed: %r", e)
         # Parent-View bleibt offen (kein finish), Nutzer kann neu wählen
 
 class RankView(StepView):
@@ -527,8 +564,10 @@ class RankView(StepView):
             return
         try:
             await interaction.response.defer() if not interaction.response.is_done() else None
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.NotFound) as e:
+            logger.debug("rank next defer failed: %r", e)
 
         # UBK -> direkt Abschluss (Regeln bestätigen) – erst Frage 4 schließen, dann Regelwerk senden
         if self.selected_key == "ubk":
@@ -560,8 +599,10 @@ class RulesConfirmView(StepView):
         await asyncio.sleep(seconds)
         try:
             await msg.delete()
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.Forbidden, discord.NotFound) as e:
+            logger.debug("delete_later failed: %r", e)
 
     @discord.ui.button(label="Habe verstanden :)", style=discord.ButtonStyle.success, custom_id="rp:qX:confirm_rules")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -575,14 +616,18 @@ class RulesConfirmView(StepView):
                 role = guild.get_role(ONBOARD_COMPLETE_ROLE_ID)
                 if role:
                     await member.add_roles(role, reason="Rules Panel: Regeln bestätigt")
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.warning(f"Could not add ONBOARD role to {member.id if member else 'unknown'}: {e}")
 
         try:
             thanks = await interaction.channel.send("✅ Danke! Willkommen an Bord!")
             asyncio.create_task(self._delete_later(thanks, THANK_YOU_DELETE_AFTER_SECONDS))
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("send thanks failed: %r", e)
 
         await self._finish(interaction)
 
@@ -606,8 +651,10 @@ async def send_step_embed_thread(
     finally:
         try:
             await msg.delete()
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except (discord.HTTPException, discord.Forbidden, discord.NotFound) as e:
+            logger.debug("cleanup step message failed: %r", e)
     return view.proceed
 
 async def send_rules_confirm_in_thread(thread: discord.Thread):
@@ -739,6 +786,8 @@ class RulesPanel(commands.Cog):
                 type=discord.ChannelType.public_thread,
                 auto_archive_duration=60
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"Join thread creation failed for {member.id}: {e}")
             return
@@ -752,6 +801,8 @@ class RulesPanel(commands.Cog):
                 "➡ **Option B:** **Starte das Onboarding direkt hier** im Thread:"
             )
             await thread.send(msg, view=StartHereView(self))
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"Failed to send join ping for {member.id}: {e}")
 
@@ -796,6 +847,8 @@ class RulesPanel(commands.Cog):
                         "Mods: bitte **Create Private Threads** erlauben.",
                         ephemeral=True
                     )
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
                     await interaction.response.send_message("❌ Konnte keinen Thread erstellen.", ephemeral=True)
                     logger.error(f"Thread creation failed for {user.id}: {e}")
@@ -808,8 +861,10 @@ class RulesPanel(commands.Cog):
                     await interaction.response.send_message(f"🧵 Onboarding in {thread.mention} gestartet.", ephemeral=True)
                 else:
                     await interaction.followup.send(f"🧵 Onboarding in {thread.mention} gestartet.", ephemeral=True)
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("start_user_thread_flow notify failed: %r", e)
 
             await self._run_flow_in_thread(thread, user)
 
@@ -909,8 +964,10 @@ class RulesPanel(commands.Cog):
         if closing_lines:
             try:
                 await thread.send("\n\n".join(closing_lines))
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("closing lines send failed: %r", e)
 
 # ========= Setup =========
 
