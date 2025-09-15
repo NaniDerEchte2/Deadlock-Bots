@@ -15,6 +15,7 @@ import logging
 import sys
 from pathlib import Path
 import atexit
+from typing import Optional, Dict, List, Any
 
 # Pfad so beibehalten: zentrale DB kommt aus utils.deadlock_db.DB_PATH
 sys.path.append(str(Path(__file__).resolve().parents[2]))
@@ -58,7 +59,7 @@ PHANTOM_NOTIFICATION_CHANNEL_ID = 1374364800817303632
 RANK_SELECTION_CHANNEL_ID = 1398021105339334666  # Channel für automatische View-Wiederherstellung
 
 # Test-User System - für normalen Betrieb leer lassen
-test_users = []
+test_users: List[discord.Member] = []
 
 # Deutsche Uhrzeiten (8-22 Uhr)
 NOTIFICATION_START_HOUR = 8
@@ -331,9 +332,9 @@ class RankSelectDropdown(discord.ui.Select):
                     await notification_channel.send(embed=notification_embed)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as e:
                     # Nur Info – Benachrichtigung ist optional
-                    logger.info("Konnte Phantom+-Benachrichtigung nicht senden.", exc_info=True)
+                    logger.info("Konnte Phantom+-Benachrichtigung nicht senden: %r", e, exc_info=True)
 
         rank_emoji = discord.utils.get(guild.emojis, name=selected_rank)
         await interaction.response.send_message(
@@ -401,8 +402,8 @@ class NoNotificationButton(discord.ui.Button):
                 await interaction.response.send_message("❌ Fehler beim Deaktivieren der Benachrichtigungen.", ephemeral=True)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                pass
+            except Exception as e2:
+                logger.debug("Followup send after error failed: %r", e2)
 
         try:
             with open_conn() as conn:
@@ -417,8 +418,8 @@ class NoNotificationButton(discord.ui.Button):
             await interaction.delete_original_response()
         except asyncio.CancelledError:
             raise
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("delete_original_response (NoNotification) failed: %r", e)
 
 class NoDeadlockButton(discord.ui.Button):
     def __init__(self, user_id: int, guild_id: int):
@@ -453,8 +454,8 @@ class NoDeadlockButton(discord.ui.Button):
                 await interaction.response.send_message("❌ Ein Fehler ist aufgetreten.", ephemeral=True)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                pass
+            except Exception as e2:
+                logger.debug("Followup send after error failed: %r", e2)
 
         try:
             with open_conn() as conn:
@@ -469,8 +470,8 @@ class NoDeadlockButton(discord.ui.Button):
             await interaction.delete_original_response()
         except asyncio.CancelledError:
             raise
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("delete_original_response (NoDeadlock) failed: %r", e)
 
 class FinishedButton(discord.ui.Button):
     def __init__(self, user_id: int, guild_id: int):
@@ -498,8 +499,8 @@ class FinishedButton(discord.ui.Button):
             await interaction.delete_original_response()
         except asyncio.CancelledError:
             raise
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("delete_original_response (Finished) failed: %r", e)
 
 # Server-Rang-Auswahl
 class ServerRankSelectView(discord.ui.View):
@@ -548,8 +549,8 @@ class ServerRankSelectDropdown(discord.ui.Select):
                     await notification_channel.send(embed=embed)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    logger.info("Konnte Phantom+-Benachrichtigung nicht senden.", exc_info=True)
+                except Exception as e:
+                    logger.info("Konnte Phantom+-Benachrichtigung nicht senden: %r", e, exc_info=True)
 
         rank_emoji = discord.utils.get(self.guild.emojis, name=selected_rank)
         try:
@@ -560,7 +561,7 @@ class ServerRankSelectDropdown(discord.ui.Select):
                 )
         except (discord.NotFound, discord.HTTPException):
             # Antwortfenster zu, Nachricht gelöscht – nicht kritisch
-            pass
+            logger.debug("Interaction response send failed (likely timeout/deletion).")
 
         track_dm_response(str(interaction.user.id))
 
@@ -612,7 +613,7 @@ async def restore_persistent_views():
     logger.info("Persistent views restoration completed")
 
 # ---------- DM Helper ----------
-async def get_existing_dm_view(user_id: str):
+async def get_existing_dm_view(user_id: str) -> Optional[Dict[str, Any]]:
     with open_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT message_id, channel_id FROM persistent_views WHERE user_id = ? AND view_type = ? LIMIT 1',
@@ -663,7 +664,7 @@ async def cleanup_old_dm_views(user_id: str):
         if old_views:
             logger.info(f"Cleaned up {len(old_views)} old DM views for user {user_id}")
 
-async def cleanup_old_dm_views_auto():
+async def cleanup_old_dm_views_auto() -> int:
     """Automatisches Cleanup von DM Views älter als 7 Tage"""
     cutoff_date = (datetime.now() - timedelta(days=7)).isoformat()
     cleaned_count = 0
@@ -750,9 +751,11 @@ async def ask_rank_update(member: discord.Member, current_rank: str, guild: disc
 
     except discord.Forbidden:
         logger.warning(f"Could not send DM to {member.display_name} ({member.id})")
+    except Exception as e:
+        logger.error("ask_rank_update unexpected error: %r", e)
 
 # ---------- Auto-Restore im Rang-Kanal ----------
-async def create_rank_selection_message(channel: discord.TextChannel, guild: discord.Guild):
+async def create_rank_selection_message(channel: discord.TextChannel, guild: discord.Guild) -> Optional[discord.Message]:
     try:
         embed = discord.Embed(
             title="🎯 Deadlock Rang-Auswahl",
@@ -771,8 +774,9 @@ async def create_rank_selection_message(channel: discord.TextChannel, guild: dis
         raise
     except Exception as e:
         logger.error(f"[AUTO RESTORE] Error creating new rank selection message: {e}")
+        return None
 
-async def auto_restore_rank_channel_view():
+async def auto_restore_rank_channel_view() -> None:
     try:
         channel = bot.get_channel(RANK_SELECTION_CHANNEL_ID)
         if not channel:
@@ -782,7 +786,7 @@ async def auto_restore_rank_channel_view():
         guild = channel.guild
         logger.info(f"[AUTO RESTORE] Checking rank channel: #{channel.name}")
 
-        bot_messages = []
+        bot_messages: List[discord.Message] = []
         async for message in channel.history(limit=50):
             if message.author == bot.user:
                 bot_messages.append(message)
@@ -1345,9 +1349,9 @@ async def create_daily_queue():
                     pause_until = datetime.fromisoformat(user_data['paused_until'])
                     if datetime.now() < pause_until:
                         continue
-                except Exception:
+                except Exception as e:
                     # Ignorierbar – bei defektem Timestamp einfach normal fortfahren
-                    pass
+                    logger.debug("paused_until parse failed for %s: %r", member.id, e)
 
             custom_interval = user_data.get('custom_interval')
             interval_days = custom_interval if custom_interval else RANK_INTERVALS.get(current_rank, 30)
@@ -1367,9 +1371,9 @@ async def create_daily_queue():
                         days_since = (datetime.now() - last_notification).days
                         if days_since < interval_days:
                             continue
-                    except Exception:
+                    except Exception as e:
                         # defektes Datum → lieber nicht blockieren
-                        pass
+                        logger.debug("last_notification parse failed for %s: %r", member.id, e)
 
             if test_users and member not in test_users:
                 continue
