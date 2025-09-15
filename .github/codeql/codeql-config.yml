@@ -1,25 +1,20 @@
-# .github/codeql/codeql-config.yml
-name: "Deadlock-Bots CodeQL"
+name: "Repository CodeQL Configuration"
+
+# Maximiert die Security-Abdeckung ohne manuelle Pflege.
 queries:
   - uses: security-extended
   - uses: security-and-quality
 
-paths:
-  - cogs
-  - shared
-  - service
-  - Standalone
-  - scripts
-  - tools
+# Keine paths-Whitelist: gesamtes Repo wird betrachtet.
+# Wenn du später Rauschen reduzieren willst, kannst du hier gezielt
+# build-/dist-/venv-Verzeichnisse ignorieren. Vorläufig: Vollabdeckung.
 
-paths-ignore:
-  - "**/dist/**"
-  - "**/build/**"
-  - "**/node_modules/**"
-  - "**/.venv/**"
-  - "**/venv/**"
-  - "**/__pycache__/**"
-  - "**/*.min.js"
-  - "**/*.map"
-  - "**/migrations/**"
-  - "**/tests/fixtures/**"
+# paths-ignore:
+#   - "**/node_modules/**"
+#   - "**/dist/**"
+#   - "**/build/**"
+#   - "**/.venv/**"
+#   - "**/venv/**"
+#   - "**/__pycache__/**"
+#   - "**/*.min.js"
+#   - "**/*.map"
