@@ -87,7 +87,8 @@ class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
         # 2) Sauber geparste URL mit echtem Host-Check
         try:
             u = urlparse(s)
-        except Exception:
+        except Exception as e:
+            log.debug("urlparse failed for %r: %r", s, e)
             u = None
 
         if not u:
@@ -97,7 +98,7 @@ class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
         if str(u.scheme).lower() not in ("http", "https"):
             return None
 
-        host = (u.hostname or "").lower().rstrip(".")  # hostname ist bereits bereinigt (ohne Port/Userinfo)
+        host = (u.hostname or "").lower().rstrip(".")
         if not host:
             return None
 
@@ -105,7 +106,6 @@ class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
             return None
 
         path = (u.path or "").rstrip("/")
-        # exakte Pfadprüfung (kein loseres search auf beliebiger Position)
         m = re.fullmatch(r"/profiles/(\d{17})", path)
         if m:
             return m.group(1)
@@ -124,12 +124,18 @@ class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
             if steam_cog:
                 try:
                     steam_id = await steam_cog._resolve_steam_input(raw)  # type: ignore[attr-defined]
-                except Exception:
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    log.debug("Steam resolve via cog failed: %r", e)
                     steam_id = None
                 if steam_id:
                     try:
                         persona = await steam_cog._fetch_persona(steam_id)  # type: ignore[attr-defined]
-                    except Exception:
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        log.debug("Persona fetch failed: %r", e)
                         persona = None
 
             if not steam_id:
@@ -151,15 +157,17 @@ class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
             )
             try:
                 await self.user.send(f"✅ Verknüpft (manuell): **{steam_id}**")
-            except Exception:
-                pass
+            except (discord.Forbidden, discord.HTTPException) as e:
+                log.debug("DM notify failed: %r", e)
 
-        except Exception:
-            log.exception("Manual Steam link failed")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.exception("Manual Steam link failed: %r", e)
             try:
                 await interaction.response.send_message("❌ Unerwarteter Fehler beim manuellen Verknüpfen.", ephemeral=True)
-            except Exception:
-                pass
+            except (discord.NotFound, discord.HTTPException) as e2:
+                log.debug("Followup send failed: %r", e2)
 
 
 # --------------------- Texte ---------------------
@@ -246,12 +254,12 @@ class _SteamLinkPromptView(discord.ui.View):
                     self.btn_next.disabled = False
                     try:
                         await self.message.edit(view=self)
-                    except Exception:
-                        pass
+                    except (discord.HTTPException, discord.NotFound) as e:
+                        log.debug("poll edit failed: %r", e)
         except asyncio.CancelledError:
             pass
-        except Exception:
-            log.exception("Steam link poll task crashed")
+        except Exception as e:
+            log.exception("Steam link poll task crashed: %r", e)
 
     def stop(self) -> None:
         if self._poll_task and not self._poll_task.done():
@@ -269,15 +277,21 @@ class _SteamLinkPromptView(discord.ui.View):
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
-            await interaction.message.delete()
-        except Exception:
+            try:
+                await interaction.message.delete()
+            except (discord.Forbidden, discord.HTTPException, discord.NotFound) as e:
+                log.debug("delete message in close failed: %r", e)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.debug("close interaction outer failed: %r", e)
             try:
                 for it in self.children:
                     if isinstance(it, discord.ui.Button):
                         it.disabled = True
                 await interaction.message.edit(view=self)
-            except Exception:
-                pass
+            except (discord.HTTPException, discord.NotFound) as e2:
+                log.debug("close fallback edit failed: %r", e2)
 
     async def _click_next(self, interaction: discord.Interaction):
         _ensure_schema()
@@ -291,24 +305,35 @@ class _SteamLinkPromptView(discord.ui.View):
                         "Bitte eine der Optionen oben nutzen.",
                         ephemeral=True,
                     )
-                await interaction.message.edit(view=self)
-            except Exception:
-                pass
+                try:
+                    await interaction.message.edit(view=self)
+                except (discord.HTTPException, discord.NotFound) as e2:
+                    log.debug("edit after next-guard failed: %r", e2)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.debug("next guard response failed: %r", e)
             return
 
         self.parent_step.force_finish()
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
-            await interaction.message.delete()
-        except Exception:
+            try:
+                await interaction.message.delete()
+            except (discord.Forbidden, discord.HTTPException, discord.NotFound) as e:
+                log.debug("delete message in next failed: %r", e)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.debug("next handler outer failed: %r", e)
             try:
                 for it in self.children:
                     if isinstance(it, discord.ui.Button):
                         it.disabled = True
                 await interaction.message.edit(view=self)
-            except Exception:
-                pass
+            except (discord.HTTPException, discord.NotFound) as e2:
+                log.debug("next fallback edit failed: %r", e2)
 
     async def send(self, channel: discord.abc.Messageable) -> discord.Message:
         # Frische URLs vom Steam-Cog holen
@@ -318,25 +343,27 @@ class _SteamLinkPromptView(discord.ui.View):
         if cog and hasattr(cog, "build_discord_link_for"):
             try:
                 discord_url = cog.build_discord_link_for(self.user.id)  # type: ignore
-            except Exception:
+            except Exception as e:
+                log.debug("build_discord_link_for failed: %r", e)
                 discord_url = ""
         if cog and hasattr(cog, "build_steam_openid_for"):
             try:
                 steam_url = cog.build_steam_openid_for(self.user.id)  # type: ignore
-            except Exception:
+            except Exception as e:
+                log.debug("build_steam_openid_for failed: %r", e)
                 steam_url = ""
 
         if not discord_url and cog:
             try:
                 discord_url = cog._build_discord_auth_url(self.user.id)  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("_build_discord_auth_url failed: %r", e)
         if not steam_url and cog:
             try:
                 state = cog._mk_state(self.user.id)                     # type: ignore[attr-defined]
                 steam_url = cog._build_steam_login_url(state)           # type: ignore[attr-defined]
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("_build_steam_login_url failed: %r", e)
 
         # View befüllen (alles grau)
         self.clear_items()
@@ -399,31 +426,35 @@ class SteamLinkNudgeView(StepView):
                     await interaction.response.defer()
                 try:
                     await interaction.message.delete()
-                except Exception:
-                    pass
+                except (discord.Forbidden, discord.HTTPException, discord.NotFound) as e:
+                    log.debug("nudge delete failed: %r", e)
                 if getattr(self, "bound_message", None):
                     try:
                         await self.bound_message.delete()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except (discord.Forbidden, discord.HTTPException, discord.NotFound) as e:
+                        log.debug("bound message delete failed: %r", e)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.debug("nudge cleanup failed: %r", e)
 
             # Optionen-Karte senden
             channel = interaction.channel or await interaction.user.create_dm()
             view = _SteamLinkPromptView(interaction.client, interaction.user, parent_step=self, timeout=None)
             await view.send(channel)
 
-        except Exception:
-            log.exception("Open SteamLinkPromptView failed")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.exception("Open SteamLinkPromptView failed: %r", e)
             try:
                 await interaction.followup.send(
                     "⚠️ Konnte die Verknüpfungs-Optionen gerade nicht öffnen. "
                     "Nutze alternativ **/link** oder **/link_steam**.",
                     ephemeral=True,
                 )
-            except Exception:
-                pass
+            except (discord.HTTPException, discord.NotFound) as e2:
+                log.debug("followup after failure failed: %r", e2)
 
     @discord.ui.button(label="Später", style=discord.ButtonStyle.secondary, custom_id="wdm:q5:skip", emoji="⏭️")
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
