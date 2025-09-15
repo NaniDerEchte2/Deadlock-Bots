@@ -5,13 +5,18 @@
 #
 # DB-Tabellen (werden automatisch angelegt):
 #   steam_links(user_id BIGINT, steam_id TEXT, ...)
+#   live_match_overrides(user_id BIGINT PRIMARY KEY, force_in_match INT, note TEXT)
 #   live_lane_members(channel_id BIGINT, user_id BIGINT, in_match INT, server_id TEXT, checked_ts INT)
 #   live_lane_state(channel_id BIGINT PRIMARY KEY, is_active INT, last_update INT, suffix TEXT, reason TEXT)
 #
 # Anzeige/Suffix:
-#   • n/cap Im Match        -> stabile Mehrheit (>= MIN_MATCH_GROUP) teilt gameserversteamid über REQUIRE_STABILITY_SEC
-#   • x/cap Im Spiel        -> mind. ein Server, aber keine stabile Mehrheit (Queue/Pre-Game/verschiedene Server)
-#   • x/cap Lobby/Queue     -> in Deadlock, aber ohne Server-ID (reine Lobby/Loading)
+#   • n/y Im Match        -> stabile Mehrheit (>= MIN_MATCH_GROUP) teilt gameserversteamid über REQUIRE_STABILITY_SEC
+#   • n/y Im Spiel        -> mind. ein Server, aber keine stabile Mehrheit (Queue/Pre-Game/verschiedene Server)
+#   • n/y Lobby/Queue     -> in Deadlock, aber ohne Server-ID (reine Lobby/Loading)
+#
+# WICHTIG (Fix):
+#   y = min(Anzahl menschlicher Voice-Teilnehmer, MAX_MATCH_CAP)  # Standard: MAX_MATCH_CAP=6
+#   n wird auf y gekappt, damit nie n > y angezeigt wird.
 # ------------------------------------------------------------
 
 import os
@@ -32,9 +37,10 @@ except Exception as e:
 log = logging.getLogger("LiveMatchMaster")
 
 # ===== Konfiguration über ENV =====
+# Kategorien, deren Voice-Channels überwacht werden
 LIVE_CATEGORIES = [int(x) for x in os.getenv(
-    "1412804540994162789",
-    "1289721245281292290"  # Beispiel: Casual, Ranked
+    "LIVE_MATCH_CATEGORY_IDS",
+    "1289721245281292290"  # Beispiel: Casual (weitere per Komma)
 ).split(",") if x.strip()]
 
 DEADLOCK_APP_ID = os.getenv("DEADLOCK_APP_ID", "1422450")
@@ -43,14 +49,21 @@ STEAM_API_KEY   = os.getenv("STEAM_API_KEY", "")
 CHECK_INTERVAL_SEC       = int(os.getenv("LIVE_CHECK_INTERVAL_SEC", "30"))
 MIN_MATCH_GROUP          = int(os.getenv("MIN_MATCH_GROUP", "2"))
 
-DEFAULT_CASUAL_CAP       = int(os.getenv("DEFAULT_CASUAL_CAP", "6"))
+# Harte Spiel-Cap (y): Maximal 6, egal wie viele im Voice sind.
+MAX_MATCH_CAP            = int(os.getenv("MAX_MATCH_CAP", "6"))
+
+# (Kompat/Alte Konfig: bleiben lesbar, wirken aber nicht mehr auf y)
 RANKED_CATEGORY_ID       = int(os.getenv("RANKED_CATEGORY_ID", "1357422957017698478"))
-DEFAULT_RANKED_CAP       = int(os.getenv("DEFAULT_RANKED_CAP", "6"))
 
 # Heuristik-Parameter
 REQUIRE_STABILITY_SEC    = int(os.getenv("REQUIRE_STABILITY_SEC", "30"))   # Mehrheit muss so lange stabil sein
 LOBBY_GRACE_SEC          = int(os.getenv("LOBBY_GRACE_SEC", "90"))        # kurze Lücke (Ladebildschirm)
 MATCH_MIN_MINUTES        = int(os.getenv("MATCH_MIN_MINUTES", "15"))      # rein informativ
+
+# Overrides
+# Wenn 1, dann zählen Voice-Mitglieder ohne Steam-Daten standardmäßig als "im Match"
+# (sinnvoll nur, wenn du weißt, dass viele privat sind). Manuelle Overrides (DB) haben Vorrang.
+AUTO_VOICE_OVERRIDE_DEFAULT = int(os.getenv("AUTO_VOICE_OVERRIDE_DEFAULT", "0"))
 
 PHASE_OFF   = "OFF"
 PHASE_LOBBY = "LOBBY"   # in DL, aber keine Server-ID -> Queue/Lobby/Loading
@@ -74,6 +87,15 @@ def _ensure_schema() -> None:
     """)
     db.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_user ON steam_links(user_id)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)")
+
+    # Manuelle Overrides: force_in_match=1 => im Voice als "im Match" zählen, auch ohne Steam-Daten
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS live_match_overrides(
+          user_id        INTEGER PRIMARY KEY,
+          force_in_match INTEGER NOT NULL DEFAULT 0,
+          note           TEXT
+        )
+    """)
 
     db.execute("""
         CREATE TABLE IF NOT EXISTS live_lane_members(
@@ -109,8 +131,8 @@ class LiveMatchMaster(commands.Cog):
             self.scan_loop.start()
             self._started = True
         log.info(
-            "LiveMatchMaster bereit (Categories=%s, Interval=%ss, MinGroup=%d)",
-            LIVE_CATEGORIES, CHECK_INTERVAL_SEC, MIN_MATCH_GROUP
+            "LiveMatchMaster bereit (Categories=%s, Interval=%ss, MinGroup=%d, MaxCap=%d, AutoVoiceOverride=%d)",
+            LIVE_CATEGORIES, CHECK_INTERVAL_SEC, MIN_MATCH_GROUP, MAX_MATCH_CAP, AUTO_VOICE_OVERRIDE_DEFAULT
         )
 
     async def cog_unload(self):
@@ -172,6 +194,7 @@ class LiveMatchMaster(commands.Cog):
         # 2) Discord->Steam Links sammeln
         members = [m for ch in lanes for m in ch.members if not m.bot]
         user_ids = sorted({m.id for m in members})
+
         links = defaultdict(list)  # user_id -> [steam_id,...]
         if user_ids:
             qs = ",".join("?" for _ in user_ids)
@@ -181,6 +204,17 @@ class LiveMatchMaster(commands.Cog):
             )
             for r in rows:
                 links[int(r["user_id"])].append(str(r["steam_id"]))
+
+        # 2b) Overrides laden (wer soll unabhängig von Steam als "im Match" gelten?)
+        overrides: Dict[int, int] = {}
+        if user_ids:
+            qs = ",".join("?" for _ in user_ids)
+            orows = db.query_all(
+                f"SELECT user_id, force_in_match FROM live_match_overrides WHERE user_id IN ({qs})",
+                tuple(user_ids)
+            )
+            for r in orows:
+                overrides[int(r["user_id"])] = int(r.get("force_in_match") or 0)
 
         # 3) Steam zusammengefasst abfragen
         all_steam = sorted({sid for arr in links.values() for sid in arr})
@@ -192,19 +226,25 @@ class LiveMatchMaster(commands.Cog):
         # 4) Pro Lane auswerten & in DB schreiben
         for ch in lanes:
             nonbots = [m for m in ch.members if not m.bot]
-            if not nonbots:
+            voice_count = len(nonbots)
+            y_cap = min(MAX_MATCH_CAP, voice_count) if voice_count > 0 else 0  # <-- Fix: y=Min(voice,6)
+
+            if voice_count == 0:
                 self._write_lane_state(ch.id, active=0, suffix=None, ts=now, reason="empty")
                 self._clear_lane_members(ch.id)
                 self._lane_cache.pop(ch.id, None)
                 continue
 
             # pro User: In DL? server_id?
-            ig_with_server = []     # Mitglieder mit Server-ID
-            deadlockers = []        # in Deadlock (mit oder ohne Server-ID)
+            ig_with_server: List[tuple[int, str]] = []   # (user_id, server_id)
+            deadlockers: List[int] = []                 # user_ids in Deadlock (mit oder ohne Server-ID)
+            override_in_match_count = 0                 # Anzahl, die nur via Override gezählt werden
             lane_members_rows = []
+
             for m in nonbots:
                 found_sid = None
                 in_dl = False
+                # 1) Steam prüfen
                 for sid in links.get(m.id, []):
                     s = summaries.get(sid)
                     if not s:
@@ -215,7 +255,23 @@ class LiveMatchMaster(commands.Cog):
                         if sid_server:
                             found_sid = sid_server
                             break
-                lane_members_rows.append((ch.id, m.id, 1 if found_sid else 0, found_sid, now))
+
+                # 2) Falls nicht ermittelbar: manueller Override oder globales Default?
+                #    -> als "im Match" werten (ohne Server-ID)
+                applied_override = False
+                if not found_sid:
+                    force_flag = overrides.get(m.id, 0)
+                    if force_flag == 1 or AUTO_VOICE_OVERRIDE_DEFAULT == 1:
+                        # Wir zählen diesen Nutzer als "im Match", obwohl keine Server-ID vorliegt.
+                        # (Kein Einfluss auf Mehrheits-Server, nur auf Anzeige / Zählung)
+                        in_dl = True
+                        applied_override = True
+                        override_in_match_count += 1
+
+                # DB-Row vorbereiten (in_match=1, wenn echte Server-ID ODER Override)
+                in_match_db = 1 if (found_sid or applied_override) else 0
+                lane_members_rows.append((ch.id, m.id, in_match_db, found_sid, now))
+
                 if in_dl:
                     deadlockers.append(m.id)
                 if found_sid:
@@ -232,7 +288,6 @@ class LiveMatchMaster(commands.Cog):
                 cnt = Counter(server_ids)
                 majority_id, majority_n = cnt.most_common(1)[0]
 
-            cap = self._cap(ch)
             ig_count = len(ig_with_server)
             dl_count = len(deadlockers)
 
@@ -247,7 +302,7 @@ class LiveMatchMaster(commands.Cog):
             if majority_id and majority_n >= max(1, MIN_MATCH_GROUP):
                 # Mehrheit existiert -> stabilisieren
                 if prev.get("server_id") == majority_id and prev.get("phase") in (PHASE_MATCH, PHASE_GAME, PHASE_LOBBY):
-                    # gleicher Server wie vorher -> Stabilitätszeit laufen lassen
+                    # gleicher Server -> Stabilitätszeit laufen lassen
                     if (now - int(prev.get("stable_since") or now)) >= REQUIRE_STABILITY_SEC:
                         phase = PHASE_MATCH
                     else:
@@ -256,7 +311,7 @@ class LiveMatchMaster(commands.Cog):
                     # neuer (oder erster) Mehrheitsserver -> Stabilität neu starten
                     stable_since = now
                     since = now
-                    phase = PHASE_GAME  # wechsle zunächst auf GAME, springe später auf MATCH
+                    phase = PHASE_GAME
                 server_for_phase = majority_id
 
                 # Wenn Stabilität erreicht, zu MATCH befördern
@@ -265,14 +320,14 @@ class LiveMatchMaster(commands.Cog):
 
             elif ig_count > 0:
                 # Leute sind auf Servern, aber keine stabile Mehrheit
-                # Grace: war vorher MATCH und Lücke ist sehr kurz? -> halte MATCH
+                # Grace: war vorher MATCH und Lücke ist kurz? -> halte MATCH
                 if prev.get("phase") == PHASE_MATCH and (now - int(prev.get("last_seen") or now)) <= LOBBY_GRACE_SEC:
                     phase = PHASE_MATCH
-                    server_for_phase = prev.get("server_id")  # behalte bisherigen
+                    server_for_phase = prev.get("server_id")
                 else:
                     phase = PHASE_GAME
                     server_for_phase = None
-                    since = prev.get("since") or now  # egal
+                    since = prev.get("since") or now
 
             elif dl_count > 0:
                 # In Deadlock ohne Server-ID -> Lobby/Queue
@@ -292,14 +347,28 @@ class LiveMatchMaster(commands.Cog):
             # Sichtbarer Suffix + Aktiv-Flag ableiten
             suffix: Optional[str] = None
             is_active = 0
+
+            # Anzeige-Numerator je Phase bestimmen und gegen y_cap clampen
             if phase == PHASE_MATCH:
-                n = majority_n if majority_n else ig_count
-                suffix = f"• {n}/{cap} Im Match"
+                # n = (Mehrheit auf Server) + Overrides (privat, gezählt) – aber max y_cap
+                n_raw = (majority_n or 0) + override_in_match_count
+                n = min(n_raw, y_cap)
+                suffix = f"• {n}/{y_cap} Im Match"
                 is_active = 1
+
             elif phase == PHASE_GAME:
-                suffix = f"• {ig_count}/{cap} Im Spiel"
+                # n = Spieler mit IRGENDeinem Server + Overrides
+                n_raw = ig_count + override_in_match_count
+                n = min(n_raw, y_cap)
+                suffix = f"• {n}/{y_cap} Im Spiel"
+
             elif phase == PHASE_LOBBY:
-                suffix = f"• {dl_count}/{cap} Lobby/Queue"
+                # n = in Deadlock (auch Overrides), ohne Server-ID
+                # Hinweis: deadlockers beinhaltet bereits override-gezählte Spieler (in_dl=True)
+                n_raw = dl_count
+                n = min(n_raw, y_cap)
+                suffix = f"• {n}/{y_cap} Lobby/Queue"
+
             else:
                 suffix = None
 
@@ -307,10 +376,11 @@ class LiveMatchMaster(commands.Cog):
             reason_bits = [f"phase={phase}"]
             if server_for_phase:
                 reason_bits.append(f"srv={server_for_phase}")
-            reason_bits.append(f"cap={cap}")
+            reason_bits.append(f"capY={y_cap}")
             reason_bits.append(f"nMaj={majority_n}")
             reason_bits.append(f"nIG={ig_count}")
             reason_bits.append(f"nDL={dl_count}")
+            reason_bits.append(f"nOVR={override_in_match_count}")
             reason = ";".join(reason_bits)
 
             self._write_lane_state(
@@ -329,11 +399,6 @@ class LiveMatchMaster(commands.Cog):
                 "stable_since": stable_since,
                 "last_seen": now,
             }
-
-    def _cap(self, ch: discord.VoiceChannel) -> int:
-        if ch.user_limit and ch.user_limit > 0:
-            return int(ch.user_limit)
-        return DEFAULT_RANKED_CAP if ch.category_id == RANKED_CATEGORY_ID else DEFAULT_CASUAL_CAP
 
     # ========== DB-Helper (shared.db, synchron) ==========
     def _write_lane_state(self, channel_id: int, *, active: int, suffix: Optional[str], ts: int, reason: str):
