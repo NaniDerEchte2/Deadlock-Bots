@@ -240,8 +240,10 @@ async def remove_all_rank_roles(member: discord.Member, guild: discord.Guild):
         if role and role in member.roles:
             try:
                 await member.remove_roles(role)
-            except:
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("remove_all_rank_roles: konnte Rolle nicht entfernen: %s", e)
 
 def track_dm_sent(user_id: str):
     with open_conn() as conn:
@@ -327,8 +329,11 @@ class RankSelectDropdown(discord.ui.Select):
                 notification_embed.timestamp = datetime.now()
                 try:
                     await notification_channel.send(embed=notification_embed)
-                except:
-                    pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # Nur Info – Benachrichtigung ist optional
+                    logger.info("Konnte Phantom+-Benachrichtigung nicht senden.", exc_info=True)
 
         rank_emoji = discord.utils.get(guild.emojis, name=selected_rank)
         await interaction.response.send_message(
@@ -388,11 +393,15 @@ class NoNotificationButton(discord.ui.Button):
             )
             await interaction.response.edit_message(embed=embed, view=None)
             track_dm_response(str(interaction.user.id))
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"Error in NoNotificationButton callback: {e}")
             try:
                 await interaction.response.send_message("❌ Fehler beim Deaktivieren der Benachrichtigungen.", ephemeral=True)
-            except:
+            except asyncio.CancelledError:
+                raise
+            except Exception:
                 pass
 
         try:
@@ -406,7 +415,9 @@ class NoNotificationButton(discord.ui.Button):
         await asyncio.sleep(300)
         try:
             await interaction.delete_original_response()
-        except:
+        except asyncio.CancelledError:
+            raise
+        except Exception:
             pass
 
 class NoDeadlockButton(discord.ui.Button):
@@ -434,11 +445,15 @@ class NoDeadlockButton(discord.ui.Button):
             )
             await interaction.response.edit_message(embed=embed, view=None)
             track_dm_response(str(interaction.user.id))
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"Error in NoDeadlockButton callback: {e}")
             try:
                 await interaction.response.send_message("❌ Ein Fehler ist aufgetreten.", ephemeral=True)
-            except:
+            except asyncio.CancelledError:
+                raise
+            except Exception:
                 pass
 
         try:
@@ -452,7 +467,9 @@ class NoDeadlockButton(discord.ui.Button):
         await asyncio.sleep(300)
         try:
             await interaction.delete_original_response()
-        except:
+        except asyncio.CancelledError:
+            raise
+        except Exception:
             pass
 
 class FinishedButton(discord.ui.Button):
@@ -479,7 +496,9 @@ class FinishedButton(discord.ui.Button):
         await asyncio.sleep(30)
         try:
             await interaction.delete_original_response()
-        except:
+        except asyncio.CancelledError:
+            raise
+        except Exception:
             pass
 
 # Server-Rang-Auswahl
@@ -527,8 +546,10 @@ class ServerRankSelectDropdown(discord.ui.Select):
                 embed.timestamp = datetime.now()
                 try:
                     await notification_channel.send(embed=embed)
-                except:
-                    pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.info("Konnte Phantom+-Benachrichtigung nicht senden.", exc_info=True)
 
         rank_emoji = discord.utils.get(self.guild.emojis, name=selected_rank)
         try:
@@ -538,6 +559,7 @@ class ServerRankSelectDropdown(discord.ui.Select):
                     ephemeral=True
                 )
         except (discord.NotFound, discord.HTTPException):
+            # Antwortfenster zu, Nachricht gelöscht – nicht kritisch
             pass
 
         track_dm_response(str(interaction.user.id))
@@ -567,6 +589,8 @@ async def restore_persistent_views():
                         view = RankSelectView(int(user_id), int(guild_id), persistent=True)
                         bot.add_view(view, message_id=int(message_id))
                         logger.info(f"Re-registered DM RankSelectView for user {user_id} (message {message_id})")
+                    except asyncio.CancelledError:
+                        raise
                     except Exception as e:
                         logger.warning(f"Failed to restore DM view for user {user_id}: {e}")
                 else:
@@ -575,9 +599,13 @@ async def restore_persistent_views():
                         view = RankSelectView(0, int(guild_id), persistent=True)
                         bot.add_view(view, message_id=int(message_id))
                         logger.info(f"Re-registered fallback DM RankSelectView for message {message_id}")
+                    except asyncio.CancelledError:
+                        raise
                     except Exception as fallback_e:
                         logger.error(f"Fallback restoration failed for {message_id}: {fallback_e}")
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"Failed to restore persistent view {message_id}: {e}")
 
@@ -600,6 +628,8 @@ async def get_existing_dm_view(user_id: str):
                     if message:
                         logger.info(f"Found existing DM view for user {user_id}: message {message_id}")
                         return {'message': message, 'message_id': message_id, 'channel_id': channel_id}
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.warning(f"Existing DM message {message_id} no longer accessible: {e}")
                 cursor.execute('DELETE FROM persistent_views WHERE message_id = ?', (message_id,))
@@ -621,6 +651,8 @@ async def cleanup_old_dm_views(user_id: str):
                     if message:
                         await message.delete()
                         logger.info(f"Deleted old DM view message {message_id} for user {user_id}")
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.warning(f"Could not delete old DM message {message_id}: {e}")
 
@@ -654,6 +686,8 @@ async def cleanup_old_dm_views_auto():
                     if message:
                         await message.delete()
                         logger.info(f"Auto-deleted old DM view {message_id} for user {user_id}")
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.warning(f"Could not delete old DM message {message_id}: {e}")
             cleaned_count += 1
@@ -733,6 +767,8 @@ async def create_rank_selection_message(channel: discord.TextChannel, guild: dis
         save_persistent_view(str(message.id), str(channel.id), str(guild.id), 'server_rank_select')
         logger.info(f"[AUTO RESTORE] Created new rank selection message {message.id}")
         return message
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         logger.error(f"[AUTO RESTORE] Error creating new rank selection message: {e}")
 
@@ -770,6 +806,8 @@ async def auto_restore_rank_channel_view():
                     await latest_message.edit(embed=embed, view=view)
                     save_persistent_view(str(latest_message.id), str(channel.id), str(guild.id), 'server_rank_select')
                     logger.info(f"[AUTO RESTORE] Successfully restored view to message {latest_message.id}")
+                except asyncio.CancelledError:
+                    raise
                 except discord.NotFound:
                     logger.warning(f"[AUTO RESTORE] Message {latest_message.id} not found - creating new one")
                     await create_rank_selection_message(channel, guild)
@@ -783,6 +821,8 @@ async def auto_restore_rank_channel_view():
             logger.info("[AUTO RESTORE] Latest message has no embeds - creating new rank selection")
             await create_rank_selection_message(channel, guild)
 
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         logger.error(f"[AUTO RESTORE] Error in auto restore: {e}")
 
@@ -1117,7 +1157,9 @@ async def view_database(ctx: commands.Context, table: str = None):
                     interval_text = f"{custom_interval}d" if custom_interval else "Standard"
                     pause_text = "Pausiert" if paused_until else "Aktiv"
                     lines.append(f"**{name}**: {interval_text}, {pause_text}")
-                except:
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
                     lines.append(f"**User {user_id}**: Fehler beim Laden")
             embed.add_field(name="📋 User (Top 10)", value="\n".join(lines), inline=False)
         else:
@@ -1141,7 +1183,9 @@ async def view_database(ctx: commands.Context, table: str = None):
                     name = user.display_name if user else f"User {user_id}"
                     time_str = datetime.fromisoformat(notif_time).strftime('%d.%m %H:%M')
                     lines.append(f"**{name}**: {rank.capitalize()} ({time_str}) #{count}")
-                except:
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
                     lines.append(f"**User {user_id}**: {rank} - Fehler")
             embed.add_field(name="📋 Letzte Benachrichtigungen", value="\n".join(lines), inline=False)
         else:
@@ -1164,7 +1208,9 @@ async def view_database(ctx: commands.Context, table: str = None):
                     user = bot.get_user(int(user_id))
                     name = user.display_name if user else f"User {user_id}"
                     lines.append(f"**{name}**: {rank.capitalize()}")
-                except:
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
                     lines.append(f"**User {user_id}**: {rank}")
             queue_text = "\n".join(lines)
             if len(queue_text) > 1000:
@@ -1200,7 +1246,9 @@ async def view_database(ctx: commands.Context, table: str = None):
                         channel = bot.get_channel(int(channel_id))
                         channel_name = channel.name if channel else f"Channel {channel_id}"
                         views_list.append(f"**{view_type}**: #{channel_name}")
-                except:
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
                     views_list.append(f"**{view_type}**: Unknown")
             summary = f"📊 **Gesamt:** {len(results)} Views ({server_count} Server, {dm_count} DMs)"
             if dm_count > 10:
@@ -1298,6 +1346,7 @@ async def create_daily_queue():
                     if datetime.now() < pause_until:
                         continue
                 except Exception:
+                    # Ignorierbar – bei defektem Timestamp einfach normal fortfahren
                     pass
 
             custom_interval = user_data.get('custom_interval')
@@ -1319,6 +1368,7 @@ async def create_daily_queue():
                         if days_since < interval_days:
                             continue
                     except Exception:
+                        # defektes Datum → lieber nicht blockieren
                         pass
 
             if test_users and member not in test_users:
@@ -1352,6 +1402,8 @@ async def process_notification_queue():
         mark_queue_item_processed(user_to_notify["user_id"], user_to_notify["guild_id"], today)
         logger.info(f"Sent notification to {member.display_name} ({user_to_notify['rank']})")
 
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         logger.error(f"Error sending notification: {e}")
         mark_queue_item_processed(user_to_notify["user_id"], user_to_notify["guild_id"], today)
