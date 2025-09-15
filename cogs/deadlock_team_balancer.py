@@ -179,9 +179,10 @@ class PlayerButton(discord.ui.Button):
             self.set_selected(False)
         else:
             if len(view.selected) >= view.max_players:
-                return await interaction.response.send_message(
+                await interaction.response.send_message(
                     f"Maximale Auswahl erreicht ({view.max_players}).", ephemeral=True
                 )
+                return
             view.selected.add(self.idx)
             self.set_selected(True)
         view.refresh_confirm()
@@ -285,8 +286,8 @@ class DeadlockTeamBalancer(commands.Cog):
     async def _close_db(self):
         try:
             await self.db.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("DeadlockTeamBalancer: DB close failed: %r", e)
 
     # ---------- Rank-Ermittlung ----------
     async def get_user_rank(self, member: discord.Member) -> Tuple[str, int]:
@@ -330,7 +331,8 @@ class DeadlockTeamBalancer(commands.Cog):
     async def balance_auto(self, ctx: commands.Context):
         members = self._voice_members(ctx)
         if len(members) < 4:
-            return await ctx.send(f"❌ Mindestens 4 Spieler benötigt (aktuell: {len(members)})")
+            await ctx.send(f"❌ Mindestens 4 Spieler benötigt (aktuell: {len(members)})")
+            return
         players: List[Tuple[discord.Member, str, int]] = []
         for m in members:
             nm, val = await self.get_user_rank(m)
@@ -347,9 +349,11 @@ class DeadlockTeamBalancer(commands.Cog):
     @balance_root.command(name="manual")
     async def balance_manual(self, ctx: commands.Context, *members: discord.Member):
         if len(members) < 4:
-            return await ctx.send(f"❌ Mindestens 4 Spieler benötigt (angegeben: {len(members)})")
+            await ctx.send(f"❌ Mindestens 4 Spieler benötigt (angegeben: {len(members)})")
+            return
         if len(members) > TEAM_SIZE_CAP * 2:
-            return await ctx.send(f"❌ Maximal {TEAM_SIZE_CAP*2} Spieler unterstützt (angegeben: {len(members)})")
+            await ctx.send(f"❌ Maximal {TEAM_SIZE_CAP*2} Spieler unterstützt (angegeben: {len(members)})")
+            return
         players: List[Tuple[discord.Member, str, int]] = []
         for m in members:
             nm, val = await self.get_user_rank(m)
@@ -361,7 +365,8 @@ class DeadlockTeamBalancer(commands.Cog):
         """Erstellt ZWINGEND zwei Voice-Channels in der Match-Kategorie und moved die Spieler in 2 Teams."""
         members = self._voice_members(ctx)
         if len(members) < 4:
-            return await ctx.send(f"❌ Mindestens 4 Spieler benötigt (aktuell: {len(members)})")
+            await ctx.send(f"❌ Mindestens 4 Spieler benötigt (aktuell: {len(members)})")
+            return
 
         players: List[Tuple[discord.Member, str, int]] = []
         for m in members:
@@ -381,7 +386,8 @@ class DeadlockTeamBalancer(commands.Cog):
                 lines.append(f"... und {len(players)-20} weitere")
             embed.add_field(name="Spieler (Ausschnitt)", value="\n".join(lines), inline=False)
             view = SelectionView(ctx, players, max_players=TEAM_SIZE_CAP*2)
-            return await ctx.send(embed=embed, view=view)
+            await ctx.send(embed=embed, view=view)
+            return
 
         await self._run_balance_and_start(ctx, players)
 
@@ -402,7 +408,8 @@ class DeadlockTeamBalancer(commands.Cog):
     @balance_root.command(name="matches")
     async def balance_matches(self, ctx: commands.Context):
         if not self.active_matches:
-            return await ctx.send("📭 Keine aktiven Matches")
+            await ctx.send("📭 Keine aktiven Matches")
+            return
         emb = discord.Embed(title="🎮 Aktive Deadlock Matches", color=discord.Color.green())
         for match_id, info in self.active_matches.items():
             guild = self.bot.get_guild(info.guild_id)
@@ -428,11 +435,13 @@ class DeadlockTeamBalancer(commands.Cog):
     @commands.has_permissions(manage_channels=True)
     async def balance_cleanup(self, ctx: commands.Context, hours: int = 2):
         if hours < 1 or hours > 24:
-            return await ctx.send("❌ Stunden müssen zwischen 1–24 liegen")
+            await ctx.send("❌ Stunden müssen zwischen 1–24 liegen")
+            return
         cutoff = datetime.utcnow() - timedelta(hours=hours)
         targets = [(mid, mi) for mid, mi in self.active_matches.items() if mi.started_at < cutoff]
         if not targets:
-            return await ctx.send(f"🧹 Keine Matches älter als {hours}h gefunden")
+            await ctx.send(f"🧹 Keine Matches älter als {hours}h gefunden")
+            return
         deleted_ch = 0
         for match_id, info in targets:
             for ch_id in (info.team1_channel_id, info.team2_channel_id):
@@ -442,18 +451,24 @@ class DeadlockTeamBalancer(commands.Cog):
                         await ch.delete(reason=f"Auto-Cleanup (> {hours}h)")
                         deleted_ch += 1
                         await asyncio.sleep(0.4)
-                    except:
-                        pass
+                    except discord.Forbidden:
+                        logger.debug("Cleanup: delete forbidden for channel %s", ch_id)
+                    except discord.HTTPException as e:
+                        logger.debug("Cleanup: HTTP error deleting %s: %r", ch_id, e)
+                    except Exception as e:
+                        logger.debug("Cleanup: unexpected error deleting %s: %r", ch_id, e)
             self.active_matches.pop(match_id, None)
         await ctx.send(f"🧹 {len(targets)} Matches bereinigt ({deleted_ch} Channels gelöscht)")
 
     @balance_root.command(name="end")
     async def balance_end(self, ctx: commands.Context, match_id: Optional[str] = None, skip_debrief: Optional[bool] = False):
         if not match_id:
-            return await ctx.send("❌ Bitte Match-ID angeben: `!balance end <id>`")
+            await ctx.send("❌ Bitte Match-ID angeben: `!balance end <id>`")
+            return
         info = self.active_matches.get(match_id)
         if not info:
-            return await ctx.send(f"❌ Match `{match_id}` nicht gefunden.")
+            await ctx.send(f"❌ Match `{match_id}` nicht gefunden.")
+            return
 
         # 1) Optionale Nachbesprechungs-Lane in gleicher Kategorie
         debrief_ch = None
@@ -539,7 +554,8 @@ class DeadlockTeamBalancer(commands.Cog):
         # Immer zwei Channels in der Kategorie erstellen (Pflicht)
         cat = ctx.guild.get_channel(MATCH_CATEGORY_ID)
         if not isinstance(cat, discord.CategoryChannel):
-            return await ctx.send(f"❌ Kategorie `{MATCH_CATEGORY_ID}` nicht gefunden oder keine Kategorie.")
+            await ctx.send(f"❌ Kategorie `{MATCH_CATEGORY_ID}` nicht gefunden oder keine Kategorie.")
+            return
 
         match_id = self._next_match_id()
         team1_name = f"🟠 Team Amber • {match_id}"
@@ -552,9 +568,11 @@ class DeadlockTeamBalancer(commands.Cog):
                 await asyncio.sleep(0.4)
                 ch2 = await ctx.guild.create_voice_channel(name=team2_name, category=cat, reason=f"Match {match_id}")
             except discord.Forbidden:
-                return await ctx.send("❌ Keine Berechtigung, Voice-Channels zu erstellen.")
+                await ctx.send("❌ Keine Berechtigung, Voice-Channels zu erstellen.")
+                return
             except Exception as e:
-                return await ctx.send(f"❌ Konnte Channels nicht erstellen: {e}")
+                await ctx.send(f"❌ Konnte Channels nicht erstellen: {e}")
+                return
 
         # Spieler bewegen
         moved_a, moved_b, fail = await self._move_teams(team_a, team_b, ch1, ch2)
