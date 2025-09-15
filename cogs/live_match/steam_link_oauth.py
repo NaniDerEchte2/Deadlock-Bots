@@ -270,6 +270,26 @@ class SteamLink(commands.Cog):
             return None
         return int(data["uid"])
 
+    # NEU: Fallback-Name „@Discord“
+    async def _discord_at_name(self, uid: int) -> str:
+        """
+        Liefert einen human-readable Discord-Namen im Format '@Name' als Fallback,
+        wenn kein Steam-Persona/Name verfügbar ist.
+        """
+        try:
+            user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+            if not user:
+                return f"@{uid}"
+            # global_name (neuer „Anzeigename“) bevorzugen, sonst name/display_name
+            at = getattr(user, "global_name", None) or getattr(user, "display_name", None) or user.name
+            at = str(at).strip() if at else str(uid)
+            # Doppelte '@' vermeiden
+            if at.startswith("@"):
+                return at
+            return f"@{at}"
+        except Exception:
+            return f"@{uid}"
+
     # --- NEU: kleine DM-Aufräumhilfe (lädt nur eigene Bot-DMs) ---------------
     async def _cleanup_recent_bot_dms(self, user: Union[discord.User, discord.Member], *, limit: int = 25) -> None:
         try:
@@ -328,10 +348,6 @@ class SteamLink(commands.Cog):
 
     # ---- Öffentliche Helper für andere Cogs (Welcome-DM etc.) -------------
     def build_discord_link_for(self, uid: int) -> str:
-        """
-        Gibt eine komplette Discord-OAuth2-URL (inkl. state) für den User zurück.
-        Fällt bei Fehlern auf leeren String zurück.
-        """
         try:
             return self._build_discord_auth_url(int(uid))
         except Exception:
@@ -339,10 +355,6 @@ class SteamLink(commands.Cog):
             return ""
 
     def build_steam_openid_for(self, uid: int) -> str:
-        """
-        Gibt eine komplette Steam-OpenID-Login-URL (inkl. state) für den User zurück.
-        Fällt bei Fehlern auf leeren String zurück.
-        """
         try:
             s = self._mk_state(int(uid))
             return self._build_steam_login_url(s)
@@ -419,8 +431,11 @@ class SteamLink(commands.Cog):
                     continue
 
                 persona = await self._fetch_persona(steam_id) or (c.get("name") or "")
-                verified = 1 if c.get("verified") else 0
+                # Fallback: Discord-@Name, wenn keine Persona vorhanden
+                if not persona:
+                    persona = await self._discord_at_name(uid)
 
+                verified = 1 if c.get("verified") else 0
                 _save_steam_link_row(uid, steam_id, persona, verified)
                 saved.append(steam_id)
 
@@ -652,7 +667,9 @@ class SteamLink(commands.Cog):
             if not steam_id:
                 return web.Response(text="OpenID validation failed", status=400)
 
-            _save_steam_link_row(uid, steam_id)
+            # Name/Persona ermitteln; Fallback @Discord
+            display_name = await self._fetch_persona(steam_id) or await self._discord_at_name(uid)
+            _save_steam_link_row(uid, steam_id, display_name, verified=1)
             await self._notify_user_linked(uid, [steam_id])
 
             steam_id_safe = html.escape(steam_id, quote=True)
@@ -776,7 +793,8 @@ class SteamLink(commands.Cog):
         if not sid:
             await self._send_ephemeral(ctx, "❌ Ungültige Eingabe. Erwarte SteamID64, Vanity oder steamcommunity-Link.")
             return
-        display_name = name or (await self._fetch_persona(sid) or "")
+        # Fallback @Discord, falls kein Name & keine Persona
+        display_name = name or (await self._fetch_persona(sid) or await self._discord_at_name(ctx.author.id))
         _save_steam_link_row(ctx.author.id, sid, display_name, verified=0)
         if primary:
             db.execute("UPDATE steam_links SET primary_account=0 WHERE user_id=?", (ctx.author.id,))
@@ -797,7 +815,8 @@ class SteamLink(commands.Cog):
         if not sid:
             await self._send_ephemeral(ctx, "❌ Ungültige Eingabe. Erwarte SteamID64, Vanity oder steamcommunity-Link.")
             return
-        display_name = name or (await self._fetch_persona(sid) or "")
+        # Fallback @Discord, falls kein Name & keine Persona
+        display_name = name or (await self._fetch_persona(sid) or await self._discord_at_name(ctx.author.id))
         _save_steam_link_row(ctx.author.id, sid, display_name, verified=0)
         db.execute("UPDATE steam_links SET primary_account=0 WHERE user_id=?", (ctx.author.id,))
         db.execute(
@@ -808,7 +827,6 @@ class SteamLink(commands.Cog):
 
     @commands.hybrid_command(name="unlink", description="Entfernt einen Steam-Link (ID/Vanity/Profil-Link möglich)")
     async def unlink(self, ctx: commands.Context, steam: str) -> None:
-        # Auch hier flexibel: Vanity/URL auflösen
         sid = await self._resolve_steam_input(steam)
         if not sid and re.fullmatch(r"\d{17}", steam or ""):
             sid = steam

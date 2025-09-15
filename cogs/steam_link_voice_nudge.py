@@ -20,6 +20,14 @@ POLL_INTERVAL = 15              # Sekunden – Voice-Alive-Check
 DEFAULT_TEST_TARGET_ID = int(os.getenv("NUDGE_TEST_DEFAULT_ID", "0"))
 LOG_CHANNEL_ID = 1374364800817303632  # Meldungen in diesen Kanal posten
 
+# Rollen mit Opt-Out (werden NICHT kontaktiert)
+# Standard enthält die gewünschte English-only Rolle: 1309741866098491479
+_EXEMPT_DEFAULT = "1309741866098491479"
+EXEMPT_ROLE_IDS = {
+    int(x) for x in os.getenv("NUDGE_EXEMPT_ROLE_IDS", _EXEMPT_DEFAULT).split(",")
+    if x.strip().isdigit()
+}
+
 # ---------- DB ----------
 def _ensure_schema():
     db.execute("""
@@ -97,6 +105,12 @@ def _had_prior_long_voice_session(user_id: int, threshold_sec: int) -> bool:
 
 
 # ---------- Utilities ----------
+def _member_has_exempt_role(member: discord.Member) -> bool:
+    try:
+        return any((r.id in EXEMPT_ROLE_IDS) for r in getattr(member, "roles", []) if isinstance(r, discord.Role))
+    except Exception:
+        return False
+
 async def _cleanup_bot_dms(user: Union[discord.User, discord.Member], bot_user_id: int, limit: int = 50):
     try:
         dm = user.dm_channel or await user.create_dm()
@@ -320,10 +334,24 @@ class SteamLinkVoiceNudge(commands.Cog):
             return False
 
     async def _send_dm_nudge(self, user: Union[discord.Member, discord.User], *, force: bool = False) -> bool:
+        # Exempt-Rollen NIE kontaktieren – auch nicht bei force
+        if isinstance(user, discord.Member) and _member_has_exempt_role(user):
+            ch = _log_chan(self.bot)
+            if ch:
+                await ch.send(f"ℹ️ Nudge übersprungen (Exempt-Rolle) für **{user}** ({int(user.id)}).")
+            return False
+
         uid = int(user.id)
         if not force:
             if _already_notified(uid) or _has_any_steam_link(uid) or _had_prior_long_voice_session(uid, MIN_VOICE_MINUTES * 60):
                 return False
+
+        # Sicherheit: Falls während Wartezeit Rolle hinzugekommen ist
+        if isinstance(user, discord.Member) and _member_has_exempt_role(user):
+            ch = _log_chan(self.bot)
+            if ch:
+                await ch.send(f"ℹ️ Nudge abgebrochen (Exempt-Rolle erkannt) für **{user}** ({uid}).")
+            return False
 
         await _cleanup_bot_dms(user, self.bot.user.id if self.bot.user else 0, limit=50)
 
@@ -381,12 +409,26 @@ class SteamLinkVoiceNudge(commands.Cog):
 
     async def _wait_and_notify(self, member: discord.Member):
         try:
+            # Wenn exempt, gar nicht erst warten/notify
+            if _member_has_exempt_role(member):
+                ch = _log_chan(self.bot)
+                if ch:
+                    await ch.send(f"ℹ️ Watch übersprungen (Exempt-Rolle) für **{member}** ({int(member.id)}).")
+                return
+
             total = 0
             while total < MIN_VOICE_MINUTES * 60:
                 await asyncio.sleep(POLL_INTERVAL)
                 total += POLL_INTERVAL
                 if not await self._still_in_voice(member):
                     return
+                # Live während der Wartezeit exempt geworden?
+                if _member_has_exempt_role(member):
+                    ch = _log_chan(self.bot)
+                    if ch:
+                        await ch.send(f"ℹ️ Watch abgebrochen (Exempt-Rolle erkannt) für **{member}** ({int(member.id)}).")
+                    return
+
             if _already_notified(member.id) or _has_any_steam_link(member.id):
                 return
             await self._send_dm_nudge(member, force=False)
@@ -404,6 +446,13 @@ class SteamLinkVoiceNudge(commands.Cog):
         left   = before.channel is not None and after.channel is None
 
         if joined:
+            # Exempt-Rollen: nicht verfolgen, nicht anschreiben
+            if _member_has_exempt_role(member):
+                ch = _log_chan(self.bot)
+                if ch:
+                    await ch.send(f"ℹ️ Join erkannt, aber Exempt-Rolle: **{member}** ({int(member.id)}).")
+                return
+
             if _already_notified(member.id) or _has_any_steam_link(member.id):
                 return
             if _had_prior_long_voice_session(member.id, MIN_VOICE_MINUTES * 60):
@@ -432,11 +481,16 @@ class SteamLinkVoiceNudge(commands.Cog):
             if target is None:
                 target = ctx.author
 
+        # Auch beim Test NICHT kontaktieren, wenn Exempt-Rolle vorhanden
+        if isinstance(target, discord.Member) and _member_has_exempt_role(target):
+            await ctx.reply("ℹ️ Test abgebrochen: Ziel hat eine ausgenommene Rolle.", mention_author=False)
+            return
+
         ok = await self._send_dm_nudge(target, force=True)
         if ok:
             await ctx.reply(f"📨 Test-DM an {getattr(target, 'mention', target.id)} gesendet.", mention_author=False)
         else:
-            await ctx.reply("⚠️ Test-DM konnte nicht gesendet werden (DMs aus?).", mention_author=False)
+            await ctx.reply("⚠️ Test-DM konnte nicht gesendet werden (DMs aus? oder bereits benachrichtigt).", mention_author=False)
 
 
 async def setup(bot: commands.Bot):
