@@ -27,6 +27,17 @@ def get_env(name: str, default: str = "") -> str:
         return default
     return v.strip()
 
+# ---------- Host-Check (gehärtet) --------------------------------------------
+def _is_allowed_steamcommunity_host(host: Optional[str]) -> bool:
+    """
+    Erlaubt exakt steamcommunity.com oder gültige Subdomains davon.
+    Nutzt den geparsten Hostnamen (u.hostname), nicht netloc/String-Contains.
+    """
+    if not host:
+        return False
+    h = host.lower().rstrip(".")
+    return h == "steamcommunity.com" or h.endswith(".steamcommunity.com")
+
 # ---------- Vanity/Link -> SteamID64 -----------------------------------------
 def _resolve_vanity(steam_api_key: str, vanity: str, timeout: float = 10.0) -> Optional[str]:
     params = {"key": steam_api_key, "vanityurl": vanity}
@@ -64,7 +75,8 @@ def _parse_steam_input(raw: str) -> Tuple[str, Optional[str], Optional[str]]:
     except Exception:
         u = None
 
-    if u and u.netloc and "steamcommunity.com" in u.netloc:
+    # Gehärteter Host-/Scheme-Check
+    if u and _is_allowed_steamcommunity_host(getattr(u, "hostname", None)):
         path = (u.path or "").rstrip("/")
         m = re.search(r"/profiles/(\d{17})$", path)
         if m:
