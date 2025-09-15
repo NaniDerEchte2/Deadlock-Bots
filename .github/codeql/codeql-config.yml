@@ -1,13 +1,16 @@
-name: "Repo CodeQL Config"
+# .github/codeql/codeql-config.yml
+name: "Deadlock-Bots CodeQL"
 queries:
   - uses: security-extended
   - uses: security-and-quality
 
 paths:
-  - src
-  - backend
-  - frontend
+  - cogs
+  - shared
+  - service
+  - Standalone
   - scripts
+  - tools
 
 paths-ignore:
   - "**/dist/**"
@@ -15,6 +18,8 @@ paths-ignore:
   - "**/node_modules/**"
   - "**/.venv/**"
   - "**/venv/**"
+  - "**/__pycache__/**"
+  - "**/*.min.js"
+  - "**/*.map"
   - "**/migrations/**"
   - "**/tests/fixtures/**"
-  - "**/*.min.js"
