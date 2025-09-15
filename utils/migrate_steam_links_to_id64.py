@@ -17,6 +17,57 @@ except ImportError:
 
 STEAM_API_VANITY = "https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/"
 
+# ======================= Redaction Utils (neu) =======================
+def _basename_or_placeholder(p: str) -> str:
+    try:
+        b = os.path.basename(p or "")
+        return b if b else "<unknown>"
+    except Exception:
+        return "<unknown>"
+
+def _redact_env_debug(env_debug: Optional[Dict[str, List[str]]]) -> Dict[str, object]:
+    """
+    Entfernt Klartext-Pfade; zeigt nur Basenames + Counts.
+    """
+    if not isinstance(env_debug, dict):
+        return {"tried_env_files_count": 0, "loaded_env_files_count": 0}
+    tried = env_debug.get("tried_env_files") or []
+    loaded = env_debug.get("loaded_env_files") or []
+    return {
+        "tried_env_files_count": len(tried),
+        "tried_env_basenames": [_basename_or_placeholder(p) for p in tried],
+        "loaded_env_files_count": len(loaded),
+        "loaded_env_basenames": [_basename_or_placeholder(p) for p in loaded],
+    }
+
+def _redact_finder_debug(finder_debug: Optional[dict]) -> Dict[str, object]:
+    """
+    Entfernt Klartext-Pfade aus dem DB-Finder-Debug; zeigt nur Basenames + Counts.
+    """
+    if not isinstance(finder_debug, dict):
+        return {"tried_paths_count": 0, "candidates_count": 0}
+
+    tried = finder_debug.get("tried_paths") or []
+    cands = finder_debug.get("candidates") or []
+
+    redacted_cands = []
+    for c in cands:
+        try:
+            redacted_cands.append({
+                "db_basename": _basename_or_placeholder(c.get("path", "")),
+                "rows": c.get("rows", 0),
+                "mtime": c.get("mtime", 0),
+            })
+        except Exception:
+            redacted_cands.append({"db_basename": "<unknown>", "rows": 0, "mtime": 0})
+
+    return {
+        "tried_paths_count": len(tried),
+        "tried_paths_basenames": [_basename_or_placeholder(p) for p in tried],
+        "candidates_count": len(cands),
+        "candidates": redacted_cands,
+    }
+
 # ======================= ENV-Loading =======================
 def try_load_env(paths: List[str]) -> List[str]:
     loaded = []
@@ -296,7 +347,8 @@ def main():
     api_key, env_debug = get_api_key(args.api_key, args.env_file)
     if not api_key:
         print("ERROR: STEAM_API_KEY fehlt (für Vanity-Auflösung).", file=sys.stderr)
-        print(json.dumps({"env_debug": env_debug}, ensure_ascii=False, indent=2), file=sys.stderr)
+        # — sicherer Debug: keine Klartext-Pfade —
+        print(json.dumps({"env_debug": _redact_env_debug(env_debug)}, ensure_ascii=False, indent=2), file=sys.stderr)
         sys.exit(2)
 
     # DB finden
@@ -310,11 +362,11 @@ def main():
     if not db_path or not os.path.exists(db_path):
         print(f"ERROR: DB nicht gefunden.", file=sys.stderr)
         debug = {
-            "cwd": os.getcwd(),
-            "script": os.path.abspath(__file__),
-            "env_DB_PATH": os.getenv("DB_PATH"),
-            "finder_debug": finder_debug,
-            "env_debug": env_debug,
+            "cwd_basename": _basename_or_placeholder(os.getcwd()),
+            "script_basename": _basename_or_placeholder(os.path.abspath(__file__)),
+            "env_DB_PATH_set": bool(os.getenv("DB_PATH")),
+            "finder_debug": _redact_finder_debug(finder_debug),
+            "env_debug": _redact_env_debug(env_debug),
         }
         print(json.dumps(debug, ensure_ascii=False, indent=2), file=sys.stderr)
         sys.exit(2)
@@ -336,7 +388,7 @@ def main():
     rows = cur.fetchall()
 
     report = {
-        "db_path": db_path,
+        "db_basename": _basename_or_placeholder(db_path),
         "checked": len(rows),
         "migrated": 0,
         "unresolved": 0,
