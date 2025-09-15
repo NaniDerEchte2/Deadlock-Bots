@@ -5,6 +5,7 @@ import time
 import uuid
 import logging
 import html
+import asyncio
 from typing import Dict, Optional, List, Union
 from urllib.parse import urlencode, urljoin, urlparse
 
@@ -36,9 +37,7 @@ HTTP_PORT = int(os.getenv("STEAM_OAUTH_PORT", os.getenv("HTTP_PORT", "8888")))
 CLIENT_SECRET = (os.getenv("DISCORD_OAUTH_CLIENT_SECRET") or "").strip()
 
 # ---- UI-Konfig per ENV -------------------------------------------------------
-# "one_click"  → direkt ein Link-Button (grau, aber 1 Klick)
-# "two_step"   → grüner "Verifizieren"-Button → danach Link-Button
-OAUTH_BUTTON_MODE = (os.getenv("OAUTH_BUTTON_MODE") or "one_click").strip().lower()
+# „Two-Step“ wird nicht mehr unterstützt, wir fahren nur One-Click.
 LINK_COVER_IMAGE = (os.getenv("LINK_COVER_IMAGE") or "").strip()
 LINK_COVER_LABEL = (os.getenv("LINK_COVER_LABEL") or "link.earlysalty.com").strip()
 LINK_BUTTON_LABEL = (os.getenv("LINK_BUTTON_LABEL") or "Mit Discord verknüpfen").strip()
@@ -144,71 +143,11 @@ async def security_headers_mw(request: web.Request, handler):
 class SteamLink(commands.Cog):
     """
     Linking-Flow:
-      1) /link → Discord OAuth2 (identify + connections)
+      1) /link → Discord OAuth2 (identify + connections) (One-Click)
       2) 0 Treffer → Fallback-Seite → Steam OpenID (automatische Weiterleitung)
       3) /steam/return → SteamID64 extrahieren → speichern
       4) Erfolg → DM an den User (cozy Abschluss) & alte Overlays aufräumen
-
-    Erweiterungen:
-      - /addsteam akzeptiert SteamID64, Vanity oder vollständige steamcommunity-Links.
-      - /setprimary akzeptiert dasselbe; legt die ID bei Bedarf (verified=0) an und setzt sie als primär.
-      - /whoami prüft eine Eingabe (ID/Vanity/Link) und zeigt Persona + SteamID.
-      - /unlink akzeptiert jetzt auch Vanity/Links.
     """
-
-    # ------------------- (Optional) 2-Step-View (Backward-Compat) ------------
-    class VerifyView(discord.ui.View):
-        """
-        Zwei-Schritt-Modus: grüner „Verifizieren“-Button → danach ephemerer Link-Button.
-        Nur genutzt, wenn OAUTH_BUTTON_MODE == 'two_step'.
-        """
-        def __init__(self, cog: "SteamLink", user_id: int, kind: str, timeout: Optional[float] = 600.0):
-            super().__init__(timeout=timeout)
-            self.cog = cog
-            self.user_id = int(user_id)
-            self.kind = kind  # "discord" | "steam"
-
-        @discord.ui.button(
-            label="Verifizieren",
-            style=discord.ButtonStyle.success,
-            custom_id="steamlink:verify"
-        )
-        async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
-            if interaction.user.id != self.user_id:
-                await interaction.response.send_message(
-                    f"Nur für <@{self.user_id}> vorgesehen.", ephemeral=True
-                )
-                return
-            try:
-                if self.kind == "discord":
-                    url = self.cog._build_discord_auth_url(self.user_id)
-                    title = "Mit Discord verknüpfen"
-                    desc = (
-                        "• Prüft deine Discord-Verknüpfungen auf Steam.\n"
-                        "• Falls kein Steam verknüpft ist, wirst du zu Steam weitergeleitet."
-                    )
-                    btn_label = LINK_BUTTON_LABEL
-                else:
-                    s = self.cog._mk_state(self.user_id)
-                    url = self.cog._build_steam_login_url(s)
-                    title = "Direkt bei Steam anmelden"
-                    desc = "Bestätige deinen Account via Steam OpenID."
-                    btn_label = STEAM_BUTTON_LABEL
-            except Exception as e:
-                await interaction.response.send_message(
-                    f"❌ OAuth-Fehler: `{e}` – prüfe .env & Redirects.", ephemeral=True
-                )
-                return
-
-            embed = discord.Embed(title=title, description=desc, color=discord.Color.green())
-            embed.url = url
-            if LINK_COVER_IMAGE:
-                embed.set_image(url=LINK_COVER_IMAGE)
-            embed.set_author(name=LINK_COVER_LABEL)
-
-            view = discord.ui.View()
-            view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label=btn_label, url=url))
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -218,6 +157,7 @@ class SteamLink(commands.Cog):
         self.app.router.add_get("/", self.handle_index)
         self.app.router.add_get("/health", self.handle_health)
         self.app.router.add_get("/discord/callback", self.handle_discord_callback)
+               # expliziter One-Click: kein Two-Step/VerifyView mehr
         self.app.router.add_get("/steam/login", self.handle_steam_login)
         self.app.router.add_get(STEAM_RETURN_PATH, self.handle_steam_return)
         self.app.router.add_get("/favicon.ico", self.handle_favicon)
@@ -270,27 +210,20 @@ class SteamLink(commands.Cog):
             return None
         return int(data["uid"])
 
-    # NEU: Fallback-Name „@Discord“
     async def _discord_at_name(self, uid: int) -> str:
-        """
-        Liefert einen human-readable Discord-Namen im Format '@Name' als Fallback,
-        wenn kein Steam-Persona/Name verfügbar ist.
-        """
+        """Fallback-Name '@Discord' falls keine Persona vorhanden."""
         try:
             user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
             if not user:
                 return f"@{uid}"
-            # global_name (neuer „Anzeigename“) bevorzugen, sonst name/display_name
             at = getattr(user, "global_name", None) or getattr(user, "display_name", None) or user.name
             at = str(at).strip() if at else str(uid)
-            # Doppelte '@' vermeiden
             if at.startswith("@"):
                 return at
             return f"@{at}"
         except Exception:
             return f"@{uid}"
 
-    # --- NEU: kleine DM-Aufräumhilfe (lädt nur eigene Bot-DMs) ---------------
     async def _cleanup_recent_bot_dms(self, user: Union[discord.User, discord.Member], *, limit: int = 25) -> None:
         try:
             dm = user.dm_channel or await user.create_dm()
@@ -304,27 +237,20 @@ class SteamLink(commands.Cog):
                     except Exception:
                         pass
         except Exception:
-            # Cleanup darf nie den Flow brechen
             pass
 
-    # --- ERSETZT: Cozy Abschluss + Aufräumen vor dem Senden ------------------
     async def _notify_user_linked(self, user_id: int, steam_ids: List[str]) -> None:
         try:
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
             if not user:
                 return
-
-            # 1) Alte Overlays/Nudges entfernen (Bot-eigene DMs)
             await self._cleanup_recent_bot_dms(user, limit=25)
-
-            # 2) Cozy Abschluss
             shine = (
                 "✨ **Connection complete.**\n"
                 "Du funkelst jetzt ein Stückchen heller — und die Welt ein winziges bisschen auch.\n\n"
                 "_Tipp: Mit `/links` siehst du deine verknüpften Accounts._"
             )
             await user.send(shine)
-
         except Exception as e:
             log.info("Konnte User-DM nicht senden (id=%s): %s", user_id, e)
 
@@ -346,7 +272,7 @@ class SteamLink(commands.Cog):
         }
         return f"{DISCORD_API}/oauth2/authorize?{urlencode(params)}"
 
-    # ---- Öffentliche Helper für andere Cogs (Welcome-DM etc.) -------------
+    # Öffentliche Helper (für andere Cogs)
     def build_discord_link_for(self, uid: int) -> str:
         try:
             return self._build_discord_auth_url(int(uid))
@@ -397,11 +323,6 @@ class SteamLink(commands.Cog):
                 return await r.json()
 
     async def _save_steam_links_from_discord(self, uid: int, conns: List[dict]) -> List[str]:
-        """
-        Nimmt die Verbindungen von Discord (/users/@me/connections),
-        filtert Steam-Accounts heraus und speichert sie in die DB.
-        Gibt die gespeicherten SteamIDs (17-stellig) zurück.
-        """
         saved: List[str] = []
         if not conns:
             return saved
@@ -431,7 +352,6 @@ class SteamLink(commands.Cog):
                     continue
 
                 persona = await self._fetch_persona(steam_id) or (c.get("name") or "")
-                # Fallback: Discord-@Name, wenn keine Persona vorhanden
                 if not persona:
                     persona = await self._discord_at_name(uid)
 
@@ -472,11 +392,9 @@ class SteamLink(commands.Cog):
         if not s:
             return None
 
-        # 1) 17-stellige ID
         if re.fullmatch(r"\d{17}", s):
             return s
 
-        # 2) URL?
         try:
             u = urlparse(s)
         except Exception:
@@ -490,7 +408,6 @@ class SteamLink(commands.Cog):
             if m:
                 return await self._resolve_vanity(m.group(1))
 
-        # 3) nackter Vanity-Kandidat
         if re.fullmatch(r"[A-Za-z0-9_.\-]+", s):
             return await self._resolve_vanity(s)
 
@@ -620,7 +537,7 @@ class SteamLink(commands.Cog):
             )
             return web.Response(text=html_doc, content_type="text/html")
 
-        # ---------- Seamless Redirect zu Steam OpenID ----------
+        # Seamless Redirect zu Steam OpenID
         try:
             steam_state = self._mk_state(uid)
             steam_login = self._build_steam_login_url(steam_state)
@@ -667,7 +584,6 @@ class SteamLink(commands.Cog):
             if not steam_id:
                 return web.Response(text="OpenID validation failed", status=400)
 
-            # Name/Persona ermitteln; Fallback @Discord
             display_name = await self._fetch_persona(steam_id) or await self._discord_at_name(uid)
             _save_steam_link_row(uid, steam_id, display_name, verified=1)
             await self._notify_user_linked(uid, [steam_id])
@@ -694,15 +610,20 @@ class SteamLink(commands.Cog):
             )
 
     # --------------- Commands -------------------------------------------------
+    async def _defer_if_needed(self, ctx: commands.Context) -> None:
+        """Sofortiges Defer, um 3-Sekunden-Timeout zu vermeiden."""
+        if getattr(ctx, "interaction", None) and not ctx.interaction.response.is_done():
+            try:
+                await ctx.interaction.response.defer(ephemeral=True)
+            except Exception:
+                pass
+
     @commands.hybrid_command(
         name="link",
         description="Verknüpfe deine Steam-Accounts (Discord → connections; Fallback Steam OpenID)"
     )
     async def link(self, ctx: commands.Context) -> None:
-        """
-        ONE-CLICK: direkt ein Link-Button (grau) – sofort zum OAuth.
-        TWO-STEP: grüner „Verifizieren“-Button → danach Link-Button (ephemer).
-        """
+        # Link-Flow ist instant – kein Defer nötig.
         desc = (
             "• Wenn in deinem Discord-Profil **kein** Steam verknüpft ist, "
             "leite ich dich automatisch zu Steam weiter.\n"
@@ -714,11 +635,6 @@ class SteamLink(commands.Cog):
         if LINK_COVER_IMAGE:
             embed.set_image(url=LINK_COVER_IMAGE)
         embed.set_author(name=LINK_COVER_LABEL)
-
-        if OAUTH_BUTTON_MODE == "two_step":
-            view = self.VerifyView(self, ctx.author.id, kind="discord")
-            await self._send_ephemeral(ctx, embed=embed, view=view)
-            return
 
         try:
             url = self._build_discord_auth_url(ctx.author.id)
@@ -735,16 +651,12 @@ class SteamLink(commands.Cog):
         description="Direkt: Steam-Login (OpenID) starten"
     )
     async def link_steam(self, ctx: commands.Context) -> None:
+        # Link-Flow ist instant – kein Defer nötig.
         desc = "Bestätige deinen Account via Steam OpenID."
         embed = discord.Embed(title="Direkt bei Steam anmelden", description=desc, color=discord.Color.green())
         if LINK_COVER_IMAGE:
             embed.set_image(url=LINK_COVER_IMAGE)
         embed.set_author(name=LINK_COVER_LABEL)
-
-        if OAUTH_BUTTON_MODE == "two_step":
-            view = self.VerifyView(self, ctx.author.id, kind="steam")
-            await self._send_ephemeral(ctx, embed=embed, view=view)
-            return
 
         s = self._mk_state(ctx.author.id)
         url = self._build_steam_login_url(s)
@@ -754,6 +666,7 @@ class SteamLink(commands.Cog):
 
     @commands.hybrid_command(name="links", description="Zeigt deine gespeicherten Steam-Links")
     async def links(self, ctx: commands.Context) -> None:
+        # DB-only – in der Regel <3s, aber wir sind großzügig und deferen sicherheitshalber nicht.
         rows = db.query_all(
             "SELECT steam_id, name, verified, primary_account "
             "FROM steam_links WHERE user_id=? "
@@ -772,13 +685,28 @@ class SteamLink(commands.Cog):
             lines.append(f"- **{sid}** ({nm}){chk}{prim}")
         await self._send_ephemeral(ctx, "Deine verknüpften Accounts:\n" + "\n".join(lines))
 
-    @commands.hybrid_command(name="whoami", description="Prüft ID/Vanity/Profil-Link und zeigt Persona + SteamID")
+    @commands.hybrid_command(
+        name="whoami",
+        description="Prüft ID/Vanity/Profil-Link und zeigt Persona + SteamID"
+    )
     async def whoami(self, ctx: commands.Context, steam: str) -> None:
-        sid = await self._resolve_steam_input(steam)
+        await self._defer_if_needed(ctx)  # <- verhindert 3s-Timeout
+        # Schnelle Budget-Klammer für UX (optional)
+        try:
+            sid = await asyncio.wait_for(self._resolve_steam_input(steam), timeout=8)
+        except asyncio.TimeoutError:
+            await self._send_ephemeral(ctx, "⏳ Steam/Netzwerk langsam. Bitte nochmal versuchen.")
+            return
+
         if not sid:
             await self._send_ephemeral(ctx, "❌ Konnte aus deiner Eingabe keine SteamID bestimmen.")
             return
-        persona = await self._fetch_persona(sid)
+
+        try:
+            persona = await asyncio.wait_for(self._fetch_persona(sid), timeout=8)
+        except asyncio.TimeoutError:
+            persona = None
+
         if persona:
             await self._send_ephemeral(ctx, f"👤 **{persona}** → SteamID64: `{sid}`")
         else:
@@ -789,13 +717,25 @@ class SteamLink(commands.Cog):
         description="Inoffiziell: fügt manuell eine SteamID hinzu – akzeptiert ID, Vanity oder Profil-Link."
     )
     async def addsteam(self, ctx: commands.Context, steam: str, name: Optional[str] = None, primary: Optional[bool] = False) -> None:
-        sid = await self._resolve_steam_input(steam)
+        await self._defer_if_needed(ctx)  # <- verhindert 3s-Timeout
+        try:
+            sid = await asyncio.wait_for(self._resolve_steam_input(steam), timeout=8)
+        except asyncio.TimeoutError:
+            await self._send_ephemeral(ctx, "⏳ Steam/Netzwerk langsam. Bitte nochmal versuchen.")
+            return
+
         if not sid:
             await self._send_ephemeral(ctx, "❌ Ungültige Eingabe. Erwarte SteamID64, Vanity oder steamcommunity-Link.")
             return
-        # Fallback @Discord, falls kein Name & keine Persona
-        display_name = name or (await self._fetch_persona(sid) or await self._discord_at_name(ctx.author.id))
+
+        try:
+            persona = await asyncio.wait_for(self._fetch_persona(sid), timeout=8)
+        except asyncio.TimeoutError:
+            persona = None
+
+        display_name = name or (persona or await self._discord_at_name(ctx.author.id))
         _save_steam_link_row(ctx.author.id, sid, display_name, verified=0)
+
         if primary:
             db.execute("UPDATE steam_links SET primary_account=0 WHERE user_id=?", (ctx.author.id,))
             db.execute(
@@ -811,12 +751,23 @@ class SteamLink(commands.Cog):
         description="Markiert einen Steam-Account als Primär (akzeptiert ID/Vanity/Link; legt bei Bedarf an)."
     )
     async def setprimary(self, ctx: commands.Context, steam: str, name: Optional[str] = None) -> None:
-        sid = await self._resolve_steam_input(steam)
+        await self._defer_if_needed(ctx)  # <- verhindert 3s-Timeout
+        try:
+            sid = await asyncio.wait_for(self._resolve_steam_input(steam), timeout=8)
+        except asyncio.TimeoutError:
+            await self._send_ephemeral(ctx, "⏳ Steam/Netzwerk langsam. Bitte nochmal versuchen.")
+            return
+
         if not sid:
             await self._send_ephemeral(ctx, "❌ Ungültige Eingabe. Erwarte SteamID64, Vanity oder steamcommunity-Link.")
             return
-        # Fallback @Discord, falls kein Name & keine Persona
-        display_name = name or (await self._fetch_persona(sid) or await self._discord_at_name(ctx.author.id))
+
+        try:
+            persona = await asyncio.wait_for(self._fetch_persona(sid), timeout=8)
+        except asyncio.TimeoutError:
+            persona = None
+
+        display_name = name or (persona or await self._discord_at_name(ctx.author.id))
         _save_steam_link_row(ctx.author.id, sid, display_name, verified=0)
         db.execute("UPDATE steam_links SET primary_account=0 WHERE user_id=?", (ctx.author.id,))
         db.execute(
@@ -827,6 +778,7 @@ class SteamLink(commands.Cog):
 
     @commands.hybrid_command(name="unlink", description="Entfernt einen Steam-Link (ID/Vanity/Profil-Link möglich)")
     async def unlink(self, ctx: commands.Context, steam: str) -> None:
+        # DB-only plus kleine Auflösung; zur Sicherheit deferen wir nicht zwingend.
         sid = await self._resolve_steam_input(steam)
         if not sid and re.fullmatch(r"\d{17}", steam or ""):
             sid = steam
@@ -845,18 +797,17 @@ class SteamLink(commands.Cog):
         embed: Optional[discord.Embed] = None,
         view: Optional[discord.ui.View] = None
     ) -> None:
+        # Wichtig: None → discord.utils.MISSING (verhindert view.is_finished() auf None)
+        c = content if content is not None else discord.utils.MISSING
+        e = embed if embed is not None else discord.utils.MISSING
+        v = view if view is not None else discord.utils.MISSING
+
         if getattr(ctx, "interaction", None) and not ctx.interaction.response.is_done():
-            await ctx.interaction.response.send_message(
-                content if content is not None else discord.utils.MISSING,
-                embed=embed, view=view, ephemeral=True
-            )
+            await ctx.interaction.response.send_message(c, embed=e, view=v, ephemeral=True)
         elif getattr(ctx, "interaction", None):
-            await ctx.interaction.followup.send(
-                content if content is not None else discord.utils.MISSING,
-                embed=embed, view=view, ephemeral=True
-            )
+            await ctx.interaction.followup.send(c, embed=e, view=v, ephemeral=True)
         else:
-            await ctx.reply(content or "", embed=embed, view=view)
+            await ctx.reply(c if c is not discord.utils.MISSING else "", embed=e if e is not discord.utils.MISSING else None, view=view)
 
 
 async def setup(bot: commands.Bot):
