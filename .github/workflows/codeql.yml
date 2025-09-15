@@ -3,103 +3,65 @@ name: "CodeQL Advanced"
 on:
   push:
     branches: [ "main" ]
-    # nur laufen, wenn relevante Dateien geändert wurden
-    paths:
-      - "**/*.js"
-      - "**/*.ts"
-      - "**/*.py"
-      - ".github/workflows/**"
-      - ".github/codeql/**"
   pull_request:
     branches: [ "main" ]
-    paths:
-      - "**/*.js"
-      - "**/*.ts"
-      - "**/*.py"
-      - ".github/workflows/**"
-      - ".github/codeql/**"
   schedule:
     - cron: '44 10 * * 1'
   workflow_dispatch:
 
-# parallele Runs derselben Ref abbrechen (spart Runner-Zeit)
 concurrency:
   group: codeql-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
-    runs-on: ${{ (matrix.language == 'swift' && 'macos-latest') || 'ubuntu-latest' }}
+    name: Analyze (auto)
+    runs-on: ubuntu-latest
 
     permissions:
-      # Minimum für Code Scanning Upload
       security-events: write
       contents: read
-      # nur falls private Repos/Interne Packs genutzt werden:
       packages: read
       actions: read
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: javascript-typescript
-            build-mode: none
-          - language: python
-            build-mode: none
-          # weitere Sprachen hier ergänzen, falls nötig
-          # - language: go
-          #   build-mode: autobuild
-
     steps:
-      - name: Checkout repository (full history for precise blame)
+      - name: Checkout repository (full history)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # (Optional) Node/Python Runtimes setzen, falls Build/Typegen nötig ist
-      # - uses: actions/setup-node@v4
-      #   with:
-      #     node-version: '20'
-      # - uses: actions/setup-python@v5
-      #   with:
-      #     python-version: '3.12'
+      # Optional – Python bereitstellen (schadet nicht, verhindert Autobuild-Heuristiken)
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
-          # stabil auf neueste Bundle-Version
-          tools: latest
-          # eigene Konfig mit Queries & Excludes (siehe Datei unten)
+          languages: auto            # <— erkennt nur vorhandene Sprachen (z. B. Python)
+          build-mode: none           # <— KEIN Autobuild für Skriptsprachen
+          tools: linked              # ehemals 'latest'
+          # Wenn du die Config-Datei nutzt, lass die Zeile aktiv;
+          # sonst auskommentieren:
           config-file: ./.github/codeql/codeql-config.yml
 
-      # Nur falls du "manual" Build-Modus verwendest (compiled langs)
-      - if: matrix.build-mode == 'manual'
-        shell: bash
-        run: |
-          echo 'Manual build mode aktiv: hier Build-Kommandos hinterlegen'
-          echo 'z. B.:'
-          echo '  npm ci && npm run build'
-          echo '  or'
-          echo '  python -m pip install -r requirements.txt'
-          exit 1
+      # Nur nötig für compiled langs; bleibt hier als Guard drin, scheitert aber NICHT
+      - name: Manual build (compiled languages only)
+        if: false
+        run: echo "No manual build needed."
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
         with:
-          category: "/language:${{ matrix.language }}"
-          # Optional: Artefakte behalten für Debugging
+          category: "/language:auto"
           upload: true
 
-      # (Optional) SARIF zusätzlich als Build-Artefakt ablegen
       - name: Archive SARIF
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: codeql-sarif-${{ matrix.language }}
+          name: codeql-sarif
           path: |
             /home/runner/work/**/results/**/*.sarif
           if-no-files-found: ignore
