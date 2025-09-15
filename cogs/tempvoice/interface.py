@@ -6,14 +6,41 @@ from .core import (
     INTERFACE_TEXT_CHANNEL_ID, ENGLISH_ONLY_ROLE_ID, MINRANK_CATEGORY_ID,
     RANK_ORDER, _rank_roles
 )
-# ganz unten in interface.py
-from discord.ext import commands
-
-async def setup(bot: commands.Bot):
-    # Wird aktuell nicht aufgerufen, weil __init__.py beide Cogs direkt registriert.
-    await bot.add_cog(TempVoiceInterface(bot))
 
 logger = logging.getLogger("cogs.tempvoice.interface")
+
+async def setup(bot: commands.Bot):
+    """
+    Lokales Setup nur für den Fall, dass diese Extension
+    separat geladen wird. Erkennt vorhandene Core/Util-Cogs
+    und vermeidet Doppel-Registrierungen.
+    """
+    # 1) Core ermitteln oder anlegen
+    core = bot.get_cog("TempVoiceCore")
+    if core is None:
+        try:
+            from .core import TempVoiceCore
+            core = TempVoiceCore(bot)
+            await bot.add_cog(core)
+        except Exception as e:
+            logger.exception("TempVoiceInterface.setup: Konnte TempVoiceCore nicht initialisieren: %r", e)
+            return
+
+    # 2) Util ermitteln oder anlegen
+    util = getattr(core, "util", None)
+    if util is None:
+        try:
+            from .util import TempVoiceUtil
+            util = TempVoiceUtil(core)
+            # util ist ein Hilfsobjekt, kein Cog – muss i. d. R. nicht registriert werden
+        except Exception as e:
+            logger.exception("TempVoiceInterface.setup: Konnte TempVoiceUtil nicht initialisieren: %r", e)
+            return
+
+    # 3) Interface-Cog hinzufügen (nur einmal)
+    if bot.get_cog("TempVoiceInterface") is None:
+        await bot.add_cog(TempVoiceInterface(bot, core, util))
+
 
 def _find_rank_emoji(guild: Optional[discord.Guild], rank: str):
     if not guild: return None
@@ -139,7 +166,7 @@ class RegionDEButton(discord.ui.Button):
 
 class RegionEUButton(discord.ui.Button):
     def __init__(self, core):
-        super().__init__(label="🇪🇺 EU", style=discord.ButtonStyle.secondary, row=0, custom_id="tv_region_eu")
+        super().__init__(label="🇪🇺 EU", style=discord.ButtonStyle.secondary, row=0, custom_id="tv_region_e")
         self.core = core
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
