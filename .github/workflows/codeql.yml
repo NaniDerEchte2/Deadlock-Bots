@@ -1,4 +1,11 @@
-name: "CodeQL Advanced"
+- name: Initialize CodeQL
+  uses: github/codeql-action/init@v3
+  with:
+    languages: python
+    build-mode: none        # ← zwingend! Sonst startet autobuild.sh
+    tools: linked
+    # wenn du eine Config nutzt, erst NACH Schritt 2 wieder aktivieren:
+    # config-file: ./.github/codeql/codeql-config.yml
 
 on:
   push:
