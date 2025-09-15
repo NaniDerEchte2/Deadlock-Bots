@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   analyze:
-    name: Analyze (auto)
+    name: Analyze (python)
     runs-on: ubuntu-latest
 
     permissions:
@@ -30,7 +30,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Optional – Python bereitstellen (schadet nicht, verhindert Autobuild-Heuristiken)
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -39,14 +38,13 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: auto            # <— erkennt nur vorhandene Sprachen (z. B. Python)
-          build-mode: none           # <— KEIN Autobuild für Skriptsprachen
+          languages: python          # ← explizit, kein "auto"
+          build-mode: none           # ← kein Autobuild für Python
           tools: linked              # ehemals 'latest'
-          # Wenn du die Config-Datei nutzt, lass die Zeile aktiv;
-          # sonst auskommentieren:
+          # Falls vorhanden, gerne nutzen; sonst diese Zeile entfernen:
           config-file: ./.github/codeql/codeql-config.yml
 
-      # Nur nötig für compiled langs; bleibt hier als Guard drin, scheitert aber NICHT
+      # Für Python nicht nötig – bleibt als Platzhalter aus
       - name: Manual build (compiled languages only)
         if: false
         run: echo "No manual build needed."
@@ -54,7 +52,7 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
         with:
-          category: "/language:auto"
+          category: "/language:python"
           upload: true
 
       - name: Archive SARIF
