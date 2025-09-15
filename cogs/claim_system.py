@@ -278,12 +278,28 @@ async def process_notification_data(data):
         print(f"Thread gefunden: {thread.name}")
 
         # Zuständigen Benutzer bestimmen (zuweisen oder freigeben)
-        assigned_user_id = USERS["hucci1789"]["id"]  # Standard-Fallback
-        try:
-            assigned_user_id = int(data.get('assigned_user_id', 0))
-        except:
-            # Falls 'assigned_user_id' nicht in data, anhand von Rang/Subrang/Held bestimmen
-            assigned_user_id = get_assigned_user(rank, subrank, hero)
+        assigned_user_id = None
+
+        raw_assignee = data.get('assigned_user_id', None)
+        if raw_assignee is not None:
+            try:
+                assigned_user_id = int(raw_assignee)
+            except (ValueError, TypeError):
+                assigned_user_id = None
+
+        # Wenn kein valider Assignee aus den Daten: versuche anhand von Rang/Subrang/Held
+        if not assigned_user_id:
+            try:
+                assigned_user_id = get_assigned_user(rank, subrank, hero)
+            except NameError:
+                # Falls die Funktion extern definiert ist und hier nicht importiert wurde,
+                # nicht hart failen – auf Fallback zurückfallen.
+                assigned_user_id = None
+
+        # Letzter Fallback: Standard-User
+        if not assigned_user_id:
+            assigned_user_id = USERS["hucci1789"]["id"]
+
         print(f"Zugewiesener Benutzer: {assigned_user_id}")
 
         # Benutzer zum Thread hinzufügen (falls nicht der Bot selbst)
