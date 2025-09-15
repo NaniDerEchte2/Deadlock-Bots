@@ -5,7 +5,7 @@ import time
 import uuid
 import logging
 import html
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Union
 from urllib.parse import urlencode, urljoin, urlparse
 
 import aiohttp
@@ -145,9 +145,9 @@ class SteamLink(commands.Cog):
     """
     Linking-Flow:
       1) /link → Discord OAuth2 (identify + connections)
-      2) 0 Treffer → Fallback-Seite → Steam OpenID (JETZT: automatische Weiterleitung)
+      2) 0 Treffer → Fallback-Seite → Steam OpenID (automatische Weiterleitung)
       3) /steam/return → SteamID64 extrahieren → speichern
-      4) Erfolg → DM an den User
+      4) Erfolg → DM an den User (cozy Abschluss) & alte Overlays aufräumen
 
     Erweiterungen:
       - /addsteam akzeptiert SteamID64, Vanity oder vollständige steamcommunity-Links.
@@ -270,17 +270,41 @@ class SteamLink(commands.Cog):
             return None
         return int(data["uid"])
 
+    # --- NEU: kleine DM-Aufräumhilfe (lädt nur eigene Bot-DMs) ---------------
+    async def _cleanup_recent_bot_dms(self, user: Union[discord.User, discord.Member], *, limit: int = 25) -> None:
+        try:
+            dm = user.dm_channel or await user.create_dm()
+            bot_id = self.bot.user.id if self.bot.user else None
+            if not bot_id:
+                return
+            async for msg in dm.history(limit=limit):
+                if msg.author and msg.author.id == bot_id:
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+        except Exception:
+            # Cleanup darf nie den Flow brechen
+            pass
+
+    # --- ERSETZT: Cozy Abschluss + Aufräumen vor dem Senden ------------------
     async def _notify_user_linked(self, user_id: int, steam_ids: List[str]) -> None:
         try:
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
             if not user:
                 return
-            if steam_ids:
-                sids = ", ".join(steam_ids)
-                txt = f"✅ Verknüpfung erfolgreich. Verknüpfte SteamID(s): **{sids}**"
-            else:
-                txt = "✅ Verknüpfung erfolgreich."
-            await user.send(txt)
+
+            # 1) Alte Overlays/Nudges entfernen (Bot-eigene DMs)
+            await self._cleanup_recent_bot_dms(user, limit=25)
+
+            # 2) Cozy Abschluss
+            shine = (
+                "✨ **Connection complete.**\n"
+                "Du funkelst jetzt ein Stückchen heller — und die Welt ein winziges bisschen auch.\n\n"
+                "_Tipp: Mit `/links` siehst du deine verknüpften Accounts._"
+            )
+            await user.send(shine)
+
         except Exception as e:
             log.info("Konnte User-DM nicht senden (id=%s): %s", user_id, e)
 
