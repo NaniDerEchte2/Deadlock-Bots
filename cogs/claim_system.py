@@ -83,7 +83,6 @@ SOCKET_PORT = 45680
 
 # Konfiguration
 STAFF_ROLE_ID = 1371929762913587292  # Rolle, die claimen kann
-CLAIMED_THREADS = CLAIMED_THREADS  # (globale Dict bleibt erhalten)
 
 # Benutzer-IDs und Helden für die Zuweisung
 USERS = {
