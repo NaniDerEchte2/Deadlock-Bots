@@ -17,57 +17,6 @@ except ImportError:
 
 STEAM_API_VANITY = "https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/"
 
-# ======================= Redaction Utils (neu) =======================
-def _basename_or_placeholder(p: str) -> str:
-    try:
-        b = os.path.basename(p or "")
-        return b if b else "<unknown>"
-    except Exception:
-        return "<unknown>"
-
-def _redact_env_debug(env_debug: Optional[Dict[str, List[str]]]) -> Dict[str, object]:
-    """
-    Entfernt Klartext-Pfade; zeigt nur Basenames + Counts.
-    """
-    if not isinstance(env_debug, dict):
-        return {"tried_env_files_count": 0, "loaded_env_files_count": 0}
-    tried = env_debug.get("tried_env_files") or []
-    loaded = env_debug.get("loaded_env_files") or []
-    return {
-        "tried_env_files_count": len(tried),
-        "tried_env_basenames": [_basename_or_placeholder(p) for p in tried],
-        "loaded_env_files_count": len(loaded),
-        "loaded_env_basenames": [_basename_or_placeholder(p) for p in loaded],
-    }
-
-def _redact_finder_debug(finder_debug: Optional[dict]) -> Dict[str, object]:
-    """
-    Entfernt Klartext-Pfade aus dem DB-Finder-Debug; zeigt nur Basenames + Counts.
-    """
-    if not isinstance(finder_debug, dict):
-        return {"tried_paths_count": 0, "candidates_count": 0}
-
-    tried = finder_debug.get("tried_paths") or []
-    cands = finder_debug.get("candidates") or []
-
-    redacted_cands = []
-    for c in cands:
-        try:
-            redacted_cands.append({
-                "db_basename": _basename_or_placeholder(c.get("path", "")),
-                "rows": c.get("rows", 0),
-                "mtime": c.get("mtime", 0),
-            })
-        except Exception:
-            redacted_cands.append({"db_basename": "<unknown>", "rows": 0, "mtime": 0})
-
-    return {
-        "tried_paths_count": len(tried),
-        "tried_paths_basenames": [_basename_or_placeholder(p) for p in tried],
-        "candidates_count": len(cands),
-        "candidates": redacted_cands,
-    }
-
 # ======================= ENV-Loading =======================
 def try_load_env(paths: List[str]) -> List[str]:
     loaded = []
@@ -237,6 +186,12 @@ def auto_find_db() -> Tuple[Optional[str], dict]:
 def is_id64(s: str) -> bool:
     return bool(s) and len(s) == 17 and s.isdigit()
 
+def _is_allowed_steamcommunity_host(host: Optional[str]) -> bool:
+    if not host:
+        return False
+    h = host.lower()
+    return h == "steamcommunity.com" or h.endswith(".steamcommunity.com")
+
 def parse_input_to_hint(raw: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Liefert (typ, wert):
@@ -251,7 +206,7 @@ def parse_input_to_hint(raw: str) -> Tuple[Optional[str], Optional[str]]:
         u = urlparse(s)
     except Exception:
         u = None
-    if u and u.netloc and "steamcommunity.com" in u.netloc:
+    if u and _is_allowed_steamcommunity_host(getattr(u, "hostname", None)):
         path = (u.path or "").rstrip("/")
         m = re.search(r"/profiles/(\d{17})$", path)
         if m:
@@ -347,8 +302,7 @@ def main():
     api_key, env_debug = get_api_key(args.api_key, args.env_file)
     if not api_key:
         print("ERROR: STEAM_API_KEY fehlt (für Vanity-Auflösung).", file=sys.stderr)
-        # — sicherer Debug: keine Klartext-Pfade —
-        print(json.dumps({"env_debug": _redact_env_debug(env_debug)}, ensure_ascii=False, indent=2), file=sys.stderr)
+        # Keine Debug-Daten ausgeben (CodeQL: keine Klartext-Logs sensibler Infos)
         sys.exit(2)
 
     # DB finden
@@ -356,19 +310,12 @@ def main():
     finder_debug = {}
     if not db_path:
         chosen, info = auto_find_db()
-        finder_debug = info
+        finder_debug = info  # (nicht loggen)
         db_path = chosen
 
     if not db_path or not os.path.exists(db_path):
-        print(f"ERROR: DB nicht gefunden.", file=sys.stderr)
-        debug = {
-            "cwd_basename": _basename_or_placeholder(os.getcwd()),
-            "script_basename": _basename_or_placeholder(os.path.abspath(__file__)),
-            "env_DB_PATH_set": bool(os.getenv("DB_PATH")),
-            "finder_debug": _redact_finder_debug(finder_debug),
-            "env_debug": _redact_env_debug(env_debug),
-        }
-        print(json.dumps(debug, ensure_ascii=False, indent=2), file=sys.stderr)
+        print("ERROR: DB nicht gefunden.", file=sys.stderr)
+        # Keine Klartext-Pfade/ENV-Infos loggen (CodeQL-konform)
         sys.exit(2)
 
     # Verbindung & optional Schema-Erweiterung
@@ -388,7 +335,6 @@ def main():
     rows = cur.fetchall()
 
     report = {
-        "db_basename": _basename_or_placeholder(db_path),
         "checked": len(rows),
         "migrated": 0,
         "unresolved": 0,
