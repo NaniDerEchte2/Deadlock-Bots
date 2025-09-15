@@ -639,7 +639,8 @@ class RolePermissionVoiceManager(commands.Cog):
 
         if not self.channel_anchors:
             embed.description = "❌ Keine aktiven Kanal-Anker"
-            return await ctx.send(embed=embed)
+            await ctx.send(embed=embed)
+            return
 
         lines: List[str] = []
         for ch_id, (user_id, rank_name, rank_value, amin, amax) in self.channel_anchors.items():
@@ -665,40 +666,44 @@ class RolePermissionVoiceManager(commands.Cog):
     @rank_command.command(name="toggle")
     async def toggle_channel_system(self, ctx, action: str = None):
         if not ctx.author.voice or not ctx.author.voice.channel:
-            return await ctx.send("❌ Du musst in einem Voice Channel sein.")
+            await ctx.send("❌ Du musst in einem Voice Channel sein.")
+            return
         channel = ctx.author.voice.channel
 
         if not self.is_monitored_channel(channel):
-            return await ctx.send(f"❌ **{channel.name}** wird nicht überwacht.")
+            await ctx.send(f"❌ **{channel.name}** wird nicht überwacht.")
+            return
 
         current = self.is_channel_system_enabled(channel)
         if action is None:
-            return await ctx.send(f"🔧 Rang-System für **{channel.name}**: {'✅ Aktiviert' if current else '❌ Deaktiviert'}")
+            await ctx.send(f"🔧 Rang-System für **{channel.name}**: {'✅ Aktiviert' if current else '❌ Deaktiviert'}")
+            return
 
         action_l = action.lower()
         if action_l in ["ein", "on", "aktivieren", "enable"]:
             if current:
                 await ctx.send(f"ℹ️ Bereits aktiviert für **{channel.name}**.")
-            else:
-                await self.set_channel_system_enabled(channel, True)
-                await ctx.send(f"✅ Aktiviert: **{channel.name}**")
-                await self.update_channel_permissions_via_roles(channel)
-                await self.update_channel_name(channel)
+                return
+            await self.set_channel_system_enabled(channel, True)
+            await ctx.send(f"✅ Aktiviert: **{channel.name}**")
+            await self.update_channel_permissions_via_roles(channel)
+            await self.update_channel_name(channel)
         elif action_l in ["aus", "off", "deaktivieren", "disable"]:
             if not current:
                 await ctx.send(f"ℹ️ Bereits deaktiviert für **{channel.name}**.")
-            else:
-                await self.set_channel_system_enabled(channel, False)
-                await ctx.send(f"❌ Deaktiviert: **{channel.name}**")
-                await self.remove_channel_anchor(channel)
-                await self.clear_role_permissions(channel)
+                return
+            await self.set_channel_system_enabled(channel, False)
+            await ctx.send(f"❌ Deaktiviert: **{channel.name}**")
+            await self.remove_channel_anchor(channel)
+            await self.clear_role_permissions(channel)
         else:
             await ctx.send("❌ Verwende: `ein`/`on` oder `aus`/`off`")
 
     @rank_command.command(name="vcstatus")
     async def voice_channel_status(self, ctx):
         if not ctx.author.voice or not ctx.author.voice.channel:
-            return await ctx.send("❌ Du musst in einem Voice Channel sein.")
+            await ctx.send("❌ Du musst in einem Voice Channel sein.")
+            return
         channel = ctx.author.voice.channel
 
         embed = discord.Embed(title=f"🔊 Status: {channel.name}", color=discord.Color.blue())
@@ -778,11 +783,13 @@ class RolePermissionVoiceManager(commands.Cog):
     async def force_update(self, ctx, channel: discord.VoiceChannel = None):
         if channel is None:
             if not ctx.author.voice or not ctx.author.voice.channel:
-                return await ctx.send("❌ In einem Sprachkanal sein oder Kanal angeben.")
+                await ctx.send("❌ In einem Sprachkanal sein oder Kanal angeben.")
+                return
             channel = ctx.author.voice.channel
 
         if not self.is_monitored_channel(channel):
-            return await ctx.send("❌ Dieser Kanal wird nicht überwacht.")
+            await ctx.send("❌ Dieser Kanal wird nicht überwacht.")
+            return
 
         try:
             self.user_rank_cache.clear()
