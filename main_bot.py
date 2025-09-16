@@ -6,7 +6,6 @@
 # - Health-Checks & Logs auf TempVoiceCore/TempVoiceInterface aktualisiert.
 
 from __future__ import annotations
-from service.worker_client import WorkerProxy
 
 import asyncio
 import logging
@@ -25,11 +24,6 @@ import traceback
 
 import discord
 from discord.ext import commands
-from service.db import db_path
-from pathlib import Path
-DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
-from service import db as _db
-
 
 
 # =========================
@@ -149,15 +143,24 @@ _install_workerproxy_shim()
 
 
 # =========================
-# Zentrale DB Init (quiet)
+# Zentrale DB Init (quiet) — NUR service.db
 # =========================
 def _init_db_if_available():
+    """
+    Initialisiert die zentrale DB ausschließlich über service.db.
+    Kein Fallback mehr auf shared.db.
+    """
     try:
-        from shared import db as _db  # Deadlock-Bots/shared/db.py
-        _db.connect()
-        logging.info("Zentrale DB initialisiert (quiet).")
+        from service import db as _db  # Deadlock-Bots/service/db.py
     except Exception as e:
-        logging.warning(f"Zentrale DB nicht verfügbar (shared.db): {e}")
+        logging.critical("Zentrale DB-Modul 'service.db' konnte nicht importiert werden: %s", e)
+        return
+
+    try:
+        _db.connect()
+        logging.info("Zentrale DB initialisiert (quiet) via service.db.")
+    except Exception as e:
+        logging.critical("Zentrale DB (service.db) konnte nicht initialisiert werden: %s", e)
 
 
 # =====================================================================
@@ -252,7 +255,6 @@ class MasterBot(commands.Bot):
                 if not has_setup:
                     continue
                 rel = init_file.relative_to(self.cogs_dir.parent)  # e.g. cogs/tempvoice/__init__.py
-                # Modulpfad der Package-Extension: ohne "__init__.py"
                 module_path = ".".join(rel.parts[:-1])  # -> cogs.tempvoice
                 if self._should_exclude(module_path):
                     logging.info(f"🚫 Excluded cog (package): {module_path}")
@@ -267,7 +269,6 @@ class MasterBot(commands.Bot):
                     continue
                 if any(part == "__pycache__" for part in cog_file.parts):
                     continue
-                # Dateien unter Paketen mit eigenem setup(__init__) überspringen
                 if any(cog_file.is_relative_to(pkg_dir) for pkg_dir in pkg_dirs_with_setup):
                     continue
 
@@ -277,7 +278,6 @@ class MasterBot(commands.Bot):
                     logging.warning(f"⚠️ Error checking {cog_file.name}: {e}")
                     continue
 
-                # WICHTIG: Nur Module mit setup() laden – keine Heuristik über "class ... Cog"
                 has_setup = ("async def setup(" in content) or ("def setup(" in content)
                 if not has_setup:
                     logging.info(f"⏭️ Skipped {cog_file}: no setup() found")
@@ -436,7 +436,7 @@ class MasterBot(commands.Bot):
             self.cog_status = {}
             await self.load_all_cogs()
 
-            loaded_count = len([s for s in self.bot.cog_status.values() if s == "loaded"]) if hasattr(self, "bot") else len([s for s in self.cog_status.values() if s == "loaded"])
+            loaded_count = len([s for s in self.cog_status.values() if s == "loaded"])
 
             summary = {
                 "unloaded": len(unload_results),
@@ -483,7 +483,7 @@ class MasterBot(commands.Bot):
         while not self.is_closed():
             try:
                 await asyncio.sleep(300)
-                current = asyncio.get_event_loop().time()
+                current = asyncio.get_running_loop().time()
 
                 if current - last_critical_check >= critical_check_interval:
                     issues = []
@@ -710,8 +710,8 @@ class MasterControlCog(commands.Cog):
         old_count = len(self.bot.cogs_list)
         old = self.bot.cogs_list.copy()
         self.bot.auto_discover_cogs()
-        new_count = len(self.bot.cogs_list)
-        new = [c for c in self.bot.cogs_list if c not in old]
+        new_count = len(self.cogs_list)
+        new = [c for c in self.cogs_list if c not in old]
 
         embed = discord.Embed(title="🔍 Cog Discovery", color=0x00FFFF)
         embed.add_field(
