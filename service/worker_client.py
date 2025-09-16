@@ -1,6 +1,6 @@
 """
-shared.worker_client
---------------------
+service.worker_client
+---------------------
 Socket-Client für den lokalen/externen Worker-Prozess.
 - Thread-safe (RLock) für parallele Calls aus Tasks/Events
 - Auto-Reconnect mit (leichter) Exponential-Backoff
@@ -22,7 +22,10 @@ import os
 import socket
 import time
 import threading
+import logging
 from typing import Any, Dict, Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 # kompatible Imports (relativ/absolut), je nach Projektstruktur
 try:
@@ -38,14 +41,16 @@ class WorkerUnavailable(Exception):
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, "").strip() or default)
-    except Exception:
+    except Exception as e:
+        logger.debug("ENV float parse failed for %s: %r (using default=%s)", name, e, default)
         return default
 
 
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, "").strip() or default)
-    except Exception:
+    except Exception as e:
+        logger.debug("ENV int parse failed for %s: %r (using default=%s)", name, e, default)
         return default
 
 
@@ -82,8 +87,9 @@ class WorkerProxy:
         try:
             if self._sock:
                 self._sock.close()
-        except OSError:
-            pass
+        except OSError as e:
+            # kann z. B. auftreten, wenn die Verbindung bereits weg ist
+            logger.debug("ignoring socket close error: %r", e)
         finally:
             self._sock = None
 
@@ -129,8 +135,9 @@ class WorkerProxy:
         if per_call_timeout is not None:
             try:
                 self._sock.settimeout(per_call_timeout)
-            except Exception:
-                pass  # im Zweifel Standard-Timeout nutzen
+            except (OSError, ValueError) as e:
+                # Im Zweifel Standard-Timeout weiterverwenden
+                logger.debug("settimeout(%s) failed, keep default: %r", per_call_timeout, e)
 
         # senden/empfangen
         send_json(self._sock, payload)
