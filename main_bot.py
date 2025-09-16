@@ -6,6 +6,7 @@
 # - Health-Checks & Logs auf TempVoiceCore/TempVoiceInterface aktualisiert.
 
 from __future__ import annotations
+from service.worker_client import WorkerProxy
 
 import asyncio
 import logging
@@ -27,6 +28,8 @@ from discord.ext import commands
 from service.db import db_path
 from pathlib import Path
 DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
+from service import db as _db
+
 
 
 # =========================

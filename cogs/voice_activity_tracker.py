@@ -12,7 +12,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 
 # zentrale DB-API (synchron, mit internem Lock), KEINE eigenen Tabellen-Anlagen hier!
-from shared import db as central_db
+from service import db as central_db
 
 logger = logging.getLogger(__name__)
 

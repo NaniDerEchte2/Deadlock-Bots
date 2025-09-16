@@ -30,9 +30,9 @@ import discord
 from discord.ext import commands, tasks
 
 try:
-    from shared import db  # synchrones Wrapper-Modul (execute/query_all/executemany)
+    from service import db  # synchrones Wrapper-Modul (execute/query_all/executemany)
 except Exception as e:
-    raise SystemExit("shared.db nicht gefunden – bitte Projektstruktur prüfen.") from e
+    raise SystemExit("service.db nicht gefunden – bitte Projektstruktur prüfen.") from e
 
 log = logging.getLogger("LiveMatchMaster")
 

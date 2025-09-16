@@ -21,7 +21,7 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 
-from shared import db
+from service import db
 
 log = logging.getLogger("LiveMatchLogger")
 

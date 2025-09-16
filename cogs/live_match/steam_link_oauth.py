@@ -15,7 +15,7 @@ from aiohttp import web
 import discord
 from discord.ext import commands
 
-from shared import db
+from service import db
 
 log = logging.getLogger("SteamLink")
 
