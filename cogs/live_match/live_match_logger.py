@@ -30,6 +30,7 @@ TEAM_SIZE = 6
 STEAM_APP_DEADLOCK = "1422450"
 STEAM_API_KEY = os.getenv("STEAM_API_KEY", "").strip()
 
+
 def _ensure_schema():
     db.execute("""
         CREATE TABLE IF NOT EXISTS lane_snapshot(
@@ -61,6 +62,7 @@ def _ensure_schema():
         )
     """)
 
+
 class LiveMatchLogger(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -80,8 +82,10 @@ class LiveMatchLogger(commands.Cog):
         try:
             if self._started:
                 self.scan.cancel()
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("LiveMatchLogger unload: scan.cancel() fehlgeschlagen: %r", e)
+        finally:
+            self._started = False
 
     @tasks.loop(seconds=SCAN_INTERVAL_SEC)
     async def scan(self):
@@ -240,9 +244,11 @@ class LiveMatchLogger(commands.Cog):
                     (snap_id, int(uid), sid, pname, int(in_dl), int(in_match), srv)
                 )
 
+
 def _chunks(seq: List[str], n: int):
     for i in range(0, len(seq), n):
-        yield seq[i:i+n]
+        yield seq[i:i + n]
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(LiveMatchLogger(bot))
