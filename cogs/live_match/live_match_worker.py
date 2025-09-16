@@ -1,12 +1,15 @@
-# cogs/live_match_worker.py
+# cogs/live_match/live_match_worker.py
 # ------------------------------------------------------------
 # LiveMatchWorker – benennt Voice-Channels gemäß live_lane_state
 #
 # Änderungen:
-# - Pro Channel max. 1 Rename / 5 min (KEIN ENV, fixer Wert).
+# - Pro Channel max. 1 Rename / 5 min (fixer Wert).
 # - Coalescing: innerhalb des Fensters nur den LETZTEN gewünschten Suffix anwenden.
 # - Rename nur, wenn sich das Suffix GEÄNDERT hat (Delta).
 # - Robust: entfernt alte Suffixe, baut Zielnamen sauber neu auf.
+# - Fix: kein "empty except"; Exceptions werden geloggt.
+# - Fix: sqlite3.Row unterstützt .get() nicht → Schlüsselzugriff via ["col"].
+# - Optimierung: wait_until_ready() in before_loop statt pro Tick.
 # ------------------------------------------------------------
 
 import re
@@ -31,6 +34,7 @@ SUFFIX_RX = re.compile(
     re.IGNORECASE
 )
 
+
 class LiveMatchWorker(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -49,25 +53,31 @@ class LiveMatchWorker(commands.Cog):
         )
 
     async def cog_unload(self):
-        try:
-            if self._started:
+        # Kein "empty except": Fehler werden geloggt.
+        if self._started:
+            try:
                 self.tick.cancel()
-        except Exception:
-            pass
+            except Exception as e:
+                log.debug("Tick cancel beim Unload fehlgeschlagen (ignoriert): %r", e)
 
     @tasks.loop(seconds=TICK_SEC)
     async def tick(self):
-        await self.bot.wait_until_ready()
-
         rows = db.query_all("SELECT channel_id, is_active, suffix FROM live_lane_state")
         now = time.time()
 
         for r in rows:
-            ch = self.bot.get_channel(int(r["channel_id"]))
+            try:
+                channel_id = int(r["channel_id"])
+                # Hinweis: sqlite3.Row unterstützt .keys()
+                desired_suffix = (r["suffix"] or "").strip()
+            except Exception as e:
+                log.debug("Ungültiger DB-Datensatz in live_lane_state: %r", e)
+                continue
+
+            ch = self.bot.get_channel(channel_id)
             if not isinstance(ch, discord.VoiceChannel):
                 continue
 
-            desired_suffix = (r.get("suffix") or "").strip()
             st = self._state.get(ch.id)
             if st is None:
                 # initialisieren – last_applied = tatsächlich am Namen vorhandenes Suffix
@@ -80,11 +90,12 @@ class LiveMatchWorker(commands.Cog):
                 self._state[ch.id] = st
             else:
                 # Pending aktualisieren, wenn sich der Wunsch ändert
-                if st.get("pending", "") != desired_suffix:
+                if (st.get("pending") or "") != desired_suffix:
                     st["pending"] = desired_suffix
 
             # Prüfen, ob ein Rename fällig ist
-            due = (now - float(st.get("last_rename_ts") or 0.0)) >= PER_CHANNEL_RENAME_COOLDOWN_SEC
+            last_ts = float(st.get("last_rename_ts") or 0.0)
+            due = (now - last_ts) >= PER_CHANNEL_RENAME_COOLDOWN_SEC
             want_change = (st.get("pending", "") != st.get("last_applied", ""))
 
             if not due or not want_change:
@@ -106,9 +117,17 @@ class LiveMatchWorker(commands.Cog):
                 st["last_applied"] = pending_suffix
                 st["last_rename_ts"] = now
                 log.info("Umbenannt: %s -> %s", base, desired_name)
+            except discord.Forbidden:
+                log.warning("Keine Berechtigung zum Umbenennen für Channel %s", ch.id)
             except discord.HTTPException as e:
                 # Bei Rate-Limit o.ä. NICHT schütten – wir versuchen es im nächsten Due-Fenster erneut
                 log.warning("Rename fehlgeschlagen (%s): %s", ch.id, e)
+            except Exception as e:
+                log.error("Unerwarteter Fehler beim Umbenennen (%s): %r", ch.id, e)
+
+    @tick.before_loop
+    async def _before_tick(self):
+        await self.bot.wait_until_ready()
 
     # --------- Hilfen ---------------------------------------------------------
     def _base_name(self, name: str) -> str:
@@ -119,6 +138,7 @@ class LiveMatchWorker(commands.Cog):
         """Liest existierenden Suffix („• n/cap …“) aus dem Namen (für Initialisierung)."""
         m = re.search(r"(•\s+\d+/\d+\s+(Im Match|Im Spiel|Lobby/Queue))", name, flags=re.IGNORECASE)
         return m.group(1) if m else ""
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(LiveMatchWorker(bot))
