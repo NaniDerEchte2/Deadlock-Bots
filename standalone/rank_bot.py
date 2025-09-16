@@ -1,10 +1,4 @@
-"""
-Standalone Deadlock Rank Bot - CLEAN VERSION
-Separater Bot nur für Rank-Management mit Dropdown-Interface
-Ohne Debug/Cleanup Funktionen - nur Core Features
-Zentrale DB: shared/db.py -> db_path()
-"""
-
+# --- Standard libs / setup ---
 import discord
 from discord.ext import commands, tasks
 import sqlite3
@@ -12,28 +6,20 @@ import asyncio
 from datetime import datetime, timedelta
 import os
 import logging
-import sys
 from pathlib import Path
+import sys
 import atexit
 from typing import Optional, Dict, List, Any
-from service.db import db_path
-from pathlib import Path
-DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
 
-# ============================================================
-# ZENTRALE DB aus lokalem shared/db.py laden (per Dateipfad)
-#   Vermeidet Konflikte mit einem evtl. installierten PyPI
-#   Paket namens "shared".
-# ============================================================
-from importlib.util import spec_from_file_location, module_from_spec
+# Repo-Root auf sys.path legen, damit "service" importierbar ist
+ROOT = Path(__file__).resolve().parents[2]  # .../Deadlock
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-_SHARED_DB_FILE = r"C:\Users\Nani-Admin\Documents\Deadlock\shared\db.py"
-_spec = spec_from_file_location("deadlock_shared_db", _SHARED_DB_FILE)
-if _spec is None or _spec.loader is None:
-    raise ImportError(f"Konnte shared/db.py nicht laden: {_SHARED_DB_FILE}")
-_deadlock_shared_db = module_from_spec(_spec)
-_spec.loader.exec_module(_deadlock_shared_db)
-sdb = _deadlock_shared_db  # Alias wie gewohnt
+# Zentrale DB: nur den Pfad aus service.db holen (keine Auto-Neuanlage)
+from service.db import db_path as central_db_path
+DB_PATH = Path(central_db_path())  # Path-Objekt
+DB_FILE = str(DB_PATH)             # String-Pfad für sqlite URI
 
 # .env laden (fixer Pfad)
 from dotenv import load_dotenv
