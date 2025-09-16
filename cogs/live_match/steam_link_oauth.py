@@ -234,10 +234,16 @@ class SteamLink(commands.Cog):
                 if msg.author and msg.author.id == bot_id:
                     try:
                         await msg.delete()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except Exception as e:
+                        log.debug(
+                            "DM-Cleanup: Konnte eine alte Bot-DM nicht löschen (user_id=%s): %s",
+                            getattr(user, "id", "?"), e, exc_info=True
+                        )
+        except Exception as e:
+            log.debug(
+                "DM-Cleanup übersprungen/fehlgeschlagen (user_id=%s): %s",
+                getattr(user, "id", "?"), e, exc_info=True
+            )
 
     async def _notify_user_linked(self, user_id: int, steam_ids: List[str]) -> None:
         try:
@@ -623,8 +629,9 @@ class SteamLink(commands.Cog):
         if getattr(ctx, "interaction", None) and not ctx.interaction.response.is_done():
             try:
                 await ctx.interaction.response.defer(ephemeral=True)
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("Defer fehlgeschlagen (ctx.user_id=%s): %s",
+                          getattr(getattr(ctx, "author", None), "id", "?"), e, exc_info=True)
 
     @commands.hybrid_command(
         name="link",
