@@ -16,6 +16,9 @@ import sys
 from pathlib import Path
 import atexit
 from typing import Optional, Dict, List, Any
+from service.db import db_path
+from pathlib import Path
+DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
 
 # ============================================================
 # ZENTRALE DB aus lokalem shared/db.py laden (per Dateipfad)

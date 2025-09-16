@@ -12,8 +12,10 @@ from datetime import datetime
 import discord
 from discord.ext import commands
 import aiosqlite
+from service.db import db_path
+from pathlib import Path
+DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
 
-from utils.deadlock_db import DB_PATH  # zentraler Pfad zu shared.db
 
 log = logging.getLogger("TempVoiceCore")
 

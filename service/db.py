@@ -1,29 +1,16 @@
 # =========================================
 # Deadlock-Bots – Zentrale SQLite-DB (KANONISCH)
 # =========================================
-# Hinweis:
-# - Alle Bots/Cogs nutzen EIN gemeinsames SQLite-File:
-#   %USERPROFILE%/Documents/Deadlock/service/deadlock.sqlite3
-#   (überschreibbar über Env:
-#      DEADLOCK_DB_PATH  -> kompletter Dateipfad (höchste Prio)
-#      DEADLOCK_DB_DIR   -> Verzeichnis, Datei heißt dann deadlock.sqlite3
-#    Kompat: Wenn LIVE_DB_PATH gesetzt ist, wird es als Fallback akzeptiert.)
+# - Eine gemeinsame SQLite-Datei für alle Bots/Cogs.
+# - Konfiguration (nur noch diese ENV-Keys):
+#     DEADLOCK_DB_PATH  -> kompletter Dateipfad (höchste Priorität)
+#     DEADLOCK_DB_DIR   -> Verzeichnis; Datei heißt dann deadlock.sqlite3
+# - KEIN automatisches Setzen von LIVE_DB_PATH mehr (ENV bleibt sauber).
 # - WAL, FOREIGN_KEYS, Busy-Timeout, Autocheckpoint, Journal-Limit aktiviert.
-# - Python ≥ 3.10, discord.py ≥ 2.3
-#
-# Dateien in diesem Refactor:
-#  - shared/db.py (DB-Core, Schema, Helpers, Migrations-Infra)
-#  - service/migrate_to_central_db.py (Einmaliges Merge-Script JSON→DB)
-#  - main_bot.py (lädt Cogs, init DB, Admin-Kommandos)
-#  - cogs/* (nutzen zentralen DB-Layer)
-#
-# Diese Datei ist die EINZIGE Quelle der Wahrheit für:
-#   - kv_store (namespaced KV)
-#   - templates (Kompat-Ebene für Vorlagen)
-#   - user_threads (Mapping User↔Thread)
-#   - sonstige Projekt-Tabellen (voice/ranks/steam/live_match/etc.)
-#
+# - Python ≥ 3.10
 # =========================================
+
+from __future__ import annotations
 
 import os
 import atexit
@@ -33,18 +20,23 @@ import logging
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-# ---- Env-Keys ----
+# ---- Env-Keys (nur diese beiden werden unterstützt) ----
 ENV_DB_PATH = "DEADLOCK_DB_PATH"   # kompletter Pfad zur DB-Datei (höchste Prio)
 ENV_DB_DIR  = "DEADLOCK_DB_DIR"    # nur Verzeichnis; Datei = deadlock.sqlite3
-ENV_LIVE    = "LIVE_DB_PATH"       # Kompatibilität für Worker/alte Skripte
 
-# ---- Default-Dateiname/Ort ----
-DEFAULT_DIR = os.path.expandvars(r"%USERPROFILE%/Documents/Deadlock/service")
-if DEFAULT_DIR.startswith("%") or "%USERPROFILE%" in DEFAULT_DIR:
-    # Fallback für Linux/CI/Container ohne USERPROFILE
-    DEFAULT_DIR = str(Path.home() / "Documents/Deadlock/service")
+# ---- Default-Dateiname/Ort (plattform-sicher) ----
+def _default_dir() -> str:
+    # Windows: %USERPROFILE%\Documents\Deadlock\service
+    up = os.environ.get("USERPROFILE")
+    if up:
+        return str(Path(up) / "Documents" / "Deadlock" / "service")
+    # Linux/Mac/Container: ~/Documents/Deadlock/service
+    return str(Path.home() / "Documents" / "Deadlock" / "service")
+
+DEFAULT_DIR = _default_dir()
 DB_NAME     = "deadlock.sqlite3"
 
+# ---- Modulweiter Zustand ----
 _CONN: Optional[sqlite3.Connection] = None
 _LOCK = threading.RLock()
 _DB_PATH_CACHED: Optional[str] = None
@@ -52,20 +44,17 @@ _DB_PATH_CACHED: Optional[str] = None
 logger = logging.getLogger(__name__)
 
 
+# ---------- Pfad-Auflösung ----------
+
 def _resolve_db_path() -> str:
     """
     Ermittelt den endgültigen DB-Pfad (eine Quelle der Wahrheit).
     Prio:
       1) DEADLOCK_DB_PATH (vollständiger Pfad)
-      2) LIVE_DB_PATH (vollständiger Pfad, Kompat)
-      3) DEADLOCK_DB_DIR + DB_NAME
-      4) DEFAULT_DIR + DB_NAME
+      2) DEADLOCK_DB_DIR + DB_NAME
+      3) DEFAULT_DIR + DB_NAME
     """
     p = os.environ.get(ENV_DB_PATH)
-    if p:
-        return str(Path(p))
-
-    p = os.environ.get(ENV_LIVE)
     if p:
         return str(Path(p))
 
@@ -78,7 +67,10 @@ def _ensure_parent(path: str) -> None:
 
 
 def db_path() -> str:
-    """Gibt den tatsächlich verwendeten DB-Pfad zurück (nach connect() garantiert gesetzt)."""
+    """
+    Liefert den tatsächlich verwendeten DB-Pfad.
+    Hinweis: Der Pfad ist nach dem ersten Aufruf gecached.
+    """
     global _DB_PATH_CACHED
     if _DB_PATH_CACHED:
         return _DB_PATH_CACHED
@@ -86,25 +78,28 @@ def db_path() -> str:
     return _DB_PATH_CACHED
 
 
+# Praktischer Alias für Altcode:
+DB_PATH: Path = Path(db_path())
+
+
+# ---------- Verbindung / PRAGMA / Schema ----------
+
 def connect() -> sqlite3.Connection:
     """
     Stellt eine einzelne, thread-safe geteilte Verbindung her.
-    Autocommit (isolation_level=None). Row-Factory = sqlite3.Row.
-    Setzt außerdem LIVE_DB_PATH auf den tatsächlich verwendeten Pfad,
-    damit Worker/Scripts garantiert dieselbe Datei nehmen.
+    - Autocommit (isolation_level=None)
+    - Row-Factory = sqlite3.Row
+    - PRAGMAs gesetzt
+    - Schema (idempotent) initialisiert
     """
-    global _CONN, _DB_PATH_CACHED
+    global _CONN, _DB_PATH_CACHED, DB_PATH
     if _CONN is not None:
         return _CONN
 
     path = _resolve_db_path()
     _ensure_parent(path)
-
-    # Sichtbar für alle Prozesse/Skripte:
-    os.environ[ENV_LIVE] = path  # Worker liest LIVE_DB_PATH
-    os.environ.setdefault(ENV_DB_PATH, path)  # Spiegeln
-
     _DB_PATH_CACHED = path
+    DB_PATH = Path(path)  # Alias aktualisieren
 
     _CONN = sqlite3.connect(
         path,
@@ -121,8 +116,8 @@ def connect() -> sqlite3.Connection:
         _CONN.execute("PRAGMA busy_timeout=5000;")               # 5s
         _CONN.execute("PRAGMA wal_autocheckpoint=1000;")         # ~1000 Seiten
         _CONN.execute("PRAGMA journal_size_limit=104857600;")    # 100 MB
-        # Optional:
         _CONN.execute("PRAGMA temp_store=MEMORY;")
+        # Optional tunable:
         # _CONN.execute("PRAGMA cache_size=-20000;")             # ~20MB
         # _CONN.execute('PRAGMA mmap_size=268435456;')           # 256MB (falls Filesystem erlaubt)
 
@@ -134,11 +129,11 @@ def connect() -> sqlite3.Connection:
 def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
     """
     Legt das Schema an (idempotent). Enthält u. a.:
-      - kv_store (generisch, mit Namespace)
-      - templates (Kompat-Layer)
-      - user_threads (User↔Thread)
-      - users, guild_settings, ranks, temp_voice_channels, voice_sessions, ...
-      - steam_links, live_player_state, live_lane_state, live_lane_members, ...
+      - kv_store, templates, user_threads
+      - users, guild_settings, onboarding_sessions, user_preferences
+      - ranks, temp_voice_channels, voice_sessions, voice_stats
+      - matches, changelog_subscriptions, posted_changelogs
+      - steam_links, live_player_state, live_lane_state, live_lane_members
     """
     c = conn or connect()
     with _LOCK:
@@ -158,14 +153,14 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               PRIMARY KEY(ns, k)
             );
 
-            -- Kompatibilität: eigene Templates-Tabelle wie im alten utils/deadlock_db.py
+            -- Templates (Kompat-Schicht)
             CREATE TABLE IF NOT EXISTS templates(
               key        TEXT PRIMARY KEY,
               content    TEXT NOT NULL,
               updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
-            -- Kompatibilität: user_threads wie im alten utils/deadlock_db.py
+            -- User↔Thread (Kompat-Schicht)
             CREATE TABLE IF NOT EXISTS user_threads(
               user_id    INTEGER PRIMARY KEY,
               thread_id  INTEGER NOT NULL,
@@ -281,8 +276,7 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               in_match_now_strict INTEGER DEFAULT 0
             );
 
-            -- Live-Lane-Status (pro Voice-Channel) – von LiveMatchMaster beschrieben,
-            -- vom Worker gelesen zum Umbenennen
+            -- Live-Lane-Status (pro Voice-Channel)
             CREATE TABLE IF NOT EXISTS live_lane_state(
               channel_id  INTEGER PRIMARY KEY,
               is_active   INTEGER DEFAULT 0,
@@ -304,7 +298,7 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             );
             """
         )
-        # Indizes / Pragmas ggf. ergänzen
+        # Indizes ergänzen (idempotent)
         try:
             c.execute("CREATE INDEX IF NOT EXISTS idx_lls_active   ON live_lane_state(is_active)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_llm_channel  ON live_lane_members(channel_id)")
@@ -316,7 +310,7 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)
 
 
-# ---------- Low-Level Helpers ----------
+# ---------- Low-Level Helpers (sicher, mit Bind-Parametern) ----------
 
 def execute(sql: str, params: Iterable[Any] = ()) -> None:
     with _LOCK:
@@ -331,17 +325,19 @@ def executemany(sql: str, seq_of_params: Iterable[Iterable[Any]]) -> None:
 def query_one(sql: str, params: Iterable[Any] = ()):  # -> sqlite3.Row | None
     with _LOCK:
         cur = connect().execute(sql, params)
-        row = cur.fetchone()
-        cur.close()
-        return row
+        try:
+            return cur.fetchone()
+        finally:
+            cur.close()
 
 
 def query_all(sql: str, params: Iterable[Any] = ()):  # -> list[sqlite3.Row]
     with _LOCK:
         cur = connect().execute(sql, params)
-        rows = cur.fetchall()
-        cur.close()
-        return rows
+        try:
+            return cur.fetchall()
+        finally:
+            cur.close()
 
 
 # ---------- KV (namespaced) ----------
@@ -422,6 +418,7 @@ def _vacuum_on_shutdown() -> None:
     try:
         with _LOCK:
             if _CONN is not None:
+                # kleines Timeout für sauberes Beenden unter Last
                 _CONN.execute("PRAGMA busy_timeout=1000;")
                 _CONN.execute("VACUUM;")
     except sqlite3.Error as e:

@@ -27,7 +27,10 @@ import discord
 from discord.ext import commands, tasks
 from discord.ui import Button, View, Modal, TextInput, Select
 
-from utils.deadlock_db import DB_PATH
+from service.db import db_path
+from pathlib import Path
+DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
+
 
 logger = logging.getLogger(__name__)
 

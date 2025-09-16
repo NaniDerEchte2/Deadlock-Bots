@@ -7,7 +7,10 @@ import aiosqlite
 import discord
 from discord.ext import commands
 
-from utils.deadlock_db import DB_PATH
+from service.db import db_path
+from pathlib import Path
+DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
