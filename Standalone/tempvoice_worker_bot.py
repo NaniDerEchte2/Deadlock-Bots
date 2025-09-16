@@ -1,7 +1,7 @@
 # service/tempvoice_worker_bot.py
 # TempVoice Worker – Socket-Server + LiveMatch-Renamer
 # Start: python -m service.tempvoice_worker_bot
-# python -m shared.tempvoice_worker_bot #
+# python -m standalone.tempvoice_worker_bot #
 #######################################################################
 import asyncio
 import logging
