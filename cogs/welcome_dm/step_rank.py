@@ -93,7 +93,7 @@ class RankSelectDropdown(discord.ui.Select):
             else:
                 await interaction.message.edit(view=self.parent_view)
         except Exception:
-            pass
+            logger.debug("Konnte die Rang-View nach Auswahl nicht aktualisieren.", exc_info=True)
 
 class ConfirmRankView(StepView):
     def __init__(self, parent_rank_view: "RankView"):
@@ -115,8 +115,8 @@ class ConfirmRankView(StepView):
             pv.selected_key = None
             if pv.bound_message:
                 await pv.bound_message.edit(view=pv)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Konnte Rang-View nicht wieder aktivieren: {e}")
         await self._finish(interaction)
 
 class RankView(StepView):
@@ -150,8 +150,8 @@ class RankView(StepView):
         try:
             emb = discord.Embed(title="Kurz checken", description=bait, color=0xB794F4)
             await interaction.channel.send(embed=emb, view=ConfirmRankView(self))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Bestätigungs-Embed konnte nicht gesendet werden: {e}")
 
         button.disabled = True
         try:
@@ -160,4 +160,4 @@ class RankView(StepView):
             else:
                 await interaction.message.edit(view=self)
         except Exception:
-            pass
+            logger.debug("Konnte 'Weiter'-Button nach Prompt nicht deaktivieren/aktualisieren.", exc_info=True)
