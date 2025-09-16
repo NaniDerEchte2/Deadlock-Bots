@@ -64,8 +64,12 @@ class CustomGamesView(StepView):
                 await interaction.response.edit_message(view=self)
             else:
                 await interaction.message.edit(view=self)
-        except Exception:
-            pass
+        except discord.NotFound:
+            logger.debug("[Custom Toggle] Nachricht zum Editieren nicht gefunden (evtl. gelöscht).", exc_info=True)
+        except discord.HTTPException as e:
+            logger.warning(f"[Custom Toggle] Edit fehlgeschlagen (HTTP): {e}")
+        except Exception as e:
+            logger.error(f"[Custom Toggle] Unerwarteter Fehler beim Edit: {e}", exc_info=True)
 
     @discord.ui.button(label="Funny Custom", style=discord.ButtonStyle.secondary, custom_id="wdm:q1:funny")
     async def funny(self, interaction: discord.Interaction, button: discord.ui.Button):
