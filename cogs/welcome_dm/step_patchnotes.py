@@ -2,8 +2,10 @@
 import discord
 from .base import StepView, PATCHNOTES_ROLE_ID, logger
 
+
 class PatchnotesView(StepView):
     """Frage 3: Patchnotes (Rolle)"""
+
     def __init__(self):
         super().__init__()
         self.patch_selected = False
@@ -58,8 +60,12 @@ class PatchnotesView(StepView):
                 await interaction.response.edit_message(view=self)
             else:
                 await interaction.message.edit(view=self)
-        except Exception:
-            pass
+        except discord.NotFound:
+            logger.debug("PatchnotesView: Original-Message für Edit nicht gefunden (evtl. gelöscht).")
+        except discord.HTTPException as e:
+            logger.debug("PatchnotesView: HTTPException beim Edit: %r", e)
+        except Exception as e:
+            logger.warning("PatchnotesView: Unerwarteter Fehler beim Edit: %r", e)
 
     @discord.ui.button(label="Ne danke", style=discord.ButtonStyle.danger, custom_id="wdm:q2:skip")
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
