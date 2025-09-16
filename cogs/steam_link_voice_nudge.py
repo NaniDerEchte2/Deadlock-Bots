@@ -1,4 +1,3 @@
-# cogs/steam_link_voice_nudge.py
 from __future__ import annotations
 
 import os
@@ -72,7 +71,8 @@ def _table_exists(name: str) -> bool:
     try:
         row = db.query_one("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,))
         return bool(row)
-    except Exception:
+    except Exception as e:
+        log.debug("table_exists(%s) failed: %r", name, e)
         return False
 
 def _had_prior_long_voice_session(user_id: int, threshold_sec: int) -> bool:
@@ -99,7 +99,8 @@ def _had_prior_long_voice_session(user_id: int, threshold_sec: int) -> bool:
             row = db.query_one(sql, params)
             if row:
                 return True
-        except Exception:
+        except Exception as e:
+            log.debug("query candidate failed (%s): %r", sql, e)
             continue
     return False
 
@@ -108,7 +109,8 @@ def _had_prior_long_voice_session(user_id: int, threshold_sec: int) -> bool:
 def _member_has_exempt_role(member: discord.Member) -> bool:
     try:
         return any((r.id in EXEMPT_ROLE_IDS) for r in getattr(member, "roles", []) if isinstance(r, discord.Role))
-    except Exception:
+    except Exception as e:
+        log.debug("member_has_exempt_role failed for %s: %r", getattr(member, "id", None), e)
         return False
 
 async def _cleanup_bot_dms(user: Union[discord.User, discord.Member], bot_user_id: int, limit: int = 50):
@@ -118,8 +120,12 @@ async def _cleanup_bot_dms(user: Union[discord.User, discord.Member], bot_user_i
             if msg.author and msg.author.id == bot_user_id:
                 try:
                     await msg.delete()
-                except Exception:
-                    pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    log.debug("delete DM message failed for %s: %r", user.id, e)
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log.debug(f"[nudge] DM-Cleanup für {user.id} übersprungen: {e}")
 
@@ -199,8 +205,8 @@ async def _fetch_oauth_urls(bot: commands.Bot, user: Union[discord.User, discord
                 discord_url = await _maybe_call(mod, discord_methods, uid)
             if not steam_url:
                 steam_url = await _maybe_call(mod, steam_methods, uid)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("oauth url module fallback failed: %r", e)
 
     if not discord_url or not steam_url:
         log.warning("[nudge] OAuth-Helper nicht verfügbar – Buttons werden deaktiviert, Hinweis auf /link gezeigt.")
@@ -208,8 +214,8 @@ async def _fetch_oauth_urls(bot: commands.Bot, user: Union[discord.User, discord
 
     try:
         log.info(f"[nudge] OAuth-URLs bereit (discord={str(discord_url)[:60]}…, steam={str(steam_url)[:60]}…)")
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("logging oauth urls failed: %r", e)
     return str(discord_url), str(steam_url)
 
 
@@ -239,6 +245,8 @@ class _ManualModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
                 "Du kannst auch `/setprimary` nutzen, wenn mehrere Einträge vorhanden sind.",
                 ephemeral=True
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             log.exception("Manual link insert failed")
             await interaction.response.send_message(f"⚠️ Konnte den Eintrag nicht speichern: {e}", ephemeral=True)
@@ -249,8 +257,7 @@ class _ManualButton(discord.ui.Button):
                          emoji="🔢", custom_id="nudge_manual", row=row)
 
     async def callback(self, interaction: discord.Interaction):
-        if not interaction.response.is_done():
-            await interaction.response.send_modal(_ManualModal())
+        await interaction.response.send_modal(_ManualModal())
 
 class _CloseButton(discord.ui.Button):
     def __init__(self, row: int = 1):
@@ -261,12 +268,16 @@ class _CloseButton(discord.ui.Button):
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True)
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.debug("close-button defer failed: %r", e)
         try:
             await interaction.message.delete()
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.debug("close-button delete failed: %r", e)
 
 class _OptionsView(discord.ui.View):
     """
@@ -330,7 +341,10 @@ class SteamLinkVoiceNudge(commands.Cog):
         try:
             m = member.guild.get_member(member.id) or await member.guild.fetch_member(member.id)
             return bool(m.voice and m.voice.channel)
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.debug("still_in_voice check failed for %s: %r", member.id, e)
             return False
 
     async def _send_dm_nudge(self, user: Union[discord.Member, discord.User], *, force: bool = False) -> bool:
@@ -395,6 +409,8 @@ class SteamLinkVoiceNudge(commands.Cog):
                 await ch.send(f"📨 Nudge-DM an **{user}** ({uid}) gesendet.")
             return True
 
+        except asyncio.CancelledError:
+            raise
         except discord.Forbidden:
             ch = _log_chan(self.bot)
             if ch:
@@ -433,7 +449,8 @@ class SteamLinkVoiceNudge(commands.Cog):
                 return
             await self._send_dm_nudge(member, force=False)
         except asyncio.CancelledError:
-            pass
+            # normal bei Disconnect/Shutdown
+            raise
         except Exception:
             log.exception("[nudge] Watch-Task crashed")
 
