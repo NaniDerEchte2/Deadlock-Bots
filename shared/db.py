@@ -33,6 +33,7 @@ import os
 import atexit
 import sqlite3
 import threading
+import logging
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -48,6 +49,8 @@ DB_NAME     = "deadlock.sqlite3"
 _CONN: Optional[sqlite3.Connection] = None
 _LOCK = threading.RLock()
 _DB_PATH_CACHED: Optional[str] = None
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_db_path() -> str:
@@ -288,8 +291,8 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute("CREATE INDEX IF NOT EXISTS idx_lls_active   ON live_lane_state(is_active)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_llm_channel  ON live_lane_members(channel_id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_llm_checked  ON live_lane_members(checked_ts)")
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("Optionale Index-Erstellung fehlgeschlagen/übersprungen: %s", e, exc_info=True)
 
 
 def execute(sql: str, params: Iterable[Any] = ()) -> None:
@@ -336,5 +339,5 @@ def _vacuum_on_shutdown() -> None:
             # Nur wenn bereits verbunden – sonst nix tun
             if _CONN is not None:
                 _CONN.execute("VACUUM;")
-    except Exception:
-        pass
+    except sqlite3.Error as e:
+        logger.debug("VACUUM beim Shutdown übersprungen/fehlgeschlagen: %s", e, exc_info=True)
