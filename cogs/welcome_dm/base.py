@@ -119,7 +119,11 @@ class StepView(discord.ui.View):
                 else:
                     await interaction.followup.send(txt, ephemeral=True)
             except Exception:
-                pass
+                logger.debug(
+                    "Min-wait Hinweis konnte nicht gesendet werden (user=%s).",
+                    getattr(getattr(interaction, "user", None), "id", "?"),
+                    exc_info=True,
+                )
             return False
         return True
 
@@ -136,9 +140,9 @@ class StepView(discord.ui.View):
             else:
                 await interaction.message.edit(view=self)
         except Exception:
-            pass
+            logger.debug("Konnte View beim Abschluss nicht aktualisieren.", exc_info=True)
         try:
             await interaction.message.delete()
         except Exception:
-            pass
+            logger.debug("Konnte Abschluss-Nachricht nicht löschen.", exc_info=True)
         self.force_finish()
