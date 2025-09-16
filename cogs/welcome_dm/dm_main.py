@@ -52,8 +52,10 @@ class WelcomeDM(commands.Cog):
                 if msg.author.id == self.bot.user.id:
                     try:
                         await msg.delete()
+                    except discord.HTTPException as e:
+                        logger.debug(f"DM-Cleanup: Konnte Bot-Nachricht {msg.id} nicht löschen: {e}")
                     except Exception:
-                        pass
+                        logger.exception("DM-Cleanup: Unerwarteter Fehler beim Löschen einer Bot-Nachricht")
         except Exception as e:
             logger.debug(f"DM-Cleanup für {member.id} übersprungen: {e}")
 
@@ -77,8 +79,10 @@ class WelcomeDM(commands.Cog):
         finally:
             try:
                 await msg.delete()
+            except discord.HTTPException as e:
+                logger.debug(f"_send_step_embed: Message {msg.id} konnte nicht gelöscht werden: {e}")
             except Exception:
-                pass
+                logger.exception("_send_step_embed: Unerwarteter Fehler beim Löschen der Message")
         return getattr(view, "proceed", False)
 
     async def send_welcome_messages(self, member: discord.Member):
@@ -265,14 +269,18 @@ class WelcomeDM(commands.Cog):
                 if closing_lines:
                     try:
                         await member.send("\n\n".join(closing_lines))
+                    except discord.Forbidden as e:
+                        logger.warning(f"Abschluss-Nachricht: DM an {member} ({member.id}) nicht möglich: {e}")
                     except Exception:
-                        pass
+                        logger.exception("Abschluss-Nachricht: Unerwarteter Fehler beim Senden")
 
                 try:
                     if greet_msg:
                         await greet_msg.delete()
+                except discord.HTTPException as e:
+                    logger.debug(f"Begrüßungsnachricht konnte nicht gelöscht werden: {e}")
                 except Exception:
-                    pass
+                    logger.exception("Unerwarteter Fehler beim Löschen der Begrüßungsnachricht")
 
                 logger.info(f"Welcome-DM abgeschlossen für {member} ({member.id})")
                 return True
