@@ -21,8 +21,9 @@ try:
     _env_file = find_dotenv(usecwd=True)
     if _env_file:
         load_dotenv(_env_file)
-except Exception:
-    pass
+except Exception as e:
+    # Nicht fatal – nur Hinweis im Log
+    logging.getLogger("tempvoice_worker").debug("dotenv laden übersprungen/fehlgeschlagen: %r", e)
 
 # interner Socket-Server
 from shared.socket_bus import JSONLineServer  # type: ignore
@@ -91,8 +92,8 @@ def _ensure_schema(con: sqlite3.Connection, *, log_once: bool = True) -> None:
     try:
         cur.execute("PRAGMA journal_mode=WAL;")
         cur.execute("PRAGMA synchronous=NORMAL;")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("PRAGMA set fehlgeschlagen/übersprungen: %r", e)
     cur.executescript("""
         CREATE TABLE IF NOT EXISTS live_lane_state(
           channel_id  INTEGER PRIMARY KEY,
@@ -145,7 +146,8 @@ async def _get_channel_anywhere(channel_id: int) -> Optional[discord.abc.GuildCh
         return ch
     try:
         return await bot.fetch_channel(channel_id)
-    except Exception:
+    except Exception as e:
+        logger.debug("fetch_channel(%s) fehlgeschlagen: %r", channel_id, e)
         return None
 
 # ===== Voice Join Logs (Account linked) =====
@@ -158,7 +160,8 @@ def _account_linked_status(con: Optional[sqlite3.Connection], user_id: int) -> T
         row = cur.fetchone()
         n = int(row["n"]) if row else 0
         return ("OK", n) if n > 0 else ("NO-LINK", 0)
-    except Exception:
+    except Exception as e:
+        logger.debug("account_linked_status-Query fehlgeschlagen: %r", e)
         return ("DB-ERR", None)
 
 def _join_log_prefix(member: discord.Member, channel: discord.abc.GuildChannel) -> str:
@@ -172,7 +175,10 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             try:
                 status, n = _account_linked_status(con, member.id)
             finally:
-                con.close()
+                try:
+                    con.close()
+                except Exception as e:
+                    logger.debug("DB close nach voice_state_update fehlgeschlagen: %r", e)
         else:
             status, n = ("DB-ERR", None)
         if status == "OK":
@@ -402,8 +408,8 @@ def stop_socket_server() -> None:
             _socket_server.stop()
             _socket_server = None
             logger.info("🔌 Worker Socket-Server gestoppt")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("stop_socket_server Fehler (ignoriert): %r", e)
 
 # ===== Renamer Loop =====
 async def _live_match_tick():
@@ -418,14 +424,14 @@ async def _live_match_tick():
         logger.warning("live_match_tick – DB-Fehler: %s", e)
         try:
             con.close()
-        except Exception:
-            pass
+        except Exception as e2:
+            logger.debug("DB close nach Tick-Fehler fehlgeschlagen: %r", e2)
         return
     finally:
         try:
             con.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("DB close im finally fehlgeschlagen: %r", e)
 
     for r in rows:
         ch = await _get_channel_anywhere(int(r["channel_id"]))
@@ -468,7 +474,10 @@ async def on_ready():
         try:
             _ensure_schema(con, log_once=True)
         finally:
-            con.close()
+            try:
+                con.close()
+            except Exception as e:
+                logger.debug("DB close in on_ready fehlgeschlagen: %r", e)
     loop = asyncio.get_running_loop()
     start_socket_server(loop)
     bot.loop.create_task(live_match_runner())
@@ -480,14 +489,14 @@ def _install_signal_handlers():
         try:
             loop = asyncio.get_event_loop()
             loop.create_task(bot.close())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("graceful shutdown bot.close() fehlgeschlagen (non-fatal): %r", e)
     for s in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):
         if s is not None:
             try:
                 signal.signal(s, _graceful_shutdown)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("signal.signal Registrierung fehlgeschlagen/übersprungen: %r", e)
 
 def main():
     _install_signal_handlers()
