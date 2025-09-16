@@ -38,7 +38,8 @@ def _load_env_robust() -> str | None:
     """
     try:
         from dotenv import load_dotenv
-    except Exception:
+    except Exception as e:
+        logging.getLogger().debug("dotenv nicht verfügbar/fehlgeschlagen: %r", e)
         return None
 
     candidates: List[Path] = []
@@ -56,8 +57,8 @@ def _load_env_robust() -> str | None:
                 load_dotenv(dotenv_path=str(p), override=False)
                 logging.getLogger().info(f".env geladen: {p}")
                 return str(p)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger().debug("Konnte .env nicht laden (%s): %r", p, e)
     return None
 
 
@@ -82,8 +83,8 @@ def _log_secret_present(name: str, env_keys: List[str], mode: str = "off") -> No
             return
         if mode in ("present", "masked"):
             logging.info("%s: vorhanden (Wert wird nicht geloggt)", name)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger().debug("Secret-Check fehlgeschlagen (%s): %r", name, e)
 
 
 class _RedactSecretsFilter(logging.Filter):
@@ -99,8 +100,8 @@ class _RedactSecretsFilter(logging.Filter):
                 if s and s in redacted:
                     redacted = redacted.replace(s, "***REDACTED***")
             record.msg = redacted
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger().debug("RedactSecretsFilter Fehler (ignoriert): %r", e)
         return True
 
 
@@ -116,8 +117,8 @@ def _install_workerproxy_shim():
         from shared.worker_client import WorkerProxy  # type: ignore
         setattr(builtins, "WorkerProxy", WorkerProxy)
         return
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger().info("WorkerProxy nicht verfügbar – verwende Stub: %r", e)
 
     class _WorkerProxyStub:
         def __init__(self, *a, **kw): pass
@@ -237,7 +238,8 @@ class MasterBot(commands.Bot):
                     continue
                 try:
                     content = init_file.read_text(encoding="utf-8", errors="ignore")
-                except Exception:
+                except Exception as e:
+                    logging.warning(f"⚠️ Error reading {init_file}: {e}")
                     continue
                 has_setup = ("async def setup(" in content) or ("def setup(" in content)
                 if not has_setup:
@@ -375,8 +377,8 @@ class MasterBot(commands.Bot):
             tv_if = self.get_cog("TempVoiceInterface")
             if tv_if:
                 logging.info("TempVoiceInterface bereit • Interface-View registriert")
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger().debug("TempVoice Ready-Log fehlgeschlagen (ignoriert): %r", e)
 
         asyncio.create_task(self.hourly_health_check())
 
@@ -760,15 +762,16 @@ async def _graceful_shutdown(bot: MasterBot, reason: str = "signal",
         t.cancel()
     try:
         await asyncio.wait(pending, timeout=max(0.0, timeout_total - timeout_close))
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger().debug("Warten auf Pending-Tasks schlug fehl (ignoriert): %r", e)
 
     # 3) Loop stoppen + harter Exit als letzte Eskalationsstufe
     try:
         loop = asyncio.get_running_loop()
         loop.stop()
         loop.call_later(0.2, lambda: os._exit(0))
-    except Exception:
+    except Exception as e:
+        logging.getLogger().debug("Loop Stop/Hard Exit (ignoriert): %r", e)
         os._exit(0)
 
 
@@ -793,8 +796,8 @@ async def main():
     try:
         signal.signal(signal.SIGINT, _sig_handler)
         signal.signal(signal.SIGTERM, _sig_handler)
-    except Exception:
-        pass  # Windows: SIGTERM ggf. nicht verfügbar
+    except Exception as e:
+        logging.getLogger().debug("Signal-Handler Registrierung teilweise fehlgeschlagen (OS?): %r", e)  # Windows: SIGTERM ggf. nicht verfügbar
 
     token = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
     if not token:
