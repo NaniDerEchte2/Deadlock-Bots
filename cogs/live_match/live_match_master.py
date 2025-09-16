@@ -22,6 +22,7 @@
 import os
 import time
 import logging
+import asyncio
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional
 
@@ -139,8 +140,12 @@ class LiveMatchMaster(commands.Cog):
         try:
             if self._started:
                 self.scan_loop.cancel()
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            # sauberes Weiterreichen von Task-Abbrüchen
+            raise
+        except Exception as e:
+            # statt "empty except": niedrigstufig loggen und fortfahren
+            log.debug("scan_loop.cancel() beim Unload warf Ausnahme (ignoriert): %r", e)
 
     # ========== Steam Helpers ==========
     @staticmethod
@@ -400,7 +405,7 @@ class LiveMatchMaster(commands.Cog):
                 "last_seen": now,
             }
 
-    # ========== DB-Helper (shared.db, synchron) ==========
+    # ========== DB-Helper (service.db, synchron) ==========
     def _write_lane_state(self, channel_id: int, *, active: int, suffix: Optional[str], ts: int, reason: str):
         db.execute(
             """
