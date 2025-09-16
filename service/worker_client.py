@@ -28,7 +28,7 @@ from typing import Any, Dict, Optional, Sequence
 try:
     from .socket_bus import send_json, recv_json
 except Exception:  # pragma: no cover
-    from shared.socket_bus import send_json, recv_json  # type: ignore
+    from service.socket_bus import send_json, recv_json  # type: ignore
 
 
 class WorkerUnavailable(Exception):

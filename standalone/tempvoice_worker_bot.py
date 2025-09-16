@@ -29,7 +29,7 @@ except Exception as e:
     logging.getLogger("tempvoice_worker").debug("dotenv laden übersprungen/fehlgeschlagen: %r", e)
 
 # interner Socket-Server
-from shared.socket_bus import JSONLineServer  # type: ignore
+from service.socket_bus import JSONLineServer  # type: ignore
 
 # ===== Logging =====
 LOG_LEVEL = os.getenv("WORKER_LOG_LEVEL", "INFO").upper()

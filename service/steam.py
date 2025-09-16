@@ -2,7 +2,7 @@
 import os
 from typing import Dict, List
 import aiohttp
-from shared import db
+from service import db
 
 STEAM_API = "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/"
 
