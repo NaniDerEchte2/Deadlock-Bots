@@ -2,7 +2,7 @@
 Standalone Deadlock Rank Bot - CLEAN VERSION
 Separater Bot nur für Rank-Management mit Dropdown-Interface
 Ohne Debug/Cleanup Funktionen - nur Core Features
-Zentrale DB: utils.deadlock_db.DB_PATH (muss existieren)
+Zentrale DB: shared/db.py -> db_path()
 """
 
 import discord
@@ -17,9 +17,20 @@ from pathlib import Path
 import atexit
 from typing import Optional, Dict, List, Any
 
-# Pfad so beibehalten: zentrale DB kommt aus utils.deadlock_db.DB_PATH
-sys.path.append(str(Path(__file__).resolve().parents[2]))
-from utils.deadlock_db import DB_PATH  # <- liefert den zentralen DB-Dateipfad
+# ============================================================
+# ZENTRALE DB aus lokalem shared/db.py laden (per Dateipfad)
+#   Vermeidet Konflikte mit einem evtl. installierten PyPI
+#   Paket namens "shared".
+# ============================================================
+from importlib.util import spec_from_file_location, module_from_spec
+
+_SHARED_DB_FILE = r"C:\Users\Nani-Admin\Documents\Deadlock\shared\db.py"
+_spec = spec_from_file_location("deadlock_shared_db", _SHARED_DB_FILE)
+if _spec is None or _spec.loader is None:
+    raise ImportError(f"Konnte shared/db.py nicht laden: {_SHARED_DB_FILE}")
+_deadlock_shared_db = module_from_spec(_spec)
+_spec.loader.exec_module(_deadlock_shared_db)
+sdb = _deadlock_shared_db  # Alias wie gewohnt
 
 # .env laden (fixer Pfad)
 from dotenv import load_dotenv
@@ -66,7 +77,8 @@ NOTIFICATION_START_HOUR = 8
 NOTIFICATION_END_HOUR = 22
 
 # ============= ZENTRALE DB – NUR RW, KEIN Fallback/Auto-Neuanlage =============
-db_path = str(DB_PATH)  # muss existieren!
+# Nur den Pfad aus shared/db.py holen (ohne connect(), damit keine Datei neu angelegt wird)
+db_path = str(sdb.db_path())  # muss existieren!
 
 def _db_uri_rw(p: str) -> str:
     """Erzeugt eine SQLite-URI mit mode=rw (Datei muss bereits existieren)."""
@@ -560,7 +572,6 @@ class ServerRankSelectDropdown(discord.ui.Select):
                     ephemeral=True
                 )
         except (discord.NotFound, discord.HTTPException):
-            # Antwortfenster zu, Nachricht gelöscht – nicht kritisch
             logger.debug("Interaction response send failed (likely timeout/deletion).")
 
         track_dm_response(str(interaction.user.id))
@@ -1350,7 +1361,6 @@ async def create_daily_queue():
                     if datetime.now() < pause_until:
                         continue
                 except Exception as e:
-                    # Ignorierbar – bei defektem Timestamp einfach normal fortfahren
                     logger.debug("paused_until parse failed for %s: %r", member.id, e)
 
             custom_interval = user_data.get('custom_interval')
@@ -1372,7 +1382,6 @@ async def create_daily_queue():
                         if days_since < interval_days:
                             continue
                     except Exception as e:
-                        # defektes Datum → lieber nicht blockieren
                         logger.debug("last_notification parse failed for %s: %r", member.id, e)
 
             if test_users and member not in test_users:
