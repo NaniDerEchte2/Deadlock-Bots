@@ -257,7 +257,8 @@ class _SteamLinkPromptView(discord.ui.View):
                     except (discord.HTTPException, discord.NotFound) as e:
                         log.debug("poll edit failed: %r", e)
         except asyncio.CancelledError:
-            pass
+            # Nicht schlucken – korrekt abbrechen
+            raise
         except Exception as e:
             log.exception("Steam link poll task crashed: %r", e)
 
