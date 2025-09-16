@@ -172,7 +172,8 @@ def init_database():
         try:
             cursor.execute('ALTER TABLE persistent_views ADD COLUMN user_id TEXT')
         except sqlite3.OperationalError:
-            pass
+            # Spalte existiert schon -> ok
+            logger.debug("Migration persistent_views.user_id: bereits vorhanden")
 
         conn.commit()
         logger.info("✅ Zentrale DB geöffnet (rw) und Tabellen sind bereit.")
@@ -567,8 +568,8 @@ class ServerRankSelectDropdown(discord.ui.Select):
                     f"✅ {rank_emoji or ''} Dein Rang wurde erfolgreich auf **{selected_rank.capitalize()}** gesetzt!",
                     ephemeral=True
                 )
-        except (discord.NotFound, discord.HTTPException):
-            logger.debug("Interaction response send failed (likely timeout/deletion).")
+        except (discord.NotFound, discord.HTTPException) as e:
+            logger.debug("Interaction response send failed (likely timeout/deletion): %r", e)
 
         track_dm_response(str(interaction.user.id))
 
@@ -651,26 +652,28 @@ async def cleanup_old_dm_views(user_id: str):
                        (user_id, 'dm_rank_select'))
         old_views = cursor.fetchall()
 
-        for message_id, channel_id in old_views:
-            try:
-                channel = bot.get_channel(int(channel_id))
-                if channel:
-                    message = await channel.fetch_message(int(message_id))
-                    if message:
-                        await message.delete()
-                        logger.info(f"Deleted old DM view message {message_id} for user {user_id}")
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"Could not delete old DM message {message_id}: {e}")
+    # Nachrichten löschen (asynchron) – DB Cleanup danach
+    for message_id, channel_id in old_views:
+        try:
+            channel = bot.get_channel(int(channel_id))
+            if channel:
+                message = await channel.fetch_message(int(message_id))
+                if message:
+                    await message.delete()
+                    logger.info(f"Deleted old DM view message {message_id} for user {user_id}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Could not delete old DM message {message_id}: {e}")
 
+    with open_conn() as conn:
+        cursor = conn.cursor()
         cursor.execute('DELETE FROM persistent_views WHERE user_id = ? AND view_type = ?',
                        (user_id, 'dm_rank_select'))
         conn.commit()
 
-        if old_views:
-            logger.info(f"Cleaned up {len(old_views)} old DM views for user {user_id}")
-
+    if old_views:
+        logger.info(f"Cleaned up {len(old_views)} old DM views for user {user_id}")
 
 async def cleanup_old_dm_views_auto() -> int:
     """Automatisches Cleanup von DM Views älter als 7 Tage"""
@@ -687,23 +690,24 @@ async def cleanup_old_dm_views_auto() -> int:
         ''', (cutoff_date,))
         old_views = cursor.fetchall()
 
-        for message_id, channel_id, user_id in old_views:
-            try:
-                channel = bot.get_channel(int(channel_id))
-                if channel:
-                    message = await channel.fetch_message(int(message_id))
-                    if message:
-                        await message.delete()
-                        logger.info(f"Auto-deleted old DM view {message_id} for user {user_id}")
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"Could not delete old DM message {message_id}: {e}")
-            cleaned_count += 1
+    for message_id, channel_id, user_id in old_views:
+        try:
+            channel = bot.get_channel(int(channel_id))
+            if channel:
+                message = await channel.fetch_message(int(message_id))
+                if message:
+                    await message.delete()
+                    logger.info(f"Auto-deleted old DM view {message_id} for user {user_id}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Could not delete old DM message {message_id}: {e}")
+        cleaned_count += 1
 
+    with open_conn() as conn:
+        cursor = conn.cursor()
         cursor.execute('DELETE FROM persistent_views WHERE view_type = ? AND created_at < ?',
                        ('dm_rank_select', cutoff_date))
-
         cursor.execute('''
             UPDATE dm_response_tracking 
                SET status = 'dropped_no_response'
@@ -757,8 +761,8 @@ async def ask_rank_update(member: discord.Member, current_rank: str, guild: disc
 
         track_dm_sent(str(member.id))
 
-    except discord.Forbidden:
-        logger.warning(f"Could not send DM to {member.display_name} ({member.id})")
+    except discord.Forbidden as e:
+        logger.warning(f"Could not send DM to {member.display_name} ({member.id}): {e}")
     except Exception as e:
         logger.error("ask_rank_update unexpected error: %r", e)
 
@@ -1223,7 +1227,7 @@ async def view_database(ctx: commands.Context, table: str = None):
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    lines.append(f"**User {user_id}**: {rank}")
+                    lines.append(f"**{user_id}**: {rank}")
             queue_text = "\n".join(lines)
             if len(queue_text) > 1000:
                 queue_text = "\n".join(lines[:15]) + f"\n... und {len(lines)-15} weitere"
