@@ -1,12 +1,9 @@
 import asyncio
 import logging
 from typing import Dict, Tuple, List, Optional, Set
-from datetime import datetime
-
 import aiosqlite
 import discord
 from discord.ext import commands
-
 from service.db import db_path
 from pathlib import Path
 DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
