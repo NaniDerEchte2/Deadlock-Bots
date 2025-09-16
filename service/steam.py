@@ -1,5 +1,4 @@
 # shared/steam.py
-import os
 from typing import Dict, List
 import aiohttp
 from service import db
