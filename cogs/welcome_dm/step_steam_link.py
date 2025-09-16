@@ -15,7 +15,7 @@ from urllib.parse import urlparse  # <- fürs saubere Host-Checking
 
 import discord
 from .base import StepView
-from shared import db  # zentrale DB
+from service import db  # zentrale DB
 
 log = logging.getLogger("WelcomeSteamStep")
 
