@@ -1,7 +1,10 @@
 # cogs/welcome_dm/step_status.py
+import logging
 import discord
 from typing import Optional
 from .base import StepView, STATUS_NEED_BETA, STATUS_PLAYING, STATUS_RETURNING, STATUS_NEW_PLAYER
+
+logger = logging.getLogger(__name__)
 
 class PlayerStatusView(StepView):
     """Frage 1: Status"""
@@ -39,8 +42,10 @@ class PlayerStatusView(StepView):
                 await interaction.response.edit_message(view=self)
             else:
                 await interaction.message.edit(view=self)
+        except discord.HTTPException as e:
+            logger.warning("Edit message fehlgeschlagen (user=%s): %s", getattr(interaction.user, "id", "?"), e)
         except Exception:
-            pass
+            logger.exception("Unerwarteter Fehler beim Edit der Status-Nachricht (user=%s)", getattr(interaction.user, "id", "?"))
 
     @discord.ui.button(label="Weiter", style=discord.ButtonStyle.primary, custom_id="wdm:qS:next")
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -52,7 +57,9 @@ class PlayerStatusView(StepView):
                     await interaction.response.send_message("Bitte wähle zuerst eine Option.", ephemeral=True)
                 else:
                     await interaction.followup.send("Bitte wähle zuerst eine Option.", ephemeral=True)
+            except discord.HTTPException as e:
+                logger.warning("Hinweis senden fehlgeschlagen (user=%s): %s", getattr(interaction.user, "id", "?"), e)
             except Exception:
-                pass
+                logger.exception("Unerwarteter Fehler beim Senden des Hinweises (user=%s)", getattr(interaction.user, "id", "?"))
             return
         await self._finish(interaction)
