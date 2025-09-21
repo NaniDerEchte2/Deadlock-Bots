@@ -1,23 +1,30 @@
 # cogs/welcome_dm/step_steam_link.py
 # — Steam-Link Schritt (Nudge + Optionen) —
-# Optionen-View: ALLES grau (link-Buttons zwangsgrau; Rest secondary).
-# „Weiter“ & „Schließen“ liegen in der ZWEITEN Reihe (row=1).
-# „Weiter“ wird erst aktiv, wenn in der DB ein Steam-Link existiert (Poll + Guard).
-# Keine nackten URLs; Link-Buttons werden beim Senden erzeugt (keine custom_id/url-Kollision).
+# Anpassungen:
+# - Erster Button: GRÜN „Steam verknüpfen“ (manuell, Modal)
+# - Steam OpenID umbenannt auf „Steam Profil suchen“ (grau, ephemeral Link)
+# - Hilfe-Button (Link) über Konstante HELP (kein ENV)
+# - Rest (Texte/Flow/Guard) unverändert
 
 from __future__ import annotations
 
+import os
 import re
 import logging
 import asyncio
 from typing import Optional
-from urllib.parse import urlparse  # <- fürs saubere Host-Checking
+from urllib.parse import urlparse
 
 import discord
 from .base import StepView
 from service import db  # zentrale DB
 
 log = logging.getLogger("WelcomeSteamStep")
+
+# --------------------- Konstante: Hilfe-Link ---------------------
+# Trage hier deine Hilfe-URL ein (z. B. YouTube-Video/Playlist).
+# Wenn leer, wird der Button automatisch disabled.
+HELP = ""
 
 
 # --------------------- DB ---------------------
@@ -71,11 +78,6 @@ class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
         self.user = user
 
     async def _fallback_resolve(self, raw: str) -> Optional[str]:
-        """
-        Härtung: kein Substring-Match mehr.
-        Akzeptiere nur http/https-URLs deren hostname == steamcommunity.com
-        oder *.steamcommunity.com. Extrahiere dann /profiles/<17-stellige-ID>.
-        """
         s = (raw or "").strip()
         if not s:
             return None
@@ -94,7 +96,6 @@ class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
         if not u:
             return None
 
-        # nur http/https
         if str(u.scheme).lower() not in ("http", "https"):
             return None
 
@@ -170,7 +171,7 @@ class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
                 log.debug("Followup send failed: %r", e2)
 
 
-# --------------------- Texte ---------------------
+# --------------------- Texte (UNVERÄNDERT) ---------------------
 EMBED_TITLE = "Empfehlung für besseres Erlebnis"
 EMBED_DESC = (
     "• **Wozu ist das gut?** Wir können deinen Voice-Status (z. B. **Lobby/In-Game**, **Anzahl im Match**) "
@@ -193,12 +194,12 @@ EMBED_FOOTER = "Kurzbefehle: /link · /link_steam · /addsteam"
 # --------------------- Optionen-View ---------------------
 class _SteamLinkPromptView(discord.ui.View):
     """
-    Optionen-View (alles grau):
-      - Link-Buttons für Discord-OAuth & Steam OpenID (style=link).
-      - Manuell/Weiter/Schließen als secondary.
+    Optionen-View:
+      - Erster Button: GRÜN (manuell) „Steam verknüpfen“
+      - „Mit Discord verbinden“ (grau) öffnet ephemeral mit Link-Button
+      - „Steam Profil suchen“ (grau) öffnet ephemeral mit Link-Button
+      - Hilfe-Link-Button (Konstante HELP)
       - „Weiter“ wird via Poll aktiv, sobald in DB irgendein Link existiert.
-      - Serverseitiger Guard verhindert Weiter ohne DB-Eintrag.
-      - Weiter & Schließen in Reihe 2 (row=1).
     """
     def __init__(self, bot: discord.Client, user: discord.abc.User, parent_step: SteamLinkNudgeView,
                  timeout: Optional[float] = None):
@@ -207,30 +208,54 @@ class _SteamLinkPromptView(discord.ui.View):
         self.user = user
         self.parent_step = parent_step
 
-        # Nicht-Link Buttons jetzt anlegen
+        # Manuell — jetzt grün und zuerst
         self.btn_manual = discord.ui.Button(
-            label="SteamID manuell eingeben", style=discord.ButtonStyle.secondary,
-            emoji="🔢", custom_id="steam_manual_open", row=0
+            label="Steam verknüpfen", style=discord.ButtonStyle.success,
+            emoji="🔧", custom_id="steam_manual_open", row=0
         )
         self.btn_manual.callback = self._click_manual  # type: ignore[assignment]
 
-        # SCHLIEẞEN → zweite Reihe
+        # Discord OAuth – grau, öffnet ephemeral mit Link
+        self.btn_discord = discord.ui.Button(
+            label="Mit Discord verbinden", style=discord.ButtonStyle.secondary,
+            emoji="🔗", custom_id="steam_discord_open", row=0
+        )
+        self.btn_discord.callback = self._click_discord  # type: ignore[assignment]
+
+        # Steam OpenID – grau, umbenannt
+        self.btn_steam = discord.ui.Button(
+            label="Steam Profil suchen", style=discord.ButtonStyle.secondary,
+            emoji="🎮", custom_id="steam_openid_open", row=0
+        )
+        self.btn_steam.callback = self._click_steam  # type: ignore[assignment]
+
+        # Hilfe – echter Link-Button (falls URL vorhanden), sonst disabled
+        self.btn_help: discord.ui.Button
+        if HELP:
+            self.btn_help = discord.ui.Button(
+                label="Hilfe", style=discord.ButtonStyle.link, url=HELP, emoji="❓", row=0
+            )
+        else:
+            self.btn_help = discord.ui.Button(
+                label="Hilfe (nicht verfügbar)", style=discord.ButtonStyle.secondary,
+                emoji="❓", custom_id="steam_help_disabled", disabled=True, row=0
+            )
+
+        # Schließen & Weiter (unten)
         self.btn_close = discord.ui.Button(
             label="Schließen", style=discord.ButtonStyle.secondary,
             emoji="❌", custom_id="steam_close", row=2
         )
         self.btn_close.callback = self._click_close  # type: ignore[assignment]
 
-        # WEITER → zweite Reihe
         self.btn_next = discord.ui.Button(
             label="Weiter", style=discord.ButtonStyle.secondary,
             emoji="➡️", custom_id="steam_next", row=2, disabled=True
         )
         self.btn_next.callback = self._click_next  # type: ignore[assignment]
 
-        # Diese werden beim Senden dynamisch erzeugt:
-        self._discord_link: Optional[discord.ui.Button] = None
-        self._steam_link: Optional[discord.ui.Button] = None
+        self._discord_url: str = ""
+        self._steam_url: str = ""
 
         self._poll_task: Optional[asyncio.Task] = None
         self.message: Optional[discord.Message] = None
@@ -257,7 +282,6 @@ class _SteamLinkPromptView(discord.ui.View):
                     except (discord.HTTPException, discord.NotFound) as e:
                         log.debug("poll edit failed: %r", e)
         except asyncio.CancelledError:
-            # Nicht schlucken – korrekt abbrechen
             raise
         except Exception as e:
             log.exception("Steam link poll task crashed: %r", e)
@@ -272,6 +296,24 @@ class _SteamLinkPromptView(discord.ui.View):
             await interaction.response.send_message("Diese Aktion ist nicht für dich bestimmt.", ephemeral=True)
             return
         await interaction.response.send_modal(_ManualSteamModal(self.bot, self.user))
+
+    async def _click_discord(self, interaction: discord.Interaction):
+        view = discord.ui.View()
+        if self._discord_url:
+            view.add_item(discord.ui.Button(label="Jetzt per Discord verbinden", style=discord.ButtonStyle.link, url=self._discord_url))
+        await interaction.response.send_message(
+            "🔗 Verbinde dich kurz per Discord-OAuth. Wir lesen **identify + connections**.",
+            ephemeral=True, view=view
+        )
+
+    async def _click_steam(self, interaction: discord.Interaction):
+        view = discord.ui.View()
+        if self._steam_url:
+            view.add_item(discord.ui.Button(label="Jetzt mit Steam anmelden", style=discord.ButtonStyle.link, url=self._steam_url))
+        await interaction.response.send_message(
+            "🎮 Öffne den offiziellen **Steam-Login**. Wir erhalten nur deine **SteamID64**.",
+            ephemeral=True, view=view
+        )
 
     async def _click_close(self, interaction: discord.Interaction):
         self.parent_step.force_finish()
@@ -338,71 +380,40 @@ class _SteamLinkPromptView(discord.ui.View):
 
     async def send(self, channel: discord.abc.Messageable) -> discord.Message:
         # Frische URLs vom Steam-Cog holen
-        discord_url = ""
-        steam_url = ""
+        self._discord_url = ""
+        self._steam_url = ""
         cog = self._steam_cog()
         if cog and hasattr(cog, "build_discord_link_for"):
             try:
-                discord_url = cog.build_discord_link_for(self.user.id)  # type: ignore
+                self._discord_url = cog.build_discord_link_for(self.user.id)  # type: ignore
             except Exception as e:
                 log.debug("build_discord_link_for failed: %r", e)
-                discord_url = ""
-        if cog and hasattr(cog, "build_steam_openid_for"):
+        if not self._discord_url and cog:
             try:
-                steam_url = cog.build_steam_openid_for(self.user.id)  # type: ignore
-            except Exception as e:
-                log.debug("build_steam_openid_for failed: %r", e)
-                steam_url = ""
-
-        if not discord_url and cog:
-            try:
-                discord_url = cog._build_discord_auth_url(self.user.id)  # type: ignore[attr-defined]
+                self._discord_url = cog._build_discord_auth_url(self.user.id)  # type: ignore[attr-defined]
             except Exception as e:
                 log.debug("_build_discord_auth_url failed: %r", e)
-        if not steam_url and cog:
+
+        if cog and hasattr(cog, "build_steam_openid_for"):
             try:
-                state = cog._mk_state(self.user.id)                     # type: ignore[attr-defined]
-                steam_url = cog._build_steam_login_url(state)           # type: ignore[attr-defined]
+                self._steam_url = cog.build_steam_openid_for(self.user.id)  # type: ignore
+            except Exception as e:
+                log.debug("build_steam_openid_for failed: %r", e)
+        if not self._steam_url and cog:
+            try:
+                state = cog._mk_state(self.user.id)                 # type: ignore[attr-defined]
+                self._steam_url = cog._build_steam_login_url(state) # type: ignore[attr-defined]
             except Exception as e:
                 log.debug("_build_steam_login_url failed: %r", e)
 
-        # View befüllen (alles grau)
+        # View befüllen (Reihenfolge wichtig: Grün zuerst)
         self.clear_items()
-
-        # 1) Discord-OAuth (Link-Button)
-        if discord_url:
-            self._discord_link = discord.ui.Button(
-                label="Mit Discord verbinden", style=discord.ButtonStyle.link,
-                emoji="🔗", url=discord_url, row=0
-            )
-        else:
-            self._discord_link = discord.ui.Button(
-                label="Mit Discord verbinden (nicht verfügbar)", style=discord.ButtonStyle.secondary,
-                emoji="🔗", custom_id="steam_discord_disabled", disabled=True, row=0
-            )
-        self.add_item(self._discord_link)
-
-        # 2) Manuell (secondary)
-        self.add_item(self.btn_manual)
-
-        # 3) Steam OpenID (Link-Button)
-        if steam_url:
-            self._steam_link = discord.ui.Button(
-                label="Mit Steam anmelden", style=discord.ButtonStyle.link,
-                emoji="🎮", url=steam_url, row=0
-            )
-        else:
-            self._steam_link = discord.ui.Button(
-                label="Mit Steam anmelden (nicht verfügbar)", style=discord.ButtonStyle.secondary,
-                emoji="🎮", custom_id="steam_openid_disabled", disabled=True, row=0
-            )
-        self.add_item(self._steam_link)
-
-        # 4) Weiter (row=1)
-        self.add_item(self.btn_next)
-
-        # 5) Schließen (row=1)
-        self.add_item(self.btn_close)
+        self.add_item(self.btn_manual)   # Grün
+        self.add_item(self.btn_discord)  # Grau
+        self.add_item(self.btn_steam)    # Grau
+        self.add_item(self.btn_help)     # Hilfe-Link (falls vorhanden/gesetzt)
+        self.add_item(self.btn_next)     # unten
+        self.add_item(self.btn_close)    # unten
 
         embed = discord.Embed(title=EMBED_TITLE, description=EMBED_DESC, color=discord.Color.dark_gray())
         embed.set_footer(text=EMBED_FOOTER)
