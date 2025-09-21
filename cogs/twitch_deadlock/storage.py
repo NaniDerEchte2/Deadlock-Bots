@@ -4,11 +4,9 @@
 import os
 import sqlite3
 from contextlib import contextmanager
-from typing import Iterator, Optional
 
 DEFAULT_DB = os.path.join(os.path.expanduser("~"), "Documents", "Deadlock", "service", "deadlock.sqlite3")
 
-# Use existing central DB location, honoring env used in the rest of the project
 DB_PATH = (
     os.getenv("DEADLOCK_DB_PATH")
     or (os.path.join(os.getenv("DEADLOCK_DB_DIR", ""), "deadlock.sqlite3") if os.getenv("DEADLOCK_DB_DIR") else DEFAULT_DB)
@@ -29,6 +27,8 @@ CREATE TABLE IF NOT EXISTS twitch_streamers (
     require_discord_link INTEGER NOT NULL DEFAULT 0,
     last_description TEXT,
     last_link_ok INTEGER NOT NULL DEFAULT 0,
+    last_link_checked_at DATETIME,
+    next_link_check_at DATETIME,
     added_by TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -51,11 +51,23 @@ CREATE TABLE IF NOT EXISTS twitch_live_state (
     last_discord_message_id TEXT,
     last_notified_at DATETIME
 );
+
+CREATE TABLE IF NOT EXISTS twitch_stream_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+    streamer_login TEXT,
+    user_id TEXT,
+    title TEXT,
+    viewers INTEGER,
+    started_at TEXT,
+    language TEXT,
+    game_id TEXT,
+    game_name TEXT
+);
 """
 
 @contextmanager
-def get_conn() -> Iterator[sqlite3.Connection]:
-    # Using sqlite3 directly but against the central file that all cogs share.
+def get_conn():
     conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
     conn.row_factory = sqlite3.Row
     try:
@@ -64,3 +76,4 @@ def get_conn() -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         conn.close()
+

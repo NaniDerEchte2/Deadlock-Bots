@@ -3,7 +3,7 @@
 # =========================================
 import asyncio
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import aiohttp
 
@@ -13,9 +13,9 @@ TWITCH_API_BASE = "https://api.twitch.tv/helix"
 class TwitchAPI:
     """Thin async wrapper around Twitch Helix using app access tokens.
 
-    Security:
-      - No secrets logged (CWE-522)
-      - Timeouts + backoff to mitigate resource exhaustion (CWE-770/CWE-400)
+    Notes:
+      * Uses **Search Categories** to resolve game/category IDs (Get Games is superseded).
+      * No secrets logged; short timeouts + simple backoff.
     """
 
     def __init__(self, client_id: str, client_secret: str, session: Optional[aiohttp.ClientSession] = None):
@@ -26,7 +26,7 @@ class TwitchAPI:
         self._token: Optional[str] = None
         self._token_expiry: float = 0.0
         self._lock = asyncio.Lock()
-        self._game_cache: Dict[str, str] = {}  # name -> id
+        self._category_cache: Dict[str, str] = {}  # name_lower -> id
 
     async def __aenter__(self):
         if self._session is None:
@@ -65,14 +65,13 @@ class TwitchAPI:
         }
 
     # ------------------------
-    # Core requests
+    # Core request
     # ------------------------
-    async def _get(self, path: str, params: Optional[Dict[str, str]] = None) -> Dict:
+    async def _get(self, path: str, params: Optional[Union[Dict[str, str], List[Tuple[str, str]]]] = None) -> Dict:
         await self._ensure_token()
         assert self._session is not None
-        # Retry/backoff
         backoff = 1.0
-        for attempt in range(4):
+        for _ in range(4):
             try:
                 async with self._session.get(
                     f"{TWITCH_API_BASE}{path}",
@@ -81,7 +80,6 @@ class TwitchAPI:
                     timeout=aiohttp.ClientTimeout(total=15),
                 ) as r:
                     if r.status == 429:
-                        # Basic rate-limit backoff
                         await asyncio.sleep(min(10, backoff))
                         backoff *= 2
                         continue
@@ -96,60 +94,48 @@ class TwitchAPI:
         raise RuntimeError("Twitch API retries exhausted")
 
     # ------------------------
-    # Public endpoints used
+    # Categories (games)
     # ------------------------
-    async def get_games_by_name(self, names: List[str]) -> Dict[str, str]:
-        """Return mapping name_lower -> game_id."""
-        if not names:
-            return {}
-        # resolve via cache first
-        remaining = [n for n in names if n.lower() not in self._game_cache]
-        out = {n.lower(): self._game_cache[n.lower()] for n in names if n.lower() in self._game_cache}
-        # Twitch allows up to 100 names
-        batch = []
-        for n in remaining:
-            batch.append(n)
-            if len(batch) == 100:
-                js = await self._get("/games", params={"name": batch[0]}) if len(batch) == 1 else await self._get("/games", params=[("name", b) for b in batch])
-                for g in js.get("data", []):
-                    self._game_cache[g["name"].lower()] = g["id"]
-                    out[g["name"].lower()] = g["id"]
-                batch = []
-        if batch:
-            js = await self._get("/games", params=[("name", b) for b in batch])
-            for g in js.get("data", []):
-                self._game_cache[g["name"].lower()] = g["id"]
-                out[g["name"].lower()] = g["id"]
-        return out
+    async def search_category_id(self, query: str) -> Optional[str]:
+        """Resolve a category/game id via /search/categories (case-insensitive exact name preferred)."""
+        if not query:
+            return None
+        ql = query.lower()
+        if ql in self._category_cache:
+            return self._category_cache[ql]
+        js = await self._get("/search/categories", params={"query": query, "first": "25"})
+        best: Optional[str] = None
+        for item in js.get("data", []) or []:
+            name = (item.get("name") or "").strip()
+            if name.lower() == ql:
+                best = item.get("id")
+                break
+            # fallback: startswith
+            if not best and name.lower().startswith(ql):
+                best = item.get("id")
+        if best:
+            self._category_cache[ql] = best
+        return best
 
-    async def get_game_id(self, name: str) -> Optional[str]:
-        name_l = name.lower()
-        if name_l in self._game_cache:
-            return self._game_cache[name_l]
-        js = await self._get("/games", params={"name": name})
-        data = js.get("data", [])
-        if data:
-            gid = data[0]["id"]
-            self._game_cache[name_l] = gid
-            return gid
-        return None
+    async def get_category_id(self, name: str) -> Optional[str]:
+        return await self.search_category_id(name)
 
+    # ------------------------
+    # Users & Streams
+    # ------------------------
     async def get_users(self, logins: List[str]) -> Dict[str, Dict]:
-        """Return mapping login_lower -> user object (id, login, display_name, description, etc.)."""
         out: Dict[str, Dict] = {}
         if not logins:
             return out
-        # 100 per request
         for i in range(0, len(logins), 100):
             chunk = logins[i:i+100]
             params: List[Tuple[str, str]] = [("login", x) for x in chunk]
             js = await self._get("/users", params=params)
-            for u in js.get("data", []):
+            for u in js.get("data", []) or []:
                 out[u["login"].lower()] = u
         return out
 
     async def get_streams(self, *, user_logins: Optional[List[str]] = None, game_id: Optional[str] = None, language: Optional[str] = None, first: int = 100) -> List[Dict]:
-        """Get active streams; filters are combined (AND)."""
         params: List[Tuple[str, str]] = []
         if user_logins:
             for u in user_logins[:100]:
@@ -161,4 +147,3 @@ class TwitchAPI:
         params.append(("first", str(min(max(first, 1), 100))))
         js = await self._get("/streams", params=params)
         return js.get("data", [])
-

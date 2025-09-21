@@ -25,12 +25,6 @@ def _bool(v: Optional[str]) -> bool:
 class TwitchDeadlockCog(commands.Cog):
     """Discord Cog: posts live messages for tracked Twitch streamers *only* when
     they are playing Deadlock. Includes a minimal admin dashboard.
-
-    Key points:
-      - Uses central SQLite DB (same file as other cogs)
-      - CWE aware: parameterized SQL, no secret logs, HTML escaping, CSRF token
-      - Deadlock-only filtering via Twitch game_id
-      - Optional language filter and Discord-link requirement
     """
 
     def __init__(self, bot: commands.Bot):
@@ -42,23 +36,37 @@ class TwitchDeadlockCog(commands.Cog):
             self.api = None
             return
         self.api = TwitchAPI(self.client_id, self.client_secret)
-        self._game_id: Optional[str] = None
-        self._language_filter = os.getenv("TWITCH_LANGUAGE", "").strip() or None  # e.g., 'de'
-        self._dashboard_token = os.getenv("TWITCH_DASHBOARD_TOKEN") or os.urandom(16).hex()
-        self._dashboard_host = os.getenv("TWITCH_DASHBOARD_HOST", "0.0.0.0")
+        self._category_id: Optional[str] = None
+        self._language_filter = os.getenv("TWITCH_LANGUAGE", "").strip() or None
+
+        # Dashboard/auth
+        self._dashboard_token = os.getenv("TWITCH_DASHBOARD_TOKEN") or None
+        self._dashboard_noauth = _bool(os.getenv("TWITCH_DASHBOARD_NOAUTH", "0"))
+        self._dashboard_host = os.getenv("TWITCH_DASHBOARD_HOST") or ("127.0.0.1" if self._dashboard_noauth else "0.0.0.0")
         self._dashboard_port = int(os.getenv("TWITCH_DASHBOARD_PORT", "8765"))
         self._required_marker_default = os.getenv("TWITCH_REQUIRED_DISCORD_MARKER", "") or None
+
+        # Channel overrides (optional)
+        self._notify_channel_id = int(os.getenv("TWITCH_NOTIFY_CHANNEL_ID", "0") or 0)
+        self._alert_channel_id = int(os.getenv("TWITCH_ALERT_CHANNEL_ID", "0") or 0)
+        self._alert_mention = os.getenv("TWITCH_ALERT_MENTION", "")  # e.g. <@123> or <@&role>
+
+        # logging/stats
+        self._tick_count = 0
+        self._log_every_n = max(1, int(os.getenv("TWITCH_LOG_EVERY_N_TICKS", "5")))
 
         self._web: Optional[web.AppRunner] = None
         self._web_app: Optional[web.Application] = None
 
         self.poll_streams.start()
-        self.bot.loop.create_task(self._ensure_game_id())
+        self.link_reverify.start()
+        self.bot.loop.create_task(self._ensure_category_id())
         self.bot.loop.create_task(self._start_dashboard())
 
     def cog_unload(self):
         try:
             self.poll_streams.cancel()
+            self.link_reverify.cancel()
         except Exception:
             pass
         if self._web:
@@ -72,7 +80,6 @@ class TwitchDeadlockCog(commands.Cog):
             return
         self._web_app = web.Application()
 
-        # Handlers use small async wrappers
         async def add(login: str, require_link: bool):
             await self._cmd_add(login, require_link)
         async def remove(login: str):
@@ -83,15 +90,46 @@ class TwitchDeadlockCog(commands.Cog):
                 return [dict(r) for r in rows]
         async def rescan():
             await self._rescan_all_links()
+        async def stats_cb():
+            return await self._compute_stats()
+        async def export_cb():
+            with storage.get_conn() as c:
+                # minimal export: stream logs
+                rows = c.execute("SELECT * FROM twitch_stream_logs ORDER BY ts DESC LIMIT 10000").fetchall()
+                return {"logs": [dict(r) for r in rows]}
+        async def export_csv_cb():
+            with storage.get_conn() as c:
+                rows = c.execute("SELECT ts, streamer_login, viewers, title, started_at, language, game_name FROM twitch_stream_logs ORDER BY ts").fetchall()
+            out = ["Timestamp,Streamer,Viewers,Title,Started_At,Language,Game
+"]
+            for r in rows:
+                title = (r["title"] or "").replace('"', '""').replace("
+", " ")
+                out.append(f'"{r["ts"]}","{r["streamer_login"]}",{r["viewers"] or 0},"{title}","{r["started_at"]}","{r["language"] or ''}","{r["game_name"] or ''}"
+')
+            return "".join(out)
 
-        Dashboard(self._dashboard_token, add, remove, list_items, rescan).attach(self._web_app)
+        Dashboard(
+            app_token=self._dashboard_token,
+            noauth=self._dashboard_noauth,
+            add_cb=add,
+            remove_cb=remove,
+            list_cb=list_items,
+            rescan_cb=rescan,
+            stats_cb=stats_cb,
+            export_cb=export_cb,
+            export_csv_cb=export_csv_cb,
+        ).attach(self._web_app)
 
         runner = web.AppRunner(self._web_app)
         await runner.setup()
         site = web.TCPSite(runner, self._dashboard_host, self._dashboard_port)
         await site.start()
         self._web = runner
-        log.info("Twitch dashboard running on http://%s:%d/twitch (token=%s)", self._dashboard_host, self._dashboard_port, self._dashboard_token)
+        # Do NOT log token (CWE-522)
+        log.info("Twitch dashboard running on http://%s:%d/twitch", self._dashboard_host, self._dashboard_port)
+        if self._dashboard_noauth and self._dashboard_host != "127.0.0.1":
+            log.warning("Dashboard is running without auth and not bound to localhost — consider restricting access.")
 
     async def _stop_dashboard(self):
         try:
@@ -112,7 +150,8 @@ class TwitchDeadlockCog(commands.Cog):
     def _set_channel(self, guild_id: int, channel_id: int):
         with storage.get_conn() as c:
             c.execute(
-                "INSERT INTO twitch_settings (guild_id, channel_id, language_filter, required_marker) VALUES (?, ?, ?, ?)\n"
+                "INSERT INTO twitch_settings (guild_id, channel_id, language_filter, required_marker) VALUES (?, ?, ?, ?)
+"
                 "ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id",
                 (guild_id, channel_id, self._language_filter, self._required_marker_default),
             )
@@ -133,7 +172,7 @@ class TwitchDeadlockCog(commands.Cog):
             marker_ok = self._required_marker_default.lower() in desc.lower()
         with storage.get_conn() as c:
             c.execute(
-                "UPDATE twitch_streamers SET last_description=?, last_link_ok=? WHERE twitch_login=?",
+                "UPDATE twitch_streamers SET last_description=?, last_link_ok=?, last_link_checked_at=CURRENT_TIMESTAMP, next_link_check_at=datetime('now','+30 days') WHERE twitch_login=?",
                 (desc[:4000], int(has_link and marker_ok), login.lower()),
             )
         return has_link and marker_ok
@@ -150,7 +189,7 @@ class TwitchDeadlockCog(commands.Cog):
                 log.warning("rescan failed for %s: %s", r["twitch_login"], e)
 
     # -----------------------------
-    # Commands (hybrid = slash + prefix)
+    # Commands (hybrid)
     # -----------------------------
     @commands.hybrid_group(name="twitch", with_app_command=True)
     @commands.has_guild_permissions(manage_guild=True)
@@ -173,14 +212,13 @@ class TwitchDeadlockCog(commands.Cog):
             return "Unbekannter Twitch-Login"
         with storage.get_conn() as c:
             c.execute(
-                "INSERT OR IGNORE INTO twitch_streamers (twitch_login, twitch_user_id, require_discord_link) VALUES (?, ?, ?)",
+                "INSERT OR IGNORE INTO twitch_streamers (twitch_login, twitch_user_id, require_discord_link, next_link_check_at) VALUES (?, ?, ?, datetime('now','+30 days'))",
                 (u["login"].lower(), u["id"], int(require_link)),
             )
-        # initial link check (best effort)
         try:
             await self._check_discord_link(login)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("initial link check failed for %s: %s", login, e)
         return f"{u['display_name']} hinzugefügt"
 
     @twitch_group.command(name="add")
@@ -209,7 +247,8 @@ class TwitchDeadlockCog(commands.Cog):
             await ctx.reply("Keine Streamer gespeichert.")
             return
         lines = [f"• {r['twitch_login']}  (require_link={'ja' if r['require_discord_link'] else 'nein'}, has_link={'ja' if r['last_link_ok'] else 'nein'})" for r in rows]
-        await ctx.reply("\n".join(lines)[:1900])
+        await ctx.reply("
+".join(lines)[:1900])
 
     @twitch_group.command(name="forcecheck")
     @commands.has_guild_permissions(manage_guild=True)
@@ -220,14 +259,17 @@ class TwitchDeadlockCog(commands.Cog):
     # -----------------------------
     # Polling & posting
     # -----------------------------
-    async def _ensure_game_id(self):
+    async def _ensure_category_id(self):
         if not self.api:
             return
         try:
-            self._game_id = await self.api.get_game_id(DEADLOCK_GAME_NAME)
-            log.info("Deadlock game_id = %s", self._game_id)
+            self._category_id = await self.api.get_category_id(DEADLOCK_GAME_NAME)
+            if self._category_id:
+                log.info("Deadlock category_id = %s", self._category_id)
+            else:
+                log.warning("Deadlock category not found via Search Categories; will use fallback filter by game_name.")
         except Exception as e:
-            log.error("could not resolve game id: %s", e)
+            log.error("could not resolve category id: %r", e)
 
     @tasks.loop(seconds=60.0)
     async def poll_streams(self):
@@ -239,10 +281,6 @@ class TwitchDeadlockCog(commands.Cog):
     async def _tick(self):
         if not self.api:
             return
-        if not self._game_id:
-            await self._ensure_game_id()
-            if not self._game_id:
-                return
         # load streamer list
         with storage.get_conn() as c:
             rows = c.execute("SELECT twitch_login, twitch_user_id, require_discord_link, last_link_ok FROM twitch_streamers").fetchall()
@@ -251,28 +289,29 @@ class TwitchDeadlockCog(commands.Cog):
         logins = [r["twitch_login"] for r in rows]
         require_map = {r["twitch_login"].lower(): (bool(r["require_discord_link"]), bool(r["last_link_ok"])) for r in rows}
 
-        # fetch streams in bulk (live only)
-        streams = await self.api.get_streams(user_logins=logins, game_id=self._game_id, language=self._language_filter)
-        live_by_login = {s["user_login"].lower(): s for s in streams}
+        # fetch streams in bulk
+        streams = await self.api.get_streams(user_logins=logins, game_id=self._category_id, language=self._language_filter)
+        # fallback: if no category id, filter by game_name
+        if not self._category_id and streams:
+            streams = [s for s in streams if (s.get("game_name") or "").lower() == DEADLOCK_GAME_NAME.lower()]
+        live_by_login = {s.get("user_login", "").lower(): s for s in streams}
 
-        # compute on/offline
+        # current states
         with storage.get_conn() as c:
             states = {r["streamer_login"].lower(): dict(r) for r in c.execute("SELECT * FROM twitch_live_state").fetchall()}
 
         now_live: List[str] = []
         now_offline: List[str] = []
 
-        # check each tracked login
         for login in logins:
             login_l = login.lower()
             is_live = login_l in live_by_login
             st = states.get(login_l)
 
             if is_live:
-                # Enforce Discord link if configured and not satisfied
                 req, has = require_map.get(login_l, (False, False))
                 if req and not has:
-                    continue  # skip posting until link present
+                    continue  # skip until profile links our Discord
                 s = live_by_login[login_l]
                 stream_id = s.get("id")
                 started_at = s.get("started_at")
@@ -283,8 +322,10 @@ class TwitchDeadlockCog(commands.Cog):
                 # update state
                 with storage.get_conn() as c:
                     c.execute(
-                        "INSERT INTO twitch_live_state (twitch_user_id, streamer_login, last_stream_id, last_started_at, last_title, last_game_id, is_live)\n"
-                        "VALUES (?, ?, ?, ?, ?, ?, 1)\n"
+                        "INSERT INTO twitch_live_state (twitch_user_id, streamer_login, last_stream_id, last_started_at, last_title, last_game_id, is_live)
+"
+                        "VALUES (?, ?, ?, ?, ?, ?, 1)
+"
                         "ON CONFLICT(twitch_user_id) DO UPDATE SET last_stream_id=excluded.last_stream_id, last_started_at=excluded.last_started_at, last_title=excluded.last_title, last_game_id=excluded.last_game_id, is_live=1",
                         (s.get("user_id"), login_l, stream_id, started_at, title, s.get("game_id")),
                     )
@@ -299,13 +340,30 @@ class TwitchDeadlockCog(commands.Cog):
         if now_offline:
             await self._mark_offline(now_offline)
 
+        # periodic logging for stats
+        self._tick_count += 1
+        if self._tick_count % self._log_every_n == 0 and streams:
+            with storage.get_conn() as c:
+                for s in streams:
+                    c.execute(
+                        "INSERT INTO twitch_stream_logs (streamer_login, user_id, title, viewers, started_at, language, game_id, game_name) VALUES (?,?,?,?,?,?,?,?)",
+                        (
+                            s.get("user_login"), s.get("user_id"), s.get("title"), s.get("viewer_count"), s.get("started_at"), s.get("language"), s.get("game_id"), s.get("game_name"),
+                        ),
+                    )
+
     async def _post_go_live(self, logins: List[str], live_by_login: Dict[str, dict]):
-        # group by guild settings (we currently support one channel per guild)
+        # Prefer explicit channel override if configured
+        target_channel = None
+        if self._notify_channel_id:
+            target_channel = self.bot.get_channel(self._notify_channel_id)
         for g in self.bot.guilds:
             settings = self._get_settings(g.id)
-            if not settings:
-                continue
-            channel = g.get_channel(int(settings["channel_id"]))
+            channel = None
+            if not target_channel and settings:
+                channel = g.get_channel(int(settings["channel_id"]))
+            else:
+                channel = target_channel
             if not isinstance(channel, (discord.TextChannel, discord.Thread)):
                 continue
             for login in logins:
@@ -315,37 +373,85 @@ class TwitchDeadlockCog(commands.Cog):
                     description=s.get("title") or "",
                     colour=discord.Colour.purple(),
                 )
-                thumb = s.get("thumbnail_url", "").replace("{width}", "640").replace("{height}", "360")
+                thumb = (s.get("thumbnail_url") or "").replace("{width}", "640").replace("{height}", "360")
                 if thumb:
                     embed.set_image(url=thumb)
                 embed.add_field(name="Viewer", value=str(s.get("viewer_count")))
                 embed.add_field(name="Kategorie", value=s.get("game_name") or "Deadlock", inline=True)
                 url = f"https://twitch.tv/{login}"
                 embed.add_field(name="Link", value=url, inline=False)
-                msg = await channel.send(content=f"🔴 **{s.get('user_name')}** ist live: {url}", embed=embed)
-                with storage.get_conn() as c:
-                    c.execute(
-                        "UPDATE twitch_live_state SET last_discord_message_id=?, last_notified_at=CURRENT_TIMESTAMP WHERE streamer_login=?",
-                        (str(msg.id), login),
-                    )
+                try:
+                    msg = await channel.send(content=f"🔴 **{s.get('user_name')}** ist live: {url}", embed=embed)
+                    with storage.get_conn() as c:
+                        c.execute(
+                            "UPDATE twitch_live_state SET last_discord_message_id=?, last_notified_at=CURRENT_TIMESTAMP WHERE streamer_login=?",
+                            (str(msg.id), login),
+                        )
+                except Exception as e:
+                    log.warning("failed to post go-live for %s: %s", login, e)
 
     async def _mark_offline(self, logins: List[str]):
-        for g in self.bot.guilds:
-            settings = self._get_settings(g.id)
-            if not settings:
-                continue
-            channel = g.get_channel(int(settings["channel_id"]))
-            if not isinstance(channel, (discord.TextChannel, discord.Thread)):
-                continue
+        # Try both override and per-guild settings
+        targets: List[discord.abc.Messageable] = []
+        if self._notify_channel_id:
+            ch = self.bot.get_channel(self._notify_channel_id)
+            if isinstance(ch, (discord.TextChannel, discord.Thread)):
+                targets.append(ch)
+        if not targets:
+            for g in self.bot.guilds:
+                settings = self._get_settings(g.id)
+                if not settings:
+                    continue
+                ch = g.get_channel(int(settings["channel_id"]))
+                if isinstance(ch, (discord.TextChannel, discord.Thread)):
+                    targets.append(ch)
+        # edit last live message if possible
+        for ch in targets:
             with storage.get_conn() as c:
-                rows = c.execute("SELECT streamer_login, last_discord_message_id FROM twitch_live_state WHERE streamer_login IN (%s)" % ",".join([
-                    "?" for _ in logins
-                ]), tuple(logins)).fetchall()
+                qmarks = ",".join(["?" for _ in logins])
+                rows = c.execute(f"SELECT streamer_login, last_discord_message_id FROM twitch_live_state WHERE streamer_login IN ({qmarks})", tuple(logins)).fetchall()
             for r in rows:
+                mid = r["last_discord_message_id"]
+                if not mid:
+                    continue
                 try:
-                    mid = r["last_discord_message_id"]
-                    if mid:
-                        msg = await channel.fetch_message(int(mid))
-                        await msg.edit(content=(msg.content + " (beendet)"))
-                except Exception:
-                    pass
+                    msg = await ch.fetch_message(int(mid))
+                    await msg.edit(content=(msg.content + " (beendet)"))
+                except Exception as e:
+                    log.debug("cannot edit message %s: %s", mid, e)
+
+    # -----------------------------
+    # Daily re-verify (30d)
+    # -----------------------------
+    @tasks.loop(hours=24)
+    async def link_reverify(self):
+        if not self.api:
+            return
+        with storage.get_conn() as c:
+            rows = c.execute(
+                "SELECT twitch_login, require_discord_link, last_link_ok, next_link_check_at FROM twitch_streamers WHERE require_discord_link=1"
+            ).fetchall()
+        for r in rows:
+            login = r["twitch_login"]
+            due = not r["next_link_check_at"] or True
+            # sqlite returns str; compare in SQL next time
+            try:
+                ok = await self._check_discord_link(login)
+                if not ok:
+                    await self._notify_missing_link(login)
+                await asyncio.sleep(0.25)
+            except Exception as e:
+                log.warning("link reverification failed for %s: %s", login, e)
+
+    async def _notify_missing_link(self, login: str):
+        if not self._alert_channel_id:
+            return
+        ch = self.bot.get_channel(self._alert_channel_id)
+        if not isinstance(ch, (discord.TextChannel, discord.Thread)):
+            return
+        mention = self._alert_mention or ""
+        try:
+            await ch.send(f"⚠️ {mention} Twitch-Profillink fehlt oder ungültig bei **{login}**.")
+        except Exception as e:
+            log.warning("failed to send alert: %s", e)
+
