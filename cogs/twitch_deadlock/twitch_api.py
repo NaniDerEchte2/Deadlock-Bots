@@ -1,8 +1,6 @@
-# =========================================
-# cogs/twitch_deadlock/twitch_api.py
-# =========================================
 import asyncio
 import time
+import logging
 from typing import Dict, List, Optional, Tuple, Union
 
 import aiohttp
@@ -10,12 +8,15 @@ import aiohttp
 TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 TWITCH_API_BASE = "https://api.twitch.tv/helix"
 
-class TwitchAPI:
-    """Thin async wrapper around Twitch Helix using app access tokens.
 
-    Notes:
-      * Uses **Search Categories** to resolve game/category IDs (Get Games is superseded).
-      * No secrets logged; short timeouts + simple backoff.
+class TwitchAPI:
+    """
+    Async Wrapper für Twitch Helix mit App-Access-Token.
+
+    - Eine wiederverwendete aiohttp.ClientSession (lazy erstellt)
+    - Keine Secrets im Log
+    - Timeouts + Backoff bei 5xx/429
+    - Kategorien via /search/categories; Streams via /streams; Profile via /users
     """
 
     def __init__(self, client_id: str, client_secret: str, session: Optional[aiohttp.ClientSession] = None):
@@ -27,21 +28,28 @@ class TwitchAPI:
         self._token_expiry: float = 0.0
         self._lock = asyncio.Lock()
         self._category_cache: Dict[str, str] = {}  # name_lower -> id
+        self._log = logging.getLogger("TwitchDeadlock")
+
+    # ---- Session lifecycle -------------------------------------------------
+    def _ensure_session(self) -> None:
+        if self._session is None:
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
+            self._own_session = True
+
+    async def aclose(self) -> None:
+        if self._own_session and self._session and not self._session.closed:
+            await self._session.close()
 
     async def __aenter__(self):
-        if self._session is None:
-            self._session = aiohttp.ClientSession()
-            self._own_session = True
+        self._ensure_session()
         return self
 
     async def __aexit__(self, *exc):
-        if self._own_session and self._session:
-            await self._session.close()
+        await self.aclose()
 
-    # ------------------------
-    # OAuth app access token
-    # ------------------------
+    # ---- OAuth -------------------------------------------------------------
     async def _ensure_token(self):
+        self._ensure_session()
         async with self._lock:
             if self._token and time.time() < self._token_expiry - 60:
                 return
@@ -51,33 +59,29 @@ class TwitchAPI:
                 "client_secret": self.client_secret,
                 "grant_type": "client_credentials",
             }
-            async with self._session.post(TWITCH_TOKEN_URL, data=data, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                r.raise_for_status()
+            async with self._session.post(TWITCH_TOKEN_URL, data=data) as r:
+                if r.status != 200:
+                    txt = await r.text()
+                    self._log.error("twitch token exchange failed: HTTP %s: %s", r.status, txt[:300].replace("\n", " "))
+                    r.raise_for_status()
                 js = await r.json()
                 self._token = js.get("access_token")
                 expires = js.get("expires_in", 3600)
                 self._token_expiry = time.time() + float(expires)
 
     def _headers(self) -> Dict[str, str]:
-        return {
-            "Client-ID": self.client_id,
-            "Authorization": f"Bearer {self._token}",
-        }
+        return {"Client-ID": self.client_id, "Authorization": f"Bearer {self._token}"}
 
-    # ------------------------
-    # Core request
-    # ------------------------
+    # ---- Core GET ----------------------------------------------------------
     async def _get(self, path: str, params: Optional[Union[Dict[str, str], List[Tuple[str, str]]]] = None) -> Dict:
         await self._ensure_token()
+        self._ensure_session()
         assert self._session is not None
         backoff = 1.0
         for _ in range(4):
             try:
                 async with self._session.get(
-                    f"{TWITCH_API_BASE}{path}",
-                    headers=self._headers(),
-                    params=params,
-                    timeout=aiohttp.ClientTimeout(total=15),
+                    f"{TWITCH_API_BASE}{path}", headers=self._headers(), params=params
                 ) as r:
                     if r.status == 429:
                         await asyncio.sleep(min(10, backoff))
@@ -93,11 +97,8 @@ class TwitchAPI:
                 raise
         raise RuntimeError("Twitch API retries exhausted")
 
-    # ------------------------
-    # Categories (games)
-    # ------------------------
+    # ---- Categories (Games) -----------------------------------------------
     async def search_category_id(self, query: str) -> Optional[str]:
-        """Resolve a category/game id via /search/categories (case-insensitive exact name preferred)."""
         if not query:
             return None
         ql = query.lower()
@@ -110,7 +111,6 @@ class TwitchAPI:
             if name.lower() == ql:
                 best = item.get("id")
                 break
-            # fallback: startswith
             if not best and name.lower().startswith(ql):
                 best = item.get("id")
         if best:
@@ -120,22 +120,27 @@ class TwitchAPI:
     async def get_category_id(self, name: str) -> Optional[str]:
         return await self.search_category_id(name)
 
-    # ------------------------
-    # Users & Streams
-    # ------------------------
+    # ---- Users & Streams ---------------------------------------------------
     async def get_users(self, logins: List[str]) -> Dict[str, Dict]:
         out: Dict[str, Dict] = {}
         if not logins:
             return out
         for i in range(0, len(logins), 100):
-            chunk = logins[i:i+100]
+            chunk = logins[i:i + 100]
             params: List[Tuple[str, str]] = [("login", x) for x in chunk]
             js = await self._get("/users", params=params)
             for u in js.get("data", []) or []:
                 out[u["login"].lower()] = u
         return out
 
-    async def get_streams(self, *, user_logins: Optional[List[str]] = None, game_id: Optional[str] = None, language: Optional[str] = None, first: int = 100) -> List[Dict]:
+    async def get_streams(
+        self,
+        *,
+        user_logins: Optional[List[str]] = None,
+        game_id: Optional[str] = None,
+        language: Optional[str] = None,
+        first: int = 100,
+    ) -> List[Dict]:
         params: List[Tuple[str, str]] = []
         if user_logins:
             for u in user_logins[:100]:
