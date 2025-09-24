@@ -23,7 +23,7 @@ def _resolve_db_path() -> str:
 class SteamVerifiedRole(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.guild_id = int(os.getenv("GUILD_ID", "0"))
+        self.guild_id = int(os.getenv("GUILD_ID", "1289721245281292288"))
         self.verified_role_id = int(os.getenv("VERIFIED_ROLE_ID", "1419608095533043774"))
         self.log_channel_id = int(os.getenv("VERIFIED_LOG_CHANNEL_ID", "1374364800817303632"))
         self.db_path = _resolve_db_path()
