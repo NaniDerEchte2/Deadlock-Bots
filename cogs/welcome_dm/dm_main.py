@@ -186,7 +186,7 @@ class WelcomeDM(commands.Cog):
                     "• Starte **Deadlock**\n"
                     "• Drücke **Esc** → **Profil**\n"
                     "• Unter dem **letzten Match**, neben **Sortieren nach: Spielzeit**, findest du deinen **Rang**\n"
-                    f"• Oder schau hier aufs Bild: [Hier Klicken](https://media.discordapp.net/attachments/1330665839078146059/1412581096436269096/image.png?ex=68c7f969&is=68c6a7e9&hm=8c6c3ce664f644f99b2d5114cb3a09d7874a6624a7a9a569ea2a8b5c2ea3f239&=&format=webp&quality=lossless&width=2162&height=1216)\n"
+                    f"• Oder schau hier aufs Bild: [Hier Klicken](https://drive.google.com/file/d/1zHn7sj6XDKGviLPOotGFiuw5gAM2EwGN/view?usp=sharing)\n"
                     "**Deutsch/Englisch verwirrt?**\n"
                     "Vergleiche einfach **das Aussehen** der Abzeichen mit dem, was du im Dropdown siehst.\n\n"
                     "Wenn du **neu im Game** bist, wähle bitte **„Neu im Game“**."
