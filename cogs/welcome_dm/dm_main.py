@@ -13,7 +13,7 @@ from .step_status import PlayerStatusView
 from .step_customs import CustomGamesView
 from .step_patchnotes import PatchnotesView
 from .step_rank import RankView
-from .step_steam_link import SteamLinkNudgeView
+from .step_steam_link import SteamLinkNudgeView, _SteamLinkPromptView  # <— neu: Prompt-View importieren
 from .step_rules import RulesView
 
 
@@ -40,6 +40,10 @@ class WelcomeDM(commands.Cog):
         self.bot.add_view(RankView(guild_for_emojis=None))
         self.bot.add_view(SteamLinkNudgeView())
         self.bot.add_view(RulesView())
+
+        # WICHTIG: Auch die Optionen-View (stateless) global registrieren,
+        # damit ihre Buttons nach einem Neustart weiter funktionieren.
+        self.bot.add_view(_SteamLinkPromptView(self.bot))
 
     @commands.Cog.listener()
     async def on_ready(self):

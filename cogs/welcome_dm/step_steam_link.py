@@ -1,18 +1,17 @@
 # cogs/welcome_dm/step_steam_link.py
-# — Steam-Link Schritt (Nudge + Optionen) —
-# Anpassungen:
-# - Erster Button: GRÜN „Steam verknüpfen“ (manuell, Modal)
-# - Steam OpenID umbenannt auf „Steam Profil suchen“ (grau, ephemeral Link)
-# - Hilfe-Button (Link) über Konstante HELP (kein ENV)
-# - Rest (Texte/Flow/Guard) unverändert
+# — Steam-Link Schritt (Nudge + Optionen), persistent-ready & stateless —
+# WICHTIG für Persistenz über Neustarts:
+#   * timeout=None
+#   * feste custom_id für alle Buttons
+#   * View beim Bot-Start registrieren: bot.add_view(_SteamLinkPromptView(bot))
+# Siehe: discord.py / pycord Guides zu Persistent Views.
 
 from __future__ import annotations
 
-import os
 import re
 import logging
 import asyncio
-from typing import Optional
+from typing import Optional, Tuple
 from urllib.parse import urlparse
 
 import discord
@@ -25,7 +24,6 @@ log = logging.getLogger("WelcomeSteamStep")
 # Trage hier deine Hilfe-URL ein (z. B. YouTube-Video/Playlist).
 # Wenn leer, wird der Button automatisch disabled.
 HELP = ""
-
 
 # --------------------- DB ---------------------
 def _ensure_schema() -> None:
@@ -46,7 +44,6 @@ def _ensure_schema() -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_user ON steam_links(user_id)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)")
 
-
 def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: int = 0) -> None:
     _ensure_schema()
     db.execute(
@@ -60,7 +57,6 @@ def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: 
         """,
         (int(user_id), str(steam_id), name or "", int(verified)),
     )
-
 
 # --------------------- Modal: manuelle Eingabe ---------------------
 class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
@@ -170,8 +166,7 @@ class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
             except (discord.NotFound, discord.HTTPException) as e2:
                 log.debug("Followup send failed: %r", e2)
 
-
-# --------------------- Texte (UNVERÄNDERT) ---------------------
+# --------------------- Texte ---------------------
 EMBED_TITLE = "Empfehlung für besseres Erlebnis"
 EMBED_DESC = (
     "• **Wozu ist das gut?** Wir können deinen Voice-Status (z. B. **Lobby/In-Game**, **Anzahl im Match**) "
@@ -190,20 +185,27 @@ EMBED_DESC = (
 )
 EMBED_FOOTER = "Kurzbefehle: /link · /link_steam · /addsteam"
 
-
-# --------------------- Optionen-View ---------------------
+# --------------------- Optionen-View (stateless & persistent-ready) ---------------------
 class _SteamLinkPromptView(discord.ui.View):
     """
     Optionen-View:
-      - Erster Button: GRÜN (manuell) „Steam verknüpfen“
-      - „Mit Discord verbinden“ (grau) öffnet ephemeral mit Link-Button
-      - „Steam Profil suchen“ (grau) öffnet ephemeral mit Link-Button
+      - Grün: „Steam verknüpfen“ (manuell, Modal)
+      - Grau: „Mit Discord verbinden“ (ephemeral Link)
+      - Grau: „Steam Profil suchen“ (ephemeral Link zum OpenID)
       - Hilfe-Link-Button (Konstante HELP)
-      - „Weiter“ wird via Poll aktiv, sobald in DB irgendein Link existiert.
+      - „Weiter“ prüft in DB und fährt den Flow fort (kein Poll nötig)
+    HINWEIS für Persistenz über Neustarts:
+      * timeout=None, feste custom_id
+      * beim Start: bot.add_view(_SteamLinkPromptView(bot))
     """
-    def __init__(self, bot: discord.Client, user: discord.abc.User, parent_step: SteamLinkNudgeView,
-                 timeout: Optional[float] = None):
-        super().__init__(timeout=timeout)
+    def __init__(
+        self,
+        bot: discord.Client,
+        user: Optional[discord.abc.User] = None,
+        parent_step: Optional["SteamLinkNudgeView"] = None,
+        timeout: Optional[float] = None,
+    ):
+        super().__init__(timeout=None)  # persistent-ready
         self.bot = bot
         self.user = user
         self.parent_step = parent_step
@@ -222,7 +224,7 @@ class _SteamLinkPromptView(discord.ui.View):
         )
         self.btn_discord.callback = self._click_discord  # type: ignore[assignment]
 
-        # Steam OpenID – grau, umbenannt
+        # Steam OpenID – grau
         self.btn_steam = discord.ui.Button(
             label="Steam Profil suchen", style=discord.ButtonStyle.secondary,
             emoji="🎮", custom_id="steam_openid_open", row=0
@@ -248,75 +250,100 @@ class _SteamLinkPromptView(discord.ui.View):
         )
         self.btn_close.callback = self._click_close  # type: ignore[assignment]
 
+        # Hinweis: Kein Poll – „Weiter“ ist immer klickbar, prüft DB on-click.
         self.btn_next = discord.ui.Button(
-            label="Weiter", style=discord.ButtonStyle.secondary,
-            emoji="➡️", custom_id="steam_next", row=2, disabled=True
+            label="Weiter", style=discord.ButtonStyle.primary,
+            emoji="➡️", custom_id="steam_next", row=2, disabled=False
         )
         self.btn_next.callback = self._click_next  # type: ignore[assignment]
 
-        self._discord_url: str = ""
-        self._steam_url: str = ""
-
-        self._poll_task: Optional[asyncio.Task] = None
-        self.message: Optional[discord.Message] = None
-
+    # ---- Helpers ----
     def _steam_cog(self):
         return self.bot.get_cog("SteamLink")
 
-    def _has_any_link(self) -> bool:
+    def _has_any_link(self, user_id: int) -> bool:
         _ensure_schema()
-        row = db.query_one("SELECT 1 FROM steam_links WHERE user_id=? LIMIT 1", (int(self.user.id),))
+        row = db.query_one("SELECT 1 FROM steam_links WHERE user_id=? LIMIT 1", (int(user_id),))
         return bool(row)
 
-    async def _poll_links(self):
-        try:
-            while True:
-                await asyncio.sleep(5)
-                if not self.message:
-                    continue
-                enabled = self._has_any_link()
-                if self.btn_next.disabled and enabled:
-                    self.btn_next.disabled = False
-                    try:
-                        await self.message.edit(view=self)
-                    except (discord.HTTPException, discord.NotFound) as e:
-                        log.debug("poll edit failed: %r", e)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            log.exception("Steam link poll task crashed: %r", e)
+    def _mk_urls_for(self, uid: int) -> Tuple[str, str]:
+        """Baue (discord_oauth_url, steam_openid_url) dynamisch für den User."""
+        disc = ""
+        steam = ""
+        cog = self._steam_cog()
+        if cog and hasattr(cog, "build_discord_link_for"):
+            try:
+                disc = cog.build_discord_link_for(uid)  # type: ignore[attr-defined]
+            except Exception as e:
+                log.debug("build_discord_link_for failed: %r", e)
+        if not disc and cog:
+            try:
+                disc = cog._build_discord_auth_url(uid)  # type: ignore[attr-defined]
+            except Exception as e:
+                log.debug("_build_discord_auth_url failed: %r", e)
 
-    def stop(self) -> None:
-        if self._poll_task and not self._poll_task.done():
-            self._poll_task.cancel()
-        super().stop()
+        if cog and hasattr(cog, "build_steam_openid_for"):
+            try:
+                steam = cog.build_steam_openid_for(uid)  # type: ignore[attr-defined]
+            except Exception as e:
+                log.debug("build_steam_openid_for failed: %r", e)
+        if not steam and cog:
+            try:
+                state = cog._mk_state(uid)                 # type: ignore[attr-defined]
+                steam = cog._build_steam_login_url(state)  # type: ignore[attr-defined]
+            except Exception as e:
+                log.debug("_build_steam_login_url failed: %r", e)
 
+        return disc, steam
+
+    # ---- Button-Handler ----
     async def _click_manual(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user.id:
+        # Nur der adressierte User darf drücken (falls self.user gesetzt wurde).
+        if self.user and interaction.user.id != self.user.id:
             await interaction.response.send_message("Diese Aktion ist nicht für dich bestimmt.", ephemeral=True)
             return
-        await interaction.response.send_modal(_ManualSteamModal(self.bot, self.user))
+        target_user = self.user or interaction.user
+        await interaction.response.send_modal(_ManualSteamModal(self.bot, target_user))
 
     async def _click_discord(self, interaction: discord.Interaction):
+        disc_url, _ = self._mk_urls_for(interaction.user.id)
         view = discord.ui.View()
-        if self._discord_url:
-            view.add_item(discord.ui.Button(label="Jetzt per Discord verbinden", style=discord.ButtonStyle.link, url=self._discord_url))
+        if disc_url:
+            view.add_item(discord.ui.Button(
+                label="Jetzt per Discord verbinden",
+                style=discord.ButtonStyle.link,
+                url=disc_url
+            ))
+        log.info("[nudge] OAuth-URL bereit (discord) user=%s(%s) guild=%s ch=%s url_set=%s",
+                 getattr(interaction.user, "name", "?"), interaction.user.id,
+                 getattr(interaction.guild, "id", "-"), getattr(interaction.channel, "id", "-"),
+                 bool(disc_url))
         await interaction.response.send_message(
             "🔗 Verbinde dich kurz per Discord-OAuth. Wir lesen **identify + connections**.",
             ephemeral=True, view=view
         )
 
     async def _click_steam(self, interaction: discord.Interaction):
+        _, steam_url = self._mk_urls_for(interaction.user.id)
         view = discord.ui.View()
-        if self._steam_url:
-            view.add_item(discord.ui.Button(label="Jetzt mit Steam anmelden", style=discord.ButtonStyle.link, url=self._steam_url))
+        if steam_url:
+            view.add_item(discord.ui.Button(
+                label="Jetzt mit Steam anmelden",
+                style=discord.ButtonStyle.link,
+                url=steam_url
+            ))
+        log.info("[nudge] OAuth-URL bereit (steam) user=%s(%s) guild=%s ch=%s url_set=%s",
+                 getattr(interaction.user, "name", "?"), interaction.user.id,
+                 getattr(interaction.guild, "id", "-"), getattr(interaction.channel, "id", "-"),
+                 bool(steam_url))
         await interaction.response.send_message(
             "🎮 Öffne den offiziellen **Steam-Login**. Wir erhalten nur deine **SteamID64**.",
             ephemeral=True, view=view
         )
 
     async def _click_close(self, interaction: discord.Interaction):
-        self.parent_step.force_finish()
+        if self.parent_step:
+            self.parent_step.force_finish()
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -329,6 +356,7 @@ class _SteamLinkPromptView(discord.ui.View):
         except Exception as e:
             log.debug("close interaction outer failed: %r", e)
             try:
+                # Fallback: Buttons deaktivieren
                 for it in self.children:
                     if isinstance(it, discord.ui.Button):
                         it.disabled = True
@@ -337,28 +365,23 @@ class _SteamLinkPromptView(discord.ui.View):
                 log.debug("close fallback edit failed: %r", e2)
 
     async def _click_next(self, interaction: discord.Interaction):
-        _ensure_schema()
-        row = db.query_one("SELECT 1 FROM steam_links WHERE user_id=? LIMIT 1", (int(self.user.id),))
-        if not row:
+        uid = interaction.user.id
+        if not self._has_any_link(uid):
             try:
-                self.btn_next.disabled = True
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
                         "⏳ Noch kein verknüpfter Steam-Account gefunden. "
                         "Bitte eine der Optionen oben nutzen.",
                         ephemeral=True,
                     )
-                try:
-                    await interaction.message.edit(view=self)
-                except (discord.HTTPException, discord.NotFound) as e2:
-                    log.debug("edit after next-guard failed: %r", e2)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 log.debug("next guard response failed: %r", e)
             return
 
-        self.parent_step.force_finish()
+        if self.parent_step:
+            self.parent_step.force_finish()
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -378,35 +401,9 @@ class _SteamLinkPromptView(discord.ui.View):
             except (discord.HTTPException, discord.NotFound) as e2:
                 log.debug("next fallback edit failed: %r", e2)
 
+    # ---- Senden der Optionen-Karte ----
     async def send(self, channel: discord.abc.Messageable) -> discord.Message:
-        # Frische URLs vom Steam-Cog holen
-        self._discord_url = ""
-        self._steam_url = ""
-        cog = self._steam_cog()
-        if cog and hasattr(cog, "build_discord_link_for"):
-            try:
-                self._discord_url = cog.build_discord_link_for(self.user.id)  # type: ignore
-            except Exception as e:
-                log.debug("build_discord_link_for failed: %r", e)
-        if not self._discord_url and cog:
-            try:
-                self._discord_url = cog._build_discord_auth_url(self.user.id)  # type: ignore[attr-defined]
-            except Exception as e:
-                log.debug("_build_discord_auth_url failed: %r", e)
-
-        if cog and hasattr(cog, "build_steam_openid_for"):
-            try:
-                self._steam_url = cog.build_steam_openid_for(self.user.id)  # type: ignore
-            except Exception as e:
-                log.debug("build_steam_openid_for failed: %r", e)
-        if not self._steam_url and cog:
-            try:
-                state = cog._mk_state(self.user.id)                 # type: ignore[attr-defined]
-                self._steam_url = cog._build_steam_login_url(state) # type: ignore[attr-defined]
-            except Exception as e:
-                log.debug("_build_steam_login_url failed: %r", e)
-
-        # View befüllen (Reihenfolge wichtig: Grün zuerst)
+        # Reihenfolge wichtig: Grün zuerst
         self.clear_items()
         self.add_item(self.btn_manual)   # Grün
         self.add_item(self.btn_discord)  # Grau
@@ -417,19 +414,18 @@ class _SteamLinkPromptView(discord.ui.View):
 
         embed = discord.Embed(title=EMBED_TITLE, description=EMBED_DESC, color=discord.Color.dark_gray())
         embed.set_footer(text=EMBED_FOOTER)
-
-        msg = await channel.send(embed=embed, view=self)
-        self.message = msg
-        self._poll_task = asyncio.create_task(self._poll_links())
-        return msg
-
+        return await channel.send(embed=embed, view=self)
 
 # --------------------- Nudge-View (Schritt im DM-Flow) ---------------------
 class SteamLinkNudgeView(StepView):
     """Frage 5: Steam-Link (Nudge; öffnet bei Klick die Optionen-View)."""
 
-    @discord.ui.button(label="Jetzt verknüpfen (empfohlen)", style=discord.ButtonStyle.success,
-                       custom_id="wdm:q5:linknow", emoji="🔗")
+    @discord.ui.button(
+        label="Jetzt verknüpfen (empfohlen)",
+        style=discord.ButtonStyle.success,
+        custom_id="wdm:q5:linknow",
+        emoji="🔗"
+    )
     async def link_now(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             # Erste Nudge-Nachricht entfernen
@@ -450,7 +446,7 @@ class SteamLinkNudgeView(StepView):
             except Exception as e:
                 log.debug("nudge cleanup failed: %r", e)
 
-            # Optionen-Karte senden
+            # Optionen-Karte senden (per-user Instanz, aber ohne state reliance)
             channel = interaction.channel or await interaction.user.create_dm()
             view = _SteamLinkPromptView(interaction.client, interaction.user, parent_step=self, timeout=None)
             await view.send(channel)
@@ -468,14 +464,20 @@ class SteamLinkNudgeView(StepView):
             except (discord.HTTPException, discord.NotFound) as e2:
                 log.debug("followup after failure failed: %r", e2)
 
-    @discord.ui.button(label="Später", style=discord.ButtonStyle.secondary, custom_id="wdm:q5:skip", emoji="⏭️")
-    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._enforce_min_wait(interaction):
-            return
+    @discord.ui.button(
+        label="Später",
+        style=discord.ButtonStyle.secondary,
+        custom_id="wdm:q5:later",
+        emoji="🕐"
+    )
+    async def later(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._finish(interaction)
 
-    @discord.ui.button(label="Weiter", style=discord.ButtonStyle.secondary, custom_id="wdm:q5:next")
-    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._enforce_min_wait(interaction):
-            return
+    @discord.ui.button(
+        label="Überspringen",
+        style=discord.ButtonStyle.danger,
+        custom_id="wdm:q5:skip",
+        emoji="⏭️"
+    )
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._finish(interaction)
