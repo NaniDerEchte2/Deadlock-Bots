@@ -806,7 +806,7 @@ _shutdown_started = False
 _kill_timer: threading.Timer | None = None
 
 async def _graceful_shutdown(bot: MasterBot, reason: str = "signal",
-                             timeout_close: float = 6.0, timeout_total: float = 10.0):
+                             timeout_close: float = 3.0, timeout_total: float = 4.0):
     global _shutdown_started, _kill_timer
     if _shutdown_started:
         return
@@ -864,11 +864,11 @@ async def main():
 
         logging.info(f"Received signal {signum}, shutting down gracefully...")
 
-        # Watchdog: harter Kill nach KILL_AFTER_SECONDS (default 10s)
+        # Watchdog: harter Kill nach KILL_AFTER_SECONDS (default 2s)
         try:
-            kill_after = float(os.getenv("KILL_AFTER_SECONDS", "10"))
+            kill_after = float(os.getenv("KILL_AFTER_SECONDS", "2"))
         except ValueError:
-            kill_after = 10.0
+            kill_after = 2.0
 
         global _kill_timer
         try:
@@ -885,7 +885,7 @@ async def main():
         try:
             asyncio.get_running_loop().create_task(_graceful_shutdown(bot, reason=f"signal {signum}",
                                                                       timeout_close=float(os.getenv("DISCORD_CLOSE_TIMEOUT", "5")),
-                                                                      timeout_total=max(kill_after, 10.0)))
+                                                                      timeout_total=max(kill_after, 2.0)))
         except RuntimeError:
             os._exit(0)
 

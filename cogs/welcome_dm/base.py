@@ -13,7 +13,7 @@ THANK_YOU_DELETE_AFTER_SECONDS  = 300  # 5 Minuten
 # -------------------------------------------
 
 # Mindest-Lesezeit für alle "Weiter"- und "Ne danke"-Aktionen
-MIN_NEXT_SECONDS = 5
+MIN_NEXT_SECONDS = 2
 
 # Status-Optionen (Frage 1)
 STATUS_NEED_BETA   = "need_beta"
