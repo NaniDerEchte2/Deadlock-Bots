@@ -20,6 +20,31 @@ import traceback
 
 import discord
 from discord.ext import commands
+# --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
+import sys, os, importlib, inspect, logging, hashlib
+
+def _log_src(modname: str):
+    try:
+        m = importlib.import_module(modname)
+        path = inspect.getfile(m)
+        sha = hashlib.sha1(open(path,'rb').read()).hexdigest()[:12]
+        logging.getLogger().info("SRC %s -> %s [sha1:%s]", modname, path, sha)
+    except Exception as e:
+        logging.getLogger().error("SRC %s -> %r", modname, e)
+
+logging.getLogger().info("PYTHON exe=%s", sys.executable)
+logging.getLogger().info("CWD=%s", os.getcwd())
+logging.getLogger().info("sys.path[0]=%s", sys.path[0] if sys.path else None)
+
+# prüfe gezielt die „verdächtigen“
+for name in [
+    "cogs.rules_channel",
+    "cogs.welcome_dm.dm_main",
+    "cogs.welcome_dm.step_streamer",
+    "cogs.welcome_dm.step_steam_link",
+]:
+    _log_src(name)
+# --- /DEBUG ---
 
 # =========================
 # .env robust laden
