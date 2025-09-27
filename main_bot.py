@@ -1,4 +1,4 @@
-# main_bot.py — angepasst für Shutdown-Watchdog & gezieltes Unload
+# main_bot.py — angepasst für Shutdown-Watchdog & korrektes Cog-Unload/Status
 # Basierend auf deiner letzten Version (Auto-Discovery, Health-Checks, usw.)
 from __future__ import annotations
 
@@ -21,13 +21,14 @@ import traceback
 import discord
 from discord.ext import commands
 # --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
-import sys, os, importlib, inspect, logging, hashlib
+import sys as _sys, os as _os, importlib, inspect, logging as _logging, hashlib
 
 def _log_src(modname: str):
     try:
         m = importlib.import_module(modname)
         path = inspect.getfile(m)
-        sha = hashlib.sha1(open(path,'rb').read()).hexdigest()[:12]
+        with open(path, 'rb') as fh:
+            sha = hashlib.sha1(fh.read()).hexdigest()[:12]
         logging.getLogger().info("SRC %s -> %s [sha1:%s]", modname, path, sha)
     except Exception as e:
         logging.getLogger().error("SRC %s -> %r", modname, e)
@@ -180,6 +181,7 @@ class MasterBot(commands.Bot):
      - ENV-Filter: COG_EXCLUDE, COG_ONLY
      - zentrale DB-Init
      - Timeout-gestütztem Cog-Unload
+     - KORREKTER Runtime-Status (self.extensions) + Presence-Updates
     """
 
     def __init__(self):
@@ -337,6 +339,23 @@ class MasterBot(commands.Bot):
 
         logging.info("Master Bot logging initialized")
 
+    # --------------------- Runtime-Status & Presence -------------------
+    def active_cogs(self) -> List[str]:
+        """Aktuell geladene Extensions (runtime), nur 'cogs.'-Namespace."""
+        return sorted([ext for ext in self.extensions.keys() if ext.startswith("cogs.")])
+
+    async def update_presence(self):
+        """Presence immer anhand der echten Runtime-Anzahl setzen."""
+        pfx = os.getenv("COMMAND_PREFIX", "!")
+        try:
+            activity = discord.Activity(
+                type=discord.ActivityType.watching,
+                name=f"{len(self.active_cogs())} Cogs | {pfx}help",
+            )
+            await self.change_presence(activity=activity)
+        except Exception:
+            pass
+
     # --------------------- Lifecycle ----------------------------------
     async def setup_hook(self):
         logging.info("Master Bot setup starting...")
@@ -360,14 +379,11 @@ class MasterBot(commands.Bot):
         logging.info(f"Bot logged in as {self.user} (ID: {self.user.id})")
         logging.info(f"Connected to {len(self.guilds)} guilds")
 
-        activity = discord.Activity(
-            type=discord.ActivityType.watching,
-            name=f"{len(self.cogs_list)} Cogs | {os.getenv('COMMAND_PREFIX','!')}help",
-        )
-        await self.change_presence(activity=activity)
+        await self.update_presence()
 
-        loaded_cogs = [name for name, status in self.cog_status.items() if status == "loaded"]
-        logging.info(f"Loaded cogs: {len(loaded_cogs)}/{len(self.cogs_list)}")
+        runtime_loaded = self.active_cogs()
+        logging.info(f"Loaded cogs (runtime): {len(runtime_loaded)}")
+        logging.info(f"Loaded cogs: {len(runtime_loaded)}/{len(self.cogs_list)}")
 
         # TempVoice Log (neu)
         try:
@@ -408,6 +424,7 @@ class MasterBot(commands.Bot):
                 logging.error(f"❌ Unexpected error during cog loading: {r}")
 
         logging.info(f"Parallel cog loading completed: {ok}/{len(self.cogs_list)} successful")
+        await self.update_presence()
 
     async def reload_all_cogs_with_discovery(self):
         try:
@@ -418,6 +435,7 @@ class MasterBot(commands.Bot):
                 try:
                     await asyncio.wait_for(self.unload_extension(ext_name), timeout=self.per_cog_unload_timeout)
                     unload_results.append(f"✅ Unloaded: {ext_name}")
+                    self.cog_status[ext_name] = "unloaded"
                     logging.info(f"Unloaded extension: {ext_name}")
                 except asyncio.TimeoutError:
                     unload_results.append(f"⏱️ Timeout unloading {ext_name}")
@@ -434,6 +452,7 @@ class MasterBot(commands.Bot):
             await self.load_all_cogs()
 
             loaded_count = len([s for s in self.cog_status.values() if s == "loaded"])
+            await self.update_presence()
 
             summary = {
                 "unloaded": len(unload_results),
@@ -452,6 +471,7 @@ class MasterBot(commands.Bot):
         try:
             await self.reload_extension(cog_name)
             self.cog_status[cog_name] = "loaded"
+            await self.update_presence()
             msg = f"✅ Successfully reloaded {cog_name}"
             logging.info(msg)
             return True, msg
@@ -459,6 +479,7 @@ class MasterBot(commands.Bot):
             try:
                 await self.load_extension(cog_name)
                 self.cog_status[cog_name] = "loaded"
+                await self.update_presence()
                 msg = f"✅ Loaded {cog_name} (was not loaded before)"
                 logging.info(msg)
                 return True, msg
@@ -527,6 +548,7 @@ class MasterBot(commands.Bot):
                 results[mod] = f"error: {str(e)[:200]}"
                 self.cog_status[mod] = f"error: {str(e)[:100]}"
                 logging.error(f"❌ Reload error for {mod}: {e}")
+        await self.update_presence()
         return results
 
     # --------- Gezieltes Unload (mit Timeout) ----------
@@ -545,6 +567,7 @@ class MasterBot(commands.Bot):
             try:
                 await asyncio.wait_for(self.unload_extension(ext_name), timeout=timeout)
                 results[ext_name] = "unloaded"
+                self.cog_status[ext_name] = "unloaded"
                 logging.info(f"Unloaded extension: {ext_name}")
             except asyncio.TimeoutError:
                 results[ext_name] = "timeout"
@@ -552,6 +575,7 @@ class MasterBot(commands.Bot):
             except Exception as e:
                 results[ext_name] = f"error: {str(e)[:200]}"
                 logging.error(f"Error unloading extension {ext_name}: {e}")
+        await self.update_presence()
         return results
 
     async def close(self):
@@ -633,27 +657,25 @@ class MasterControlCog(commands.Cog):
             inline=True,
         )
 
-        loaded_cogs = []
-        error_cogs = []
-        for cog_name, status in self.bot.cog_status.items():
-            short = cog_name.split(".")[-1]
-            if status == "loaded":
-                loaded_cogs.append(f"✅ {short}")
-            else:
-                error_cogs.append(f"❌ {short}")
+        # NEU: echte Runtime-Extensions
+        active = self.bot.active_cogs()
+        discovered = set(self.bot.cogs_list)
+        inactive = sorted(list(discovered - set(active)))
 
-        if loaded_cogs:
-            embed.add_field(
-                name=f"📦 Loaded Cogs ({len(loaded_cogs)})",
-                value="\n".join(loaded_cogs),
-                inline=True,
-            )
-        if error_cogs:
-            embed.add_field(
-                name=f"⚠️ Error Cogs ({len(error_cogs)})",
-                value="\n".join(error_cogs),
-                inline=True,
-            )
+        if active:
+            short = [f"✅ {a.split('.')[-1]}" for a in active]
+            embed.add_field(name=f"📦 Loaded Cogs ({len(active)})", value="\n".join(short), inline=True)
+
+        if inactive:
+            short_inactive = [f"• {a.split('.')[-1]}" for a in inactive]
+            embed.add_field(name=f"🗂️ Inaktiv/Entdeckt ({len(inactive)})", value="\n".join(short_inactive), inline=True)
+
+        # Optional: zeig fehlerhafte Ladeversuche aus letzter Runde
+        errs = [k for k, v in self.bot.cog_status.items() if isinstance(v, str) and v.startswith("error:")]
+        if errs:
+            err_short = [f"❌ {e.split('.')[-1]}" for e in errs]
+            embed.add_field(name="⚠️ Fehlerhafte Cogs (letzter Versuch)", value="\n".join(err_short), inline=False)
+
         await ctx.send(embed=embed)
 
     @master_control.command(name="reload", aliases=["rl"])
@@ -665,6 +687,7 @@ class MasterControlCog(commands.Cog):
                 return
             target = matches[0]
             ok, msg = await self.bot.reload_cog(target)
+            await self.bot.update_presence()
             embed = discord.Embed(title="🔄 Cog Reload", description=msg, color=0x00FF00 if ok else 0xFF0000)
             await ctx.send(embed=embed)
         else:
@@ -682,6 +705,8 @@ class MasterControlCog(commands.Cog):
         msg = await ctx.send(embed=embed)
 
         ok, result = await self.bot.reload_all_cogs_with_discovery()
+        await self.bot.update_presence()
+
         if ok:
             summary = result
             final = discord.Embed(
@@ -701,7 +726,7 @@ class MasterControlCog(commands.Cog):
                 ),
                 inline=True,
             )
-            loaded_cogs = [n.split(".")[-1] for n, s in self.bot.cog_status.items() if s == "loaded"]
+            loaded_cogs = [n.split(".")[-1] for n in self.bot.active_cogs()]
             if loaded_cogs:
                 final.add_field(name="✅ Aktive Cogs", value="\n".join([f"• {c}" for c in loaded_cogs]), inline=True)
         else:
@@ -712,6 +737,7 @@ class MasterControlCog(commands.Cog):
     @master_control.command(name="reloadlive", aliases=["rllm", "reload_livematch", "reload_lm"])
     async def master_reload_live_folder(self, ctx):
         results = await self.bot.reload_live_match_folder()
+        await self.bot.update_presence()
 
         ok = [k for k, v in results.items() if v in ("reloaded", "loaded")]
         err = {k: v for k, v in results.items() if v.startswith("error:")}
@@ -768,6 +794,8 @@ class MasterControlCog(commands.Cog):
             await ctx.send(f"❌ Keine geladenen Cogs gefunden für Muster: `{pattern}`")
             return
         results = await self.bot.unload_many(matches)
+        await self.bot.update_presence()
+
         ok = [k for k, v in results.items() if v == "unloaded"]
         timeouts = [k for k, v in results.items() if v == "timeout"]
         errs = {k: v for k, v in results.items() if v not in ("unloaded", "timeout")}
@@ -800,6 +828,8 @@ class MasterControlCog(commands.Cog):
             await ctx.send(f"❌ Kein geladener Cog unter Prefix: `{pref}`")
             return
         results = await self.bot.unload_many(matches)
+        await self.bot.update_presence()
+
         ok = [k for k, v in results.items() if v == "unloaded"]
         timeouts = [k for k, v in results.items() if v == "timeout"]
         errs = {k: v for k, v in results.items() if v not in ("unloaded", "timeout")}
