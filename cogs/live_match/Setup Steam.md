@@ -1,47 +1,90 @@
+Alles klar — hier ist die **vollständig überarbeitete README**, logisch sortiert, inkl. **NSSM als Pflicht** für den Caddy-Dienst. Ich habe dir außerdem einen **einfügbaren Block „4.5 Bot-Watchdog (optional)“** mitgegeben, den du bei Bedarf nach 4) einsetzen kannst.
 
-# Steam Link (Discord + Steam OpenID) – Setup & Betrieb (Windows + Caddy)
+---
+
+# Steam Link (Discord + Steam OpenID) – Setup & Betrieb (Windows + Caddy/NSSM)
 
 Dieser Dienst ermöglicht es Usern, ihren Steam-Account mit dem Discord-Account zu verknüpfen.
+
 Er besteht aus:
 
 * einem **Bot-Prozess** (Discord Cog `SteamLink`) mit eingebautem **AioHTTP-Callback-Server** auf `127.0.0.1:8888`
 * einem **Reverse-Proxy (Caddy)**, der die öffentliche Subdomain **`link.earlysalty.com`** auf den Bot weiterleitet und TLS terminiert
 
-> **Wichtig:** Alle **Secrets/Passwörter** kommen **in die ENV**. Konfigurationen (Pfadnamen, Ports, Labels) können gern im Bot-Code bleiben – so ist dieser Guide geschrieben.
+> **Wichtig:** Alle **Secrets/Passwörter** kommen **in die ENV**. Konfigurationen (Pfadnamen, Ports, Labels) können im Bot-Code bleiben.
 
 ---
 
 ## TL;DR (Kurzfassung)
 
 1. **DNS**: `link.earlysalty.com` → öffentliche IP des Windows-Servers.
-2. **Caddy** installieren und mit untenstehendem **Caddyfile** starten.
-3. **ENV** für den Bot setzen (siehe `.env.example`), **Bot starten/neu starten**.
-4. **Discord Developer Portal**: Redirect‐URI `https://link.earlysalty.com/discord/callback` hinterlegen.
-5. **Tests**: `https://link.earlysalty.com/health` → 200,
-   `https://link.earlysalty.com/steam/return?state=abc` → 400 (*invalid/expired state*).
-6. In Discord `/link` ausführen → happy path.
+2. **Installieren**: `choco install caddy nssm -y`.
+3. **Caddy vorbereiten**: `C:\caddy\{Caddyfile,logs,data,config}` anlegen, **XDG-Variablen** setzen.
+4. **Firewall** öffnen (80/443).
+5. **Caddy als Windows-Dienst via NSSM** registrieren (mit `--watch` & XDG-Variablen).
+6. **Bot-ENV** setzen und **Bot starten**.
+7. **Discord Developer Portal**: Redirect `https://link.earlysalty.com/discord/callback`.
+8. **Tests**: `/health` → 200, `/steam/return?state=abc` → 400.
+9. (Optional **4.5**) **Bot-Watchdog**, der Ausfälle in deinen Log-Channel meldet.
 
 ---
 
 ## Voraussetzungen
 
-* Windows Server (PowerShell 7 ok)
-* Administratorrechte
-* `caddy.exe` (in `C:\caddy`)
+* Windows Server (PowerShell 7 ok), Adminrechte
+* **Caddy** (über Chocolatey), **NSSM** (Windows-Dienstmanager)
 * Python 3.10+ (für den Bot)
-* Optional: **NSSM** zum Installieren als Windows-Dienst
 
 ---
 
 ## 1) DNS
 
-* **`link.earlysalty.com`** als A/AAAA-Record auf den Server zeigen lassen
+* **`link.earlysalty.com`** als A/AAAA-Record auf die Server-IP zeigen lassen.
 
 ---
 
-## 2) Caddy konfigurieren
+## 2) Software installieren
 
-Lege `C:\caddy\Caddyfile` an (du hast schon eine funktionsfähige; diese passt 1:1):
+```powershell
+# Als Administrator
+choco install caddy nssm -y
+```
+
+* Die `caddy.exe` liegt danach i. d. R. unter
+  `C:\ProgramData\chocolatey\bin\caddy.exe`
+
+---
+
+## 3) Caddy vorbereiten (Ordner, XDG, Logs)
+
+```powershell
+mkdir C:\caddy\logs  -Force
+mkdir C:\caddy\data  -Force
+mkdir C:\caddy\config -Force
+
+# Caddy State/Certs/Autosave zentral ablegen (nicht im Benutzerprofil):
+setx XDG_DATA_HOME   "C:\caddy\data"   /M
+setx XDG_CONFIG_HOME "C:\caddy\config" /M
+
+# Schreibrechte für Logs (SYSTEM = Dienst, du = manuell)
+icacls C:\caddy\logs /inheritance:e
+icacls C:\caddy\logs /grant "NT AUTHORITY\SYSTEM:(OI)(CI)(F)" /T
+icacls C:\caddy\logs /grant "$env:USERNAME:(OI)(CI)M" /T
+```
+
+> **Hinweis:** Wenn du Caddy vorher schon mal manuell gestartet hast, kannst du (optional) vorhandene Daten nach `C:\caddy\data\Caddy` kopieren:
+>
+> ```powershell
+> robocopy "$env:APPDATA\Caddy" "C:\caddy\data\Caddy" /E
+> ```
+
+---
+
+## 4) Caddy konfigurieren (Caddyfile + Firewall + Dienst)
+
+### 4.1 Caddyfile anlegen
+
+Speichere **`C:\caddy\Caddyfile`** mit folgendem Inhalt:
 
 ```caddy
 {
@@ -59,7 +102,7 @@ www.earlysalty.de {
   redir https://earlysalty.de{uri} 308
 }
 
-# --- Hauptseite (nur der Vollständigkeit halber; kann entfernt werden, falls nicht genutzt) ---
+# --- Hauptseite (optional; entfernen, wenn ungenutzt) ---
 earlysalty.de {
   encode zstd gzip
   tls {
@@ -87,6 +130,7 @@ earlysalty.de {
   @health path /health
   respond @health 200
   reverse_proxy 127.0.0.1:4888
+
   log {
     output file C:/caddy/logs/earlysalty.access.log {
       roll_size 10MiB
@@ -106,6 +150,7 @@ link.earlysalty.com {
       disable_http_challenge
     }
   }
+
   # Security für die Link-Seite
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
@@ -136,31 +181,67 @@ link.earlysalty.com {
 }
 ```
 
-Firewall öffnen (einmalig):
+### 4.2 Firewall öffnen (einmalig)
 
 ```powershell
 netsh advfirewall firewall add rule name="Caddy HTTP 80"  dir=in action=allow protocol=TCP localport=80
 netsh advfirewall firewall add rule name="Caddy HTTPS 443" dir=in action=allow protocol=TCP localport=443
 ```
 
-Starten:
+### 4.3 Caddy als **Windows-Dienst via NSSM** registrieren (**Pflicht**)
+
+> **Wichtig:** Falls Caddy noch manuell läuft → zuerst beenden (`CTRL+C`).
 
 ```powershell
-cd C:\caddy
-caddy validate --config Caddyfile
-caddy start --config Caddyfile --watch
+# Dienst anlegen
+nssm install Caddy "C:\ProgramData\chocolatey\bin\caddy.exe" run --config "C:\caddy\Caddyfile" --watch
+nssm set Caddy AppDirectory "C:\caddy"
+nssm set Caddy Start SERVICE_AUTO_START
+nssm set Caddy AppStdout "C:\caddy\logs\service.out.log"
+nssm set Caddy AppStderr "C:\caddy\logs\service.err.log"
+
+# XDG-Variablen im Dienst erzwingen (damit Certs/State immer unter C:\caddy\... landen)
+nssm set Caddy AppEnvironmentExtra "XDG_DATA_HOME=C:\caddy\data"
+nssm set Caddy AppEnvironmentExtra "XDG_CONFIG_HOME=C:\caddy\config"
+
+# Starten & prüfen
+nssm start Caddy
+sc query Caddy
 ```
 
-> Tipp: Du kannst Caddy später als Dienst via **NSSM** installieren (`nssm install Caddy "C:\caddy\caddy.exe" "run --config Caddyfile --watch"`).
+### 4.4 Funktionstest HTTP(S)
+
+```powershell
+# Konfig prüfen (optional)
+"C:\ProgramData\chocolatey\bin\caddy.exe" validate --config C:\caddy\Caddyfile
+
+# Health Check über Internet:
+Invoke-WebRequest https://link.earlysalty.com/health | Select-Object StatusCode
+# Erwartet: 200
+```
+
+### 4.5 (OPTIONAL – EINFÜGBARE STELLE) Bot-Watchdog (Discord Log-Channel)
+
+> **Füge diesen Unterpunkt genau hier ein**, wenn du den Watchdog verwenden willst.
+
+* Zweck: `/health` wird periodisch gecheckt; **DOWN/UP** wird in deinen Bot-Log-Channel gepostet.
+* Datei: `cogs/caddy_watchdog.py` in deinem Bot-Repo.
+* ENV:
+
+  * `LOG_CHANNEL_ID=<dein_discord_channel_id>` (Pflicht)
+  * `CADDY_HEALTH_URL=https://link.earlysalty.com/health` (optional; Default passt)
+  * `CADDY_CHECK_INTERVAL_SEC=60`, `CADDY_ALERT_EVERY_MIN=30` (optional)
+* Slash-Cmd: `/caddy_status`
+* Bot neu starten, **Auto-Discovery** lädt die Cog.
 
 ---
 
-## 3) Bot – ENV & Start
+## 5) Bot – ENV & Start
 
-**.env Beispiel** (Werte anpassen; **Secrets NIE committen**):
+**.env Beispiel** (Werte anpassen; **Secrets nie committen**):
 
 ```bash
-# Öffentliche Basis-URL des Link-Servers (GENAU diese Domain; ändert sich → Bot neu starten)
+# Öffentliche Basis-URL (muss 1:1 passen; Änderung → Bot neu starten)
 PUBLIC_BASE_URL=https://link.earlysalty.com
 
 # Optional: Pfad für den Steam-Return (Default passt)
@@ -169,17 +250,17 @@ STEAM_RETURN_PATH=/steam/return
 # AioHTTP Callback-Server
 HTTP_HOST=127.0.0.1
 STEAM_OAUTH_PORT=8888
-# (Alternativ: HTTP_PORT=8888 – der Code liest erst STEAM_OAUTH_PORT, dann HTTP_PORT.)
+# (Alternativ: HTTP_PORT=8888 – Code liest erst STEAM_OAUTH_PORT, dann HTTP_PORT.)
 
 # Discord OAuth App
 DISCORD_OAUTH_CLIENT_ID=xxxxxxxxxxxxxxxxxx
 DISCORD_OAUTH_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# Steam Web API Key (für Vanity-Resolve + Persona; OpenID selbst braucht ihn nicht, aber sehr sinnvoll)
+# Steam Web API Key (für Vanity/Persona; OpenID selbst braucht ihn nicht)
 STEAM_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# Button/UI (optional)
-OAUTH_BUTTON_MODE=one_click          # oder two_step
+# UI (optional)
+OAUTH_BUTTON_MODE=one_click
 LINK_COVER_IMAGE=
 LINK_COVER_LABEL=link.earlysalty.com
 LINK_BUTTON_LABEL=Mit Discord verknüpfen
@@ -197,34 +278,32 @@ $env:DISCORD_OAUTH_CLIENT_ID="..."
 $env:DISCORD_OAUTH_CLIENT_SECRET="..."
 $env:STEAM_API_KEY="..."
 
-# dann euren Bot starten, z.B.:
 python main.py
 ```
 
-> **Merke:** Wenn du `PUBLIC_BASE_URL` oder Ports änderst → **Bot-Prozess neu starten**. Diese Werte werden beim Laden benutzt.
+> **Merke:** `PUBLIC_BASE_URL`/Ports geändert? → **Bot neu starten**.
 
 ---
 
-## 4) Discord Developer Portal
-
-In deiner Anwendung:
+## 6) Discord Developer Portal
 
 * **OAuth2 → Redirects**:
   `https://link.earlysalty.com/discord/callback` hinzufügen
-* Scopes, die der Code nutzt: **`identify connections`**
-* Client-ID & Secret aus der App in ENV setzen (s.o.)
+* Scopes: **`identify connections`**
+* Client-ID & Secret in ENV (siehe oben) setzen
 
 ---
 
-## 5) Steam OpenID
+## 7) Steam OpenID
 
-* Kein eigenes App-Eintragen nötig.
-* Wichtig ist, dass **`openid.return_to`** und **`openid.realm`** exakt zu **`PUBLIC_BASE_URL`** passen (der Code baut das automatisch aus `PUBLIC_BASE_URL` + `STEAM_RETURN_PATH`).
-* Der Bot prüft via OpenID Verify; `steamcommunity.com` muss erreichbar sein (Server outbound).
+* Kein App-Eintrag nötig.
+* **`openid.return_to`** & **`openid.realm`** müssen exakt zu **`PUBLIC_BASE_URL`** passen
+  (der Code baut das aus `PUBLIC_BASE_URL` + `STEAM_RETURN_PATH`).
+* Outbound zu `steamcommunity.com` muss erlaubt sein.
 
 ---
 
-## 6) Tests (PowerShell)
+## 8) Tests (PowerShell)
 
 Lokaler Port:
 
@@ -235,15 +314,15 @@ Test-NetConnection 127.0.0.1 -Port 8888
 Über **Caddy/Internet**:
 
 ```powershell
-# Health → 200 und Content {"ok":true,...}
+# Health → 200
 Invoke-WebRequest https://link.earlysalty.com/health -SkipCertificateCheck |
   Select-Object StatusCode,Content
 
-# Steam Return mit Fake-State → 400 "invalid/expired state" (vom Bot)
+# Steam Return mit Fake-State → 400 ("invalid/expired state" vom Bot)
 Invoke-WebRequest 'https://link.earlysalty.com/steam/return?state=abc' `
   -MaximumRedirection 0 -SkipCertificateCheck | Select-Object StatusCode
 
-# Steam Login HTML → 200, enthält steamcommunity OpenID URL
+# Steam Login HTML → 200, enthält OpenID-URL
 $r = Invoke-WebRequest 'https://link.earlysalty.com/steam/login?uid=1' -SkipCertificateCheck
 $r.Content -match 'steamcommunity\.com/openid/login'
 ```
@@ -253,86 +332,100 @@ $r.Content -match 'steamcommunity\.com/openid/login'
 1. In Discord `/link` ausführen → Button klicken.
 2. Discord OAuth zeigt Connections.
 3. Falls keine Steam-Connection vorhanden → automatische Weiterleitung zu Steam.
-4. Nach Steam-Login landest du auf
-   `https://link.earlysalty.com/steam/return?...` (Erfolgstext)
-   und der Bot schickt eine **DM**.
+4. Nach Steam-Login landest du auf `https://link.earlysalty.com/steam/return?...` (Erfolg) und der Bot schickt eine **DM**.
 
 ---
 
-## 7) Troubleshooting (häufige Stolpersteine)
+## 9) Troubleshooting (häufige Stolpersteine)
 
-* **`invalid/expired state`** direkt nach Return:
-  Das ist korrekt, **wenn du manuell** auf `/steam/return?state=abc` gehst.
-  Im echten Flow stellt der Bot einen frischen `state`; Ablaufzeit: 10 min.
-  Wenn es **im echten Flow** passiert → Bot wurde während des Flows neu gestartet **oder** du nutzt eine andere Domain als `PUBLIC_BASE_URL`.
+* **`invalid/expired state`** direkt nach manuellem Aufruf von `/steam/return?state=abc` → **erwartet**.
+  Im echten Flow ist `state` frisch (Ablauf ~10 min). Tritt’s dort auf: Bot während des Flows neu gestartet **oder** `PUBLIC_BASE_URL` stimmt nicht.
 
-* **404/500 von IIS statt 400 vom Bot**:
-  Bedeutet, die Anfrage ist **falsch geroutet** (landet bei IIS).
-  → Prüfe Caddy läuft, Firewall 80/443 offen, DNS zeigt korrekt, **keine** IIS-Bindings für `link.earlysalty.com`.
+* **IIS antwortet 404/500** → Falsches Routing.
+  Prüfen: Caddy läuft, 80/443 offen, DNS korrekt, **keine** IIS-Bindings für `link.earlysalty.com`.
 
-* **Let's Encrypt schlägt fehl**:
-  Caddy-Logs anschauen. Port 443 muss offen sein (hier ACME `tls-alpn-01`).
+* **ACME/LE schlägt fehl** → Logs checken (`C:\caddy\logs\service.err.log`).
+  `tls-alpn-01` braucht Port 443 inbound. Rate-Limits beachten.
 
-* **Discord „Invalid Redirect“**:
-  Redirect‐URI **exakt** so im Portal: `https://link.earlysalty.com/discord/callback`.
+* **Log-Fehler „Zugriff verweigert“** → Rechte auf `C:\caddy\logs` setzen:
 
-* **Steam Vanity/Persona fehlen**:
-  `STEAM_API_KEY` fehlt oder falsch → OpenID klappt trotzdem, aber Vanity→ID-Resolve und Persona-Abruf gehen dann nicht.
-  Der Code fällt auf einen Discord-\@Namen zurück.
+  ```powershell
+  icacls C:\caddy\logs /inheritance:e
+  icacls C:\caddy\logs /grant "NT AUTHORITY\SYSTEM:(OI)(CI)(F)" /T
+  icacls C:\caddy\logs /grant "$env:USERNAME:(OI)(CI)M" /T
+  ```
 
-* **Nach ENV-Änderung keine Wirkung**:
-  Bot **neu starten**. Caddy brauchst du nur bei Caddyfile-Änderungen neu zu laden.
+* **Autosave/Certs landen im AppData** → XDG-Variablen **im Dienst** setzen:
 
----
+  ```powershell
+  nssm set Caddy AppEnvironmentExtra "XDG_DATA_HOME=C:\caddy\data"
+  nssm set Caddy AppEnvironmentExtra "XDG_CONFIG_HOME=C:\caddy\config"
+  nssm restart Caddy
+  ```
 
-## 8) Betrieb als Windows-Dienst (optional)
-
-Mit **NSSM** (empfohlen):
-
-```powershell
-# Caddy als Dienst
-nssm install Caddy "C:\caddy\caddy.exe" run --config Caddyfile --watch
-nssm set Caddy AppDirectory "C:\caddy"
-nssm start Caddy
-
-# Bot als Dienst (Beispiel)
-nssm install DeadlockBot "C:\Python311\python.exe" "C:\apps\deadlock\main.py"
-nssm set DeadlockBot AppDirectory "C:\apps\deadlock"
-# ENVs setzen (mehrfach 'set' aufrufen)
-nssm set DeadlockBot AppEnvironmentExtra "PUBLIC_BASE_URL=https://link.earlysalty.com"
-nssm set DeadlockBot AppEnvironmentExtra "STEAM_OAUTH_PORT=8888"
-...
-nssm start DeadlockBot
-```
+* **Nach ENV-Änderung keine Wirkung** → **Bot neu starten**.
+  Caddy neu laden nur bei Caddyfile-Änderungen nötig (Service läuft mit `--watch`).
 
 ---
 
-## 9) Ordnerstruktur (Beispiel)
+## 10) Betrieb & Wartung
+
+* **Status prüfen**
+
+  ```powershell
+  sc query Caddy
+  ```
+* **Logs live ansehen**
+
+  ```powershell
+  Get-Content C:\caddy\logs\service.out.log -Wait
+  Get-Content C:\caddy\logs\service.err.log -Wait
+  ```
+* **Dienst Neustart**
+
+  ```powershell
+  nssm restart Caddy
+  ```
+* **Beim Boot starten**: Ist per `SERVICE_AUTO_START` aktiv.
+* **Port-Konflikte prüfen**
+
+  ```powershell
+  netstat -ano | findstr :80
+  netstat -ano | findstr :443
+  ```
+
+---
+
+## 11) Ordnerstruktur (Beispiel)
 
 ```
 C:\caddy\
   Caddyfile
   logs\
+  data\
+  config\
 
 C:\apps\deadlock\
   main.py
   cogs\live_match\steam_link_oauth.py
-  shared\db.py            # <– eure DB-Abstraktion (SQLite o.ä.), Schreibrechte beachten
-  .env                    # (nur lokal, nicht commiten)
+  # optional (Watchdog):
+  cogs\caddy_watchdog.py
+  shared\db.py
+  .env
 ```
 
 ---
 
-## 10) Checkliste „Bereit für Prod“
+## 12) Checkliste „Bereit für Prod“
 
 * [ ] DNS: `link.earlysalty.com` → Server-IP
-* [ ] Caddy läuft, Zertifikat aktiv (Logs ok)
+* [ ] Caddy als **Dienst** via NSSM (RUNNING), Zertifikate aktiv
+* [ ] `XDG_DATA_HOME`/`XDG_CONFIG_HOME` im **Dienst** gesetzt
 * [ ] `PUBLIC_BASE_URL=https://link.earlysalty.com` gesetzt
 * [ ] Discord OAuth Redirect konfiguriert
 * [ ] `DISCORD_OAUTH_CLIENT_ID` / `DISCORD_OAUTH_CLIENT_SECRET` in ENV
 * [ ] `STEAM_API_KEY` in ENV (empfohlen)
 * [ ] `HTTP_HOST=127.0.0.1`, `STEAM_OAUTH_PORT=8888` gesetzt, Port frei
-* [ ] Bot zuletzt **nach** ENV-Anpassung neu gestartet
 * [ ] Health/Return/Login-Tests grün
 * [ ] DM kommt nach erfolgreichem Link-Flow
-
+* [ ] (Optional) Watchdog aktiv & meldet DOWN/UP in Log-Channel
