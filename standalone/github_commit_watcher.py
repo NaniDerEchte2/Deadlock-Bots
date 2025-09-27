@@ -7,6 +7,11 @@ GitHub Commit Watcher -> Discord (Diff-Vorschau, .patch, .env, Rate-Limit-Backof
 - ETag-Caching; SQLite-State
 - .env-Unterstützung (ohne externe Pakete)
 - NEU: Sauberes Rate-Limit-Handling (X-RateLimit-Remaining/Reset + 403-Backoff)
+- NEU: .env wird bevorzugt aus dem Benutzer-Dokumente-Ordner geladen
+        Windows:   %USERPROFILE%\Documents  (ggf. auch %OneDrive%\Documents)
+        Linux/mac: ~/Documents
+        Fallbacks: <script_dir>/.env(.local), <cwd>/.env(.local)
+        Vorrang: OS-ENV > Documents > Script-Verzeichnis > CWD  (first wins pro Quelle)
 """
 
 import os
@@ -18,6 +23,13 @@ import logging
 from typing import Optional, Tuple, Dict, Any, List
 
 import requests
+
+# -------------------- Logging früh initialisieren -------------------- #
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+log = logging.getLogger("commit-watcher")
 
 # -------------------- .env LOADER (ohne Abhängigkeiten) -------------------- #
 def _parse_env_line(line: str):
@@ -41,6 +53,7 @@ def _parse_env_line(line: str):
                    .replace("\\\\", "\\"))
     return k, v
 
+
 def _load_env_file(path: str) -> Dict[str, str]:
     out = {}
     try:
@@ -49,33 +62,98 @@ def _load_env_file(path: str) -> Dict[str, str]:
                 kv = _parse_env_line(line)
                 if kv:
                     out[kv[0]] = kv[1]
+        log.info("ENV-Datei geladen: %s (Keys: %d)", path, len(out))
     except FileNotFoundError:
         return {}
     except Exception as e:
-        print(f"Warnung: .env konnte nicht gelesen werden ({path}): {e}", file=sys.stderr)
+        # Keine Secrets loggen, nur Pfad + Fehler
+        log.warning("Warnung: .env konnte nicht gelesen werden (%s): %s", path, e)
     return out
 
+
+def _user_documents_dirs() -> List[str]:
+    """
+    Liefert existierende 'Documents'-Verzeichnisse des Users (Windows: auch OneDrive).
+    Reihenfolge bestimmt Priorität.
+    """
+    dirs: List[str] = []
+    home = os.path.expanduser("~")
+
+    if os.name == "nt":
+        userprofile = os.environ.get("USERPROFILE") or home
+        onedrive = os.environ.get("OneDrive") or os.environ.get("ONEDRIVE")
+        # Klassisch: C:\Users\<User>\Documents
+        if userprofile:
+            p = os.path.join(userprofile, "Documents")
+            if os.path.isdir(p):
+                dirs.append(p)
+        # OneDrive: %OneDrive%\Documents
+        if onedrive:
+            p = os.path.join(onedrive, "Documents")
+            if os.path.isdir(p) and p not in dirs:
+                dirs.append(p)
+    else:
+        # Linux/macOS: ~/Documents
+        p = os.path.join(home, "Documents")
+        if os.path.isdir(p):
+            dirs.append(p)
+
+    return dirs
+
+
 def load_dotenv_fallback() -> None:
+    """
+    Lädt .env-Werte aus festen Suchpfaden (first wins), sofern Key noch NICHT im OS-ENV existiert.
+    Suchreihenfolge (höchste Priorität zuerst):
+      1) Benutzer-Dokumente:  <docs>/.env.local, <docs>/.env   (alle gefundenen Documents-Pfade in Reihenfolge)
+      2) Script-Verzeichnis:  <script_dir>/.env.local, <script_dir>/.env
+      3) Arbeitsverzeichnis:  <cwd>/.env.local, <cwd>/.env
+    """
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
     except NameError:
         script_dir = os.getcwd()
     cwd = os.getcwd()
-    candidates = [
-        os.path.join(script_dir, ".env.local"),
-        os.path.join(script_dir, ".env"),
-        os.path.join(cwd, ".env.local"),
-        os.path.join(cwd, ".env"),
-    ]
+
+    candidates: List[str] = []
+
+    # 1) User-Dokumente (können mehrere sein, z. B. OneDrive und lokales Documents)
+    for docs_dir in _user_documents_dirs():
+        candidates.append(os.path.join(docs_dir, ".env.local"))
+        candidates.append(os.path.join(docs_dir, ".env"))
+
+    # 2) Script-Verzeichnis
+    candidates.append(os.path.join(script_dir, ".env.local"))
+    candidates.append(os.path.join(script_dir, ".env"))
+
+    # 3) Aktuelles Arbeitsverzeichnis
+    candidates.append(os.path.join(cwd, ".env.local"))
+    candidates.append(os.path.join(cwd, ".env"))
+
     merged: Dict[str, str] = {}
+    used_files: List[str] = []
     for p in candidates:
-        for k, v in _load_env_file(p).items():
+        data = _load_env_file(p)
+        if not data:
+            continue
+        for k, v in data.items():
             if k not in merged:
                 merged[k] = v
+        used_files.append(p)
+
+    # Setze nur Keys, die noch NICHT im OS-ENV existieren
+    applied = 0
     for k, v in merged.items():
         if k not in os.environ:
             os.environ[k] = v
+            applied += 1
 
+    if used_files:
+        log.info("ENV-Suchreihenfolge aktiv. Genutzte Dateien (first wins): %s", " | ".join(used_files))
+    log.info("ENV angewendet: %d Keys aus Dateien (OS-ENV hatte Vorrang).", applied)
+
+
+# Lade .envs vor Konfiguration/Validierungen
 load_dotenv_fallback()
 # --------------------------------------------------------------------------- #
 
@@ -95,16 +173,10 @@ MIN_REMAINING_BEFORE_PAUSE = int(os.getenv("RATE_MIN_REMAINING", "2"))  # wenn <
 EXTRA_BACKOFF_SEC = int(os.getenv("RATE_EXTRA_BACKOFF_SEC", "3"))       # kleiner Puffer
 
 if not DISCORD_WEBHOOK:
-    print("ERROR: DISCORD_WEBHOOK ist nicht gesetzt (ENV oder .env).", file=sys.stderr)
+    log.error("ERROR: DISCORD_WEBHOOK ist nicht gesetzt (ENV oder .env).")
     sys.exit(2)
 if not DISCORD_WEBHOOK.startswith("https://"):
-    print("WARNUNG: DISCORD_WEBHOOK scheint keine valide HTTPS-URL zu sein.", file=sys.stderr)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-log = logging.getLogger("commit-watcher")
+    log.warning("WARNUNG: DISCORD_WEBHOOK scheint keine valide HTTPS-URL zu sein.")
 
 # ---------- DB Layer ----------
 DDL = """
@@ -139,9 +211,10 @@ def db_set_state(conn: sqlite3.Connection, repo: str, branch: str, sha: Optional
 
 # ---------- HTTP / GitHub Helper ----------
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "deadlock-discord-commit-watcher/1.3"})
+SESSION.headers.update({"User-Agent": "deadlock-discord-commit-watcher/1.4"})
 if GITHUB_TOKEN:
     SESSION.headers.update({"Authorization": f"Bearer {GITHUB_TOKEN}"})
+
 
 def _respect_rate_and_sleep(resp: requests.Response) -> None:
     """
@@ -160,6 +233,7 @@ def _respect_rate_and_sleep(resp: requests.Response) -> None:
         if wait > 0:
             log.warning("Rate-Limit nahe Null (remaining=%s). Pausiere bis Reset: %ss", remaining, wait)
             time.sleep(wait)
+
 
 def _github_get(url: str, *, params=None, headers=None, timeout=30, allow_404=False) -> Optional[requests.Response]:
     """
@@ -182,7 +256,7 @@ def _github_get(url: str, *, params=None, headers=None, timeout=30, allow_404=Fa
         return resp
 
     # 403 Rate-Limit?
-    if resp.status_code == 403 and "rate limit exceeded" in resp.text.lower():
+    if resp.status_code == 403 and "rate limit exceeded" in (resp.text or "").lower():
         try:
             reset_unix = int(resp.headers.get("X-RateLimit-Reset", "0"))
         except Exception:
@@ -199,12 +273,13 @@ def _github_get(url: str, *, params=None, headers=None, timeout=30, allow_404=Fa
         _respect_rate_and_sleep(resp2)
         if resp2.status_code in (200, 304) or (allow_404 and resp2.status_code == 404):
             return resp2
-        log.warning("GitHub nach Backoff weiterhin Fehler: %s %s", resp2.status_code, resp2.text[:200])
+        log.warning("GitHub nach Backoff weiterhin Fehler: %s %s", resp2.status_code, (resp2.text or "")[:200])
         return None
 
     # Andere Fehler
-    log.warning("GitHub API %s -> %s %s", url, resp.status_code, resp.text[:200])
+    log.warning("GitHub API %s -> %s %s", url, resp.status_code, (resp.text or "")[:200])
     return None
+
 
 # ---------- GitHub API Wrappers ----------
 def gh_list_commits(repo: str, branch: str, etag: Optional[str]):
@@ -230,12 +305,14 @@ def gh_list_commits(repo: str, branch: str, etag: Optional[str]):
         log.exception("JSON-Parse list commits: %s", e)
         return 500, new_etag, None
 
+
 def gh_get_commit(repo: str, sha: str) -> Optional[Dict[str, Any]]:
     url = f"https://api.github.com/repos/{repo}/commits/{sha}"
     resp = _github_get(url)
     if resp is None or resp.status_code != 200:
         return None
     return resp.json()
+
 
 def gh_get_patch_bytes(repo: str, sha: str) -> Optional[bytes]:
     # Patch über die HTML-Seite laden (GitHub limitiert hier meist großzügiger)
@@ -250,6 +327,7 @@ def gh_get_patch_bytes(repo: str, sha: str) -> Optional[bytes]:
         log.exception("Patch-Download Fehler")
         return None
 
+
 # ---------- Discord Webhook ----------
 def discord_post_embed(embed: Dict[str, Any]) -> bool:
     try:
@@ -258,6 +336,7 @@ def discord_post_embed(embed: Dict[str, Any]) -> bool:
     except Exception:
         log.exception("Discord Webhook Fehler")
         return False
+
 
 def discord_post_embed_with_file(embed: Dict[str, Any], filename: str, filebytes: bytes) -> bool:
     try:
@@ -269,11 +348,13 @@ def discord_post_embed_with_file(embed: Dict[str, Any], filename: str, filebytes
         log.exception("Discord Webhook Upload Fehler")
         return False
 
+
 # ---------- Helpers ----------
 def escape_md(s: str) -> str:
     for ch in ("*", "_", "`", "~"):
         s = s.replace(ch, f"\\{ch}")
     return s
+
 
 def parse_watch_list(raw: str) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
@@ -285,10 +366,12 @@ def parse_watch_list(raw: str) -> List[Tuple[str, str]]:
         out.append((repo, branch))
     return out
 
+
 def truncate_text(s: str, limit: int) -> str:
     if len(s) <= limit:
         return s
     return s[: max(0, limit - 1)].rstrip() + "…"
+
 
 def build_overview_embed(repo: str, branch: str, commits: List[Dict[str, Any]]) -> Dict[str, Any]:
     show = commits[:5]
@@ -311,6 +394,7 @@ def build_overview_embed(repo: str, branch: str, commits: List[Dict[str, Any]]) 
         "author": {"name": repo, "url": repo_url},
         "footer": {"text": "GitHub → Discord"},
     }
+
 
 def build_single_commit_embed(repo: str, commit: Dict[str, Any]) -> Dict[str, Any]:
     sha_full = commit.get("sha") or ""
@@ -364,6 +448,7 @@ def build_single_commit_embed(repo: str, commit: Dict[str, Any]) -> Dict[str, An
 
     return embed
 
+
 # ---------- Watcher ----------
 def process_repo(conn: sqlite3.Connection, repo: str, branch: str) -> None:
     last_sha, etag = db_get_state(conn, repo, branch)
@@ -407,14 +492,17 @@ def process_repo(conn: sqlite3.Connection, repo: str, branch: str) -> None:
         db_set_state(conn, repo, branch, newest_sha, new_etag)
         log.info("[%s@%s] %d Commits gemeldet (overview), last=%s", repo, branch, len(new_items), newest_sha[:7])
 
+
 def main():
     watch = parse_watch_list(WATCH_LIST)
     if not watch:
         log.error("WATCH_LIST leer – nichts zu tun.")
         sys.exit(1)
     conn = db_connect()
-    log.info("Watcher gestartet. Interval=%ss, DB=%s, Repos=%s",
-             POLL_INTERVAL, DB_PATH, ", ".join([f"{r}@{b}" for r,b in watch]))
+    log.info(
+        "Watcher gestartet. Interval=%ss, DB=%s, Repos=%s",
+        POLL_INTERVAL, DB_PATH, ", ".join([f"{r}@{b}" for r, b in watch])
+    )
     try:
         while True:
             for repo, branch in watch:
@@ -429,8 +517,9 @@ def main():
     finally:
         try:
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("DB close Warnung: %s", e)
+
 
 if __name__ == "__main__":
     main()
