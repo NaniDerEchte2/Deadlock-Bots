@@ -36,11 +36,10 @@ HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")
 HTTP_PORT = int(os.getenv("STEAM_OAUTH_PORT", os.getenv("HTTP_PORT", "8888")))
 CLIENT_SECRET = (os.getenv("DISCORD_OAUTH_CLIENT_SECRET") or "").strip()
 
-# ---- Feste State-TTL (KEIN ENV): bei Bedarf im Code anpassen ----------------
+# Feste State-TTL im Code (kein ENV)
 STATE_TTL_SEC = 600  # 10 Minuten
 
-# ---- UI-Konfig per ENV -------------------------------------------------------
-# „Two-Step“ wird nicht mehr unterstützt, wir fahren nur One-Click.
+# UI-Konfig per ENV
 LINK_COVER_IMAGE = (os.getenv("LINK_COVER_IMAGE") or "").strip()
 LINK_COVER_LABEL = (os.getenv("LINK_COVER_LABEL") or "link.earlysalty.com").strip()
 LINK_BUTTON_LABEL = (os.getenv("LINK_BUTTON_LABEL") or "Mit Discord verknüpfen").strip()
@@ -146,10 +145,10 @@ async def security_headers_mw(request: web.Request, handler):
 class SteamLink(commands.Cog):
     """
     Linking-Flow:
-      1) /link → Discord OAuth2 (identify + connections) (One-Click, Lazy-Start)
-      2) 0 Treffer → Fallback-Seite → Steam OpenID (automatische Weiterleitung)
+      1) /link → Discord OAuth2 (identify + connections) (Lazy-Start)
+      2) 0 Treffer → Fallback-Seite → Steam OpenID (Auto-Redirect)
       3) /steam/return → SteamID64 extrahieren → speichern
-      4) Erfolg → DM an den User (cozy Abschluss) & alte Overlays aufräumen
+      4) Erfolg → DM an User
     """
 
     def __init__(self, bot: commands.Bot):
@@ -160,12 +159,12 @@ class SteamLink(commands.Cog):
         self.app.router.add_get("/", self.handle_index)
         self.app.router.add_get("/health", self.handle_health)
 
-        # Discord OAuth2
-        self.app.router.add_get("/discord/login", self.handle_discord_login)      # Lazy-Start
+        # Discord OAuth2 (Lazy-Start + Callback)
+        self.app.router.add_get("/discord/login", self.handle_discord_login)
         self.app.router.add_get("/discord/callback", self.handle_discord_callback)
 
-        # Steam OpenID
-        self.app.router.add_get("/steam/login", self.handle_steam_login)          # Lazy-Start
+        # Steam OpenID (Lazy-Start + Return)
+        self.app.router.add_get("/steam/login", self.handle_steam_login)
         self.app.router.add_get(STEAM_RETURN_PATH, self.handle_steam_return)
 
         # Kleinkram
@@ -220,7 +219,6 @@ class SteamLink(commands.Cog):
         return int(data["uid"])
 
     async def _discord_at_name(self, uid: int) -> str:
-        """Fallback-Name '@Discord' falls keine Persona vorhanden."""
         try:
             user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
             if not user:
@@ -244,15 +242,9 @@ class SteamLink(commands.Cog):
                     try:
                         await msg.delete()
                     except Exception as e:
-                        log.debug(
-                            "DM-Cleanup: Konnte eine alte Bot-DM nicht löschen (user_id=%s): %s",
-                            getattr(user, "id", "?"), e, exc_info=True
-                        )
+                        log.debug("DM-Cleanup scheiterte (user_id=%s): %s", getattr(user, "id", "?"), e, exc_info=True)
         except Exception as e:
-            log.debug(
-                "DM-Cleanup übersprungen/fehlgeschlagen (user_id=%s): %s",
-                getattr(user, "id", "?"), e, exc_info=True
-            )
+            log.debug("DM-Cleanup übersprungen/fehlgeschlagen (user_id=%s): %s", getattr(user, "id", "?"), e, exc_info=True)
 
     async def _notify_user_linked(self, user_id: int, steam_ids: List[str]) -> None:
         try:
@@ -288,7 +280,6 @@ class SteamLink(commands.Cog):
         return f"{DISCORD_API}/oauth2/authorize?{urlencode(params)}"
 
     # Öffentliche Helper (für andere Cogs)
-    # —> Bevorzugt: Lazy-Start-URLs (erzeugen state erst beim Klick)
     def discord_start_url_for(self, uid: int) -> str:
         if not PUBLIC_BASE_URL:
             return ""
@@ -414,7 +405,6 @@ class SteamLink(commands.Cog):
         return None
 
     async def _resolve_steam_input(self, raw: str) -> Optional[str]:
-        """Akzeptiert: 17-stellige ID, steamcommunity-URL (/profiles/<id> oder /id/<vanity>), oder Vanity-String."""
         s = (raw or "").strip()
         if not s:
             return None
@@ -429,7 +419,6 @@ class SteamLink(commands.Cog):
         except Exception:
             u = None
 
-        # sichere Host-Prüfung statt Substring in netloc
         if u and (u.hostname or "").lower():
             host = (u.hostname or "").lower().strip(".")
             if host == "steamcommunity.com" or host.endswith(".steamcommunity.com"):
@@ -545,6 +534,9 @@ class SteamLink(commands.Cog):
         try:
             url = self._build_discord_auth_url(uid)  # erzeugt state JETZT (beim Klick)
             raise web.HTTPFound(location=url)
+        except web.HTTPFound:
+            # normaler Redirect-Pfad
+            raise
         except Exception as e:
             log.exception("discord/login failed: %s", e)
             return web.Response(text="failed to start oauth", status=500)
@@ -583,11 +575,13 @@ class SteamLink(commands.Cog):
             )
             return web.Response(text=html_doc, content_type="text/html")
 
-        # Seamless Redirect zu Steam OpenID (falls keine Steam-Connection bei Discord)
+        # Seamless Redirect zu Steam OpenID
         try:
             steam_state = self._mk_state(uid)
             steam_login = self._build_steam_login_url(steam_state)
             raise web.HTTPFound(location=steam_login)
+        except web.HTTPFound:
+            raise
         except Exception:
             steam_state = self._mk_state(uid)
             steam_login = self._build_steam_login_url(steam_state) if PUBLIC_BASE_URL else "#"
@@ -664,7 +658,6 @@ class SteamLink(commands.Cog):
 
     # --------------- Commands -------------------------------------------------
     async def _defer_if_needed(self, ctx: commands.Context) -> None:
-        """Sofortiges Defer, um 3-Sekunden-Timeout zu vermeiden."""
         if getattr(ctx, "interaction", None) and not ctx.interaction.response.is_done():
             try:
                 await ctx.interaction.response.defer(ephemeral=True)
@@ -680,7 +673,6 @@ class SteamLink(commands.Cog):
         embed: Optional[discord.Embed] = None,
         view: Optional[discord.ui.View] = None
     ) -> None:
-        # Wichtig: None → discord.utils.MISSING (verhindert view.is_finished() auf None)
         c = content if content is not None else discord.utils.MISSING
         e = embed if embed is not None else discord.utils.MISSING
         v = view if view is not None else discord.utils.MISSING
@@ -697,7 +689,6 @@ class SteamLink(commands.Cog):
         description="Verknüpfe deine Steam-Accounts (Discord → connections; Fallback Steam OpenID)"
     )
     async def link(self, ctx: commands.Context) -> None:
-        # Link-Flow ist instant – kein Defer nötig.
         desc = (
             "• Wenn in deinem Discord-Profil **kein** Steam verknüpft ist, "
             "leite ich dich automatisch zu Steam weiter.\n"
@@ -714,7 +705,6 @@ class SteamLink(commands.Cog):
             await self._send_ephemeral(ctx, "❌ PUBLIC_BASE_URL fehlt – Start-Links können nicht gebaut werden.")
             return
 
-        # Lazy-Start: state wird ERST beim Klick erzeugt
         start_url = f"{PUBLIC_BASE_URL}/discord/login?uid={ctx.author.id}"
         view = discord.ui.View()
         view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label=LINK_BUTTON_LABEL, url=start_url))
@@ -725,7 +715,6 @@ class SteamLink(commands.Cog):
         description="Direkt: Steam-Login (OpenID) starten"
     )
     async def link_steam(self, ctx: commands.Context) -> None:
-        # Link-Flow ist instant – kein Defer nötig.
         desc = "Bestätige deinen Account via Steam OpenID."
         embed = discord.Embed(title="Direkt bei Steam anmelden", description=desc, color=discord.Color.green())
         if LINK_COVER_IMAGE:
@@ -736,7 +725,6 @@ class SteamLink(commands.Cog):
             await self._send_ephemeral(ctx, "❌ PUBLIC_BASE_URL fehlt – Start-Links können nicht gebaut werden.")
             return
 
-        # Lazy-Start
         start_url = f"{PUBLIC_BASE_URL}/steam/login?uid={ctx.author.id}"
         view = discord.ui.View()
         view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label=STEAM_BUTTON_LABEL, url=start_url))
@@ -767,7 +755,7 @@ class SteamLink(commands.Cog):
         description="Prüft ID/Vanity/Profil-Link und zeigt Persona + SteamID"
     )
     async def whoami(self, ctx: commands.Context, steam: str) -> None:
-        await self._defer_if_needed(ctx)  # <- verhindert 3s-Timeout
+        await self._defer_if_needed(ctx)
         try:
             sid = await asyncio.wait_for(self._resolve_steam_input(steam), timeout=8)
         except asyncio.TimeoutError:
