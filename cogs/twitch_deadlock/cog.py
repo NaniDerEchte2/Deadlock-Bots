@@ -11,7 +11,7 @@ TWITCH_DEADLOCK_NAME = "Deadlock"
 TWITCH_REQUIRED_DISCORD_MARKER = ""                # optionaler Marker im Profiltext (zusätzlich zur Discord-URL)
 
 # Benachrichtigungskanäle
-TWITCH_NOTIFY_CHANNEL_ID = 1304169815505637458     # Live-Postings
+TWITCH_NOTIFY_CHANNEL_ID = 1304169815505637458     # Live-Postings (optional global)
 TWITCH_ALERT_CHANNEL_ID  = 1374364800817303632     # Warnungen (30d Re-Check)
 TWITCH_ALERT_MENTION     = "<@USER_OR_ROLE_ID>"    # z. B. <@123> oder <@&ROLEID>
 
@@ -32,7 +32,7 @@ import asyncio
 import logging
 import os
 import re
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import discord
 from discord.ext import commands, tasks
@@ -150,7 +150,6 @@ class TwitchDeadlockCog(commands.Cog):
         self._web_app = web.Application()
 
         async def add(login: str, require_link: bool):
-            # Rückgabewert ins Dashboard durchreichen (für Flash-Message)
             return await self._cmd_add(login, require_link)
 
         async def remove(login: str):
@@ -204,7 +203,6 @@ class TwitchDeadlockCog(commands.Cog):
         site = web.TCPSite(runner, self._dashboard_host, self._dashboard_port)
         await site.start()
         self._web = runner
-        # Token wird absichtlich NICHT geloggt (CWE-522)
         log.info("Twitch dashboard running on http://%s:%d/twitch", self._dashboard_host, self._dashboard_port)
         if self._dashboard_noauth and self._dashboard_host != "127.0.0.1":
             log.warning("Dashboard without auth and not bound to localhost — restrict access!")
@@ -222,7 +220,7 @@ class TwitchDeadlockCog(commands.Cog):
     async def invites_refresh(self):
         await self._refresh_all_invites()
 
-    async def _refresh_all_invites(self,):
+    async def _refresh_all_invites(self):
         for g in self.bot.guilds:
             await self._refresh_guild_invites(g)
 
@@ -369,7 +367,7 @@ class TwitchDeadlockCog(commands.Cog):
     @twitch_group.command(name="add")
     @commands.has_guild_permissions(manage_guild=True)
     async def twitch_add(self, ctx: commands.Context, login: str, require_discord_link: Optional[bool] = False):
-        msg = await self._cmd_add(login, bool(require_link))
+        msg = await self._cmd_add(login, bool(require_discord_link))
         await ctx.reply(msg)
 
     @twitch_group.command(name="remove")
@@ -524,70 +522,89 @@ class TwitchDeadlockCog(commands.Cog):
                     )
 
     async def _post_go_live(self, logins: List[str], live_by_login: Dict[str, dict]):
-        target_channel = None
-        if self._notify_channel_id:
-            target_channel = self.bot.get_channel(self._notify_channel_id)
-        for g in self.bot.guilds:
-            settings = self._get_settings(g.id)
-            channel = target_channel or (g.get_channel(int(settings["channel_id"])) if settings else None)
-            if not isinstance(channel, (discord.TextChannel, discord.Thread)):
-                continue
-            for login in logins:
-                s = live_by_login[login]
-                embed = discord.Embed(
-                    title=f"{s.get('user_name')} ist LIVE in Deadlock!",
-                    description=s.get("title") or "",
-                    colour=discord.Colour.purple(),
-                )
-                thumb = (s.get("thumbnail_url") or "").replace("{width}", "640").replace("{height}", "360")
-                if thumb:
-                    embed.set_image(url=thumb)
-                embed.add_field(name="Viewer", value=str(s.get("viewer_count")))
-                embed.add_field(name="Kategorie", value=s.get("game_name") or "Deadlock", inline=True)
-                url = f"https://twitch.tv/{login}"
-                embed.add_field(name="Link", value=url, inline=False)
-                try:
-                    view = discord.ui.View()
-                    view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label="Auf Twitch ansehen", url=url))
-                    msg = await channel.send(content=f"🔴 **{s.get('user_name')}** ist live: {url}", embed=embed, view=view)
-                    with storage.get_conn() as c:
-                        c.execute(
-                            "UPDATE twitch_live_state SET last_discord_message_id=?, last_notified_at=CURRENT_TIMESTAMP WHERE streamer_login=?",
-                            (str(msg.id), login),
-                        )
-                except Exception as e:
-                    log.warning("failed to post go-live for %s: %s", login, e)
-
-    async def _mark_offline(self, logins: List[str]):
-        targets: List[discord.abc.Messageable] = []
+        """
+        Postet Go-Live in:
+          - globalem Channel (TWITCH_NOTIFY_CHANNEL_ID), falls gesetzt — EINMAL
+          - sonst pro Guild in dem dort konfigurierten Channel
+        """
+        # 1) Globaler Kanal?
         if self._notify_channel_id:
             ch = self.bot.get_channel(self._notify_channel_id)
             if isinstance(ch, (discord.TextChannel, discord.Thread)):
-                targets.append(ch)
-        if not targets:
-            for g in self.bot.guilds:
-                settings = self._get_settings(g.id)
-                if not settings:
-                    continue
-                ch = g.get_channel(int(settings["channel_id"]))
-                if isinstance(ch, (discord.TextChannel, discord.Thread)):
-                    targets.append(ch)
-        for ch in targets:
-            with storage.get_conn() as c:
-                qmarks = ",".join(["?" for _ in logins])
-                rows = c.execute(
-                    f"SELECT streamer_login, last_discord_message_id FROM twitch_live_state WHERE streamer_login IN ({qmarks})",
-                    tuple(logins),
-                ).fetchall()
-            for r in rows:
-                mid = r["last_discord_message_id"]
-                if not mid:
-                    continue
-                try:
-                    msg = await ch.fetch_message(int(mid))
-                    await msg.edit(content=(msg.content + " (beendet)"))
-                except Exception as e:
-                    log.debug("cannot edit message %s: %s", mid, e)
+                await self._post_to_channel(ch, logins, live_by_login)
+            return  # wichtig: nicht pro Guild erneut posten
+
+        # 2) Pro Guild
+        for g in self.bot.guilds:
+            settings = self._get_settings(g.id)
+            channel = g.get_channel(int(settings["channel_id"])) if settings else None
+            if isinstance(channel, (discord.TextChannel, discord.Thread)):
+                await self._post_to_channel(channel, logins, live_by_login)
+
+    async def _post_to_channel(self, channel: discord.abc.Messageable, logins: List[str], live_by_login: Dict[str, dict]):
+        for login in logins:
+            s = live_by_login[login]
+            embed = discord.Embed(
+                title=f"{s.get('user_name')} ist LIVE in Deadlock!",
+                description=s.get("title") or "",
+                colour=discord.Colour.purple(),
+            )
+            thumb = (s.get("thumbnail_url") or "").replace("{width}", "640").replace("{height}", "360")
+            if thumb:
+                embed.set_image(url=thumb)
+            embed.add_field(name="Viewer", value=str(s.get("viewer_count")))
+            embed.add_field(name="Kategorie", value=s.get("game_name") or "Deadlock", inline=True)
+            url = f"https://twitch.tv/{login}"
+            embed.add_field(name="Link", value=url, inline=False)
+            try:
+                view = discord.ui.View()
+                view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label="Auf Twitch ansehen", url=url))
+                msg = await channel.send(content=f"🔴 **{s.get('user_name')}** ist live: {url}", embed=embed, view=view)
+                with storage.get_conn() as c:
+                    c.execute(
+                        "UPDATE twitch_live_state SET last_discord_message_id=?, last_notified_at=CURRENT_TIMESTAMP WHERE streamer_login=?",
+                        (str(msg.id), login),
+                    )
+            except Exception as e:
+                log.warning("failed to post go-live for %s: %s", login, e)
+
+    async def _mark_offline(self, logins: List[str]):
+        """
+        Markiert letzte Live-Nachricht als „beendet“ – analog zu _post_go_live:
+        - globaler Channel einmal, sonst pro Guild.
+        """
+        # 1) Global?
+        if self._notify_channel_id:
+            ch = self.bot.get_channel(self._notify_channel_id)
+            if isinstance(ch, (discord.TextChannel, discord.Thread)):
+                await self._mark_offline_in_channel(ch, logins)
+            return
+
+        # 2) Pro Guild
+        for g in self.bot.guilds:
+            settings = self._get_settings(g.id)
+            if not settings:
+                continue
+            ch = g.get_channel(int(settings["channel_id"]))
+            if isinstance(ch, (discord.TextChannel, discord.Thread)):
+                await self._mark_offline_in_channel(ch, logins)
+
+    async def _mark_offline_in_channel(self, ch: discord.abc.Messageable, logins: List[str]):
+        with storage.get_conn() as c:
+            qmarks = ",".join(["?" for _ in logins])
+            rows = c.execute(
+                f"SELECT streamer_login, last_discord_message_id FROM twitch_live_state WHERE streamer_login IN ({qmarks})",
+                tuple(logins),
+            ).fetchall()
+        for r in rows:
+            mid = r["last_discord_message_id"]
+            if not mid:
+                continue
+            try:
+                msg = await ch.fetch_message(int(mid))  # type: ignore[attr-defined]
+                await msg.edit(content=(msg.content + " (beendet)"))  # type: ignore[attr-defined]
+            except Exception as e:
+                log.debug("cannot edit message %s: %s", mid, e)
 
     # ---------- 30-Tage-Check (täglich) ----------
     @tasks.loop(hours=24)
@@ -631,10 +648,12 @@ class TwitchDeadlockCog(commands.Cog):
                 "FROM twitch_stream_logs GROUP BY streamer_login ORDER BY sessions DESC LIMIT 10"
             ).fetchall()
         top = [
-            (
-                r["streamer_login"],
-                {"sessions": r["sessions"], "avg_viewers": r["avg_viewers"] or 0, "max_viewers": r["max_viewers"] or 0},
-            )
+            {
+                "streamer": r["streamer_login"],
+                "sessions": r["sessions"],
+                "avg_viewers": r["avg_viewers"] or 0,
+                "max_viewers": r["max_viewers"] or 0,
+            }
             for r in rows
         ]
         return {"total_sessions": total_sessions, "unique_streamers": unique_streamers, "top": top}

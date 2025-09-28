@@ -1,55 +1,37 @@
 # -*- coding: utf-8 -*-
 """
-Rules Panel Cog – spiegelt das Welcome-DM Onboarding 1:1 im Thread.
-
-Idee:
-- NICHT die Inhalte hier duplizieren.
-- Stattdessen die bestehenden DM-Views aus `cogs.welcome_dm` verwenden.
-- Wenn der WelcomeDM-Cog eine Methode `run_flow_in_channel(channel, member)` anbietet,
-  nutzen wir genau diese (volle Wiederverwendung).
-- Falls nicht, verwenden wir eine *Fallback*-Sequenz, die ebenfalls ausschließlich
-  die vorhandenen Step-Views nutzt (Intro/Status/Steam/Rules).
-
-Benutzung:
-- /publish_rules_panel (oder dein bestehender Admin-Command) postet das Panel.
-- Klick auf „Weiter ➜“: erstellt privaten Thread und startet den Flow im Thread.
-
-Hinweis:
-- Die View ist persistent (timeout=None) und wird in `cog_load` registriert.
-- Thread-Erstellung: bevorzugt privat; fällt ggf. auf public thread zurück.
+Rules Panel Cog – startet den Welcome-Flow 1:1 im privaten Thread aus dem Regel-Channel.
+- Persistente Panel-View (nur custom_id-Buttons, kein Link-Button)
+- Nutzt die bestehenden Views aus cogs.welcome_dm (keine Duplikate)
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Optional, Tuple
 import contextlib
+from typing import Optional
 
 import discord
 from discord.ext import commands
 from discord import app_commands
 
-# ========== Konfiguration (IDs bitte prüfen) ==========
-MAIN_GUILD_ID            = 1289721245281292288
-RULES_CHANNEL_ID         = 1315684135175716975
+# ========== Konfiguration ==========
+MAIN_GUILD_ID    = 1289721245281292288
+RULES_CHANNEL_ID = 1315684135175716975
 
 log = logging.getLogger("RulesPanel")
 
-# ========== Bestehende DM-Bausteine importieren ==========
-# Wir wollen NICHT neu schreiben – wir verwenden die existierenden Views/Helper aus welcome_dm.
+# ========== Imports aus welcome_dm ==========
 from cogs.welcome_dm.base import build_step_embed
 from cogs.welcome_dm.step_intro import IntroView
 from cogs.welcome_dm.step_status import PlayerStatusView
-from cogs.welcome_dm.step_steam_link import SteamLinkNudgeView
+from cogs.welcome_dm.step_steam_link import SteamLinkStepView
 from cogs.welcome_dm.step_rules import RulesView
 
 
-# ------------------------------
-# Thread-Helfer
-# ------------------------------
+# ------------------------------ Helpers ------------------------------ #
 async def _create_user_thread(interaction: discord.Interaction) -> Optional[discord.Thread]:
-    """Erstellt einen (bevorzugt) privaten Thread unter RULES_CHANNEL_ID und fügt den Nutzer hinzu."""
+    """Erstellt einen (bevorzugt) privaten Thread im Regelkanal und fügt den Nutzer hinzu."""
     guild = interaction.guild
     if not guild:
         await interaction.response.send_message("❌ Dieser Button funktioniert nur in der Guild.", ephemeral=True)
@@ -60,9 +42,9 @@ async def _create_user_thread(interaction: discord.Interaction) -> Optional[disc
         await interaction.response.send_message("❌ Regelkanal nicht gefunden/kein Textkanal.", ephemeral=True)
         return None
 
-    name = f"onboarding-{interaction.user.name}".replace(' ', '-')[:90]
+    name = f"onboarding-{interaction.user.name}".replace(" ", "-")[:90]
 
-    # Versuche Private Thread
+    # Private Thread versuchen
     try:
         thread = await channel.create_thread(
             name=name,
@@ -92,54 +74,40 @@ async def _create_user_thread(interaction: discord.Interaction) -> Optional[disc
 async def _send_step(thread: discord.Thread, embed: discord.Embed, view: discord.ui.View) -> bool:
     """Sendet Embed+View in den Thread, wartet auf Abschluss und räumt auf."""
     msg = await thread.send(embed=embed, view=view)
-    # Falls die View ein bound_message-Feld hat, setze es (für kompatible StepViews)
     try:
-        setattr(view, "bound_message", msg)  # type: ignore[attr-defined]
+        setattr(view, "bound_message", msg)  # kompatibel mit DM-Views
     except Exception:
         pass
     try:
         await view.wait()
     finally:
-        # Die DM-Views löschen oft selbst; Cleanup hier defensiv.
         with contextlib.suppress(Exception):
             await msg.delete()
-    # proceed=true -> weiter
     return bool(getattr(view, "proceed", True))
 
 
-# ------------------------------
-# Panel-View (Regelkanal)
-# ------------------------------
+# ------------------------------ Panel-View (persistent) ------------------------------ #
 class RulesPanelView(discord.ui.View):
     def __init__(self, cog: "RulesPanel"):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None)  # PERSISTENT
         self.cog = cog
 
     @discord.ui.button(label="Weiter ➜", style=discord.ButtonStyle.primary, custom_id="rp:panel:start")
-    async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def start(self, interaction: discord.Interaction, _button: discord.ui.Button):
         await self.cog.start_in_thread(interaction)
 
 
-# ------------------------------
-# Cog
-# ------------------------------
+# ------------------------------ Cog ------------------------------ #
 class RulesPanel(commands.Cog):
-    """Kleiner Wrapper-Cog: startet das bestehende Welcome-DM Onboarding im Thread."""
+    """Wrapper-Cog: Startet den WelcomeDM-Flow im privaten Thread."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     async def cog_load(self):
-        # Panel-View persistieren
+        # Nur die Panel-View persistent registrieren!
         self.bot.add_view(RulesPanelView(self))
         log.info("✅ Rules Panel geladen (Panel-View aktiv)")
-
-        # Safety: Falls der WelcomeDM-Cog Views NICHT registriert hat (z. B. Reihenfolge),
-        # versichern wir uns, dass die DM-Step-Views registriert sind.
-        self.bot.add_view(IntroView())
-        self.bot.add_view(PlayerStatusView())
-        self.bot.add_view(SteamLinkNudgeView())
-        self.bot.add_view(RulesView())
 
     @app_commands.command(name="publish_rules_panel", description="(Admin) Regelwerk-Panel posten")
     @app_commands.checks.has_permissions(administrator=True)
@@ -161,12 +129,12 @@ class RulesPanel(commands.Cog):
         await ch.send(embed=emb, view=RulesPanelView(self))
         await interaction.response.send_message("✅ Panel gesendet.", ephemeral=True)
 
-    # ----- Start-Flow -----
+    # ----- Start-Flow im Thread -----
     async def start_in_thread(self, interaction: discord.Interaction):
-        # Thread anlegen
         thread = await _create_user_thread(interaction)
         if not thread:
             return
+
         # Nutzer informieren
         try:
             if not interaction.response.is_done():
@@ -176,63 +144,57 @@ class RulesPanel(commands.Cog):
         except Exception:
             pass
 
-        # 1) Bevorzugt den WelcomeDM-Cog fragen, ob er den Flow liefern kann
+        # Bevorzugt: WelcomeDM um Hilfe bitten
         wdm = self.bot.get_cog("WelcomeDM")
         if wdm and hasattr(wdm, "run_flow_in_channel"):
             try:
-                await getattr(wdm, "run_flow_in_channel")(thread, interaction.user)  # type: ignore
+                await wdm.run_flow_in_channel(thread, interaction.user)  # type: ignore
                 return
             except Exception as e:
                 log.warning("WelcomeDM.run_flow_in_channel failed, fallback local: %r", e)
 
-        # 2) Fallback: lokaler Mini-Runner (nutzt dieselben Step-Views, damit Texte/Logik aus welcome_dm kommen)
-        await self._fallback_flow(thread, interaction.user)
+        # Fallback: denselben Flow lokal starten (Intro ungezählt; danach 1/3–3/3)
+        total = 3
 
-    async def _fallback_flow(self, thread: discord.Thread, user: discord.User):
-        """Notfall: Wenn WelcomeDM keine Channel-API hat, nutzen wir die Views direkt."""
-        total = 4
-
-        # Intro
-        intro = IntroView()
+        # Intro (ohne Zählung)
         emb = build_step_embed(
-            title="👋 Willkommen in der Deutschen Deadlock Community!",
-            desc="Ich helfe dir jetzt, dein Erlebnis hier optimal einzustellen.",
+            title="👋 Willkommen!",
+            desc="Ich helfe dir, dein Erlebnis hier optimal einzustellen. 2–3 Minuten genügen.",
             step=None, total=total, color=0x5865F2,
         )
-        ok = await _send_step(thread, emb, intro)
+        ok = await _send_step(thread, emb, IntroView())
         if not ok:
             return
 
-        # Status
-        status = PlayerStatusView()
+        # 1/3 Status
         emb = build_step_embed(
-            title="Frage 1/4 · Wie ist dein Status?",
+            title="Frage 1/3 · Wie ist dein Status?",
             desc="Sag kurz, wo du stehst – dann passen wir alles besser an.",
             step=1, total=total, color=0x95A5A6,
         )
+        status = PlayerStatusView()
         ok = await _send_step(thread, emb, status)
         if not ok:
             return
 
-        # Steam
-        steam = SteamLinkNudgeView()
+        # 2/3 Steam
         emb = build_step_embed(
-            title="Frage 2/4 · Steam verknüpfen (empfohlen)",
-            desc="Für Voice-Status & Features bitte deinen Steam-Account verknüpfen.",
+            title="Frage 2/3 · Steam verknüpfen (empfohlen)",
+            desc=("Für Voice-Status & Features bitte deinen Steam-Account verknüpfen.\n"
+                  "**Wichtig:** Steam → Profil → Spieldetails = Öffentlich."),
             step=2, total=total, color=0x2ECC71,
         )
-        ok = await _send_step(thread, emb, steam)
+        ok = await _send_step(thread, emb, SteamLinkStepView())
         if not ok:
             return
 
-        # Regeln
-        rules = RulesView()
+        # 3/3 Regeln
         emb = build_step_embed(
-            title="Frage 3/4 · Regelwerk bestätigen",
+            title="Frage 3/3 · Regelwerk bestätigen",
             desc="Kurz bestätigen, dass du die Regeln gelesen hast.",
             step=3, total=total, color=0xE67E22,
         )
-        await _send_step(thread, emb, rules)
+        await _send_step(thread, emb, RulesView())
 
 
 async def setup(bot: commands.Bot):
