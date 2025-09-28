@@ -1,4 +1,3 @@
-# cogs/live_match/steam_link_voice_nudge.py
 from __future__ import annotations
 
 import os
@@ -7,7 +6,7 @@ import logging
 import inspect
 import re
 from typing import Optional, Dict, Union, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import discord
 from discord.ext import commands
@@ -29,6 +28,25 @@ EXEMPT_ROLE_IDS = {
     int(x) for x in os.getenv("NUDGE_EXEMPT_ROLE_IDS", _EXEMPT_DEFAULT).split(",")
     if x.strip().isdigit()
 }
+
+# Deep-Link Toggle für Discord OAuth
+_DEEPLINK_EN = str(os.getenv("DISCORD_OAUTH_DEEPLINK", "0")).strip().lower() not in ("", "0", "false", "no")
+
+def _prefer_discord_deeplink(browser_url: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    (primary_url, browser_fallback).
+    Aktiviert 'discord://-/oauth2/authorize?...' als primary, wenn möglich.
+    """
+    if not browser_url:
+        return None, None
+    try:
+        u = urlparse(browser_url)
+        if "discord.com" in (u.netloc or "") and "/oauth2/authorize" in (u.path or "") and _DEEPLINK_EN:
+            deeplink = urlunparse(("discord", "-/oauth2/authorize", "", "", u.query, ""))
+            return deeplink, browser_url
+    except Exception:
+        pass
+    return browser_url, None
 
 # ---------- DB ----------
 def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: int = 0) -> None:
@@ -147,7 +165,6 @@ async def _fetch_oauth_urls(bot: commands.Bot, user: Union[discord.User, discord
             if hasattr(cog, "steam_start_url_for"):
                 s = cog.steam_start_url_for(int(user.id))
             else:
-                # Notfalls sofort state generieren (weniger schön, aber funktioniert)
                 state = cog._mk_state(int(user.id))  # type: ignore[attr-defined]
                 s = cog._build_steam_login_url(state)  # type: ignore[attr-defined]
         except Exception:
@@ -280,7 +297,6 @@ class _OptionsView(discord.ui.View):
     def __init__(self, *, discord_oauth_url: Optional[str], steam_openid_url: Optional[str]):
         super().__init__(timeout=None)
 
-        # Reihe 1: zwei Link-Buttons (grau, öffnen extern) + manuell
         if discord_oauth_url:
             self.add_item(discord.ui.Button(
                 label="Via Discord verknüpfen", style=discord.ButtonStyle.link,
@@ -303,10 +319,7 @@ class _OptionsView(discord.ui.View):
                 disabled=True, emoji="🎮", row=0
             ))
 
-        # Manuell (grün)
         self.add_item(_ManualButton(row=1))
-
-        # Schließen
         self.add_item(_CloseButton(row=1))
 
 # Persistente Registry-View (falls weitere Buttons mit custom_id notwendig)
@@ -346,7 +359,6 @@ class SteamLinkVoiceNudge(commands.Cog):
         self._tasks: Dict[int, asyncio.Task] = {}
 
     async def cog_load(self):
-        # Persistente Buttons (manuell/close)
         self.bot.add_view(_PersistentRegistryView())
 
     async def cog_unload(self):
@@ -360,7 +372,6 @@ class SteamLinkVoiceNudge(commands.Cog):
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         try:
-            # Nur bei Join in einen Voice-Channel
             if (before.channel is None) and (after.channel is not None):
                 if _member_has_exempt_role(member):
                     log.debug("[nudge] skip exempt member id=%s", member.id)
@@ -371,7 +382,6 @@ class SteamLinkVoiceNudge(commands.Cog):
                 if _has_been_notified(member.id):
                     log.debug("[nudge] user already notified id=%s", member.id)
                     return
-                # Start Warte-Task
                 if member.id in self._tasks and not self._tasks[member.id].done():
                     try:
                         self._tasks[member.id].cancel()
@@ -382,9 +392,6 @@ class SteamLinkVoiceNudge(commands.Cog):
             log.exception("on_voice_state_update error")
 
     async def _send_dm_nudge(self, user: Union[discord.User, discord.Member], *, force: bool = False) -> bool:
-        """
-        Sendet die Nudge-DM. force=True überschreibt notified-Guard (für Tests).
-        """
         uid = int(user.id)
         if not force and _has_been_notified(uid):
             return False
@@ -395,8 +402,8 @@ class SteamLinkVoiceNudge(commands.Cog):
             dm = user.dm_channel or await user.create_dm()
 
             discord_url, steam_url = await _fetch_oauth_urls(self.bot, user)
+            primary_discord, browser_fallback = _prefer_discord_deeplink(discord_url)
 
-            # Beschreibung
             desc = (
                 "Damit wir **einheitlich** anzeigen können, wer **in der Lobby** ist und wer **im Match**, "
                 "hilft uns die Verknüpfung zwischen Discord und Steam.\n\n"
@@ -406,10 +413,11 @@ class SteamLinkVoiceNudge(commands.Cog):
                 "1) Klicke **„Via Discord verknüpfen“**, **„SteamID manuell eingeben“** oder **„Mit Steam anmelden“**.\n"
                 "2) Folge den kurzen Schritten. Wir bekommen niemals dein Passwort – bei Steam erhalten wir nur die **SteamID64**.\n\n"
                 "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** "
-                "(und **Gesamtspielzeit** nicht auf „immer privat“).\n\n"
-                "Du kannst dich **jederzeit abmelden** (z. B. mit `/unlink`)."
+                "(und **Gesamtspielzeit** nicht auf „immer privat“)."
             )
-            if not discord_url or not steam_url:
+            if browser_fallback and (primary_discord or "").startswith("discord://"):
+                desc += f"\n\n_Falls sich nichts öffnet:_ [Browser-Variante]({browser_fallback})"
+            if not primary_discord or not steam_url:
                 desc += "\n\n_Heads-up:_ Der Link-Dienst ist gerade nicht verfügbar. Nutze vorerst **/link** oder **/link_steam**."
 
             embed = discord.Embed(
@@ -419,7 +427,7 @@ class SteamLinkVoiceNudge(commands.Cog):
             )
             embed.set_footer(text="Kurzbefehle: /link · /link_steam · /addsteam · /unlink · /setprimary")
 
-            view = _OptionsView(discord_oauth_url=discord_url, steam_openid_url=steam_url)
+            view = _OptionsView(discord_oauth_url=primary_discord, steam_openid_url=steam_url)
             await dm.send(embed=embed, view=view)
 
             if not force:
@@ -446,7 +454,6 @@ class SteamLinkVoiceNudge(commands.Cog):
 
     async def _wait_and_notify(self, member: discord.Member):
         try:
-            # Wenn exempt, gar nicht erst warten/notify
             if _member_has_exempt_role(member):
                 ch = _log_chan(self.bot)
                 if ch:
@@ -462,7 +469,6 @@ class SteamLinkVoiceNudge(commands.Cog):
                 log.debug("[nudge] already linked after wait, skip")
                 return
 
-            # Senden
             await self._send_dm_nudge(member)
 
         except asyncio.CancelledError:
@@ -470,7 +476,6 @@ class SteamLinkVoiceNudge(commands.Cog):
         except Exception:
             log.exception("wait_and_notify failed")
 
-    # --------- Admin/Test ---------
     @commands.hybrid_command(name="nudgesend", description="(Admin) Schickt die Steam-Nudge-DM an einen Nutzer.")
     @commands.has_permissions(administrator=True)
     async def nudgesend(self, ctx: commands.Context, target: Optional[discord.Member] = None):
@@ -479,7 +484,6 @@ class SteamLinkVoiceNudge(commands.Cog):
             await ctx.reply("Bitte Ziel angeben: `!nudgesend @user`", mention_author=False)
             return
 
-        # Auch beim Test NICHT kontaktieren, wenn Exempt-Rolle vorhanden
         if isinstance(target, discord.Member) and _member_has_exempt_role(target):
             await ctx.reply("ℹ️ Test abgebrochen: Ziel hat eine ausgenommene Rolle.", mention_author=False)
             return
