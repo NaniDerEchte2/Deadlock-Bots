@@ -192,7 +192,7 @@ class StreamerIntroView(StepView):
     )
     async def btn_no(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        await self._finish(interaction, message="Alles klar – du kannst es später mit **/streamer** erneut starten.")
+        await self._finish(interaction, content="Alles klar – du kannst es später mit **/streamer** erneut starten.")
 
 
 # ------------------------------
