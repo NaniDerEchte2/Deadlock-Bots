@@ -93,20 +93,15 @@ class WelcomeDM(commands.Cog):
         """Sende die Welcome-DM-Sequenz an den Nutzer."""
         lock = self._get_lock(member.id)
         async with lock:
-            greet_msg: discord.Message | None = None
             try:
                 await self._cleanup_old_bot_dms(member, limit=50)
 
-                # (0) Begrüßung
-                greet_msg = await member.send(
+                # (0) Intro (ohne Zählung) — enthält jetzt den kompletten Begrüßungstext
+                intro_desc = (
                     "👋 **Willkommen in der Deutschen Deadlock Community!**\n\n"
                     "Ich helfe dir jetzt, dein Erlebnis hier **optimal** einzustellen. "
                     "Nimm dir kurz **2–3 Minuten** Zeit. 💙\n\n"
-                    "**:bangbang: Ohne diese Schritte hast du keinen vollen Zugriff. :bangbang:**"
-                )
-
-                # (0.5) Intro (ohne Zählung)
-                intro_desc = (
+                    "**:bangbang: Ohne diese Schritte hast du keinen vollen Zugriff. :bangbang:**\n\n"
                     "Bitte lies die nächsten Schritte **in Ruhe**. "
                     "Ich halte es kurz und sorge dafür, dass du **genau die richtigen** "
                     "Channels & Features siehst. 💙"
@@ -229,14 +224,6 @@ class WelcomeDM(commands.Cog):
                         logger.warning(f"Abschluss-DM an {member} ({member.id}) nicht möglich: {e}")
                     except Exception:
                         logger.exception("Abschluss-DM: Unerwarteter Fehler beim Senden")
-
-                try:
-                    if greet_msg:
-                        await greet_msg.delete()
-                except discord.HTTPException as e:
-                    logger.debug(f"Begrüßungsnachricht nicht gelöscht: {e}")
-                except Exception:
-                    logger.exception("Unerwarteter Fehler beim Löschen der Begrüßungsnachricht")
 
                 logger.info(f"Welcome-DM abgeschlossen für {member} ({member.id})")
                 return True
