@@ -413,7 +413,7 @@ class LiveMatchMaster(commands.Cog):
                     cohort_imputable_count = sum(1 for uid in deadlockers if uid not in users_with_server)
                     n_raw += cohort_imputable_count
                 n = min(n_raw, y_cap)
-                suffix = f"• {n}/{y_cap} Im Spiel"
+                suffix = f"• {n}/{y_cap} In der Lobby"
             elif phase == PHASE_LOBBY:
                 n_raw = len(deadlockers)
                 n = min(n_raw, y_cap)
