@@ -1,7 +1,10 @@
-# cogs/welcome_dm/step_steam_link.py
 from __future__ import annotations
 
+import os
 import re
+from typing import Optional, Tuple
+from urllib.parse import urlparse, urlunparse
+
 import discord
 
 __all__ = [
@@ -23,6 +26,27 @@ if not hasattr(_oauth, "start_urls_for") or not callable(getattr(_oauth, "start_
     raise ImportError(
         "Ungültige Schnittstelle: cogs.live_match.steam_link_oauth exportiert keine start_urls_for(uid)."
     )
+
+# --- ENV: Discord OAuth Deep-Link (in-App Dialog) ---
+_DEEPLINK_EN = str(os.getenv("DISCORD_OAUTH_DEEPLINK", "0")).strip().lower() not in ("", "0", "false", "no")
+
+def _prefer_discord_deeplink(browser_url: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Liefert (primary_url, browser_fallback). Wenn Deep-Link aktiv und erkennbar,
+    wird 'discord://-/oauth2/authorize?...' als primary geliefert, sonst (url, None).
+    """
+    if not browser_url:
+        return None, None
+    try:
+        u = urlparse(browser_url)
+        # akzeptiere /oauth2/authorize sowohl mit/ohne /api
+        if "discord.com" in (u.netloc or "") and "/oauth2/authorize" in (u.path or ""):
+            if _DEEPLINK_EN:
+                deeplink = urlunparse(("discord", "-/oauth2/authorize", "", "", u.query, ""))
+                return deeplink, browser_url
+    except Exception:
+        pass
+    return browser_url, None
 
 # --- Eingabe-Validierung ---
 # Erlaubt:
@@ -113,7 +137,6 @@ class _LinkSheet(discord.ui.View):
     """Ephemere Mini-View mit den tatsächlichen Link-Buttons (mit ?uid=...)."""
     def __init__(self, *, discord_url: str, steam_url: str):
         super().__init__(timeout=120)
-        # gleiche alten Labels
         self.add_item(discord.ui.Button(
             label="Via Discord verknüpfen",
             style=discord.ButtonStyle.link,
@@ -133,7 +156,7 @@ class SteamLinkStepView(discord.ui.View):
     View für den Steam-Verknüpfungsschritt in der Welcome-DM.
     WICHTIG: Diese View enthält KEINE Link-Buttons.
              Die tatsächlichen URLs werden erst beim Klick als ephemere Link-View gesendet.
-    Damit kann diese View auch persistent registriert werden.
+    Dadurch keine ablaufenden/alten OAuth-Links in persistenter View.
     """
     def __init__(
         self,
@@ -181,11 +204,21 @@ class SteamLinkStepView(discord.ui.View):
             else:
                 await interaction.response.send_message("❌ Start-Links nicht konfiguriert. Bitte später erneut versuchen.", ephemeral=True)
             return
-        sheet = _LinkSheet(discord_url=urls["discord_start"], steam_url=urls["steam_openid_start"])
+
+        # Deep-Link bevorzugen (falls aktiviert) + Browser-Fallback anfügen
+        primary, browser_fallback = _prefer_discord_deeplink(urls["discord_start"])
+        discord_link = primary or urls["discord_start"]
+
+        sheet = _LinkSheet(discord_url=discord_link, steam_url=urls["steam_openid_start"])
+
+        msg = "🔐 Wähle den Link:"
+        if browser_fallback and discord_link.startswith("discord://"):
+            msg += f" _(Falls sich nichts öffnet: [Browser-Variante]({browser_fallback}))_"
+
         if interaction.response.is_done():
-            await interaction.followup.send("🔐 Wähle den Link:", view=sheet, ephemeral=True)
+            await interaction.followup.send(msg, view=sheet, ephemeral=True)
         else:
-            await interaction.response.send_message("🔐 Wähle den Link:", view=sheet, ephemeral=True)
+            await interaction.response.send_message(msg, view=sheet, ephemeral=True)
 
     @discord.ui.button(
         label="Steam Profil suchen",
@@ -206,18 +239,14 @@ class SteamLinkStepView(discord.ui.View):
         emoji="⏭️",
     )
     async def _next(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        # markiere und beende die View sofort
         self.proceed = True
         self.stop()
-        # optionaler Callback des Aufrufers (kann selbst antworten)
         if callable(self.on_next):
             try:
                 await self.on_next(interaction)
                 return
             except Exception:
-                # falls der Callback nichts sendet/fehlschlägt, sorgen wir für eine Antwort
                 pass
-        # sichere Bestätigung, damit kein "Interaction failed" erscheint
         if interaction.response.is_done():
             await interaction.followup.send("Alles klar – weiter geht’s! ✅", ephemeral=True)
         else:
