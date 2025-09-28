@@ -5,7 +5,9 @@ import os
 import asyncio
 import logging
 import inspect
+import re
 from typing import Optional, Dict, Union, Tuple
+from urllib.parse import urlparse
 
 import discord
 from discord.ext import commands
@@ -29,6 +31,20 @@ EXEMPT_ROLE_IDS = {
 }
 
 # ---------- DB ----------
+def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: int = 0) -> None:
+    _ensure_schema()
+    db.execute(
+        """
+        INSERT INTO steam_links(user_id, steam_id, name, verified)
+        VALUES(?,?,?,?)
+        ON CONFLICT(user_id, steam_id) DO UPDATE SET
+          name=excluded.name,
+          verified=excluded.verified,
+          updated_at=CURRENT_TIMESTAMP
+        """,
+        (int(user_id), str(steam_id), name or "", int(verified)),
+    )
+
 def _ensure_schema():
     db.execute("""
         CREATE TABLE IF NOT EXISTS steam_nudge_state(
@@ -55,101 +71,52 @@ def _has_any_steam_link(user_id: int) -> bool:
     row = db.query_one("SELECT 1 FROM steam_links WHERE user_id=? LIMIT 1", (int(user_id),))
     return bool(row)
 
-def _already_notified(user_id: int) -> bool:
+def _mark_notified(user_id: int) -> None:
     _ensure_schema()
-    row = db.query_one("SELECT notified_at FROM steam_nudge_state WHERE user_id=?", (int(user_id),))
-    return bool(row and row["notified_at"])
+    db.execute(
+        "INSERT INTO steam_nudge_state(user_id, notified_at) VALUES(?, CURRENT_TIMESTAMP) "
+        "ON CONFLICT(user_id) DO UPDATE SET notified_at=CURRENT_TIMESTAMP",
+        (int(user_id),),
+    )
 
-def _mark_notified(user_id: int):
+def _has_been_notified(user_id: int) -> bool:
     _ensure_schema()
-    db.execute("""
-        INSERT INTO steam_nudge_state(user_id, notified_at)
-        VALUES(?, CURRENT_TIMESTAMP)
-        ON CONFLICT(user_id) DO UPDATE SET notified_at=CURRENT_TIMESTAMP
-    """, (int(user_id),))
+    row = db.query_one("SELECT 1 FROM steam_nudge_state WHERE user_id=? LIMIT 1", (int(user_id),))
+    return bool(row)
 
-def _table_exists(name: str) -> bool:
-    try:
-        row = db.query_one("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,))
-        return bool(row)
-    except Exception as e:
-        log.debug("table_exists(%s) failed: %r", name, e)
-        return False
-
-def _had_prior_long_voice_session(user_id: int, threshold_sec: int) -> bool:
-    _ensure_schema()
-    candidates = []
-    if _table_exists("voice_sessions"):
-        candidates += [
-            ("SELECT 1 FROM voice_sessions WHERE user_id=? AND duration_seconds>=? LIMIT 1", (user_id, threshold_sec)),
-            ("SELECT 1 FROM voice_sessions WHERE user_id=? AND duration>=? LIMIT 1", (user_id, threshold_sec)),
-            ("SELECT 1 FROM voice_sessions WHERE user_id=? AND total_seconds>=? LIMIT 1", (user_id, threshold_sec)),
-        ]
-    if _table_exists("vat_sessions"):
-        candidates += [
-            ("SELECT 1 FROM vat_sessions WHERE user_id=? AND duration_seconds>=? LIMIT 1", (user_id, threshold_sec)),
-            ("SELECT 1 FROM vat_sessions WHERE user_id=? AND duration>=? LIMIT 1", (user_id, threshold_sec)),
-        ]
-    if _table_exists("voice_activity"):
-        candidates += [
-            ("SELECT 1 FROM voice_activity WHERE user_id=? AND duration_seconds>=? LIMIT 1", (user_id, threshold_sec)),
-            ("SELECT 1 FROM voice_activity WHERE user_id=? AND duration>=? LIMIT 1", (user_id, threshold_sec)),
-        ]
-    for sql, params in candidates:
-        try:
-            row = db.query_one(sql, params)
-            if row:
-                return True
-        except Exception as e:
-            log.debug("query candidate failed (%s): %r", sql, e)
-            continue
-    return False
-
-
-# ---------- Utilities ----------
 def _member_has_exempt_role(member: discord.Member) -> bool:
-    try:
-        return any((r.id in EXEMPT_ROLE_IDS) for r in getattr(member, "roles", []) if isinstance(r, discord.Role))
-    except Exception as e:
-        log.debug("member_has_exempt_role failed for %s: %r", getattr(member, "id", None), e)
-        return False
-
-async def _cleanup_bot_dms(user: Union[discord.User, discord.Member], bot_user_id: int, limit: int = 50):
-    try:
-        dm = user.dm_channel or await user.create_dm()
-        async for msg in dm.history(limit=limit):
-            if msg.author and msg.author.id == bot_user_id:
-                try:
-                    await msg.delete()
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    log.debug("delete DM message failed for %s: %r", user.id, e)
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:
-        log.debug(f"[nudge] DM-Cleanup für {user.id} übersprungen: {e}")
+    return any((r.id in EXEMPT_ROLE_IDS) for r in getattr(member, "roles", []) or [])
 
 def _log_chan(bot: commands.Bot) -> Optional[discord.TextChannel]:
     ch = bot.get_channel(LOG_CHANNEL_ID)
     return ch if isinstance(ch, discord.TextChannel) else None
 
-async def _maybe_call(obj, names: Tuple[str, ...], *args, **kwargs):
-    """Ruft die erste existierende Methode/Funktion aus `names` auf (sync/async)."""
-    for n in names:
-        if not hasattr(obj, n):
-            continue
-        fn = getattr(obj, n)
-        if callable(fn):
-            res = fn(*args, **kwargs)
-            if inspect.isawaitable(res):
-                res = await res
-            return res
-    return None
+# ---------- Voice-Monitor ----------
+async def _count_voice_minutes(member: discord.Member, minutes: int) -> bool:
+    """
+    Wartet bis zu `minutes` Minuten, während der Member (irgendeinem) Voice-Channel angehört.
+    Gibt True zurück, wenn er die gesamte Zeit im Voice war (abzügl. kurzer Poll-Gaps),
+    sonst False, wenn er vorher abhaut.
+    """
+    seen = 0
+    try:
+        while seen < minutes * 60:
+            await asyncio.sleep(POLL_INTERVAL)
+            vc = getattr(member, "voice", None)
+            if not vc or not vc.channel:
+                return False
+            seen += POLL_INTERVAL
+        return True
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("voice wait failed for member=%s", getattr(member, "id", "?"))
+        return False
 
-def _find_steam_oauth_cog(bot: commands.Bot):
-    # 1) feste Namen
-    for name in ("SteamLink", "SteamLinkOAuth", "SteamOAuth", "SteamLinkOpenID"):
+# ---------- OAuth/OpenID Hilfen ----------
+def _find_steamlink_cog(bot: commands.Bot):
+    # 1) explizit
+    for name in ("SteamLink", "SteamLinkOAuth", "SteamLinkOpenID"):
         cog = bot.get_cog(name)
         if cog:
             return cog
@@ -166,58 +133,28 @@ async def _fetch_oauth_urls(bot: commands.Bot, user: Union[discord.User, discord
     Bevorzugt Lazy-Start (state wird erst beim Klick erzeugt).
     Gibt (discord_start_url, steam_start_url) zurück oder (None, None) als Fallback.
     """
-    cog = _find_steam_oauth_cog(bot)
-    if not cog:
-        log.warning("[nudge] SteamLink OAuth-Cog nicht gefunden – Link-Buttons werden ausgeblendet.")
-        return None, None
-
-    uid = int(user.id)
-
-    # 👉 Priorität: Lazy-Start-Methoden zuerst, dann rückwärtskompatible Builder.
-    discord_methods = (
-        "discord_start_url_for",         # bevorzugt
-        "public_discord_oauth_url_for",  # evtl. alternative Namensgebung
-        "discord_oauth_url_for",         # evtl. alternative Namensgebung
-        "get_discord_link_url_for",      # evtl. alternative Namensgebung
-        "get_discord_oauth_url_for",     # evtl. alternative Namensgebung
-        "build_discord_link_for",        # Fallback: erzeugt state SOFORT (nicht ideal)
-        "build_discord_oauth_url_for",   # Fallback-Variante
-        "make_discord_oauth_url",        # Fallback-Variante
-    )
-    steam_methods = (
-        "steam_start_url_for",           # bevorzugt
-        "public_steam_openid_url_for",   # evtl. alternative Namensgebung
-        "steam_openid_url_for",          # evtl. alternative Namensgebung
-        "get_steam_openid_url_for",      # evtl. alternative Namensgebung
-        "build_steam_openid_for",        # Fallback: erzeugt state SOFORT (nicht ideal)
-        "build_steam_openid_url_for",    # Fallback-Variante
-        "make_steam_openid_url",         # Fallback-Variante
-    )
-
-    discord_url = await _maybe_call(cog, discord_methods, uid)
-    steam_url   = await _maybe_call(cog, steam_methods,   uid)
-
-    # Fallback: versuche das Modul selbst (falls die Helper als Modulexporte existieren)
-    if (not discord_url or not steam_url) and hasattr(cog, "__module__"):
+    cog = _find_steamlink_cog(bot)
+    if cog:
         try:
-            mod = __import__(cog.__module__, fromlist=["*"])
-            if not discord_url:
-                discord_url = await _maybe_call(mod, discord_methods, uid)
-            if not steam_url:
-                steam_url = await _maybe_call(mod, steam_methods,   uid)
-        except Exception as e:
-            log.debug("oauth url module fallback failed: %r", e)
-
-    if not discord_url or not steam_url:
-        log.warning("[nudge] OAuth-Start-URLs nicht verfügbar – Buttons werden deaktiviert, Hinweis auf /link gezeigt.")
-        return None, None
-
-    try:
-        log.info(f"[nudge] OAuth-Start-URLs bereit (discord={str(discord_url)[:60]}…, steam={str(steam_url)[:60]}…)")
-    except Exception as e:
-        log.debug("logging oauth urls failed: %r", e)
-    return str(discord_url), str(steam_url)
-
+            if hasattr(cog, "discord_start_url_for"):
+                d = cog.discord_start_url_for(int(user.id))
+            else:
+                d = cog.build_discord_link_for(int(user.id))  # falls vorhanden
+        except Exception:
+            log.exception("fetch discord oauth url failed")
+            d = None
+        try:
+            if hasattr(cog, "steam_start_url_for"):
+                s = cog.steam_start_url_for(int(user.id))
+            else:
+                # Notfalls sofort state generieren (weniger schön, aber funktioniert)
+                state = cog._mk_state(int(user.id))  # type: ignore[attr-defined]
+                s = cog._build_steam_login_url(state)  # type: ignore[attr-defined]
+        except Exception:
+            log.exception("fetch steam openid url failed")
+            s = None
+        return d or None, s or None
+    return None, None
 
 # ---------- View/Modal ----------
 class _ManualModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
@@ -230,26 +167,81 @@ class _ManualModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        txt = str(self.steam_input.value).strip()
-        steamid64 = txt  # (echte Validierung übernimmt dein Backend/Cog)
+        raw = str(self.steam_input.value).strip()
+        steam_id: Optional[str] = None
+        persona: Optional[str] = None
+
+        # Try resolve via SteamLink cog (handles vanity + links)
+        try:
+            steam_cog = interaction.client.get_cog("SteamLink")
+        except Exception:
+            steam_cog = None
+
+        if steam_cog:
+            try:
+                steam_id = await steam_cog._resolve_steam_input(raw)  # type: ignore[attr-defined]
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.debug("[nudge] resolve via SteamLink cog failed: %r", e)
+                steam_id = None
+            if steam_id:
+                try:
+                    persona = await steam_cog._fetch_persona(steam_id)  # type: ignore[attr-defined]
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    log.debug("[nudge] persona fetch failed: %r", e)
+                    persona = None
+
+        # Fallback: accept 17-digit or /profiles/<id> links only (no vanity here)
+        if not steam_id:
+            s = raw
+            if re.fullmatch(r"\d{17}", s):
+                steam_id = s
+            else:
+                try:
+                    u = urlparse(s)
+                except Exception:
+                    u = None
+                if u and (u.scheme in ("http", "https")):
+                    host = (u.hostname or "").lower().rstrip(".")
+                    path = (u.path or "").rstrip("/")
+                    if host == "steamcommunity.com" or host.endswith(".steamcommunity.com"):
+                        m2 = re.fullmatch(r"/profiles/(\d{17})", path)
+                        if m2:
+                            steam_id = m2.group(1)
+
+        if not steam_id:
+            try:
+                await interaction.response.send_message(
+                    "❌ Konnte keine gültige SteamID bestimmen.\n"
+                    "Nutze bitte die **17-stellige SteamID64** oder einen **steamcommunity.com/profiles/<id>**-Link.\n"
+                    "Für **Vanity**-URLs verwende „Via Discord verknüpfen“ oder „Mit Steam anmelden“.",
+                    ephemeral=True,
+                )
+            except Exception:
+                pass
+            return
 
         try:
-            _ensure_schema()
-            db.execute("""
-                INSERT INTO steam_links(user_id, steam_id, name, verified, primary_account)
-                VALUES(?,?,?,?,?)
-                ON CONFLICT(user_id, steam_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP
-            """, (int(interaction.user.id), steamid64, None, 0, 0))
+            _save_steam_link_row(interaction.user.id, steam_id, persona or "", verified=0)
             await interaction.response.send_message(
-                "✅ Eingang gespeichert! Wir prüfen/verwenden das beim nächsten Check. "
-                "Du kannst auch `/setprimary` nutzen, wenn mehrere Einträge vorhanden sind.",
-                ephemeral=True
+                f"✅ Hinzugefügt: `{steam_id}` (manuell). Prüfe **/links**, setze **/setprimary**.",
+                ephemeral=True,
             )
+            try:
+                await interaction.user.send(f"✅ Verknüpft (manuell): **{steam_id}**")
+            except Exception as e:
+                log.debug("[nudge] DM notify failed: %r", e)
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            log.exception("Manual link insert failed")
-            await interaction.response.send_message(f"⚠️ Konnte den Eintrag nicht speichern: {e}", ephemeral=True)
+            log.exception("[nudge] Manual Steam link failed: %r", e)
+            try:
+                await interaction.response.send_message("❌ Unerwarteter Fehler beim manuellen Verknüpfen.", ephemeral=True)
+            except Exception:
+                pass
 
 class _ManualButton(discord.ui.Button):
     def __init__(self, row: int = 0):
@@ -291,98 +283,127 @@ class _OptionsView(discord.ui.View):
         # Reihe 1: zwei Link-Buttons (grau, öffnen extern) + manuell
         if discord_oauth_url:
             self.add_item(discord.ui.Button(
-                label="Mit Discord verbinden", style=discord.ButtonStyle.link,
+                label="Via Discord verknüpfen", style=discord.ButtonStyle.link,
                 url=discord_oauth_url, emoji="🔗", row=0
             ))
         else:
             self.add_item(discord.ui.Button(
-                label="Mit Discord verbinden (/link)", style=discord.ButtonStyle.secondary,
+                label="Via Discord verknüpfen (/link)", style=discord.ButtonStyle.secondary,
                 disabled=True, emoji="🔗", row=0
             ))
-
-        self.add_item(_ManualButton(row=0))
 
         if steam_openid_url:
             self.add_item(discord.ui.Button(
                 label="Mit Steam anmelden", style=discord.ButtonStyle.link,
-                url=steam_openid_url, emoji="🛰️", row=0
+                url=steam_openid_url, emoji="🎮", row=0
             ))
         else:
             self.add_item(discord.ui.Button(
-                label="Mit Steam anmelden", style=discord.ButtonStyle.secondary,
-                disabled=True, emoji="🛰️", row=0
+                label="Mit Steam anmelden (/link_steam)", style=discord.ButtonStyle.secondary,
+                disabled=True, emoji="🎮", row=0
             ))
 
-        # Reihe 2: Schließen
+        # Manuell (grün)
+        self.add_item(_ManualButton(row=1))
+
+        # Schließen
         self.add_item(_CloseButton(row=1))
 
+# Persistente Registry-View (falls weitere Buttons mit custom_id notwendig)
 class _PersistentRegistryView(discord.ui.View):
-    """Registriert die custom_id Buttons global, damit Interaktionen nach Reboot funktionieren."""
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(_ManualButton())
-        self.add_item(_CloseButton())
 
+    @discord.ui.button(label="SteamID manuell eingeben", style=discord.ButtonStyle.primary,
+                       emoji="🔢", custom_id="nudge_manual")
+    async def _open_manual(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(_ManualModal())
+
+    @discord.ui.button(label="Schließen", style=discord.ButtonStyle.secondary,
+                       emoji="❌", custom_id="nudge_close")
+    async def _close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        try:
+            await interaction.message.delete()
+        except Exception:
+            pass
 
 # ---------- Cog ----------
 class SteamLinkVoiceNudge(commands.Cog):
-    """Schickt nach *erstem* ≥30-Min-Voice-Join eine freundliche DM zum Steam-Linken (einmalig)."""
+    """
+    Nudge-Nachricht in DMs, wenn Member lange genug im Voice war und noch kein Steam-Link hinterlegt ist.
+    Mit Rollen-Opt-Out, Logging und robustem Cleanup.
+    """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._watch_tasks: Dict[int, asyncio.Task] = {}
+        self._tasks: Dict[int, asyncio.Task] = {}
 
     async def cog_load(self):
-        # persistente Buttons registrieren (nur custom_id-basierte)
+        # Persistente Buttons (manuell/close)
         self.bot.add_view(_PersistentRegistryView())
 
-    # --- Helper ---
-    async def _still_in_voice(self, member: discord.Member) -> bool:
+    async def cog_unload(self):
+        for uid, t in list(self._tasks.items()):
+            try:
+                t.cancel()
+            except Exception:
+                pass
+        self._tasks.clear()
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         try:
-            m = member.guild.get_member(member.id) or await member.guild.fetch_member(member.id)
-            return bool(m.voice and m.voice.channel)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            log.debug("still_in_voice check failed for %s: %r", member.id, e)
-            return False
+            # Nur bei Join in einen Voice-Channel
+            if (before.channel is None) and (after.channel is not None):
+                if _member_has_exempt_role(member):
+                    log.debug("[nudge] skip exempt member id=%s", member.id)
+                    return
+                if _has_any_steam_link(member.id):
+                    log.debug("[nudge] user already linked id=%s", member.id)
+                    return
+                if _has_been_notified(member.id):
+                    log.debug("[nudge] user already notified id=%s", member.id)
+                    return
+                # Start Warte-Task
+                if member.id in self._tasks and not self._tasks[member.id].done():
+                    try:
+                        self._tasks[member.id].cancel()
+                    except Exception:
+                        pass
+                self._tasks[member.id] = asyncio.create_task(self._wait_and_notify(member))
+        except Exception:
+            log.exception("on_voice_state_update error")
 
-    async def _send_dm_nudge(self, user: Union[discord.Member, discord.User], *, force: bool = False) -> bool:
-        # Exempt-Rollen NIE kontaktieren – auch nicht bei force
-        if isinstance(user, discord.Member) and _member_has_exempt_role(user):
-            ch = _log_chan(self.bot)
-            if ch:
-                await ch.send(f"ℹ️ Nudge übersprungen (Exempt-Rolle) für **{user}** ({int(user.id)}).")
-            return False
-
+    async def _send_dm_nudge(self, user: Union[discord.User, discord.Member], *, force: bool = False) -> bool:
+        """
+        Sendet die Nudge-DM. force=True überschreibt notified-Guard (für Tests).
+        """
         uid = int(user.id)
-        if not force:
-            if _already_notified(uid) or _has_any_steam_link(uid) or _had_prior_long_voice_session(uid, MIN_VOICE_MINUTES * 60):
-                return False
-
-        # Sicherheit: Falls während Wartezeit Rolle hinzugekommen ist
-        if isinstance(user, discord.Member) and _member_has_exempt_role(user):
-            ch = _log_chan(self.bot)
-            if ch:
-                await ch.send(f"ℹ️ Nudge abgebrochen (Exempt-Rolle erkannt) für **{user}** ({uid}).")
+        if not force and _has_been_notified(uid):
             return False
-
-        await _cleanup_bot_dms(user, self.bot.user.id if self.bot.user else 0, limit=50)
+        if not force and _has_any_steam_link(uid):
+            return False
 
         try:
             dm = user.dm_channel or await user.create_dm()
 
-            # URLs vom OAuth-Cog holen (Lazy-Start bevorzugt; state wird serverseitig erst beim Klick erzeugt)
             discord_url, steam_url = await _fetch_oauth_urls(self.bot, user)
 
+            # Beschreibung
             desc = (
-                "Cool, dass du aktiv im Voice bist! 💙\n\n"
                 "Damit wir **einheitlich** anzeigen können, wer **in der Lobby** ist und wer **im Match**, "
                 "hilft uns die Verknüpfung zwischen Discord und Steam.\n\n"
                 "• So können wir, **wenn du im Voice bist**, checken, ob du **gerade in Deadlock im Match** bist.\n"
                 "• Ergebnis: präzisere **Kanal-Beschreibungen** (z. B. „3 im Match“) & bessere **Orga/Balancing** bei Events.\n\n"
                 "**Wie kannst du dabei helfen?**\n"
-                "1) Klicke **„Mit Discord verbinden“**, **„SteamID manuell eingeben“** oder **„Mit Steam anmelden“**.\n"
+                "1) Klicke **„Via Discord verknüpfen“**, **„SteamID manuell eingeben“** oder **„Mit Steam anmelden“**.\n"
                 "2) Folge den kurzen Schritten. Wir bekommen niemals dein Passwort – bei Steam erhalten wir nur die **SteamID64**.\n\n"
                 "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** "
                 "(und **Gesamtspielzeit** nicht auf „immer privat“).\n\n"
@@ -429,76 +450,34 @@ class SteamLinkVoiceNudge(commands.Cog):
             if _member_has_exempt_role(member):
                 ch = _log_chan(self.bot)
                 if ch:
-                    await ch.send(f"ℹ️ Watch übersprungen (Exempt-Rolle) für **{member}** ({int(member.id)}).")
+                    await ch.send(f"ℹ️ Übersprungen (Exempt): **{member}** ({member.id})")
                 return
 
-            total = 0
-            while total < MIN_VOICE_MINUTES * 60:
-                await asyncio.sleep(POLL_INTERVAL)
-                total += POLL_INTERVAL
-                if not await self._still_in_voice(member):
-                    return
-                # Live während der Wartezeit exempt geworden?
-                if _member_has_exempt_role(member):
-                    ch = _log_chan(self.bot)
-                    if ch:
-                        await ch.send(f"ℹ️ Watch abgebrochen (Exempt-Rolle erkannt) für **{member}** ({int(member.id)}).")
-                    return
+            ok = await _count_voice_minutes(member, MIN_VOICE_MINUTES)
+            if not ok:
+                log.debug("[nudge] %s left voice early – abort", member.id)
+                return
 
-            if _already_notified(member.id) or _has_any_steam_link(member.id):
+            if _has_any_steam_link(member.id):
+                log.debug("[nudge] already linked after wait, skip")
                 return
-            if _had_prior_long_voice_session(member.id, MIN_VOICE_MINUTES * 60):
-                return
-            await self._send_dm_nudge(member, force=False)
+
+            # Senden
+            await self._send_dm_nudge(member)
+
         except asyncio.CancelledError:
-            # normal bei Disconnect/Shutdown
             raise
         except Exception:
-            log.exception("[nudge] Watch-Task crashed")
+            log.exception("wait_and_notify failed")
 
-    # --- Events ---
-    @commands.Cog.listener()
-    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        if member.bot:
+    # --------- Admin/Test ---------
+    @commands.hybrid_command(name="nudgesend", description="(Admin) Schickt die Steam-Nudge-DM an einen Nutzer.")
+    @commands.has_permissions(administrator=True)
+    async def nudgesend(self, ctx: commands.Context, target: Optional[discord.Member] = None):
+        target = target or (ctx.guild.get_member(DEFAULT_TEST_TARGET_ID) if ctx.guild and DEFAULT_TEST_TARGET_ID else None)
+        if not target:
+            await ctx.reply("Bitte Ziel angeben: `!nudgesend @user`", mention_author=False)
             return
-        joined = before.channel is None and after.channel is not None
-        left   = before.channel is not None and after.channel is None
-
-        if joined:
-            # Exempt-Rollen: nicht verfolgen, nicht anschreiben
-            if _member_has_exempt_role(member):
-                ch = _log_chan(self.bot)
-                if ch:
-                    await ch.send(f"ℹ️ Join erkannt, aber Exempt-Rolle: **{member}** ({int(member.id)}).")
-                return
-
-            if _already_notified(member.id) or _has_any_steam_link(member.id):
-                return
-            if _had_prior_long_voice_session(member.id, MIN_VOICE_MINUTES * 60):
-                return
-            if member.id in self._watch_tasks and not self._watch_tasks[member.id].done():
-                return
-            self._watch_tasks[member.id] = asyncio.create_task(self._wait_and_notify(member))
-        elif left:
-            t = self._watch_tasks.pop(member.id, None)
-            if t and not t.done():
-                t.cancel()
-
-    # --- TEST ---
-    @commands.command(name="test30", aliases=["testnudge", "nudge30"])
-    async def test30(self, ctx: commands.Context, user: Optional[discord.Member] = None):
-        target: Union[discord.Member, discord.User]
-        if user is not None:
-            target = user
-        else:
-            target = None
-            if DEFAULT_TEST_TARGET_ID:
-                if ctx.guild:
-                    target = ctx.guild.get_member(DEFAULT_TEST_TARGET_ID)
-                if target is None:
-                    target = self.bot.get_user(DEFAULT_TEST_TARGET_ID)
-            if target is None:
-                target = ctx.author
 
         # Auch beim Test NICHT kontaktieren, wenn Exempt-Rolle vorhanden
         if isinstance(target, discord.Member) and _member_has_exempt_role(target):
