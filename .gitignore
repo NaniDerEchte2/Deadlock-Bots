@@ -20,3 +20,4 @@ install_windows_service.py
 *.db-shm
 *.db-wal
 *.db
+cogs/faq_menu.py

@@ -1,10 +1,5 @@
-# main_bot.py — angepasst für das neue TempVoice-Paket (Core + Interface)
-# - Präzisere Auto-Discovery:
-#     * Lädt Pakete (Ordner mit __init__.py) nur, wenn __init__.py ein setup() enthält.
-#     * Lädt einzelne .py-Cogs nur, wenn sie ein setup() enthalten.
-#     * Verhindert Doppel-Loads, indem Unterdateien eines Paket-Cogs mit setup() übersprungen werden.
-# - Health-Checks & Logs auf TempVoiceCore/TempVoiceInterface aktualisiert.
-
+# main_bot.py — angepasst für Shutdown-Watchdog & korrektes Cog-Unload/Status
+# Basierend auf deiner letzten Version (Auto-Discovery, Health-Checks, usw.)
 from __future__ import annotations
 
 import asyncio
@@ -15,6 +10,7 @@ import sys
 import signal
 import types
 import builtins
+import threading
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -24,19 +20,37 @@ import traceback
 
 import discord
 from discord.ext import commands
+# --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
+import sys as _sys, os as _os, importlib, inspect, logging as _logging, hashlib
 
+def _log_src(modname: str):
+    try:
+        m = importlib.import_module(modname)
+        path = inspect.getfile(m)
+        with open(path, 'rb') as fh:
+            sha = hashlib.sha1(fh.read()).hexdigest()[:12]
+        logging.getLogger().info("SRC %s -> %s [sha1:%s]", modname, path, sha)
+    except Exception as e:
+        logging.getLogger().error("SRC %s -> %r", modname, e)
+
+logging.getLogger().info("PYTHON exe=%s", sys.executable)
+logging.getLogger().info("CWD=%s", os.getcwd())
+logging.getLogger().info("sys.path[0]=%s", sys.path[0] if sys.path else None)
+
+# prüfe gezielt die „verdächtigen“
+for name in [
+    "cogs.rules_channel",
+    "cogs.welcome_dm.dm_main",
+    "cogs.welcome_dm.step_streamer",
+    "cogs.welcome_dm.step_steam_link",
+]:
+    _log_src(name)
+# --- /DEBUG ---
 
 # =========================
 # .env robust laden
 # =========================
 def _load_env_robust() -> str | None:
-    """
-    Lädt die .env robust:
-      1) DOTENV_PATH, falls gesetzt
-      2) Projektpfad (dieses File) / ".env"
-      3) %USERPROFILE%/Documents/.env
-    Loggt nur den Pfad, nicht den Inhalt.
-    """
     try:
         from dotenv import load_dotenv
     except Exception as e:
@@ -109,7 +123,6 @@ class _RedactSecretsFilter(logging.Filter):
 logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout)])
 _load_env_robust()
 
-
 # =========================
 # WorkerProxy Shim (fallback-sicher)
 # =========================
@@ -141,21 +154,15 @@ def _install_workerproxy_shim():
 
 _install_workerproxy_shim()
 
-
 # =========================
-# Zentrale DB Init (quiet) — NUR service.db
+# Zentrale DB Init (quiet)
 # =========================
 def _init_db_if_available():
-    """
-    Initialisiert die zentrale DB ausschließlich über service.db.
-    Kein Fallback mehr auf shared.db.
-    """
     try:
         from service import db as _db  # Deadlock-Bots/service/db.py
     except Exception as e:
         logging.critical("Zentrale DB-Modul 'service.db' konnte nicht importiert werden: %s", e)
         return
-
     try:
         _db.connect()
         logging.info("Zentrale DB initialisiert (quiet) via service.db.")
@@ -168,12 +175,13 @@ def _init_db_if_available():
 # =====================================================================
 class MasterBot(commands.Bot):
     """
-    Master Discord Bot:
-     - Präzise Auto-Discovery (Cogs & Paket-Cogs)
+    Master Discord Bot mit:
+     - Präziser Auto-Discovery
      - Exclude Worker-Cogs
      - ENV-Filter: COG_EXCLUDE, COG_ONLY
-     - sichere Secret-Logs
      - zentrale DB-Init
+     - Timeout-gestütztem Cog-Unload
+     - KORREKTER Runtime-Status (self.extensions) + Presence-Updates
     """
 
     def __init__(self):
@@ -204,36 +212,29 @@ class MasterBot(commands.Bot):
         self.startup_time = _dt.datetime.now(tz=tz)
         self.cog_status: Dict[str, str] = {}
 
+        try:
+            self.per_cog_unload_timeout = float(os.getenv("PER_COG_UNLOAD_TIMEOUT", "3.0"))
+        except ValueError:
+            self.per_cog_unload_timeout = 3.0
+
     # --------------------- Discovery & Filters -------------------------
     def _should_exclude(self, module_path: str) -> bool:
         default_excludes = {
             "cogs.live_match.live_match_worker",
         }
-
         env_ex = (os.getenv("COG_EXCLUDE") or "").strip()
         for item in [x.strip() for x in env_ex.split(",") if x.strip()]:
             default_excludes.add(item)
-
         only = {x.strip() for x in (os.getenv("COG_ONLY") or "").split(",") if x.strip()}
         if only:
             return module_path not in only
-
         if module_path in default_excludes:
             return True
-
         if ".worker" in module_path or "worker." in module_path or module_path.endswith("_worker"):
             return True
-
         return False
 
     def auto_discover_cogs(self):
-        """
-        Neue Discovery-Logik:
-          1) Pakete (Ordner mit __init__.py) werden als EIN Extension-Modul geladen,
-             wenn __init__.py ein setup() enthält (z.B. cogs.tempvoice).
-          2) Normale .py-Dateien werden nur geladen, wenn sie ein setup() enthalten.
-          3) Unterdateien eines Paket-Cogs mit setup(__init__) werden NICHT zusätzlich geladen.
-        """
         try:
             if not self.cogs_dir.exists():
                 logging.warning(f"Cogs directory not found: {self.cogs_dir}")
@@ -254,8 +255,8 @@ class MasterBot(commands.Bot):
                 has_setup = ("async def setup(" in content) or ("def setup(" in content)
                 if not has_setup:
                     continue
-                rel = init_file.relative_to(self.cogs_dir.parent)  # e.g. cogs/tempvoice/__init__.py
-                module_path = ".".join(rel.parts[:-1])  # -> cogs.tempvoice
+                rel = init_file.relative_to(self.cogs_dir.parent)
+                module_path = ".".join(rel.parts[:-1])
                 if self._should_exclude(module_path):
                     logging.info(f"🚫 Excluded cog (package): {module_path}")
                     continue
@@ -263,7 +264,7 @@ class MasterBot(commands.Bot):
                 pkg_dirs_with_setup.append(init_file.parent)
                 logging.info(f"🔍 Auto-discovered package cog: {module_path}")
 
-            # Pass 2: Einzelne .py-Dateien mit setup()
+            # Pass 2: Einzelne .py
             for cog_file in self.cogs_dir.rglob("*.py"):
                 if cog_file.name == "__init__.py":
                     continue
@@ -271,25 +272,20 @@ class MasterBot(commands.Bot):
                     continue
                 if any(cog_file.is_relative_to(pkg_dir) for pkg_dir in pkg_dirs_with_setup):
                     continue
-
                 try:
                     content = cog_file.read_text(encoding="utf-8", errors="ignore")
                 except Exception as e:
                     logging.warning(f"⚠️ Error checking {cog_file.name}: {e}")
                     continue
-
                 has_setup = ("async def setup(" in content) or ("def setup(" in content)
                 if not has_setup:
                     logging.info(f"⏭️ Skipped {cog_file}: no setup() found")
                     continue
-
                 rel = cog_file.relative_to(self.cogs_dir.parent)
                 module_path = ".".join(rel.with_suffix("").parts)
-
                 if self._should_exclude(module_path):
                     logging.info(f"🚫 Excluded cog: {module_path}")
                     continue
-
                 discovered.append(module_path)
                 logging.info(f"🔍 Auto-discovered cog: {module_path}")
 
@@ -343,6 +339,23 @@ class MasterBot(commands.Bot):
 
         logging.info("Master Bot logging initialized")
 
+    # --------------------- Runtime-Status & Presence -------------------
+    def active_cogs(self) -> List[str]:
+        """Aktuell geladene Extensions (runtime), nur 'cogs.'-Namespace."""
+        return sorted([ext for ext in self.extensions.keys() if ext.startswith("cogs.")])
+
+    async def update_presence(self):
+        """Presence immer anhand der echten Runtime-Anzahl setzen."""
+        pfx = os.getenv("COMMAND_PREFIX", "!")
+        try:
+            activity = discord.Activity(
+                type=discord.ActivityType.watching,
+                name=f"{len(self.active_cogs())} Cogs | {pfx}help",
+            )
+            await self.change_presence(activity=activity)
+        except Exception:
+            pass
+
     # --------------------- Lifecycle ----------------------------------
     async def setup_hook(self):
         logging.info("Master Bot setup starting...")
@@ -366,14 +379,11 @@ class MasterBot(commands.Bot):
         logging.info(f"Bot logged in as {self.user} (ID: {self.user.id})")
         logging.info(f"Connected to {len(self.guilds)} guilds")
 
-        activity = discord.Activity(
-            type=discord.ActivityType.watching,
-            name=f"{len(self.cogs_list)} Cogs | {os.getenv('COMMAND_PREFIX','!')}help",
-        )
-        await self.change_presence(activity=activity)
+        await self.update_presence()
 
-        loaded_cogs = [name for name, status in self.cog_status.items() if status == "loaded"]
-        logging.info(f"Loaded cogs: {len(loaded_cogs)}/{len(self.cogs_list)}")
+        runtime_loaded = self.active_cogs()
+        logging.info(f"Loaded cogs (runtime): {len(runtime_loaded)}")
+        logging.info(f"Loaded cogs: {len(runtime_loaded)}/{len(self.cogs_list)}")
 
         # TempVoice Log (neu)
         try:
@@ -414,6 +424,7 @@ class MasterBot(commands.Bot):
                 logging.error(f"❌ Unexpected error during cog loading: {r}")
 
         logging.info(f"Parallel cog loading completed: {ok}/{len(self.cogs_list)} successful")
+        await self.update_presence()
 
     async def reload_all_cogs_with_discovery(self):
         try:
@@ -422,9 +433,13 @@ class MasterBot(commands.Bot):
 
             for ext_name in loaded_extensions:
                 try:
-                    await self.unload_extension(ext_name)
+                    await asyncio.wait_for(self.unload_extension(ext_name), timeout=self.per_cog_unload_timeout)
                     unload_results.append(f"✅ Unloaded: {ext_name}")
+                    self.cog_status[ext_name] = "unloaded"
                     logging.info(f"Unloaded extension: {ext_name}")
+                except asyncio.TimeoutError:
+                    unload_results.append(f"⏱️ Timeout unloading {ext_name}")
+                    logging.error(f"Timeout unloading extension {ext_name}")
                 except Exception as e:
                     unload_results.append(f"❌ Error unloading {ext_name}: {str(e)[:50]}")
                     logging.error(f"Error unloading {ext_name}: {e}")
@@ -437,6 +452,7 @@ class MasterBot(commands.Bot):
             await self.load_all_cogs()
 
             loaded_count = len([s for s in self.cog_status.values() if s == "loaded"])
+            await self.update_presence()
 
             summary = {
                 "unloaded": len(unload_results),
@@ -455,6 +471,7 @@ class MasterBot(commands.Bot):
         try:
             await self.reload_extension(cog_name)
             self.cog_status[cog_name] = "loaded"
+            await self.update_presence()
             msg = f"✅ Successfully reloaded {cog_name}"
             logging.info(msg)
             return True, msg
@@ -462,6 +479,7 @@ class MasterBot(commands.Bot):
             try:
                 await self.load_extension(cog_name)
                 self.cog_status[cog_name] = "loaded"
+                await self.update_presence()
                 msg = f"✅ Loaded {cog_name} (was not loaded before)"
                 logging.info(msg)
                 return True, msg
@@ -530,17 +548,44 @@ class MasterBot(commands.Bot):
                 results[mod] = f"error: {str(e)[:200]}"
                 self.cog_status[mod] = f"error: {str(e)[:100]}"
                 logging.error(f"❌ Reload error for {mod}: {e}")
+        await self.update_presence()
+        return results
+
+    # --------- Gezieltes Unload (mit Timeout) ----------
+    def _match_extensions(self, query: str) -> List[str]:
+        q = query.strip().lower()
+        loaded = [ext for ext in self.extensions.keys() if ext.startswith("cogs.")]
+        if q.startswith("cogs."):
+            return [ext for ext in loaded if ext.lower().startswith(q)]
+        # erlaub Substring und Ordnerkurznamen
+        return [ext for ext in loaded if q in ext.lower() or ext.lower().startswith(f"cogs.{q}.")]
+
+    async def unload_many(self, targets: List[str], timeout: float | None = None) -> Dict[str, str]:
+        timeout = float(timeout) if timeout is not None else self.per_cog_unload_timeout
+        results: Dict[str, str] = {}
+        for ext_name in targets:
+            try:
+                await asyncio.wait_for(self.unload_extension(ext_name), timeout=timeout)
+                results[ext_name] = "unloaded"
+                self.cog_status[ext_name] = "unloaded"
+                logging.info(f"Unloaded extension: {ext_name}")
+            except asyncio.TimeoutError:
+                results[ext_name] = "timeout"
+                logging.error(f"Timeout unloading extension {ext_name} (>{timeout:.1f}s)")
+            except Exception as e:
+                results[ext_name] = f"error: {str(e)[:200]}"
+                logging.error(f"Error unloading extension {ext_name}: {e}")
+        await self.update_presence()
         return results
 
     async def close(self):
         logging.info("Master Bot shutting down...")
-        # 1) Alle Cogs entladen
-        for ext_name in [ext for ext in list(self.extensions.keys()) if ext.startswith("cogs.")]:
-            try:
-                await self.unload_extension(ext_name)
-                logging.info(f"Unloaded extension: {ext_name}")
-            except Exception as e:
-                logging.error(f"Error unloading extension {ext_name}: {e}")
+
+        # 1) Alle Cogs entladen (parallel/sequenziell mit Timeout pro Cog)
+        to_unload = [ext for ext in list(self.extensions.keys()) if ext.startswith("cogs.")]
+        if to_unload:
+            logging.info(f"Unloading {len(to_unload)} cogs with timeout {self.per_cog_unload_timeout:.1f}s each ...")
+            _ = await self.unload_many(to_unload, timeout=self.per_cog_unload_timeout)
 
         # 2) discord.Client.close() mit Timeout schützen
         try:
@@ -587,6 +632,8 @@ class MasterControlCog(commands.Cog):
                 f"`{p}master reloadall` - Alle Cogs neu laden + Auto-Discovery\n"
                 f"`{p}master reloadlive` - Alle Live-Match Cogs neu laden (Ordner)\n"
                 f"`{p}master discover` - Neue Cogs entdecken (ohne laden)\n"
+                f"`{p}master unload <muster>` - Cogs mit Muster entladen\n"
+                f"`{p}master unloadtree <prefix>` - ganzen Cog-Ordner entladen\n"
                 f"`{p}master shutdown` - Bot beenden"
             ),
             inline=False,
@@ -610,27 +657,25 @@ class MasterControlCog(commands.Cog):
             inline=True,
         )
 
-        loaded_cogs = []
-        error_cogs = []
-        for cog_name, status in self.bot.cog_status.items():
-            short = cog_name.split(".")[-1]
-            if status == "loaded":
-                loaded_cogs.append(f"✅ {short}")
-            else:
-                error_cogs.append(f"❌ {short}")
+        # NEU: echte Runtime-Extensions
+        active = self.bot.active_cogs()
+        discovered = set(self.bot.cogs_list)
+        inactive = sorted(list(discovered - set(active)))
 
-        if loaded_cogs:
-            embed.add_field(
-                name=f"📦 Loaded Cogs ({len(loaded_cogs)})",
-                value="\n".join(loaded_cogs),
-                inline=True,
-            )
-        if error_cogs:
-            embed.add_field(
-                name=f"⚠️ Error Cogs ({len(error_cogs)})",
-                value="\n".join(error_cogs),
-                inline=True,
-            )
+        if active:
+            short = [f"✅ {a.split('.')[-1]}" for a in active]
+            embed.add_field(name=f"📦 Loaded Cogs ({len(active)})", value="\n".join(short), inline=True)
+
+        if inactive:
+            short_inactive = [f"• {a.split('.')[-1]}" for a in inactive]
+            embed.add_field(name=f"🗂️ Inaktiv/Entdeckt ({len(inactive)})", value="\n".join(short_inactive), inline=True)
+
+        # Optional: zeig fehlerhafte Ladeversuche aus letzter Runde
+        errs = [k for k, v in self.bot.cog_status.items() if isinstance(v, str) and v.startswith("error:")]
+        if errs:
+            err_short = [f"❌ {e.split('.')[-1]}" for e in errs]
+            embed.add_field(name="⚠️ Fehlerhafte Cogs (letzter Versuch)", value="\n".join(err_short), inline=False)
+
         await ctx.send(embed=embed)
 
     @master_control.command(name="reload", aliases=["rl"])
@@ -642,6 +687,7 @@ class MasterControlCog(commands.Cog):
                 return
             target = matches[0]
             ok, msg = await self.bot.reload_cog(target)
+            await self.bot.update_presence()
             embed = discord.Embed(title="🔄 Cog Reload", description=msg, color=0x00FF00 if ok else 0xFF0000)
             await ctx.send(embed=embed)
         else:
@@ -659,6 +705,8 @@ class MasterControlCog(commands.Cog):
         msg = await ctx.send(embed=embed)
 
         ok, result = await self.bot.reload_all_cogs_with_discovery()
+        await self.bot.update_presence()
+
         if ok:
             summary = result
             final = discord.Embed(
@@ -678,7 +726,7 @@ class MasterControlCog(commands.Cog):
                 ),
                 inline=True,
             )
-            loaded_cogs = [n.split(".")[-1] for n, s in self.bot.cog_status.items() if s == "loaded"]
+            loaded_cogs = [n.split(".")[-1] for n in self.bot.active_cogs()]
             if loaded_cogs:
                 final.add_field(name="✅ Aktive Cogs", value="\n".join([f"• {c}" for c in loaded_cogs]), inline=True)
         else:
@@ -689,6 +737,7 @@ class MasterControlCog(commands.Cog):
     @master_control.command(name="reloadlive", aliases=["rllm", "reload_livematch", "reload_lm"])
     async def master_reload_live_folder(self, ctx):
         results = await self.bot.reload_live_match_folder()
+        await self.bot.update_presence()
 
         ok = [k for k, v in results.items() if v in ("reloaded", "loaded")]
         err = {k: v for k, v in results.items() if v.startswith("error:")}
@@ -710,8 +759,8 @@ class MasterControlCog(commands.Cog):
         old_count = len(self.bot.cogs_list)
         old = self.bot.cogs_list.copy()
         self.bot.auto_discover_cogs()
-        new_count = len(self.cogs_list)
-        new = [c for c in self.cogs_list if c not in old]
+        new_count = len(self.bot.cogs_list)
+        new = [c for c in self.bot.cogs_list if c not in old]
 
         embed = discord.Embed(title="🔍 Cog Discovery", color=0x00FFFF)
         embed.add_field(
@@ -732,6 +781,71 @@ class MasterControlCog(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    @master_control.command(name="unload", aliases=["ul"])
+    async def master_unload(self, ctx, *, pattern: str):
+        """
+        Entlädt alle geladenen Cogs deren Modulpfad <pattern> matcht.
+        Beispiele:
+          !master unload tempvoice
+          !master unload cogs.live_match.live_match_master
+        """
+        matches = self.bot._match_extensions(pattern)
+        if not matches:
+            await ctx.send(f"❌ Keine geladenen Cogs gefunden für Muster: `{pattern}`")
+            return
+        results = await self.bot.unload_many(matches)
+        await self.bot.update_presence()
+
+        ok = [k for k, v in results.items() if v == "unloaded"]
+        timeouts = [k for k, v in results.items() if v == "timeout"]
+        errs = {k: v for k, v in results.items() if v not in ("unloaded", "timeout")}
+
+        embed = discord.Embed(
+            title=f"🧹 Unload Resultate ({pattern})",
+            color=0x00FF00 if ok and not timeouts and not errs else 0xFFAA00 if ok else 0xFF0000,
+        )
+        if ok:
+            embed.add_field(name="✅ Entladen", value="\n".join(f"• {x}" for x in ok), inline=False)
+        if timeouts:
+            embed.add_field(name="⏱️ Timeouts", value="\n".join(f"• {x}" for x in timeouts), inline=False)
+        if errs:
+            embed.add_field(name="⚠️ Fehler", value="\n".join(f"• {k}: {v}" for k, v in errs.items()), inline=False)
+        await ctx.send(embed=embed)
+
+    @master_control.command(name="unloadtree", aliases=["ult"])
+    async def master_unload_tree(self, ctx, *, prefix: str):
+        """
+        Entlädt ALLE Cogs unterhalb eines Prefix/Ordners.
+        Beispiele:
+          !master unloadtree live_match
+          !master unloadtree cogs.tempvoice
+        """
+        pref = prefix.strip()
+        if not pref.startswith("cogs."):
+            pref = f"cogs.{pref}"
+        matches = [ext for ext in self.bot.extensions.keys() if ext.startswith(pref)]
+        if not matches:
+            await ctx.send(f"❌ Kein geladener Cog unter Prefix: `{pref}`")
+            return
+        results = await self.bot.unload_many(matches)
+        await self.bot.update_presence()
+
+        ok = [k for k, v in results.items() if v == "unloaded"]
+        timeouts = [k for k, v in results.items() if v == "timeout"]
+        errs = {k: v for k, v in results.items() if v not in ("unloaded", "timeout")}
+
+        embed = discord.Embed(
+            title=f"🌲 Unload-Tree Resultate ({pref})",
+            color=0x00FF00 if ok and not timeouts and not errs else 0xFFAA00 if ok else 0xFF0000,
+        )
+        if ok:
+            embed.add_field(name="✅ Entladen", value="\n".join(f"• {x}" for x in ok), inline=False)
+        if timeouts:
+            embed.add_field(name="⏱️ Timeouts", value="\n".join(f"• {x}" for x in timeouts), inline=False)
+        if errs:
+            embed.add_field(name="⚠️ Fehler", value="\n".join(f"• {k}: {v}" for k, v in errs.items()), inline=False)
+        await ctx.send(embed=embed)
+
     @master_control.command(name="shutdown", aliases=["stop", "quit"])
     async def master_shutdown(self, ctx):
         embed = discord.Embed(title="🛑 Master Bot wird beendet", description="Bot fährt herunter...", color=0xFF0000)
@@ -744,10 +858,11 @@ class MasterControlCog(commands.Cog):
 # Graceful Shutdown (Timeout + Doppel-SIGINT + harter Fallback)
 # =====================================================================
 _shutdown_started = False
+_kill_timer: threading.Timer | None = None
 
 async def _graceful_shutdown(bot: MasterBot, reason: str = "signal",
-                             timeout_close: float = 6.0, timeout_total: float = 10.0):
-    global _shutdown_started
+                             timeout_close: float = 3.0, timeout_total: float = 4.0):
+    global _shutdown_started, _kill_timer
     if _shutdown_started:
         return
     _shutdown_started = True
@@ -772,6 +887,13 @@ async def _graceful_shutdown(bot: MasterBot, reason: str = "signal",
     except Exception as e:
         logging.getLogger().debug("Warten auf Pending-Tasks schlug fehl (ignoriert): %r", e)
 
+    # Kill-Watchdog stoppen, wenn wir bis hierhin sauber sind
+    try:
+        if _kill_timer:
+            _kill_timer.cancel()
+    except Exception:
+        pass
+
     # 3) Loop stoppen + harter Exit als letzte Eskalationsstufe
     try:
         loop = asyncio.get_running_loop()
@@ -794,9 +916,31 @@ async def main():
         if _shutdown_started:
             logging.error("Second signal received -> hard exit now.")
             os._exit(1)
+
         logging.info(f"Received signal {signum}, shutting down gracefully...")
+
+        # Watchdog: harter Kill nach KILL_AFTER_SECONDS (default 2s)
         try:
-            asyncio.get_running_loop().create_task(_graceful_shutdown(bot, reason=f"signal {signum}"))
+            kill_after = float(os.getenv("KILL_AFTER_SECONDS", "2"))
+        except ValueError:
+            kill_after = 2.0
+
+        global _kill_timer
+        try:
+            _kill_timer = threading.Timer(
+                kill_after,
+                lambda: (logging.error(f"Kill watchdog fired after {kill_after:.1f}s -> os._exit(2)"),
+                         os._exit(2))
+            )
+            _kill_timer.daemon = True
+            _kill_timer.start()
+        except Exception as e:
+            logging.getLogger().debug("Kill-Timer konnte nicht gestartet werden (ignoriert): %r", e)
+
+        try:
+            asyncio.get_running_loop().create_task(_graceful_shutdown(bot, reason=f"signal {signum}",
+                                                                      timeout_close=float(os.getenv("DISCORD_CLOSE_TIMEOUT", "5")),
+                                                                      timeout_total=max(kill_after, 2.0)))
         except RuntimeError:
             os._exit(0)
 
@@ -804,7 +948,7 @@ async def main():
         signal.signal(signal.SIGINT, _sig_handler)
         signal.signal(signal.SIGTERM, _sig_handler)
     except Exception as e:
-        logging.getLogger().debug("Signal-Handler Registrierung teilweise fehlgeschlagen (OS?): %r", e)  # Windows: SIGTERM ggf. nicht verfügbar
+        logging.getLogger().debug("Signal-Handler Registrierung teilweise fehlgeschlagen (OS?): %r", e)
 
     token = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
     if not token:
@@ -814,14 +958,13 @@ async def main():
         await bot.start(token)
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt received, shutting down...")
-        await _graceful_shutdown(bot, reason="KeyboardInterrupt")
+        _sig_handler(signal.SIGINT, None)
     except Exception as e:
         logging.error(f"Bot crashed: {e}")
         logging.error(traceback.format_exc())
     finally:
         if not bot.is_closed():
             await _graceful_shutdown(bot, reason="finally-clause")
-
 
 if __name__ == "__main__":
     asyncio.run(main())

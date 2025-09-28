@@ -1,3 +1,4 @@
+# cogs/live_match/steam_link_voice_nudge.py
 from __future__ import annotations
 
 import os
@@ -161,8 +162,9 @@ def _find_steam_oauth_cog(bot: commands.Bot):
 
 async def _fetch_oauth_urls(bot: commands.Bot, user: Union[discord.User, discord.Member]) -> Tuple[Optional[str], Optional[str]]:
     """
-    Holt gültige (server-registrierte) URLs vom SteamLink-OAuth-Cog.
-    Gibt (discord_oauth_url, steam_openid_url) zurück oder (None, None) als Fallback.
+    Holt gültige (server-registrierte) Start-URLs vom SteamLink-OAuth-Cog.
+    Bevorzugt Lazy-Start (state wird erst beim Klick erzeugt).
+    Gibt (discord_start_url, steam_start_url) zurück oder (None, None) als Fallback.
     """
     cog = _find_steam_oauth_cog(bot)
     if not cog:
@@ -171,49 +173,47 @@ async def _fetch_oauth_urls(bot: commands.Bot, user: Union[discord.User, discord
 
     uid = int(user.id)
 
-    # 👉 Hier sind jetzt explizit DEINE öffentlichen Helper drin:
+    # 👉 Priorität: Lazy-Start-Methoden zuerst, dann rückwärtskompatible Builder.
     discord_methods = (
-        "build_discord_link_for",        # <— deine Methode
-        # weitere geläufige Varianten:
-        "get_discord_oauth_url_for",
-        "build_discord_oauth_url_for",
-        "make_discord_oauth_url",
-        "get_discord_link_url_for",
-        "public_discord_oauth_url_for",
-        "discord_oauth_url_for",
-        "discord_start_url_for",
+        "discord_start_url_for",         # bevorzugt
+        "public_discord_oauth_url_for",  # evtl. alternative Namensgebung
+        "discord_oauth_url_for",         # evtl. alternative Namensgebung
+        "get_discord_link_url_for",      # evtl. alternative Namensgebung
+        "get_discord_oauth_url_for",     # evtl. alternative Namensgebung
+        "build_discord_link_for",        # Fallback: erzeugt state SOFORT (nicht ideal)
+        "build_discord_oauth_url_for",   # Fallback-Variante
+        "make_discord_oauth_url",        # Fallback-Variante
     )
     steam_methods = (
-        "build_steam_openid_for",        # <— deine Methode
-        # weitere geläufige Varianten:
-        "get_steam_openid_url_for",
-        "build_steam_openid_url_for",
-        "make_steam_openid_url",
-        "public_steam_openid_url_for",
-        "steam_openid_url_for",
-        "steam_start_url_for",
+        "steam_start_url_for",           # bevorzugt
+        "public_steam_openid_url_for",   # evtl. alternative Namensgebung
+        "steam_openid_url_for",          # evtl. alternative Namensgebung
+        "get_steam_openid_url_for",      # evtl. alternative Namensgebung
+        "build_steam_openid_for",        # Fallback: erzeugt state SOFORT (nicht ideal)
+        "build_steam_openid_url_for",    # Fallback-Variante
+        "make_steam_openid_url",         # Fallback-Variante
     )
 
     discord_url = await _maybe_call(cog, discord_methods, uid)
     steam_url   = await _maybe_call(cog, steam_methods,   uid)
 
-    # Fallback: versuche das Modul selbst
+    # Fallback: versuche das Modul selbst (falls die Helper als Modulexporte existieren)
     if (not discord_url or not steam_url) and hasattr(cog, "__module__"):
         try:
             mod = __import__(cog.__module__, fromlist=["*"])
             if not discord_url:
                 discord_url = await _maybe_call(mod, discord_methods, uid)
             if not steam_url:
-                steam_url = await _maybe_call(mod, steam_methods, uid)
+                steam_url = await _maybe_call(mod, steam_methods,   uid)
         except Exception as e:
             log.debug("oauth url module fallback failed: %r", e)
 
     if not discord_url or not steam_url:
-        log.warning("[nudge] OAuth-Helper nicht verfügbar – Buttons werden deaktiviert, Hinweis auf /link gezeigt.")
+        log.warning("[nudge] OAuth-Start-URLs nicht verfügbar – Buttons werden deaktiviert, Hinweis auf /link gezeigt.")
         return None, None
 
     try:
-        log.info(f"[nudge] OAuth-URLs bereit (discord={str(discord_url)[:60]}…, steam={str(steam_url)[:60]}…)")
+        log.info(f"[nudge] OAuth-Start-URLs bereit (discord={str(discord_url)[:60]}…, steam={str(steam_url)[:60]}…)")
     except Exception as e:
         log.debug("logging oauth urls failed: %r", e)
     return str(discord_url), str(steam_url)
@@ -372,7 +372,7 @@ class SteamLinkVoiceNudge(commands.Cog):
         try:
             dm = user.dm_channel or await user.create_dm()
 
-            # URLs vom OAuth-Cog holen (mit serverseitig registriertem state)
+            # URLs vom OAuth-Cog holen (Lazy-Start bevorzugt; state wird serverseitig erst beim Klick erzeugt)
             discord_url, steam_url = await _fetch_oauth_urls(self.bot, user)
 
             desc = (
@@ -446,6 +446,8 @@ class SteamLinkVoiceNudge(commands.Cog):
                     return
 
             if _already_notified(member.id) or _has_any_steam_link(member.id):
+                return
+            if _had_prior_long_voice_session(member.id, MIN_VOICE_MINUTES * 60):
                 return
             await self._send_dm_nudge(member, force=False)
         except asyncio.CancelledError:
