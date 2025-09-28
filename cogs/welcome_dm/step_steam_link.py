@@ -74,6 +74,12 @@ class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
         self.user = user
 
     async def _fallback_resolve(self, raw: str) -> Optional[str]:
+        """
+        Fallback ohne Steam-API/Vanity-Auflösung:
+        - akzeptiert 17-stellige ID direkt
+        - extrahiert ID aus /profiles/<id>-URLs
+        (Vanity /id/<name> wird hier NICHT aufgelöst – das übernimmt der Steam-Cog, falls vorhanden.)
+        """
         s = (raw or "").strip()
         if not s:
             return None
@@ -120,6 +126,7 @@ class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
 
             if steam_cog:
                 try:
+                    # Kann: 17-stell. ID, Vanity (/id/<name>), steamcommunity-Links
                     steam_id = await steam_cog._resolve_steam_input(raw)  # type: ignore[attr-defined]
                 except asyncio.CancelledError:
                     raise
@@ -142,7 +149,7 @@ class _ManualSteamModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
                 await interaction.response.send_message(
                     "❌ Konnte keine gültige SteamID bestimmen.\n"
                     "Nutze die **17-stellige SteamID64** oder einen **/profiles/<id>**-Link.\n"
-                    "Für **Vanity** bitte „Mit Discord verbinden“ oder „Mit Steam anmelden“ nutzen.",
+                    "Für **Vanity** bitte „Via Discord verknüpfen“ oder „Mit Steam anmelden“ nutzen.",
                     ephemeral=True,
                 )
                 return
@@ -172,7 +179,7 @@ EMBED_DESC = (
     "• **Wozu ist das gut?** Wir können deinen Voice-Status (z. B. **Lobby/In-Game**, **Anzahl im Match**) "
     "präziser als Kanalbeschreibung anzeigen und Events sauberer balancen.\n\n"
     "**Ablauf & Optionen:**\n"
-    "• **Mit Discord verbinden:** Schnellster Weg. Wir fragen über Discord **identify + connections** ab. "
+    "• **Via Discord verknüpfen:** Schnellster Weg. Wir fragen über Discord **identify + connections** ab. "
     "Ist Steam bei deinen Discord-Verknüpfungen hinterlegt → speichern wir automatisch deine **SteamID64**; "
     "falls nicht, leiten wir dich direkt zu **Steam OpenID** weiter.\n"
     "• **SteamID manuell eingeben:** Du trägst **ID/Vanity/Profil-Link** ein. Vanity klappt nur, wenn das "
@@ -190,7 +197,7 @@ class _SteamLinkPromptView(discord.ui.View):
     """
     Optionen-View:
       - Grün: „Steam verknüpfen“ (manuell, Modal)
-      - Grau: „Mit Discord verbinden“ (ephemeral Link)
+      - Grau: „Via Discord verknüpfen“ (ephemeral Link)
       - Grau: „Steam Profil suchen“ (ephemeral Link zum OpenID)
       - Hilfe-Link-Button (Konstante HELP)
       - „Weiter“ prüft in DB und fährt den Flow fort (kein Poll nötig)
@@ -219,7 +226,7 @@ class _SteamLinkPromptView(discord.ui.View):
 
         # Discord OAuth – grau, öffnet ephemeral mit Link
         self.btn_discord = discord.ui.Button(
-            label="Mit Discord verbinden", style=discord.ButtonStyle.secondary,
+            label="Via Discord verknüpfen", style=discord.ButtonStyle.secondary,
             emoji="🔗", custom_id="steam_discord_open", row=0
         )
         self.btn_discord.callback = self._click_discord  # type: ignore[assignment]
@@ -310,7 +317,7 @@ class _SteamLinkPromptView(discord.ui.View):
         view = discord.ui.View()
         if disc_url:
             view.add_item(discord.ui.Button(
-                label="Jetzt per Discord verbinden",
+                label="Jetzt via Discord verknüpfen",
                 style=discord.ButtonStyle.link,
                 url=disc_url
             ))
@@ -319,7 +326,7 @@ class _SteamLinkPromptView(discord.ui.View):
                  getattr(interaction.guild, "id", "-"), getattr(interaction.channel, "id", "-"),
                  bool(disc_url))
         await interaction.response.send_message(
-            "🔗 Verbinde dich kurz per Discord-OAuth. Wir lesen **identify + connections**.",
+            "🔗 Verbinde dich kurz via Discord-OAuth. Wir lesen **identify + connections**.",
             ephemeral=True, view=view
         )
 
@@ -458,7 +465,7 @@ class SteamLinkNudgeView(StepView):
             try:
                 await interaction.followup.send(
                     "⚠️ Konnte die Verknüpfungs-Optionen gerade nicht öffnen. "
-                    "Nutze alternativ **/link** oder **/link_steam**.",
+                    "Nutze alternativ **/link** (via Discord) oder **/link_steam**.",
                     ephemeral=True,
                 )
             except (discord.HTTPException, discord.NotFound) as e2:
