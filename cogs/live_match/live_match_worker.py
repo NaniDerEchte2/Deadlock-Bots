@@ -1,22 +1,12 @@
 # filename: cogs/live_match/live_match_worker.py
 # ------------------------------------------------------------
-# LiveMatchWorker v2 (v3-ready Telemetrie)
+# LiveMatchWorker v2.1 (v3-ready Telemetrie) – robustes Suffix-Handling
 #
-# Aufgabe:
-#   - Liest gewünschten Suffix je Channel aus live_lane_state
-#   - Benennt Channel debounced (max. 1 Rename / 5 Min / Channel)
-#   - Nur Delta-Umbenennungen (wenn sich Suffix wirklich ändert)
-#   - Entfernt alte Suffixe stabil und hängt neuen korrekt an
-#   - Schreibt Telemetrie in live_worker_actions_v3 (für v2/v3-Analysen)
-#
-# DB-Erwartung (wird automatisch angelegt):
-#   live_lane_state(channel_id BIGINT PRIMARY KEY, is_active INT, last_update INT, suffix TEXT, reason TEXT)
-#   live_worker_actions_v3(id PK, ts INT, channel_id BIGINT, old_name TEXT, new_name TEXT,
-#                          desired_suffix TEXT, applied INT, reason TEXT)
-#
-# Hinweise:
-#   - Keine ENV-Abhängigkeiten hier; feste, konservative Defaults.
-#   - Keine "empty except" – Fehler werden protokolliert und in Telemetrie festgehalten.
+# Änderungen:
+#   - RegEx erkennt jetzt: "Im Match" | "Im Spiel" | "In der Lobby" | "Lobby/Queue".
+#   - Entfernt *alle* vorhandenen Suffix-Wiederholungen (falls zuvor gestapelt).
+#   - Kanonisiert Suffixe vor dem Vergleich (case/whitespace).
+#   - Telemetrie speichert die echte channel_id.
 # ------------------------------------------------------------
 
 import re
@@ -35,12 +25,22 @@ log = logging.getLogger("LiveMatchWorker")
 TICK_SEC = 20                                   # Poll-Intervall Worker
 PER_CHANNEL_RENAME_COOLDOWN_SEC = 300           # 5 Minuten Cooldown pro Channel
 
-# Erkennung & Entfernen des von uns gesetzten Suffix-Teils am Channel-Namen:
-# Beispiele: "• 3/6 Im Match", "• 4/6 Im Spiel", "• 1/6 Lobby/Queue"
+# Muster für unseren Suffix-Block.
+# Beispiele, die erkannt/entfernt werden:
+#   "• 3/6 Im Match", "• 4/6 Im Spiel", "• 1/6 In der Lobby", "• 2/6 Lobby/Queue"
+# Außerdem: wiederholte/gestapelte Blöcke werden komplett entfernt.
+_SUFFIX_VARIANTS = r"(?:im\s+match|im\s+spiel|in\s+der\s+lobby|lobby/queue)"
 SUFFIX_RX = re.compile(
-    r"\s+•\s+\d+/\d+\s+(im\s+match|im\s+spiel|lobby/queue)",
-    re.IGNORECASE
+    rf"(?:\s*•\s*\d+/\d+\s*(?:{_SUFFIX_VARIANTS}))+",
+    re.IGNORECASE,
 )
+
+# Für die Extraktion des *letzten* vorhandenen Suffix-Blocks (falls mehrere gestapelt sind).
+EXTRACT_LAST_SUFFIX_RX = re.compile(
+    rf"(•\s*\d+/\d+\s*(?:{_SUFFIX_VARIANTS}))",
+    re.IGNORECASE,
+)
+
 
 def _ensure_metrics_schema() -> None:
     """Legt die Telemetrie-Tabelle für den Worker an (idempotent)."""
@@ -73,10 +73,7 @@ class LiveMatchWorker(commands.Cog):
         if not self._started:
             self.tick.start()
             self._started = True
-        log.info(
-            "LiveMatchWorker gestartet (Tick=%ss, Cooldown=%ss)",
-            TICK_SEC, PER_CHANNEL_RENAME_COOLDOWN_SEC
-        )
+        log.info("LiveMatchWorker gestartet (Tick=%ss, Cooldown=%ss)", TICK_SEC, PER_CHANNEL_RENAME_COOLDOWN_SEC)
 
     async def cog_unload(self):
         if self._started:
@@ -100,20 +97,19 @@ class LiveMatchWorker(commands.Cog):
             except Exception as e:
                 msg = f"Ungültiger Datensatz in live_lane_state: {e!r}"
                 log.debug(msg)
-                self._telemetry(unix_now, None, None, None, applied=0, reason=msg)
+                self._telemetry(unix_now, 0, None, None, None, applied=0, reason=msg)
                 continue
 
             ch = self.bot.get_channel(channel_id)
             if not isinstance(ch, discord.VoiceChannel):
-                # Telemetrie, falls Channel nicht mehr existiert/typfalsch
-                self._telemetry(unix_now, None, None, desired_suffix, applied=0,
-                                reason=f"channel_not_found_or_not_voice:{channel_id}")
+                self._telemetry(unix_now, channel_id, None, None, desired_suffix, applied=0,
+                                reason="channel_not_found_or_not_voice")
                 continue
 
-            # State initialisieren: last_applied = was gerade im Namen steht
+            # State initialisieren: last_applied = was gerade im Namen steht (letzter erkannter Suffix-Baustein)
             st = self._state.get(ch.id)
             if st is None:
-                current_suffix = self._extract_suffix(ch.name) or ""
+                current_suffix = self._extract_last_suffix(ch.name) or ""
                 st = {
                     "last_applied": current_suffix,
                     "pending": desired_suffix,
@@ -121,7 +117,6 @@ class LiveMatchWorker(commands.Cog):
                 }
                 self._state[ch.id] = st
             else:
-                # pending aktualisieren, wenn sich der Ziel-Suffix geändert hat
                 if (st.get("pending") or "") != desired_suffix:
                     st["pending"] = desired_suffix
 
@@ -129,29 +124,27 @@ class LiveMatchWorker(commands.Cog):
             if is_active == 0:
                 st["pending"] = ""  # Ziel ist „kein Suffix“
 
-            # Cooldown/Delta prüfen
+            # Cooldown/Delta prüfen (Vergleich kanonisiert: Case/Whitespace egal)
             last_ts = float(st.get("last_rename_ts") or 0.0)
             due = (now - last_ts) >= PER_CHANNEL_RENAME_COOLDOWN_SEC
-            want_change = (st.get("pending", "") != st.get("last_applied", ""))
+            want_change = (self._canon(st.get("pending")) != self._canon(st.get("last_applied")))
 
             if not want_change:
-                # Nichts zu tun – Telemetrie (sparsam, nur wenn last_applied != extract_base_mismatch)
                 continue
 
             if not due:
                 self._telemetry(
-                    unix_now, ch.name, None, st.get("pending", ""), applied=0,
+                    unix_now, ch.id, ch.name, None, st.get("pending", ""), applied=0,
                     reason=f"cooldown_active:{int(PER_CHANNEL_RENAME_COOLDOWN_SEC - (now - last_ts))}s_left"
                 )
                 continue
 
-            # Zielnamen bauen
+            # Zielnamen bauen – vorher ALLE bestehenden Suffix-Blöcke wegschneiden
             base = self._base_name(ch.name)
             target_suffix = st.get("pending", "") or ""
             desired_name = base if not target_suffix else f"{base} {target_suffix}"
 
             if desired_name == ch.name:
-                # Name entspricht bereits Zielzustand
                 st["last_applied"] = target_suffix
                 continue
 
@@ -160,21 +153,19 @@ class LiveMatchWorker(commands.Cog):
                 await ch.edit(name=desired_name, reason="LiveMatchWorker (debounced rename)")
                 st["last_applied"] = target_suffix
                 st["last_rename_ts"] = now
-                self._telemetry(
-                    unix_now, ch.name, desired_name, target_suffix, applied=1, reason="ok"
-                )
+                self._telemetry(unix_now, ch.id, ch.name, desired_name, target_suffix, applied=1, reason="ok")
                 log.info("Channel umbenannt: %s -> %s", ch.name, desired_name)
             except discord.Forbidden:
                 msg = "permission_denied"
-                self._telemetry(unix_now, ch.name, desired_name, target_suffix, applied=0, reason=msg)
+                self._telemetry(unix_now, ch.id, ch.name, desired_name, target_suffix, applied=0, reason=msg)
                 log.warning("Keine Berechtigung für Channel-Umbenennung (%s).", ch.id)
             except discord.HTTPException as e:
                 msg = f"http_error:{e}"
-                self._telemetry(unix_now, ch.name, desired_name, target_suffix, applied=0, reason=msg)
+                self._telemetry(unix_now, ch.id, ch.name, desired_name, target_suffix, applied=0, reason=msg)
                 log.warning("HTTP-Fehler beim Umbenennen (%s): %s", ch.id, e)
             except Exception as e:
                 msg = f"unexpected_error:{e!r}"
-                self._telemetry(unix_now, ch.name, desired_name, target_suffix, applied=0, reason=msg)
+                self._telemetry(unix_now, ch.id, ch.name, desired_name, target_suffix, applied=0, reason=msg)
                 log.error("Unerwarteter Fehler beim Umbenennen (%s): %r", ch.id, e)
 
     @tick.before_loop
@@ -183,17 +174,30 @@ class LiveMatchWorker(commands.Cog):
 
     # ---------------- Hilfsfunktionen ----------------------------------------
 
+    def _canon(self, s: Optional[str]) -> str:
+        """Kanonische Form für Vergleich (case/whitespace-insensitiv)."""
+        return re.sub(r"\s+", " ", (s or "").strip()).lower()
+
     def _base_name(self, name: str) -> str:
-        """Entfernt unseren bekannten Suffix-Anteil (• n/cap Im ...) zuverlässig."""
+        """Entfernt *alle* erkannten Suffix-Blöcke zuverlässig."""
         return SUFFIX_RX.sub("", name).strip()
 
-    def _extract_suffix(self, name: str) -> str:
-        """Extrahiert existierenden Suffix („• n/cap Im Match|Im Spiel|Lobby/Queue“) aus dem Namen."""
-        m = re.search(r"(•\s+\d+/\d+\s+(Im Match|Im Spiel|Lobby/Queue))", name, flags=re.IGNORECASE)
-        return m.group(1) if m else ""
+    def _extract_last_suffix(self, name: str) -> str:
+        """Extrahiert den *letzten* Suffix-Block („• n/cap …“) aus dem Namen, falls vorhanden."""
+        matches = EXTRACT_LAST_SUFFIX_RX.findall(name)
+        return matches[-1] if matches else ""
 
-    def _telemetry(self, ts: int, old_name: Optional[str], new_name: Optional[str],
-                   desired_suffix: Optional[str], *, applied: int, reason: str) -> None:
+    def _telemetry(
+        self,
+        ts: int,
+        channel_id: int,
+        old_name: Optional[str],
+        new_name: Optional[str],
+        desired_suffix: Optional[str],
+        *,
+        applied: int,
+        reason: str,
+    ) -> None:
         """Schreibt einen Telemetrie-Eintrag (idempotent ungefährlich)."""
         try:
             db.execute(
@@ -201,8 +205,7 @@ class LiveMatchWorker(commands.Cog):
                 INSERT INTO live_worker_actions_v3(ts, channel_id, old_name, new_name, desired_suffix, applied, reason)
                 VALUES(?,?,?,?,?,?,?)
                 """,
-                (int(ts), 0 if new_name is None and old_name is None else 0,  # channel_id ist optional; 0 falls unbekannt
-                 old_name, new_name, desired_suffix, int(applied), reason)
+                (int(ts), int(channel_id), old_name, new_name, desired_suffix, int(applied), reason)
             )
         except Exception as e:
             # Telemetrie-Fehler nicht fatal machen, aber loggen
