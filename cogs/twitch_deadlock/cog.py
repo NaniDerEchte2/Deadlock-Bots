@@ -222,7 +222,7 @@ class TwitchDeadlockCog(commands.Cog):
     async def invites_refresh(self):
         await self._refresh_all_invites()
 
-    async def _refresh_all_invites(self):
+    async def _refresh_all_invites(self,):
         for g in self.bot.guilds:
             await self._refresh_guild_invites(g)
 
@@ -369,7 +369,7 @@ class TwitchDeadlockCog(commands.Cog):
     @twitch_group.command(name="add")
     @commands.has_guild_permissions(manage_guild=True)
     async def twitch_add(self, ctx: commands.Context, login: str, require_discord_link: Optional[bool] = False):
-        msg = await self._cmd_add(login, bool(require_discord_link))
+        msg = await self._cmd_add(login, bool(require_link))
         await ctx.reply(msg)
 
     @twitch_group.command(name="remove")
@@ -452,6 +452,15 @@ class TwitchDeadlockCog(commands.Cog):
         )
         if not self._category_id and streams:
             streams = [s for s in streams if (s.get("game_name") or "").lower() == DEADLOCK_GAME_NAME.lower()]
+
+        # Fallback: wenn keine Streams mit Kategorie gefunden wurden, erneut ohne Kategorie filtern
+        if not streams and logins:
+            try:
+                fallback_streams = await self.api.get_streams(user_logins=logins, language=self._language_filter)
+                streams = [s for s in fallback_streams if (s.get("game_name") or "").lower() == DEADLOCK_GAME_NAME.lower()]
+            except Exception as e:
+                log.debug("fallback get_streams (ohne Kategorie) failed: %s", e)
+
         live_by_login = {s.get("user_login", "").lower(): s for s in streams}
 
         # aktueller State
@@ -538,7 +547,9 @@ class TwitchDeadlockCog(commands.Cog):
                 url = f"https://twitch.tv/{login}"
                 embed.add_field(name="Link", value=url, inline=False)
                 try:
-                    msg = await channel.send(content=f"🔴 **{s.get('user_name')}** ist live: {url}", embed=embed)
+                    view = discord.ui.View()
+                    view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label="Auf Twitch ansehen", url=url))
+                    msg = await channel.send(content=f"🔴 **{s.get('user_name')}** ist live: {url}", embed=embed, view=view)
                     with storage.get_conn() as c:
                         c.execute(
                             "UPDATE twitch_live_state SET last_discord_message_id=?, last_notified_at=CURRENT_TIMESTAMP WHERE streamer_login=?",
@@ -585,10 +596,11 @@ class TwitchDeadlockCog(commands.Cog):
             return
         with storage.get_conn() as c:
             rows = c.execute(
-                "SELECT twitch_login, require_discord_link FROM twitch_streamers WHERE require_discord_link=1"
+                "SELECT twitch_login, require_discord_link FROM twitch_streamers WHERE require_discord_link=1 AND (next_link_check_at IS NULL OR next_link_check_at <= CURRENT_TIMESTAMP)"
             ).fetchall()
         for r in rows:
             login = r["twitch_login"]
+            log.info("[twitch] 30d re-check: %s", login)
             try:
                 ok = await self._check_discord_link(login)
                 if not ok:
