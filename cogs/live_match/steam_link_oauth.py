@@ -48,7 +48,7 @@ STEAM_BUTTON_LABEL = (os.getenv("STEAM_BUTTON_LABEL") or "Steam Profil suchen").
 # ---------------------------------------------------------------------------
 # Öffentliche Schnittstelle für andere Cogs (Welcome-DM, Rules-Panel, etc.)
 # ---------------------------------------------------------------------------
-__all__ = ("get_public_urls",)
+__all__ = ("get_public_urls", "start_urls_for")
 
 def _env_client_id(bot: commands.Bot) -> str:
     cid = (os.getenv("DISCORD_OAUTH_CLIENT_ID") or "").strip()
@@ -97,6 +97,21 @@ def get_public_urls() -> dict:
         if not u or "://" not in u:
             raise ImportError(f"Ungültige URL für {k}: {u!r}")
     return urls
+def start_urls_for(uid: int) -> dict:
+    """
+    Liefert user-spezifische Start-URLs MIT ?uid=... für Discord-OAuth und Steam-OpenID.
+    Wird vom SteamLinkStepView (Welcome-DM / Rules-Panel) beim Klick verwendet.
+    """
+    base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+    if not base:
+        # bewusst nicht hart fehlschlagen – die UI meldet es dem Nutzer ephemer
+        return {"discord_start": "", "steam_openid_start": ""}
+
+    u = int(uid)
+    return {
+        "discord_start": f"{base}/discord/login?uid={u}",
+        "steam_openid_start": f"{base}/steam/login?uid={u}",
+    }
 
 
 # ----------------------- DB-Schema -------------------------------------------

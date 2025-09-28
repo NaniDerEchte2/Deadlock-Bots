@@ -16,16 +16,13 @@ try:
     from cogs.live_match import steam_link_oauth as _oauth
 except Exception as e:
     raise ImportError(
-        "Erforderliches Modul fehlt: cogs.live_match.steam_link_oauth (exportiert get_public_urls). Abbruch."
+        "Erforderliches Modul fehlt: cogs.live_match.steam_link_oauth. Abbruch."
     ) from e
 
-if not hasattr(_oauth, "get_public_urls") or not callable(_oauth.get_public_urls):
+if not hasattr(_oauth, "start_urls_for") or not callable(getattr(_oauth, "start_urls_for")):
     raise ImportError(
-        "Ungültige Schnittstelle: cogs.live_match.steam_link_oauth exportiert keine get_public_urls()."
+        "Ungültige Schnittstelle: cogs.live_match.steam_link_oauth exportiert keine start_urls_for(uid)."
     )
-
-# Erwartete Keys der URL-Funktion
-_REQUIRED_URL_KEYS = {"discord_start", "steam_openid_start"}
 
 # --- Eingabe-Validierung ---
 # Erlaubt:
@@ -43,12 +40,12 @@ def build_steam_intro_embed() -> discord.Embed:
     em = discord.Embed(
         title="Empfehlung für besseres Erlebnis",
         description=(
-            "• **Wozu?** Damit können wir deinen **Voice-Status** (z. B. *Lobby/In-Game*, **Anzahl im Match**) "
-            "genauer anzeigen und Events sauberer balancen.\n\n"
+            "• Wozu ist das gut? Wir können deinen **Voice-Status** (z. B. *Lobby/In-Game*, **Anzahl im Match**) "
+            "präziser anzeigen und Events sauberer balancen.\n\n"
             "**Ablauf & Optionen:**\n"
-            "• **Via Discord verknüpfen** – schnell & sicher (wir lesen *identify + connections*).\n"
-            "• **SteamID manuell eingeben** – du trägst **ID64/Vanity/Profil-Link** selbst ein.\n"
-            "• **Steam Profil suchen** – offizieller Steam-OpenID-Flow (kein Passwort; wir sehen nur die **SteamID64**).\n\n"
+            "• **Via Discord verknüpfen**: Schnellster, sicherer Weg (wir fragen *identify + connections* ab).\n"
+            "• **SteamID manuell eingeben**: Du trägst **ID64 / Vanity / Profil-Link** selbst ein.\n"
+            "• **Steam Profil suchen**: Offizieller Steam OpenID-Flow (kein Passwort, wir sehen nur die **SteamID64**).\n\n"
             "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** "
             "(und **Gesamtspielzeit** nicht auf „immer privat“)."
         ),
@@ -73,7 +70,6 @@ class _ManualSteamModal(discord.ui.Modal, title="SteamID manuell eintragen"):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         raw = (self.input.value or "").strip()
-        # Query/Fragment abschneiden, dann prüfen
         sanitized = raw.split("?", 1)[0].split("#", 1)[0].strip()
         m = STEAM_KEY_RE.match(sanitized)
         if not m:
@@ -87,18 +83,22 @@ class _ManualSteamModal(discord.ui.Modal, title="SteamID manuell eintragen"):
 
         steam_key = m.group(1)
 
-        # Callback (z. B. Persistenz im aufrufenden Cog)
         if callable(self.on_submit_cb):
             try:
                 await self.on_submit_cb(interaction, steam_key)
             except Exception:
-                await interaction.response.send_message(
-                    "⚠️ Eingabe erhalten, aber Speichern schlug fehl. Bitte später erneut versuchen.",
-                    ephemeral=True,
-                )
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        "⚠️ Eingabe erhalten, aber Speichern schlug fehl. Bitte später erneut versuchen.",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.response.send_message(
+                        "⚠️ Eingabe erhalten, aber Speichern schlug fehl. Bitte später erneut versuchen.",
+                        ephemeral=True,
+                    )
                 return
 
-        # Default-Bestätigung
         content = (
             f"✅ **Gespeichert:** `{steam_key}`\n"
             f"_Wir prüfen die Verbindung in Kürze. Stelle sicher, dass **Spieldetails = Öffentlich** sind._"
@@ -109,78 +109,119 @@ class _ManualSteamModal(discord.ui.Modal, title="SteamID manuell eintragen"):
             await interaction.response.send_message(content, ephemeral=True)
 
 
+class _LinkSheet(discord.ui.View):
+    """Ephemere Mini-View mit den tatsächlichen Link-Buttons (mit ?uid=...)."""
+    def __init__(self, *, discord_url: str, steam_url: str):
+        super().__init__(timeout=120)
+        # gleiche alten Labels
+        self.add_item(discord.ui.Button(
+            label="Via Discord verknüpfen",
+            style=discord.ButtonStyle.link,
+            url=discord_url,
+            emoji="🔗",
+        ))
+        self.add_item(discord.ui.Button(
+            label="Steam Profil suchen",
+            style=discord.ButtonStyle.link,
+            url=steam_url,
+            emoji="🎮",
+        ))
+
+
 class SteamLinkStepView(discord.ui.View):
     """
     View für den Steam-Verknüpfungsschritt in der Welcome-DM.
-    - Buttons/Links kommen ausschließlich aus dem OAuth-Cog (`get_public_urls()`).
-    - Keine eigenen ENV-Fallbacks hier.
+    WICHTIG: Diese View enthält KEINE Link-Buttons.
+             Die tatsächlichen URLs werden erst beim Klick als ephemere Link-View gesendet.
+    Damit kann diese View auch persistent registriert werden.
     """
     def __init__(
         self,
         *,
         on_next=None,                 # async def (interaction) -> None
         on_manual_save=None,          # async def (interaction, steam_key) -> None
-        timeout: float | None = 600.0,
+        timeout: float | None = None, # persistent-fähig
         show_next: bool = True,
     ):
         super().__init__(timeout=timeout)
         self.on_next = on_next
         self.on_manual_save = on_manual_save
         self.show_next = show_next
+        self.proceed: bool = False
 
-        # URLs strikt aus dem OAuth/Link-Cog beziehen
-        urls = _oauth.get_public_urls()
-        missing = _REQUIRED_URL_KEYS - set(urls.keys())
-        if missing:
-            # explizit hart abbrechen – Konfiguration fehlerhaft
-            raise ImportError(
-                f"Ungültige get_public_urls()-Rückgabe, fehlende Keys: {', '.join(sorted(missing))}"
-            )
+    # --- Buttons (nur custom_id, keine URLs – dadurch persistent-fähig) ---
 
-        discord_start = urls["discord_start"]
-        steam_openid_start = urls["steam_openid_start"]
-
-        # Row 1 – große Aktionsbuttons
-        self.add_item(discord.ui.Button(
-            label="Jetzt verknüpfen (empfohlen)",
-            style=discord.ButtonStyle.success,
-            url=discord_start,
-            emoji="🔗",
-        ))
-        self.add_item(discord.ui.Button(
-            label="SteamID manuell",
-            style=discord.ButtonStyle.secondary,
-            custom_id="steam:manual",
-            emoji="📝",
-        ))
-        self.add_item(discord.ui.Button(
-            label="Steam Profil suchen",   # ehemals „Mit Steam anmelden“
-            style=discord.ButtonStyle.primary,
-            url=steam_openid_start,
-            emoji="🎮",
-        ))
-
-        # Row 2 – Navigation
-        if self.show_next:
-            self.add_item(discord.ui.Button(
-                label="Weiter",
-                style=discord.ButtonStyle.primary,
-                custom_id="steam:next",
-                emoji="⏭️",
-            ))
-
-    # --- Hidden Handler-Buttons für custom_id-Actions ---
-    @discord.ui.button(label="__hidden__", style=discord.ButtonStyle.secondary, custom_id="steam:manual", row=0)
+    @discord.ui.button(
+        label="SteamID manuell",
+        style=discord.ButtonStyle.secondary,
+        custom_id="steam:manual",
+        row=0,
+        emoji="📝",
+    )
     async def _open_manual(self, interaction: discord.Interaction, _button: discord.ui.Button):
         modal = _ManualSteamModal(on_submit_cb=self.on_manual_save)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="__hidden__", style=discord.ButtonStyle.primary, custom_id="steam:next", row=1)
-    async def _next(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        if callable(self.on_next):
-            await self.on_next(interaction)
+    @discord.ui.button(
+        label="Via Discord verknüpfen",
+        style=discord.ButtonStyle.success,
+        custom_id="steam:discord",
+        row=0,
+        emoji="🔗",
+    )
+    async def _start_discord(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        uid = interaction.user.id
+        try:
+            urls = _oauth.start_urls_for(uid)
+        except Exception:
+            urls = {}
+        if not urls.get("discord_start") or not urls.get("steam_openid_start"):
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Start-Links nicht konfiguriert. Bitte später erneut versuchen.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Start-Links nicht konfiguriert. Bitte später erneut versuchen.", ephemeral=True)
             return
-        await interaction.response.send_message("Alles klar – weiter geht’s! ✅", ephemeral=True)
+        sheet = _LinkSheet(discord_url=urls["discord_start"], steam_url=urls["steam_openid_start"])
+        if interaction.response.is_done():
+            await interaction.followup.send("🔐 Wähle den Link:", view=sheet, ephemeral=True)
+        else:
+            await interaction.response.send_message("🔐 Wähle den Link:", view=sheet, ephemeral=True)
+
+    @discord.ui.button(
+        label="Steam Profil suchen",
+        style=discord.ButtonStyle.primary,
+        custom_id="steam:openid",
+        row=0,
+        emoji="🎮",
+    )
+    async def _start_openid(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        # identisch: wir zeigen dieselbe ephemere Link-Sheet (mit beiden Links)
+        await self._start_discord(interaction, _button)
+
+    @discord.ui.button(
+        label="Weiter",
+        style=discord.ButtonStyle.primary,
+        custom_id="steam:next",
+        row=1,
+        emoji="⏭️",
+    )
+    async def _next(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        # markiere und beende die View sofort
+        self.proceed = True
+        self.stop()
+        # optionaler Callback des Aufrufers (kann selbst antworten)
+        if callable(self.on_next):
+            try:
+                await self.on_next(interaction)
+                return
+            except Exception:
+                # falls der Callback nichts sendet/fehlschlägt, sorgen wir für eine Antwort
+                pass
+        # sichere Bestätigung, damit kein "Interaction failed" erscheint
+        if interaction.response.is_done():
+            await interaction.followup.send("Alles klar – weiter geht’s! ✅", ephemeral=True)
+        else:
+            await interaction.response.send_message("Alles klar – weiter geht’s! ✅", ephemeral=True)
 
 
 # --- Aliase für ältere Imports ---

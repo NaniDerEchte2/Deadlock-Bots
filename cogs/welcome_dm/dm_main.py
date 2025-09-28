@@ -14,15 +14,15 @@ from .base import (
     STATUS_RETURNING,
 )
 from .step_intro import IntroView
+    # Intro info/weiter Button (nicht persistent registrieren)
 from .step_status import PlayerStatusView
 from .step_steam_link import SteamLinkStepView
 from .step_rules import RulesView
-from .step_streamer import StreamerIntroView  # Ja/Nein → dann Anforderungen
-
+from .step_streamer import StreamerIntroView  # Optionaler Schritt
 
 class WelcomeDM(commands.Cog):
     """Welcome-DM: Intro → Status → Steam → (optional Streamer) → Regeln.
-       Jetzt ohne persistente Registrierung der Step-Views (wegen Link-Buttons)."""
+       WICHTIG: keine persistente Registrierung der Step-Views (enthalten Link-Buttons)."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -38,7 +38,7 @@ class WelcomeDM(commands.Cog):
         return lock
 
     async def cog_load(self):
-        # KEINE persistenten Views hier registrieren – einzelne Steps nutzen Link-Buttons.
+        # KEINE persistente Registrierung der Step-Views; nur Logging.
         logger.info("WelcomeDM geladen (ohne persistente Step-Views).")
 
     @commands.Cog.listener()
@@ -362,7 +362,7 @@ class WelcomeDM(commands.Cog):
 
     # ---------------- Events & Commands ----------------
 
-    @commands.Cog.listener())
+    @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         await asyncio.sleep(2)
         await self.send_welcome_messages(member)
