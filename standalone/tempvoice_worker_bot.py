@@ -1,6 +1,7 @@
 # service/tempvoice_worker_bot.py
 # TempVoice Worker – Socket-Server + LiveMatch-Renamer
-# python -m standalone.tempvoice_worker_bot #
+# v2.2 – robustes Suffix-Cleanup + 100-Char-Schutz
+# python -m standalone.tempvoice_worker_bot
 #######################################################################
 import asyncio
 import logging
@@ -24,7 +25,6 @@ try:
     if _env_file:
         load_dotenv(_env_file)
 except Exception as e:
-    # Nicht fatal – nur Hinweis im Log
     logging.getLogger("tempvoice_worker").debug("dotenv laden übersprungen/fehlgeschlagen: %r", e)
 
 # interner Socket-Server
@@ -54,20 +54,15 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 HOST = os.getenv("SOCKET_HOST", "127.0.0.1")
 PORT = int(os.getenv("SOCKET_PORT", "45679"))
 
-# ===== LiveMatch-Renamer (feste Defaults, keine ENV-Konfig-Schlacht) =====
+# ===== LiveMatch-Renamer (feste Defaults) =====
 LIVE_MATCH_ENABLE = (os.getenv("LIVE_MATCH_ENABLE", "1") == "1")
 LIVE_DB_PATH = (os.getenv("DEADLOCK_DB_PATH") or
                 os.getenv("LIVE_DB_PATH") or
                 os.path.expandvars(r"%USERPROFILE%/Documents/Deadlock/service/deadlock.sqlite3")).strip()
 LIVE_TICK_SEC = 20
-NAME_EDIT_COOLDOWN_SEC = 300        # << pro Channel 1 Rename / 5 Minuten
-RATE_LIMIT_BACKOFF_SEC = 380        # Backoff bei 429
-
-# Regex: „ • n/cap Im Match|Im Spiel|Lobby/Queue“
-MATCH_SUFFIX_RX = re.compile(
-    r"\s+•\s+\d+/\d+\s+(im\s+match|im\s+spiel|lobby/queue)",
-    re.IGNORECASE,
-)
+NAME_EDIT_COOLDOWN_SEC = 300
+RATE_LIMIT_BACKOFF_SEC = 380
+DISCORD_MAX_NAME = 100
 
 _socket_server: Optional[JSONLineServer] = None
 _last_rename_ts: Dict[int, float] = {}        # channel_id -> last successful attempt ts
@@ -135,12 +130,57 @@ def _norm(s: str) -> str:
     s = " ".join(s.split())
     return s.casefold()
 
-def _strip_suffix(name: str) -> str:
-    return MATCH_SUFFIX_RX.sub("", name).strip()
+def _normalize_spaces(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip())
 
-def _extract_suffix(name: str) -> str:
-    m = MATCH_SUFFIX_RX.search(name)
-    return m.group(0).strip() if m else ""
+def _base_name_cleanup(name: str) -> str:
+    """
+    Robuster Basisschnitt: ALLES ab dem ersten '•' weg.
+    Fängt auch kaputte Fälle ('• • …') oder unbekannte Statuswörter ab.
+    """
+    if "•" in name:
+        base = name.split("•", 1)[0].rstrip()
+    else:
+        base = name
+    base = _normalize_spaces(base)
+    return base if base else "Voice"
+
+def _build_name(base: str, suffix: str) -> str:
+    """
+    Baut finalen Channel-Namen, strikt <= 100 Zeichen.
+    - Suffix leer -> nur Base.
+    - Sonst 'Base {space}Suffix'.
+    - Falls zu lang, wird die Base mit '…' gekürzt (notfalls harter Cut).
+    """
+    base = _normalize_spaces(base)
+    suffix = _normalize_spaces(suffix)
+
+    if not suffix:
+        name = base
+    else:
+        name = f"{base} {suffix}"
+
+    if len(name) <= DISCORD_MAX_NAME:
+        return name
+
+    if not suffix:
+        # Nur Base ist zu lang
+        return (base[: DISCORD_MAX_NAME - 1].rstrip() + "…") if DISCORD_MAX_NAME > 1 else base[:DISCORD_MAX_NAME]
+
+    # Platz für " " + suffix reservieren
+    reserved = 1 + len(suffix)
+    if reserved >= DISCORD_MAX_NAME:
+        # Pathologischer Fall: Suffix ist selbst zu lang -> harter Cut
+        return (base + " " + suffix)[:DISCORD_MAX_NAME]
+
+    allowed_base = DISCORD_MAX_NAME - reserved
+    if allowed_base <= 1:
+        # Kein Platz für Base -> nur (ggf. gekürzten) Suffix zeigen
+        return (suffix[: DISCORD_MAX_NAME]).rstrip()
+
+    base_short = (base[: allowed_base - 1].rstrip() + "…")
+    final_name = f"{base_short} {suffix}"
+    return final_name[:DISCORD_MAX_NAME]
 
 async def _get_channel_anywhere(channel_id: int) -> Optional[discord.abc.GuildChannel]:
     ch = bot.get_channel(channel_id)
@@ -202,7 +242,7 @@ async def _safe_rename(ch: discord.VoiceChannel, desired: str, *, reason: str) -
     if now < until:
         return False
 
-    # Delta-Check
+    # Delta-Check (normalisiert)
     current = ch.name
     if _norm(current) == _norm(desired):
         return False
@@ -297,19 +337,19 @@ async def handle_op(payload: Dict[str, Any]) -> Dict[str, Any]:
             if op == "rename_match_suffix":
                 if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
                     return {"ok": False, "error": f"Channel {channel_id} ist kein Voice/StageChannel"}
-                current = channel.name
-                base = _strip_suffix(current)
-                suffix = (payload.get("suffix") or "").strip()
-                desired = base if not suffix else f"{base} {suffix}"
+                base = _base_name_cleanup(channel.name)
+                suffix = _normalize_spaces(str(payload.get("suffix") or ""))
+                desired = _build_name(base, suffix)
                 ok = await _safe_rename(channel, desired, reason=str(payload.get("reason") or "LiveMatch"))
                 return {"ok": ok, "base": base, "desired": desired}
 
             if op == "clear_match_suffix":
                 if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
                     return {"ok": False, "error": f"Channel {channel_id} ist kein Voice/StageChannel"}
-                base = _strip_suffix(channel.name)
-                ok = await _safe_rename(channel, base, reason=str(payload.get("reason") or "LiveMatch clear"))
-                return {"ok": ok, "base": base, "desired": base}
+                base = _base_name_cleanup(channel.name)
+                desired = _build_name(base, "")
+                ok = await _safe_rename(channel, desired, reason=str(payload.get("reason") or "LiveMatch clear"))
+                return {"ok": ok, "base": base, "desired": desired}
 
         # move_member
         if op == "move_member":
@@ -440,14 +480,13 @@ async def _live_match_tick():
         if not isinstance(ch, (discord.VoiceChannel, discord.StageChannel)):
             continue
 
-        current_suffix = _extract_suffix(ch.name)    # z.B. "• 1/8 Im Spiel"
-        db_suffix = (r["suffix"] or "").strip() if r["suffix"] is not None else ""
+        db_suffix = _normalize_spaces((r["suffix"] or "").strip()) if r["suffix"] is not None else ""
+        base = _base_name_cleanup(ch.name)
+        desired = _build_name(base, db_suffix)
 
-        if _norm(current_suffix) == _norm(db_suffix):
+        if _norm(ch.name) == _norm(desired):
             continue
 
-        base = _strip_suffix(ch.name)
-        desired = base if not db_suffix else f"{base} {db_suffix}"
         await _safe_rename(ch, desired, reason="LiveMatch-Renamer")
 
 async def live_match_runner():
