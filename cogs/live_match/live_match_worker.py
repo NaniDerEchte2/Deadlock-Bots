@@ -23,7 +23,7 @@ log = logging.getLogger("LiveMatchWorker")
 
 # Festwerte (bewährt & konservativ)
 TICK_SEC = 20                                   # Poll-Intervall Worker
-PER_CHANNEL_RENAME_COOLDOWN_SEC = 300           # 5 Minuten Cooldown pro Channel
+PER_CHANNEL_RENAME_COOLDOWN_SEC = 305           # 5 Minuten Cooldown pro Channel
 
 # Muster für unseren Suffix-Block.
 # Beispiele, die erkannt/entfernt werden:
