@@ -1,12 +1,12 @@
 # filename: cogs/live_match/live_match_worker.py
 # ------------------------------------------------------------
-# LiveMatchWorker v2.1 (v3-ready Telemetrie) – robustes Suffix-Handling
+# LiveMatchWorker v2.2 (v3-ready Telemetrie) – robustes Suffix-Handling
 #
-# Änderungen:
-#   - RegEx erkennt jetzt: "Im Match" | "Im Spiel" | "In der Lobby" | "Lobby/Queue".
-#   - Entfernt *alle* vorhandenen Suffix-Wiederholungen (falls zuvor gestapelt).
-#   - Kanonisiert Suffixe vor dem Vergleich (case/whitespace).
-#   - Telemetrie speichert die echte channel_id.
+# Änderungen in v2.2:
+#   - Entfernt jetzt Suffix-Blöcke sowohl MIT "• n/c" als auch OHNE Zähler.
+#   - Extrahiert den letzten Suffix-Block in beiden Formen (mit/ohne Bullet).
+#   - Kanonisiert Suffixe aggressiver (case/whitespace, Bullet/Zähler egal).
+#   - Optionaler Stale-Schutz: ignoriert veraltete live_lane_state-Einträge.
 # ------------------------------------------------------------
 
 import re
@@ -21,26 +21,54 @@ from service import db  # Sync-Wrapper mit execute/query_all/executemany
 
 log = logging.getLogger("LiveMatchWorker")
 
-# Festwerte (bewährt & konservativ)
+# Festwerte
 TICK_SEC = 20                                   # Poll-Intervall Worker
-PER_CHANNEL_RENAME_COOLDOWN_SEC = 305           # 5 Minuten Cooldown pro Channel
+PER_CHANNEL_RENAME_COOLDOWN_SEC = 305           # ~5 Minuten Cooldown pro Channel
+STALE_STATE_MAX_AGE_SEC = 600                   # 10 Minuten: älter = kein Rename
 
-# Muster für unseren Suffix-Block.
-# Beispiele, die erkannt/entfernt werden:
-#   "• 3/6 Im Match", "• 4/6 Im Spiel", "• 1/6 In der Lobby", "• 2/6 Lobby/Queue"
-# Außerdem: wiederholte/gestapelte Blöcke werden komplett entfernt.
-_SUFFIX_VARIANTS = r"(?:im\s+match|im\s+spiel|in\s+der\s+lobby|lobby/queue)"
+# Erlaubte Suffix-Varianten (kanonische Textteile)
+_SUFFIX_TERMS = r"(?:im\s+match|im\s+spiel|in\s+der\s+lobby|lobby/queue)"
+
+# 1) Block MIT Zähler, z. B. "• 3/6 Im Match"
+_SUFFIX_WITH_COUNTER = rf"(?:\s*•\s*\d+/\d+\s*{_SUFFIX_TERMS})"
+
+# 2) Block OHNE Zähler, z. B. "Im Match" (am liebsten am Ende, aber wir matchen überall)
+_SUFFIX_PLAIN = rf"(?:\s*{_SUFFIX_TERMS})"
+
+# Gesamter Suffix-Block: eine oder mehrere Wiederholungen, egal ob mit oder ohne Zähler.
+# Hinweis: Reihenfolge "with | plain" macht das Entfernen etwas gieriger für mit-Zähler.
 SUFFIX_RX = re.compile(
-    rf"(?:\s*•\s*\d+/\d+\s*(?:{_SUFFIX_VARIANTS}))+",
-    re.IGNORECASE,
+    rf"(?:{_SUFFIX_WITH_COUNTER}|{_SUFFIX_PLAIN})+",
+    re.IGNORECASE
 )
 
-# Für die Extraktion des *letzten* vorhandenen Suffix-Blocks (falls mehrere gestapelt sind).
+# Für die Extraktion des *letzten* vorhandenen Suffix-Blocks (mit/ohne Zähler).
 EXTRACT_LAST_SUFFIX_RX = re.compile(
-    rf"(•\s*\d+/\d+\s*(?:{_SUFFIX_VARIANTS}))",
-    re.IGNORECASE,
+    rf"((?:•\s*\d+/\d+\s*)?{_SUFFIX_TERMS})",
+    re.IGNORECASE
 )
 
+def _canon(s: Optional[str]) -> str:
+    """Kanonische Form für Vergleich (Zähler/Bullet/Case/Whitespace egal)."""
+    t = (s or "").strip().lower()
+    # Bullet + Zähler entfernen
+    t = re.sub(r"•\s*\d+/\d+\s*", "", t)
+    # Mehrfache Whitespaces normalisieren
+    t = re.sub(r"\s+", " ", t)
+    # Nur anerkannte Suffix-Terme stehen lassen
+    m = re.search(_SUFFIX_TERMS, t, re.IGNORECASE)
+    return m.group(0) if m else ""
+
+def _base_name(name: str) -> str:
+    """Entfernt *alle* erkannten Suffix-Blöcke (mit/ohne Zähler) zuverlässig."""
+    return SUFFIX_RX.sub("", name).strip()
+
+def _extract_last_suffix(name: str) -> str:
+    """Extrahiert den *letzten* Suffix-Block (mit/ohne Zähler) in kanonischer Form."""
+    matches = EXTRACT_LAST_SUFFIX_RX.findall(name)
+    if not matches:
+        return ""
+    return _canon(matches[-1])
 
 def _ensure_metrics_schema() -> None:
     """Legt die Telemetrie-Tabelle für den Worker an (idempotent)."""
@@ -59,7 +87,6 @@ def _ensure_metrics_schema() -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_lwa3_ts ON live_worker_actions_v3(ts)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_lwa3_channel ON live_worker_actions_v3(channel_id)")
 
-
 class LiveMatchWorker(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -73,7 +100,10 @@ class LiveMatchWorker(commands.Cog):
         if not self._started:
             self.tick.start()
             self._started = True
-        log.info("LiveMatchWorker gestartet (Tick=%ss, Cooldown=%ss)", TICK_SEC, PER_CHANNEL_RENAME_COOLDOWN_SEC)
+        log.info(
+            "LiveMatchWorker gestartet (Tick=%ss, Cooldown=%ss, Stale=%ss)",
+            TICK_SEC, PER_CHANNEL_RENAME_COOLDOWN_SEC, STALE_STATE_MAX_AGE_SEC
+        )
 
     async def cog_unload(self):
         if self._started:
@@ -84,32 +114,42 @@ class LiveMatchWorker(commands.Cog):
 
     @tasks.loop(seconds=TICK_SEC)
     async def tick(self):
-        # Wir lesen nur die minimal nötigen Spalten
-        rows = db.query_all("SELECT channel_id, is_active, suffix FROM live_lane_state")
+        # Wir lesen jetzt auch last_update für Stale-Schutz
+        rows = db.query_all("SELECT channel_id, is_active, suffix, last_update FROM live_lane_state")
         now = time.time()
         unix_now = int(now)
 
         for r in rows:
             try:
                 channel_id = int(r["channel_id"])
-                desired_suffix = (r["suffix"] or "").strip()
+                desired_suffix_raw = (r["suffix"] or "").strip()
+                desired_suffix = _canon(desired_suffix_raw)  # kanonische Ziel-Variante
                 is_active = int(r["is_active"] or 0)
+                last_update = int(r.get("last_update") or 0)
             except Exception as e:
                 msg = f"Ungültiger Datensatz in live_lane_state: {e!r}"
                 log.debug(msg)
                 self._telemetry(unix_now, 0, None, None, None, applied=0, reason=msg)
                 continue
 
+            # Stale-Schutz: wenn live_lane_state zu alt, nicht umbenennen
+            if last_update and (unix_now - last_update) > STALE_STATE_MAX_AGE_SEC:
+                self._telemetry(
+                    unix_now, channel_id, None, None, desired_suffix_raw, applied=0,
+                    reason=f"stale_state:{unix_now - last_update}s_old"
+                )
+                continue
+
             ch = self.bot.get_channel(channel_id)
             if not isinstance(ch, discord.VoiceChannel):
-                self._telemetry(unix_now, channel_id, None, None, desired_suffix, applied=0,
+                self._telemetry(unix_now, channel_id, None, None, desired_suffix_raw, applied=0,
                                 reason="channel_not_found_or_not_voice")
                 continue
 
-            # State initialisieren: last_applied = was gerade im Namen steht (letzter erkannter Suffix-Baustein)
+            # State initialisieren: last_applied = was gerade im Namen steht (letzter erkannter Suffix)
             st = self._state.get(ch.id)
             if st is None:
-                current_suffix = self._extract_last_suffix(ch.name) or ""
+                current_suffix = _extract_last_suffix(ch.name)  # bereits kanonisch
                 st = {
                     "last_applied": current_suffix,
                     "pending": desired_suffix,
@@ -117,17 +157,17 @@ class LiveMatchWorker(commands.Cog):
                 }
                 self._state[ch.id] = st
             else:
-                if (st.get("pending") or "") != desired_suffix:
+                if _canon(st.get("pending")) != desired_suffix:
                     st["pending"] = desired_suffix
 
             # Falls Channel als inaktiv markiert ist, wollen wir i.d.R. KEIN Suffix anzeigen.
             if is_active == 0:
                 st["pending"] = ""  # Ziel ist „kein Suffix“
 
-            # Cooldown/Delta prüfen (Vergleich kanonisiert: Case/Whitespace egal)
+            # Cooldown/Delta prüfen (Vergleich auf kanonischer Basis)
             last_ts = float(st.get("last_rename_ts") or 0.0)
             due = (now - last_ts) >= PER_CHANNEL_RENAME_COOLDOWN_SEC
-            want_change = (self._canon(st.get("pending")) != self._canon(st.get("last_applied")))
+            want_change = (_canon(st.get("pending")) != _canon(st.get("last_applied")))
 
             if not want_change:
                 continue
@@ -139,8 +179,8 @@ class LiveMatchWorker(commands.Cog):
                 )
                 continue
 
-            # Zielnamen bauen – vorher ALLE bestehenden Suffix-Blöcke wegschneiden
-            base = self._base_name(ch.name)
+            # Zielnamen bauen – vorher ALLE bestehenden Suffix-Blöcke (mit/ohne Zähler) wegschneiden
+            base = _base_name(ch.name)
             target_suffix = st.get("pending", "") or ""
             desired_name = base if not target_suffix else f"{base} {target_suffix}"
 
@@ -172,20 +212,7 @@ class LiveMatchWorker(commands.Cog):
     async def _before_tick(self):
         await self.bot.wait_until_ready()
 
-    # ---------------- Hilfsfunktionen ----------------------------------------
-
-    def _canon(self, s: Optional[str]) -> str:
-        """Kanonische Form für Vergleich (case/whitespace-insensitiv)."""
-        return re.sub(r"\s+", " ", (s or "").strip()).lower()
-
-    def _base_name(self, name: str) -> str:
-        """Entfernt *alle* erkannten Suffix-Blöcke zuverlässig."""
-        return SUFFIX_RX.sub("", name).strip()
-
-    def _extract_last_suffix(self, name: str) -> str:
-        """Extrahiert den *letzten* Suffix-Block („• n/cap …“) aus dem Namen, falls vorhanden."""
-        matches = EXTRACT_LAST_SUFFIX_RX.findall(name)
-        return matches[-1] if matches else ""
+    # ---------------- Telemetrie ---------------------------------------------
 
     def _telemetry(
         self,
@@ -210,7 +237,6 @@ class LiveMatchWorker(commands.Cog):
         except Exception as e:
             # Telemetrie-Fehler nicht fatal machen, aber loggen
             log.debug("Telemetrie konnte nicht geschrieben werden: %r", e)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(LiveMatchWorker(bot))
