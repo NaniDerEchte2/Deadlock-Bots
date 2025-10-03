@@ -230,8 +230,8 @@ class MasterBot(commands.Bot):
             return module_path not in only
         if module_path in default_excludes:
             return True
-        if ".worker" in module_path or "worker." in module_path or module_path.endswith("_worker"):
-            return True
+        #if ".worker" in module_path or "worker." in module_path or module_path.endswith("_worker"):
+        #    return True
         return False
 
     def auto_discover_cogs(self):
