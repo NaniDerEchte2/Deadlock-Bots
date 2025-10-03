@@ -21,8 +21,7 @@ log = logging.getLogger("LiveMatchMaster")
 
 # ---- Konfiguration -----------------------------------------------------------
 
-LIVE_CATEGORIES = [int(x) for x in os.getenv("LIVE_CATEGORIES", "").split(",") if x.strip().isdigit()]
-
+LIVE_CATEGORIES = [1289721245281292290, 1412804540994162789, 1357422957017698478]
 DEADLOCK_APP_ID = os.getenv("DEADLOCK_APP_ID", "1422450")
 STEAM_API_KEY   = os.getenv("STEAM_API_KEY", "").strip()
 
