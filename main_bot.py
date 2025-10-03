@@ -220,7 +220,7 @@ class MasterBot(commands.Bot):
     # --------------------- Discovery & Filters -------------------------
     def _should_exclude(self, module_path: str) -> bool:
         default_excludes = {
-            "cogs.live_match.live_match_worker",
+            "",
         }
         env_ex = (os.getenv("COG_EXCLUDE") or "").strip()
         for item in [x.strip() for x in env_ex.split(",") if x.strip()]:
