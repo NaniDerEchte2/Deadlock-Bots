@@ -67,6 +67,7 @@ class SteamPresenceServiceManager:
     async def ensure_dependencies(self) -> None:
         if self._deps_checked:
             return
+        self._deps_checked = True
 
         package_json = self.service_dir / "package.json"
         if not package_json.exists():
@@ -75,35 +76,29 @@ class SteamPresenceServiceManager:
 
         node_modules = self.service_dir / "node_modules"
         if node_modules.exists() and not _to_bool(os.getenv("STEAM_SERVICE_FORCE_INSTALL"), False):
-            self._deps_checked = True
             return
 
         cmd = self.install_command
         LOGGER.info("Installing steam presence dependencies via '%s' (cwd=%s)", cmd, self.service_dir)
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                cwd=str(self.service_dir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            stdout = []
-            if proc.stdout is not None:
-                while True:
-                    line = await proc.stdout.readline()
-                    if not line:
-                        break
-                    text = line.decode(errors="replace").rstrip()
-                    stdout.append(text)
-                    LOGGER.debug("[npm install] %s", text)
-            rc = await proc.wait()
-            if rc != 0:
-                raise RuntimeError(f"npm install failed with exit code {rc}: {'; '.join(stdout[-10:])}")
-            LOGGER.info("npm dependencies ready")
-            self._deps_checked = True
-        except Exception:
-            self._deps_checked = False
-            raise
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            cwd=str(self.service_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout = []
+        if proc.stdout is not None:
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                text = line.decode(errors="replace").rstrip()
+                stdout.append(text)
+                LOGGER.debug("[npm install] %s", text)
+        rc = await proc.wait()
+        if rc != 0:
+            raise RuntimeError(f"npm install failed with exit code {rc}: {'; '.join(stdout[-10:])}")
+        LOGGER.info("npm dependencies ready")
 
     async def ensure_started(self) -> bool:
         lock = await self._get_lock()

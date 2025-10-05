@@ -42,6 +42,7 @@ ab und lädt ihn bei zukünftigen Starts automatisch wieder. So genügt es, einm
 und Guard-Code einzutragen; danach kannst du beide Variablen entfernen und startest ohne
 erneute 2FA-Eingabe.
 
+
 ### Steam Guard / 2FA
 
 Es gibt keine interaktive Abfrage – der Dienst benötigt den Steam-Guard-Code bereits beim
