@@ -276,6 +276,26 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               in_match_now_strict INTEGER DEFAULT 0
             );
 
+            -- Steam Rich Presence Cache (gefüllt vom node-steam-user Service)
+            CREATE TABLE IF NOT EXISTS steam_rich_presence(
+              steam_id TEXT PRIMARY KEY,
+              app_id INTEGER,
+              status TEXT,
+              display TEXT,
+              player_group TEXT,
+              player_group_size INTEGER,
+              connect TEXT,
+              raw_json TEXT,
+              last_update INTEGER
+            );
+
+            -- Optionale zusätzliche Watchlist für den Presence-Service
+            CREATE TABLE IF NOT EXISTS steam_presence_watchlist(
+              steam_id TEXT PRIMARY KEY,
+              note TEXT,
+              added_at INTEGER DEFAULT (strftime('%s','now'))
+            );
+
             -- Live-Lane-Status (pro Voice-Channel)
             CREATE TABLE IF NOT EXISTS live_lane_state(
               channel_id  INTEGER PRIMARY KEY,
@@ -305,6 +325,7 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute("CREATE INDEX IF NOT EXISTS idx_llm_checked  ON live_lane_members(checked_ts)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_user  ON steam_links(user_id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_rich_presence_updated ON steam_rich_presence(last_update)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ranks_rank ON ranks(rank)")
         except sqlite3.Error as e:
             logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)
