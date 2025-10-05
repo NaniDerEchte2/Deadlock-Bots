@@ -737,7 +737,8 @@ class SteamLink(commands.Cog):
             "• Wenn in deinem Discord-Profil **kein** Steam verknüpft ist, "
             "leite ich dich automatisch zu Steam weiter.\n"
             "• Anmeldedaten bleiben bei Steam.\n"
-            "• Ich schicke dir eine DM, sobald die Verknüpfung durch ist."
+            "• Ich schicke dir eine DM, sobald die Verknüpfung durch ist.\n"
+            "• Nach erfolgreicher Verknüpfung erhältst du automatisch eine Steam-Freundschaftsanfrage vom Bot."
         )
 
         embed = discord.Embed(title="Steam/Discord verknüpfen", description=desc, color=discord.Color.green())
@@ -759,7 +760,10 @@ class SteamLink(commands.Cog):
         description="Direkt: Steam-Login (OpenID) starten"
     )
     async def link_steam(self, ctx: commands.Context) -> None:
-        desc = "Bestätige deinen Account via Steam OpenID."
+        desc = (
+            "Bestätige deinen Account via Steam OpenID. "
+            "Nach dem Abschluss senden wir dir automatisch eine Freundschaftsanfrage vom Bot."
+        )
         embed = discord.Embed(title="Direkt bei Steam anmelden", description=desc, color=discord.Color.green())
         if LINK_COVER_IMAGE:
             embed.set_image(url=LINK_COVER_IMAGE)

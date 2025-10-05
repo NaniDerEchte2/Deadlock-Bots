@@ -10,6 +10,7 @@
     "better-sqlite3": "^9.4.0",
     "dotenv": "^16.4.5",
     "steam-totp": "^2.1.1",
-    "steam-user": "^5.0.0"
+    "steam-user": "^5.0.0",
+    "steamid": "^2.1.0"
   }
 }
