@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import asyncio
 import logging
-import inspect
 import re
 from typing import Optional, Dict, Union, Tuple
 from urllib.parse import urlparse, urlunparse
@@ -41,7 +40,15 @@ def _prefer_discord_deeplink(browser_url: Optional[str]) -> Tuple[Optional[str],
         return None, None
     try:
         u = urlparse(browser_url)
-        if "discord.com" in (u.netloc or "") and "/oauth2/authorize" in (u.path or "") and _DEEPLINK_EN:
+        hostname = (u.hostname or "").lower()
+        path = u.path or ""
+        if (
+            _DEEPLINK_EN
+            and u.scheme in {"http", "https"}
+            and hostname
+            and (hostname == "discord.com" or hostname.endswith(".discord.com"))
+            and (path == "/oauth2/authorize" or path.startswith("/oauth2/authorize/"))
+        ):
             deeplink = urlunparse(("discord", "-/oauth2/authorize", "", "", u.query, ""))
             return deeplink, browser_url
     except Exception:

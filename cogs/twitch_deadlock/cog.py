@@ -32,7 +32,7 @@ import asyncio
 import logging
 import os
 import re
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
 import discord
 from discord.ext import commands, tasks

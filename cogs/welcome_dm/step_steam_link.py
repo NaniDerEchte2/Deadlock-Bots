@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 from typing import Optional, Tuple
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlsplit, urlunparse, urlunsplit
 
 import discord
 
@@ -39,8 +39,15 @@ def _prefer_discord_deeplink(browser_url: Optional[str]) -> Tuple[Optional[str],
         return None, None
     try:
         u = urlparse(browser_url)
+        hostname = (u.hostname or "").lower()
+        path = u.path or ""
         # akzeptiere /oauth2/authorize sowohl mit/ohne /api
-        if "discord.com" in (u.netloc or "") and "/oauth2/authorize" in (u.path or ""):
+        if (
+            u.scheme in {"http", "https"}
+            and hostname
+            and (hostname == "discord.com" or hostname.endswith(".discord.com"))
+            and (path == "/oauth2/authorize" or path.startswith("/oauth2/authorize/"))
+        ):
             if _DEEPLINK_EN:
                 deeplink = urlunparse(("discord", "-/oauth2/authorize", "", "", u.query, ""))
                 return deeplink, browser_url
@@ -100,7 +107,18 @@ class _ManualSteamModal(discord.ui.Modal, title="SteamID manuell eintragen"):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         raw = (self.input.value or "").strip()
-        sanitized = raw.split("?", 1)[0].split("#", 1)[0].strip()
+        sanitized = raw
+        try:
+            parsed = urlsplit(raw)
+        except ValueError:
+            parsed = None
+
+        if parsed and parsed.scheme and parsed.netloc:
+            path = (parsed.path or "").split(";", 1)[0]
+            sanitized = urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+        else:
+            sanitized = raw.split("?", 1)[0].split("#", 1)[0]
+        sanitized = sanitized.strip()
         m = STEAM_KEY_RE.match(sanitized)
         if not m:
             await interaction.response.send_message(

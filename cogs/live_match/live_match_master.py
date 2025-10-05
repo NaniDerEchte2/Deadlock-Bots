@@ -274,6 +274,7 @@ class LiveMatchMaster(commands.Cog):
         sid = summary.get("gameserversteamid")
         return str(sid) if sid else None
 
+    @staticmethod
     def _presence_server_id(pres: dict) -> Optional[str]:
         raw = pres.get("raw") or {}
         group = pres.get("player_group") or raw.get("steam_player_group")
