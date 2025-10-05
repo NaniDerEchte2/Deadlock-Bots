@@ -5,6 +5,8 @@
  * into the shared SQLite database so the Python bot can evaluate lobby/match states.
  */
 
+require('dotenv').config();
+
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -297,6 +299,22 @@ client.on('friendRichPresence', (steamID, appID) => {
 });
 
 client.on('friendRelationship', (steamID, relationship) => {
+  if (relationship === SteamUser.EFriendRelationship.RequestRecipient) {
+    const sid64 = steamID.getSteamID64();
+    log('info', 'Accepting inbound friend request', { steamId: sid64 });
+    try {
+      client.addFriend(steamID);
+    } catch (err) {
+      log('warn', 'Failed to accept friend request', { steamId: sid64, error: err.message });
+      return;
+    }
+    const cached = watchList.get(sid64);
+    if (cached) {
+      safeRequestRichPresence(cached);
+    }
+    return;
+  }
+
   if (relationship === SteamUser.EFriendRelationship.None) {
     const sid64 = steamID.getSteamID64();
     if (watchList.delete(sid64)) {
