@@ -2,6 +2,7 @@
 .env.worker
 .env.*
 __pycache__
+node_modules/
 /Backup
 /logs
 
@@ -17,6 +18,8 @@ install_windows_service.py
 *env*
 *.env*
 *.json
+!service/steam_presence/package.json
+!service/steam_presence/package-lock.json
 *.db-shm
 *.db-wal
 *.db

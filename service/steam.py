@@ -1,5 +1,6 @@
 # shared/steam.py
 from typing import Dict, List
+import json
 import aiohttp
 from service import db
 
@@ -53,3 +54,39 @@ def cache_player_state(row: dict) -> None:
             row["in_deadlock_now"], row["in_match_now_strict"]
         ),
     )
+
+
+def load_rich_presence(steam_ids: List[str]) -> Dict[str, dict]:
+    """Lädt die zuletzt gespeicherten Rich-Presence-Daten für die angegebenen Steam-IDs."""
+    if not steam_ids:
+        return {}
+    placeholders = ",".join("?" for _ in steam_ids)
+    rows = db.query_all(
+        f"""
+        SELECT steam_id, app_id, status, display, player_group, player_group_size,
+               connect, raw_json, last_update
+        FROM steam_rich_presence
+        WHERE steam_id IN ({placeholders})
+        """,
+        tuple(steam_ids),
+    )
+    out: Dict[str, dict] = {}
+    for r in rows:
+        raw_json = r["raw_json"] if isinstance(r, dict) else r[7]
+        try:
+            raw = json.loads(raw_json) if raw_json else {}
+        except json.JSONDecodeError:
+            raw = {}
+        entry = {
+            "steam_id": str(r["steam_id"] if isinstance(r, dict) else r[0]),
+            "app_id": r["app_id"] if isinstance(r, dict) else r[1],
+            "status": r["status"] if isinstance(r, dict) else r[2],
+            "display": r["display"] if isinstance(r, dict) else r[3],
+            "player_group": r["player_group"] if isinstance(r, dict) else r[4],
+            "player_group_size": r["player_group_size"] if isinstance(r, dict) else r[5],
+            "connect": r["connect"] if isinstance(r, dict) else r[6],
+            "last_update": r["last_update"] if isinstance(r, dict) else r[8],
+            "raw": raw,
+        }
+        out[entry["steam_id"]] = entry
+    return out

@@ -15,7 +15,7 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 
-from service import db
+from service import db, steam as steam_service_module
 
 log = logging.getLogger("LiveMatchMaster")
 
@@ -29,6 +29,9 @@ CHECK_INTERVAL_SEC    = int(os.getenv("LIVE_CHECK_INTERVAL_SEC", "15"))
 MIN_MATCH_GROUP       = int(os.getenv("MIN_MATCH_GROUP", "2"))
 MAX_MATCH_CAP         = int(os.getenv("MAX_MATCH_CAP", "6"))
 
+ENABLE_RICH_PRESENCE = os.getenv("ENABLE_RICH_PRESENCE", "1").lower() not in {"0", "false", "no"}
+RICH_PRESENCE_STALE_SEC = int(os.getenv("RICH_PRESENCE_STALE_SEC", "60"))
+
 REQUIRE_STABILITY_SEC = int(os.getenv("REQUIRE_STABILITY_SEC", "30"))
 LOBBY_GRACE_SEC       = int(os.getenv("LOBBY_GRACE_SEC", "90"))
 
@@ -40,6 +43,30 @@ PHASE_OFF   = "OFF"
 PHASE_GAME  = "GAME"
 PHASE_LOBBY = "LOBBY"
 PHASE_MATCH = "MATCH"
+
+_RP_MATCH_TERMS = (
+    "#deadlock_status_inmatch",
+    "im match",
+    "in match",
+    "match",
+    "playing match",
+)
+_RP_LOBBY_TERMS = (
+    "lobby",
+    "queue",
+    "warteschlange",
+    "search",
+    "searching",
+    "suche",
+)
+_RP_GAME_TERMS = (
+    "#deadlock_status_ingame",
+    "im spiel",
+    "ingame",
+    "playing",
+    "spiel",
+    "game",
+)
 
 # ---- Helpers ----------------------------------------------------------------
 
@@ -247,6 +274,86 @@ class LiveMatchMaster(commands.Cog):
         sid = summary.get("gameserversteamid")
         return str(sid) if sid else None
 
+    def _presence_server_id(pres: dict) -> Optional[str]:
+        raw = pres.get("raw") or {}
+        group = pres.get("player_group") or raw.get("steam_player_group")
+        if group:
+            return str(group)
+        connect = pres.get("connect") or raw.get("connect")
+        if isinstance(connect, str) and "joinlobby" in connect:
+            parts = connect.split("/")
+            if len(parts) >= 5:
+                return parts[4]
+        return None
+
+    @staticmethod
+    def _presence_phase_hint(pres: dict) -> Optional[str]:
+        raw = pres.get("raw") or {}
+        connect = pres.get("connect") or raw.get("connect")
+        if isinstance(connect, str) and connect:
+            return PHASE_MATCH
+
+        group_size_val = pres.get("player_group_size") or raw.get("steam_player_group_size")
+        try:
+            group_size = int(group_size_val)
+        except (TypeError, ValueError):
+            group_size = 0
+        group_id = pres.get("player_group") or raw.get("steam_player_group")
+        if group_id and group_size > 0:
+            return PHASE_LOBBY
+
+        texts: List[str] = []
+        for key in ("status", "display"):
+            val = pres.get(key)
+            if val:
+                texts.append(str(val))
+        for key in ("status", "steam_display"):
+            val = raw.get(key)
+            if val:
+                texts.append(str(val))
+        blob = " ".join(texts).lower()
+
+        if any(term in blob for term in _RP_MATCH_TERMS):
+            return PHASE_MATCH
+        if any(term in blob for term in _RP_LOBBY_TERMS):
+            return PHASE_LOBBY
+        if any(term in blob for term in _RP_GAME_TERMS):
+            return PHASE_GAME
+        return None
+
+    @staticmethod
+    def _presence_in_deadlock(pres: dict) -> bool:
+        app_id = str(pres.get("app_id") or "")
+        if app_id and app_id == str(DEADLOCK_APP_ID):
+            return True
+        raw = pres.get("raw") or {}
+        texts = [
+            str(pres.get("status") or ""),
+            str(pres.get("display") or ""),
+            str(raw.get("steam_display") or ""),
+            str(raw.get("status") or ""),
+        ]
+        blob = " ".join(t for t in texts if t).lower()
+        return "deadlock" in blob
+
+    def _select_presence(self, steam_ids: List[str], presence_map: Dict[str, dict], now: int) -> Optional[dict]:
+        best: Optional[dict] = None
+        best_ts = -1
+        for sid in steam_ids:
+            pres = presence_map.get(str(sid))
+            if not pres:
+                continue
+            try:
+                ts = int(pres.get("last_update") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts <= 0 or (now - ts) > RICH_PRESENCE_STALE_SEC:
+                continue
+            if ts > best_ts:
+                best = pres
+                best_ts = ts
+        return best
+
     async def _steam_summaries(self, session: aiohttp.ClientSession, steam_ids: List[str]) -> Dict[str, dict]:
         out: Dict[str, dict] = {}
         if not steam_ids or not STEAM_API_KEY:
@@ -320,6 +427,14 @@ class LiveMatchMaster(commands.Cog):
         async with aiohttp.ClientSession() as session:
             summaries = await self._steam_summaries(session, all_steam)
 
+        presence_map: Dict[str, dict] = {}
+        if ENABLE_RICH_PRESENCE and steam_service_module:
+            try:
+                presence_map = steam_service_module.load_rich_presence(all_steam)
+            except Exception as e:
+                log.debug("rich_presence/load_failed: %r", e)
+                presence_map = {}
+
         now = int(time.time())
 
         for ch in lanes:
@@ -344,10 +459,31 @@ class LiveMatchMaster(commands.Cog):
             override_in_match_count = 0
             lane_member_rows: List[Tuple[int, int, int, Optional[str], int]] = []
             cohort_imputable_count = 0
+            presence_counts_total: Counter[str] = Counter()
+            presence_total = 0
+            presence_age_samples: List[int] = []
 
             for m in nonbots:
                 found_server: Optional[str] = None
                 in_dl = False
+                presence_info = self._select_presence(links.get(m.id, []), presence_map, now) if presence_map else None
+                if presence_info:
+                    presence_total += 1
+                    try:
+                        ts_val = int(presence_info.get("last_update") or 0)
+                    except (TypeError, ValueError):
+                        ts_val = 0
+                    if ts_val:
+                        presence_age_samples.append(max(0, now - ts_val))
+                    if self._presence_in_deadlock(presence_info):
+                        in_dl = True
+                    hint = self._presence_phase_hint(presence_info)
+                    if hint:
+                        presence_counts_total[hint] += 1
+                    presence_server = self._presence_server_id(presence_info)
+                    if presence_server:
+                        found_server = presence_server
+
                 for sid in links.get(m.id, []):
                     s = summaries.get(sid)
                     if not s:
@@ -379,6 +515,11 @@ class LiveMatchMaster(commands.Cog):
 
             ig_count = len(ig_with_server)
             dl_count = len(deadlockers)
+
+            presence_match_n = presence_counts_total.get(PHASE_MATCH, 0)
+            presence_lobby_n = presence_counts_total.get(PHASE_LOBBY, 0)
+            presence_game_n = presence_counts_total.get(PHASE_GAME, 0)
+            cohort_imputable_count = presence_match_n
 
             prev = self._lane_cache.get(ch.id, {})
             prev_phase = prev.get("phase", PHASE_OFF)
@@ -438,6 +579,16 @@ class LiveMatchMaster(commands.Cog):
                     else:
                         phase = PHASE_LOBBY
 
+            if dl_count > 0 and presence_match_n >= max(1, MIN_MATCH_GROUP):
+                if phase != PHASE_MATCH:
+                    phase = PHASE_MATCH
+                if not server_for_phase:
+                    server_for_phase = majority_id or (ig_with_server[0][1] if ig_with_server else None)
+            elif phase == PHASE_GAME and presence_lobby_n >= max(1, MIN_MATCH_GROUP) and presence_lobby_n > presence_match_n:
+                phase = PHASE_LOBBY
+            elif phase == PHASE_LOBBY and presence_game_n >= max(1, MIN_MATCH_GROUP) and presence_game_n > presence_lobby_n:
+                phase = PHASE_GAME
+
             if suffix is None:
                 if phase == PHASE_MATCH:
                     suffix = _fmt_suffix(dl_count, voice_count, AUTO_SUFFIX_MATCH or "Im Match")
@@ -468,6 +619,14 @@ class LiveMatchMaster(commands.Cog):
                 bits.insert(1, f"srv={server_for_phase or majority_id}")
             if group_ready_since:
                 bits.append(f"join_grace_left={join_left}")
+            bits.append(f"rp_tot={presence_total}")
+            bits.append(f"rp_match={presence_match_n}")
+            bits.append(f"rp_game={presence_game_n}")
+            bits.append(f"rp_lobby={presence_lobby_n}")
+            if presence_age_samples:
+                bits.append(f"rp_age_min={min(presence_age_samples)}")
+                bits.append(f"rp_age_max={max(presence_age_samples)}")
+
             reason = ";".join(bits)
 
             self._write_lane_state(ch.id, active=is_active, suffix=suffix, ts=now, reason=reason)
