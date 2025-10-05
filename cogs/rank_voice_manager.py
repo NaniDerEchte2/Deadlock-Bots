@@ -66,13 +66,13 @@ class RolePermissionVoiceManager(commands.Cog):
             "Seeker": (-2, 2),
             "Alchemist": (-2, 2),
             "Arcanist": (-2, 2),
-            "Ritualist": (-2, 2),
+            "Ritualist": (-2, 1),
             "Emissary": (-2, 1),
             "Archon": (-1, 1),
             "Oracle": (-1, 2),
             "Phantom": (-1, 2),
             "Ascendant": (-1, 1),
-            "Eternus": (-1, 1),
+            "Eternus": (-2, 1),
         }
 
         # Cache

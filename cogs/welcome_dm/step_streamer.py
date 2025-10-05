@@ -49,35 +49,46 @@ MAIN_GUILD_ID = int(os.getenv("MAIN_GUILD_ID", "0"))  # DM-Fallback, falls inter
 # ------------------------------
 # Utilities
 # ------------------------------
-def _resolve_guild_and_member(
+async def _resolve_guild_and_member(
     interaction: discord.Interaction
 ) -> Tuple[Optional[discord.Guild], Optional[discord.Member]]:
     """
-    Liefert (Guild, Member) – auch in DMs (via MAIN_GUILD_ID).
+    Liefert (Guild, Member) – robust auch in DMs (via MAIN_GUILD_ID) und bei leerem Cache.
+    Nutzt fetch_member() als Fallback (braucht Members-Intent).
     """
+    async def _try(g: Optional[discord.Guild]) -> Tuple[Optional[discord.Guild], Optional[discord.Member]]:
+        if not g:
+            return None, None
+
+        # 1) Wenn Interaction bereits einen Member aus genau dieser Guild liefert
+        if isinstance(interaction.user, discord.Member) and getattr(interaction.user.guild, "id", None) == g.id:
+            return g, interaction.user  # type: ignore
+
+        # 2) Cache
+        m = g.get_member(interaction.user.id)
+        if m:
+            return g, m
+
+        # 3) Netzwerk-Fetch
+        try:
+            m = await g.fetch_member(interaction.user.id)
+            return g, m
+        except Exception as e:
+            log.debug("fetch_member failed in guild %s for user %s: %r", getattr(g, "id", "?"), interaction.user.id, e)
+            return g, None
+
     guild = interaction.guild
-    member: Optional[discord.Member] = None
+    g1, m1 = await _try(guild)
 
-    if guild:
-        if isinstance(interaction.user, discord.Member):
-            member = interaction.user
-        else:
-            try:
-                member = guild.get_member(interaction.user.id)
-            except Exception as e:
-                log.debug("resolve member in guild failed: %r", e)
-    else:
-        # DM-Kontext: versuche über MAIN_GUILD_ID
-        if MAIN_GUILD_ID:
-            bot: commands.Bot = interaction.client  # type: ignore
-            guild = bot.get_guild(MAIN_GUILD_ID)
-            if guild:
-                try:
-                    member = guild.get_member(interaction.user.id)
-                except Exception as e:
-                    log.debug("resolve member via MAIN_GUILD_ID failed: %r", e)
+    # DM-Fallback über MAIN_GUILD_ID
+    if (not g1 or not m1) and MAIN_GUILD_ID:
+        bot: commands.Bot = interaction.client  # type: ignore
+        mg = bot.get_guild(MAIN_GUILD_ID)
+        g2, m2 = await _try(mg)
+        if g2 and m2:
+            return g2, m2
 
-    return guild, member
+    return g1, m1
 
 
 async def _assign_role_and_notify(interaction: discord.Interaction) -> Tuple[bool, str]:
@@ -85,7 +96,7 @@ async def _assign_role_and_notify(interaction: discord.Interaction) -> Tuple[boo
     Vergibt die Streamer-Rolle und pingt den Kontrollkanal.
     Gibt (ok, msg) zurück.
     """
-    guild, member = _resolve_guild_and_member(interaction)
+    guild, member = await _resolve_guild_and_member(interaction)
     if not guild or not member:
         return False, "Konnte dich in einer Guild nicht auflösen. Bitte schreibe einem Team-Mitglied."
 
@@ -116,9 +127,7 @@ async def _assign_role_and_notify(interaction: discord.Interaction) -> Tuple[boo
                             raise StopIteration  # registriert – keine weiteren Versuche nötig
                         except Exception as e:
                             log.warning("Twitch registration via %s.%s failed for %s: %r", name, meth, member.id, e)
-                # Fallback: wenn Cog da, aber keine Methode passt, loggen
                 log.debug("Twitch cog '%s' gefunden, aber keine passende register-Methode.", name)
-        # ignore if nothing found
     except StopIteration:
         pass
     except Exception as e:
@@ -139,6 +148,58 @@ async def _assign_role_and_notify(interaction: discord.Interaction) -> Tuple[boo
     return True, "Top! Du hast jetzt die **Streamer-Rolle**. Wir prüfen kurz alles Weitere."
 
 
+async def _safe_send(
+    interaction: discord.Interaction,
+    *,
+    content: Optional[str] = None,
+    embed: Optional[discord.Embed] = None,
+    ephemeral: bool = False,
+) -> None:
+    """
+    Sendet sicher eine Nachricht: nutzt followup.send, falls bereits geantwortet wurde.
+    """
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(content=content, embed=embed, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(content=content, embed=embed, ephemeral=ephemeral)
+    except Exception as e:
+        log.exception("Failed to send response: %r", e)
+
+
+async def _disable_all_and_edit(
+    view: discord.ui.View,
+    interaction: discord.Interaction,
+    *,
+    new_embed: Optional[discord.Embed] = None,
+    new_content: Optional[str] = None,
+) -> None:
+    """
+    Deaktiviert alle Buttons und editiert die ursprüngliche Nachricht (falls möglich).
+    Funktioniert für Komponenten-Interaktionen auch nach defer().
+    """
+    for child in view.children:
+        try:
+            child.disabled = True  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    try:
+        if interaction.message:
+            await interaction.message.edit(embed=new_embed, content=new_content, view=view)
+            return
+    except Exception as e:
+        log.debug("message.edit failed: %r", e)
+
+    try:
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=new_embed, content=new_content, view=view)
+        else:
+            await interaction.response.edit_message(embed=new_embed, content=new_content, view=view)
+    except Exception as e:
+        log.debug("response edit failed: %r", e)
+
+
 # ------------------------------
 # Schritt 1: Intro / Entscheidung
 # ------------------------------
@@ -150,7 +211,6 @@ class StreamerIntroView(StepView):
       - Nein, kein Partner  -> Abbruch
     """
     def __init__(self):
-        # WICHTIG: base.StepView.__init__ nimmt KEIN timeout-Argument!
         super().__init__()
 
     @staticmethod
@@ -159,11 +219,9 @@ class StreamerIntroView(StepView):
             title="Streamst du Deadlock?",
             description=(
                 "Wir haben einen **Streamer-Bereich**. Wenn du möchtest, kannst du "
-                "**Partner** werden – Vorteile kurz & knackig:\n\n"
+                "**Partner** werden – Das sind deine Benefits:\n\n"
                 "• **Auto-Promo** in `#live-on-twitch`, sobald du *Deadlock* streamst\n"
                 "• **Mehr Sichtbarkeit** in der deutschsprachigen Deadlock-Community\n"
-                "• **Kein Konkurrenz-Zwang**: Dein eigener Server ist willkommen\n\n"
-                "Möchtest du **Partner** werden?"
             ),
             color=0x8A2BE2
         )
@@ -176,13 +234,17 @@ class StreamerIntroView(StepView):
         custom_id="wdm:streamer:intro_yes",
     )
     async def btn_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Öffentliche Antwort akzeptieren
         await interaction.response.defer(ephemeral=False)
-        # Aktuelle Nachricht „deaktivieren“
-        await self._disable_all_and_edit(interaction)
-        # Step 2 senden
+
+        # Step-1-Nachricht deaktivieren
+        await _disable_all_and_edit(self, interaction)
+
+        # Step 2 in **EINER** Nachricht: Embed + View zusammen -> kein „Buttons über Embed“
         await interaction.followup.send(
             embed=StreamerRequirementsView.build_embed(),
-            view=StreamerRequirementsView()
+            view=StreamerRequirementsView(),
+            ephemeral=False,
         )
 
     @discord.ui.button(
@@ -192,7 +254,12 @@ class StreamerIntroView(StepView):
     )
     async def btn_no(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        await self._finish(interaction, message="Alles klar – du kannst es später mit **/streamer** erneut starten.")
+        await _safe_send(
+            interaction,
+            content="Alles klar – du kannst es später mit **/streamer** erneut starten.",
+            ephemeral=True,
+        )
+        await self._finish(interaction)
 
 
 # ------------------------------
@@ -234,14 +301,13 @@ class StreamerRequirementsView(StepView):
     )
     async def btn_done(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
+
         ok, msg = await _assign_role_and_notify(interaction)
         if ok:
-            await self._finish(interaction, message=msg)
+            await _safe_send(interaction, content=msg, ephemeral=True)
+            await self._finish(interaction)
         else:
-            try:
-                await interaction.followup.send(f"⚠️ {msg}", ephemeral=True)
-            except Exception:
-                pass
+            await _safe_send(interaction, content=f"⚠️ {msg}", ephemeral=True)
 
     @discord.ui.button(
         label="Abbrechen",
@@ -250,7 +316,12 @@ class StreamerRequirementsView(StepView):
     )
     async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        await self._finish(interaction, message="Abgebrochen. Du kannst es später mit **/streamer** erneut starten.")
+        await _safe_send(
+            interaction,
+            content="Abgebrochen. Du kannst es später mit **/streamer** erneut starten.",
+            ephemeral=True,
+        )
+        await self._finish(interaction)
 
 
 # ---------------------------------------------------------

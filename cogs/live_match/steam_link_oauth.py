@@ -36,15 +36,19 @@ HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")
 HTTP_PORT = int(os.getenv("STEAM_OAUTH_PORT", os.getenv("HTTP_PORT", "8888")))
 CLIENT_SECRET = (os.getenv("DISCORD_OAUTH_CLIENT_SECRET") or "").strip()
 
-# Feste State-TTL im Code (kein ENV)
-STATE_TTL_SEC = 600  # 10 Minuten
+# State TTL
+STATE_TTL_SEC = 600  # 10 min
 
-# UI-Konfig per ENV
+# UI (deutsche Labels)
 LINK_COVER_IMAGE = (os.getenv("LINK_COVER_IMAGE") or "").strip()
 LINK_COVER_LABEL = (os.getenv("LINK_COVER_LABEL") or "link.earlysalty.com").strip()
-LINK_BUTTON_LABEL = (os.getenv("LINK_BUTTON_LABEL") or "Mit Discord verknüpfen").strip()
-STEAM_BUTTON_LABEL = (os.getenv("STEAM_BUTTON_LABEL") or "Bei Steam anmelden").strip()
+LINK_BUTTON_LABEL = (os.getenv("LINK_BUTTON_LABEL") or "Via Discord verknüpfen").strip()
+STEAM_BUTTON_LABEL = (os.getenv("STEAM_BUTTON_LABEL") or "Steam Profil suchen").strip()  # ehem. "Mit Steam anmelden"
 
+# ---------------------------------------------------------------------------
+# Öffentliche Schnittstelle für andere Cogs (Welcome-DM, Rules-Panel, etc.)
+# ---------------------------------------------------------------------------
+__all__ = ("get_public_urls", "start_urls_for")
 
 def _env_client_id(bot: commands.Bot) -> str:
     cid = (os.getenv("DISCORD_OAUTH_CLIENT_ID") or "").strip()
@@ -65,6 +69,49 @@ def _env_redirect() -> str:
     port = int(os.getenv("STEAM_OAUTH_PORT", os.getenv("HTTP_PORT", "8888")))
     scheme = "http" if host.startswith(("127.", "0.", "localhost")) else "https"
     return f"{scheme}://{host}:{port}/discord/callback"
+
+
+def get_public_urls() -> dict:
+    """
+    Quelle der Wahrheit für Start-/Callback-Links.
+    UI-Cogs importieren diese Funktion und hängen selbst '?uid=<discord_id>' an.
+    Kein Fallback: fehlt etwas Wesentliches -> ImportError (Start abbrechen).
+    """
+    base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+    if not base:
+        # entspricht Vorgabe: hart abbrechen, kein Fallback
+        raise ImportError("PUBLIC_BASE_URL ist nicht gesetzt – keine öffentlichen URLs verfügbar.")
+
+    urls = {
+        # Startpunkte (an diese hängen die UIs ?uid=<id>)
+        "discord_start": f"{base}/discord/login",
+        "steam_openid_start": f"{base}/steam/login",
+        # Callbacks (für Vollständigkeit/Debug)
+        "discord_callback": _env_redirect(),
+        "steam_return": urljoin(base + "/", STEAM_RETURN_PATH.lstrip("/")),
+    }
+
+    # Minimalvalidierung
+    for k in ("discord_start", "steam_openid_start", "discord_callback", "steam_return"):
+        u = urls.get(k)
+        if not u or "://" not in u:
+            raise ImportError(f"Ungültige URL für {k}: {u!r}")
+    return urls
+def start_urls_for(uid: int) -> dict:
+    """
+    Liefert user-spezifische Start-URLs MIT ?uid=... für Discord-OAuth und Steam-OpenID.
+    Wird vom SteamLinkStepView (Welcome-DM / Rules-Panel) beim Klick verwendet.
+    """
+    base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+    if not base:
+        # bewusst nicht hart fehlschlagen – die UI meldet es dem Nutzer ephemer
+        return {"discord_start": "", "steam_openid_start": ""}
+
+    u = int(uid)
+    return {
+        "discord_start": f"{base}/discord/login?uid={u}",
+        "steam_openid_start": f"{base}/steam/login?uid={u}",
+    }
 
 
 # ----------------------- DB-Schema -------------------------------------------
@@ -146,7 +193,7 @@ class SteamLink(commands.Cog):
     """
     Linking-Flow:
       1) /link → Discord OAuth2 (identify + connections) (Lazy-Start)
-      2) 0 Treffer → Fallback-Seite → Steam OpenID (Auto-Redirect)
+      2) Keine Steam-Verknüpfung gefunden → seamless Redirect zu Steam OpenID
       3) /steam/return → SteamID64 extrahieren → speichern
       4) Erfolg → DM an User
     """
@@ -279,7 +326,7 @@ class SteamLink(commands.Cog):
         }
         return f"{DISCORD_API}/oauth2/authorize?{urlencode(params)}"
 
-    # Öffentliche Helper (für andere Cogs)
+    # Öffentliche Helper (für andere Cogs über Bot-Instanz, optional)
     def discord_start_url_for(self, uid: int) -> str:
         if not PUBLIC_BASE_URL:
             return ""
@@ -290,7 +337,7 @@ class SteamLink(commands.Cog):
             return ""
         return f"{PUBLIC_BASE_URL}/steam/login?uid={int(uid)}"
 
-    # Rückwärtskompatibel (erzeugen state SOFORT – nur als Fallback)
+    # Rückwärtskompatibel
     def build_discord_link_for(self, uid: int) -> str:
         try:
             return self._build_discord_auth_url(int(uid))
@@ -340,49 +387,6 @@ class SteamLink(commands.Cog):
                     return None
                 return await r.json()
 
-    async def _save_steam_links_from_discord(self, uid: int, conns: List[dict]) -> List[str]:
-        saved: List[str] = []
-        if not conns:
-            return saved
-
-        for c in conns:
-            try:
-                if str(c.get("type", "")).lower() != "steam":
-                    continue
-
-                sid_raw = str(c.get("id") or "").strip()
-                steam_id: Optional[str] = None
-
-                if re.fullmatch(r"\d{17}", sid_raw):
-                    steam_id = sid_raw
-                else:
-                    name_or_vanity = str(c.get("name") or "").strip()
-                    steam_id = await self._resolve_steam_input(sid_raw) or await self._resolve_steam_input(name_or_vanity)
-
-                if not steam_id:
-                    meta = c.get("metadata") or {}
-                    meta_sid = str(meta.get("steam_id") or "").strip()
-                    if re.fullmatch(r"\d{17}", meta_sid):
-                        steam_id = meta_sid
-
-                if not steam_id:
-                    log.info("Ignoriere Verbindung ohne gültige SteamID: %s", c)
-                    continue
-
-                persona = await self._fetch_persona(steam_id) or (c.get("name") or "")
-                if not persona:
-                    persona = await self._discord_at_name(uid)
-
-                verified = 1 if c.get("verified") else 0
-                _save_steam_link_row(uid, steam_id, persona, verified)
-                saved.append(steam_id)
-
-            except Exception:
-                log.exception("Fehler beim Speichern der Steam-Verknüpfung: user_id=%s, conn=%s", uid, c)
-
-        return saved
-
-    # ---------- Steam resolving helpers --------------------------------------
     async def _resolve_vanity(self, vanity: str) -> Optional[str]:
         key = (os.getenv("STEAM_API_KEY") or "").strip()
         if not key:
@@ -398,7 +402,7 @@ class SteamLink(commands.Cog):
                     resp = data.get("response", {})
                     if resp.get("success") == 1:
                         sid = resp.get("steamid")
-                        if sid and re.fullmatch(r"\d{17}", sid):
+                        if sid and re.fullmatch(r"\d{17,20}", sid):
                             return sid
         except Exception:
             return None
@@ -409,8 +413,8 @@ class SteamLink(commands.Cog):
         if not s:
             return None
 
-        # 1) 17-stellige ID direkt akzeptieren
-        if re.fullmatch(r"\d{17}", s):
+        # 1) 17–20-stellige ID direkt (tolerant, wie gewünscht)
+        if re.fullmatch(r"\d{17,20}", s):
             return s
 
         # 2) URL?
@@ -423,7 +427,7 @@ class SteamLink(commands.Cog):
             host = (u.hostname or "").lower().strip(".")
             if host == "steamcommunity.com" or host.endswith(".steamcommunity.com"):
                 path = (u.path or "").rstrip("/")
-                m = re.search(r"/profiles/(\d{17})$", path)
+                m = re.search(r"/profiles/(\d{17,20})$", path)
                 if m:
                     return m.group(1)
                 m = re.search(r"/id/([^/]+)$", path)
@@ -501,7 +505,7 @@ class SteamLink(commands.Cog):
         claimed_id = query.get("openid.claimed_id", "")
         m = re.search(r"/openid/id/(\d+)$", claimed_id)
         sid = m.group(1) if m else None
-        if sid and re.fullmatch(r"\d{17}", sid):
+        if sid and re.fullmatch(r"\d{17,20}", sid):  # tolerant
             return sid
         return None
 
@@ -535,7 +539,6 @@ class SteamLink(commands.Cog):
             url = self._build_discord_auth_url(uid)  # erzeugt state JETZT (beim Klick)
             raise web.HTTPFound(location=url)
         except web.HTTPFound:
-            # normaler Redirect-Pfad
             raise
         except Exception as e:
             log.exception("discord/login failed: %s", e)
@@ -607,10 +610,8 @@ class SteamLink(commands.Cog):
         try:
             raise web.HTTPFound(location=login_url)
         except web.HTTPFound:
-            # normaler Redirect-Pfad
             raise
         except Exception:
-            # Fallback: klickbarer Link
             login_url_safe = html.escape(login_url, quote=True)
             html_doc = (
                 "<html><body style='font-family: system-ui, sans-serif'>"
@@ -655,6 +656,49 @@ class SteamLink(commands.Cog):
                 content_type="text/html",
                 status=500,
             )
+
+    # --------------- Connections → SteamIDs ----------------------------------
+    async def _save_steam_links_from_discord(self, uid: int, conns: List[dict]) -> List[str]:
+        saved: List[str] = []
+        if not conns:
+            return saved
+
+        for c in conns:
+            try:
+                if str(c.get("type", "")).lower() != "steam":
+                    continue
+
+                sid_raw = str(c.get("id") or "").strip()
+                steam_id: Optional[str] = None
+
+                if re.fullmatch(r"\d{17,20}", sid_raw):
+                    steam_id = sid_raw
+                else:
+                    name_or_vanity = str(c.get("name") or "").strip()
+                    steam_id = await self._resolve_steam_input(sid_raw) or await self._resolve_steam_input(name_or_vanity)
+
+                if not steam_id:
+                    meta = c.get("metadata") or {}
+                    meta_sid = str(meta.get("steam_id") or "").strip()
+                    if re.fullmatch(r"\d{17,20}", meta_sid):
+                        steam_id = meta_sid
+
+                if not steam_id:
+                    log.info("Ignoriere Verbindung ohne gültige SteamID: %s", c)
+                    continue
+
+                persona = await self._fetch_persona(steam_id) or (c.get("name") or "")
+                if not persona:
+                    persona = await self._discord_at_name(uid)
+
+                verified = 1 if c.get("verified") else 0
+                _save_steam_link_row(uid, steam_id, persona, verified)
+                saved.append(steam_id)
+
+            except Exception:
+                log.exception("Fehler beim Speichern der Steam-Verknüpfung: user_id=%s, conn=%s", uid, c)
+
+        return saved
 
     # --------------- Commands -------------------------------------------------
     async def _defer_if_needed(self, ctx: commands.Context) -> None:
@@ -843,7 +887,7 @@ class SteamLink(commands.Cog):
     @commands.hybrid_command(name="unlink", description="Entfernt einen Steam-Link (ID/Vanity/Profil-Link möglich)")
     async def unlink(self, ctx: commands.Context, steam: str) -> None:
         sid = await self._resolve_steam_input(steam)
-        if not sid and re.fullmatch(r"\d{17}", steam or ""):
+        if not sid and re.fullmatch(r"\d{17,20}", steam or ""):
             sid = steam
         if not sid:
             await self._send_ephemeral(ctx, "❌ Ungültige Eingabe. Erwarte SteamID64, Vanity oder steamcommunity-Link.")

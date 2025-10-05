@@ -23,6 +23,8 @@ from discord.ext import commands
 # --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
 import sys as _sys, os as _os, importlib, inspect, logging as _logging, hashlib
 
+from steam import SteamPresenceServiceManager
+
 def _log_src(modname: str):
     try:
         m = importlib.import_module(modname)
@@ -212,6 +214,8 @@ class MasterBot(commands.Bot):
         self.startup_time = _dt.datetime.now(tz=tz)
         self.cog_status: Dict[str, str] = {}
 
+        self.steam_service = SteamPresenceServiceManager()
+
         try:
             self.per_cog_unload_timeout = float(os.getenv("PER_COG_UNLOAD_TIMEOUT", "3.0"))
         except ValueError:
@@ -220,7 +224,7 @@ class MasterBot(commands.Bot):
     # --------------------- Discovery & Filters -------------------------
     def _should_exclude(self, module_path: str) -> bool:
         default_excludes = {
-            "cogs.live_match.live_match_worker",
+            "",
         }
         env_ex = (os.getenv("COG_EXCLUDE") or "").strip()
         for item in [x.strip() for x in env_ex.split(",") if x.strip()]:
@@ -230,8 +234,8 @@ class MasterBot(commands.Bot):
             return module_path not in only
         if module_path in default_excludes:
             return True
-        if ".worker" in module_path or "worker." in module_path or module_path.endswith("_worker"):
-            return True
+        #if ".worker" in module_path or "worker." in module_path or module_path.endswith("_worker"):
+        #    return True
         return False
 
     def auto_discover_cogs(self):
@@ -373,6 +377,16 @@ class MasterBot(commands.Bot):
         except Exception as e:
             logging.error(f"Failed to sync slash commands: {e}")
 
+        if self.steam_service.auto_start:
+            logging.info(
+                "Scheduling steam presence service auto-start (cmd='%s', cwd=%s)",
+                self.steam_service.start_command,
+                self.steam_service.service_dir,
+            )
+            asyncio.create_task(self._start_steam_service_safely())
+        else:
+            logging.info("AUTO_START_STEAM_SERVICE disabled; steam presence service not started automatically")
+
         logging.info("Master Bot setup completed")
 
     async def on_ready(self):
@@ -384,6 +398,14 @@ class MasterBot(commands.Bot):
         runtime_loaded = self.active_cogs()
         logging.info(f"Loaded cogs (runtime): {len(runtime_loaded)}")
         logging.info(f"Loaded cogs: {len(runtime_loaded)}/{len(self.cogs_list)}")
+
+        steam_status = self.steam_service.status()
+        logging.info(
+            "Steam presence service • auto_start=%s • running=%s • pid=%s",
+            steam_status.auto_start,
+            steam_status.running,
+            steam_status.pid,
+        )
 
         # TempVoice Log (neu)
         try:
@@ -398,6 +420,16 @@ class MasterBot(commands.Bot):
             logging.getLogger().debug("TempVoice Ready-Log fehlgeschlagen (ignoriert): %r", e)
 
         asyncio.create_task(self.hourly_health_check())
+
+    async def _start_steam_service_safely(self):
+        try:
+            started = await self.steam_service.ensure_started()
+            if started:
+                logging.info("Steam presence service launched by master bot")
+            else:
+                logging.info("Steam presence service already running when master bot attempted start")
+        except Exception as exc:
+            logging.error(f"Failed to start steam presence service: {exc}")
 
     async def load_all_cogs(self):
         logging.info("Loading all cogs in parallel...")
@@ -581,6 +613,13 @@ class MasterBot(commands.Bot):
     async def close(self):
         logging.info("Master Bot shutting down...")
 
+        try:
+            stopped = await self.steam_service.stop()
+            if stopped:
+                logging.info("Steam presence service stopped as part of master shutdown")
+        except Exception as exc:
+            logging.error(f"Failed to stop steam presence service during shutdown: {exc}")
+
         # 1) Alle Cogs entladen (parallel/sequenziell mit Timeout pro Cog)
         to_unload = [ext for ext in list(self.extensions.keys()) if ext.startswith("cogs.")]
         if to_unload:
@@ -634,11 +673,82 @@ class MasterControlCog(commands.Cog):
                 f"`{p}master discover` - Neue Cogs entdecken (ohne laden)\n"
                 f"`{p}master unload <muster>` - Cogs mit Muster entladen\n"
                 f"`{p}master unloadtree <prefix>` - ganzen Cog-Ordner entladen\n"
+                f"`{p}master steam …` - Steam Presence Service steuern\n"
                 f"`{p}master shutdown` - Bot beenden"
             ),
             inline=False,
         )
         await ctx.send(embed=embed)
+
+    def _format_timestamp(self, ts: float | None) -> str:
+        if not ts:
+            return "—"
+        tz = self.bot.startup_time.tzinfo or pytz.timezone("Europe/Berlin")
+        return _dt.datetime.fromtimestamp(ts, tz=tz).strftime("%d.%m.%Y %H:%M:%S")
+
+    @master_control.group(name="steam", invoke_without_command=True)
+    async def master_steam(self, ctx):
+        status = self.bot.steam_service.status()
+        embed = discord.Embed(title="Steam Presence Service", color=0x1B2838)
+        embed.add_field(name="Auto-Start", value="✅ Aktiv" if status.auto_start else "⛔ Deaktiviert", inline=True)
+        embed.add_field(name="Status", value="🟢 Läuft" if status.running else "🔴 Gestoppt", inline=True)
+        embed.add_field(name="PID", value=status.pid or "—", inline=True)
+        embed.add_field(name="Restarts", value=str(status.restarts), inline=True)
+        embed.add_field(name="Start-Befehl", value=f"`{status.cmd}`", inline=False)
+        embed.add_field(name="Arbeitsverzeichnis", value=f"`{status.cwd}`", inline=False)
+        embed.add_field(name="Letzter Start", value=self._format_timestamp(status.last_start), inline=True)
+        embed.add_field(name="Letzter Exit", value=self._format_timestamp(status.last_exit), inline=True)
+        if not status.running and status.returncode is not None:
+            embed.add_field(name="Exit-Code", value=str(status.returncode), inline=True)
+        embed.set_footer(text="Subcommands: start, stop, restart, tail [limit] [stdout|stderr]")
+        await ctx.send(embed=embed)
+
+    @master_steam.command(name="start")
+    async def master_steam_start(self, ctx):
+        try:
+            started = await self.bot.steam_service.ensure_started()
+        except Exception as exc:
+            await ctx.send(f"❌ Start fehlgeschlagen: `{exc}`")
+            return
+        if started:
+            await ctx.send("✅ Steam Presence Service wurde gestartet.")
+        else:
+            await ctx.send("ℹ️ Service läuft bereits.")
+
+    @master_steam.command(name="stop")
+    async def master_steam_stop(self, ctx):
+        try:
+            stopped = await self.bot.steam_service.stop()
+        except Exception as exc:
+            await ctx.send(f"❌ Stop fehlgeschlagen: `{exc}`")
+            return
+        if stopped:
+            await ctx.send("🛑 Steam Presence Service wurde gestoppt.")
+        else:
+            await ctx.send("ℹ️ Service war bereits gestoppt.")
+
+    @master_steam.command(name="restart")
+    async def master_steam_restart(self, ctx):
+        try:
+            await self.bot.steam_service.restart()
+        except Exception as exc:
+            await ctx.send(f"❌ Restart fehlgeschlagen: `{exc}`")
+            return
+        await ctx.send("🔄 Steam Presence Service wurde neu gestartet.")
+
+    @master_steam.command(name="tail")
+    async def master_steam_tail(self, ctx, limit: int = 20, channel: str = "stdout"):
+        limit = max(1, min(limit, 100))
+        stderr = channel.lower() in {"stderr", "err", "error"}
+        lines = self.bot.steam_service.tail(stderr=stderr, limit=limit)
+        if not lines:
+            await ctx.send("(Keine Ausgaben verfügbar)")
+            return
+        lang = "diff" if stderr else ""
+        content = "\n".join(lines)
+        if len(content) > 1900:
+            content = content[-1900:]
+        await ctx.send(f"```{lang}\n{content}\n```")
 
     @master_control.command(name="status", aliases=["s"])
     async def master_status(self, ctx):
@@ -675,6 +785,17 @@ class MasterControlCog(commands.Cog):
         if errs:
             err_short = [f"❌ {e.split('.')[-1]}" for e in errs]
             embed.add_field(name="⚠️ Fehlerhafte Cogs (letzter Versuch)", value="\n".join(err_short), inline=False)
+
+        steam_status = self.bot.steam_service.status()
+        lines = [
+            f"Auto-Start: {'✅ an' if steam_status.auto_start else '⛔ aus'}",
+            f"Status: {'🟢 läuft' if steam_status.running else '🔴 gestoppt'}",
+            f"PID: {steam_status.pid or '—'}",
+            f"Restarts: {steam_status.restarts}",
+        ]
+        if not steam_status.running and steam_status.returncode is not None:
+            lines.append(f"Exit-Code: {steam_status.returncode}")
+        embed.add_field(name="🖥️ Steam Presence Service", value="\n".join(lines), inline=False)
 
         await ctx.send(embed=embed)
 

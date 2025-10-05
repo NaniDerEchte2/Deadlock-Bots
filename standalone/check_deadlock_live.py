@@ -14,21 +14,18 @@ from urllib.parse import urlparse
 import requests
 from dotenv import load_dotenv
 
+
 # ------------------------------------------------------------
 # Konfiguration
 # ------------------------------------------------------------
 
-# .env optional laden (für STEAM_API_KEY o.ä.)
 DOTENV_PATH = Path(r"C:\Users\Nani-Admin\Documents\.env")
 if DOTENV_PATH.exists():
     load_dotenv(dotenv_path=DOTENV_PATH, override=True)
 
 STEAM_API_KEY_ENV = "STEAM_API_KEY"
 
-# Fallback (ohne ENV): hier kannst du Komma-getrennt hardcoden
-# Beispiel: HARDCODED_IDS = "76561198000000000,myvanity,https://steamcommunity.com/id/foo"
-HARDCODED_IDS = "76561197961709142,76561198440101518,76561199480459727,76561199026913891"
-
+HARDCODED_IDS = "76561199806683118"
 DEADLOCK_APP_ID_DEFAULT = "1422450"
 CHUNK = 100  # Steam API erlaubt bis 100 IDs pro Call
 
@@ -39,6 +36,8 @@ ENDPOINTS = {
     "level":     "https://api.steampowered.com/IPlayerService/GetSteamLevel/v1/",
     "stats":     "https://api.steampowered.com/ISteamUserStats/GetUserStatsForGame/v0002/",
     "srv_by_sid":"https://api.steampowered.com/IGameServersService/GetServerIPsBySteamID/v1/",
+    # Fiktiver neuer Endpoint für Live-Game-Events (müsste vom Deadlock-API Server real bereitgestellt werden)
+    "live_game_events": "https://api.deadlockgame.com/v1/livegame/events"
 }
 
 TEAM_SIZE = 6  # Deadlock Teams
@@ -54,14 +53,6 @@ def _is_allowed_steamcommunity_host(host: Optional[str]) -> bool:
     return h == "steamcommunity.com" or h.endswith(".steamcommunity.com")
 
 def _parse_steam_input(raw: str) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    Liefert (original, type, value):
-      ("id64", <17digits>)             -> SteamID64
-      ("profiles_url", <17digits>)     -> aus /profiles/<id>
-      ("vanity_url", <vanity>)         -> aus /id/<vanity>
-      ("vanity", <vanity>)             -> nackter Vanity-String
-      (None, None)                     -> unbrauchbar
-    """
     s = (raw or "").strip()
     if not s:
         return raw, None, None
@@ -119,7 +110,6 @@ def resolve_inputs_to_id64s(steam_api_key: str, inputs: List[str]) -> List[Tuple
             continue
         print(f"[resolve] Ungültiger Input ignoriert: {original}", file=sys.stderr)
 
-    # dedup
     seen = set()
     dedup: List[Tuple[str, str]] = []
     for orig, sid in out:
@@ -178,7 +168,6 @@ def fetch_user_stats_for_game(steam_api_key: str, steam_id: str, app_id: str, ti
     params = {"key": steam_api_key, "steamid": steam_id, "appid": app_id}
     try:
         r = requests.get(ENDPOINTS["stats"], params=params, timeout=timeout)
-        # Viele Spiele geben 403/404, also robust behandeln
         if r.status_code != 200:
             return None
         data = r.json() or {}
@@ -187,9 +176,6 @@ def fetch_user_stats_for_game(steam_api_key: str, steam_id: str, app_id: str, ti
         return None
 
 def fetch_server_ips_by_steamids(steam_api_key: str, server_ids: List[str], timeout: float = 10.0) -> Dict[str, List[str]]:
-    """
-    Mappt gameserversteamid -> ["ip:port", ...]
-    """
     if not server_ids:
         return {}
     out: Dict[str, List[str]] = {}
@@ -210,6 +196,19 @@ def fetch_server_ips_by_steamids(steam_api_key: str, server_ids: List[str], time
             print(f"[server_ips] Fehler: {e}", file=sys.stderr)
     return out
 
+# Neuer Fetch für Live-Game-Events (Statusphasen)
+def fetch_live_game_events(steam_api_key: str, steam_id: str, app_id: str, timeout: float = 10.0) -> Optional[dict]:
+    # Beispielhafte Abfrage mit API-Key und SteamID als Parameter
+    url = ENDPOINTS["live_game_events"]
+    params = {"key": steam_api_key, "steamid": steam_id, "appid": app_id}
+    try:
+        r = requests.get(url, params=params, timeout=timeout)
+        if r.status_code != 200:
+            return None
+        return r.json() or None
+    except requests.RequestException:
+        return None
+
 # ------------------------------------------------------------
 # Analyse & Darstellung
 # ------------------------------------------------------------
@@ -219,7 +218,6 @@ KNOWN_SUMMARY_KEYS = {
     "avatar","avatarmedium","avatarfull","avatarhash","lastlogoff","personastate",
     "commentpermission","realname","primaryclanid","timecreated","gameid",
     "gameserverip","gameextrainfo","cityid","loccountrycode","locstatecode","loccityid",
-    # in der Praxis häufig vorhanden, aber nicht offiziell garantiert:
     "gameserversteamid","lobbysteamid"
 }
 
@@ -253,24 +251,21 @@ def analyze_group(results: List[dict]) -> dict:
             match_groups.setdefault(r["gameserversteamid"], []).append(r)
     return {"lobby_groups": lobby_groups, "match_groups": match_groups}
 
-def pretty_status(r: dict) -> str:
-    if r["in_match"]: return "✅ Im Match"
-    if r["in_lobby"]: return "🟡 In Lobby"
-    if r["in_deadlock_now"]: return "⚪ Spiel offen"
-    return "❌ Nicht im Spiel"
+def pretty_status(r: dict, live_phase: Optional[str] = None) -> str:
+    status = ""
+    if r["in_match"]: status = "✅ Im Match"
+    elif r["in_lobby"]: status = "🟡 In Lobby"
+    elif r["in_deadlock_now"]: status = "⚪ Spiel offen"
+    else: status = "❌ Nicht im Spiel"
+    if live_phase:
+        status += f"  ⏳ Phase: {live_phase}"
+    return status
 
 # ------------------------------------------------------------
 # CLI
 # ------------------------------------------------------------
 
 def parse_id_args(raw: Optional[str], list_args: List[str]) -> List[str]:
-    """
-    Erlaubt:
-      --ids "id1,id2,https://.../id/foo"
-      --ids id1,id2  (ohne Anführungszeichen)
-      --steam-ids id1 id2 id3 (space-getrennt)
-      HARDCODED_IDS (Komma-getrennt)
-    """
     toks: List[str] = []
     def add_chunk(s: str):
         for part in re.split(r"[,\s]+", s.strip()):
@@ -291,7 +286,7 @@ def main():
     ap.add_argument("--ids", default="", help="Komma/Leerzeichen-getrennte Liste aus IDs/Vanities/Profil-Links.")
     ap.add_argument("--steam-ids", nargs="*", help="Alternative: space-getrennte Liste.")
     ap.add_argument("--app-id", default=os.getenv("DEADLOCK_APP_ID", DEADLOCK_APP_ID_DEFAULT), help="Deadlock AppID (default 1422450).")
-    ap.add_argument("--all", action="store_true", help="Zusätzliche Endpoints probieren: Bans, Level, UserStatsForGame.")
+    ap.add_argument("--all", action="store_true", help="Zusätzliche Endpoints probieren: Bans, Level, UserStatsForGame, LiveGameEvents.")
     ap.add_argument("--server-ips", action="store_true", help="Server-IPs für gefundene gameserversteamid nachschlagen.")
     ap.add_argument("--dump-unknown", action="store_true", help="Zeige unbekannte Summary-Felder (Key-Diff).")
     ap.add_argument("--raw", action="store_true", help="Roh-JSON der Summaries ausgeben.")
@@ -309,7 +304,6 @@ def main():
         sys.exit(2)
 
     try:
-        # 1) IDs normalisieren
         resolved = resolve_inputs_to_id64s(key, raw_inputs)
         if not resolved:
             print("ERROR: Keine gültigen SteamIDs nach Auflösung.", file=sys.stderr)
@@ -317,10 +311,26 @@ def main():
         input_map = {orig: sid for (orig, sid) in resolved}
         id_list = [sid for (_, sid) in resolved]
 
-        # 2) Summaries
         summaries = fetch_player_summaries(key, id_list)
         results: List[dict] = []
         unknown_keys: Dict[str, List[str]] = {}
+
+        bans = levels = {}
+        stats: Dict[str, Any] = {}
+        live_events: Dict[str, dict] = {}
+
+        # Fetch Zusatzdaten wenn --all gesetzt
+        if args.all:
+            bans = fetch_player_bans(key, id_list)
+            levels = fetch_steam_levels(key, id_list)
+            for sid in id_list:
+                ps = fetch_user_stats_for_game(key, sid, args.app_id)
+                if ps:
+                    stats[sid] = ps
+                # Live Game Events (Statusphasen)
+                live_evt = fetch_live_game_events(key, sid, args.app_id)
+                if live_evt:
+                    live_events[sid] = live_evt
 
         for orig, sid in resolved:
             p = summaries.get(sid)
@@ -330,34 +340,25 @@ def main():
             r = decide_match_state(p, args.app_id)
             r["_input"] = orig
             results.append(r)
-
             if args.dump_unknown:
                 unk = sorted(set(p.keys()) - KNOWN_SUMMARY_KEYS)
                 if unk:
                     unknown_keys[sid] = unk
 
-        # 3) Extra Endpoints
-        bans = levels = {}
-        stats: Dict[str, Any] = {}
-        if args.all:
-            bans = fetch_player_bans(key, id_list)
-            levels = fetch_steam_levels(key, id_list)
-            # Warnung: stats sind oft nicht verfügbar; robust probieren
-            for sid in id_list:
-                ps = fetch_user_stats_for_game(key, sid, args.app_id)
-                if ps:
-                    stats[sid] = ps
-
-        # 4) Gruppierung + optional Server-IP Mapping
         groups = analyze_group(results)
         server_ip_map: Dict[str, List[str]] = {}
         if args.server_ips:
             server_ids = list(groups.get("match_groups", {}).keys())
             server_ip_map = fetch_server_ips_by_steamids(key, server_ids)
 
-        # 5) Konsolenausgabe
+        # Ausgabe mit Phase aus Live Events (wenn vorhanden)
         for r in results:
-            print(f"[{r['_input']} → {r['steam_id']}] {r['personaname']}: {pretty_status(r)}")
+            sid = r["steam_id"]
+            phase = None
+            if sid in live_events:
+                # Beispiel: live_events[sid] könnte {"phase": "GameInProgress", "details": {...}} sein
+                phase = live_events[sid].get("phase")
+            print(f"[{r['_input']} → {r['steam_id']}] {r['personaname']}: {pretty_status(r, phase)}")
             if r.get("gameserversteamid"):
                 print(f"   server_id: {r['gameserversteamid']}  server_ip: {r.get('gameserverip')}")
             if r.get("lobbysteamid"):
@@ -382,7 +383,6 @@ def main():
             print("\n--- RAW SUMMARIES ---")
             print(json.dumps(summaries, ensure_ascii=False, indent=2))
 
-        # 6) JSON Payload
         payload = {
             "input_map": input_map,
             "results": results,
@@ -391,7 +391,8 @@ def main():
             "extras": {
                 "bans": bans,
                 "levels": levels,
-                "stats": stats
+                "stats": stats,
+                "live_game_events": live_events
             }
         }
         if args.pretty:
@@ -410,6 +411,7 @@ def main():
     except Exception as e:
         print(f"UNBEKANNTER FEHLER: {e}", file=sys.stderr)
         sys.exit(7)
+
 
 if __name__ == "__main__":
     main()
