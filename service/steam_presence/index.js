@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const SteamUser = require('steam-user');
+const SteamID = require('steamid');
 const SteamTotp = require('steam-totp');
 const Database = require('better-sqlite3');
 
@@ -198,7 +199,7 @@ function refreshWatchList() {
     next.add(sid);
     if (!watchList.has(sid)) {
       try {
-        const steamID = new SteamUser.SteamID(sid);
+        const steamID = new SteamID(sid);
         watchList.set(sid, steamID);
         log('info', 'Added SteamID to watch list', { steamId: sid });
         if (isLoggedOn) {
