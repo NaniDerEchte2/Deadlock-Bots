@@ -282,6 +282,9 @@ class WelcomeDM(commands.Cog):
             # 2/3 Steam
             q2_desc = (
                 "**Empfohlen:** Exakter **Voice-Status**, saubere **Event-Orga & Balancing**.\n\n"
+                "🤝 **Freundschaft mit dem Bot:** Wenn du dich via Discord oder Steam verknüpfst, senden wir dir automatisch eine "
+                "Freundschaftsanfrage. Alternativen findest du über den Button **Freundschafts-Optionen** (z. B. Bot-ID 820142646 "
+                "oder der Schnell-Link).\n\n"
                 "**Wichtig:** Steam → Profil → **Spieldetails = Öffentlich** (Gesamtspielzeit nicht „immer privat“)."
             )
             ok = await self._send_step_embed_channel(
