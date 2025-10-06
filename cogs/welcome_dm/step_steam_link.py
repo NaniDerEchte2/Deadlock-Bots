@@ -78,11 +78,9 @@ def build_steam_intro_embed() -> discord.Embed:
             "• **SteamID manuell eingeben**: Du trägst **ID64 / Vanity / Profil-Link** selbst ein.\n"
             "• **Steam Profil suchen**: Offizieller Steam OpenID-Flow (kein Passwort, wir sehen nur die **SteamID64**).\n\n"
             "🤝 **Freundschaft mit dem Bot:** Sobald du dich via Discord oder Steam authentifizierst, "
-            "schickt dir unser Bot automatisch eine Anfrage. Alternativen findest du unter den "
-            "Freundschafts-Optionen:\n"
-            "  1️⃣ Du sendest selbst eine Anfrage an **820142646** (Bot-Account).\n"
-            "  2️⃣ Lass dir vom Bot eine Anfrage schicken – halte deinen **Freundescode** bereit.\n"
-            "  3️⃣ Nutze den Schnell-Link: <https://s.team/p/820142646>.\n\n"
+            "schickt dir unser Bot automatisch eine Anfrage. Alternativ kannst du manuell adden:\n"
+            "  🔗 Schnell-Link: <https://s.team/p/820142646>.\n"
+            "  🔢 Freundescode: **820142646** (oder gib ihn uns, dann senden wir dir eine Anfrage).\n\n"
             "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** "
             "(und **Gesamtspielzeit** nicht auf „immer privat“)."
         ),
@@ -266,10 +264,9 @@ class SteamLinkStepView(discord.ui.View):
         content = (
             "🤝 **So verbindest du dich mit unserem Steam-Bot:**\n"
             "• Sobald du dich über Discord oder Steam verknüpfst, senden wir dir automatisch eine Freundschaftsanfrage.\n\n"
-            "• Alternativen, falls du es manuell erledigen möchtest:\n"
-            "  1️⃣ Sende selbst eine Anfrage an **820142646** (Bot-Account).\n"
-            "  2️⃣ Lass dir vom Bot eine Anfrage schicken – halte deinen **Freundescode** bereit.\n"
-            "  3️⃣ Nutze den Schnell-Link: <https://s.team/p/820142646>."
+            "• Alternativ kannst du den Bot selbst hinzufügen:\n"
+            "  🔗 Schnell-Link: <https://s.team/p/820142646>.\n"
+            "  🔢 Freundescode: **820142646** (oder teile ihn uns mit, dann adden wir dich)."
         )
         if interaction.response.is_done():
             await interaction.followup.send(content, ephemeral=True)

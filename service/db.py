@@ -296,6 +296,16 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               added_at INTEGER DEFAULT (strftime('%s','now'))
             );
 
+            -- Ausgehende Freundschaftsanfragen des Steam-Bots
+            CREATE TABLE IF NOT EXISTS steam_friend_requests(
+              steam_id TEXT PRIMARY KEY,
+              status TEXT DEFAULT 'pending',
+              requested_at INTEGER DEFAULT (strftime('%s','now')),
+              last_attempt INTEGER,
+              attempts INTEGER DEFAULT 0,
+              error TEXT
+            );
+
             -- Live-Lane-Status (pro Voice-Channel)
             CREATE TABLE IF NOT EXISTS live_lane_state(
               channel_id  INTEGER PRIMARY KEY,
