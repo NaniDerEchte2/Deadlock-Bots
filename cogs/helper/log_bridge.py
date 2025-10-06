@@ -9,9 +9,9 @@ from discord.ext import commands
 LOG = logging.getLogger(__name__)
 
 # Lies die Channel-ID aus .env (z.B. BOT_LOG_CHANNEL_ID=123456789012345678)
-ENV_CHANNEL_ID = os.getenv("BOT_LOG_CHANNEL_ID")
-DEFAULT_CHANNEL_ID: Optional[int] = int(ENV_CHANNEL_ID) if ENV_CHANNEL_ID and ENV_CHANNEL_ID.isdigit() else None
-
+#ENV_CHANNEL_ID = os.getenv("BOT_LOG_CHANNEL_ID")
+#DEFAULT_CHANNEL_ID: Optional[int] = int(ENV_CHANNEL_ID) if ENV_CHANNEL_ID and ENV_CHANNEL_ID.isdigit() else None
+DEFAULT_CHANNEL_ID = 1374364800817303632
 class _DiscordChannelHandler(logging.Handler):
     """Schickt Logeinträge gesammelt in einen Discord-Channel (Rate-Limit-freundlich)."""
     def __init__(self, bot: commands.Bot, channel_id: int, level=logging.INFO) -> None:
