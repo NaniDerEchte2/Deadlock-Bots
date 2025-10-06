@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
  * Steam Rich Presence bridge for Deadlock bots.
- * - Wartet bei Mobile-App-Approval (domain === 'device') geduldig auf Freigabe
- * - Optional: akzeptiert Codes (stdin) für /sg !sg
- * - Speichert loginKey persistent (Datei) -> spätere Logins ohne Guard
- * - Kein Logon-Spam, Backoff bei Disconnect/Fehler
+ * - Warten auf Mobile-Approval (domain === 'device') mit Watchdog/Timeout
+ * - Optional: Code via stdin (!sg) — auch Umschalten von Device→Code
+ * - Persistenter loginKey (Datei) -> spätere Logins ohne Guard
+ * - Single-Login-Schutz, Backoff bei Disconnect/Fehler
  */
 
 const fs = require('fs');
@@ -24,6 +24,10 @@ const APP_ID = parseInt(process.env.DEADLOCK_APP_ID || '1422450', 10);
 const WATCH_REFRESH_MS = parseInt(process.env.RP_WATCH_REFRESH_SEC || '30', 10) * 1000;
 const POLL_INTERVAL_MS = parseInt(process.env.RP_POLL_INTERVAL_MS || '15000', 10);
 
+const DEVICE_WAIT_TIMEOUT_MS = (parseInt(process.env.STEAM_DEVICE_WAIT_TIMEOUT_SEC || '300', 10) || 0) * 1000; // 0 = kein Timeout
+const STATUS_LOG_EVERY_MS = parseInt(process.env.STEAM_DEVICE_STATUS_LOG_EVERY_MS || '15000', 10);
+
+// Logging
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
 const LOG_THRESHOLD = Object.prototype.hasOwnProperty.call(LOG_LEVELS, LOG_LEVEL) ? LOG_LEVELS[LOG_LEVEL] : LOG_LEVELS.info;
@@ -128,31 +132,52 @@ if (!loginKey && fs.existsSync(loginKeyPath)) {
 let isLoggedOn = false;
 let isConnecting = false;
 let waitingDeviceApproval = false;
+let deviceWaitStartedAt = 0;
+let deviceStatusTicker = null;
 let reconnectTimer = null;
 let backoffMs = 10_000;      // Start-Backoff
 const backoffMaxMs = 5 * 60_000;
 
-function scheduleReconnect() {
+function startDeviceWaitWatchdog() {
+  stopDeviceWaitWatchdog();
+  deviceWaitStartedAt = Date.now();
+  if (STATUS_LOG_EVERY_MS > 0) {
+    deviceStatusTicker = setInterval(() => {
+      if (!waitingDeviceApproval) return;
+      const waited = Math.floor((Date.now() - deviceWaitStartedAt) / 1000);
+      log('info', 'Still waiting for approval in Steam Mobile app…', { waitedSec: waited });
+      if (DEVICE_WAIT_TIMEOUT_MS > 0 && (Date.now() - deviceWaitStartedAt) >= DEVICE_WAIT_TIMEOUT_MS) {
+        log('warn', 'Device approval timed out — resetting challenge and re-trying login');
+        waitingDeviceApproval = false;
+        try { client.logOff(); } catch {}
+        scheduleReconnect({ immediate: true });
+      }
+    }, STATUS_LOG_EVERY_MS);
+  }
+}
+
+function stopDeviceWaitWatchdog() {
+  if (deviceStatusTicker) {
+    clearInterval(deviceStatusTicker);
+    deviceStatusTicker = null;
+  }
+  deviceWaitStartedAt = 0;
+}
+
+function scheduleReconnect(opts = {}) {
+  const { immediate = false } = opts;
   if (reconnectTimer || isConnecting || waitingDeviceApproval) return;
-  const delay = backoffMs;
+  const delay = immediate ? 0 : backoffMs;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     backoffMs = Math.min(backoffMaxMs, Math.floor(backoffMs * 1.8));
-    log('info', 'Reconnecting to Steam...', { delayMs: delay, nextBackoffMs: backoffMs });
+    log('info', 'Reconnecting to Steam…', { delayMs: delay, nextBackoffMs: backoffMs });
     logOn();
   }, delay);
 }
 
 function resetBackoff() {
   backoffMs = 10_000;
-}
-
-function readOneLineFromStdin() {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    log('info', 'Waiting for Steam Guard code on stdin');
-    rl.question('', (answer) => { rl.close(); resolve((answer || '').trim()); });
-  });
 }
 
 function logOn() {
@@ -190,6 +215,53 @@ function logOn() {
   }
 }
 
+// ---- stdin: global, non-blocking ----
+const stdinRL = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+stdinRL.on('line', (line) => {
+  const txt = (line || '').trim();
+  if (!txt) return;
+
+  // Steuerkommandos (optional)
+  if (txt.toUpperCase() === 'STATUS') {
+    log('info', 'Status', {
+      isLoggedOn, isConnecting, waitingDeviceApproval,
+      hasLoginKey: Boolean(loginKey), backoffMs,
+    });
+    return;
+  }
+  if (txt.toUpperCase() === 'CANCEL') {
+    if (waitingDeviceApproval) {
+      log('warn', 'Cancelling device approval wait (manual command).');
+      waitingDeviceApproval = false;
+      stopDeviceWaitWatchdog();
+      try { client.logOff(); } catch {}
+      scheduleReconnect({ immediate: true });
+    } else {
+      log('info', 'No device wait to cancel.');
+    }
+    return;
+  }
+
+  // Annahme: 5-stellige Codes (oder 2FA) -> „umschalten“ wenn wir gerade auf Device warten
+  if (waitingDeviceApproval) {
+    log('info', 'Received code while waiting for device approval — switching to code path.');
+    stopDeviceWaitWatchdog();
+    waitingDeviceApproval = false;
+    guardCode = txt; // nächste logOn()-Runde nutzt diesen Code
+    try { client.logOff(); } catch {}
+    scheduleReconnect({ immediate: true });
+  } else {
+    // Kein Device-Wait → falls wir im steamGuard-Code-Zweig sind, wird der Code dort abgeholt,
+    // ansonsten speichern wir ihn für den nächsten Logon.
+    guardCode = txt;
+    log('info', 'Stored guard code from stdin for next login attempt.');
+    if (!isLoggedOn && !isConnecting) {
+      scheduleReconnect({ immediate: true });
+    }
+  }
+});
+
+// ---- Presence helpers ----
 function safeRequestRichPresence(steamID) {
   try { client.requestFriendRichPresence(steamID, APP_ID); }
   catch (err) { log('debug', 'requestFriendRichPresence failed', { steamId: steamID.toString(), error: err.message }); }
@@ -235,6 +307,7 @@ client.on('loggedOn', () => {
   isLoggedOn = true;
   isConnecting = false;
   waitingDeviceApproval = false;
+  stopDeviceWaitWatchdog();
   resetBackoff();
   log('info', 'Logged in to Steam', { account: loginAccount });
   client.setPersona(SteamUser.EPersonaState.Online);
@@ -257,21 +330,20 @@ client.on('steamGuard', async (domain, callback, lastCodeWrong) => {
   log('warn', 'Steam Guard required', { domain: d, lastCodeWrong: Boolean(lastCodeWrong) });
 
   try {
-    // 1) Mobile App Approval -> EINMAL callback() und dann WARTEN
     if (d === 'device') {
       if (!waitingDeviceApproval) {
         waitingDeviceApproval = true;
         isConnecting = false; // blocke neue logOn() Versuche
-        log('info', 'Waiting for approval in Steam Mobile app...');
-        return void callback(); // kein Code nötig
+        log('info', 'Waiting for approval in Steam Mobile app…');
+        startDeviceWaitWatchdog();
+        return void callback(); // kein Code nötig – Steam wartet serverseitig auf Approve
       } else {
-        // Bereits wartend: NICHT erneut callback() oder logOn()
         log('debug', 'Already waiting for mobile approval; ignoring duplicate steamGuard event.');
         return;
       }
     }
 
-    // 2) Code-basierte Varianten (email/TOTP/Code)
+    // Code-basierte Varianten (email/TOTP/Code)
     if (totpSecret) {
       const code = SteamTotp.generateAuthCode(totpSecret);
       log('info', 'Supplying TOTP Steam Guard code');
@@ -279,13 +351,32 @@ client.on('steamGuard', async (domain, callback, lastCodeWrong) => {
     }
     if (guardCode) {
       const code = guardCode.trim(); guardCode = '';
-      log('info', 'Supplying static Steam Guard code from env');
+      log('info', 'Supplying guard code from buffer/env');
       return void callback(code);
     }
-    // Optionaler manueller Code via stdin (dein /sg|!sg-Helper schreibt in stdin des Prozesses)
-    const code = (await readOneLineFromStdin()) || '';
-    if (code) { log('info', 'Supplying Steam Guard code from stdin'); return void callback(code); }
-    log('error', 'No Steam Guard code supplied on stdin.');
+
+    // Kein Code vorhanden → kurze, non-blocking Wartezeit auf stdin (optional)
+    const code = await new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => { if (!settled) { settled = true; resolve(''); } }, 30_000);
+      const onLine = (line) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        stdinRL.removeListener('line', onLine);
+        resolve((line || '').trim());
+      };
+      stdinRL.on('line', onLine);
+    });
+
+    if (code) {
+      log('info', 'Supplying Steam Guard code from stdin (inline wait)');
+      return void callback(code);
+    } else {
+      log('warn', 'No Steam Guard code supplied in time; will retry later.');
+      try { client.logOff(); } catch {}
+      scheduleReconnect();
+    }
   } catch (e) {
     log('error', 'Failed during steamGuard handling', { error: e.message || String(e) });
   }
@@ -321,15 +412,14 @@ client.on('friendRelationship', (steamID, relationship) => {
 client.on('disconnected', (eresult, msg) => {
   isLoggedOn = false;
   isConnecting = false;
-  // Wenn wir auf Device-Approval warten, NICHT sofort reconnecten. User muss erst bestätigen.
   log('warn', 'Steam disconnected', { eresult, msg, waitingDeviceApproval });
+  // Während Device-Wait nicht auto-reconnecten; sonst Backoff
   if (!waitingDeviceApproval) scheduleReconnect();
+  else startDeviceWaitWatchdog(); // sicherstellen, dass Statuslogs weiterlaufen
 });
 
 client.on('error', (err) => {
   log('error', 'Steam client error', { error: err.message });
-
-  // Bei RateLimit oder ähnlichen Fehlern -> Backoff Reconnect (wenn nicht auf Approval gewartet wird)
   const text = (err && err.message) ? err.message.toLowerCase() : '';
   if (!waitingDeviceApproval && (text.includes('ratelimit') || text.includes('rate limit'))) {
     scheduleReconnect();
@@ -346,6 +436,7 @@ logOn();
 
 function shutdown() {
   log('info', 'Shutting down presence service');
+  stopDeviceWaitWatchdog();
   try { client.logOff(); } catch {}
   try { db.close(); } catch {}
   process.exit(0);
