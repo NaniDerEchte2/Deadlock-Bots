@@ -16,6 +16,7 @@ import discord
 from discord.ext import commands
 
 from service import db
+from service.steam_friend_requests import queue_friend_request, queue_friend_requests
 
 from cogs.steam import QuickInviteButton, queue_friend_request, queue_friend_requests
 

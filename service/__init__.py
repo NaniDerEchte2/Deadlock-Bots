@@ -6,6 +6,10 @@ try:
 except Exception:
     steam = None
 try:
+    from . import steam_friend_requests  # Queue für Steam-Freundschaftsanfragen
+except Exception:
+    steam_friend_requests = None
+try:
     from . import socket_bus  # falls vorhanden
 except Exception:
     socket_bus = None

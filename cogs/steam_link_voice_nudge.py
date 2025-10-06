@@ -11,6 +11,7 @@ import discord
 from discord.ext import commands
 
 from service import db
+from service.steam_friend_requests import queue_friend_request
 
 from cogs.steam import (
     QUICK_INVITE_CUSTOM_ID,
