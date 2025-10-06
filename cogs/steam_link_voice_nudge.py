@@ -514,16 +514,11 @@ class SteamLinkVoiceNudge(commands.Cog):
         ctx: commands.Context,
         target: Optional[Union[discord.Member, discord.User]],
     ) -> Optional[Union[discord.Member, discord.User]]:
-        author_obj = getattr(ctx, "author", None)
-        author_fallback: Optional[Union[discord.Member, discord.User]] = None
-        if isinstance(author_obj, (discord.Member, discord.User)) and not getattr(author_obj, "bot", False):
-            author_fallback = author_obj
-
         if target:
             return target
 
         if not DEFAULT_TEST_TARGET_ID:
-            return author_fallback
+            return None
 
         # Try resolve as guild member first.
         guild = getattr(ctx, "guild", None)
@@ -546,7 +541,7 @@ class SteamLinkVoiceNudge(commands.Cog):
         try:
             return await self.bot.fetch_user(DEFAULT_TEST_TARGET_ID)
         except (discord.NotFound, discord.HTTPException, discord.Forbidden):
-            return author_fallback
+            return None
 
 
 async def setup(bot: commands.Bot):
