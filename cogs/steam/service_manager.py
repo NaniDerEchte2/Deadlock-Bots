@@ -22,10 +22,7 @@ def _to_bool(value: Optional[str], default: bool) -> bool:
 
 def _resolve_service_dir(explicit: Optional[Path]) -> Path:
     """
-    Ermittelt den Ordner des Node-Services robust:
-    1) expliziter Parameter (service_dir)
-    2) ENV: STEAM_PRESENCE_DIR
-    3) typische Kandidaten relativ zu diesem Modul (cogs/steam/service_manager.py)
+    Einfach: 1) service_dir-Param, 2) ENV STEAM_PRESENCE_DIR, 3) ./steam_presence neben dieser Datei.
     """
     if explicit is not None:
         return Path(explicit).expanduser().resolve()
@@ -34,24 +31,8 @@ def _resolve_service_dir(explicit: Optional[Path]) -> Path:
     if env:
         return Path(env).expanduser().resolve()
 
-    # Dieses File liegt in: .../cogs/steam/service_manager.py
-    here = Path(__file__).resolve().parent              # .../cogs/steam
-    cogs_dir = here.parent                              # .../cogs
-    project_root = cogs_dir.parent                      # .../
-
-    candidates = [
-        here / "steam_presence",                        # .../cogs/steam/steam_presence (NEU)
-        here / "service" / "steam_presence",            # .../cogs/steam/service/steam_presence
-        cogs_dir / "service" / "steam_presence",        # .../cogs/service/steam_presence (ALT)
-        project_root / "cogs" / "service" / "steam_presence",  # fallback legacy
-    ]
-
-    for cand in candidates:
-        pkg = cand / "package.json"
-        if pkg.exists():
-            return cand.resolve()
-
-    # Wenn keiner existiert, nimm den bevorzugten neuen Ort:
+    # Dieses File liegt in .../cogs/steam/service_manager.py
+    here = Path(__file__).resolve().parent  # .../cogs/steam
     return (here / "steam_presence").resolve()
 
 
@@ -142,8 +123,19 @@ class SteamPresenceServiceManager:
             if self.is_running:
                 return False
 
+            # --- Minimal, aber sicher: erst existenz checken, dann package.json, sonst sauber abbrechen ---
+            if not self.service_dir.exists():
+                LOGGER.error("Steam presence service path does not exist: %s", self.service_dir)
+                return False
+
             if self.auto_install:
                 await self.ensure_dependencies()
+
+            package_json = self.service_dir / "package.json"
+            if not package_json.exists():
+                LOGGER.warning("Abort start: no package.json in %s", self.service_dir)
+                return False
+            # --- Ende Guards ---
 
             cmd = self.start_command
             LOGGER.info("Starting steam presence service using '%s' (cwd=%s)", cmd, self.service_dir)
