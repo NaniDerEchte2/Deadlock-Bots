@@ -286,7 +286,7 @@ class StreamerRequirementsView(StepView):
                 "   *„Deutscher Deadlock Community Server“*\n"
                 "3) Wünchenswert wäre es wenn du Zuschauer auf den Server verweist.\n"
                 "4) Genauso wünschenswert ist es, wenn du Deadlock-Content postest, verlinke da gerne den Server.\n\n"
-                "Du **darfst** selbstverständlich deinen **eigenen Server** weiterführen – "
+                "Du **darfst** selbstverständlich deinen **eigenen Server** weiterführen – \n"
                 "wir verstehen uns nicht als Konkurrenz, sondern als Hub für deutschsprachige Deadlock-Spieler."
             ),
             color=0x32CD32
