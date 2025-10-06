@@ -23,7 +23,7 @@ from discord.ext import commands
 # --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
 import sys as _sys, os as _os, importlib, inspect, logging as _logging, hashlib
 
-from steam import SteamPresenceServiceManager
+from cogs.steam.service_manager import SteamPresenceServiceManager
 
 def _log_src(modname: str):
     try:
