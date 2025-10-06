@@ -9,6 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Deque, List, Optional
 
+# Discord imports für den Cog-Wrapper
+import discord
+from discord.ext import commands
+
 LOGGER = logging.getLogger("steam.presence")
 
 _FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
@@ -18,6 +22,22 @@ def _to_bool(value: Optional[str], default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() not in _FALSE_VALUES
+
+
+def _resolve_service_dir(explicit: Optional[Path]) -> Path:
+    """
+    1) übergebenes service_dir, 2) ENV STEAM_PRESENCE_DIR, 3) ./steam_presence neben diesem File.
+    """
+    if explicit is not None:
+        return Path(explicit).expanduser().resolve()
+
+    env = os.getenv("STEAM_PRESENCE_DIR")
+    if env:
+        return Path(env).expanduser().resolve()
+
+    # dieses File liegt in .../cogs/steam/service_manager.py
+    here = Path(__file__).resolve().parent  # .../cogs/steam
+    return (here / "steam_presence").resolve()
 
 
 @dataclass
@@ -34,11 +54,10 @@ class SteamServiceStatus:
 
 
 class SteamPresenceServiceManager:
-    """Controls the node-based Steam rich presence bridge."""
+    """Controls the node-based Steam rich presence bridge (KEIN Cog)."""
 
     def __init__(self, service_dir: Optional[Path] = None) -> None:
-        root = Path(__file__).resolve().parent.parent
-        self.service_dir = service_dir or root / "service" / "steam_presence"
+        self.service_dir = _resolve_service_dir(service_dir)
         self.start_command = os.getenv("STEAM_SERVICE_CMD", "npm run start")
         self.install_command = os.getenv("STEAM_SERVICE_INSTALL_CMD", "npm install")
         self.auto_start = _to_bool(os.getenv("AUTO_START_STEAM_SERVICE"), True)
@@ -58,6 +77,8 @@ class SteamPresenceServiceManager:
         self._deps_checked = False
         self._closing = False
         self._monitor_task: Optional[asyncio.Task[None]] = None
+
+        LOGGER.info("Steam presence service directory resolved to: %s", self.service_dir)
 
     async def _get_lock(self) -> asyncio.Lock:
         if self._lock is None:
@@ -106,8 +127,17 @@ class SteamPresenceServiceManager:
             if self.is_running:
                 return False
 
+            if not self.service_dir.exists():
+                LOGGER.error("Steam presence service path does not exist: %s", self.service_dir)
+                return False
+
             if self.auto_install:
                 await self.ensure_dependencies()
+
+            package_json = self.service_dir / "package.json"
+            if not package_json.exists():
+                LOGGER.warning("Abort start: no package.json in %s", self.service_dir)
+                return False
 
             cmd = self.start_command
             LOGGER.info("Starting steam presence service using '%s' (cwd=%s)", cmd, self.service_dir)
@@ -115,6 +145,7 @@ class SteamPresenceServiceManager:
             self._process = await asyncio.create_subprocess_shell(
                 cmd,
                 cwd=str(self.service_dir),
+                stdin=asyncio.subprocess.PIPE,            # wichtig für !sg / /sg
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -122,9 +153,13 @@ class SteamPresenceServiceManager:
             self._stdout.clear()
             self._stderr.clear()
             if self._process.stdout is not None:
-                self._stdout_task = asyncio.create_task(self._pump_stream(self._process.stdout, self._stdout, logging.INFO, "stdout"))
+                self._stdout_task = asyncio.create_task(
+                    self._pump_stream(self._process.stdout, self._stdout, logging.INFO, "stdout")
+                )
             if self._process.stderr is not None:
-                self._stderr_task = asyncio.create_task(self._pump_stream(self._process.stderr, self._stderr, logging.WARNING, "stderr"))
+                self._stderr_task = asyncio.create_task(
+                    self._pump_stream(self._process.stderr, self._stderr, logging.WARNING, "stderr")
+                )
             self._monitor_task = asyncio.create_task(self._monitor_process())
             LOGGER.info("Steam presence service started (pid=%s)", self._process.pid)
             return True
@@ -240,3 +275,76 @@ class SteamPresenceServiceManager:
             cwd=self.service_dir,
             auto_start=self.auto_start,
         )
+
+    async def submit_guard_code(self, code: str) -> bool:
+        proc = self._process
+        if not self.is_running or proc is None or proc.stdin is None:
+            LOGGER.warning("Cannot submit guard code: process not running or no stdin.")
+            return False
+        try:
+            text = (code.strip() + "\n").encode()
+            proc.stdin.write(text)
+            await proc.stdin.drain()
+            LOGGER.info("Submitted Steam Guard code to service (len=%d).", len(code.strip()))
+            return True
+        except Exception as exc:
+            LOGGER.error("Failed to submit guard code: %s", exc)
+            return False
+
+
+# =========================
+# Cog-Wrapper (Service gehört dem Cog)
+# =========================
+class SteamPresenceServiceCog(commands.Cog):
+    """Discord Cog, der den Manager hält und auto-startet."""
+
+    def __init__(self, bot: commands.Bot, service_dir: Optional[Path] = None) -> None:
+        self.bot = bot
+        self.manager = SteamPresenceServiceManager(service_dir=service_dir)
+        # Manager global am Bot verfügbar machen:
+        setattr(self.bot, "steam_service_manager", self.manager)
+
+    async def cog_load(self) -> None:
+        # Auto-Start beim Laden des Cogs
+        if self.manager.auto_start:
+            self.bot.loop.create_task(self._safe_start())
+
+    async def cog_unload(self) -> None:
+        try:
+            await self.manager.stop()
+        except Exception:
+            pass
+        if getattr(self.bot, "steam_service_manager", None) is self.manager:
+            delattr(self.bot, "steam_service_manager")
+
+    async def _safe_start(self) -> None:
+        try:
+            await self.manager.ensure_started()
+            LOGGER.info(
+                "Steam presence service auto_start=%s • running=%s",
+                self.manager.auto_start, self.manager.is_running
+            )
+        except Exception as exc:
+            LOGGER.error("Failed to start steam presence service: %s", exc)
+
+    # Debug-Kommandos (optional)
+    @commands.command(name="steam_service_status")
+    @commands.has_permissions(administrator=True)
+    async def steam_service_status(self, ctx: commands.Context):
+        s = self.manager.status()
+        txt = (
+            f"running={s.running} pid={s.pid} restarts={s.restarts} "
+            f"cwd={s.cwd} cmd='{s.cmd}' auto_start={s.auto_start}"
+        )
+        await ctx.reply(f"```{txt}```")
+
+    @commands.command(name="steam_service_restart")
+    @commands.has_permissions(administrator=True)
+    async def steam_service_restart(self, ctx: commands.Context):
+        await self.manager.restart()
+        await ctx.reply("🔁 Presence-Service neu gestartet.")
+
+
+# Discord lädt den **Cog**, NICHT den Manager direkt
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(SteamPresenceServiceCog(bot))

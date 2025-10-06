@@ -34,6 +34,15 @@ Start automatisch eingelesen.
 | `STEAM_SERVICE_CMD` | Optionaler alternativer Startbefehl (Default: `npm run start`) |
 | `STEAM_SERVICE_INSTALL_CMD` | Optionaler Installationsbefehl (Default: `npm install`) |
 
+### Login-Key automatisch verwalten
+
+Setze `STEAM_LOGIN_KEY_PATH` auf eine beschreibbare Datei (z. B. `C:\\Bots\\steam_login.key`).
+Beim ersten erfolgreichen Login legt der Dienst dort den von Steam ausgestellten `loginKey`
+ab und lädt ihn bei zukünftigen Starts automatisch wieder. So genügt es, einmalig Passwort
+und Guard-Code einzutragen; danach kannst du beide Variablen entfernen und startest ohne
+erneute 2FA-Eingabe.
+
+
 ### Steam Guard / 2FA
 
 Es gibt keine interaktive Abfrage – der Dienst benötigt den Steam-Guard-Code bereits beim

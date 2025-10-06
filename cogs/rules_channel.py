@@ -180,9 +180,16 @@ class RulesPanel(commands.Cog):
         # 2/3 Steam
         emb = build_step_embed(
             title="Frage 2/3 · Steam verknüpfen (empfohlen)",
-            desc=("Für Voice-Status & Features bitte deinen Steam-Account verknüpfen.\n"
-                  "**Wichtig:** Steam → Profil → Spieldetails = Öffentlich."),
-            step=2, total=total, color=0x2ECC71,
+            desc=(
+                "Für Voice-Status & Features bitte deinen Steam-Account verknüpfen.\n"
+                "🤝 Wenn du dich via Discord oder Steam anmeldest, senden wir dir automatisch eine Freundschaftsanfrage. "
+                "Mehr Optionen findest du über **Freundschafts-Optionen** – dort kannst du "
+                "„Schnelle Anfrage senden“ (einmaliger Link, 30 Tage gültig) oder den Freundescode 820142646 nutzen.\n"
+                "**Wichtig:** Steam → Profil → Spieldetails = Öffentlich."
+            ),
+            step=2,
+            total=total,
+            color=0x2ECC71,
         )
         ok = await _send_step(thread, emb, SteamLinkStepView())
         if not ok:

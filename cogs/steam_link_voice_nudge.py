@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import asyncio
 import logging
-import inspect
 import re
 from typing import Optional, Dict, Union, Tuple
 from urllib.parse import urlparse, urlunparse
@@ -12,6 +11,14 @@ import discord
 from discord.ext import commands
 
 from service import db
+from service.steam_friend_requests import queue_friend_request
+
+from cogs.steam import (
+    QUICK_INVITE_CUSTOM_ID,
+    QuickInviteButton,
+    queue_friend_request,
+    respond_with_quick_invite,
+)
 
 log = logging.getLogger("SteamVoiceNudge")
 
@@ -41,7 +48,15 @@ def _prefer_discord_deeplink(browser_url: Optional[str]) -> Tuple[Optional[str],
         return None, None
     try:
         u = urlparse(browser_url)
-        if "discord.com" in (u.netloc or "") and "/oauth2/authorize" in (u.path or "") and _DEEPLINK_EN:
+        hostname = (u.hostname or "").lower()
+        path = u.path or ""
+        if (
+            _DEEPLINK_EN
+            and u.scheme in {"http", "https"}
+            and hostname
+            and (hostname == "discord.com" or hostname.endswith(".discord.com"))
+            and (path == "/oauth2/authorize" or path.startswith("/oauth2/authorize/"))
+        ):
             deeplink = urlunparse(("discord", "-/oauth2/authorize", "", "", u.query, ""))
             return deeplink, browser_url
     except Exception:
@@ -62,6 +77,10 @@ def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: 
         """,
         (int(user_id), str(steam_id), name or "", int(verified)),
     )
+    try:
+        queue_friend_request(steam_id)
+    except Exception:
+        log.exception("[nudge] Konnte Steam-Freundschaftsanfrage nicht einreihen", extra={"steam_id": steam_id})
 
 def _ensure_schema():
     db.execute("""
@@ -319,6 +338,7 @@ class _OptionsView(discord.ui.View):
                 disabled=True, emoji="🎮", row=0
             ))
 
+        self.add_item(QuickInviteButton(row=1, source="voice_nudge_view"))
         self.add_item(_ManualButton(row=1))
         self.add_item(_CloseButton(row=1))
 
@@ -331,6 +351,15 @@ class _PersistentRegistryView(discord.ui.View):
                        emoji="🔢", custom_id="nudge_manual")
     async def _open_manual(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(_ManualModal())
+
+    @discord.ui.button(
+        label="Schnelle Anfrage senden",
+        style=discord.ButtonStyle.success,
+        emoji="⚡",
+        custom_id=QUICK_INVITE_CUSTOM_ID,
+    )
+    async def _quick_invite(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await respond_with_quick_invite(interaction, source="voice_nudge_persistent")
 
     @discord.ui.button(label="Schließen", style=discord.ButtonStyle.secondary,
                        emoji="❌", custom_id="nudge_close")
@@ -411,7 +440,10 @@ class SteamLinkVoiceNudge(commands.Cog):
                 "• Ergebnis: präzisere **Kanal-Beschreibungen** (z. B. „3 im Match“) & bessere **Orga/Balancing** bei Events.\n\n"
                 "**Wie kannst du dabei helfen?**\n"
                 "1) Klicke **„Via Discord verknüpfen“**, **„SteamID manuell eingeben“** oder **„Mit Steam anmelden“**.\n"
-                "2) Folge den kurzen Schritten. Wir bekommen niemals dein Passwort – bei Steam erhalten wir nur die **SteamID64**.\n\n"
+                "2) Folge den kurzen Schritten. Wir bekommen niemals dein Passwort – bei Steam erhalten wir nur die **SteamID64**.\n"
+                "3) Der Steam-Bot schickt dir anschließend automatisch eine Freundschaftsanfrage. "
+                "Alternativ kannst du über **„Schnelle Anfrage senden“** einen persönlichen Link erzeugen "
+                "(einmalig, 30 Tage gültig) oder den Freundescode **820142646** nutzen.\n\n"
                 "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** "
                 "(und **Gesamtspielzeit** nicht auf „immer privat“)."
             )
@@ -476,10 +508,18 @@ class SteamLinkVoiceNudge(commands.Cog):
         except Exception:
             log.exception("wait_and_notify failed")
 
-    @commands.hybrid_command(name="nudgesend", description="(Admin) Schickt die Steam-Nudge-DM an einen Nutzer.")
+    @commands.hybrid_command(
+        name="nudgesend",
+        description="(Admin) Schickt die Steam-Nudge-DM an einen Nutzer.",
+        aliases=("t30",),
+    )
     @commands.has_permissions(administrator=True)
-    async def nudgesend(self, ctx: commands.Context, target: Optional[discord.Member] = None):
-        target = target or (ctx.guild.get_member(DEFAULT_TEST_TARGET_ID) if ctx.guild and DEFAULT_TEST_TARGET_ID else None)
+    async def nudgesend(
+        self,
+        ctx: commands.Context,
+        target: Optional[Union[discord.Member, discord.User]] = None,
+    ):
+        target = await self._resolve_test_target(ctx, target)
         if not target:
             await ctx.reply("Bitte Ziel angeben: `!nudgesend @user`", mention_author=False)
             return
@@ -493,6 +533,40 @@ class SteamLinkVoiceNudge(commands.Cog):
             await ctx.reply(f"📨 Test-DM an {getattr(target, 'mention', target.id)} gesendet.", mention_author=False)
         else:
             await ctx.reply("⚠️ Test-DM konnte nicht gesendet werden (DMs aus? oder bereits benachrichtigt).", mention_author=False)
+
+    async def _resolve_test_target(
+        self,
+        ctx: commands.Context,
+        target: Optional[Union[discord.Member, discord.User]],
+    ) -> Optional[Union[discord.Member, discord.User]]:
+        if target:
+            return target
+
+        if not DEFAULT_TEST_TARGET_ID:
+            return None
+
+        # Try resolve as guild member first.
+        guild = getattr(ctx, "guild", None)
+        if guild:
+            member = guild.get_member(DEFAULT_TEST_TARGET_ID)
+            if member:
+                return member
+            try:
+                member = await guild.fetch_member(DEFAULT_TEST_TARGET_ID)
+            except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+                member = None
+            if member:
+                return member
+
+        # Fall back to any known user object in cache/API.
+        user = self.bot.get_user(DEFAULT_TEST_TARGET_ID)
+        if user:
+            return user
+
+        try:
+            return await self.bot.fetch_user(DEFAULT_TEST_TARGET_ID)
+        except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+            return None
 
 
 async def setup(bot: commands.Bot):

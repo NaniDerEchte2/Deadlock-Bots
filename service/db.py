@@ -296,6 +296,30 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               added_at INTEGER DEFAULT (strftime('%s','now'))
             );
 
+            -- Ausgehende Freundschaftsanfragen des Steam-Bots
+            CREATE TABLE IF NOT EXISTS steam_friend_requests(
+              steam_id TEXT PRIMARY KEY,
+              status TEXT DEFAULT 'pending',
+              requested_at INTEGER DEFAULT (strftime('%s','now')),
+              last_attempt INTEGER,
+              attempts INTEGER DEFAULT 0,
+              error TEXT
+            );
+
+            -- Vorgehaltene Steam-Quick-Invite-Links (werden vom Node-Service erzeugt)
+            CREATE TABLE IF NOT EXISTS steam_quick_invites(
+              token TEXT PRIMARY KEY,
+              invite_link TEXT NOT NULL,
+              invite_limit INTEGER DEFAULT 1,
+              invite_duration INTEGER,
+              created_at INTEGER NOT NULL,
+              expires_at INTEGER,
+              status TEXT DEFAULT 'available',
+              reserved_by INTEGER,
+              reserved_at INTEGER,
+              last_seen INTEGER
+            );
+
             -- Live-Lane-Status (pro Voice-Channel)
             CREATE TABLE IF NOT EXISTS live_lane_state(
               channel_id  INTEGER PRIMARY KEY,
@@ -325,6 +349,12 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute("CREATE INDEX IF NOT EXISTS idx_llm_checked  ON live_lane_members(checked_ts)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_user  ON steam_links(user_id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_quick_invites_status ON steam_quick_invites(status, expires_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_quick_invites_reserved ON steam_quick_invites(reserved_by)"
+            )
             c.execute("CREATE INDEX IF NOT EXISTS idx_rich_presence_updated ON steam_rich_presence(last_update)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ranks_rank ON ranks(rank)")
         except sqlite3.Error as e:
