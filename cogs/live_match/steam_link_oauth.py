@@ -18,6 +18,8 @@ from discord.ext import commands
 from service import db
 from service.steam_friend_requests import queue_friend_request, queue_friend_requests
 
+from cogs.steam import QuickInviteButton, queue_friend_request, queue_friend_requests
+
 log = logging.getLogger("SteamLink")
 
 DISCORD_API = "https://discord.com/api"
@@ -315,7 +317,8 @@ class SteamLink(commands.Cog):
                 "✨ **Connection complete.**\n"
                 "Du funkelst jetzt ein Stückchen heller — und die Welt ein winziges bisschen auch.\n\n"
                 "🤝 Unser Steam-Bot schickt dir gleich eine Freundschaftsanfrage. "
-                "Falls nichts ankommt, nutze <https://s.team/p/820142646> oder den Freundescode **820142646**.\n\n"
+                "Falls nichts ankommt, nutze den Button **„Schnelle Anfrage senden“** für einen frischen Link "
+                "(einmalig, 30 Tage gültig) oder den Freundescode **820142646**.\n\n"
                 "_Tipp: Mit `/links` siehst du deine verknüpften Accounts._"
             )
             await user.send(shine)
@@ -753,7 +756,7 @@ class SteamLink(commands.Cog):
             "• Anmeldedaten bleiben bei Steam.\n"
             "• Ich schicke dir eine DM, sobald die Verknüpfung durch ist.\n"
             "• Nach erfolgreicher Verknüpfung erhältst du automatisch eine Steam-Freundschaftsanfrage vom Bot.\n"
-            "• Alternativ: <https://s.team/p/820142646> oder Freundescode **820142646**."
+            "• Alternativ: Nutze **„Schnelle Anfrage senden“** (einmaliger Link, 30 Tage gültig) oder Freundescode **820142646**."
         )
 
         embed = discord.Embed(title="Steam/Discord verknüpfen", description=desc, color=discord.Color.green())
@@ -768,6 +771,7 @@ class SteamLink(commands.Cog):
         start_url = f"{PUBLIC_BASE_URL}/discord/login?uid={ctx.author.id}"
         view = discord.ui.View()
         view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label=LINK_BUTTON_LABEL, url=start_url))
+        view.add_item(QuickInviteButton(row=1, source="slash_link"))
         await self._send_ephemeral(ctx, embed=embed, view=view)
 
     @commands.hybrid_command(
@@ -778,7 +782,7 @@ class SteamLink(commands.Cog):
         desc = (
             "Bestätige deinen Account via Steam OpenID. "
             "Nach dem Abschluss senden wir dir automatisch eine Freundschaftsanfrage vom Bot. "
-            "Oder nutze <https://s.team/p/820142646> / Freundescode **820142646**."
+            "Alternativ hilft dir **„Schnelle Anfrage senden“** (einmaliger Link, 30 Tage gültig) oder der Freundescode **820142646**."
         )
         embed = discord.Embed(title="Direkt bei Steam anmelden", description=desc, color=discord.Color.green())
         if LINK_COVER_IMAGE:
@@ -792,6 +796,7 @@ class SteamLink(commands.Cog):
         start_url = f"{PUBLIC_BASE_URL}/steam/login?uid={ctx.author.id}"
         view = discord.ui.View()
         view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label=STEAM_BUTTON_LABEL, url=start_url))
+        view.add_item(QuickInviteButton(row=1, source="slash_link_steam"))
         await self._send_ephemeral(ctx, embed=embed, view=view)
 
     @commands.hybrid_command(name="links", description="Zeigt deine gespeicherten Steam-Links")

@@ -13,6 +13,13 @@ from discord.ext import commands
 from service import db
 from service.steam_friend_requests import queue_friend_request
 
+from cogs.steam import (
+    QUICK_INVITE_CUSTOM_ID,
+    QuickInviteButton,
+    queue_friend_request,
+    respond_with_quick_invite,
+)
+
 log = logging.getLogger("SteamVoiceNudge")
 
 # ---------- Einstellungen ----------
@@ -331,6 +338,7 @@ class _OptionsView(discord.ui.View):
                 disabled=True, emoji="🎮", row=0
             ))
 
+        self.add_item(QuickInviteButton(row=1, source="voice_nudge_view"))
         self.add_item(_ManualButton(row=1))
         self.add_item(_CloseButton(row=1))
 
@@ -343,6 +351,15 @@ class _PersistentRegistryView(discord.ui.View):
                        emoji="🔢", custom_id="nudge_manual")
     async def _open_manual(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(_ManualModal())
+
+    @discord.ui.button(
+        label="Schnelle Anfrage senden",
+        style=discord.ButtonStyle.success,
+        emoji="⚡",
+        custom_id=QUICK_INVITE_CUSTOM_ID,
+    )
+    async def _quick_invite(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await respond_with_quick_invite(interaction, source="voice_nudge_persistent")
 
     @discord.ui.button(label="Schließen", style=discord.ButtonStyle.secondary,
                        emoji="❌", custom_id="nudge_close")
@@ -425,7 +442,8 @@ class SteamLinkVoiceNudge(commands.Cog):
                 "1) Klicke **„Via Discord verknüpfen“**, **„SteamID manuell eingeben“** oder **„Mit Steam anmelden“**.\n"
                 "2) Folge den kurzen Schritten. Wir bekommen niemals dein Passwort – bei Steam erhalten wir nur die **SteamID64**.\n"
                 "3) Der Steam-Bot schickt dir anschließend automatisch eine Freundschaftsanfrage. "
-                "Alternativ: <https://s.team/p/820142646> oder Freundescode **820142646**.\n\n"
+                "Alternativ kannst du über **„Schnelle Anfrage senden“** einen persönlichen Link erzeugen "
+                "(einmalig, 30 Tage gültig) oder den Freundescode **820142646** nutzen.\n\n"
                 "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** "
                 "(und **Gesamtspielzeit** nicht auf „immer privat“)."
             )

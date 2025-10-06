@@ -7,6 +7,8 @@ from urllib.parse import urlparse, urlsplit, urlunparse, urlunsplit
 
 import discord
 
+from cogs.steam import QuickInviteButton
+
 __all__ = [
     "SteamLinkStepView",
     "SteamLinkView",          # Alias (Backcompat)
@@ -79,7 +81,7 @@ def build_steam_intro_embed() -> discord.Embed:
             "• **Steam Profil suchen**: Offizieller Steam OpenID-Flow (kein Passwort, wir sehen nur die **SteamID64**).\n\n"
             "🤝 **Freundschaft mit dem Bot:** Sobald du dich via Discord oder Steam authentifizierst, "
             "schickt dir unser Bot automatisch eine Anfrage. Alternativ kannst du manuell adden:\n"
-            "  🔗 Schnell-Link: <https://s.team/p/820142646>.\n"
+            "  ⚡ Über den Button **„Schnelle Anfrage senden“** erhältst du einen persönlichen Link.\n"
             "  🔢 Freundescode: **820142646** (oder gib ihn uns, dann senden wir dir eine Anfrage).\n\n"
             "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** "
             "(und **Gesamtspielzeit** nicht auf „immer privat“)."
@@ -173,6 +175,20 @@ class _LinkSheet(discord.ui.View):
         ))
 
 
+class _FriendOptionsView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=180)
+        self.add_item(
+            QuickInviteButton(
+                style=discord.ButtonStyle.success,
+                label="Schnelle Anfrage senden",
+                emoji="⚡",
+                row=0,
+                source="welcome_dm_friend_options",
+            )
+        )
+
+
 class SteamLinkStepView(discord.ui.View):
     """
     View für den Steam-Verknüpfungsschritt in der Welcome-DM.
@@ -261,17 +277,19 @@ class SteamLinkStepView(discord.ui.View):
         emoji="🤝",
     )
     async def _show_friend_options(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        view = _FriendOptionsView()
         content = (
             "🤝 **So verbindest du dich mit unserem Steam-Bot:**\n"
             "• Sobald du dich über Discord oder Steam verknüpfst, senden wir dir automatisch eine Freundschaftsanfrage.\n\n"
             "• Alternativ kannst du den Bot selbst hinzufügen:\n"
-            "  🔗 Schnell-Link: <https://s.team/p/820142646>.\n"
-            "  🔢 Freundescode: **820142646** (oder teile ihn uns mit, dann adden wir dich)."
+            "  ⚡ Nutze **„Schnelle Anfrage senden“** für einen persönlichen Link (einmalig, 30 Tage gültig).\n"
+            "  🔢 Freundescode: **820142646** (oder teile ihn uns mit, dann adden wir dich).\n\n"
+            "Teile Schnell-Links nur mit Leuten, denen du vertraust."
         )
         if interaction.response.is_done():
-            await interaction.followup.send(content, ephemeral=True)
+            await interaction.followup.send(content, view=view, ephemeral=True)
         else:
-            await interaction.response.send_message(content, ephemeral=True)
+            await interaction.response.send_message(content, view=view, ephemeral=True)
 
     @discord.ui.button(
         label="Weiter",

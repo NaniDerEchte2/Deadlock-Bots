@@ -37,6 +37,9 @@ const FRIEND_REQUEST_INTERVAL_MS = Math.max(intOption('FRIEND_REQUEST_INTERVAL_M
 const FRIEND_REQUEST_RETRY_SEC = Math.max(intOption('FRIEND_REQUEST_RETRY_SEC', 300), 30);
 const FRIEND_REQUEST_BATCH_SIZE = Math.max(intOption('FRIEND_REQUEST_BATCH_SIZE', 20), 1);
 const FRIEND_REQUEST_MAX_ATTEMPTS = intOption('FRIEND_REQUEST_MAX_ATTEMPTS', 5);
+const QUICK_INVITE_POOL_SIZE = Math.max(intOption('QUICK_INVITE_POOL_SIZE', 10), 0);
+const QUICK_INVITE_DURATION_SEC = Math.max(intOption('QUICK_INVITE_DURATION_SEC', 30 * 24 * 60 * 60), 0);
+const QUICK_INVITE_REFRESH_MS = Math.max(intOption('QUICK_INVITE_REFRESH_MS', 15 * 60 * 1000), 60000);
 
 function log(level, message, extra = undefined) {
   const lvl = LOG_LEVELS[level];
@@ -129,6 +132,21 @@ db.prepare(`
   )
 `).run();
 
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS steam_quick_invites (
+    token TEXT PRIMARY KEY,
+    invite_link TEXT NOT NULL,
+    invite_limit INTEGER DEFAULT 1,
+    invite_duration INTEGER,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    status TEXT DEFAULT 'available',
+    reserved_by INTEGER,
+    reserved_at INTEGER,
+    last_seen INTEGER
+  )
+`).run();
+
 const upsertPresence = db.prepare(`
   INSERT INTO steam_rich_presence(steam_id, app_id, status, display, player_group, player_group_size, connect, raw_json, last_update)
   VALUES (@steam_id, @app_id, @status, @display, @player_group, @player_group_size, @connect, @raw_json, @last_update)
@@ -186,12 +204,59 @@ const markFriendRequestFailed = db.prepare(`
   WHERE steam_id = @steam_id
 `);
 
+const markQuickInvitesExpired = db.prepare(`
+  UPDATE steam_quick_invites
+  SET status = 'expired',
+      last_seen = strftime('%s','now')
+  WHERE status = 'available'
+    AND expires_at IS NOT NULL
+    AND expires_at <= strftime('%s','now')
+`);
+
+const countAvailableQuickInvites = db.prepare(`
+  SELECT COUNT(1) AS count
+  FROM steam_quick_invites
+  WHERE status = 'available'
+    AND (expires_at IS NULL OR expires_at > strftime('%s','now'))
+`);
+
+const upsertQuickInvite = db.prepare(`
+  INSERT INTO steam_quick_invites(
+    token, invite_link, invite_limit, invite_duration, created_at,
+    expires_at, status, reserved_by, reserved_at, last_seen
+  ) VALUES (
+    @invite_token, @invite_link, @invite_limit, @invite_duration, @created_at,
+    @expires_at, 'available', NULL, NULL, strftime('%s','now')
+  )
+  ON CONFLICT(token) DO UPDATE SET
+    invite_link=excluded.invite_link,
+    invite_limit=excluded.invite_limit,
+    invite_duration=excluded.invite_duration,
+    created_at=excluded.created_at,
+    expires_at=excluded.expires_at,
+    status=CASE
+      WHEN steam_quick_invites.status = 'shared' THEN steam_quick_invites.status
+      ELSE 'available'
+    END,
+    reserved_by=CASE
+      WHEN steam_quick_invites.status = 'shared' THEN steam_quick_invites.reserved_by
+      ELSE NULL
+    END,
+    reserved_at=CASE
+      WHEN steam_quick_invites.status = 'shared' THEN steam_quick_invites.reserved_at
+      ELSE NULL
+    END,
+    last_seen=strftime('%s','now')
+`);
+
 const client = new SteamUser();
 client.setOption('promptSteamGuardCode', false);
 
 let isLoggedOn = false;
 let reconnectTimer = null;
 const watchList = new Map();
+let ensuringQuickInvites = false;
+let quickInviteWarnedUnsupported = false;
 
 const loginAccount = process.env.STEAM_BOT_USERNAME || process.env.STEAM_LOGIN || process.env.STEAM_ACCOUNT;
 let loginKey = process.env.STEAM_LOGIN_KEY || '';
@@ -364,12 +429,107 @@ function processFriendRequests() {
   }
 }
 
-client.on('loggedOn', () => {
+async function ensureQuickInvitePool() {
+  if (!isLoggedOn || QUICK_INVITE_POOL_SIZE <= 0) {
+    return;
+  }
+  if (typeof client.createQuickInviteLink !== 'function') {
+    if (!quickInviteWarnedUnsupported) {
+      log('warn', 'Quick invite API not supported by current steam-user version');
+      quickInviteWarnedUnsupported = true;
+    }
+    return;
+  }
+  if (ensuringQuickInvites) {
+    return;
+  }
+  ensuringQuickInvites = true;
+
+  try {
+    try {
+      markQuickInvitesExpired.run();
+    } catch (err) {
+      log('warn', 'Failed to mark expired quick invites', { error: err.message });
+    }
+
+    let available = 0;
+    try {
+      const row = countAvailableQuickInvites.get();
+      if (row && Object.prototype.hasOwnProperty.call(row, 'count')) {
+        available = Number(row.count) || 0;
+      }
+    } catch (err) {
+      log('error', 'Failed to count available quick invites', { error: err.message });
+      return;
+    }
+
+    const needed = QUICK_INVITE_POOL_SIZE - available;
+    if (needed <= 0) {
+      return;
+    }
+
+    for (let i = 0; i < needed; i += 1) {
+      try {
+        const options = { inviteLimit: 1 };
+        if (QUICK_INVITE_DURATION_SEC > 0) {
+          options.inviteDuration = QUICK_INVITE_DURATION_SEC;
+        }
+
+        const response = await client.createQuickInviteLink(options);
+        if (!response || !response.token) {
+          log('warn', 'Quick invite creation returned empty response');
+          continue;
+        }
+
+        const token = response.token;
+        const createdAt = token.time_created instanceof Date
+          ? Math.floor(token.time_created.getTime() / 1000)
+          : Math.floor(Date.now() / 1000);
+        const inviteDurationRaw = token.invite_duration;
+        const inviteDuration = (inviteDurationRaw === undefined || inviteDurationRaw === null)
+          ? null
+          : Number(inviteDurationRaw);
+        let expiresAt = null;
+        if (inviteDuration && Number.isFinite(inviteDuration) && inviteDuration > 0) {
+          expiresAt = createdAt + inviteDuration;
+        } else if (QUICK_INVITE_DURATION_SEC > 0) {
+          expiresAt = createdAt + QUICK_INVITE_DURATION_SEC;
+        }
+
+        upsertQuickInvite.run({
+          invite_token: token.invite_token,
+          invite_link: token.invite_link,
+          invite_limit: Number(token.invite_limit || 0),
+          invite_duration: inviteDuration,
+          created_at: createdAt,
+          expires_at: expiresAt,
+        });
+
+        log('info', 'Created Steam quick invite link', {
+          inviteToken: token.invite_token,
+          expiresAt,
+        });
+      } catch (err) {
+        log('warn', 'Failed to create Steam quick invite link', { error: err.message });
+        break;
+      }
+    }
+  } finally {
+    ensuringQuickInvites = false;
+  }
+}
+
+client.on('loggedOn', async () => {
   isLoggedOn = true;
   log('info', 'Logged in to Steam', { account: loginAccount });
   client.setPersona(SteamUser.EPersonaState.Online);
   refreshWatchList();
   processFriendRequests();
+  try {
+    await ensureQuickInvitePool();
+  } catch (err) {
+    log('warn', 'Initial quick invite pool fill failed', { error: err.message });
+  }
 });
 
 client.on('loginKey', (key) => {
@@ -495,6 +655,13 @@ refreshWatchList();
 setInterval(refreshWatchList, WATCH_REFRESH_MS);
 setInterval(pollPresence, POLL_INTERVAL_MS);
 setInterval(processFriendRequests, FRIEND_REQUEST_INTERVAL_MS);
+if (QUICK_INVITE_POOL_SIZE > 0) {
+  setInterval(() => {
+    ensureQuickInvitePool().catch((err) => {
+      log('warn', 'Quick invite pool refresh failed', { error: err.message });
+    });
+  }, QUICK_INVITE_REFRESH_MS);
+}
 
 logOn();
 
