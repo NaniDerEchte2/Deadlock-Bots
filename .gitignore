@@ -18,8 +18,11 @@ install_windows_service.py
 *env*
 *.env*
 *.json
-!service/steam_presence/package.json
-!service/steam_presence/package-lock.json
+cogs/steam/steam_presence/*
+!cogs/steam/steam_presence/package.json
+!cogs/steam/steam_presence/package-lock.json
+!cogs/steam/steam_presence/index.js
+
 *.db-shm
 *.db-wal
 *.db
