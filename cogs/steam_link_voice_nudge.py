@@ -483,10 +483,18 @@ class SteamLinkVoiceNudge(commands.Cog):
         except Exception:
             log.exception("wait_and_notify failed")
 
-    @commands.hybrid_command(name="nudgesend", description="(Admin) Schickt die Steam-Nudge-DM an einen Nutzer.")
+    @commands.hybrid_command(
+        name="nudgesend",
+        description="(Admin) Schickt die Steam-Nudge-DM an einen Nutzer.",
+        aliases=("t30",),
+    )
     @commands.has_permissions(administrator=True)
-    async def nudgesend(self, ctx: commands.Context, target: Optional[discord.Member] = None):
-        target = target or (ctx.guild.get_member(DEFAULT_TEST_TARGET_ID) if ctx.guild and DEFAULT_TEST_TARGET_ID else None)
+    async def nudgesend(
+        self,
+        ctx: commands.Context,
+        target: Optional[Union[discord.Member, discord.User]] = None,
+    ):
+        target = await self._resolve_test_target(ctx, target)
         if not target:
             await ctx.reply("Bitte Ziel angeben: `!nudgesend @user`", mention_author=False)
             return
@@ -500,6 +508,45 @@ class SteamLinkVoiceNudge(commands.Cog):
             await ctx.reply(f"📨 Test-DM an {getattr(target, 'mention', target.id)} gesendet.", mention_author=False)
         else:
             await ctx.reply("⚠️ Test-DM konnte nicht gesendet werden (DMs aus? oder bereits benachrichtigt).", mention_author=False)
+
+    async def _resolve_test_target(
+        self,
+        ctx: commands.Context,
+        target: Optional[Union[discord.Member, discord.User]],
+    ) -> Optional[Union[discord.Member, discord.User]]:
+        author_obj = getattr(ctx, "author", None)
+        author_fallback: Optional[Union[discord.Member, discord.User]] = None
+        if isinstance(author_obj, (discord.Member, discord.User)) and not getattr(author_obj, "bot", False):
+            author_fallback = author_obj
+
+        if target:
+            return target
+
+        if not DEFAULT_TEST_TARGET_ID:
+            return author_fallback
+
+        # Try resolve as guild member first.
+        guild = getattr(ctx, "guild", None)
+        if guild:
+            member = guild.get_member(DEFAULT_TEST_TARGET_ID)
+            if member:
+                return member
+            try:
+                member = await guild.fetch_member(DEFAULT_TEST_TARGET_ID)
+            except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+                member = None
+            if member:
+                return member
+
+        # Fall back to any known user object in cache/API.
+        user = self.bot.get_user(DEFAULT_TEST_TARGET_ID)
+        if user:
+            return user
+
+        try:
+            return await self.bot.fetch_user(DEFAULT_TEST_TARGET_ID)
+        except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+            return author_fallback
 
 
 async def setup(bot: commands.Bot):
