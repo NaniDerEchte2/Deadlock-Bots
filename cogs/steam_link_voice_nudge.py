@@ -12,6 +12,13 @@ from discord.ext import commands
 
 from service import db
 
+from cogs.steam import (
+    QUICK_INVITE_CUSTOM_ID,
+    QuickInviteButton,
+    queue_friend_request,
+    respond_with_quick_invite,
+)
+
 log = logging.getLogger("SteamVoiceNudge")
 
 # ---------- Einstellungen ----------
@@ -69,6 +76,10 @@ def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: 
         """,
         (int(user_id), str(steam_id), name or "", int(verified)),
     )
+    try:
+        queue_friend_request(steam_id)
+    except Exception:
+        log.exception("[nudge] Konnte Steam-Freundschaftsanfrage nicht einreihen", extra={"steam_id": steam_id})
 
 def _ensure_schema():
     db.execute("""
@@ -326,6 +337,7 @@ class _OptionsView(discord.ui.View):
                 disabled=True, emoji="🎮", row=0
             ))
 
+        self.add_item(QuickInviteButton(row=1, source="voice_nudge_view"))
         self.add_item(_ManualButton(row=1))
         self.add_item(_CloseButton(row=1))
 
@@ -338,6 +350,15 @@ class _PersistentRegistryView(discord.ui.View):
                        emoji="🔢", custom_id="nudge_manual")
     async def _open_manual(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(_ManualModal())
+
+    @discord.ui.button(
+        label="Schnelle Anfrage senden",
+        style=discord.ButtonStyle.success,
+        emoji="⚡",
+        custom_id=QUICK_INVITE_CUSTOM_ID,
+    )
+    async def _quick_invite(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await respond_with_quick_invite(interaction, source="voice_nudge_persistent")
 
     @discord.ui.button(label="Schließen", style=discord.ButtonStyle.secondary,
                        emoji="❌", custom_id="nudge_close")
@@ -418,7 +439,10 @@ class SteamLinkVoiceNudge(commands.Cog):
                 "• Ergebnis: präzisere **Kanal-Beschreibungen** (z. B. „3 im Match“) & bessere **Orga/Balancing** bei Events.\n\n"
                 "**Wie kannst du dabei helfen?**\n"
                 "1) Klicke **„Via Discord verknüpfen“**, **„SteamID manuell eingeben“** oder **„Mit Steam anmelden“**.\n"
-                "2) Folge den kurzen Schritten. Wir bekommen niemals dein Passwort – bei Steam erhalten wir nur die **SteamID64**.\n\n"
+                "2) Folge den kurzen Schritten. Wir bekommen niemals dein Passwort – bei Steam erhalten wir nur die **SteamID64**.\n"
+                "3) Der Steam-Bot schickt dir anschließend automatisch eine Freundschaftsanfrage. "
+                "Alternativ kannst du über **„Schnelle Anfrage senden“** einen persönlichen Link erzeugen "
+                "(einmalig, 30 Tage gültig) oder den Freundescode **820142646** nutzen.\n\n"
                 "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** "
                 "(und **Gesamtspielzeit** nicht auf „immer privat“)."
             )

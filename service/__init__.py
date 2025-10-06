@@ -14,4 +14,9 @@ try:
 except Exception:
     worker_client = None
 
-__all__ = ["db", "socket_bus", "worker_client", "steam"]
+__all__ = [
+    "db",
+    "socket_bus",
+    "worker_client",
+    "steam",
+]
