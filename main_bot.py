@@ -1,5 +1,4 @@
-# main_bot.py — angepasst für Shutdown-Watchdog & korrektes Cog-Unload/Status
-# Basierend auf deiner letzten Version (Auto-Discovery, Health-Checks, usw.)
+# main_bot.py — angepasst: Service-Manager wird NUR noch vom Cog gesteuert
 from __future__ import annotations
 
 import asyncio
@@ -23,7 +22,6 @@ from discord.ext import commands
 # --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
 import sys as _sys, os as _os, importlib, inspect, logging as _logging, hashlib
 
-from cogs.steam.service_manager import SteamPresenceServiceManager
 
 def _log_src(modname: str):
     try:
@@ -184,6 +182,7 @@ class MasterBot(commands.Bot):
      - zentrale DB-Init
      - Timeout-gestütztem Cog-Unload
      - KORREKTER Runtime-Status (self.extensions) + Presence-Updates
+     - ⚠️ Steam-Service wird NUR über den Cog 'cogs.steam.service_manager' verwaltet
     """
 
     def __init__(self):
@@ -214,7 +213,9 @@ class MasterBot(commands.Bot):
         self.startup_time = _dt.datetime.now(tz=tz)
         self.cog_status: Dict[str, str] = {}
 
-        self.steam_service = SteamPresenceServiceManager()
+        # WICHTIG: KEIN eigener SteamPresenceServiceManager hier!
+        # Der Cog 'cogs.steam.service_manager' setzt beim Laden:
+        #   bot.steam_service_manager = SteamPresenceServiceManager(...)
 
         try:
             self.per_cog_unload_timeout = float(os.getenv("PER_COG_UNLOAD_TIMEOUT", "3.0"))
@@ -234,8 +235,6 @@ class MasterBot(commands.Bot):
             return module_path not in only
         if module_path in default_excludes:
             return True
-        #if ".worker" in module_path or "worker." in module_path or module_path.endswith("_worker"):
-        #    return True
         return False
 
     def auto_discover_cogs(self):
@@ -377,16 +376,7 @@ class MasterBot(commands.Bot):
         except Exception as e:
             logging.error(f"Failed to sync slash commands: {e}")
 
-        if self.steam_service.auto_start:
-            logging.info(
-                "Scheduling steam presence service auto-start (cmd='%s', cwd=%s)",
-                self.steam_service.start_command,
-                self.steam_service.service_dir,
-            )
-            asyncio.create_task(self._start_steam_service_safely())
-        else:
-            logging.info("AUTO_START_STEAM_SERVICE disabled; steam presence service not started automatically")
-
+        # ⚠️ KEIN Autostart des Steam-Services hier!
         logging.info("Master Bot setup completed")
 
     async def on_ready(self):
@@ -399,13 +389,16 @@ class MasterBot(commands.Bot):
         logging.info(f"Loaded cogs (runtime): {len(runtime_loaded)}")
         logging.info(f"Loaded cogs: {len(runtime_loaded)}/{len(self.cogs_list)}")
 
-        steam_status = self.steam_service.status()
-        logging.info(
-            "Steam presence service • auto_start=%s • running=%s • pid=%s",
-            steam_status.auto_start,
-            steam_status.running,
-            steam_status.pid,
-        )
+        # Status des vom Cog verwalteten Steam-Services loggen (falls vorhanden)
+        mgr = getattr(self, "steam_service_manager", None)
+        if mgr:
+            s = mgr.status()
+            logging.info(
+                "Steam presence service • auto_start=%s • running=%s • pid=%s",
+                s.auto_start, s.running, s.pid,
+            )
+        else:
+            logging.info("Steam presence service manager (Cog) nicht verfügbar/noch nicht geladen")
 
         # TempVoice Log (neu)
         try:
@@ -420,16 +413,6 @@ class MasterBot(commands.Bot):
             logging.getLogger().debug("TempVoice Ready-Log fehlgeschlagen (ignoriert): %r", e)
 
         asyncio.create_task(self.hourly_health_check())
-
-    async def _start_steam_service_safely(self):
-        try:
-            started = await self.steam_service.ensure_started()
-            if started:
-                logging.info("Steam presence service launched by master bot")
-            else:
-                logging.info("Steam presence service already running when master bot attempted start")
-        except Exception as exc:
-            logging.error(f"Failed to start steam presence service: {exc}")
 
     async def load_all_cogs(self):
         logging.info("Loading all cogs in parallel...")
@@ -613,12 +596,15 @@ class MasterBot(commands.Bot):
     async def close(self):
         logging.info("Master Bot shutting down...")
 
-        try:
-            stopped = await self.steam_service.stop()
-            if stopped:
-                logging.info("Steam presence service stopped as part of master shutdown")
-        except Exception as exc:
-            logging.error(f"Failed to stop steam presence service during shutdown: {exc}")
+        # Steam-Service NUR stoppen, wenn der Cog-Manager vorhanden ist
+        mgr = getattr(self, "steam_service_manager", None)
+        if mgr:
+            try:
+                stopped = await mgr.stop()
+                if stopped:
+                    logging.info("Steam presence service stopped as part of master shutdown")
+            except Exception as exc:
+                logging.error(f"Failed to stop steam presence service during shutdown: {exc}")
 
         # 1) Alle Cogs entladen (parallel/sequenziell mit Timeout pro Cog)
         to_unload = [ext for ext in list(self.extensions.keys()) if ext.startswith("cogs.")]
@@ -688,7 +674,12 @@ class MasterControlCog(commands.Cog):
 
     @master_control.group(name="steam", invoke_without_command=True)
     async def master_steam(self, ctx):
-        status = self.bot.steam_service.status()
+        mgr = getattr(self.bot, "steam_service_manager", None)
+        if not mgr:
+            await ctx.send("⚠️ Steam Presence Service Cog ist nicht geladen (oder Manager nicht gesetzt).")
+            return
+
+        status = mgr.status()
         embed = discord.Embed(title="Steam Presence Service", color=0x1B2838)
         embed.add_field(name="Auto-Start", value="✅ Aktiv" if status.auto_start else "⛔ Deaktiviert", inline=True)
         embed.add_field(name="Status", value="🟢 Läuft" if status.running else "🔴 Gestoppt", inline=True)
@@ -705,8 +696,12 @@ class MasterControlCog(commands.Cog):
 
     @master_steam.command(name="start")
     async def master_steam_start(self, ctx):
+        mgr = getattr(self.bot, "steam_service_manager", None)
+        if not mgr:
+            await ctx.send("⚠️ Steam Presence Service Cog ist nicht geladen.")
+            return
         try:
-            started = await self.bot.steam_service.ensure_started()
+            started = await mgr.ensure_started()
         except Exception as exc:
             await ctx.send(f"❌ Start fehlgeschlagen: `{exc}`")
             return
@@ -717,8 +712,12 @@ class MasterControlCog(commands.Cog):
 
     @master_steam.command(name="stop")
     async def master_steam_stop(self, ctx):
+        mgr = getattr(self.bot, "steam_service_manager", None)
+        if not mgr:
+            await ctx.send("⚠️ Steam Presence Service Cog ist nicht geladen.")
+            return
         try:
-            stopped = await self.bot.steam_service.stop()
+            stopped = await mgr.stop()
         except Exception as exc:
             await ctx.send(f"❌ Stop fehlgeschlagen: `{exc}`")
             return
@@ -729,8 +728,12 @@ class MasterControlCog(commands.Cog):
 
     @master_steam.command(name="restart")
     async def master_steam_restart(self, ctx):
+        mgr = getattr(self.bot, "steam_service_manager", None)
+        if not mgr:
+            await ctx.send("⚠️ Steam Presence Service Cog ist nicht geladen.")
+            return
         try:
-            await self.bot.steam_service.restart()
+            await mgr.restart()
         except Exception as exc:
             await ctx.send(f"❌ Restart fehlgeschlagen: `{exc}`")
             return
@@ -738,9 +741,13 @@ class MasterControlCog(commands.Cog):
 
     @master_steam.command(name="tail")
     async def master_steam_tail(self, ctx, limit: int = 20, channel: str = "stdout"):
+        mgr = getattr(self.bot, "steam_service_manager", None)
+        if not mgr:
+            await ctx.send("⚠️ Steam Presence Service Cog ist nicht geladen.")
+            return
         limit = max(1, min(limit, 100))
         stderr = channel.lower() in {"stderr", "err", "error"}
-        lines = self.bot.steam_service.tail(stderr=stderr, limit=limit)
+        lines = mgr.tail(stderr=stderr, limit=limit)
         if not lines:
             await ctx.send("(Keine Ausgaben verfügbar)")
             return
@@ -786,16 +793,20 @@ class MasterControlCog(commands.Cog):
             err_short = [f"❌ {e.split('.')[-1]}" for e in errs]
             embed.add_field(name="⚠️ Fehlerhafte Cogs (letzter Versuch)", value="\n".join(err_short), inline=False)
 
-        steam_status = self.bot.steam_service.status()
-        lines = [
-            f"Auto-Start: {'✅ an' if steam_status.auto_start else '⛔ aus'}",
-            f"Status: {'🟢 läuft' if steam_status.running else '🔴 gestoppt'}",
-            f"PID: {steam_status.pid or '—'}",
-            f"Restarts: {steam_status.restarts}",
-        ]
-        if not steam_status.running and steam_status.returncode is not None:
-            lines.append(f"Exit-Code: {steam_status.returncode}")
-        embed.add_field(name="🖥️ Steam Presence Service", value="\n".join(lines), inline=False)
+        mgr = getattr(self.bot, "steam_service_manager", None)
+        if mgr:
+            steam_status = mgr.status()
+            lines = [
+                f"Auto-Start: {'✅ an' if steam_status.auto_start else '⛔ aus'}",
+                f"Status: {'🟢 läuft' if steam_status.running else '🔴 gestoppt'}",
+                f"PID: {steam_status.pid or '—'}",
+                f"Restarts: {steam_status.restarts}",
+            ]
+            if not steam_status.running and steam_status.returncode is not None:
+                lines.append(f"Exit-Code: {steam_status.returncode}")
+            embed.add_field(name="🖥️ Steam Presence Service", value="\n".join(lines), inline=False)
+        else:
+            embed.add_field(name="🖥️ Steam Presence Service", value="Cog/Manager nicht geladen", inline=False)
 
         await ctx.send(embed=embed)
 

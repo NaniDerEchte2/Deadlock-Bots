@@ -5,6 +5,7 @@
  * - Optional: Code via stdin (!sg) — auch Umschalten von Device→Code
  * - Persistenter loginKey (Datei) -> spätere Logins ohne Guard
  * - Single-Login-Schutz, Backoff bei Disconnect/Fehler
+ * - Schonendes Presence-Polling (Token-Bucket + Chunk-Delay) gegen Rate-Limits
  */
 
 const fs = require('fs');
@@ -21,8 +22,16 @@ try { SteamIDCtor = require('steamid'); } catch { SteamIDCtor = SteamUser.SteamI
 
 // ---- Config / Logging ----
 const APP_ID = parseInt(process.env.DEADLOCK_APP_ID || '1422450', 10);
-const WATCH_REFRESH_MS = parseInt(process.env.RP_WATCH_REFRESH_SEC || '30', 10) * 1000;
-const POLL_INTERVAL_MS = parseInt(process.env.RP_POLL_INTERVAL_MS || '15000', 10);
+
+// Wie oft wir neue Watchlist aus DB ziehen
+const WATCH_REFRESH_MS = parseInt(process.env.RP_WATCH_REFRESH_SEC || '60', 10) * 1000; // konservativer
+// Basis-Intervall, in dem wir 1 "runde" Presence anstoßen (intern weiter gedrosselt)
+const POLL_INTERVAL_MS = parseInt(process.env.RP_POLL_INTERVAL_MS || '30000', 10);
+
+// Token-Bucket / Throttling (sanfte Grenzen)
+const CHUNK_SIZE      = parseInt(process.env.RP_CHUNK_SIZE || '20', 10);        // wie viele IDs pro Chunk
+const CHUNK_DELAY_MS  = parseInt(process.env.RP_CHUNK_DELAY_MS || '500', 10);   // Pause zwischen Chunks
+const MAX_REQ_PER_MIN = parseInt(process.env.RP_MAX_REQ_PER_MIN || '120', 10);  // Deckel pro Minute für requestFriendRichPresence
 
 const DEVICE_WAIT_TIMEOUT_MS = (parseInt(process.env.STEAM_DEVICE_WAIT_TIMEOUT_SEC || '300', 10) || 0) * 1000; // 0 = kein Timeout
 const STATUS_LOG_EVERY_MS = parseInt(process.env.STEAM_DEVICE_STATUS_LOG_EVERY_MS || '15000', 10);
@@ -31,6 +40,17 @@ const STATUS_LOG_EVERY_MS = parseInt(process.env.STEAM_DEVICE_STATUS_LOG_EVERY_M
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
 const LOG_THRESHOLD = Object.prototype.hasOwnProperty.call(LOG_LEVELS, LOG_LEVEL) ? LOG_LEVELS[LOG_LEVEL] : LOG_LEVELS.info;
+
+// ganz oben nach Imports
+const LOCK_PATH = path.join(__dirname, 'presence.lock');
+let lockFd;
+try { lockFd = fs.openSync(LOCK_PATH, 'wx'); fs.writeFileSync(lockFd, String(process.pid)); }
+catch { console.error('Another presence instance seems to be running. Exiting.'); process.exit(0); }
+
+// beim Shutdown:
+function cleanupLock(){ try{ if(lockFd) fs.closeSync(lockFd); fs.unlinkSync(LOCK_PATH); }catch{} }
+process.on('exit', cleanupLock); process.on('SIGINT', ()=>{ cleanupLock(); process.exit(0); });
+process.on('SIGTERM', ()=>{ cleanupLock(); process.exit(0); });
 
 function log(level, message, extra = undefined) {
   const lvl = LOG_LEVELS[level];
@@ -138,6 +158,22 @@ let reconnectTimer = null;
 let backoffMs = 10_000;      // Start-Backoff
 const backoffMaxMs = 5 * 60_000;
 
+// Token-Bucket für Presence-Requests
+let tokens = MAX_REQ_PER_MIN;
+setInterval(() => { tokens = MAX_REQ_PER_MIN; }, 60_000);
+
+function tryRequestPresence(steamID) {
+  if (tokens <= 0) return false;
+  try {
+    client.requestFriendRichPresence(steamID, APP_ID);
+    tokens--;
+    return true;
+  } catch (err) {
+    log('debug', 'requestFriendRichPresence failed', { steamId: String(steamID), error: err.message });
+    return false;
+  }
+}
+
 function startDeviceWaitWatchdog() {
   stopDeviceWaitWatchdog();
   deviceWaitStartedAt = Date.now();
@@ -225,7 +261,7 @@ stdinRL.on('line', (line) => {
   if (txt.toUpperCase() === 'STATUS') {
     log('info', 'Status', {
       isLoggedOn, isConnecting, waitingDeviceApproval,
-      hasLoginKey: Boolean(loginKey), backoffMs,
+      hasLoginKey: Boolean(loginKey), backoffMs, tokensRemaining: tokens,
     });
     return;
   }
@@ -262,11 +298,6 @@ stdinRL.on('line', (line) => {
 });
 
 // ---- Presence helpers ----
-function safeRequestRichPresence(steamID) {
-  try { client.requestFriendRichPresence(steamID, APP_ID); }
-  catch (err) { log('debug', 'requestFriendRichPresence failed', { steamId: steamID.toString(), error: err.message }); }
-}
-
 const watchList = new Map();
 function refreshWatchList() {
   let rows = [];
@@ -282,7 +313,7 @@ function refreshWatchList() {
         const steamID = new SteamIDCtor(sid);
         watchList.set(sid, steamID);
         log('info', 'Added SteamID to watch list', { steamId: sid });
-        if (isLoggedOn) safeRequestRichPresence(steamID);
+        if (isLoggedOn) tryRequestPresence(steamID); // soft
       } catch (err) {
         log('warn', 'Ignoring invalid SteamID', { steamId: sid, error: err.message });
       }
@@ -293,12 +324,24 @@ function refreshWatchList() {
   }
 }
 
-function pollPresence() {
+async function pollPresence() {
   if (!isLoggedOn || watchList.size === 0) return;
   const ids = Array.from(watchList.values());
-  const chunkSize = 25;
-  for (let i = 0; i < ids.length; i += chunkSize) {
-    for (const sid of ids.slice(i, i + chunkSize)) safeRequestRichPresence(sid);
+
+  for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+    const chunk = ids.slice(i, i + CHUNK_SIZE);
+    for (const sid of chunk) {
+      // Wenn Tokens alle, warte bis zur nächsten Minute (sanft: nur Chunk-Pause weiterlaufen lassen)
+      if (tokens <= 0) {
+        log('warn', 'Presence request budget exhausted; pausing chunk loop until refill.');
+        // warte bis nächster Refilling-Tick grob ansteht (Rest der Minute)
+        await new Promise(r => setTimeout(r, Math.max(CHUNK_DELAY_MS, 1000)));
+        // versuche erneut
+      }
+      tryRequestPresence(sid);
+    }
+    // kleine Pause zwischen den Chunks, damit wir nicht burst-artig anklopfen
+    await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
   }
 }
 
@@ -311,7 +354,13 @@ client.on('loggedOn', () => {
   resetBackoff();
   log('info', 'Logged in to Steam', { account: loginAccount });
   client.setPersona(SteamUser.EPersonaState.Online);
-  refreshWatchList();
+
+  // sanftes Hochfahren
+  setTimeout(() => {
+    refreshWatchList();
+    // Einmaliges initiales Polling kurz nach Login (sonst wartet man bis zum nächsten Intervall)
+    pollPresence().catch(() => {});
+  }, 5000);
 });
 
 client.on('loginKey', (key) => {
@@ -422,6 +471,8 @@ client.on('error', (err) => {
   log('error', 'Steam client error', { error: err.message });
   const text = (err && err.message) ? err.message.toLowerCase() : '';
   if (!waitingDeviceApproval && (text.includes('ratelimit') || text.includes('rate limit'))) {
+    // bei RateLimit künftig deutlich länger warten
+    backoffMs = Math.max(backoffMs, 5 * 60_000);
     scheduleReconnect();
   }
 });
@@ -431,7 +482,7 @@ client.on('webSession', () => log('debug', 'Web session established'));
 // ---- Kickoff ----
 refreshWatchList();
 setInterval(refreshWatchList, WATCH_REFRESH_MS);
-setInterval(pollPresence, POLL_INTERVAL_MS);
+setInterval(() => { pollPresence().catch(() => {}); }, POLL_INTERVAL_MS);
 logOn();
 
 function shutdown() {
