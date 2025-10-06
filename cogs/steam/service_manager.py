@@ -20,6 +20,41 @@ def _to_bool(value: Optional[str], default: bool) -> bool:
     return value.strip().lower() not in _FALSE_VALUES
 
 
+def _resolve_service_dir(explicit: Optional[Path]) -> Path:
+    """
+    Ermittelt den Ordner des Node-Services robust:
+    1) expliziter Parameter (service_dir)
+    2) ENV: STEAM_PRESENCE_DIR
+    3) typische Kandidaten relativ zu diesem Modul (cogs/steam/service_manager.py)
+    """
+    if explicit is not None:
+        return Path(explicit).expanduser().resolve()
+
+    env = os.getenv("STEAM_PRESENCE_DIR")
+    if env:
+        return Path(env).expanduser().resolve()
+
+    # Dieses File liegt in: .../cogs/steam/service_manager.py
+    here = Path(__file__).resolve().parent              # .../cogs/steam
+    cogs_dir = here.parent                              # .../cogs
+    project_root = cogs_dir.parent                      # .../
+
+    candidates = [
+        here / "steam_presence",                        # .../cogs/steam/steam_presence (NEU)
+        here / "service" / "steam_presence",            # .../cogs/steam/service/steam_presence
+        cogs_dir / "service" / "steam_presence",        # .../cogs/service/steam_presence (ALT)
+        project_root / "cogs" / "service" / "steam_presence",  # fallback legacy
+    ]
+
+    for cand in candidates:
+        pkg = cand / "package.json"
+        if pkg.exists():
+            return cand.resolve()
+
+    # Wenn keiner existiert, nimm den bevorzugten neuen Ort:
+    return (here / "steam_presence").resolve()
+
+
 @dataclass
 class SteamServiceStatus:
     running: bool
@@ -37,8 +72,7 @@ class SteamPresenceServiceManager:
     """Controls the node-based Steam rich presence bridge."""
 
     def __init__(self, service_dir: Optional[Path] = None) -> None:
-        root = Path(__file__).resolve().parent.parent
-        self.service_dir = service_dir or root / "service" / "steam_presence"
+        self.service_dir = _resolve_service_dir(service_dir)
         self.start_command = os.getenv("STEAM_SERVICE_CMD", "npm run start")
         self.install_command = os.getenv("STEAM_SERVICE_INSTALL_CMD", "npm install")
         self.auto_start = _to_bool(os.getenv("AUTO_START_STEAM_SERVICE"), True)
@@ -58,6 +92,8 @@ class SteamPresenceServiceManager:
         self._deps_checked = False
         self._closing = False
         self._monitor_task: Optional[asyncio.Task[None]] = None
+
+        LOGGER.info("Steam presence service directory resolved to: %s", self.service_dir)
 
     async def _get_lock(self) -> asyncio.Lock:
         if self._lock is None:
