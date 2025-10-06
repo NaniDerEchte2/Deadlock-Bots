@@ -6,6 +6,10 @@ try:
 except Exception:
     steam = None
 try:
+    from . import steam_friend_requests  # Queue für Steam-Freundschaftsanfragen
+except Exception:
+    steam_friend_requests = None
+try:
     from . import socket_bus  # falls vorhanden
 except Exception:
     socket_bus = None
@@ -14,4 +18,4 @@ try:
 except Exception:
     worker_client = None
 
-__all__ = ["db", "socket_bus", "worker_client", "steam"]
+__all__ = ["db", "socket_bus", "worker_client", "steam", "steam_friend_requests"]

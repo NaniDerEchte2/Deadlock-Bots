@@ -183,7 +183,8 @@ class RulesPanel(commands.Cog):
             desc=(
                 "Für Voice-Status & Features bitte deinen Steam-Account verknüpfen.\n"
                 "🤝 Wenn du dich via Discord oder Steam anmeldest, senden wir dir automatisch eine Freundschaftsanfrage. "
-                "Mehr Optionen findest du über **Freundschafts-Optionen** (Bot-ID 820142646, Schnell-Link usw.).\n"
+                "Mehr Optionen findest du über **Freundschafts-Optionen** (Schnell-Link <https://s.team/p/820142646> "
+                "oder Freundescode 820142646).\n"
                 "**Wichtig:** Steam → Profil → Spieldetails = Öffentlich."
             ),
             step=2,

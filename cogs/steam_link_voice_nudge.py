@@ -11,6 +11,7 @@ import discord
 from discord.ext import commands
 
 from service import db
+from service.steam_friend_requests import queue_friend_request
 
 log = logging.getLogger("SteamVoiceNudge")
 
@@ -69,6 +70,10 @@ def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: 
         """,
         (int(user_id), str(steam_id), name or "", int(verified)),
     )
+    try:
+        queue_friend_request(steam_id)
+    except Exception:
+        log.exception("[nudge] Konnte Steam-Freundschaftsanfrage nicht einreihen", extra={"steam_id": steam_id})
 
 def _ensure_schema():
     db.execute("""
@@ -418,7 +423,9 @@ class SteamLinkVoiceNudge(commands.Cog):
                 "• Ergebnis: präzisere **Kanal-Beschreibungen** (z. B. „3 im Match“) & bessere **Orga/Balancing** bei Events.\n\n"
                 "**Wie kannst du dabei helfen?**\n"
                 "1) Klicke **„Via Discord verknüpfen“**, **„SteamID manuell eingeben“** oder **„Mit Steam anmelden“**.\n"
-                "2) Folge den kurzen Schritten. Wir bekommen niemals dein Passwort – bei Steam erhalten wir nur die **SteamID64**.\n\n"
+                "2) Folge den kurzen Schritten. Wir bekommen niemals dein Passwort – bei Steam erhalten wir nur die **SteamID64**.\n"
+                "3) Der Steam-Bot schickt dir anschließend automatisch eine Freundschaftsanfrage. "
+                "Alternativ: <https://s.team/p/820142646> oder Freundescode **820142646**.\n\n"
                 "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** "
                 "(und **Gesamtspielzeit** nicht auf „immer privat“)."
             )

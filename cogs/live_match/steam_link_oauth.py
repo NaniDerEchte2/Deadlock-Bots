@@ -16,6 +16,7 @@ import discord
 from discord.ext import commands
 
 from service import db
+from service.steam_friend_requests import queue_friend_request, queue_friend_requests
 
 log = logging.getLogger("SteamLink")
 
@@ -146,6 +147,10 @@ def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: 
         """,
         (int(user_id), str(steam_id), name or "", int(verified)),
     )
+    try:
+        queue_friend_request(steam_id)
+    except Exception:
+        log.exception("Konnte Steam-Freundschaftsanfrage nicht einreihen", extra={"steam_id": steam_id})
 
 
 # ----------------------- Middleware (Top-Level) -------------------------------
@@ -295,6 +300,13 @@ class SteamLink(commands.Cog):
 
     async def _notify_user_linked(self, user_id: int, steam_ids: List[str]) -> None:
         try:
+            queue_friend_requests(steam_ids)
+        except Exception:
+            log.exception(
+                "Konnte Steam-Freundschaftsanfragen nicht in die Queue legen",
+                extra={"user_id": user_id, "steam_ids": steam_ids},
+            )
+        try:
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
             if not user:
                 return
@@ -302,6 +314,8 @@ class SteamLink(commands.Cog):
             shine = (
                 "✨ **Connection complete.**\n"
                 "Du funkelst jetzt ein Stückchen heller — und die Welt ein winziges bisschen auch.\n\n"
+                "🤝 Unser Steam-Bot schickt dir gleich eine Freundschaftsanfrage. "
+                "Falls nichts ankommt, nutze <https://s.team/p/820142646> oder den Freundescode **820142646**.\n\n"
                 "_Tipp: Mit `/links` siehst du deine verknüpften Accounts._"
             )
             await user.send(shine)
@@ -738,7 +752,8 @@ class SteamLink(commands.Cog):
             "leite ich dich automatisch zu Steam weiter.\n"
             "• Anmeldedaten bleiben bei Steam.\n"
             "• Ich schicke dir eine DM, sobald die Verknüpfung durch ist.\n"
-            "• Nach erfolgreicher Verknüpfung erhältst du automatisch eine Steam-Freundschaftsanfrage vom Bot."
+            "• Nach erfolgreicher Verknüpfung erhältst du automatisch eine Steam-Freundschaftsanfrage vom Bot.\n"
+            "• Alternativ: <https://s.team/p/820142646> oder Freundescode **820142646**."
         )
 
         embed = discord.Embed(title="Steam/Discord verknüpfen", description=desc, color=discord.Color.green())
@@ -762,7 +777,8 @@ class SteamLink(commands.Cog):
     async def link_steam(self, ctx: commands.Context) -> None:
         desc = (
             "Bestätige deinen Account via Steam OpenID. "
-            "Nach dem Abschluss senden wir dir automatisch eine Freundschaftsanfrage vom Bot."
+            "Nach dem Abschluss senden wir dir automatisch eine Freundschaftsanfrage vom Bot. "
+            "Oder nutze <https://s.team/p/820142646> / Freundescode **820142646**."
         )
         embed = discord.Embed(title="Direkt bei Steam anmelden", description=desc, color=discord.Color.green())
         if LINK_COVER_IMAGE:
