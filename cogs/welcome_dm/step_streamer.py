@@ -284,8 +284,8 @@ class StreamerRequirementsView(StepView):
                 "1) Nutze einen **nicht ablaufenden Invite-Link** zu unserem Server (persönlich für dich).\n"
                 "2) Packe den **Server-Link** in deine **Twitch-Bio** – z. B. mit dem Text:\n"
                 "   *„Deutscher Deadlock Community Server“*\n"
-                "3) Verweise Zuschauer **aktiv** auf den Server (z. B. Panel/Chat-Command).\n"
-                "4) Wenn du Deadlock-Content postest, **verlinke den Server**.\n\n"
+                "3) Wünchenswert wäre es wenn du Zuschauer auf den Server verweist.\n"
+                "4) Genauso wünschenswert ist es, wenn du Deadlock-Content postest, verlinke da gerne den Server.\n\n"
                 "Du **darfst** selbstverständlich deinen **eigenen Server** weiterführen – "
                 "wir verstehen uns nicht als Konkurrenz, sondern als Hub für deutschsprachige Deadlock-Spieler."
             ),
