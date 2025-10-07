@@ -15,9 +15,14 @@ from discord.ext import commands
 # =========================
 # >>> KONFIG-KOPF (deine IDs) <<<
 SUBMIT_CHANNEL_ID = 1374364800817303632   # Kanal mit Interface (Embed + Button)
-REVIEW_CHANNEL_ID = 1374364800817303632   # Kanal für Review-Embeds
+REVIEW_CHANNEL_ID = 1374364800817303632   # Kanal für Review-Embeds (falls aktiviert)
 GUILD_ID: int | None = None               # Optional: auf eine Guild begrenzen (sonst None)
 AUTO_POST_ON_READY = True                 # Beim Start/Reload Interface automatisch prüfen/erzeugen
+
+# --- NEU: Zielsteuerung ---
+REVIEW_CHANNEL_ENABLED = False             # Clip im Review-Channel posten? (True/False)
+SEND_TO_USER = True                      # Clip zusätzlich/alternativ per DM an User senden? (True/False)
+SEND_TO_USER_ID = 00000    # Ziel-User-ID für DM (z.B. 123456789012345678) – erforderlich wenn SEND_TO_USER=True
 # =========================
 
 URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
@@ -84,6 +89,7 @@ class ConfirmPermissionView(discord.ui.View):
     async def perm_yes(self, interaction: discord.Interaction, _: discord.ui.Button):
         self.cog._pending_permission[interaction.user.id] = "owner_or_permission"
         await self.open_modal(interaction)
+
     '''
     @discord.ui.button(
         label="Nur Owner-Erlaubnis (nicht mein Clip)",
@@ -151,6 +157,7 @@ class ClipSubmitModal(discord.ui.Modal, title="Gameplay-Clip einreichen"):
             )
         self.cog._last_submit_ts[user.id] = now
 
+        # Persistenz
         with with_db() as db:
             db.execute(
                 """
@@ -161,26 +168,7 @@ class ClipSubmitModal(discord.ui.Modal, title="Gameplay-Clip einreichen"):
             )
             db.commit()
 
-        review_channel = None
-        if guild:
-            ch = guild.get_channel(REVIEW_CHANNEL_ID)
-            if isinstance(ch, discord.TextChannel):
-                review_channel = ch
-            else:
-                try:
-                    ch = await guild.fetch_channel(REVIEW_CHANNEL_ID)
-                    if isinstance(ch, discord.TextChannel):
-                        review_channel = ch
-                except Exception:
-                    review_channel = None
-
-        if review_channel is None:
-            await interaction.response.send_message(
-                "✅ Gespeichert! Hinweis: Review-Channel-ID ist ungültig oder nicht sichtbar.",
-                ephemeral=True,
-            )
-            return
-
+        # Embed bauen (identisch für Kanal & DM)
         embed = discord.Embed(
             title="🎬 Neue Clip-Einsendung",
             description="Eine neue Einsendung zur Sichtung.",
@@ -201,17 +189,67 @@ class ClipSubmitModal(discord.ui.Modal, title="Gameplay-Clip einreichen"):
         embed.set_footer(text=f"User: {user} • UserID: {user.id}")
         embed.timestamp = discord.utils.utcnow()
 
-        try:
-            await review_channel.send(embed=embed)
-        except Exception as e:
-            await interaction.response.send_message(
-                f"✅ Gespeichert, aber Posting im Review-Channel ist fehlgeschlagen: `{e}`",
-                ephemeral=True,
-            )
-            return
+        # Flags zum Reporting sammeln
+        posted_to_channel = False
+        sent_dm = False
+        errors: list[str] = []
+
+        # Optional: Review-Channel Posting
+        if REVIEW_CHANNEL_ENABLED:
+            review_channel = None
+            if guild:
+                ch = guild.get_channel(REVIEW_CHANNEL_ID)
+                if isinstance(ch, discord.TextChannel):
+                    review_channel = ch
+                else:
+                    try:
+                        ch = await guild.fetch_channel(REVIEW_CHANNEL_ID)
+                        if isinstance(ch, discord.TextChannel):
+                            review_channel = ch
+                    except Exception:
+                        review_channel = None
+
+            if review_channel is None:
+                errors.append("Review-Channel nicht gefunden/zugreifbar.")
+            else:
+                try:
+                    await review_channel.send(embed=embed)
+                    posted_to_channel = True
+                except Exception as e:
+                    errors.append(f"Posting im Review-Channel fehlgeschlagen: {e}")
+
+        # Optional: DM an definierten User
+        if SEND_TO_USER:
+            if SEND_TO_USER_ID is None:
+                errors.append("SEND_TO_USER=True aber SEND_TO_USER_ID ist nicht gesetzt.")
+            else:
+                try:
+                    target_user = (interaction.client or self.cog.bot).get_user(SEND_TO_USER_ID)
+                    if target_user is None:
+                        # fetch_user holt auch, wenn nicht gecached
+                        target_user = await (interaction.client or self.cog.bot).fetch_user(SEND_TO_USER_ID)
+                    await target_user.send(embed=embed)
+                    sent_dm = True
+                except Exception as e:
+                    errors.append(f"DM an User {SEND_TO_USER_ID} fehlgeschlagen: {e}")
+
+        # Nutzer-Feedback (ephemeral)
+        # Fallunterscheidung, um klares Feedback zu geben:
+        if posted_to_channel and sent_dm:
+            note = "✅ Danke! Dein Clip ist eingegangen. An Review-Channel **und** den konfigurierten User gesendet."
+        elif posted_to_channel:
+            note = "✅ Danke! Dein Clip ist eingegangen. Im Review-Channel gepostet."
+        elif sent_dm:
+            note = "✅ Danke! Dein Clip ist eingegangen. An den konfigurierten User per DM gesendet."
+        else:
+            # Nichts gesendet – aber gespeichert
+            note = "✅ Gespeichert! (Es wurde weder an einen Kanal noch per DM gesendet – prüfe die Konfiguration.)"
+
+        if errors:
+            note += "\n\n⚠️ Hinweise:\n- " + "\n- ".join(f"`{e}`" for e in errors)
 
         await interaction.response.send_message(
-            "✅ Danke! Dein Clip ist eingegangen. Mindestqualität **1080p**.",
+            note + "\n\nMindestqualität **1080p**.",
             ephemeral=True,
         )
 
