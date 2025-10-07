@@ -27,3 +27,4 @@ cogs/steam/steam_presence/*
 *.db-wal
 *.db
 cogs/faq_menu.py
+cogs/clip_submission.py
