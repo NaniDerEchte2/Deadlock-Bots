@@ -434,18 +434,18 @@ class SteamLinkVoiceNudge(commands.Cog):
             primary_discord, browser_fallback = _prefer_discord_deeplink(discord_url)
 
             desc = (
-                "Damit wir **einheitlich** anzeigen können, wer **in der Lobby** ist und wer **im Match**, "
-                "hilft uns die Verknüpfung zwischen Discord und Steam.\n\n"
-                "• So können wir, **wenn du im Voice bist**, checken, ob du **gerade in Deadlock im Match** bist.\n"
-                "• Ergebnis: präzisere **Kanal-Beschreibungen** (z. B. „3 im Match“) & bessere **Orga/Balancing** bei Events.\n\n"
-                "**Wie kannst du dabei helfen?**\n"
-                "1) Klicke **„Via Discord verknüpfen“**, **„SteamID manuell eingeben“** oder **„Mit Steam anmelden“**.\n"
-                "2) Folge den kurzen Schritten. Wir bekommen niemals dein Passwort – bei Steam erhalten wir nur die **SteamID64**.\n"
-                "3) Der Steam-Bot schickt dir anschließend automatisch eine Freundschaftsanfrage. "
-                "Alternativ kannst du über **„Schnelle Anfrage senden“** einen persönlichen Link erzeugen "
-                "(einmalig, 30 Tage gültig) oder den Freundescode **820142646** nutzen.\n\n"
-                "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** "
-                "(und **Gesamtspielzeit** nicht auf „immer privat“)."
+            "• Wozu ist das gut? Wir können deinen **Spiel-Status** \n"
+            "(z. B. *Lobby/In-Game*, **Anzahl im Match**) als Status für den Sprach Kanel nehmen"
+            "Dadurch können wir präziser anzeigen wie der Status ist und Events sauberer balancen.\n\n"
+            "**Ablauf & Optionen:**\n"
+            "• **Via Discord verknüpfen** - Schnellster Weg.\n"
+            "• **SteamID manuell eingeben**: Du trägst **ID64 / Vanity / Profil-Link** selbst ein.\n"
+            "• **Steam Profil suchen**: Offizieller Steam OpenID-Flow (kein Passwort, wir sehen nur die **SteamID64**).\n\n"
+            "🤝 **Freundschaft mit dem Bot:** Sobald du dich via Discord oder Steam authentifizierst, "
+            "schickt dir unser Bot automatisch eine Anfrage. Alternativ kannst du manuell adden:\n"
+            "  ⚡ Über den Button **„Schnelle Anfrage senden“** erhältst du einen persönlichen Link.\n"
+            "  🔢 Freundescode: **820142646** oder schick dem Bot eine Freundschaftsanfrage über die ID\n\n"
+            "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** sonst funktioniert das nicht."
             )
             if browser_fallback and (primary_discord or "").startswith("discord://"):
                 desc += f"\n\n_Falls sich nichts öffnet:_ [Browser-Variante]({browser_fallback})"
