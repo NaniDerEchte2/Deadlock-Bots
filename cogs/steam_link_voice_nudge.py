@@ -19,6 +19,8 @@ from cogs.steam import (
     queue_friend_request,
     respond_with_quick_invite,
 )
+from cogs.welcome_dm.step_steam_link import steam_link_detailed_description
+
 
 log = logging.getLogger("SteamVoiceNudge")
 
@@ -433,20 +435,7 @@ class SteamLinkVoiceNudge(commands.Cog):
             discord_url, steam_url = await _fetch_oauth_urls(self.bot, user)
             primary_discord, browser_fallback = _prefer_discord_deeplink(discord_url)
 
-            desc = (
-                "Damit wir **einheitlich** anzeigen können, wer **in der Lobby** ist und wer **im Match**, "
-                "hilft uns die Verknüpfung zwischen Discord und Steam.\n\n"
-                "• So können wir, **wenn du im Voice bist**, checken, ob du **gerade in Deadlock im Match** bist.\n"
-                "• Ergebnis: präzisere **Kanal-Beschreibungen** (z. B. „3 im Match“) & bessere **Orga/Balancing** bei Events.\n\n"
-                "**Wie kannst du dabei helfen?**\n"
-                "1) Klicke **„Via Discord verknüpfen“**, **„SteamID manuell eingeben“** oder **„Mit Steam anmelden“**.\n"
-                "2) Folge den kurzen Schritten. Wir bekommen niemals dein Passwort – bei Steam erhalten wir nur die **SteamID64**.\n"
-                "3) Der Steam-Bot schickt dir anschließend automatisch eine Freundschaftsanfrage. "
-                "Alternativ kannst du über **„Schnelle Anfrage senden“** einen persönlichen Link erzeugen "
-                "(einmalig, 30 Tage gültig) oder den Freundescode **820142646** nutzen.\n\n"
-                "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** "
-                "(und **Gesamtspielzeit** nicht auf „immer privat“)."
-            )
+            desc = steam_link_detailed_description()
             if browser_fallback and (primary_discord or "").startswith("discord://"):
                 desc += f"\n\n_Falls sich nichts öffnet:_ [Browser-Variante]({browser_fallback})"
             if not primary_discord or not steam_url:

@@ -21,7 +21,7 @@ import discord
 from discord.ext import commands
 # --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
 import sys as _sys, os as _os, importlib, inspect, logging as _logging, hashlib
-
+import re
 
 def _log_src(modname: str):
     try:

@@ -16,7 +16,7 @@ from .base import (
 from .step_intro import IntroView
     # Intro info/weiter Button (nicht persistent registrieren)
 from .step_status import PlayerStatusView
-from .step_steam_link import SteamLinkStepView
+from .step_steam_link import SteamLinkStepView, steam_link_dm_description
 from .step_rules import RulesView
 from .step_streamer import StreamerIntroView  # Optionaler Schritt
 
@@ -156,16 +156,10 @@ class WelcomeDM(commands.Cog):
                 status_choice = status_view.choice or STATUS_PLAYING
 
                 # 2/3 Steam
-                q2_desc = (
-                    "**Empfohlen für das beste Erlebnis:**\n"
-                    "• Exakter **Voice-Status** (Lobby/Match, freie Slots)\n"
-                    "• Saubere **Event-Orga & Balancing**\n\n"
-                    "**Wichtig:** In Steam → Profil → **Privatsphäre** → "
-                    "**Spieldetails = Öffentlich** (und **Gesamtspielzeit** nicht auf „immer privat“)."
-                )
+                q2_desc = steam_link_dm_description()
                 if not await self._send_step_embed_dm(
                     member,
-                    title="Frage 2/3 · Steam verknüpfen (skippbar)",
+                    title="Frage 2/3 · Verknüpfe deinen Steam Account",
                     desc=q2_desc,
                     step=2,
                     total=3,
@@ -280,13 +274,7 @@ class WelcomeDM(commands.Cog):
             status_choice = status_view.choice or STATUS_PLAYING
 
             # 2/3 Steam
-            q2_desc = (
-                "**Empfohlen:** Exakter **Voice-Status**, saubere **Event-Orga & Balancing**.\n\n"
-                "🤝 **Freundschaft mit dem Bot:** Wenn du dich via Discord oder Steam verknüpfst, senden wir dir automatisch eine "
-                "Freundschaftsanfrage. Alternativen findest du über den Button **Freundschafts-Optionen** (z. B. Bot-ID 820142646 "
-                "oder der Schnell-Link).\n\n"
-                "**Wichtig:** Steam → Profil → **Spieldetails = Öffentlich** (Gesamtspielzeit nicht „immer privat“)."
-            )
+            q2_desc = steam_link_dm_description()
             ok = await self._send_step_embed_channel(
                 channel,
                 title="Frage 2/3 · Steam verknüpfen (skippbar)",

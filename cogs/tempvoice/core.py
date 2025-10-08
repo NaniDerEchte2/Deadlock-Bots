@@ -138,20 +138,71 @@ class TVDB:
             )
         """)
         await self.db.execute("""
-            CREATE TABLE IF NOT EXISTS tempvoice_interface (
-                guild_id    INTEGER PRIMARY KEY,
-                channel_id  INTEGER NOT NULL,
-                message_id  INTEGER NOT NULL,
-                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        await self.db.execute("""
             CREATE TABLE IF NOT EXISTS tempvoice_owner_prefs (
                 owner_id    INTEGER PRIMARY KEY,
                 region      TEXT NOT NULL CHECK(region IN ('DE','EU')),
                 updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await self.db.commit()
+        await self._ensure_interface_table()
+
+    async def _ensure_interface_table(self):
+        assert self.db is not None
+        cur = await self.db.execute("PRAGMA table_info(tempvoice_interface)")
+        rows = await cur.fetchall()
+        await cur.close()
+
+        if not rows:
+            await self._create_interface_table()
+            await self.db.commit()
+            return
+
+        col_names = {str(row["name"]) for row in rows}
+        pk_cols = [str(row["name"]) for row in rows if int(row["pk"]) > 0]
+        required = {"guild_id", "channel_id", "message_id", "category_id", "lane_id", "created_at", "updated_at"}
+
+        if required.issubset(col_names) and pk_cols == ["guild_id", "message_id"]:
+            return
+
+        await self._migrate_interface_table()
+
+    async def _create_interface_table(self):
+        assert self.db is not None
+        await self.db.execute("""
+            CREATE TABLE IF NOT EXISTS tempvoice_interface (
+                guild_id    INTEGER NOT NULL,
+                channel_id  INTEGER NOT NULL,
+                message_id  INTEGER NOT NULL,
+                category_id INTEGER,
+                lane_id     INTEGER,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (guild_id, message_id),
+                UNIQUE(lane_id)
+            )
+        """)
+
+    async def _migrate_interface_table(self):
+        assert self.db is not None
+        try:
+            await self.db.execute("ALTER TABLE tempvoice_interface RENAME TO tempvoice_interface_old")
+        except Exception as e:
+            log.debug("tempvoice_interface rename failed (migration skipped): %r", e)
+            await self._create_interface_table()
+            await self.db.commit()
+            return
+
+        await self._create_interface_table()
+        try:
+            await self.db.execute("""
+                INSERT INTO tempvoice_interface(guild_id, channel_id, message_id, updated_at)
+                SELECT guild_id, channel_id, message_id, COALESCE(updated_at, CURRENT_TIMESTAMP)
+                FROM tempvoice_interface_old
+            """)
+        except Exception as e:
+            log.debug("tempvoice_interface migration copy failed: %r", e)
+        await self.db.execute("DROP TABLE IF EXISTS tempvoice_interface_old")
         await self.db.commit()
 
     async def fetchone(self, q: str, p: tuple = ()):
@@ -320,7 +371,7 @@ class TempVoiceCore(commands.Cog):
             self.lane_min_rank.setdefault(lane.id, "unknown")
             self.join_time.setdefault(lane.id, {})
 
-            await self._apply_owner_bans(lane, self.lane_owner[lane.id])
+            await self._apply_owner_settings(lane, self.lane_owner[lane.id])
             # KEIN aggressives Rename hier – _refresh_name() prüft Schutzbedingungen
             await self._refresh_name(lane)
 
@@ -346,10 +397,15 @@ class TempVoiceCore(commands.Cog):
                     await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
                 except Exception as e:
                     log.debug("purge: cleanup stale row %s failed: %r", lane_id, e)
+                try:
+                    await self._tvdb.exec("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_id,))
+                except Exception as e:
+                    log.debug("purge: cleanup stale interface row %s failed: %r", lane_id, e)
                 continue
 
             try:
                 if len(lane.members) == 0:
+                    lane_key = int(lane.id)
                     try:
                         await lane.delete(reason="TempVoice: Cleanup (leer)")
                     except Exception as e:
@@ -358,6 +414,14 @@ class TempVoiceCore(commands.Cog):
                         await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
                     except Exception as e:
                         log.debug("purge: delete row %s failed: %r", lane_id, e)
+                    try:
+                        await self._tvdb.exec("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_key,))
+                    except Exception as e:
+                        log.debug("purge: delete interface row %s failed: %r", lane_id, e)
+                    try:
+                        self.bot.dispatch("tempvoice_lane_deleted", lane_key)
+                    except Exception as e:
+                        log.debug("dispatch lane_deleted failed for %s: %r", lane_key, e)
             except Exception as e:
                 log.debug("purge: inspect lane %s failed: %r", lane_id, e)
 
@@ -365,6 +429,7 @@ class TempVoiceCore(commands.Cog):
             if _is_managed_lane(ch):
                 try:
                     if len(ch.members) == 0:
+                        lane_key = int(ch.id)
                         try:
                             await ch.delete(reason="TempVoice: Sweep (leer)")
                         except Exception as e:
@@ -373,6 +438,14 @@ class TempVoiceCore(commands.Cog):
                             await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (int(ch.id),))
                         except Exception as e:
                             log.debug("sweep: delete row %s failed: %r", ch.id, e)
+                        try:
+                            await self._tvdb.exec("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_key,))
+                        except Exception as e:
+                            log.debug("sweep: delete interface row %s failed: %r", ch.id, e)
+                        try:
+                            self.bot.dispatch("tempvoice_lane_deleted", lane_key)
+                        except Exception as e:
+                            log.debug("dispatch lane_deleted failed for %s: %r", lane_key, e)
                 except Exception as e:
                     log.debug("sweep: inspect lane %s failed: %r", ch.id, e)
 
@@ -578,6 +651,11 @@ class TempVoiceCore(commands.Cog):
             except Exception as e:
                 log.debug("apply_owner_bans: failed for %s in lane %s: %r", uid, lane.id, e)
 
+    async def _apply_owner_settings(self, lane: discord.VoiceChannel, owner_id: int):
+        region = await self.get_region_pref(owner_id)
+        await self.apply_region(lane, region)
+        await self._apply_owner_bans(lane, owner_id)
+
     async def _apply_min_rank(self, lane: discord.VoiceChannel, min_rank: str):
         if lane.category_id != MINRANK_CATEGORY_ID:
             return
@@ -650,9 +728,7 @@ class TempVoiceCore(commands.Cog):
         except Exception as e:
             log.debug("create_lane: db insert failed for lane %s: %r", lane.id, e)
 
-        region = await self.get_region_pref(member.id)
-        await self.apply_region(lane, region)
-        await self._apply_owner_bans(lane, member.id)
+        await self._apply_owner_settings(lane, member.id)
 
         try:
             await member.move_to(lane, reason="TempVoice: Auto-Lane erstellt")
@@ -661,6 +737,10 @@ class TempVoiceCore(commands.Cog):
 
         # NUR hier initial den Namen setzen (innerhalb des Create-Fensters)
         await self._refresh_name(lane)
+        try:
+            self.bot.dispatch("tempvoice_lane_created", lane, member)
+        except Exception as e:
+            log.debug("dispatch lane_created failed for %s: %r", lane.id, e)
 
     # --------- Events ---------
     @commands.Cog.listener()
@@ -685,7 +765,8 @@ class TempVoiceCore(commands.Cog):
                         tsmap = self.join_time.get(ch.id, {})
                         candidates = list(ch.members)
                         candidates.sort(key=lambda m: tsmap.get(m.id, float("inf")))
-                        self.lane_owner[ch.id] = candidates[0].id
+                        new_owner_member = candidates[0]
+                        self.lane_owner[ch.id] = new_owner_member.id
                         try:
                             await self._tvdb.exec(
                                 "UPDATE tempvoice_lanes SET owner_id=? WHERE channel_id=?",
@@ -693,7 +774,16 @@ class TempVoiceCore(commands.Cog):
                             )
                         except Exception as e:
                             log.debug("owner transfer db update failed for lane %s: %r", ch.id, e)
+                        try:
+                            await self._apply_owner_settings(ch, new_owner_member.id)
+                        except Exception as e:
+                            log.debug("owner transfer apply settings failed for lane %s: %r", ch.id, e)
+                        try:
+                            self.bot.dispatch("tempvoice_lane_owner_changed", ch, int(new_owner_member.id))
+                        except Exception as e:
+                            log.debug("dispatch lane_owner_changed failed for %s: %r", ch.id, e)
                     else:
+                        lane_id = int(ch.id)
                         try:
                             await ch.delete(reason="TempVoice: Lane leer")
                         except Exception as e:
@@ -702,10 +792,18 @@ class TempVoiceCore(commands.Cog):
                             await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (int(ch.id),))
                         except Exception as e:
                             log.debug("delete lane row %s failed: %r", ch.id, e)
+                        try:
+                            await self._tvdb.exec("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_id,))
+                        except Exception as e:
+                            log.debug("delete lane interface row %s failed: %r", ch.id, e)
                         self.created_channels.discard(ch.id)
                         for d in (self.lane_owner, self.lane_base, self.lane_min_rank, self.join_time,
                                   self._last_name_desired, self._last_name_patch_ts):
                             d.pop(ch.id, None)
+                        try:
+                            self.bot.dispatch("tempvoice_lane_deleted", lane_id)
+                        except Exception as e:
+                            log.debug("dispatch lane_deleted failed for %s: %r", lane_id, e)
         except Exception as e:
             log.debug("owner/cleanup flow failed: %r", e)
 
@@ -715,6 +813,40 @@ class TempVoiceCore(commands.Cog):
                 ch = after.channel
                 self.join_time.setdefault(ch.id, {})
                 self.join_time[ch.id][member.id] = datetime.utcnow().timestamp()
+
+                if _is_managed_lane(ch) and ch.id not in self.lane_owner:
+                    base_name = self.lane_base.get(ch.id) or _strip_suffixes(ch.name)
+                    self.lane_owner[ch.id] = member.id
+                    self.lane_base[ch.id] = base_name
+                    self.created_channels.add(ch.id)
+                    try:
+                        await self._tvdb.exec(
+                            """
+                            INSERT INTO tempvoice_lanes(channel_id, guild_id, owner_id, base_name, category_id)
+                            VALUES(?,?,?,?,?)
+                            ON CONFLICT(channel_id) DO UPDATE SET
+                                owner_id=excluded.owner_id,
+                                base_name=excluded.base_name,
+                                category_id=excluded.category_id
+                            """,
+                            (
+                                int(ch.id),
+                                int(ch.guild.id),
+                                int(member.id),
+                                base_name,
+                                int(ch.category_id) if ch.category_id else 0,
+                            )
+                        )
+                    except Exception as e:
+                        log.debug("lane owner backfill db failed for %s: %r", ch.id, e)
+                    try:
+                        await self._apply_owner_settings(ch, member.id)
+                    except Exception as e:
+                        log.debug("lane owner backfill apply settings failed for %s: %r", ch.id, e)
+                    try:
+                        self.bot.dispatch("tempvoice_lane_owner_changed", ch, int(member.id))
+                    except Exception as e:
+                        log.debug("dispatch lane_owner_changed (backfill) failed for %s: %r", ch.id, e)
 
                 owner_id = self.lane_owner.get(ch.id)
                 if owner_id and await self.bans.is_banned_by_owner(owner_id, member.id):
