@@ -64,6 +64,7 @@ class TempVoiceInterface(commands.Cog):
     async def _startup(self):
         await self.bot.wait_until_ready()
         await self.ensure_interface_message()
+        await self.rehydrate_lane_interfaces()
 
     async def ensure_interface_message(self):
         ch = self.bot.get_channel(INTERFACE_TEXT_CHANNEL_ID)
@@ -103,7 +104,11 @@ class TempVoiceInterface(commands.Cog):
         row = None
         try:
             row = await self.core.db.fetchone(
-                "SELECT channel_id, message_id FROM tempvoice_interface WHERE guild_id=?",
+                """
+                SELECT channel_id, message_id FROM tempvoice_interface
+                WHERE guild_id=? AND lane_id IS NULL AND category_id IS NULL
+                ORDER BY updated_at DESC LIMIT 1
+                """,
                 (int(guild.id),)
             )
         except Exception as e:
@@ -115,6 +120,7 @@ class TempVoiceInterface(commands.Cog):
                 if isinstance(use_ch, discord.TextChannel):
                     msg = await use_ch.fetch_message(int(row["message_id"]))
                     await msg.edit(embed=embed, view=MainView(self.core, self.util))
+                    await self._record_interface_message(int(guild.id), int(use_ch.id), int(msg.id), None, None)
                     return
             except discord.NotFound:
                 logger.debug("ensure_interface_message: Vorherige Interface-Nachricht nicht mehr vorhanden.")
@@ -125,17 +131,184 @@ class TempVoiceInterface(commands.Cog):
 
         try:
             msg = await ch.send(embed=embed, view=MainView(self.core, self.util))
-            await self.core.db.exec(
-                "INSERT INTO tempvoice_interface(guild_id, channel_id, message_id, updated_at) "
-                "VALUES(?,?,?,CURRENT_TIMESTAMP) "
-                "ON CONFLICT(guild_id) DO UPDATE SET "
-                "channel_id=excluded.channel_id, message_id=excluded.message_id, updated_at=CURRENT_TIMESTAMP",
-                (int(guild.id), int(ch.id), int(msg.id))
-            )
+            await self._record_interface_message(int(guild.id), int(ch.id), int(msg.id), None, None)
         except discord.HTTPException as e:
             logger.warning("ensure_interface_message: HTTP-Fehler beim Senden/Speichern der Interface-Nachricht: %r", e)
         except Exception as e:
             logger.debug("ensure_interface_message: Fehler beim Senden/Speichern der Interface-Nachricht: %r", e)
+
+    async def _record_interface_message(self, guild_id: int, channel_id: int, message_id: int,
+                                        category_id: Optional[int], lane_id: Optional[int]):
+        try:
+            if lane_id is not None:
+                await self.core.db.exec(
+                    """
+                    INSERT INTO tempvoice_interface(guild_id, channel_id, message_id, category_id, lane_id, updated_at)
+                    VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+                    ON CONFLICT(lane_id) DO UPDATE SET
+                        channel_id=excluded.channel_id,
+                        message_id=excluded.message_id,
+                        category_id=excluded.category_id,
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (guild_id, channel_id, message_id, category_id, lane_id)
+                )
+            else:
+                await self.core.db.exec(
+                    """
+                    INSERT INTO tempvoice_interface(guild_id, channel_id, message_id, category_id, lane_id, updated_at)
+                    VALUES(?,?,?,?,NULL,CURRENT_TIMESTAMP)
+                    ON CONFLICT(guild_id, message_id) DO UPDATE SET
+                        channel_id=excluded.channel_id,
+                        category_id=excluded.category_id,
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (guild_id, channel_id, message_id, category_id)
+                )
+        except Exception as e:
+            logger.debug("_record_interface_message: Persistenz fehlgeschlagen (guild=%s lane=%s): %r",
+                         guild_id, lane_id, e)
+
+    def _lane_embed(self, lane: discord.VoiceChannel, owner_id: Optional[int]) -> discord.Embed:
+        owner_display = "Unbekannt"
+        if owner_id:
+            owner = lane.guild.get_member(int(owner_id))
+            if owner:
+                owner_display = owner.mention
+            else:
+                owner_display = f"<@{owner_id}>"
+        embed = discord.Embed(
+            title=f"TempVoice Interface – {lane.name}",
+            description=(
+                f"Owner: {owner_display}\n"
+                "• Buttons funktionieren nur, wenn du in dieser Lane bist.\n"
+                "• 🇩🇪/🇪🇺 Sprachfilter, Limit, Kick/Ban & Owner Claim direkt hier nutzen."
+            ),
+            color=0x2ecc71,
+        )
+        embed.set_footer(text="Deadlock DACH • TempVoice")
+        return embed
+
+    async def ensure_lane_interface(self, lane: discord.VoiceChannel, owner_id: Optional[int] = None):
+        owner_id = owner_id or self.core.lane_owner.get(lane.id)
+        embed = self._lane_embed(lane, owner_id)
+
+        row = None
+        try:
+            row = await self.core.db.fetchone(
+                "SELECT channel_id, message_id FROM tempvoice_interface WHERE lane_id=?",
+                (int(lane.id),)
+            )
+        except Exception as e:
+            logger.debug("ensure_lane_interface: DB-Select fehlgeschlagen für Lane %s: %r", lane.id, e)
+
+        if row:
+            target = self.bot.get_channel(int(row["channel_id"])) or lane
+            try:
+                msg = await target.fetch_message(int(row["message_id"]))
+                await msg.edit(embed=embed, view=MainView(self.core, self.util))
+                await self._record_interface_message(
+                    int(lane.guild.id),
+                    int(target.id),
+                    int(msg.id),
+                    int(lane.category_id) if lane.category_id else None,
+                    int(lane.id)
+                )
+                return
+            except (discord.NotFound, discord.Forbidden):
+                await self._remove_lane_interface_record(int(lane.id))
+            except discord.HTTPException as e:
+                logger.debug("ensure_lane_interface: HTTP-Fehler beim Editieren (Lane %s): %r", lane.id, e)
+                return
+            except Exception as e:
+                logger.debug("ensure_lane_interface: Fehler beim Editieren (Lane %s): %r", lane.id, e)
+                return
+
+        try:
+            msg = await lane.send(embed=embed, view=MainView(self.core, self.util))
+        except discord.Forbidden:
+            logger.warning("TempVoice Lane Interface: Keine Berechtigung zum Senden in VoiceChannel %s.", lane.id)
+            return
+        except discord.HTTPException as e:
+            logger.warning("TempVoice Lane Interface: HTTP-Fehler beim Senden in %s: %r", lane.id, e)
+            return
+        except Exception as e:
+            logger.debug("TempVoice Lane Interface: Unerwarteter Fehler beim Senden in %s: %r", lane.id, e)
+            return
+
+        await self._record_interface_message(
+            int(lane.guild.id),
+            int(lane.id),
+            int(msg.id),
+            int(lane.category_id) if lane.category_id else None,
+            int(lane.id)
+        )
+
+    async def rehydrate_lane_interfaces(self):
+        try:
+            rows = await self.core.db.fetchall(
+                "SELECT channel_id, message_id, lane_id FROM tempvoice_interface WHERE lane_id IS NOT NULL"
+            )
+        except Exception as e:
+            logger.debug("rehydrate_lane_interfaces: DB-Select fehlgeschlagen: %r", e)
+            return
+
+        for row in rows:
+            lane_id = int(row["lane_id"])
+            lane = self.bot.get_channel(lane_id)
+            if not isinstance(lane, discord.VoiceChannel):
+                await self._remove_lane_interface_record(lane_id)
+                continue
+
+            target = self.bot.get_channel(int(row["channel_id"])) or lane
+            try:
+                msg = await target.fetch_message(int(row["message_id"]))
+            except (discord.NotFound, discord.Forbidden):
+                await self._remove_lane_interface_record(lane_id)
+                await self.ensure_lane_interface(lane)
+                continue
+            except discord.HTTPException as e:
+                logger.debug("rehydrate_lane_interfaces: HTTP-Fehler beim Laden (Lane %s): %r", lane_id, e)
+                continue
+            except Exception as e:
+                logger.debug("rehydrate_lane_interfaces: Fehler beim Laden (Lane %s): %r", lane_id, e)
+                continue
+
+            owner_id = self.core.lane_owner.get(lane_id)
+            try:
+                await msg.edit(embed=self._lane_embed(lane, owner_id), view=MainView(self.core, self.util))
+                await self._record_interface_message(
+                    int(lane.guild.id),
+                    int(target.id),
+                    int(msg.id),
+                    int(lane.category_id) if lane.category_id else None,
+                    lane_id
+                )
+            except discord.HTTPException as e:
+                logger.debug("rehydrate_lane_interfaces: HTTP-Fehler beim Editieren (Lane %s): %r", lane_id, e)
+            except Exception as e:
+                logger.debug("rehydrate_lane_interfaces: Fehler beim Editieren (Lane %s): %r", lane_id, e)
+
+    async def _remove_lane_interface_record(self, lane_id: int):
+        try:
+            await self.core.db.exec(
+                "DELETE FROM tempvoice_interface WHERE lane_id=?",
+                (int(lane_id),)
+            )
+        except Exception as e:
+            logger.debug("remove_lane_interface_record: DB-Delete fehlgeschlagen für Lane %s: %r", lane_id, e)
+
+    @commands.Cog.listener()
+    async def on_tempvoice_lane_created(self, lane: discord.VoiceChannel, owner: discord.Member):
+        await self.ensure_lane_interface(lane, owner_id=owner.id)
+
+    @commands.Cog.listener()
+    async def on_tempvoice_lane_owner_changed(self, lane: discord.VoiceChannel, owner_id: int):
+        await self.ensure_lane_interface(lane, owner_id=owner_id)
+
+    @commands.Cog.listener()
+    async def on_tempvoice_lane_deleted(self, lane_id: int):
+        await self._remove_lane_interface_record(int(lane_id))
 
 
 # -------------------- UI Komponenten --------------------
