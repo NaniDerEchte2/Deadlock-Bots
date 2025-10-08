@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from textwrap import dedent
 from typing import Optional, Tuple
 from urllib.parse import urlparse, urlsplit, urlunparse, urlunsplit
 
@@ -14,6 +15,8 @@ __all__ = [
     "SteamLinkView",          # Alias (Backcompat)
     "SteamLinkNudgeView",     # Alias (für rules_channel)
     "build_steam_intro_embed",
+    "steam_link_dm_description",
+    "steam_link_detailed_description",
 ]
 
 # --- harte Abhängigkeit auf das OAuth/Link-Modul (keine Fallbacks) ---
@@ -68,24 +71,56 @@ STEAM_KEY_RE = re.compile(
 )
 
 
+_STEAM_LINK_DM_DESC = dedent(
+    """
+    **Empfohlen:** Exakter **Voice-Status**, saubere **Event-Orga & Balancing**.
+
+
+    🤝 **Freundschaft mit dem Bot:** Wenn du dich via Discord oder Steam verknüpfst, senden wir dir automatisch eine Freundschaftsanfrage. Alternativen findest du über den Button **Freundschafts-Optionen** (z. B. Bot-ID 820142646 oder der Schnell-Link).
+
+
+    **Wichtig:** Steam → Profil → **Spieldetails = Öffentlich** (Gesamtspielzeit nicht „immer privat“).
+    """
+).strip()
+
+
+_STEAM_LINK_DETAILED_DESC = dedent(
+    """
+    • Wozu ist das gut? Wir können deinen **Spiel-Status**
+      (z. B. *Lobby/In-Game*, **Anzahl im Match**) als Status für den Sprach Kanel nehmen.
+      Dadurch können wir präziser anzeigen wie der Status ist und Events sauberer balancen.
+
+
+    **Ablauf & Optionen:**
+    • **Via Discord verknüpfen** – Schnellster Weg.
+    • **SteamID manuell eingeben**: Du trägst **ID64 / Vanity / Profil-Link** selbst ein.
+    • **Steam Profil suchen**: Offizieller Steam OpenID-Flow (kein Passwort, wir sehen nur die **SteamID64**).
+
+
+    • Sobald du dich via Discord oder Steam authentifizierst, schickt dir unser Bot automatisch eine Anfrage.
+      Alternativ kannst du diesen manuell adden:
+      ⚡ Über den Button **„Schnelle Anfrage senden“** erhältst du einen persönlichen Link.
+      🔢 Freundescode: **820142646** oder schick dem Bot eine Freundschaftsanfrage über die ID
+
+
+    **Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** sonst funktioniert das nicht.
+    """
+).strip()
+
+
+def steam_link_dm_description() -> str:
+    return _STEAM_LINK_DM_DESC
+
+
+def steam_link_detailed_description() -> str:
+    return _STEAM_LINK_DETAILED_DESC
+
+
 def build_steam_intro_embed() -> discord.Embed:
     """Intro/Erklärung für den Schritt – mit Hinweis auf 'SteamID manuell'."""
     em = discord.Embed(
         title="Empfehlung für besseres Erlebnis",
-        description=(
-            "• Wozu ist das gut? Wir können deinen **Spiel-Status** \n"
-            "(z. B. *Lobby/In-Game*, **Anzahl im Match**) als Status für den Sprach Kanel nehmen"
-            "Dadurch können wir präziser anzeigen wie der Status ist und Events sauberer balancen.\n\n"
-            "**Ablauf & Optionen:**\n"
-            "• **Via Discord verknüpfen** - Schnellster Weg.\n"
-            "• **SteamID manuell eingeben**: Du trägst **ID64 / Vanity / Profil-Link** selbst ein.\n"
-            "• **Steam Profil suchen**: Offizieller Steam OpenID-Flow (kein Passwort, wir sehen nur die **SteamID64**).\n\n"
-            "• Sobald du dich via Discord oder Steam authentifizierst, "
-            "schickt dir unser Bot automatisch eine Anfrage. Alternativ kannst du diesen manuell adden:\n"
-            "  ⚡ Über den Button **„Schnelle Anfrage senden“** erhältst du einen persönlichen Link.\n"
-            "  🔢 Freundescode: **820142646** oder schick dem Bot eine Freundschaftsanfrage über die ID\n\n"
-            "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** sonst funktioniert das nicht."
-        ),
+        description=steam_link_detailed_description(),
         colour=discord.Colour.blurple(),
     )
     em.set_footer(text="Kurzbefehle: /link, /link_steam, /addsteam")

@@ -25,7 +25,7 @@ log = logging.getLogger("RulesPanel")
 from cogs.welcome_dm.base import build_step_embed
 from cogs.welcome_dm.step_intro import IntroView
 from cogs.welcome_dm.step_status import PlayerStatusView
-from cogs.welcome_dm.step_steam_link import SteamLinkStepView
+from cogs.welcome_dm.step_steam_link import SteamLinkStepView, steam_link_detailed_description
 from cogs.welcome_dm.step_rules import RulesView
 
 
@@ -180,20 +180,7 @@ class RulesPanel(commands.Cog):
         # 2/3 Steam
         emb = build_step_embed(
             title="Frage 2/3 · Steam verknüpfen (empfohlen)",
-            desc=(
-            "• Wozu ist das gut? Wir können deinen **Spiel-Status** \n"
-            "(z. B. *Lobby/In-Game*, **Anzahl im Match**) als Status für den Sprach Kanel nehmen"
-            "Dadurch können wir präziser anzeigen wie der Status ist und Events sauberer balancen.\n\n"
-            "**Ablauf & Optionen:**\n"
-            "• **Via Discord verknüpfen** - Schnellster Weg.\n"
-            "• **SteamID manuell eingeben**: Du trägst **ID64 / Vanity / Profil-Link** selbst ein.\n"
-            "• **Steam Profil suchen**: Offizieller Steam OpenID-Flow (kein Passwort, wir sehen nur die **SteamID64**).\n\n"
-            "• Sobald du dich via Discord oder Steam authentifizierst, "
-            "schickt dir unser Bot automatisch eine Anfrage. Alternativ kannst du diesen manuell adden:\n"
-            "  ⚡ Über den Button **„Schnelle Anfrage senden“** erhältst du einen persönlichen Link.\n"
-            "  🔢 Freundescode: **820142646** oder schick dem Bot eine Freundschaftsanfrage über die ID\n\n"
-            "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** sonst funktioniert das nicht."
-            ),
+            desc=steam_link_detailed_description(),
             step=2,
             total=total,
             color=0x2ECC71,
