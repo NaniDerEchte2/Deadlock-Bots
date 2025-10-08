@@ -165,7 +165,7 @@ class WelcomeDM(commands.Cog):
                 )
                 if not await self._send_step_embed_dm(
                     member,
-                    title="Frage 2/3 · Steam verknüpfen (skippbar)",
+                    title="Frage 2/3 · Verknüpfe deinen Steam Account",
                     desc=q2_desc,
                     step=2,
                     total=3,
