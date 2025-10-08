@@ -281,12 +281,17 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               steam_id TEXT PRIMARY KEY,
               app_id INTEGER,
               status TEXT,
+              status_text TEXT,
               display TEXT,
               player_group TEXT,
               player_group_size INTEGER,
               connect TEXT,
+              mode TEXT,
+              map TEXT,
+              party_size INTEGER,
               raw_json TEXT,
-              last_update INTEGER
+              last_update INTEGER,
+              updated_at INTEGER
             );
 
             -- Optionale zusätzliche Watchlist für den Presence-Service
@@ -355,7 +360,7 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_quick_invites_reserved ON steam_quick_invites(reserved_by)"
             )
-            c.execute("CREATE INDEX IF NOT EXISTS idx_rich_presence_updated ON steam_rich_presence(last_update)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_rich_presence_updated ON steam_rich_presence(updated_at)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ranks_rank ON ranks(rank)")
         except sqlite3.Error as e:
             logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)
