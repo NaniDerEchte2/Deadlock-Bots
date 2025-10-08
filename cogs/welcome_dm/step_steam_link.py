@@ -73,18 +73,18 @@ def build_steam_intro_embed() -> discord.Embed:
     em = discord.Embed(
         title="Empfehlung für besseres Erlebnis",
         description=(
-            "• Wozu ist das gut? Wir können deinen **Voice-Status** (z. B. *Lobby/In-Game*, **Anzahl im Match**) "
-            "präziser anzeigen und Events sauberer balancen.\n\n"
+            "• Wozu ist das gut? Wir können deinen **Spiel-Status** \n"
+            "(z. B. *Lobby/In-Game*, **Anzahl im Match**) als Status für den Sprach Kanel nehmen"
+            "Dadurch können wir präziser anzeigen wie der Status ist und Events sauberer balancen.\n\n"
             "**Ablauf & Optionen:**\n"
-            "• **Via Discord verknüpfen**: Schnellster, sicherer Weg (wir fragen *identify + connections* ab).\n"
+            "• **Via Discord verknüpfen** - Schnellster Weg.\n"
             "• **SteamID manuell eingeben**: Du trägst **ID64 / Vanity / Profil-Link** selbst ein.\n"
             "• **Steam Profil suchen**: Offizieller Steam OpenID-Flow (kein Passwort, wir sehen nur die **SteamID64**).\n\n"
             "🤝 **Freundschaft mit dem Bot:** Sobald du dich via Discord oder Steam authentifizierst, "
             "schickt dir unser Bot automatisch eine Anfrage. Alternativ kannst du manuell adden:\n"
             "  ⚡ Über den Button **„Schnelle Anfrage senden“** erhältst du einen persönlichen Link.\n"
-            "  🔢 Freundescode: **820142646** (oder gib ihn uns, dann senden wir dir eine Anfrage).\n\n"
-            "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** "
-            "(und **Gesamtspielzeit** nicht auf „immer privat“)."
+            "  🔢 Freundescode: **820142646** oder schick dem Bot eine Freundschaftsanfrage über die ID\n\n"
+            "**Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** sonst funktioniert das nicht."
         ),
         colour=discord.Colour.blurple(),
     )
