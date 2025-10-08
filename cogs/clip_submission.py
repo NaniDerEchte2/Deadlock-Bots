@@ -6,9 +6,9 @@ import io
 import re
 import time
 import random
-import asyncio
-from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, List
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from typing import Optional, Dict, List, Tuple
 
 import discord
 from discord import app_commands
@@ -21,25 +21,23 @@ REVIEW_CHANNEL_ID = 1374364800817303632   # Kanal für Review-Embeds (falls akti
 GUILD_ID: int | None = None               # Optional: auf eine Guild begrenzen (sonst None)
 AUTO_POST_ON_READY = True                 # Beim Start/Reload Interface automatisch prüfen/erzeugen
 
-# --- Ziele / Defaults ---
+# --- Ziele ---
 REVIEW_CHANNEL_ENABLED = False            # Clip im Review-Channel posten?
-SEND_TO_USER = True                       # Standard: Dump/Benachrichtigungen per DM senden
-SEND_TO_USER_ID = 662995601738170389      # Ziel-User-ID für DM (Admin/Redaktion)
+SEND_TO_USER = True                       # Am Ende des Fensters: Gesamt-Dump an User senden?
+SEND_TO_USER_ID = 662995601738170389      # Ziel-User-ID für Wochen-Dump (Gesamtpaket)
 
-# --- Wöchentliches Fenster ---
-# Ende-Wochentag (0=Montag ... 6=Sonntag) und Uhrzeit (24h) in **lokaler Zeit**.
-WINDOW_END_WEEKDAY = 5                    # 5 = Samstag
-WINDOW_END_HOUR = 23                      # 23:00 Uhr
-LOCAL_TZ = timezone.utc                   # falls du lokal willst: timezone(timedelta(hours=+2)) o.ä.
-
-# Anzeige: so zeigt’s Discord im Embed; Logik bleibt in UTC stabil.
-DISPLAY_TZ = timezone.utc
-
+# --- Wöchentliche Fenster (Europe/Berlin) ---
+WEEKLY_WINDOW_ENABLED = True
+WINDOW_TZ = "Europe/Berlin"               # Zeitzone für Fensterberechnung
+WINDOW_START_WEEKDAY = 6                  # 0=Mo ... 6=So -> Start: Sonntag 00:00
+WINDOW_END_HOUR = 23                      # Ende: Samstag 23:00
 # =========================
 
 URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+TZ = ZoneInfo(WINDOW_TZ)
+VIEW_TYPE = "clip_submission_v1"          # Schlüssel in persistent_views
 
-# ===== ZENTRALE DB =====
+# ===== ZENTRALE DB (nutzt deine bestehende service/db.py) =====
 try:
     from service import db as central_db  # type: ignore
 except Exception:
@@ -64,13 +62,12 @@ def _fetchall(sql: str, params: tuple = ()):
         cur = c.execute(sql, params)
         return cur.fetchall()
 
-# ---- Wir nutzen deine bestehende Tabelle persistent_views:
-# persistent_views(message_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, guild_id TEXT NOT NULL,
-#                  view_type TEXT NOT NULL, user_id TEXT, created_at TIMESTAMP DEFAULT ...)
-VIEW_TYPE = "clip_submission_v1"
+# ---- wir benutzen vorhandene Tabelle:
+# persistent_views(message_id TEXT PK, channel_id TEXT, guild_id TEXT, view_type TEXT, user_id TEXT, created_at TIMESTAMP DEFAULT ...)
+# Keine Schema-Änderung an persistent_views nötig.
 
-# ---- zusätzliche Tabellen (Clips & Contests) – falls noch nicht vorhanden:
 def init_schema():
+    """Minimale Schemata für Clips & Wochenfenster (idempotent)."""
     with _conn() as c:
         c.executescript(
             """
@@ -85,136 +82,91 @@ def init_schema():
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
-            CREATE TABLE IF NOT EXISTS clip_contests(
+            -- Wochenfenster-Status (automatisch pro Woche erzeugt)
+            CREATE TABLE IF NOT EXISTS clip_windows(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
-                name TEXT,
                 start_ts INTEGER NOT NULL,
                 end_ts   INTEGER NOT NULL,
-                announce_channel_id INTEGER,
-                status TEXT NOT NULL DEFAULT 'running', -- running|ended|published
-                video_url TEXT,
-                winner_user_id INTEGER,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                status TEXT NOT NULL DEFAULT 'running', -- running | dumped
+                dump_sent_ts INTEGER,
+                UNIQUE(guild_id, start_ts, end_ts)
             );
 
-            CREATE TABLE IF NOT EXISTS clip_contest_submissions(
-                contest_id INTEGER NOT NULL,
+            -- Zuordnung Einsendung ↔ Fenster (nur für Query-Komfort)
+            CREATE TABLE IF NOT EXISTS clip_window_submissions(
+                window_id INTEGER NOT NULL,
                 submission_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
-                PRIMARY KEY(contest_id, submission_id),
-                FOREIGN KEY(contest_id) REFERENCES clip_contests(id) ON DELETE CASCADE,
+                PRIMARY KEY(window_id, submission_id),
+                FOREIGN KEY(window_id) REFERENCES clip_windows(id) ON DELETE CASCADE,
                 FOREIGN KEY(submission_id) REFERENCES clip_submissions(id) ON DELETE CASCADE
             );
 
-            CREATE INDEX IF NOT EXISTS idx_clip_contests_guild ON clip_contests(guild_id);
-            CREATE INDEX IF NOT EXISTS idx_clip_contests_active ON clip_contests(guild_id, start_ts, end_ts);
+            CREATE INDEX IF NOT EXISTS idx_clip_windows_guild ON clip_windows(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_clip_submissions_guild ON clip_submissions(guild_id);
             """
         )
 
-# -------------------- Zeit-/Contest-Utils --------------------
+# -------------------- Zeitfenster-Helfer --------------------
 
-def _now_utc_ts() -> int:
+def _now_ts() -> int:
     return int(time.time())
 
-def _to_display_ts(ts: int) -> str:
-    return f"<t:{int(ts)}:f>"
+def _dt_to_ts(dt: datetime) -> int:
+    return int(dt.timestamp())
 
-def _week_window_for_now() -> tuple[int, int, str]:
-    """
-    Liefert (start_ts_utc, end_ts_utc, name) für die **aktuelle Woche** gemäß WINDOW_END_WEEKDAY/HOUR.
-    Logik: Fenster endet am nächsten gewünschten Wochentag um WINDOW_END_HOUR (lokale Zeit), Länge = 7 Tage.
-    """
-    now_local = datetime.now(tz=LOCAL_TZ)
-    # finde nächste End-Grenze
-    days_ahead = (WINDOW_END_WEEKDAY - now_local.weekday()) % 7
-    end_local = (now_local + timedelta(days=days_ahead)).replace(
-        hour=WINDOW_END_HOUR, minute=0, second=0, microsecond=0
-    )
-    # wenn Endzeit bereits überschritten: auf die nächste Woche schieben
-    if end_local <= now_local:
-        end_local += timedelta(days=7)
-    start_local = end_local - timedelta(days=7)
+def _format_ts(ts: int, style: str = "f") -> str:
+    return f"<t:{int(ts)}:{style}>"
 
-    # nach UTC konvertieren
-    end_utc = end_local.astimezone(timezone.utc)
-    start_utc = start_local.astimezone(timezone.utc)
-    name = f"Clips {start_local.date().isoformat()} – {end_local.date().isoformat()}"
-    return int(start_utc.timestamp()), int(end_utc.timestamp()), name
+def _compute_week_window_berlin(now: datetime) -> Tuple[int, int]:
+    """
+    Liefert (start_ts, end_ts) des aktuellen Wochenfensters gemäß:
+    Start: Sonntag 00:00 Europe/Berlin
+    Ende:  Samstag 23:00 Europe/Berlin
+    """
+    local = now.astimezone(TZ).replace(minute=0, second=0, microsecond=0)
+    # finde den letzten Sonntag 00:00
+    days_since_sun = (local.weekday() - WINDOW_START_WEEKDAY) % 7
+    start_local = (local - timedelta(days=days_since_sun)).replace(hour=0)
+    # Ende: Samstag 23:00 => Samstag ist (Sonntag + 6 Tage)
+    end_local = (start_local + timedelta(days=6)).replace(hour=WINDOW_END_HOUR)
+    return _dt_to_ts(start_local), _dt_to_ts(end_local)
 
-def _ensure_current_week_contest(guild_id: int) -> int:
+def _ensure_window(guild_id: int) -> dict:
     """
-    Stellt sicher, dass es **ein** laufendes/scheduled Contest für die aktuelle Woche gibt.
-    Gibt die Contest-ID zurück.
+    Stellt sicher, dass es ein laufendes Fenster für diese Woche gibt.
+    Gibt das aktuelle Fenster (running oder bereits 'dumped', falls überfällig) als dict zurück.
     """
-    start_ts, end_ts, name = _week_window_for_now()
-    # existiert passende Zeile?
+    now = datetime.now(tz=TZ)
+    start_ts, end_ts = _compute_week_window_berlin(now)
     row = _fetchone(
-        """
-        SELECT id FROM clip_contests
-         WHERE guild_id=? AND start_ts=? AND end_ts=?
-         LIMIT 1
-        """, (guild_id, start_ts, end_ts)
+        "SELECT id, start_ts, end_ts, status, dump_sent_ts FROM clip_windows WHERE guild_id=? AND start_ts=? AND end_ts=? LIMIT 1",
+        (guild_id, start_ts, end_ts)
     )
     if row:
-        return int(row[0])
-    # evtl. veraltete "running" der Vorwoche beenden
-    _exec(
-        "UPDATE clip_contests SET status='ended' WHERE guild_id=? AND end_ts<=? AND status!='ended'",
-        (guild_id, _now_utc_ts())
-    )
-    # neuen Datensatz anlegen (running)
+        return dict(row)
+
+    # neu anlegen (running)
     with _conn() as c:
-        cur = c.execute(
-            "INSERT INTO clip_contests(guild_id, name, start_ts, end_ts, status) VALUES (?, ?, ?, ?, 'running')",
-            (guild_id, name, start_ts, end_ts)
+        c.execute(
+            "INSERT OR IGNORE INTO clip_windows(guild_id, start_ts, end_ts, status) VALUES (?, ?, ?, 'running')",
+            (guild_id, start_ts, end_ts)
         )
-        return int(cur.lastrowid)
+        row = c.execute(
+            "SELECT id, start_ts, end_ts, status, dump_sent_ts FROM clip_windows WHERE guild_id=? AND start_ts=? AND end_ts=? LIMIT 1",
+            (guild_id, start_ts, end_ts)
+        ).fetchone()
+    return dict(row)
 
-def _get_running_contest(guild_id: int) -> Optional[dict]:
-    now = _now_utc_ts()
-    row = _fetchone(
-        """
-        SELECT id, name, start_ts, end_ts, status
-          FROM clip_contests
-         WHERE guild_id=? AND start_ts<=? AND end_ts>? AND status='running'
-         LIMIT 1
-        """, (guild_id, now, now)
-    )
-    return dict(row) if row else None
+def _get_current_window_if_running(guild_id: int) -> Optional[dict]:
+    w = _ensure_window(guild_id)
+    now_ts = _now_ts()
+    if w and int(w["start_ts"]) <= now_ts <= int(w["end_ts"]):
+        return w
+    return None
 
-def _mark_contest_ended_and_dump(guild_id: int, contest_id: int) -> None:
-    _exec("UPDATE clip_contests SET status='ended' WHERE id=?", (contest_id,))
-    # Dump wird im Task erzeugt & versendet (siehe weekly_closer)
-
-def _list_contest_submissions(contest_id: int) -> List[dict]:
-    rows = _fetchall(
-        """
-        SELECT s.id, s.user_id, s.link, s.credit, s.permission, s.info, s.created_at
-          FROM clip_contest_submissions x
-          JOIN clip_submissions s ON s.id = x.submission_id
-         WHERE x.contest_id = ?
-         ORDER BY s.created_at ASC
-        """, (contest_id,)
-    )
-    return [dict(r) for r in rows]
-
-def _build_dump_text(contest: dict, subs: List[dict]) -> str:
-    lines = []
-    header = f"# Dump – {contest.get('name') or 'Unbenannt'} | Zeitraum: {datetime.fromtimestamp(contest['start_ts'], tz=DISPLAY_TZ)} – {datetime.fromtimestamp(contest['end_ts'], tz=DISPLAY_TZ)}"
-    lines.append(header)
-    lines.append("")
-    for s in subs:
-        created = s.get("created_at", "")
-        # minimalistisch, einfach parsbar:
-        lines.append(f"{s['link']} | {s['credit']} | user_id={s['user_id']} | created_at={created}")
-    if not subs:
-        lines.append("(keine Einsendungen)")
-    lines.append("")
-    lines.append(f"Total submissions: {len(subs)}")
-    return "\n".join(lines)
-
-# -------- Persistent-View-Helpers (nutzen persistent_views) --------
+# -------------------- persistent_views-Helper --------------------
 
 def pv_get_latest(guild_id: int, view_type: str) -> Optional[dict]:
     row = _fetchone(
@@ -230,6 +182,7 @@ def pv_get_latest(guild_id: int, view_type: str) -> Optional[dict]:
     return dict(row) if row else None
 
 def pv_upsert_single(guild_id: int, channel_id: int, message_id: int, view_type: str, user_id: Optional[int] = None) -> None:
+    # genau 1 Datensatz je (guild_id, view_type)
     with _conn() as c:
         c.execute("DELETE FROM persistent_views WHERE guild_id = ? AND view_type = ?", (str(guild_id), view_type))
         c.execute(
@@ -254,6 +207,9 @@ class ConfirmPermissionView(discord.ui.View):
     )
     async def perm_yes(self, interaction: discord.Interaction, _: discord.ui.Button):
         self.cog._pending_permission[interaction.user.id] = "owner_or_permission"
+        await self.open_modal(interaction)
+
+    async def open_modal(self, interaction: discord.Interaction):
         await interaction.response.send_modal(ClipSubmitModal(self.cog))
 
 
@@ -309,6 +265,7 @@ class ClipSubmitModal(discord.ui.Modal, title="Gameplay-Clip einreichen"):
             )
         self.cog._last_submit_ts[user.id] = now
 
+        # Speichern
         with _conn() as db:
             cur = db.execute(
                 """
@@ -319,54 +276,41 @@ class ClipSubmitModal(discord.ui.Modal, title="Gameplay-Clip einreichen"):
             )
             submission_id = cur.lastrowid
 
-            # aktuelle Woche/Contest sicherstellen und Zuordnung
-            contest_id = _ensure_current_week_contest(guild.id if guild else 0)
-            db.execute(
-                "INSERT OR IGNORE INTO clip_contest_submissions(contest_id, submission_id, user_id) VALUES (?, ?, ?)",
-                (contest_id, submission_id, user.id)
-            )
+            # aktuelle Woche zuordnen (falls running)
+            w = _get_current_window_if_running(guild.id if guild else 0)
+            if w:
+                db.execute(
+                    "INSERT OR IGNORE INTO clip_window_submissions(window_id, submission_id, user_id) VALUES (?, ?, ?)",
+                    (int(w["id"]), int(submission_id), int(user.id))
+                )
 
-        # Optional: Review-Channel & Admin-DM
-        embed = discord.Embed(
-            title="🎬 Neue Clip-Einsendung",
-            description="Eine neue Einsendung zur Sichtung.",
-            color=discord.Color.blurple(),
-        )
-        embed.add_field(name="Link", value=link, inline=False)
-        embed.add_field(name="Credit (Overlay)", value=credit, inline=True)
-        perm_text = "Ich besitze den Clip / Erlaubnis" if permission == "owner_or_permission" else "Unbekannt"
-        embed.add_field(name="Erlaubnis", value=perm_text, inline=True)
-        if info:
-            embed.add_field(name="Info", value=info[:1024], inline=False)
-        embed.set_footer(text=f"User: {user} • UserID: {user.id}")
-        embed.timestamp = discord.utils.utcnow()
-
-        errors: List[str] = []
+        # Optional: Review-Channel Info (kein DM mehr pro Submission!)
         if REVIEW_CHANNEL_ENABLED and guild:
             try:
-                channel = guild.get_channel(REVIEW_CHANNEL_ID) or await guild.fetch_channel(REVIEW_CHANNEL_ID)
-                if isinstance(channel, discord.TextChannel):
-                    await channel.send(embed=embed)
-            except Exception as e:
-                errors.append(f"Review-Channel fehlgeschlagen: {e}")
+                ch = guild.get_channel(REVIEW_CHANNEL_ID) or await guild.fetch_channel(REVIEW_CHANNEL_ID)
+                if isinstance(ch, discord.TextChannel):
+                    embed = discord.Embed(
+                        title="🎬 Neue Clip-Einsendung",
+                        description=f"Von **{user}** – Credit: `{credit}`",
+                        color=discord.Color.blurple(),
+                    )
+                    embed.add_field(name="Link", value=link, inline=False)
+                    if info:
+                        embed.add_field(name="Info", value=info[:1024], inline=False)
+                    embed.set_footer(text=f"UserID: {user.id}")
+                    await ch.send(embed=embed)
+            except Exception:
+                pass
 
-        if SEND_TO_USER and SEND_TO_USER_ID:
-            try:
-                admin = (interaction.client or self.cog.bot).get_user(SEND_TO_USER_ID) or await (interaction.client or self.cog.bot).fetch_user(SEND_TO_USER_ID)
-                await admin.send(embed=embed)
-            except Exception as e:
-                errors.append(f"DM an Admin fehlgeschlagen: {e}")
-
-        note = "✅ Danke! Dein Clip ist eingegangen."
-        if errors:
-            note += "\n\n⚠️ Hinweise:\n- " + "\n- ".join(f"`{e}`" for e in errors)
-
-        await interaction.response.send_message(note + "\n\nMindestqualität **1080p**.", ephemeral=True)
+        await interaction.response.send_message(
+            "✅ Danke! Dein Clip ist eingegangen.\n\nMindestqualität **1080p**.",
+            ephemeral=True,
+        )
 
 
 class ClipSubmitView(discord.ui.View):
     def __init__(self, cog: "ClipSubmissionCog"):
-        super().__init__(timeout=None)  # persistent
+        super().__init__(timeout=None)  # persistent!
         self.cog = cog
 
     @discord.ui.button(
@@ -375,9 +319,10 @@ class ClipSubmitView(discord.ui.View):
         custom_id="clip_submit_btn_v1",
     )
     async def submit(self, interaction: discord.Interaction, _: discord.ui.Button):
+        view = ConfirmPermissionView(self.cog)
         await interaction.response.send_message(
             "Bitte bestätige zunächst die Verwendungserlaubnis:",
-            view=ConfirmPermissionView(self.cog),
+            view=view,
             ephemeral=True,
         )
 
@@ -391,89 +336,83 @@ RULES_TEXT = (
 )
 
 class ClipSubmissionCog(commands.Cog):
-    """Clip-Interface (persistent), wöchentliches Teilnahmefenster, automatischer Dump am Wochenende."""
+    """Einsende-Interface + wöchentliches Fenster + Wochen-Dump. Persistenz via persistent_views."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._pending_permission: Dict[int, str] = {}
         self._last_submit_ts: Dict[int, float] = {}
-        self._upsert_locks: Dict[int, asyncio.Lock] = {}
 
         init_schema()
 
-        # persistenten View global registrieren (überlebt Restarts)
+        # Persistente View global registrieren (überlebt Restarts)
         self.bot.add_view(ClipSubmitView(self))
 
-        # periodisch Interface aktualisieren & Weekly-Logik ausführen
+        # Hintergrund-Tasks
         self.interface_refresher.start()
-        self.weekly_closer.start()
+        if WEEKLY_WINDOW_ENABLED:
+            self.weekly_window_manager.start()
 
-    # ---------- Interface & Embeds ----------
+    # ---------- Interface ----------
 
-    def _contest_line(self, guild_id: int) -> str:
-        # Stellt sicher, dass aktuelle Woche existiert (liefert ID, aber wir brauchen nur Zeitraum)
-        cid = _ensure_current_week_contest(guild_id)
-        row = _fetchone("SELECT start_ts, end_ts FROM clip_contests WHERE id=?", (cid,))
-        if not row:
-            return "📅 Aktuell ist kein Teilnahmefenster geplant."
-        start_ts, end_ts = int(row[0]), int(row[1])
-        now = _now_utc_ts()
-        if start_ts <= now < end_ts:
-            return f"🏁 **Teilnahmefenster aktiv**: {_to_display_ts(start_ts)} – {_to_display_ts(end_ts)} (endet <t:{end_ts}:R>)"
-        return f"🗓️ Nächstes Fenster: {_to_display_ts(start_ts)} – {_to_display_ts(end_ts)} (startet <t:{start_ts}:R>)"
+    def _window_line(self, guild_id: int) -> str:
+        w = _ensure_window(guild_id)
+        s, e = int(w["start_ts"]), int(w["end_ts"])
+        now = _now_ts()
+        if s <= now <= e:
+            return f"🏁 **Teilnahmefenster aktiv**: { _format_ts(s,'f') } – { _format_ts(e,'f') } (endet { _format_ts(e,'R') })"
+        return f"🗓️ Nächstes Fenster: { _format_ts(s,'f') } – { _format_ts(e,'f') } (startet { _format_ts(s,'R') })"
 
     async def upsert_interface(self, guild: discord.Guild) -> Optional[int]:
         if GUILD_ID is not None and guild.id != GUILD_ID:
             return None
 
-        # guild-lock: verhindert Doppelevents/Mehrfachposts
-        lock = self._upsert_locks.setdefault(guild.id, asyncio.Lock())
-        async with lock:
-            # Kanal ermitteln
-            channel: Optional[discord.TextChannel] = None
-            ch = guild.get_channel(SUBMIT_CHANNEL_ID)
-            if isinstance(ch, discord.TextChannel):
-                channel = ch
-            else:
-                try:
-                    ch = await guild.fetch_channel(SUBMIT_CHANNEL_ID)
-                    if isinstance(ch, discord.TextChannel):
-                        channel = ch
-                except Exception:
-                    channel = None
-            if channel is None:
-                return None
+        # Kanal
+        channel: Optional[discord.TextChannel] = None
+        ch = guild.get_channel(SUBMIT_CHANNEL_ID)
+        if isinstance(ch, discord.TextChannel):
+            channel = ch
+        else:
+            try:
+                ch = await guild.fetch_channel(SUBMIT_CHANNEL_ID)
+                if isinstance(ch, discord.TextChannel):
+                    channel = ch
+            except Exception:
+                channel = None
+        if channel is None:
+            return None
 
-            # existierenden Datensatz aus persistent_views nehmen
-            pv = pv_get_latest(guild.id, VIEW_TYPE)
-            message = None
-            if pv and pv.get("channel_id") and int(pv["channel_id"]) == channel.id:
-                try:
+        # vorhandene Interface-Message über persistent_views
+        pv = pv_get_latest(guild.id, VIEW_TYPE)
+        message = None
+        if pv and str(pv["channel_id"]).isdigit():
+            try:
+                if int(pv["channel_id"]) == channel.id:
                     message = await channel.fetch_message(int(pv["message_id"]))
-                except Exception:
-                    message = None  # wurde evtl. gelöscht
+            except Exception:
+                message = None
 
-            embed = discord.Embed(
-                title="🎥 Deadlock Gameplay-Clips einsenden",
-                description=RULES_TEXT + "\n\n" + self._contest_line(guild.id),
-                color=discord.Color.green(),
-            )
-            embed.set_footer(text="Mit dem Button unten kannst du deinen Clip einreichen.")
-            view = ClipSubmitView(self)
+        embed = discord.Embed(
+            title="🎥 Deadlock Gameplay-Clips einsenden",
+            description=RULES_TEXT + "\n\n" + self._window_line(guild.id),
+            color=discord.Color.green(),
+        )
+        embed.set_footer(text="Mit dem Button unten kannst du deinen Clip einreichen.")
+        view = ClipSubmitView(self)
 
-            if message:
-                await message.edit(embed=embed, view=view, content=None)
-                pv_upsert_single(guild.id, channel.id, message.id, VIEW_TYPE)
-                return message.id
-            else:
-                # falls pv existiert aber Channel-ID abweicht -> neu posten und pv ersetzen
-                sent = await channel.send(embed=embed, view=view)
-                pv_upsert_single(guild.id, channel.id, sent.id, VIEW_TYPE)
-                return sent.id
+        if message:
+            await message.edit(embed=embed, view=view, content=None)
+            pv_upsert_single(guild.id, channel.id, message.id, VIEW_TYPE)
+            return message.id
+
+        # nicht gefunden → neu posten und persistent speichern
+        sent = await channel.send(embed=embed, view=view)
+        pv_upsert_single(guild.id, channel.id, sent.id, VIEW_TYPE)
+        return sent.id
 
     @tasks.loop(minutes=5)
     async def interface_refresher(self):
-        """Alle 5 Minuten: Fenster-Text aktualisieren + Interface gesund halten."""
+        """Alle 5 Minuten Embed updaten (Countdown/Zeitraum)."""
         try:
             if GUILD_ID is not None:
                 g = self.bot.get_guild(GUILD_ID)
@@ -489,74 +428,84 @@ class ClipSubmissionCog(commands.Cog):
     async def _wait_ready(self):
         await self.bot.wait_until_ready()
 
-    # ---------- Weekly-Ende & Dump ----------
+    # ---------- Weekly Window Manager ----------
 
-    @tasks.loop(minutes=1)
-    async def weekly_closer(self):
-        """
-        Prüft minütlich:
-        - Wenn aktueller "running"-Contest abgelaufen ist -> auf 'ended' setzen und Dump versenden.
-        - Danach sofort nächsten Wochen-Contest **anlegen** (damit Interface weiter korrekt anzeigt).
-        """
+    @tasks.loop(minutes=2)
+    async def weekly_window_manager(self):
+        """Erzeugt / hält das aktuelle Wochenfenster und verschickt genau einmal den Wochen-Dump nach Ablauf."""
+        if not WEEKLY_WINDOW_ENABLED:
+            return
         try:
-            guild_ids = [GUILD_ID] if GUILD_ID is not None else [g.id for g in self.bot.guilds]
-            now = _now_utc_ts()
-            for gid in guild_ids:
-                # Running-Contest?
-                cont = _get_running_contest(gid)
-                if cont and now >= int(cont["end_ts"]):
-                    # beenden
-                    _mark_contest_ended_and_dump(gid, int(cont["id"]))
-                    # Dump erzeugen & versenden
-                    await self._send_dump_for_contest(gid, int(cont["id"]))
-                    # nächstes Fenster sofort bereitstellen
-                    _ensure_current_week_contest(gid)
-                    # Interface aktualisieren
-                    g = self.bot.get_guild(gid)
-                    if g:
-                        await self.upsert_interface(g)
+            targets = []
+            if GUILD_ID is not None:
+                g = self.bot.get_guild(GUILD_ID)
+                if g:
+                    targets = [g]
+            else:
+                targets = list(self.bot.guilds)
+
+            now_ts = _now_ts()
+            for g in targets:
+                w = _ensure_window(g.id)
+                start_ts, end_ts = int(w["start_ts"]), int(w["end_ts"])
+                status = w["status"]
+                dumped = w["dump_sent_ts"]
+
+                # nach Ende: Dump senden, falls noch nicht gesendet
+                if now_ts > end_ts and (dumped is None or int(dumped or 0) == 0) and status in ("running",):
+                    # Dump generieren und senden
+                    await self._send_window_dump(g, start_ts, end_ts)
+                    with _conn() as c:
+                        c.execute("UPDATE clip_windows SET status='dumped', dump_sent_ts=? WHERE id=?", (now_ts, int(w["id"])))
+                # automatisch: nächstes Fenster wird durch _ensure_window() beim nächsten Tick abgedeckt
         except Exception:
             pass
 
-    @weekly_closer.before_loop
+    @weekly_window_manager.before_loop
     async def _wait_ready2(self):
         await self.bot.wait_until_ready()
 
-    async def _send_dump_for_contest(self, guild_id: int, contest_id: int):
-        """Erzeugt TXT-Dump & sendet ihn per DM an SEND_TO_USER_ID; fallback: im SUBMIT_CHANNEL_ID posten."""
-        contest = _fetchone("SELECT id, name, start_ts, end_ts FROM clip_contests WHERE id=?", (contest_id,))
-        if not contest:
+    async def _send_window_dump(self, guild: discord.Guild, start_ts: int, end_ts: int, target_channel: Optional[discord.TextChannel] = None):
+        """Baut TXT-Dump und sendet ihn an SEND_TO_USER_ID (oder target_channel, wenn angegeben)."""
+        rows = _fetchall(
+            """
+            SELECT id, user_id, link, credit, permission, info, created_at
+              FROM clip_submissions
+             WHERE guild_id=? AND strftime('%s', created_at) BETWEEN ? AND ?
+             ORDER BY datetime(created_at) ASC
+            """,
+            (guild.id, str(start_ts), str(end_ts))
+        )
+        text_lines = [
+            f"# Deadlock Clips – Fenster {datetime.fromtimestamp(start_ts, TZ):%Y-%m-%d %H:%M} → {datetime.fromtimestamp(end_ts, TZ):%Y-%m-%d %H:%M} ({WINDOW_TZ})",
+            f"# Guild: {guild.name} ({guild.id})",
+            "",
+            "id | user_id | created_at | credit | link | permission | info",
+            "-"*120
+        ]
+        for r in rows:
+            created = r["created_at"]
+            line = f"{r['id']} | {r['user_id']} | {created} | {r['credit']} | {r['link']} | {r['permission']} | {(r['info'] or '').replace(chr(10),' ')}"
+            text_lines.append(line)
+
+        content = "\n".join(text_lines) if rows else "# (keine Einsendungen in diesem Fenster)"
+        data = io.BytesIO(content.encode("utf-8"))
+        filename = f"deadlock_clips_{guild.id}_{start_ts}_{end_ts}.txt"
+        file = discord.File(data, filename=filename)
+
+        if target_channel and isinstance(target_channel, discord.TextChannel):
+            await target_channel.send(content="📦 **Wochen-Dump (Clips)**", file=file)
             return
-        cont = dict(contest)
-        subs = _list_contest_submissions(contest_id)
-        txt = _build_dump_text(cont, subs)
 
-        # Datei bauen
-        fp = io.BytesIO(txt.encode("utf-8"))
-        filename = f"clip_dump_{contest_id}.txt"
-        file = discord.File(fp, filename=filename)
-
-        # DM an Admin?
-        sent = False
         if SEND_TO_USER and SEND_TO_USER_ID:
             try:
                 user = self.bot.get_user(SEND_TO_USER_ID) or await self.bot.fetch_user(SEND_TO_USER_ID)
-                await user.send(
-                    content=f"📦 **Dump für `{cont.get('name','Contest')}`** (Contest #{contest_id})",
-                    file=file
-                )
-                sent = True
+                await user.send(content=f"📦 **Wochen-Dump (Clips)** – {guild.name}", file=file)
             except Exception:
-                sent = False
-
-        if not sent:
-            # Fallback: in SUBMIT_CHANNEL posten
-            g = self.bot.get_guild(guild_id)
-            if not g:
-                return
-            ch = g.get_channel(SUBMIT_CHANNEL_ID) or await g.fetch_channel(SUBMIT_CHANNEL_ID)
-            if isinstance(ch, discord.TextChannel):
-                await ch.send(content=f"📦 **Dump – Contest #{contest_id}**", file=file)
+                # Fallback: in den Submit-Channel posten
+                ch = guild.get_channel(SUBMIT_CHANNEL_ID) or await guild.fetch_channel(SUBMIT_CHANNEL_ID)
+                if isinstance(ch, discord.TextChannel):
+                    await ch.send(content="📦 **Wochen-Dump (Clips)**", file=file)
 
     # ---------- Lifecycle ----------
 
@@ -569,7 +518,6 @@ class ClipSubmissionCog(commands.Cog):
             g = self.bot.get_guild(GUILD_ID)
             if g:
                 try:
-                    _ensure_current_week_contest(g.id)
                     await self.upsert_interface(g)
                 except Exception:
                     pass
@@ -577,12 +525,11 @@ class ClipSubmissionCog(commands.Cog):
 
         for g in self.bot.guilds:
             try:
-                _ensure_current_week_contest(g.id)
                 await self.upsert_interface(g)
             except Exception:
                 pass
 
-    # ---------- Admin-Befehle ----------
+    # ---------- Commands ----------
 
     @app_commands.command(name="clips_repost", description="Interface-Nachricht erneut erstellen/aktualisieren.")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -591,7 +538,6 @@ class ClipSubmissionCog(commands.Cog):
         if guild is None:
             return await interaction.response.send_message("Nur in einem Server nutzbar.", ephemeral=True)
 
-        _ensure_current_week_contest(guild.id)
         msg_id = await self.upsert_interface(guild)
         if msg_id:
             await interaction.response.send_message(f"✅ Interface aktiv. MessageID: `{msg_id}`", ephemeral=True)
@@ -601,34 +547,62 @@ class ClipSubmissionCog(commands.Cog):
                 ephemeral=True,
             )
 
-    @app_commands.command(name="clips_dump_now", description="Sende sofort den Dump für das aktuelle (laufende) Fenster.")
+    # Gruppe
+    clips_group = app_commands.Group(name="clips", description="Clips & Zeitfenster")
+
+    @clips_group.command(name="dump", description="Erzeuge einen TXT-Dump für einen Zeitraum (beeinflusst das Wochenfenster NICHT).")
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def clips_dump_now(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        if guild is None:
-            return await interaction.response.send_message("Nur im Server nutzbar.", ephemeral=True)
-
-        cont = _get_running_contest(guild.id)
-        if not cont:
-            return await interaction.response.send_message("ℹ️ Kein laufendes Fenster.", ephemeral=True)
-
-        await self._send_dump_for_contest(guild.id, int(cont["id"]))
-        await interaction.response.send_message("✅ Dump gesendet.", ephemeral=True)
-
-    @app_commands.command(name="clips_window_status", description="Zeigt Zeitraum des aktuellen Wochenfensters.")
-    async def clips_window_status(self, interaction: discord.Interaction):
+    async def clips_dump(self,
+                         interaction: discord.Interaction,
+                         start_ts: Optional[int] = None,
+                         end_ts: Optional[int] = None,
+                         to_channel: Optional[discord.TextChannel] = None):
         guild = interaction.guild
         if not guild:
             return await interaction.response.send_message("Nur im Server nutzbar.", ephemeral=True)
-        cid = _ensure_current_week_contest(guild.id)
-        row = _fetchone("SELECT name, start_ts, end_ts FROM clip_contests WHERE id=?", (cid,))
-        if not row:
-            return await interaction.response.send_message("ℹ️ Kein Fenster gefunden.", ephemeral=True)
-        name, start_ts, end_ts = row[0], int(row[1]), int(row[2])
+
+        # Default: aktuelles Wochenfenster
+        if start_ts is None or end_ts is None:
+            s, e = _compute_week_window_berlin(datetime.now(tz=TZ))
+            start_ts = start_ts or s
+            end_ts = end_ts or e
+
+        await self._send_window_dump(guild, int(start_ts), int(end_ts), target_channel=to_channel)
         await interaction.response.send_message(
-            f"**{name}**\nZeitraum: {_to_display_ts(start_ts)} – {_to_display_ts(end_ts)}",
+            f"📦 Dump angefordert: {_format_ts(int(start_ts),'f')} → {_format_ts(int(end_ts),'f')}",
             ephemeral=True
         )
+
+    @clips_group.command(name="winner_draw", description="Zufallsgewinner aus einem Zeitraum ziehen (reiner Test, ohne Fensterlogik).")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def clips_winner_draw(self,
+                                interaction: discord.Interaction,
+                                start_ts: Optional[int] = None,
+                                end_ts: Optional[int] = None):
+        guild = interaction.guild
+        if not guild:
+            return await interaction.response.send_message("Nur im Server nutzbar.", ephemeral=True)
+
+        # Zeitraum default = aktuelles Wochenfenster
+        if start_ts is None or end_ts is None:
+            s, e = _compute_week_window_berlin(datetime.now(tz=TZ))
+            start_ts = start_ts or s
+            end_ts = end_ts or e
+
+        rows = _fetchall(
+            """
+            SELECT DISTINCT user_id
+              FROM clip_submissions
+             WHERE guild_id=? AND strftime('%s', created_at) BETWEEN ? AND ?
+            """,
+            (guild.id, str(int(start_ts)), str(int(end_ts)))
+        )
+        users = [int(r[0]) for r in rows]
+        if not users:
+            return await interaction.response.send_message("Keine Teilnehmenden im Zeitraum.", ephemeral=True)
+
+        winner_id = random.choice(users)
+        await interaction.response.send_message(f"🏆 Gewinner (Test): <@{winner_id}>", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
