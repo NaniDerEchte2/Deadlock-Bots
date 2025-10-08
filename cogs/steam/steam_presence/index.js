@@ -24,6 +24,9 @@ try { SteamIDCtor = require('steamid'); } catch { SteamIDCtor = SteamUser.SteamI
 const APP_ID = parseInt(process.env.DEADLOCK_APP_ID || '1422450', 10);
 const WATCH_REFRESH_MS = parseInt(process.env.RP_WATCH_REFRESH_SEC || '60', 10) * 1000;
 const POLL_INTERVAL_MS  = parseInt(process.env.RP_POLL_INTERVAL_MS  || '30000', 10);
+const FRIEND_QUEUE_INTERVAL_MS = parseInt(process.env.FRIEND_QUEUE_INTERVAL_MS || '1000', 10);
+const FRIEND_SYNC_INTERVAL_MS = parseInt(process.env.FRIEND_SYNC_INTERVAL_SEC || '60', 10) * 1000;
+const FRIEND_REQUEST_INTERVAL_MS = parseInt(process.env.FRIEND_REQUEST_INTERVAL_MS || '5000', 10);
 
 // Token-Bucket
 const CHUNK_SIZE      = parseInt(process.env.RP_CHUNK_SIZE      || '20', 10);
@@ -68,12 +71,40 @@ db.prepare(`
     steam_id TEXT PRIMARY KEY,
     app_id INTEGER,
     status TEXT,
+    status_text TEXT,
     display TEXT,
     player_group TEXT,
     player_group_size INTEGER,
     connect TEXT,
+    mode TEXT,
+    map TEXT,
+    party_size INTEGER,
     raw_json TEXT,
-    last_update INTEGER
+    last_update INTEGER,
+    updated_at INTEGER
+  )
+`).run();
+
+const presenceSchemaMigrations = [
+  "ALTER TABLE steam_rich_presence ADD COLUMN status_text TEXT",
+  "ALTER TABLE steam_rich_presence ADD COLUMN mode TEXT",
+  "ALTER TABLE steam_rich_presence ADD COLUMN map TEXT",
+  "ALTER TABLE steam_rich_presence ADD COLUMN party_size INTEGER",
+  "ALTER TABLE steam_rich_presence ADD COLUMN updated_at INTEGER"
+];
+for (const sql of presenceSchemaMigrations) {
+  try { db.prepare(sql).run(); }
+  catch (err) { if (!String(err.message || err).includes('duplicate column name')) throw err; }
+}
+
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS steam_friend_requests (
+    steam_id TEXT PRIMARY KEY,
+    status TEXT DEFAULT 'pending',
+    requested_at INTEGER DEFAULT (strftime('%s','now')),
+    last_attempt INTEGER,
+    attempts INTEGER DEFAULT 0,
+    error TEXT
   )
 `).run();
 
@@ -86,17 +117,28 @@ db.prepare(`
 `).run();
 
 const upsertPresence = db.prepare(`
-  INSERT INTO steam_rich_presence(steam_id, app_id, status, display, player_group, player_group_size, connect, raw_json, last_update)
-  VALUES (@steam_id, @app_id, @status, @display, @player_group, @player_group_size, @connect, @raw_json, @last_update)
+  INSERT INTO steam_rich_presence(
+    steam_id, app_id, status, status_text, display, player_group, player_group_size,
+    connect, mode, map, party_size, raw_json, last_update, updated_at
+  )
+  VALUES (
+    @steam_id, @app_id, @status, @status_text, @display, @player_group, @player_group_size,
+    @connect, @mode, @map, @party_size, @raw_json, @updated_at, @updated_at
+  )
   ON CONFLICT(steam_id) DO UPDATE SET
     app_id=excluded.app_id,
     status=excluded.status,
+    status_text=excluded.status_text,
     display=excluded.display,
     player_group=excluded.player_group,
     player_group_size=excluded.player_group_size,
     connect=excluded.connect,
+    mode=excluded.mode,
+    map=excluded.map,
+    party_size=excluded.party_size,
     raw_json=excluded.raw_json,
-    last_update=excluded.last_update
+    last_update=excluded.last_update,
+    updated_at=excluded.updated_at
 `);
 
 const watchlistQuery = db.prepare(`
@@ -107,6 +149,54 @@ const watchlistQuery = db.prepare(`
   )
   WHERE steam_id IS NOT NULL AND steam_id != ''
 `);
+
+const steamLinksForFriendsQuery = db.prepare(`
+  SELECT steam_id FROM steam_links
+  WHERE steam_id IS NOT NULL AND steam_id != ''
+`);
+
+const pendingFriendRequestQuery = db.prepare(`
+  SELECT steam_id, attempts FROM steam_friend_requests
+  WHERE status = 'pending'
+  ORDER BY COALESCE(last_attempt, 0) ASC, requested_at ASC
+  LIMIT 1
+`);
+
+const markFriendRequestSuccessStmt = db.prepare(`
+  UPDATE steam_friend_requests
+  SET status='sent', last_attempt=@ts, attempts=@attempts, error=NULL
+  WHERE steam_id=@steam_id
+`);
+
+const markFriendRequestFailureStmt = db.prepare(`
+  UPDATE steam_friend_requests
+  SET last_attempt=@ts, attempts=@attempts, error=@error
+  WHERE steam_id=@steam_id
+`);
+
+const markFriendRequestKnownStmt = db.prepare(`
+  UPDATE steam_friend_requests
+  SET status='sent', error=NULL
+  WHERE steam_id=@steam_id
+`);
+
+const enqueueFriendRequestStmt = db.prepare(`
+  INSERT INTO steam_friend_requests(steam_id, status)
+  VALUES (@steam_id, 'pending')
+  ON CONFLICT(steam_id) DO UPDATE SET
+    status=excluded.status,
+    last_attempt=NULL,
+    attempts=0,
+    error=NULL
+  WHERE steam_friend_requests.status NOT IN ('sent', 'pending')
+`);
+
+function toOptionalInt(value) {
+  if (value === undefined || value === null) return null;
+  const num = Number(value);
+  if (Number.isNaN(num) || !Number.isFinite(num)) return null;
+  return Math.trunc(num);
+}
 
 // --------------- Steam client ---------------
 // WICHTIG: v5 – wir nutzen Token-Flow
@@ -149,6 +239,8 @@ const backoffMaxMs = 5 * 60_000;
 // Token-Bucket
 let tokens = MAX_REQ_PER_MIN;
 setInterval(() => { tokens = MAX_REQ_PER_MIN; }, 60_000);
+
+let lastFriendActionAt = 0;
 
 // --------------- Helpers ---------------
 function tryRequestPresence(steamID) {
@@ -313,6 +405,70 @@ async function pollPresence() {
   }
 }
 
+function ensureFriendQueued(steamId) {
+  if (!steamId) return;
+  const sid = String(steamId).trim();
+  if (!sid) return;
+  try {
+    const result = enqueueFriendRequestStmt.run({ steam_id: sid });
+    if (result.changes > 0) {
+      log('info', 'FA_OUTGOING_ENQUEUED', { steamId: sid });
+    }
+  } catch (err) {
+    log('warn', 'Failed to enqueue friend request', { steamId: sid, error: err.message });
+  }
+}
+
+function processFriendQueue() {
+  if (!isLoggedOn) return;
+  if (Date.now() - lastFriendActionAt < FRIEND_REQUEST_INTERVAL_MS) return;
+  let job;
+  try { job = pendingFriendRequestQuery.get(); }
+  catch (err) { log('warn', 'Failed to read pending friend request', { error: err.message }); return; }
+  if (!job || !job.steam_id) return;
+  const steamId = String(job.steam_id).trim();
+  if (!steamId) return;
+  const attempts = Number(job.attempts || 0) + 1;
+  const ts = Math.floor(Date.now() / 1000);
+  try {
+    client.addFriend(steamId);
+    markFriendRequestSuccessStmt.run({ steam_id: steamId, attempts, ts });
+    lastFriendActionAt = Date.now();
+    log('info', 'FA_OUTGOING_SENT', { steamId, attempts });
+  } catch (err) {
+    lastFriendActionAt = Date.now();
+    const message = err && err.message ? err.message : String(err);
+    markFriendRequestFailureStmt.run({ steam_id: steamId, attempts, ts, error: message });
+    const lower = message.toLowerCase();
+    if ((err && err.eresult === SteamUser.EResult.RateLimitExceeded) || lower.includes('rate')) {
+      log('warn', 'FA_RATE_LIMIT_HIT', { steamId, error: message });
+    } else {
+      log('warn', 'FA_OUTGOING_FAILED', { steamId, error: message });
+    }
+  }
+}
+
+function syncFriendsWithDb() {
+  if (!isLoggedOn) return;
+  let rows;
+  try { rows = steamLinksForFriendsQuery.all(); }
+  catch (err) { log('error', 'Failed to read steam_links for friend sync', { error: err.message }); return; }
+  const desired = new Set();
+  for (const row of rows) {
+    const sid = String(row.steam_id || '').trim();
+    if (sid) desired.add(sid);
+  }
+  const friendMap = client.myFriends || {};
+  for (const sid of desired) {
+    const relationship = friendMap[sid];
+    if (relationship === SteamUser.EFriendRelationship.Friend || relationship === SteamUser.EFriendRelationship.RequestInitiator) {
+      try { markFriendRequestKnownStmt.run({ steam_id: sid }); } catch {}
+      continue;
+    }
+    ensureFriendQueued(sid);
+  }
+}
+
 // --------------- Events ---------------
 client.on('loggedOn', () => {
   isLoggedOn = true;
@@ -321,7 +477,12 @@ client.on('loggedOn', () => {
   log('info', 'Logged in to Steam', { account: loginAccount, usingRefreshToken: Boolean(refreshToken) });
   client.setPersona(SteamUser.EPersonaState.Online);
 
-  setTimeout(() => { refreshWatchList(); pollPresence().catch(() => {}); }, 5000);
+  setTimeout(() => {
+    refreshWatchList();
+    pollPresence().catch(() => {});
+    syncFriendsWithDb();
+    processFriendQueue();
+  }, 5000);
 });
 
 // Neuer Standard: Refresh-Token speichern
@@ -383,21 +544,49 @@ client.on('friendRichPresence', (steamID, appID) => {
     steam_id: sid64,
     app_id: Number(appID) || null,
     status: normalized.status || null,
+    status_text: normalized.status_text || normalized.status || null,
     display: normalized.steam_display || normalized.display || null,
     player_group: normalized.steam_player_group || null,
-    player_group_size: normalized.steam_player_group_size ? Number(normalized.steam_player_group_size) || null : null,
+    player_group_size: toOptionalInt(normalized.steam_player_group_size),
     connect: normalized.connect || null,
+    mode: normalized.mode || normalized.gamemode || null,
+    map: normalized.map || null,
+    party_size: toOptionalInt(normalized.party_size),
     raw_json: JSON.stringify(normalized),
-    last_update: Math.floor(Date.now() / 1000),
+    updated_at: Math.floor(Date.now() / 1000),
   };
-  try { upsertPresence.run(entry); log('debug', 'Stored rich presence update', { steamId: sid64, appId: entry.app_id, status: entry.status, display: entry.display }); }
+  try {
+    upsertPresence.run(entry);
+    log('info', 'PRESENCE_UPSERT', {
+      steamId: sid64,
+      updatedAt: entry.updated_at,
+      status: entry.status_text || entry.status || null,
+      display: entry.display,
+      mode: entry.mode || null,
+    });
+  }
   catch (err) { log('error', 'Failed to persist rich presence', { steamId: sid64, error: err.message }); }
 });
 
 client.on('friendRelationship', (steamID, relationship) => {
+  const sid64 = typeof steamID.getSteamID64 === 'function' ? steamID.getSteamID64() : String(steamID);
+  if (relationship === SteamUser.EFriendRelationship.RequestRecipient) {
+    try {
+      client.addFriend(steamID);
+      lastFriendActionAt = Date.now();
+      log('info', 'FA_INCOMING_ACCEPTED', { steamId: sid64 });
+      try { markFriendRequestKnownStmt.run({ steam_id: sid64 }); } catch {}
+    } catch (err) {
+      log('error', 'Failed to accept incoming friend request', { steamId: sid64, error: err.message });
+    }
+    return;
+  }
+  if (relationship === SteamUser.EFriendRelationship.Friend || relationship === SteamUser.EFriendRelationship.RequestInitiator) {
+    try { markFriendRequestKnownStmt.run({ steam_id: sid64 }); } catch {}
+  }
   if (relationship === SteamUser.EFriendRelationship.None) {
-    const sid64 = typeof steamID.getSteamID64 === 'function' ? steamID.getSteamID64() : String(steamID);
     if (watchList.delete(sid64)) log('info', 'Friend relationship removed, deleting from watch list', { steamId: sid64 });
+    log('info', 'FA_REMOVED', { steamId: sid64 });
   }
 });
 
@@ -442,6 +631,14 @@ client.on('webSession', () => log('debug', 'Web session established'));
 refreshWatchList();
 setInterval(refreshWatchList, WATCH_REFRESH_MS);
 setInterval(() => { pollPresence().catch(() => {}); }, POLL_INTERVAL_MS);
+setInterval(() => {
+  try { processFriendQueue(); }
+  catch (err) { log('warn', 'processFriendQueue failed', { error: err.message }); }
+}, Math.max(250, FRIEND_QUEUE_INTERVAL_MS));
+setInterval(() => {
+  try { syncFriendsWithDb(); }
+  catch (err) { log('warn', 'syncFriendsWithDb failed', { error: err.message }); }
+}, Math.max(1_000, FRIEND_SYNC_INTERVAL_MS));
 
 // Startregel: nur wenn refresh.token existiert
 if (refreshToken) {
