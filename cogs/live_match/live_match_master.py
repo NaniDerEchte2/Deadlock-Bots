@@ -13,15 +13,20 @@ from service import db
 
 log = logging.getLogger("LiveMatchMaster")
 
+# Nur diese Kategorien werden gescannt (wie gehabt)
 LIVE_CATEGORIES: List[int] = [
     1289721245281292290,
     1412804540994162789,
 ]
 
+# Scan-Intervalle/Frische
 CHECK_INTERVAL_SEC = 15
 PRESENCE_FRESH_SEC = 120
 MIN_MATCH_GROUP = 2
 MAX_MATCH_CAP = 6
+
+# Neu: Debounce für identische Zustände
+LOG_RATE_SEC = 600  # 10 Minuten
 
 PHASE_OFF = "OFF"
 PHASE_GAME = "GAME"
@@ -115,6 +120,8 @@ class LiveMatchMaster(commands.Cog):
         self._started = False
         self._links_cache: Dict[int, List[str]] = {}
         self._presence_cache: Dict[str, PresenceInfo] = {}
+        # Neu: Merker des letzten geschriebenen Zustands pro Channel
+        self._last_state: Dict[int, Dict[str, Any]] = {}
 
     async def cog_load(self):
         db.connect()
@@ -406,16 +413,6 @@ class LiveMatchMaster(commands.Cog):
             f"voice={voice_n};dl={dl_count};match={match_signals};lobby={lobby_signals};"
             f"majority={majority_id or '-'}:{majority_n};phase={phase}"
         )
-        log.info(
-            "PHASE_DECISION channel_members=%d dl_count=%d match=%d lobby=%d majority_id=%s majority_n=%d phase=%s",
-            voice_n,
-            dl_count,
-            match_signals,
-            lobby_signals,
-            majority_id,
-            majority_n,
-            phase,
-        )
         return {
             "voice_n": voice_n,
             "dl_count": dl_count,
@@ -426,6 +423,27 @@ class LiveMatchMaster(commands.Cog):
             "phase": phase,
             "suffix": suffix,
             "reason": reason,
+        }
+
+    def _should_write_state(self, channel_id: int, phase_result: Dict[str, Any], now: int) -> bool:
+        """Nur schreiben, wenn sich der Zustand geändert hat oder das Re-Log-Intervall abgelaufen ist."""
+        prev = self._last_state.get(channel_id)
+        current_key = (phase_result.get("phase"), phase_result.get("suffix"))
+        if prev:
+            prev_key = (prev.get("phase"), prev.get("suffix"))
+            same = prev_key == current_key
+            recent = (now - int(prev.get("ts", 0))) < LOG_RATE_SEC
+            if same and recent:
+                # Nichts getan – zu frisch, wir sparen uns DB/INFO-Log
+                return False
+        return True
+
+    def _remember_state(self, channel_id: int, phase_result: Dict[str, Any], now: int) -> None:
+        self._last_state[channel_id] = {
+            "phase": phase_result.get("phase"),
+            "suffix": phase_result.get("suffix"),
+            "reason": phase_result.get("reason"),
+            "ts": int(now),
         }
 
     def _write_lane_state(
@@ -448,6 +466,7 @@ class LiveMatchMaster(commands.Cog):
             """,
             (int(channel_id), int(is_active), int(now), suffix, phase_result["reason"]),
         )
+        # INFO nur wenn wir wirklich schreiben
         log.info(
             "STATE_WRITE channel=%d phase=%s suffix=%s reason=%s",
             channel_id,
@@ -461,6 +480,7 @@ class LiveMatchMaster(commands.Cog):
         channels = self._collect_voice_channels()
         now = int(time.time())
 
+        # Vorab alle relevanten Voice-Mitglieder einsammeln (ohne Bots)
         members_per_channel: Dict[int, List[discord.Member]] = {}
         all_members: List[discord.Member] = []
         for channel in channels:
@@ -468,34 +488,58 @@ class LiveMatchMaster(commands.Cog):
             members_per_channel[channel.id] = members
             all_members.extend(members)
 
+        # Steam-Links nur für tatsächlich anwesende User laden
         self._links_cache = self._load_links(member.id for member in all_members)
         all_steam_ids = [sid for ids in self._links_cache.values() for sid in ids]
-        self._presence_cache = self._load_presence_map(all_steam_ids, now)
+        # Rich Presence nur laden, wenn überhaupt Links da sind
+        self._presence_cache = self._load_presence_map(all_steam_ids, now) if all_steam_ids else {}
 
         for channel in channels:
             members = members_per_channel.get(channel.id, [])
+
+            # Guard 1: Keine Voice-Mitglieder -> komplett skip (kein Log/Write)
             if not members:
-                phase_result = {
-                    "voice_n": 0,
-                    "dl_count": 0,
-                    "match_signals": 0,
-                    "lobby_signals": 0,
-                    "majority_id": None,
-                    "majority_n": 0,
-                    "phase": PHASE_OFF,
-                    "suffix": None,
-                    "reason": "phase=OFF;voice=0",
-                }
-                log.info(
-                    "PHASE_DECISION channel_members=0 dl_count=0 match=0 lobby=0 majority_id=None majority_n=0 phase=%s",
-                    PHASE_OFF,
-                )
-                self._write_lane_state(channel.id, phase_result, now)
+                log.debug("skip channel=%s: no voice members", channel.id)
                 continue
 
-            phase_result = self._determine_phase(members)
-            self._write_lane_state(channel.id, phase_result, now)
+            # Guard 2: Keiner im Channel ist verknüpft -> skip
+            linked_members = [m for m in members if self._links_cache.get(m.id)]
+            if not linked_members:
+                log.debug("skip channel=%s: no linked steam accounts", channel.id)
+                continue
 
+            # Phase bestimmen (nutzt intern Presence aus dem Cache)
+            phase_result = self._determine_phase(members)
+
+            # Log der Entscheidung: nur INFO, wenn aktiv oder sich was ändert
+            will_write = self._should_write_state(channel.id, phase_result, now)
+            if phase_result["phase"] == PHASE_OFF and not will_write:
+                log.debug(
+                    "PHASE_DECISION (no-change) channel_members=%d dl_count=%d match=%d lobby=%d majority_id=%s majority_n=%d phase=%s",
+                    phase_result["voice_n"],
+                    phase_result["dl_count"],
+                    phase_result["match_signals"],
+                    phase_result["lobby_signals"],
+                    phase_result["majority_id"],
+                    phase_result["majority_n"],
+                    phase_result["phase"],
+                )
+            else:
+                log.info(
+                    "PHASE_DECISION channel_members=%d dl_count=%d match=%d lobby=%d majority_id=%s majority_n=%d phase=%s",
+                    phase_result["voice_n"],
+                    phase_result["dl_count"],
+                    phase_result["match_signals"],
+                    phase_result["lobby_signals"],
+                    phase_result["majority_id"],
+                    phase_result["majority_n"],
+                    phase_result["phase"],
+                )
+
+            # Nur schreiben, wenn nötig (Change / Re-Log Intervall)
+            if will_write:
+                self._write_lane_state(channel.id, phase_result, now)
+                self._remember_state(channel.id, phase_result, now)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(LiveMatchMaster(bot))
