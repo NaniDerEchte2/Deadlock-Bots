@@ -4,7 +4,8 @@ import os
 import asyncio
 import logging
 import re
-from typing import Optional, Dict, Union, Tuple
+import sqlite3
+from typing import Optional, Dict, Union, Tuple, Iterable
 from urllib.parse import urlparse, urlunparse
 
 import discord
@@ -29,6 +30,7 @@ MIN_VOICE_MINUTES = 30          # Mindest-Verweildauer im Voice (einmalig)
 POLL_INTERVAL = 15              # Sekunden – Voice-Alive-Check
 DEFAULT_TEST_TARGET_ID = int(os.getenv("NUDGE_TEST_DEFAULT_ID", "0"))
 LOG_CHANNEL_ID = 1374364800817303632  # Meldungen in diesen Kanal posten
+NUDGE_VIEW_VERSION = 1          # Version der persistierten DM-View
 
 # Rollen mit Opt-Out (werden NICHT kontaktiert)
 # Standard enthält die gewünschte English-only Rolle: 1309741866098491479
@@ -89,9 +91,21 @@ def _ensure_schema():
         CREATE TABLE IF NOT EXISTS steam_nudge_state(
           user_id     INTEGER PRIMARY KEY,
           notified_at DATETIME,
-          first_seen  DATETIME DEFAULT CURRENT_TIMESTAMP
+          first_seen  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          message_id  INTEGER,
+          channel_id  INTEGER,
+          view_version INTEGER DEFAULT 0
         )
     """)
+    for sql in (
+        "ALTER TABLE steam_nudge_state ADD COLUMN message_id INTEGER",
+        "ALTER TABLE steam_nudge_state ADD COLUMN channel_id INTEGER",
+        "ALTER TABLE steam_nudge_state ADD COLUMN view_version INTEGER DEFAULT 0",
+    ):
+        try:
+            db.execute(sql)
+        except sqlite3.OperationalError:
+            pass
     db.execute("""
         CREATE TABLE IF NOT EXISTS steam_links(
           user_id         INTEGER NOT NULL,
@@ -110,18 +124,49 @@ def _has_any_steam_link(user_id: int) -> bool:
     row = db.query_one("SELECT 1 FROM steam_links WHERE user_id=? LIMIT 1", (int(user_id),))
     return bool(row)
 
-def _mark_notified(user_id: int) -> None:
+def _load_nudge_state(user_id: int) -> Optional[sqlite3.Row]:
     _ensure_schema()
-    db.execute(
-        "INSERT INTO steam_nudge_state(user_id, notified_at) VALUES(?, CURRENT_TIMESTAMP) "
-        "ON CONFLICT(user_id) DO UPDATE SET notified_at=CURRENT_TIMESTAMP",
+    return db.query_one(
+        "SELECT user_id, notified_at, first_seen, message_id, channel_id, view_version FROM steam_nudge_state WHERE user_id=?",
         (int(user_id),),
     )
 
-def _has_been_notified(user_id: int) -> bool:
+
+def _iter_nudge_states() -> Iterable[sqlite3.Row]:
     _ensure_schema()
-    row = db.query_one("SELECT 1 FROM steam_nudge_state WHERE user_id=? LIMIT 1", (int(user_id),))
-    return bool(row)
+    return db.query_all(
+        "SELECT user_id, notified_at, first_seen, message_id, channel_id, view_version FROM steam_nudge_state",
+    )
+
+
+def _mark_notified(
+    user_id: int,
+    *,
+    message_id: Optional[int],
+    channel_id: Optional[int],
+    view_version: int = NUDGE_VIEW_VERSION,
+) -> None:
+    _ensure_schema()
+    db.execute(
+        """
+        INSERT INTO steam_nudge_state(user_id, notified_at, message_id, channel_id, view_version)
+        VALUES(?, CURRENT_TIMESTAMP, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          notified_at=excluded.notified_at,
+          message_id=excluded.message_id,
+          channel_id=excluded.channel_id,
+          view_version=excluded.view_version
+        """,
+        (int(user_id), message_id, channel_id, view_version),
+    )
+
+
+def _clear_nudge_state(user_id: int) -> None:
+    _ensure_schema()
+    db.execute(
+        "UPDATE steam_nudge_state SET message_id=NULL, channel_id=NULL, view_version=0 WHERE user_id=?",
+        (int(user_id),),
+    )
 
 def _member_has_exempt_role(member: discord.Member) -> bool:
     return any((r.id in EXEMPT_ROLE_IDS) for r in getattr(member, "roles", []) or [])
@@ -388,9 +433,14 @@ class SteamLinkVoiceNudge(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._tasks: Dict[int, asyncio.Task] = {}
+        self._restore_task: Optional[asyncio.Task] = None
 
     async def cog_load(self):
         self.bot.add_view(_PersistentRegistryView())
+        try:
+            self._restore_task = asyncio.create_task(self._restore_persistent_messages())
+        except Exception:
+            log.exception("[nudge] Konnte Persistenz-Wiederherstellung nicht starten")
 
     async def cog_unload(self):
         for uid, t in list(self._tasks.items()):
@@ -399,6 +449,157 @@ class SteamLinkVoiceNudge(commands.Cog):
             except Exception:
                 pass
         self._tasks.clear()
+        if self._restore_task:
+            try:
+                self._restore_task.cancel()
+            except Exception:
+                pass
+            self._restore_task = None
+
+    async def _restore_persistent_messages(self) -> None:
+        try:
+            rows = list(_iter_nudge_states())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("[nudge] Konnte Nudge-States nicht laden")
+            return
+
+        for row in rows:
+            try:
+                user_id = int(row["user_id"])
+            except Exception:
+                continue
+
+            message_id = row.get("message_id") if isinstance(row, dict) else row["message_id"]
+            if not message_id:
+                continue
+
+            user: Optional[Union[discord.Member, discord.User]] = self.bot.get_user(user_id)
+            if not user:
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                except (discord.HTTPException, discord.Forbidden, discord.NotFound):
+                    user = None
+            if not user:
+                continue
+
+            message = await self._fetch_nudge_message(user, row)
+            if not message:
+                _clear_nudge_state(user_id)
+                continue
+
+            try:
+                embed, view = await self._build_dm_payload(user)
+                await message.edit(embed=embed, view=view)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.debug(
+                    "[nudge] Persistente DM konnte nicht aktualisiert werden: %r", exc,
+                    extra={"user_id": user_id},
+                )
+                continue
+
+            _mark_notified(
+                user_id,
+                message_id=message.id,
+                channel_id=message.channel.id,
+                view_version=NUDGE_VIEW_VERSION,
+            )
+
+    async def _build_dm_payload(
+        self, user: Union[discord.User, discord.Member]
+    ) -> Tuple[discord.Embed, _OptionsView]:
+        discord_url, steam_url = await _fetch_oauth_urls(self.bot, user)
+        primary_discord, browser_fallback = _prefer_discord_deeplink(discord_url)
+
+        desc = steam_link_detailed_description()
+        if browser_fallback and (primary_discord or "").startswith("discord://"):
+            desc += f"\n\n_Falls sich nichts öffnet:_ [Browser-Variante]({browser_fallback})"
+        if not primary_discord or not steam_url:
+            desc += "\n\n_Heads-up:_ Der Link-Dienst ist gerade nicht verfügbar. Nutze vorerst **/link** oder **/link_steam**."
+
+        embed = discord.Embed(
+            title="Kleiner Tipp für besseres Voice-Erlebnis 🎧",
+            description=desc,
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="Kurzbefehle: /link · /link_steam · /addsteam · /unlink · /setprimary")
+
+        view = _OptionsView(discord_oauth_url=primary_discord, steam_openid_url=steam_url)
+        return embed, view
+
+    async def _fetch_nudge_message(
+        self,
+        user: Union[discord.Member, discord.User],
+        state: sqlite3.Row,
+    ) -> Optional[discord.Message]:
+        message_id = state["message_id"] if "message_id" in state.keys() else None  # type: ignore[index]
+        if not message_id:
+            return None
+
+        channel_id = state["channel_id"] if "channel_id" in state.keys() else None  # type: ignore[index]
+        dm_channel: Optional[discord.DMChannel] = None
+
+        if channel_id:
+            channel = self.bot.get_channel(int(channel_id))
+            if channel is None:
+                try:
+                    channel = await self.bot.fetch_channel(int(channel_id))
+                except (discord.HTTPException, discord.Forbidden, discord.NotFound):
+                    channel = None
+            if isinstance(channel, discord.DMChannel):
+                dm_channel = channel
+
+        if dm_channel is None:
+            try:
+                dm_channel = user.dm_channel or await user.create_dm()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.debug("[nudge] DM-Channel konnte nicht geöffnet werden: %r", exc)
+                return None
+
+        try:
+            return await dm_channel.fetch_message(int(message_id))
+        except (discord.NotFound, discord.Forbidden):
+            return None
+        except discord.HTTPException as exc:
+            log.debug("[nudge] DM-Message fetch fehlgeschlagen: %r", exc)
+            return None
+
+    async def _has_active_nudge(self, member: discord.Member) -> bool:
+        state = _load_nudge_state(member.id)
+        if not state:
+            return False
+
+        message = await self._fetch_nudge_message(member, state)
+        if not message:
+            _clear_nudge_state(member.id)
+            return False
+
+        try:
+            stored_version = int(state.get("view_version", 0)) if hasattr(state, "get") else int(state["view_version"] or 0)
+        except Exception:
+            stored_version = 0
+
+        if stored_version < NUDGE_VIEW_VERSION:
+            try:
+                embed, view = await self._build_dm_payload(member)
+                await message.edit(embed=embed, view=view)
+                _mark_notified(
+                    member.id,
+                    message_id=message.id,
+                    channel_id=message.channel.id,
+                    view_version=NUDGE_VIEW_VERSION,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.debug("[nudge] Aktualisierung der vorhandenen Nudge-DM fehlgeschlagen: %r", exc)
+
+        return True
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -410,7 +611,7 @@ class SteamLinkVoiceNudge(commands.Cog):
                 if _has_any_steam_link(member.id):
                     log.debug("[nudge] user already linked id=%s", member.id)
                     return
-                if _has_been_notified(member.id):
+                if await self._has_active_nudge(member):
                     log.debug("[nudge] user already notified id=%s", member.id)
                     return
                 if member.id in self._tasks and not self._tasks[member.id].done():
@@ -424,35 +625,51 @@ class SteamLinkVoiceNudge(commands.Cog):
 
     async def _send_dm_nudge(self, user: Union[discord.User, discord.Member], *, force: bool = False) -> bool:
         uid = int(user.id)
-        if not force and _has_been_notified(uid):
-            return False
         if not force and _has_any_steam_link(uid):
             return False
 
         try:
-            dm = user.dm_channel or await user.create_dm()
-
-            discord_url, steam_url = await _fetch_oauth_urls(self.bot, user)
-            primary_discord, browser_fallback = _prefer_discord_deeplink(discord_url)
-
-            desc = steam_link_detailed_description()
-            if browser_fallback and (primary_discord or "").startswith("discord://"):
-                desc += f"\n\n_Falls sich nichts öffnet:_ [Browser-Variante]({browser_fallback})"
-            if not primary_discord or not steam_url:
-                desc += "\n\n_Heads-up:_ Der Link-Dienst ist gerade nicht verfügbar. Nutze vorerst **/link** oder **/link_steam**."
-
-            embed = discord.Embed(
-                title="Kleiner Tipp für besseres Voice-Erlebnis 🎧",
-                description=desc,
-                color=discord.Color.blurple()
-            )
-            embed.set_footer(text="Kurzbefehle: /link · /link_steam · /addsteam · /unlink · /setprimary")
-
-            view = _OptionsView(discord_oauth_url=primary_discord, steam_openid_url=steam_url)
-            await dm.send(embed=embed, view=view)
-
             if not force:
-                _mark_notified(uid)
+                state = _load_nudge_state(uid)
+            else:
+                state = None
+
+            if state:
+                message = await self._fetch_nudge_message(user, state)
+                if message:
+                    try:
+                        stored_version = int(state.get("view_version", 0)) if hasattr(state, "get") else int(state["view_version"] or 0)
+                    except Exception:
+                        stored_version = 0
+
+                    if stored_version < NUDGE_VIEW_VERSION:
+                        try:
+                            embed, view = await self._build_dm_payload(user)
+                            await message.edit(embed=embed, view=view)
+                            _mark_notified(
+                                uid,
+                                message_id=message.id,
+                                channel_id=message.channel.id,
+                                view_version=NUDGE_VIEW_VERSION,
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            log.debug("[nudge] Aktualisierung bestehender Nudge-DM fehlgeschlagen: %r", exc)
+                    return False
+                else:
+                    _clear_nudge_state(uid)
+
+            dm = user.dm_channel or await user.create_dm()
+            embed, view = await self._build_dm_payload(user)
+            message = await dm.send(embed=embed, view=view)
+
+            _mark_notified(
+                uid,
+                message_id=message.id,
+                channel_id=dm.id,
+                view_version=NUDGE_VIEW_VERSION,
+            )
 
             ch = _log_chan(self.bot)
             if ch:
