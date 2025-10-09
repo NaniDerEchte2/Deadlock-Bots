@@ -8,7 +8,7 @@ from urllib.parse import urlparse, urlsplit, urlunparse, urlunsplit
 
 import discord
 
-from cogs.steam import QuickInviteButton
+from cogs.steam import SchnellLinkButton
 
 __all__ = [
     "SteamLinkStepView",
@@ -214,7 +214,7 @@ class _FriendOptionsView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=180)
         self.add_item(
-            QuickInviteButton(
+            SchnellLinkButton(
                 style=discord.ButtonStyle.success,
                 label="Schnelle Anfrage senden",
                 emoji="⚡",
