@@ -18,7 +18,7 @@ from discord.ext import commands
 from service import db
 from service.steam_friend_requests import queue_friend_request, queue_friend_requests
 
-from cogs.steam import QuickInviteButton, queue_friend_request, queue_friend_requests
+from cogs.steam import SchnellLinkButton, queue_friend_request, queue_friend_requests
 
 log = logging.getLogger("SteamLink")
 
@@ -771,7 +771,7 @@ class SteamLink(commands.Cog):
         start_url = f"{PUBLIC_BASE_URL}/discord/login?uid={ctx.author.id}"
         view = discord.ui.View()
         view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label=LINK_BUTTON_LABEL, url=start_url))
-        view.add_item(QuickInviteButton(row=1, source="slash_link"))
+        view.add_item(SchnellLinkButton(row=1, source="slash_link"))
         await self._send_ephemeral(ctx, embed=embed, view=view)
 
     @commands.hybrid_command(
@@ -796,7 +796,7 @@ class SteamLink(commands.Cog):
         start_url = f"{PUBLIC_BASE_URL}/steam/login?uid={ctx.author.id}"
         view = discord.ui.View()
         view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label=STEAM_BUTTON_LABEL, url=start_url))
-        view.add_item(QuickInviteButton(row=1, source="slash_link_steam"))
+        view.add_item(SchnellLinkButton(row=1, source="slash_link_steam"))
         await self._send_ephemeral(ctx, embed=embed, view=view)
 
     @commands.hybrid_command(name="links", description="Zeigt deine gespeicherten Steam-Links")

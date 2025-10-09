@@ -14,10 +14,10 @@ from service import db
 from service.steam_friend_requests import queue_friend_request
 
 from cogs.steam import (
-    QUICK_INVITE_CUSTOM_ID,
-    QuickInviteButton,
+    SCHNELL_LINK_CUSTOM_ID,
+    SchnellLinkButton,
     queue_friend_request,
-    respond_with_quick_invite,
+    respond_with_schnelllink,
 )
 from cogs.welcome_dm.step_steam_link import steam_link_detailed_description
 
@@ -340,7 +340,7 @@ class _OptionsView(discord.ui.View):
                 disabled=True, emoji="🎮", row=0
             ))
 
-        self.add_item(QuickInviteButton(row=1, source="voice_nudge_view"))
+        self.add_item(SchnellLinkButton(row=1, source="voice_nudge_view"))
         self.add_item(_ManualButton(row=1))
         self.add_item(_CloseButton(row=1))
 
@@ -358,10 +358,10 @@ class _PersistentRegistryView(discord.ui.View):
         label="Schnelle Anfrage senden",
         style=discord.ButtonStyle.success,
         emoji="⚡",
-        custom_id=QUICK_INVITE_CUSTOM_ID,
+        custom_id=SCHNELL_LINK_CUSTOM_ID,
     )
     async def _quick_invite(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await respond_with_quick_invite(interaction, source="voice_nudge_persistent")
+        await respond_with_schnelllink(interaction, source="voice_nudge_persistent")
 
     @discord.ui.button(label="Schließen", style=discord.ButtonStyle.secondary,
                        emoji="❌", custom_id="nudge_close")
