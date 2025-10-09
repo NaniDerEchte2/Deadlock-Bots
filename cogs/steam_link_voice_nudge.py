@@ -12,14 +12,13 @@ import discord
 from discord.ext import commands
 
 from service import db
-from service.steam_friend_requests import queue_friend_request
 
 from cogs.steam import (
     SCHNELL_LINK_CUSTOM_ID,
     SchnellLinkButton,
-    queue_friend_request,
     respond_with_schnelllink,
 )
+from cogs.steam.friend_requests import queue_friend_request
 from cogs.welcome_dm.step_steam_link import steam_link_detailed_description
 
 

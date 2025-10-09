@@ -16,9 +16,9 @@ import discord
 from discord.ext import commands
 
 from service import db
-from service.steam_friend_requests import queue_friend_request, queue_friend_requests
 
-from cogs.steam import SchnellLinkButton, queue_friend_request, queue_friend_requests
+from cogs.steam import SchnellLinkButton
+from cogs.steam.friend_requests import queue_friend_request, queue_friend_requests
 
 log = logging.getLogger("SteamLink")
 
