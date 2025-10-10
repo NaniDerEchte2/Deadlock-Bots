@@ -73,13 +73,7 @@ STEAM_KEY_RE = re.compile(
 
 _STEAM_LINK_DM_DESC = dedent(
     """
-    **Empfohlen:** Exakter **Voice-Status**, saubere **Event-Orga & Balancing**.
-
-
-    🤝 **Freundschaft mit dem Bot:** Wenn du dich via Discord oder Steam verknüpfst, senden wir dir automatisch eine Freundschaftsanfrage. Alternativen findest du über den Button **Freundschafts-Optionen** (z. B. Bot-ID 820142646 oder der Schnell-Link).
-
-
-    **Wichtig:** Steam → Profil → **Spieldetails = Öffentlich** (Gesamtspielzeit nicht „immer privat“).
+    **Verknüpfe deinen Steam Account**
     """
 ).strip()
 
