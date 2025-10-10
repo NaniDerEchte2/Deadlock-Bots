@@ -62,15 +62,15 @@ class RolePermissionVoiceManager(commands.Cog):
 
         # Balancing-Regeln (Rang -> (minus, plus))
         self.balancing_rules = {
-            "Initiate": (-2, 2),
-            "Seeker": (-2, 2),
-            "Alchemist": (-2, 2),
-            "Arcanist": (-2, 2),
-            "Ritualist": (-2, 1),
-            "Emissary": (-2, 1),
+            "Initiate": (-1, 1),
+            "Seeker": (-1, 1),
+            "Alchemist": (-1, 1),
+            "Arcanist": (-1, 1),
+            "Ritualist": (-1, 1),
+            "Emissary": (-1, 1),
             "Archon": (-1, 1),
-            "Oracle": (-1, 2),
-            "Phantom": (-1, 2),
+            "Oracle": (-1, 1),
+            "Phantom": (-1, 1),
             "Ascendant": (-1, 1),
             "Eternus": (-2, 1),
         }
