@@ -36,6 +36,7 @@ import logging
 import os
 import re
 from typing import Dict, List, Optional, Set
+from urllib.parse import urlparse
 
 import discord
 from discord.ext import commands, tasks
@@ -292,8 +293,12 @@ class TwitchStreamCog(commands.Cog):
     # ---------- Link check (Profil-Bio + Invite-Quervergleich) ----------
     async def _check_discord_link(self, login: str) -> bool:
         assert self.api
-        users = await self.api.get_users([login])
-        u = users.get(login.lower())
+        normalized = self._normalize_login(login)
+        if not normalized:
+            return False
+
+        users = await self.api.get_users([normalized])
+        u = users.get(normalized)
         if not u:
             return False
         desc = (u.get("description") or "").strip()
@@ -312,7 +317,7 @@ class TwitchStreamCog(commands.Cog):
                 "UPDATE twitch_streamers SET last_description=?, last_link_ok=?, "
                 "last_link_checked_at=CURRENT_TIMESTAMP, next_link_check_at=datetime('now','+30 days') "
                 "WHERE twitch_login=?",
-                (desc[:4000], int(has_link_and_ok), login.lower()),
+                (desc[:4000], int(has_link_and_ok), normalized),
             )
         return has_link_and_ok
 
@@ -343,8 +348,12 @@ class TwitchStreamCog(commands.Cog):
 
     async def _cmd_add(self, login: str, require_link: bool) -> str:
         assert self.api
-        users = await self.api.get_users([login])
-        u = users.get(login.lower())
+        normalized = self._normalize_login(login)
+        if not normalized:
+            return "Ungültiger Twitch-Login"
+
+        users = await self.api.get_users([normalized])
+        u = users.get(normalized)
         if not u:
             return "Unbekannter Twitch-Login"
         with storage.get_conn() as c:
@@ -353,16 +362,24 @@ class TwitchStreamCog(commands.Cog):
                 (u["login"].lower(), u["id"], int(require_link)),
             )
         try:
-            await self._check_discord_link(login)
+            await self._check_discord_link(normalized)
         except Exception as e:
-            log.debug("initial link check failed for %s: %s", login, e)
+            log.debug("initial link check failed for %s: %s", normalized, e)
         return f"{u['display_name']} hinzugefügt"
 
     async def _cmd_remove(self, login: str) -> str:
+        normalized = self._normalize_login(login)
+        if not normalized:
+            return "Ungültiger Twitch-Login"
+
         with storage.get_conn() as c:
-            c.execute("DELETE FROM twitch_streamers WHERE twitch_login=?", (login.lower(),))
-            c.execute("DELETE FROM twitch_live_state WHERE streamer_login=?", (login.lower(),))
-        return f"{login} entfernt"
+            cur = c.execute("DELETE FROM twitch_streamers WHERE twitch_login=?", (normalized,))
+            deleted = cur.rowcount or 0
+            c.execute("DELETE FROM twitch_live_state WHERE streamer_login=?", (normalized,))
+
+        if deleted:
+            return f"{normalized} entfernt"
+        return f"{normalized} war nicht gespeichert"
 
     @twitch_group.command(name="add")
     @commands.has_guild_permissions(manage_guild=True)
@@ -410,6 +427,35 @@ class TwitchStreamCog(commands.Cog):
             await ctx.reply("Aktive Einladungen:\n" + "\n".join(urls)[:1900])
 
     # ---------- Polling & Posting ----------
+    @staticmethod
+    def _normalize_login(raw: str) -> str:
+        login = (raw or "").strip()
+        if not login:
+            return ""
+
+        login = login.split("?")[0].split("#")[0].strip()
+
+        lowered = login.lower()
+        if "twitch.tv" in lowered:
+            if "//" not in login:
+                login = f"https://{login}"
+            try:
+                parsed = urlparse(login)
+                path = (parsed.path or "").strip("/")
+                if path:
+                    login = path.split("/")[0]
+                else:
+                    login = ""
+            except Exception:
+                login = ""
+
+        login = login.strip().lstrip("@")
+        login = login.lower()
+
+        if not re.fullmatch(r"[a-z0-9_]+", login):
+            return ""
+        return login
+
     async def _ensure_category_id(self):
         if not self.api:
             return
