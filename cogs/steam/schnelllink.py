@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as _dt
 import logging
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from typing import Optional
@@ -14,6 +15,7 @@ from service import db
 log = logging.getLogger(__name__)
 
 SCHNELL_LINK_CUSTOM_ID = "steam:schnelllink"
+_INVITE_LINK_PATTERN = re.compile(r"^https://s\.team/p/[A-Za-z0-9-]+/[A-Za-z0-9]+$")
 
 
 @dataclass(slots=True)
@@ -37,10 +39,17 @@ ORDER BY created_at ASC
 LIMIT 1
 """
 
-_MARK_SHARED = """
+_MARK_RESERVED = """
 UPDATE steam_quick_invites
-SET status = 'shared',
+SET status = 'reserved',
     reserved_by = ?,
+    reserved_at = strftime('%s','now')
+WHERE token = ? AND status = 'available'
+"""
+
+_MARK_INVALID = """
+UPDATE steam_quick_invites
+SET status = 'invalid',
     reserved_at = strftime('%s','now')
 WHERE token = ? AND status = 'available'
 """
@@ -63,9 +72,23 @@ def _reserve_pre_generated_link(discord_user_id: Optional[int]) -> Optional[Schn
                 conn.execute("ROLLBACK")
                 return None
 
+            invite_link = str(row["invite_link"])
+            if not _INVITE_LINK_PATTERN.fullmatch(invite_link):
+                conn.execute(_MARK_INVALID, (row["token"],))
+                conn.execute("COMMIT")
+                log.warning(
+                    "Discarded invalid quick invite link",
+                    extra={
+                        "user_id": discord_user_id,
+                        "token": row["token"],
+                        "invite_link": row["invite_link"],
+                    },
+                )
+                return None
+
             token = row["token"]
             cursor = conn.execute(
-                _MARK_SHARED,
+                _MARK_RESERVED,
                 (int(discord_user_id) if discord_user_id else None, token),
             )
             if cursor.rowcount < 1:
@@ -105,12 +128,11 @@ def _fallback_link() -> Optional[SchnellLink]:
     friend_code = _friend_code()
 
     if not url:
-        if friend_code:
-            url = f"https://s.team/p/{friend_code}"
-        else:
-            profile = (os.getenv("STEAM_PROFILE_URL") or "").strip()
-            if profile:
-                url = profile
+        profile = (os.getenv("STEAM_PROFILE_URL") or "").strip()
+        if profile:
+            url = profile
+        elif friend_code:
+            url = f"Freundescode: {friend_code}"
 
     if not url:
         return None
@@ -119,26 +141,26 @@ def _fallback_link() -> Optional[SchnellLink]:
 
 
 def _format_link_message(link: SchnellLink) -> str:
-    parts = ["âš¡ **Hier ist dein Schnell-Link zum Steam-Bot:**\n", link.url]
+    parts = ["\u26a1 **Hier ist dein Schnell-Link zum Steam-Bot:**\n", link.url]
 
     if link.single_use:
         parts.append("\nDieser Link kann genau **einmal** verwendet werden.")
         if link.expires_at:
             expires_dt = _dt.datetime.fromtimestamp(link.expires_at, tz=_dt.timezone.utc)
             parts.append(
-                "\nGÃ¼ltig bis {} ({}).".format(
+                "\nG\u00fcltig bis {} ({}).".format(
                     discord.utils.format_dt(expires_dt, style="R"),
                     discord.utils.format_dt(expires_dt, style="f"),
                 )
             )
         else:
-            parts.append("\nDieser Link verfÃ¤llt erst, wenn er eingelÃ¶st wurde.")
+            parts.append("\nDieser Link verf\u00e4llt erst, wenn er eingel\u00f6st wurde.")
     else:
         parts.append("\nDieser Link kann mehrfach verwendet werden.")
 
     friend_code = link.friend_code or _friend_code()
     if friend_code:
-        parts.append(f"\nAlternativ bleibt der Freundescode **{friend_code}** verfÃ¼gbar.")
+        parts.append(f"\nAlternativ bleibt der Freundescode **{friend_code}** verf\u00fcgbar.")
 
     return "".join(parts)
 
@@ -177,7 +199,7 @@ async def respond_with_schnelllink(
         link = _fallback_link()
 
     if not link:
-        await _send("âš ï¸ Aktuell kÃ¶nnen keine Links erzeugt werden. Bitte versuche es spÃ¤ter erneut.")
+        await _send("\u26a0\ufe0f Aktuell k\u00f6nnen keine Links erzeugt werden. Bitte versuche es sp\u00e4ter erneut.")
         return
 
     await _send(_format_link_message(link))
@@ -189,7 +211,7 @@ class SchnellLinkButton(discord.ui.Button):
         *,
         label: str = "Schnelle Anfrage senden",
         style: discord.ButtonStyle = discord.ButtonStyle.success,
-        emoji: Optional[str] = "âš¡",
+        emoji: Optional[str] = "\u26a1",
         custom_id: str = SCHNELL_LINK_CUSTOM_ID,
         row: Optional[int] = None,
         source: Optional[str] = None,
