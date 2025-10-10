@@ -315,11 +315,7 @@ class SteamLink(commands.Cog):
             await self._cleanup_recent_bot_dms(user, limit=25)
             shine = (
                 "✨ **Connection complete.**\n"
-                "Du funkelst jetzt ein Stückchen heller — und die Welt ein winziges bisschen auch.\n\n"
                 "🤝 Unser Steam-Bot schickt dir gleich eine Freundschaftsanfrage. "
-                "Falls nichts ankommt, nutze den Button **„Schnelle Anfrage senden“** für einen frischen Link "
-                "(einmalig, 30 Tage gültig) oder den Freundescode **820142646**.\n\n"
-                "_Tipp: Mit `/links` siehst du deine verknüpften Accounts._"
             )
             await user.send(shine)
         except Exception as e:
