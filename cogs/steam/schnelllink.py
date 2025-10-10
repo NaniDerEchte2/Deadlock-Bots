@@ -141,26 +141,26 @@ def _fallback_link() -> Optional[SchnellLink]:
 
 
 def _format_link_message(link: SchnellLink) -> str:
-    parts = ["âš¡ **Hier ist dein Schnell-Link zum Steam-Bot:**\n", link.url]
+    parts = ["\u26a1 **Hier ist dein Schnell-Link zum Steam-Bot:**\n", link.url]
 
     if link.single_use:
         parts.append("\nDieser Link kann genau **einmal** verwendet werden.")
         if link.expires_at:
             expires_dt = _dt.datetime.fromtimestamp(link.expires_at, tz=_dt.timezone.utc)
             parts.append(
-                "\nGÃ¼ltig bis {} ({}).".format(
+                "\nG\u00fcltig bis {} ({}).".format(
                     discord.utils.format_dt(expires_dt, style="R"),
                     discord.utils.format_dt(expires_dt, style="f"),
                 )
             )
         else:
-            parts.append("\nDieser Link verfÃ¤llt erst, wenn er eingelÃ¶st wurde.")
+            parts.append("\nDieser Link verf\u00e4llt erst, wenn er eingel\u00f6st wurde.")
     else:
         parts.append("\nDieser Link kann mehrfach verwendet werden.")
 
     friend_code = link.friend_code or _friend_code()
     if friend_code:
-        parts.append(f"\nAlternativ bleibt der Freundescode **{friend_code}** verfÃ¼gbar.")
+        parts.append(f"\nAlternativ bleibt der Freundescode **{friend_code}** verf\u00fcgbar.")
 
     return "".join(parts)
 
@@ -199,7 +199,7 @@ async def respond_with_schnelllink(
         link = _fallback_link()
 
     if not link:
-        await _send("âš ï¸ Aktuell kÃ¶nnen keine Links erzeugt werden. Bitte versuche es spÃ¤ter erneut.")
+        await _send("\u26a0\ufe0f Aktuell k\u00f6nnen keine Links erzeugt werden. Bitte versuche es sp\u00e4ter erneut.")
         return
 
     await _send(_format_link_message(link))
@@ -211,7 +211,7 @@ class SchnellLinkButton(discord.ui.Button):
         *,
         label: str = "Schnelle Anfrage senden",
         style: discord.ButtonStyle = discord.ButtonStyle.success,
-        emoji: Optional[str] = "âš¡",
+        emoji: Optional[str] = "\u26a1",
         custom_id: str = SCHNELL_LINK_CUSTOM_ID,
         row: Optional[int] = None,
         source: Optional[str] = None,
