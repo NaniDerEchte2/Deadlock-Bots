@@ -1,4 +1,4 @@
-# cogs/twitch_deadlock/dashboard.py
+# cogs/twitch/dashboard.py
 import html
 import logging
 import re
@@ -7,7 +7,7 @@ from urllib.parse import unquote, urlsplit, quote_plus
 
 from aiohttp import web
 
-log = logging.getLogger("TwitchDeadlock")
+log = logging.getLogger("TwitchStreams")
 
 # Erlaubte Twitch-Logins: 3–25 Zeichen, a–z, 0–9, _
 LOGIN_RE = re.compile(r"^[A-Za-z0-9_]{3,25}$")
@@ -267,13 +267,59 @@ class Dashboard:
     async def stats(self, request: web.Request):
         self._require_token(request)
         stats = await self._stats()
-        rows = []
-        for name, data in stats.get("top", [])[:10]:
-            rows.append(f"<li>{html.escape(name)} — {int(data['sessions'])} sessions, avg {int(data['avg_viewers'])} viewers</li>")
+        tracked = stats.get("tracked", {}) or {}
+        category = stats.get("category", {}) or {}
+
+        def render_table(items):
+            if not items:
+                return "<tr><td colspan=4><i>No data yet.</i></td></tr>"
+            rows = []
+            for item in items:
+                rows.append(
+                    "<tr>"
+                    f"<td>{html.escape(str(item.get('streamer', '')))}</td>"
+                    f"<td>{int(item.get('samples', 0))}</td>"
+                    f"<td>{float(item.get('avg_viewers', 0)):.1f}</td>"
+                    f"<td>{int(item.get('max_viewers', 0))}</td>"
+                    "</tr>"
+                )
+            return "".join(rows)
+
         body = f"""
 <h1>📊 Stats</h1>
-<p>Total sessions: {stats.get('total_sessions', 0)} | Unique streamers: {stats.get('unique_streamers', 0)}</p>
-<ol>{''.join(rows) or '<li>no data</li>'}</ol>
+
+<div class="card">
+  <h2>Deadlock Kategorie Überblick</h2>
+  <p>
+    Samples: {category.get('samples', 0)}<br>
+    Unique Streamer: {category.get('unique_streamers', 0)}<br>
+    Durchschnittliche Viewer (alle): {stats.get('avg_viewers_all', 0):.1f}<br>
+    Durchschnittliche Viewer (Tracked): {stats.get('avg_viewers_tracked', 0):.1f}
+  </p>
+  <p>
+    Tracked Samples: {tracked.get('samples', 0)} — Tracked Streamer: {tracked.get('unique_streamers', 0)}
+  </p>
+</div>
+
+<div class="card" style="margin-top:1.2rem;">
+  <h2>Top Partner Streamer (Tracked)</h2>
+  <table>
+    <thead>
+      <tr><th>Streamer</th><th>Samples</th><th>Ø Viewer</th><th>Peak Viewer</th></tr>
+    </thead>
+    <tbody>{render_table(tracked.get('top', []))}</tbody>
+  </table>
+</div>
+
+<div class="card" style="margin-top:1.2rem;">
+  <h2>Top Deadlock Streamer (Kategorie gesamt)</h2>
+  <table>
+    <thead>
+      <tr><th>Streamer</th><th>Samples</th><th>Ø Viewer</th><th>Peak Viewer</th></tr>
+    </thead>
+    <tbody>{render_table(category.get('top', []))}</tbody>
+  </table>
+</div>
 """
         return web.Response(text=self._html(body, active="stats"), content_type="text/html")
 

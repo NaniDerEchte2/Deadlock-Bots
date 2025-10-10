@@ -28,7 +28,7 @@ class TwitchAPI:
         self._token_expiry: float = 0.0
         self._lock = asyncio.Lock()
         self._category_cache: Dict[str, str] = {}  # name_lower -> id
-        self._log = logging.getLogger("TwitchDeadlock")
+        self._log = logging.getLogger("TwitchStreams")
 
     # ---- Session lifecycle -------------------------------------------------
     def _ensure_session(self) -> None:
@@ -133,14 +133,15 @@ class TwitchAPI:
                 out[u["login"].lower()] = u
         return out
 
-    async def get_streams(
+    async def _fetch_stream_page(
         self,
         *,
         user_logins: Optional[List[str]] = None,
         game_id: Optional[str] = None,
         language: Optional[str] = None,
         first: int = 100,
-    ) -> List[Dict]:
+        after: Optional[str] = None,
+    ) -> Tuple[List[Dict], Optional[str]]:
         params: List[Tuple[str, str]] = []
         if user_logins:
             for u in user_logins[:100]:
@@ -150,5 +151,72 @@ class TwitchAPI:
         if language:
             params.append(("language", language))
         params.append(("first", str(min(max(first, 1), 100))))
+        if after:
+            params.append(("after", after))
         js = await self._get("/streams", params=params)
-        return js.get("data", [])
+        pagination = js.get("pagination") or {}
+        return js.get("data", []), pagination.get("cursor")
+
+    async def get_streams(
+        self,
+        *,
+        user_logins: Optional[List[str]] = None,
+        game_id: Optional[str] = None,
+        language: Optional[str] = None,
+        first: int = 100,
+    ) -> List[Dict]:
+        data, _ = await self._fetch_stream_page(
+            user_logins=user_logins,
+            game_id=game_id,
+            language=language,
+            first=first,
+        )
+        return data
+
+    async def get_streams_for_game(
+        self,
+        *,
+        game_id: Optional[str],
+        game_name: str,
+        language: Optional[str] = None,
+        limit: int = 500,
+    ) -> List[Dict]:
+        """Fetch up to ``limit`` live streams for the given game.
+
+        Falls die Game-ID unbekannt ist, wird nach ``game_name`` gefiltert.
+        """
+
+        limit = max(1, min(limit, 1200))  # hard cap to protect API limits
+        out: List[Dict] = []
+        after: Optional[str] = None
+
+        if game_id:
+            while len(out) < limit:
+                data, after = await self._fetch_stream_page(
+                    game_id=game_id,
+                    language=language,
+                    first=100,
+                    after=after,
+                )
+                out.extend(data)
+                if not after or not data:
+                    break
+        else:
+            # Ohne Kategorie-ID bleibt nur ein allgemeiner Stream-Call mit Filtern
+            while len(out) < limit:
+                data, after = await self._fetch_stream_page(
+                    language=language,
+                    first=100,
+                    after=after,
+                )
+                if not data:
+                    break
+                out.extend(data)
+                if not after:
+                    break
+            target = (game_name or "").lower()
+            out = [s for s in out if (s.get("game_name") or "").lower() == target]
+
+        if len(out) > limit:
+            out = out[:limit]
+        return out
