@@ -7,7 +7,7 @@ TWITCH_DASHBOARD_HOST = "127.0.0.1"
 TWITCH_DASHBOARD_PORT = 8765
 
 TWITCH_LANGUAGE = "de"
-TWITCH_DEADLOCK_NAME = "Deadlock"
+TWITCH_TARGET_GAME_NAME = "Deadlock"
 TWITCH_REQUIRED_DISCORD_MARKER = ""                # optionaler Marker im Profiltext (zusätzlich zur Discord-URL)
 
 # Benachrichtigungskanäle
@@ -17,6 +17,9 @@ TWITCH_ALERT_MENTION     = "<@USER_OR_ROLE_ID>"    # z. B. <@123> oder <@&ROLEID
 
 # Stats/Sampling: alle N Ticks (Tick=60s) in DB loggen
 TWITCH_LOG_EVERY_N_TICKS = 5
+
+# Zusätzliche Streams aus der Deadlock-Kategorie für Statistiken loggen (Maximalanzahl je Tick)
+TWITCH_CATEGORY_SAMPLE_LIMIT = 400
 
 # Invite-Refresh alle X Stunden
 INVITES_REFRESH_INTERVAL_HOURS = 12
@@ -33,6 +36,7 @@ import logging
 import os
 import re
 from typing import Dict, List, Optional, Set
+from urllib.parse import urlparse
 
 import discord
 from discord.ext import commands, tasks
@@ -42,7 +46,7 @@ from .twitch_api import TwitchAPI
 from . import storage
 from .dashboard import Dashboard
 
-log = logging.getLogger("TwitchDeadlock")
+log = logging.getLogger("TwitchStreams")
 
 # Regex: Discord-Invite-URL -> Code
 INVITE_URL_RE = re.compile(
@@ -50,16 +54,12 @@ INVITE_URL_RE = re.compile(
     re.I,
 )
 
-# Deadlock-Kategorie-Name (vom Config-Header)
-DEADLOCK_GAME_NAME = TWITCH_DEADLOCK_NAME
+# Spiel-Kategorie, die als „Deadlock-Stream“ gilt (Standard: Deadlock)
+TARGET_GAME_NAME = TWITCH_TARGET_GAME_NAME
 
 
-class TwitchDeadlockCog(commands.Cog):
-    """
-    Postet Live-Messages nur, wenn beobachtete Streamer Deadlock streamen.
-    Prüft Twitch-Profilbeschreibung auf Invite-Links und matcht sie gegen unsere(n) Discord-Server.
-    Mit Dashboard (Tabs), optionalem Sprachfilter und 30d Re-Check.
-    """
+class TwitchStreamCog(commands.Cog):
+    """Monitor Twitch streamers and post go-live messages for the target game."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -91,6 +91,7 @@ class TwitchDeadlockCog(commands.Cog):
         # Stats logging cadence
         self._tick_count = 0
         self._log_every_n = max(1, int(TWITCH_LOG_EVERY_N_TICKS or 5))
+        self._category_sample_limit = max(50, int(TWITCH_CATEGORY_SAMPLE_LIMIT or 400))
 
         # Dashboard
         self._web: Optional[web.AppRunner] = None
@@ -176,13 +177,13 @@ class TwitchDeadlockCog(commands.Cog):
         async def export_csv_cb():
             with storage.get_conn() as c:
                 rows = c.execute(
-                    "SELECT ts, streamer_login, viewers, title, started_at, language, game_name FROM twitch_stream_logs ORDER BY ts"
+                    "SELECT ts, streamer_login, viewers, title, started_at, language, game_name, is_tracked FROM twitch_stream_logs ORDER BY ts"
                 ).fetchall()
-            out = ["Timestamp,Streamer,Viewers,Title,Started_At,Language,Game\n"]
+            out = ["Timestamp,Streamer,Viewers,Title,Started_At,Language,Game,Is_Tracked\n"]
             for r in rows:
                 title = (r["title"] or "").replace('"', '""').replace("\n", " ")
                 out.append(
-                    f'"{r["ts"]}","{r["streamer_login"]}",{r["viewers"] or 0},"{title}","{r["started_at"]}","{r["language"] or ""}","{r["game_name"] or ""}"\n'
+                    f'"{r["ts"]}","{r["streamer_login"]}",{r["viewers"] or 0},"{title}","{r["started_at"]}","{r["language"] or ""}","{r["game_name"] or ""}",{int(r["is_tracked"] or 0)}\n'
                 )
             return "".join(out)
 
@@ -292,8 +293,12 @@ class TwitchDeadlockCog(commands.Cog):
     # ---------- Link check (Profil-Bio + Invite-Quervergleich) ----------
     async def _check_discord_link(self, login: str) -> bool:
         assert self.api
-        users = await self.api.get_users([login])
-        u = users.get(login.lower())
+        normalized = self._normalize_login(login)
+        if not normalized:
+            return False
+
+        users = await self.api.get_users([normalized])
+        u = users.get(normalized)
         if not u:
             return False
         desc = (u.get("description") or "").strip()
@@ -312,7 +317,7 @@ class TwitchDeadlockCog(commands.Cog):
                 "UPDATE twitch_streamers SET last_description=?, last_link_ok=?, "
                 "last_link_checked_at=CURRENT_TIMESTAMP, next_link_check_at=datetime('now','+30 days') "
                 "WHERE twitch_login=?",
-                (desc[:4000], int(has_link_and_ok), login.lower()),
+                (desc[:4000], int(has_link_and_ok), normalized),
             )
         return has_link_and_ok
 
@@ -343,8 +348,12 @@ class TwitchDeadlockCog(commands.Cog):
 
     async def _cmd_add(self, login: str, require_link: bool) -> str:
         assert self.api
-        users = await self.api.get_users([login])
-        u = users.get(login.lower())
+        normalized = self._normalize_login(login)
+        if not normalized:
+            return "Ungültiger Twitch-Login"
+
+        users = await self.api.get_users([normalized])
+        u = users.get(normalized)
         if not u:
             return "Unbekannter Twitch-Login"
         with storage.get_conn() as c:
@@ -353,16 +362,24 @@ class TwitchDeadlockCog(commands.Cog):
                 (u["login"].lower(), u["id"], int(require_link)),
             )
         try:
-            await self._check_discord_link(login)
+            await self._check_discord_link(normalized)
         except Exception as e:
-            log.debug("initial link check failed for %s: %s", login, e)
+            log.debug("initial link check failed for %s: %s", normalized, e)
         return f"{u['display_name']} hinzugefügt"
 
     async def _cmd_remove(self, login: str) -> str:
+        normalized = self._normalize_login(login)
+        if not normalized:
+            return "Ungültiger Twitch-Login"
+
         with storage.get_conn() as c:
-            c.execute("DELETE FROM twitch_streamers WHERE twitch_login=?", (login.lower(),))
-            c.execute("DELETE FROM twitch_live_state WHERE streamer_login=?", (login.lower(),))
-        return f"{login} entfernt"
+            cur = c.execute("DELETE FROM twitch_streamers WHERE twitch_login=?", (normalized,))
+            deleted = cur.rowcount or 0
+            c.execute("DELETE FROM twitch_live_state WHERE streamer_login=?", (normalized,))
+
+        if deleted:
+            return f"{normalized} entfernt"
+        return f"{normalized} war nicht gespeichert"
 
     @twitch_group.command(name="add")
     @commands.has_guild_permissions(manage_guild=True)
@@ -410,17 +427,83 @@ class TwitchDeadlockCog(commands.Cog):
             await ctx.reply("Aktive Einladungen:\n" + "\n".join(urls)[:1900])
 
     # ---------- Polling & Posting ----------
+    @staticmethod
+    def _normalize_login(raw: str) -> str:
+        login = (raw or "").strip()
+        if not login:
+            return ""
+
+        login = login.split("?")[0].split("#")[0].strip()
+
+        lowered = login.lower()
+        if "twitch.tv" in lowered:
+            if "//" not in login:
+                login = f"https://{login}"
+            try:
+                parsed = urlparse(login)
+                path = (parsed.path or "").strip("/")
+                if path:
+                    login = path.split("/")[0]
+                else:
+                    login = ""
+            except Exception:
+                login = ""
+
+        login = login.strip().lstrip("@")
+        login = login.lower()
+
+        if not re.fullmatch(r"[a-z0-9_]+", login):
+            return ""
+        return login
+
     async def _ensure_category_id(self):
         if not self.api:
             return
         try:
-            self._category_id = await self.api.get_category_id(DEADLOCK_GAME_NAME)
+            self._category_id = await self.api.get_category_id(TARGET_GAME_NAME)
             if self._category_id:
                 log.info("Deadlock category_id = %s", self._category_id)
             else:
                 log.warning("Deadlock category not found via Search Categories; fallback by game_name.")
         except Exception as e:
             log.error("could not resolve category id: %r", e)
+
+    async def _fetch_category_streams(self) -> List[dict]:
+        """Hole eine Liste aller Live-Streams in der Deadlock-Kategorie."""
+        assert self.api
+        try:
+            streams = await self.api.get_streams_for_game(
+                game_id=self._category_id,
+                game_name=TARGET_GAME_NAME,
+                language=self._language_filter,
+                limit=self._category_sample_limit,
+            )
+        except Exception as e:
+            log.debug("category stream fetch failed: %s", e)
+            streams = []
+        return streams
+
+    def _log_stream_samples(self, streams: List[dict], tracked_logins: Set[str]) -> None:
+        if not streams:
+            return
+        tracked = {login.lower() for login in tracked_logins}
+        with storage.get_conn() as c:
+            for s in streams:
+                login = (s.get("user_login") or "").lower()
+                c.execute(
+                    "INSERT INTO twitch_stream_logs (streamer_login, user_id, title, viewers, started_at, language, game_id, game_name, is_tracked) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        login or s.get("user_login"),
+                        s.get("user_id"),
+                        s.get("title"),
+                        s.get("viewer_count"),
+                        s.get("started_at"),
+                        s.get("language"),
+                        s.get("game_id"),
+                        s.get("game_name"),
+                        1 if login in tracked else 0,
+                    ),
+                )
 
     @tasks.loop(seconds=60.0)
     async def poll_streams(self):
@@ -443,19 +526,23 @@ class TwitchDeadlockCog(commands.Cog):
         require_map = {
             r["twitch_login"].lower(): (bool(r["require_discord_link"]), bool(r["last_link_ok"])) for r in rows
         }
+        tracked_logins = {login.lower() for login in logins}
+
+        self._tick_count += 1
+        should_log = self._tick_count % self._log_every_n == 0
 
         # Streams (live) holen
         streams = await self.api.get_streams(
             user_logins=logins, game_id=self._category_id, language=self._language_filter
         )
         if not self._category_id and streams:
-            streams = [s for s in streams if (s.get("game_name") or "").lower() == DEADLOCK_GAME_NAME.lower()]
+            streams = [s for s in streams if (s.get("game_name") or "").lower() == TARGET_GAME_NAME.lower()]
 
         # Fallback: wenn keine Streams mit Kategorie gefunden wurden, erneut ohne Kategorie filtern
         if not streams and logins:
             try:
                 fallback_streams = await self.api.get_streams(user_logins=logins, language=self._language_filter)
-                streams = [s for s in fallback_streams if (s.get("game_name") or "").lower() == DEADLOCK_GAME_NAME.lower()]
+                streams = [s for s in fallback_streams if (s.get("game_name") or "").lower() == TARGET_GAME_NAME.lower()]
             except Exception as e:
                 log.debug("fallback get_streams (ohne Kategorie) failed: %s", e)
 
@@ -503,23 +590,14 @@ class TwitchDeadlockCog(commands.Cog):
             await self._mark_offline(now_offline)
 
         # periodisches Logging (Stats)
-        self._tick_count += 1
-        if self._tick_count % self._log_every_n == 0 and streams:
-            with storage.get_conn() as c:
-                for s in streams:
-                    c.execute(
-                        "INSERT INTO twitch_stream_logs (streamer_login, user_id, title, viewers, started_at, language, game_id, game_name) VALUES (?,?,?,?,?,?,?,?)",
-                        (
-                            s.get("user_login"),
-                            s.get("user_id"),
-                            s.get("title"),
-                            s.get("viewer_count"),
-                            s.get("started_at"),
-                            s.get("language"),
-                            s.get("game_id"),
-                            s.get("game_name"),
-                        ),
-                    )
+        category_streams: List[dict] = []
+        if should_log:
+            category_streams = await self._fetch_category_streams()
+            if category_streams:
+                self._log_stream_samples(category_streams, tracked_logins)
+            elif streams:
+                # Fallback: wenigstens die beobachteten Streams loggen
+                self._log_stream_samples(streams, tracked_logins)
 
     async def _post_go_live(self, logins: List[str], live_by_login: Dict[str, dict]):
         """
@@ -641,19 +719,57 @@ class TwitchDeadlockCog(commands.Cog):
     # ---------- simple stats for dashboard ----------
     async def _compute_stats(self) -> dict:
         with storage.get_conn() as c:
-            total_sessions = c.execute("SELECT COUNT(*) AS c FROM twitch_stream_logs").fetchone()["c"]
+            total_samples = c.execute("SELECT COUNT(*) AS c FROM twitch_stream_logs").fetchone()["c"]
             unique_streamers = c.execute("SELECT COUNT(DISTINCT streamer_login) AS c FROM twitch_stream_logs").fetchone()["c"]
-            rows = c.execute(
-                "SELECT streamer_login, COUNT(*) AS sessions, AVG(COALESCE(viewers,0)) AS avg_viewers, MAX(COALESCE(viewers,0)) AS max_viewers "
-                "FROM twitch_stream_logs GROUP BY streamer_login ORDER BY sessions DESC LIMIT 10"
+            tracked_samples = (
+                c.execute("SELECT COUNT(*) AS c FROM twitch_stream_logs WHERE is_tracked=1").fetchone()["c"]
+            )
+            tracked_unique = (
+                c.execute(
+                    "SELECT COUNT(DISTINCT streamer_login) AS c FROM twitch_stream_logs WHERE is_tracked=1"
+                ).fetchone()["c"]
+            )
+            avg_all = c.execute(
+                "SELECT AVG(COALESCE(viewers,0)) AS avg_v FROM twitch_stream_logs"
+            ).fetchone()["avg_v"]
+            avg_tracked = c.execute(
+                "SELECT AVG(COALESCE(viewers,0)) AS avg_v FROM twitch_stream_logs WHERE is_tracked=1"
+            ).fetchone()["avg_v"]
+            top_tracked_rows = c.execute(
+                "SELECT streamer_login, COUNT(*) AS samples, AVG(COALESCE(viewers,0)) AS avg_viewers, "
+                "MAX(COALESCE(viewers,0)) AS max_viewers "
+                "FROM twitch_stream_logs WHERE is_tracked=1 GROUP BY streamer_login ORDER BY avg_viewers DESC, max_viewers DESC LIMIT 10"
             ).fetchall()
-        top = [
-            {
-                "streamer": r["streamer_login"],
-                "sessions": r["sessions"],
-                "avg_viewers": r["avg_viewers"] or 0,
-                "max_viewers": r["max_viewers"] or 0,
-            }
-            for r in rows
-        ]
-        return {"total_sessions": total_sessions, "unique_streamers": unique_streamers, "top": top}
+            top_category_rows = c.execute(
+                "SELECT streamer_login, COUNT(*) AS samples, AVG(COALESCE(viewers,0)) AS avg_viewers, "
+                "MAX(COALESCE(viewers,0)) AS max_viewers "
+                "FROM twitch_stream_logs GROUP BY streamer_login ORDER BY avg_viewers DESC, max_viewers DESC LIMIT 10"
+            ).fetchall()
+
+        def _rows_to_list(rows):
+            return [
+                {
+                    "streamer": r["streamer_login"],
+                    "samples": r["samples"],
+                    "avg_viewers": round(r["avg_viewers"] or 0, 2),
+                    "max_viewers": r["max_viewers"] or 0,
+                }
+                for r in rows
+            ]
+
+        return {
+            "total_sessions": total_samples,
+            "unique_streamers": unique_streamers,
+            "avg_viewers_all": round(avg_all or 0, 2),
+            "avg_viewers_tracked": round(avg_tracked or 0, 2),
+            "tracked": {
+                "samples": tracked_samples,
+                "unique_streamers": tracked_unique,
+                "top": _rows_to_list(top_tracked_rows),
+            },
+            "category": {
+                "samples": total_samples,
+                "unique_streamers": unique_streamers,
+                "top": _rows_to_list(top_category_rows),
+            },
+        }
