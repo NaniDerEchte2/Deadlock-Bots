@@ -35,6 +35,7 @@ import asyncio
 import logging
 import os
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set
 from urllib.parse import urlparse
 
@@ -47,12 +48,6 @@ from . import storage
 from .dashboard import Dashboard
 
 log = logging.getLogger("TwitchStreams")
-
-# Regex: Discord-Invite-URL -> Code
-INVITE_URL_RE = re.compile(
-    r"(?:https?://)?(?:discord(?:app)?\.com/invite|discord\.gg)/([A-Za-z0-9-]+)",
-    re.I,
-)
 
 # Spiel-Kategorie, die als „Deadlock-Stream“ gilt (Standard: Deadlock)
 TARGET_GAME_NAME = TWITCH_TARGET_GAME_NAME
@@ -97,13 +92,11 @@ class TwitchStreamCog(commands.Cog):
         self._web: Optional[web.AppRunner] = None
         self._web_app: Optional[web.Application] = None
 
-        # Invite-Cache: {guild_id: {code, ...}} und {code: guild_id}
+        # Invite-Cache: {guild_id: {code, ...}}
         self._invite_codes: Dict[int, Set[str]] = {}
-        self._invite_code_cache: Dict[str, int] = {}
 
         # Background tasks
         self.poll_streams.start()
-        self.link_reverify.start()
         self.invites_refresh.start()
         self.bot.loop.create_task(self._ensure_category_id())
         self.bot.loop.create_task(self._start_dashboard())
@@ -111,7 +104,7 @@ class TwitchStreamCog(commands.Cog):
 
     def cog_unload(self):
         """Sauberer Shutdown ohne leere except-Blöcke (CWE-390/703-freundlich)."""
-        loops = (self.poll_streams, self.link_reverify, self.invites_refresh)
+        loops = (self.poll_streams, self.invites_refresh)
 
         async def _graceful_shutdown():
             # 1) laufende Tasks abbrechen
@@ -159,12 +152,10 @@ class TwitchStreamCog(commands.Cog):
         async def list_items():
             with storage.get_conn() as c:
                 rows = c.execute(
-                    "SELECT twitch_login, require_discord_link, last_link_ok FROM twitch_streamers ORDER BY twitch_login"
+                    "SELECT twitch_login, manual_verified_permanent, manual_verified_until, manual_verified_at "
+                    "FROM twitch_streamers ORDER BY twitch_login"
                 ).fetchall()
                 return [dict(r) for r in rows]
-
-        async def rescan():
-            await self._rescan_all_links()
 
         async def stats_cb():
             return await self._compute_stats()
@@ -187,16 +178,19 @@ class TwitchStreamCog(commands.Cog):
                 )
             return "".join(out)
 
+        async def verify_cb(login: str, mode: str) -> str:
+            return await self._set_manual_verification(login, mode)
+
         Dashboard(
             app_token=self._dashboard_token,
             noauth=self._dashboard_noauth,
             add_cb=add,
             remove_cb=remove,
             list_cb=list_items,
-            rescan_cb=rescan,
             stats_cb=stats_cb,
             export_cb=export_cb,
             export_csv_cb=export_csv_cb,
+            verify_cb=verify_cb,
         ).attach(self._web_app)
 
         runner = web.AppRunner(self._web_app)
@@ -242,40 +236,6 @@ class TwitchStreamCog(commands.Cog):
         self._invite_codes[guild.id] = codes
         log.debug("invite cache for %s: %d codes", guild.id, len(codes))
 
-    def _extract_invite_codes(self, text: str) -> Set[str]:
-        return {m.group(1) for m in INVITE_URL_RE.finditer(text or "")}
-
-    async def _codes_match_our_guild(self, codes: Set[str]) -> bool:
-        """True, wenn einer der Codes zu einer Guild gehört, in der unser Bot ist."""
-        if not codes:
-            return False
-
-        our_guild_ids = {g.id for g in self.bot.guilds}
-
-        # 1) Schnell: lokaler Cache
-        for gid, known in self._invite_codes.items():
-            if codes & known:
-                return True
-
-        # 2) Fallback: API-Auflösung (Code -> Guild-ID)
-        for code in list(codes)[:5]:  # harte Obergrenze
-            if code in self._invite_code_cache:
-                if self._invite_code_cache[code] in our_guild_ids:
-                    return True
-                continue
-            try:
-                inv = await self.bot.fetch_invite(code)
-                gid = getattr(getattr(inv, "guild", None), "id", None)
-                if gid:
-                    gid = int(gid)
-                    self._invite_code_cache[code] = gid
-                    if gid in our_guild_ids:
-                        return True
-            except Exception as e:
-                log.debug("invite fetch failed for %s: %s", code, e)
-            await asyncio.sleep(0.25)
-        return False
-
     # ---------- DB helpers ----------
     def _get_settings(self, guild_id: int) -> Optional[dict]:
         with storage.get_conn() as c:
@@ -290,47 +250,82 @@ class TwitchStreamCog(commands.Cog):
                 (guild_id, channel_id, self._language_filter, self._required_marker_default),
             )
 
-    # ---------- Link check (Profil-Bio + Invite-Quervergleich) ----------
-    async def _check_discord_link(self, login: str) -> bool:
-        assert self.api
+    async def _set_manual_verification(self, login: str, mode: str) -> str:
         normalized = self._normalize_login(login)
         if not normalized:
-            return False
-
-        users = await self.api.get_users([normalized])
-        u = users.get(normalized)
-        if not u:
-            return False
-        desc = (u.get("description") or "").strip()
-
-        codes = self._extract_invite_codes(desc)
-        link_matches_our_guild = await self._codes_match_our_guild(codes)
-
-        marker_ok = True
-        if self._required_marker_default:
-            marker_ok = self._required_marker_default.lower() in desc.lower()
-
-        has_link_and_ok = bool(link_matches_our_guild and marker_ok)
+            return "Ungültiger Twitch-Login"
 
         with storage.get_conn() as c:
-            c.execute(
-                "UPDATE twitch_streamers SET last_description=?, last_link_ok=?, "
-                "last_link_checked_at=CURRENT_TIMESTAMP, next_link_check_at=datetime('now','+30 days') "
-                "WHERE twitch_login=?",
-                (desc[:4000], int(has_link_and_ok), normalized),
-            )
-        return has_link_and_ok
+            existing = c.execute(
+                "SELECT twitch_login FROM twitch_streamers WHERE twitch_login=?",
+                (normalized,),
+            ).fetchone()
 
-    async def _rescan_all_links(self):
-        assert self.api
-        with storage.get_conn() as c:
-            rows = c.execute("SELECT twitch_login FROM twitch_streamers").fetchall()
-        for r in rows:
-            try:
-                await self._check_discord_link(r["twitch_login"])
-                await asyncio.sleep(0.2)
-            except Exception as e:
-                log.warning("rescan failed for %s: %s", r["twitch_login"], e)
+        if not existing:
+            return f"{normalized} ist nicht in der Liste"
+
+        now = datetime.now(timezone.utc)
+
+        if mode == "permanent":
+            with storage.get_conn() as c:
+                c.execute(
+                    "UPDATE twitch_streamers SET manual_verified_permanent=1, manual_verified_until=NULL, manual_verified_at=? WHERE twitch_login=?",
+                    (now.isoformat(), normalized),
+                )
+            return f"{normalized} dauerhaft verifiziert"
+
+        if mode == "temp":
+            until = now + timedelta(days=30)
+            with storage.get_conn() as c:
+                c.execute(
+                    "UPDATE twitch_streamers SET manual_verified_permanent=0, manual_verified_until=?, manual_verified_at=? WHERE twitch_login=?",
+                    (until.isoformat(), now.isoformat(), normalized),
+                )
+            return f"{normalized} für 30 Tage verifiziert"
+
+        if mode == "clear":
+            with storage.get_conn() as c:
+                c.execute(
+                    "UPDATE twitch_streamers SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL WHERE twitch_login=?",
+                    (normalized,),
+                )
+            return f"Verifizierung für {normalized} zurückgesetzt"
+
+        return "Unbekannter Verifizierungsmodus"
+
+    def _format_list_line(self, row: dict) -> str:
+        login = row.get("twitch_login", "")
+        if row.get("manual_verified_permanent"):
+            status = "permanent verifiziert"
+        else:
+            until = row.get("manual_verified_until")
+            if until:
+                try:
+                    dt = datetime.fromisoformat(str(until))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    status = f"verifiziert bis {dt.date().isoformat()}"
+                except ValueError:
+                    status = f"verifiziert bis {until}"
+            else:
+                status = "nicht verifiziert"
+        return f"• {login} — {status}"
+
+    def _is_verified_now(self, row: dict) -> bool:
+        if row.get("manual_verified_permanent"):
+            return True
+        until = row.get("manual_verified_until")
+        if not until:
+            return False
+        try:
+            dt = datetime.fromisoformat(str(until))
+        except ValueError:
+            return False
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt >= datetime.now(timezone.utc)
 
     # ---------- Commands (hybrid) ----------
     @commands.hybrid_group(name="twitch", with_app_command=True)
@@ -361,10 +356,11 @@ class TwitchStreamCog(commands.Cog):
                 "INSERT OR IGNORE INTO twitch_streamers (twitch_login, twitch_user_id, require_discord_link, next_link_check_at) VALUES (?, ?, ?, datetime('now','+30 days'))",
                 (u["login"].lower(), u["id"], int(require_link)),
             )
-        try:
-            await self._check_discord_link(normalized)
-        except Exception as e:
-            log.debug("initial link check failed for %s: %s", normalized, e)
+        with storage.get_conn() as c:
+            c.execute(
+                "UPDATE twitch_streamers SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL WHERE twitch_login=?",
+                (normalized,),
+            )
         return f"{u['display_name']} hinzugefügt"
 
     async def _cmd_remove(self, login: str) -> str:
@@ -398,13 +394,13 @@ class TwitchStreamCog(commands.Cog):
     async def twitch_list(self, ctx: commands.Context):
         with storage.get_conn() as c:
             rows = c.execute(
-                "SELECT twitch_login, require_discord_link, last_link_ok FROM twitch_streamers ORDER BY twitch_login"
+                "SELECT twitch_login, manual_verified_permanent, manual_verified_until FROM twitch_streamers ORDER BY twitch_login"
             ).fetchall()
         if not rows:
             await ctx.reply("Keine Streamer gespeichert.")
             return
         lines = [
-            f"• {r['twitch_login']}  (require_link={'ja' if r['require_discord_link'] else 'nein'}, has_link={'ja' if r['last_link_ok'] else 'nein'})"
+            self._format_list_line(dict(r))
             for r in rows
         ]
         await ctx.reply("\n".join(lines)[:1900])
@@ -518,13 +514,14 @@ class TwitchStreamCog(commands.Cog):
         # Liste der beobachteten Logins
         with storage.get_conn() as c:
             rows = c.execute(
-                "SELECT twitch_login, twitch_user_id, require_discord_link, last_link_ok FROM twitch_streamers"
+                "SELECT twitch_login, twitch_user_id, require_discord_link, manual_verified_permanent, manual_verified_until FROM twitch_streamers"
             ).fetchall()
         if not rows:
             return
         logins = [r["twitch_login"] for r in rows]
-        require_map = {
-            r["twitch_login"].lower(): (bool(r["require_discord_link"]), bool(r["last_link_ok"])) for r in rows
+        require_flags = {r["twitch_login"].lower(): bool(r["require_discord_link"]) for r in rows}
+        verification_state = {
+            r["twitch_login"].lower(): self._is_verified_now(dict(r)) for r in rows
         }
         tracked_logins = {login.lower() for login in logins}
 
@@ -561,8 +558,7 @@ class TwitchStreamCog(commands.Cog):
             st = states.get(login_l)
 
             if is_live:
-                req, has = require_map.get(login_l, (False, False))
-                if req and not has:
+                if require_flags.get(login_l, False) and not verification_state.get(login_l, False):
                     continue  # solange Linkpflicht nicht erfüllt, nix posten
                 s = live_by_login[login_l]
                 stream_id = s.get("id")
@@ -684,38 +680,6 @@ class TwitchStreamCog(commands.Cog):
             except Exception as e:
                 log.debug("cannot edit message %s: %s", mid, e)
 
-    # ---------- 30-Tage-Check (täglich) ----------
-    @tasks.loop(hours=24)
-    async def link_reverify(self):
-        if not self.api:
-            return
-        with storage.get_conn() as c:
-            rows = c.execute(
-                "SELECT twitch_login, require_discord_link FROM twitch_streamers WHERE require_discord_link=1 AND (next_link_check_at IS NULL OR next_link_check_at <= CURRENT_TIMESTAMP)"
-            ).fetchall()
-        for r in rows:
-            login = r["twitch_login"]
-            log.info("[twitch] 30d re-check: %s", login)
-            try:
-                ok = await self._check_discord_link(login)
-                if not ok:
-                    await self._notify_missing_link(login)
-                await asyncio.sleep(0.25)
-            except Exception as e:
-                log.warning("link reverification failed for %s: %s", login, e)
-
-    async def _notify_missing_link(self, login: str):
-        if not self._alert_channel_id:
-            return
-        ch = self.bot.get_channel(self._alert_channel_id)
-        if not isinstance(ch, (discord.TextChannel, discord.Thread)):
-            return
-        mention = self._alert_mention or ""
-        try:
-            await ch.send(f"⚠️ {mention} Twitch-Profillink fehlt oder ungültig bei **{login}**.")
-        except Exception as e:
-            log.warning("failed to send alert: %s", e)
-
     # ---------- simple stats for dashboard ----------
     async def _compute_stats(self) -> dict:
         with storage.get_conn() as c:
@@ -738,12 +702,12 @@ class TwitchStreamCog(commands.Cog):
             top_tracked_rows = c.execute(
                 "SELECT streamer_login, COUNT(*) AS samples, AVG(COALESCE(viewers,0)) AS avg_viewers, "
                 "MAX(COALESCE(viewers,0)) AS max_viewers "
-                "FROM twitch_stream_logs WHERE is_tracked=1 GROUP BY streamer_login ORDER BY avg_viewers DESC, max_viewers DESC LIMIT 10"
+                "FROM twitch_stream_logs WHERE is_tracked=1 GROUP BY streamer_login ORDER BY avg_viewers DESC, max_viewers DESC"
             ).fetchall()
             top_category_rows = c.execute(
                 "SELECT streamer_login, COUNT(*) AS samples, AVG(COALESCE(viewers,0)) AS avg_viewers, "
                 "MAX(COALESCE(viewers,0)) AS max_viewers "
-                "FROM twitch_stream_logs GROUP BY streamer_login ORDER BY avg_viewers DESC, max_viewers DESC LIMIT 10"
+                "FROM twitch_stream_logs GROUP BY streamer_login ORDER BY avg_viewers DESC, max_viewers DESC"
             ).fetchall()
 
         def _rows_to_list(rows):
