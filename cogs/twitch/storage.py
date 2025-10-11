@@ -81,6 +81,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             last_link_ok           INTEGER DEFAULT 0,
             last_link_checked_at   TEXT,
             next_link_check_at     TEXT,
+            manual_verified_permanent INTEGER DEFAULT 0,
+            manual_verified_until  TEXT,
+            manual_verified_at     TEXT,
             created_at             TEXT DEFAULT CURRENT_TIMESTAMP
         )
         """
@@ -93,6 +96,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ("last_link_ok", "INTEGER DEFAULT 0"),
         ("last_link_checked_at", "TEXT"),
         ("next_link_check_at", "TEXT"),
+        ("manual_verified_permanent", "INTEGER DEFAULT 0"),
+        ("manual_verified_until", "TEXT"),
+        ("manual_verified_at", "TEXT"),
         ("created_at", "TEXT DEFAULT CURRENT_TIMESTAMP"),
     ]:
         _add_column_if_missing(conn, "twitch_streamers", col, spec)

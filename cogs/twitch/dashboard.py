@@ -2,8 +2,9 @@
 import html
 import logging
 import re
+from datetime import datetime, timezone
 from typing import List, Callable, Awaitable, Optional
-from urllib.parse import unquote, urlsplit, quote_plus
+from urllib.parse import unquote, urlsplit, quote_plus, urlencode
 
 from aiohttp import web
 
@@ -33,20 +34,20 @@ class Dashboard:
         add_cb: Callable[[str, bool], Awaitable[str]],
         remove_cb: Callable[[str], Awaitable[None]],
         list_cb: Callable[[], Awaitable[List[dict]]],
-        rescan_cb: Callable[[], Awaitable[None]],
         stats_cb: Callable[[], Awaitable[dict]],
         export_cb: Callable[[], Awaitable[dict]],
         export_csv_cb: Callable[[], Awaitable[str]],
+        verify_cb: Callable[[str, str], Awaitable[str]],
     ):
         self._token = app_token
         self._noauth = noauth
         self._add = add_cb
         self._remove = remove_cb
         self._list = list_cb
-        self._rescan = rescan_cb
         self._stats = stats_cb
         self._export = export_cb
         self._export_csv = export_csv_cb
+        self._verify = verify_cb
 
     # ---------- Auth ----------
     def _require_token(self, request: web.Request):
@@ -95,6 +96,9 @@ class Dashboard:
   .row {{ display:flex; gap:1rem; align-items:center; flex-wrap:wrap; }}
   .btn {{ background:var(--accent); color:white; border:none; padding:.5rem .8rem; border-radius:.5rem; cursor:pointer; }}
   .btn:hover {{ opacity:.95; }}
+  .btn-small {{ padding:.35rem .6rem; font-size:.85rem; }}
+  .btn-secondary {{ background:#2a3044; color:var(--text); }}
+  .btn-danger {{ background:#792e2e; }}
   table {{ width:100%; border-collapse: collapse; margin-top:1rem; }}
   th, td {{ border-bottom:1px solid var(--bd); padding:.6rem; text-align:left; }}
   th {{ color:var(--accent-2); }}
@@ -104,6 +108,19 @@ class Dashboard:
   .flash.ok {{ background:var(--ok-bg); border:1px solid var(--ok-bd); color:var(--ok-fg); }}
   .flash.err {{ background:var(--err-bg); border:1px solid var(--err-bd); color:var(--err-fg); }}
   form.inline {{ display:inline; }}
+  .card-header {{ display:flex; justify-content:space-between; align-items:center; gap:.8rem; flex-wrap:wrap; }}
+  .badge {{ display:inline-block; padding:.2rem .6rem; border-radius:999px; font-size:.8rem; font-weight:600; }}
+  .badge-ok {{ background:var(--ok-bd); color:var(--ok-fg); }}
+  .badge-warn {{ background:var(--err-bd); color:var(--err-fg); }}
+  .badge-neutral {{ background:#2a3044; color:#ddd; }}
+  .status-meta {{ font-size:.8rem; color:var(--muted); margin-top:.2rem; }}
+  .action-stack {{ display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; }}
+  .countdown-ok {{ color:var(--accent-2); font-weight:600; }}
+  .countdown-warn {{ color:var(--err-fg); font-weight:600; }}
+  table.sortable-table th[data-sort-type] {{ cursor:pointer; user-select:none; position:relative; padding-right:1.4rem; }}
+  table.sortable-table th[data-sort-type]::after {{ content:"⇅"; position:absolute; right:.4rem; color:var(--muted); font-size:.75rem; top:50%; transform:translateY(-50%); }}
+  table.sortable-table th[data-sort-type][data-sort-dir="asc"]::after {{ content:"↑"; color:var(--accent-2); }}
+  table.sortable-table th[data-sort-type][data-sort-dir="desc"]::after {{ content:"↓"; color:var(--accent-2); }}
 </style>
 {self._tabs(active)}
 {flash}
@@ -152,19 +169,90 @@ class Dashboard:
         msg = request.query.get("ok", "")
         err = request.query.get("err", "")
 
+        now = datetime.now(timezone.utc)
+
+        def _parse_dt(value: Optional[str]) -> Optional[datetime]:
+            if not value:
+                return None
+            try:
+                dt = datetime.fromisoformat(value)
+            except ValueError:
+                return None
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+
         rows: List[str] = []
         for st in items:
+            login = st.get("twitch_login", "")
+            login_html = html.escape(login)
+            permanent = bool(st.get("manual_verified_permanent"))
+            until_raw = st.get("manual_verified_until")
+            until_dt = _parse_dt(until_raw)
+            verified_at_dt = _parse_dt(st.get("manual_verified_at"))
+
+            status_badge = "<span class='badge badge-neutral'>Nicht verifiziert</span>"
+            meta_parts: List[str] = []
+            countdown_label = "—"
+            countdown_classes: List[str] = []
+
+            if permanent:
+                status_badge = "<span class='badge badge-ok'>Dauerhaft verifiziert</span>"
+            elif until_dt:
+                day_diff = (until_dt.date() - now.date()).days
+                if day_diff >= 0:
+                    status_badge = "<span class='badge badge-ok'>Verifiziert (30 Tage)</span>"
+                    countdown_label = f"{day_diff} Tage"
+                    countdown_classes.append("countdown-ok")
+                    meta_parts.append(f"Bis {until_dt.date().isoformat()}")
+                else:
+                    status_badge = "<span class='badge badge-warn'>Verifizierung überfällig</span>"
+                    countdown_label = f"Überfällig {abs(day_diff)} Tage"
+                    countdown_classes.append("countdown-warn")
+                    meta_parts.append(f"Abgelaufen am {until_dt.date().isoformat()}")
+
+            if verified_at_dt:
+                meta_parts.append(f"Bestätigt am {verified_at_dt.date().isoformat()}")
+
+            meta_html = (
+                f"<div class='status-meta'>{' • '.join(meta_parts)}</div>" if meta_parts else ""
+            )
+
+            countdown_html = html.escape(countdown_label)
+            if countdown_classes:
+                countdown_html = f"<span class='{' '.join(countdown_classes)}'>{countdown_html}</span>"
+
+            escaped_login = html.escape(login, quote=True)
+            actions_html = (
+                "<div class='action-stack'>"
+                "  <form class='inline' method='post' action='/twitch/verify'>"
+                f"    <input type='hidden' name='login' value='{escaped_login}' />"
+                "    <input type='hidden' name='mode' value='temp' />"
+                "    <button class='btn btn-small'>30 Tage</button>"
+                "  </form>"
+                "  <form class='inline' method='post' action='/twitch/verify'>"
+                f"    <input type='hidden' name='login' value='{escaped_login}' />"
+                "    <input type='hidden' name='mode' value='permanent' />"
+                "    <button class='btn btn-small'>Dauerhaft</button>"
+                "  </form>"
+                "  <form class='inline' method='post' action='/twitch/verify'>"
+                f"    <input type='hidden' name='login' value='{escaped_login}' />"
+                "    <input type='hidden' name='mode' value='clear' />"
+                "    <button class='btn btn-small btn-secondary'>Reset</button>"
+                "  </form>"
+                "  <form class='inline' method='post' action='/twitch/remove'>"
+                f"    <input type='hidden' name='login' value='{escaped_login}' />"
+                "    <button class='btn btn-small btn-danger'>Remove</button>"
+                "  </form>"
+                "</div>"
+            )
+
             rows.append(
                 "<tr>"
-                f"<td>{html.escape(st['twitch_login'])}</td>"
-                f"<td>{'✅' if st['require_discord_link'] else '—'}</td>"
-                f"<td>{'✅' if st['last_link_ok'] else '❌'}</td>"
-                "<td>"
-                "<form class='inline' method='post' action='/twitch/remove'>"
-                f"<input type='hidden' name='login' value='{html.escape(st['twitch_login'])}'/>"
-                "<button class='btn'>Remove</button>"
-                "</form>"
-                "</td>"
+                f"<td><strong>{login_html}</strong></td>"
+                f"<td>{status_badge}{meta_html}</td>"
+                f"<td>{countdown_html}</td>"
+                f"<td>{actions_html}</td>"
                 "</tr>"
             )
 
@@ -181,14 +269,11 @@ class Dashboard:
     <div><button class="btn">Add</button></div>
   </form>
 
-  <form method="post" action="/twitch/rescan" style="margin-top:0.8rem">
-    <button class="btn">Re-scan Discord links on all profiles</button>
-  </form>
 </div>
 
 <table>
   <thead>
-    <tr><th>Login</th><th>Req. Link</th><th>Has Link</th><th>Actions</th></tr>
+    <tr><th>Login</th><th>Verifizierung</th><th>Countdown</th><th>Aktionen</th></tr>
   </thead>
   <tbody>
     {''.join(rows) or '<tr><td colspan="4"><i>Keine Streamer hinterlegt.</i></td></tr>'}
@@ -255,14 +340,19 @@ class Dashboard:
             log.exception("dashboard remove failed: %s", e)
             raise web.HTTPFound(location="/twitch?err=" + quote_plus("could not remove"))
 
-    async def rescan(self, request: web.Request):
+    async def verify(self, request: web.Request):
         self._require_token(request)
+        data = await request.post()
+        login = (data.get("login") or "").strip()
+        mode = (data.get("mode") or "").strip().lower()
         try:
-            await self._rescan()
-            raise web.HTTPFound(location="/twitch?ok=" + quote_plus("rescan started"))
+            msg = await self._verify(login, mode)
+            raise web.HTTPFound(location="/twitch?ok=" + quote_plus(msg))
+        except web.HTTPException:
+            raise
         except Exception as e:
-            log.exception("dashboard rescan failed: %s", e)
-            raise web.HTTPFound(location="/twitch?err=" + quote_plus("rescan failed"))
+            log.exception("dashboard verify failed: %s", e)
+            raise web.HTTPFound(location="/twitch?err=" + quote_plus("Verifizierung fehlgeschlagen"))
 
     async def stats(self, request: web.Request):
         self._require_token(request)
@@ -270,20 +360,96 @@ class Dashboard:
         tracked = stats.get("tracked", {}) or {}
         category = stats.get("category", {}) or {}
 
+        view_mode = (request.query.get("view") or "top").lower()
+        show_all = view_mode == "all"
+
+        def build_stats_url(view: str) -> str:
+            params = {}
+            if view != "top":
+                params["view"] = view
+            if not self._noauth:
+                token = request.query.get("token")
+                if token:
+                    params["token"] = token
+            query = urlencode(params)
+            return "/twitch/stats" + (f"?{query}" if query else "")
+
+        toggle_href = build_stats_url("top" if show_all else "all")
+        toggle_label = "Top 10 anzeigen" if show_all else "Alle anzeigen"
+        current_view_label = "Alle" if show_all else "Top 10"
+
+        tracked_items = tracked.get("top", []) or []
+        category_items = category.get("top", []) or []
+        if not show_all:
+            tracked_items = tracked_items[:10]
+            category_items = category_items[:10]
+
         def render_table(items):
             if not items:
                 return "<tr><td colspan=4><i>No data yet.</i></td></tr>"
             rows = []
             for item in items:
+                streamer = html.escape(str(item.get('streamer', '')))
+                samples = int(item.get('samples') or 0)
+                avg_viewers = float(item.get('avg_viewers') or 0.0)
+                max_viewers = int(item.get('max_viewers') or 0)
                 rows.append(
                     "<tr>"
-                    f"<td>{html.escape(str(item.get('streamer', '')))}</td>"
-                    f"<td>{int(item.get('samples', 0))}</td>"
-                    f"<td>{float(item.get('avg_viewers', 0)):.1f}</td>"
-                    f"<td>{int(item.get('max_viewers', 0))}</td>"
+                    f"<td>{streamer}</td>"
+                    f"<td data-value=\"{samples}\">{samples}</td>"
+                    f"<td data-value=\"{avg_viewers:.4f}\">{avg_viewers:.1f}</td>"
+                    f"<td data-value=\"{max_viewers}\">{max_viewers}</td>"
                     "</tr>"
                 )
             return "".join(rows)
+
+        script = """
+<script>
+(function () {
+  const tables = document.querySelectorAll("table.sortable-table");
+  tables.forEach((table) => {
+    const headers = table.querySelectorAll("th[data-sort-type]");
+    const tbody = table.querySelector("tbody");
+    if (!tbody) {
+      return;
+    }
+    headers.forEach((header, index) => {
+      header.addEventListener("click", () => {
+        const sortType = header.dataset.sortType || "string";
+        const currentDir = header.dataset.sortDir === "asc" ? "desc" : "asc";
+        headers.forEach((h) => h.removeAttribute("data-sort-dir"));
+        header.dataset.sortDir = currentDir;
+        const rows = Array.from(tbody.querySelectorAll("tr"));
+        const multiplier = currentDir === "asc" ? 1 : -1;
+        rows.sort((rowA, rowB) => {
+          const cellA = rowA.children[index];
+          const cellB = rowB.children[index];
+          const rawA = cellA ? cellA.getAttribute("data-value") || cellA.textContent.trim() : "";
+          const rawB = cellB ? cellB.getAttribute("data-value") || cellB.textContent.trim() : "";
+          let valA = rawA;
+          let valB = rawB;
+          if (sortType === "number") {
+            valA = Number(String(rawA).replace(/[^0-9.-]+/g, "")) || 0;
+            valB = Number(String(rawB).replace(/[^0-9.-]+/g, "")) || 0;
+          } else {
+            valA = String(rawA).toLowerCase();
+            valB = String(rawB).toLowerCase();
+          }
+          if (valA < valB) {
+            return -1 * multiplier;
+          }
+          if (valA > valB) {
+            return 1 * multiplier;
+          }
+          return 0;
+        });
+        rows.forEach((row) => tbody.appendChild(row));
+      });
+    });
+  });
+})();
+</script>
+"""
 
         body = f"""
 <h1>📊 Stats</h1>
@@ -302,24 +468,44 @@ class Dashboard:
 </div>
 
 <div class="card" style="margin-top:1.2rem;">
-  <h2>Top Partner Streamer (Tracked)</h2>
-  <table>
+  <div class="card-header">
+    <h2>Top Partner Streamer (Tracked)</h2>
+    <div class="row" style="gap:.6rem; align-items:center;">
+      <div style="color:var(--muted); font-size:.9rem;">Ansicht: {current_view_label}</div>
+      <a class="btn" href="{toggle_href}">{toggle_label}</a>
+    </div>
+  </div>
+  <table class="sortable-table" data-table="tracked">
     <thead>
-      <tr><th>Streamer</th><th>Samples</th><th>Ø Viewer</th><th>Peak Viewer</th></tr>
+      <tr>
+        <th data-sort-type="string">Streamer</th>
+        <th data-sort-type="number">Samples</th>
+        <th data-sort-type="number">Ø Viewer</th>
+        <th data-sort-type="number">Peak Viewer</th>
+      </tr>
     </thead>
-    <tbody>{render_table(tracked.get('top', []))}</tbody>
+    <tbody>{render_table(tracked_items)}</tbody>
   </table>
 </div>
 
 <div class="card" style="margin-top:1.2rem;">
-  <h2>Top Deadlock Streamer (Kategorie gesamt)</h2>
-  <table>
+  <div class="card-header">
+    <h2>Top Deadlock Streamer (Kategorie gesamt)</h2>
+    <div style="color:var(--muted); font-size:.9rem;">Ansicht: {current_view_label}</div>
+  </div>
+  <table class="sortable-table" data-table="category">
     <thead>
-      <tr><th>Streamer</th><th>Samples</th><th>Ø Viewer</th><th>Peak Viewer</th></tr>
+      <tr>
+        <th data-sort-type="string">Streamer</th>
+        <th data-sort-type="number">Samples</th>
+        <th data-sort-type="number">Ø Viewer</th>
+        <th data-sort-type="number">Peak Viewer</th>
+      </tr>
     </thead>
-    <tbody>{render_table(category.get('top', []))}</tbody>
+    <tbody>{render_table(category_items)}</tbody>
   </table>
 </div>
+{script}
 """
         return web.Response(text=self._html(body, active="stats"), content_type="text/html")
 
@@ -344,7 +530,7 @@ class Dashboard:
             web.get("/twitch/add_url", self.add_url),            # kompatibel
             web.get("/twitch/add_login/{login}", self.add_login),
             web.post("/twitch/remove", self.remove),
-            web.post("/twitch/rescan", self.rescan),
+            web.post("/twitch/verify", self.verify),
             web.get("/twitch/stats", self.stats),
             web.get("/twitch/export", self.export_json),
             web.get("/twitch/export/csv", self.export_csv),
