@@ -16,6 +16,7 @@ try:  # pragma: no cover - optional dependency guard
     from steam.enums import PersonaState
     from steam.invite import UserInvite
     from steam.user import Friend, User
+    STEAM_AVAILABLE = True
 except Exception as exc:  # pragma: no cover - runtime safety for environments without steam
     Client = object  # type: ignore[assignment]
     Intents = object  # type: ignore[assignment]
@@ -23,6 +24,7 @@ except Exception as exc:  # pragma: no cover - runtime safety for environments w
     UserInvite = object  # type: ignore[assignment]
     Friend = object  # type: ignore[assignment]
     User = object  # type: ignore[assignment]
+    STEAM_AVAILABLE = False
     logging.getLogger(__name__).warning("steam package not available: %s", exc)
 
 from service import db
@@ -115,6 +117,8 @@ class DiscordSteamClient(Client):  # type: ignore[misc]
     """Steam client subclass that obtains guard codes from Discord."""
 
     def __init__(self, guard_codes: GuardCodeManager, *, guard_timeout: float = 300.0, **options):
+        if not STEAM_AVAILABLE:  # pragma: no cover - sanity check
+            raise RuntimeError("steam package is required to create DiscordSteamClient")
         intents = options.pop("intents", None)
         if intents is None and hasattr(Intents, "Users"):
             intents = getattr(Intents, "Users", 0) | getattr(Intents, "Chat", 0)
@@ -151,7 +155,7 @@ class SteamBotService:
     """Encapsulates the Steam client connection and background maintenance loops."""
 
     def __init__(self, config: SteamBotConfig, guard_codes: GuardCodeManager) -> None:
-        if not isinstance(Client, type):  # steam not available
+        if not STEAM_AVAILABLE:
             raise RuntimeError("steam package is required to start the SteamBotService")
 
         self.config = config
