@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional
 
 import discord
@@ -14,10 +15,7 @@ from .bot_service import FriendPresence, GuardCodeManager, SteamBotConfig, Steam
 log = logging.getLogger("SteamBotCog")
 
 DEFAULT_CHANNEL_ID = 1374364800817303632
-DEFAULT_REFRESH_TOKEN_PATH = (
-    r"C:\\Users\\Nani-Admin\\Documents\\Deadlock\\cogs\\steam\\steam_presence"
-    r"\\.steam-data\\refresh.token"
-)
+DEFAULT_REFRESH_TOKEN_PATH = Path(__file__).resolve().parent / ".steam-data" / "refresh.token"
 
 
 def _env_optional(key: str) -> Optional[str]:
@@ -52,9 +50,6 @@ class SteamBotCog(commands.Cog):
         self._status_lock = asyncio.Lock()
         self._last_status_payload: Optional[str] = None
         self._online_announced = False
-        self._status_message_id: Optional[int] = None
-        self._status_lock = asyncio.Lock()
-        self._last_status_payload: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Cog lifecycle
@@ -156,34 +151,83 @@ class SteamBotCog(commands.Cog):
         return self.guard_codes.submit(code)
 
     def _build_config(self) -> SteamBotConfig:
-        username = _env_first("STEAM_ACCOUNT_USERNAME", "STEAM_USERNAME", "STEAM_ACCOUNT")
-        password = _env_first("STEAM_ACCOUNT_PASSWORD", "STEAM_PASSWORD")
-        if not username or not password:
-            raise RuntimeError(
-                "Steam credentials missing (STEAM_ACCOUNT_USERNAME/STEAM_USERNAME and "
-                "STEAM_ACCOUNT_PASSWORD/STEAM_PASSWORD)"
-            )
-        refresh_token_path = _env_first("STEAM_REFRESH_TOKEN_PATH", "STEAM_REFRESH_TOKEN_FILE")
-        if not refresh_token_path:
+        username = _env_first(
+            "STEAM_ACCOUNT_USERNAME",
+            "STEAM_USERNAME",
+            "STEAM_ACCOUNT",
+            "STEAM_BOT_USERNAME",
+        )
+        password = _env_first(
+            "STEAM_ACCOUNT_PASSWORD",
+            "STEAM_PASSWORD",
+            "STEAM_BOT_PASSWORD",
+        )
+        refresh_token_path_env = _env_first(
+            "STEAM_REFRESH_TOKEN_PATH",
+            "STEAM_REFRESH_TOKEN_FILE",
+            "STEAM_BOT_REFRESH_TOKEN_PATH",
+            "STEAM_BOT_REFRESH_TOKEN_FILE",
+        )
+        if refresh_token_path_env:
+            refresh_token_path = Path(os.path.expanduser(os.path.expandvars(refresh_token_path_env)))
+        else:
             refresh_token_path = DEFAULT_REFRESH_TOKEN_PATH
-        if refresh_token_path:
-            refresh_token_path = os.path.expanduser(os.path.expandvars(refresh_token_path))
 
-        return SteamBotConfig(
-            username=username,
-            password=password,
-            shared_secret=_env_first("STEAM_SHARED_SECRET", "STEAM_TOTP_SECRET"),
-            identity_secret=_env_optional("STEAM_IDENTITY_SECRET"),
-            refresh_token=_env_first("STEAM_REFRESH_TOKEN", "STEAM_TOKEN"),
-            refresh_token_path=refresh_token_path,
-            account_name=_env_first(
+        refresh_token = _env_first(
+            "STEAM_REFRESH_TOKEN",
+            "STEAM_TOKEN",
+            "STEAM_BOT_REFRESH_TOKEN",
+        )
+
+        if not username:
+            username = _env_first(
                 "STEAM_ACCOUNT_NAME",
                 "STEAM_USERNAME",
                 "STEAM_ACCOUNT_USERNAME",
                 "STEAM_ACCOUNT",
             )
-            or username,
-            web_api_key=_env_first("STEAM_WEB_API_KEY", "STEAM_API_KEY"),
+
+        if not username and not password:
+            has_refresh_candidate = False
+            if refresh_token and refresh_token.strip():
+                has_refresh_candidate = True
+            else:
+                try:
+                    has_refresh_candidate = refresh_token_path.is_file()
+                except OSError:
+                    has_refresh_candidate = False
+            if not has_refresh_candidate:
+                raise RuntimeError(
+                    "Steam credentials missing (STEAM_ACCOUNT_USERNAME/STEAM_USERNAME and "
+                    "STEAM_ACCOUNT_PASSWORD/STEAM_PASSWORD) and no refresh token available"
+                )
+
+        account_name = _env_first(
+            "STEAM_ACCOUNT_NAME",
+            "STEAM_USERNAME",
+            "STEAM_ACCOUNT_USERNAME",
+            "STEAM_ACCOUNT",
+            "STEAM_BOT_USERNAME",
+        )
+
+        return SteamBotConfig(
+            username=username,
+            password=password,
+            shared_secret=_env_first(
+                "STEAM_SHARED_SECRET",
+                "STEAM_TOTP_SECRET",
+                "STEAM_BOT_SHARED_SECRET",
+            ),
+            identity_secret=_env_optional("STEAM_IDENTITY_SECRET")
+            or _env_optional("STEAM_BOT_IDENTITY_SECRET"),
+            refresh_token=refresh_token,
+            refresh_token_path=str(refresh_token_path) if refresh_token_path else None,
+            account_name=account_name or username,
+            web_api_key=_env_first(
+                "STEAM_WEB_API_KEY",
+                "STEAM_API_KEY",
+                "STEAM_BOT_WEB_API_KEY",
+            ),
             deadlock_app_id=_env_first("DEADLOCK_APP_ID", "DEADLOCK_APPID") or "1422450",
         )
 
