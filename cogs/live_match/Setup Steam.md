@@ -407,7 +407,7 @@ C:\caddy\
 
 C:\apps\deadlock\
   main.py
-  cogs\live_match\steam_link_oauth.py
+  cogs\steam\steam_link_oauth.py
   # optional (Watchdog):
   cogs\caddy_watchdog.py
   shared\db.py

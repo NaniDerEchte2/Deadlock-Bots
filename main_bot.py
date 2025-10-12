@@ -513,8 +513,8 @@ class MasterBot(commands.Bot):
                         issues.append("TempVoiceCore not loaded")
                     if not self.get_cog("TempVoiceInterface"):
                         issues.append("TempVoiceInterface not loaded")
-                    if "cogs.live_match.live_match_master" not in self.extensions:
-                        issues.append("LiveMatchMaster (module) not loaded")
+                    if "cogs.steam.steam_link_oauth" not in self.extensions:
+                        issues.append("SteamLinkOAuth (module) not loaded")
 
                     if issues:
                         logging.warning(f"Critical Health Check: Issues found: {issues}")
@@ -526,12 +526,12 @@ class MasterBot(commands.Bot):
             except Exception as e:
                 logging.error(f"Health check error: {e}")
 
-    # --------- Reload für den Ordner cogs/live_match ----------
-    async def reload_live_match_folder(self) -> Dict[str, str]:
+    # --------- Reload für den Ordner cogs/steam ----------
+    async def reload_steam_folder(self) -> Dict[str, str]:
         self.auto_discover_cogs()
         targets = [
             mod for mod in self.cogs_list
-            if mod.startswith("cogs.live_match.")
+            if mod.startswith("cogs.steam.")
             and not self._should_exclude(mod)
         ]
 
@@ -553,6 +553,7 @@ class MasterBot(commands.Bot):
                 logging.error(f"❌ Reload error for {mod}: {e}")
         await self.update_presence()
         return results
+
 
     # --------- Gezieltes Unload (mit Timeout) ----------
     def _match_extensions(self, query: str) -> List[str]:
@@ -633,7 +634,7 @@ class MasterControlCog(commands.Cog):
                 f"`{p}master status` - Bot Status\n"
                 f"`{p}master reload [cog]` - Cog neu laden\n"
                 f"`{p}master reloadall` - Alle Cogs neu laden + Auto-Discovery\n"
-                f"`{p}master reloadlive` - Alle Live-Match Cogs neu laden (Ordner)\n"
+                f"`{p}master reloadsteam` - Alle Steam-Cogs neu laden (Ordner)\n"
                 f"`{p}master discover` - Neue Cogs entdecken (ohne laden)\n"
                 f"`{p}master unload <muster>` - Cogs mit Muster entladen\n"
                 f"`{p}master unloadtree <prefix>` - ganzen Cog-Ordner entladen\n"
@@ -743,17 +744,20 @@ class MasterControlCog(commands.Cog):
 
         await msg.edit(embed=final)
 
-    @master_control.command(name="reloadlive", aliases=["rllm", "reload_livematch", "reload_lm"])
-    async def master_reload_live_folder(self, ctx):
-        results = await self.bot.reload_live_match_folder()
+    @master_control.command(
+        name="reloadsteam",
+        aliases=["rllm", "reload_livematch", "reload_lm", "reloadlive"],
+    )
+    async def master_reload_steam_folder(self, ctx):
+        results = await self.bot.reload_steam_folder()
         await self.bot.update_presence()
 
         ok = [k for k, v in results.items() if v in ("reloaded", "loaded")]
         err = {k: v for k, v in results.items() if v.startswith("error:")}
 
         embed = discord.Embed(
-            title="🎯 Reload: cogs/live_match",
-            description="Alle Live-Match Cogs neu geladen.",
+            title="🎯 Reload: cogs/steam",
+            description="Alle Steam-Cogs neu geladen.",
             color=0x00FF00 if not err else 0xFFAA00,
         )
         if ok:
@@ -796,7 +800,7 @@ class MasterControlCog(commands.Cog):
         Entlädt alle geladenen Cogs deren Modulpfad <pattern> matcht.
         Beispiele:
           !master unload tempvoice
-          !master unload cogs.live_match.live_match_master
+          !master unload cogs.steam.steam_link_oauth
         """
         matches = self.bot._match_extensions(pattern)
         if not matches:
@@ -826,7 +830,7 @@ class MasterControlCog(commands.Cog):
         """
         Entlädt ALLE Cogs unterhalb eines Prefix/Ordners.
         Beispiele:
-          !master unloadtree live_match
+          !master unloadtree steam
           !master unloadtree cogs.tempvoice
         """
         pref = prefix.strip()
