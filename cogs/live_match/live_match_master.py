@@ -7,6 +7,7 @@ import time
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
+import aiohttp
 import discord
 from discord.ext import commands, tasks
 
@@ -532,6 +533,30 @@ class LiveMatchMaster(commands.Cog):
         friend_snapshots = self._steam.load_friend_snapshots(all_steam_ids)
         self._friend_snapshot_cache = friend_snapshots
         self._steam.attach_friend_snapshots(self._presence_cache, friend_snapshots)
+
+        await self._send_presence_snapshot(now)
+
+        summary_ids: List[str] = []
+        for sid in all_steam_ids:
+            info = self._presence_cache.get(str(sid)) if sid else None
+            if not info or not info.is_deadlock or not info.display:
+                summary_ids.append(str(sid))
+
+        if summary_ids:
+            summaries = await self._fetch_player_summaries(summary_ids)
+            for steam_id, payload in summaries.items():
+                summary_info = self._build_presence_from_summary(payload, now)
+                if not summary_info:
+                    continue
+                existing = self._presence_cache.get(steam_id)
+                if existing:
+                    merged_entry = self._merge_presence_entries(
+                        self._presence_info_to_entry(existing),
+                        self._presence_info_to_entry(summary_info),
+                    )
+                    self._presence_cache[steam_id] = self._build_presence_info(merged_entry)
+                else:
+                    self._presence_cache[steam_id] = summary_info
 
         await self._send_presence_snapshot(now)
 
