@@ -115,10 +115,11 @@ class LiveMatchWorker(commands.Cog):
 
         for r in rows:
             try:
-                channel_id = int(r["channel_id"])
-                desired_suffix_raw = (r["suffix"] or "").strip()
-                is_active = int(r["is_active"] or 0)
-                last_update = int(r.get("last_update") or 0)
+                row = dict(r)
+                channel_id = int(row["channel_id"])
+                desired_suffix_raw = (row.get("suffix") or "").strip()
+                is_active = int(row.get("is_active") or 0)
+                last_update = int(row.get("last_update") or 0)
             except Exception as e:
                 msg = f"Ungültiger Datensatz in live_lane_state: {e!r}"
                 log.debug(msg)
