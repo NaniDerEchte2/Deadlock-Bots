@@ -25,18 +25,28 @@ log = logging.getLogger("LiveMatchWorker")
 TICK_SEC = 20                                   # Poll-Intervall Worker
 PER_CHANNEL_RENAME_COOLDOWN_SEC = 310           # ~5 Minuten + 10 Sekunden Cooldown pro Channel
 STALE_STATE_MAX_AGE_SEC = 600                   # 10 Minuten: älter = kein Rename
+EXCLUDED_RENAME_CHANNEL_IDS = {
+    1412804671432818890,
+    1330278323145801758,
+    1357422958544420944,
+    1413991108983263252,
+    1423662511001043075,
+    1411391356278018245,
+    1426160735469174875,
+}
 
 # Erlaubte Suffix-Varianten (kanonische Textteile)
 _SUFFIX_TERMS = r"(?:im\s+match|im\s+spiel|in\s+der\s+lobby|lobby/queue)"
+_SUFFIX_COUNT_BLOCK = r"(?:\s*\(\s*\d+\s*(?:DL)?\s*\))?"
 
 # Für die Extraktion des *letzten* vorhandenen Suffix-Blocks (mit/ohne Zähler).
 EXTRACT_LAST_SUFFIX_RX = re.compile(
-    rf"((?:•\s*\d+/\d+\s*)?{_SUFFIX_TERMS}(?:\s*\(\d+\s*DL\))?)",
+    rf"((?:•\s*\d+/\d+\s*)?{_SUFFIX_TERMS}{_SUFFIX_COUNT_BLOCK})",
     re.IGNORECASE,
 )
 
 SUFFIX_DISPLAY_RX = re.compile(
-    rf"\s*(?:•\s*\d+/\d+\s*)?(?:{_SUFFIX_TERMS})(?:\s*\(\d+\s*DL\))?",
+    rf"\s*(?:•\s*\d+/\d+\s*)?(?:{_SUFFIX_TERMS}){_SUFFIX_COUNT_BLOCK}",
     re.IGNORECASE,
 )
 
@@ -45,8 +55,8 @@ def _canon(s: Optional[str]) -> str:
     t = (s or "").strip().lower()
     # Bullet + Zähler entfernen
     t = re.sub(r"•\s*\d+/\d+\s*", "", t)
-    # DL-Klammern entfernen
-    t = re.sub(r"\(\s*\d+\s*dl\s*\)", "", t, flags=re.IGNORECASE)
+    # DL-Klammern oder reine Zähler entfernen
+    t = re.sub(r"\(\s*\d+\s*(?:dl)?\s*\)", "", t, flags=re.IGNORECASE)
     # Mehrfache Whitespaces normalisieren
     t = re.sub(r"\s+", " ", t)
     # Nur anerkannte Suffix-Terme stehen lassen
@@ -143,6 +153,8 @@ class LiveMatchWorker(commands.Cog):
                                 reason="channel_not_found_or_not_voice")
                 continue
 
+            excluded_channel = ch.id in EXCLUDED_RENAME_CHANNEL_IDS
+
             if is_active == 0:
                 desired_display = ""
                 desired_canon = ""
@@ -178,6 +190,21 @@ class LiveMatchWorker(commands.Cog):
             want_change = (pending_display != last_display) or (pending_canon != last_canon)
 
             if not want_change:
+                continue
+
+            if excluded_channel:
+                st["last_applied_display"] = pending_display
+                st["last_applied_canon"] = pending_canon
+                st["last_rename_ts"] = now
+                self._telemetry(
+                    unix_now,
+                    ch.id,
+                    ch.name,
+                    None,
+                    pending_display,
+                    applied=0,
+                    reason="channel_excluded",
+                )
                 continue
 
             if not due:
