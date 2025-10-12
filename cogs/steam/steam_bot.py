@@ -52,6 +52,9 @@ class SteamBotCog(commands.Cog):
         self._status_lock = asyncio.Lock()
         self._last_status_payload: Optional[str] = None
         self._online_announced = False
+        self._status_message_id: Optional[int] = None
+        self._status_lock = asyncio.Lock()
+        self._last_status_payload: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Cog lifecycle
