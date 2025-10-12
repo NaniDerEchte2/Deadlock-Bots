@@ -18,6 +18,30 @@ DEFAULT_CHANNEL_ID = 1374364800817303632
 DEFAULT_REFRESH_TOKEN_PATH = Path(__file__).resolve().parent / ".steam-data" / "refresh.token"
 
 
+async def _announce_setup_failure(bot: commands.Bot, channel_id: int, reason: str) -> None:
+    """Post a setup failure message into the configured status channel."""
+
+    await bot.wait_until_ready()
+    channel = bot.get_channel(channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            fetched = await bot.fetch_channel(channel_id)
+        except discord.HTTPException:
+            log.warning("Unable to announce Steam bot failure – channel %s not found", channel_id)
+            return
+        if not isinstance(fetched, discord.TextChannel):
+            log.warning("Steam bot status channel %s is not a text channel", channel_id)
+            return
+        channel = fetched
+    try:
+        await channel.send(
+            "⚠️ Steam-Bot konnte nicht gestartet werden: "
+            f"{reason}\nBitte stelle sicher, dass die Steam-Abhängigkeiten installiert sind."
+        )
+    except discord.HTTPException:
+        log.exception("Failed to post Steam bot setup failure message")
+
+
 def _env_optional(key: str) -> Optional[str]:
     value = os.getenv(key)
     if value:
@@ -42,7 +66,7 @@ class SteamBotCog(commands.Cog):
         self.bot = bot
         self.guard_codes = GuardCodeManager()
         self.config = self._build_config()
-        self.channel_id = self._resolve_channel_id()
+        self.channel_id = self.resolve_channel_id_from_env()
         self.service = SteamBotService(self.config, self.guard_codes)
         self.service.register_status_callback(self._handle_status_update)
         self.service.register_connection_callback(self._handle_connection_change)
@@ -231,7 +255,8 @@ class SteamBotCog(commands.Cog):
             deadlock_app_id=_env_first("DEADLOCK_APP_ID", "DEADLOCK_APPID") or "1422450",
         )
 
-    def _resolve_channel_id(self) -> int:
+    @staticmethod
+    def resolve_channel_id_from_env() -> int:
         channel_env = _env_first("STEAM_STATUS_CHANNEL_ID", "DEADLOCK_PRESENCE_CHANNEL_ID")
         if channel_env:
             try:
@@ -246,3 +271,5 @@ async def setup(bot: commands.Bot) -> None:
         await bot.add_cog(SteamBotCog(bot))
     except RuntimeError as exc:
         log.error("SteamBotCog konnte nicht geladen werden: %s", exc)
+        channel_id = SteamBotCog.resolve_channel_id_from_env()
+        bot.loop.create_task(_announce_setup_failure(bot, channel_id, str(exc)))

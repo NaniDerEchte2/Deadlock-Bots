@@ -156,7 +156,10 @@ class SteamBotService:
 
     def __init__(self, config: SteamBotConfig, guard_codes: GuardCodeManager) -> None:
         if not STEAM_AVAILABLE:
-            raise RuntimeError("steam package is required to start the SteamBotService")
+            raise RuntimeError(
+                "steam package is required to start the SteamBotService. "
+                "Install it via 'pip install steam[client]' in your bot environment."
+            )
 
         self.config = config
         self.guard_codes = guard_codes
