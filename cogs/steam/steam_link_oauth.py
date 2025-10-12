@@ -1,4 +1,4 @@
-# cogs/live_match/steam_link_oauth.py
+# cogs/steam/steam_link_oauth.py
 import os
 import re
 import time
