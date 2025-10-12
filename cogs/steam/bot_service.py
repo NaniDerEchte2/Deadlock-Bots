@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Awaitable, Callable, Dict, Iterable, List, Optional
 
 import aiohttp
@@ -133,6 +134,7 @@ class SteamBotConfig:
     shared_secret: Optional[str] = None
     identity_secret: Optional[str] = None
     refresh_token: Optional[str] = None
+    refresh_token_path: Optional[str] = None
     account_name: Optional[str] = None
     web_api_key: Optional[str] = None
     deadlock_app_id: str = "1422450"
@@ -168,6 +170,7 @@ class SteamBotService:
         self._friend_task: Optional[asyncio.Task[None]] = None
         self._status_task: Optional[asyncio.Task[None]] = None
         self._invite_task: Optional[asyncio.Task[None]] = None
+        self._last_refresh_source: Optional[str] = None
 
         # register steam events
         self.client.event(self._on_login)
@@ -272,6 +275,39 @@ class SteamBotService:
             return str(row[0])
         return None
 
+    def _load_external_refresh_token(self) -> Optional[str]:
+        path = self.config.refresh_token_path
+        if not path:
+            return None
+        candidate = Path(path)
+        try:
+            if not candidate.exists():
+                return None
+            token = candidate.read_text(encoding="utf-8").strip()
+        except OSError:
+            log.exception("Failed to read refresh token from %s", candidate)
+            return None
+        if token:
+            return token
+        return None
+
+    def _select_refresh_token(self) -> Optional[str]:
+        for source, loader in (
+            ("external file", self._load_external_refresh_token),
+            ("configuration", lambda: self.config.refresh_token),
+            ("database", self._load_persisted_refresh_token),
+        ):
+            token = loader()
+            if token:
+                if self._last_refresh_source != source:
+                    log.info("Using Steam refresh token from %s", source)
+                    self._last_refresh_source = source
+                return token
+        if self._last_refresh_source != "interactive":
+            log.info("No refresh token available – waiting for Steam Guard input")
+            self._last_refresh_source = "interactive"
+        return None
+
     async def _refresh_friend_snapshot(self) -> None:
         try:
             friends: Iterable[Friend] = await self.client.user.friends()
@@ -337,7 +373,7 @@ class SteamBotService:
         backoff = 5.0
         while not self._stop.is_set():
             try:
-                refresh_token = self.config.refresh_token or self._load_persisted_refresh_token()
+                refresh_token = self._select_refresh_token()
                 async with self.client:  # pragma: no cover - requires live Steam
                     await self.client.login(
                         self.config.username,

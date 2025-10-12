@@ -14,6 +14,7 @@ from .bot_service import FriendPresence, GuardCodeManager, SteamBotConfig, Steam
 log = logging.getLogger("SteamBotCog")
 
 DEFAULT_CHANNEL_ID = 1374364800817303632
+DEFAULT_REFRESH_TOKEN_PATH = r"C:\\Users\\Nani-cogs\\steam\\steam_presence\\.steam-data\\refresh.token"
 def _env_optional(key: str) -> Optional[str]:
     value = os.getenv(key)
     if value:
@@ -124,12 +125,17 @@ class SteamBotCog(commands.Cog):
         password = _env_optional("STEAM_ACCOUNT_PASSWORD")
         if not username or not password:
             raise RuntimeError("Steam credentials missing (STEAM_ACCOUNT_USERNAME / STEAM_ACCOUNT_PASSWORD)")
+        refresh_token_path = _env_optional("STEAM_REFRESH_TOKEN_PATH") or DEFAULT_REFRESH_TOKEN_PATH
+        if refresh_token_path:
+            refresh_token_path = os.path.expanduser(os.path.expandvars(refresh_token_path))
+
         return SteamBotConfig(
             username=username,
             password=password,
             shared_secret=_env_optional("STEAM_SHARED_SECRET"),
             identity_secret=_env_optional("STEAM_IDENTITY_SECRET"),
             refresh_token=_env_optional("STEAM_REFRESH_TOKEN"),
+            refresh_token_path=refresh_token_path,
             account_name=_env_optional("STEAM_ACCOUNT_NAME") or username,
             web_api_key=_env_optional("STEAM_WEB_API_KEY") or _env_optional("STEAM_API_KEY"),
             deadlock_app_id=_env_optional("DEADLOCK_APP_ID") or "1422450",
