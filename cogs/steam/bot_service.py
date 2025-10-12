@@ -12,13 +12,29 @@ from typing import Awaitable, Callable, Dict, Iterable, List, Optional
 
 import aiohttp
 
+# --- robuste steam/steamio-Imports mit Fallbacks ---
 try:  # pragma: no cover - optional dependency guard
     from steam import Client, Intents
-    from steam.enums import PersonaState
-    from steam.invite import UserInvite
-    from steam.user import Friend, User
+
+    try:
+        from steam.enums import PersonaState  # steamio
+    except Exception:
+        from steam.enums import EPersonaState as PersonaState  # ältere Benennung
+
+    from steam.user import User
+    try:
+        from steam.user import Friend  # nicht in allen steamio-Versionen vorhanden
+    except Exception:
+        Friend = User  # type: ignore[assignment]
+
+    try:
+        from steam.invite import UserInvite
+    except Exception:
+        class UserInvite:  # type: ignore[empty-body]
+            pass
+
     STEAM_AVAILABLE = True
-except Exception as exc:  # pragma: no cover - runtime safety for environments without steam
+except Exception as exc:  # pragma: no cover - runtime safety für Umgebungen ohne steam
     Client = object  # type: ignore[assignment]
     Intents = object  # type: ignore[assignment]
     PersonaState = object  # type: ignore[assignment]
@@ -26,23 +42,20 @@ except Exception as exc:  # pragma: no cover - runtime safety for environments w
     Friend = object  # type: ignore[assignment]
     User = object  # type: ignore[assignment]
     STEAM_AVAILABLE = False
-    logging.getLogger(__name__).warning("steam package not available: %s", exc)
+    logging.getLogger(__name__).warning("steam package not available: %r", exc)
 
 from service import db
 
 
 def _missing_steam_message() -> str:
     """Provide a helpful installation hint for the missing ``steam`` package."""
-
     python_exe = Path(sys.executable).resolve()
-    if " " in str(python_exe):
-        python_cmd = f'"{python_exe}"'
-    else:
-        python_cmd = str(python_exe)
+    python_cmd = f'"{python_exe}"' if " " in str(python_exe) else str(python_exe)
     return (
         "steam package is required to start the SteamBotService. Install it via "
-        f"{python_cmd} -m pip install steam[client] to match the bot environment."
+        f"{python_cmd} -m pip install steamio to match the bot environment."
     )
+
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +100,7 @@ class FriendPresence:
 
 
 class GuardCodeManager:
-    """Coordinates Steam Guard codes submitted via Discord."""
+    """Koordiniert Steam-Guard-Codes, die via Discord eingesendet werden."""
 
     def __init__(self) -> None:
         self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
@@ -95,8 +108,7 @@ class GuardCodeManager:
         self._lock = asyncio.Lock()
 
     async def wait_for_code(self, timeout: Optional[float] = None) -> str:
-        """Wait until a guard code is submitted by a Discord command."""
-
+        """Warte, bis ein Guard-Code eingesendet wurde (z. B. über !sg CODE)."""
         async with self._lock:
             self._waiters += 1
         try:
@@ -111,8 +123,7 @@ class GuardCodeManager:
                 self._waiters = max(0, self._waiters - 1)
 
     def submit(self, code: str) -> bool:
-        """Submit a guard code provided by Discord administrators."""
-
+        """Guard-Code von Discord-Admins entgegennehmen."""
         cleaned = str(code or "").strip()
         if not cleaned:
             return False
@@ -129,7 +140,7 @@ class GuardCodeManager:
 
 
 class DiscordSteamClient(Client):  # type: ignore[misc]
-    """Steam client subclass that obtains guard codes from Discord."""
+    """Steam-Client-Subklasse, die Guard-Codes von Discord bezieht."""
 
     def __init__(self, guard_codes: GuardCodeManager, *, guard_timeout: float = 300.0, **options):
         if not STEAM_AVAILABLE:  # pragma: no cover - sanity check
@@ -142,6 +153,7 @@ class DiscordSteamClient(Client):  # type: ignore[misc]
         self._guard_timeout = guard_timeout
 
     async def code(self) -> str:  # pragma: no cover - requires runtime interaction
+        # Wird von steamio aufgerufen, wenn ein Guard-Code gebraucht wird.
         log.warning("Steam Guard challenge received – waiting for Discord input…")
         return await self._guard_codes.wait_for_code(self._guard_timeout)
 
@@ -167,7 +179,7 @@ class SteamBotConfig:
 
 
 class SteamBotService:
-    """Encapsulates the Steam client connection and background maintenance loops."""
+    """Kapselt die Steam-Client-Verbindung und Hintergrund-Loops."""
 
     def __init__(self, config: SteamBotConfig, guard_codes: GuardCodeManager) -> None:
         if not STEAM_AVAILABLE:
@@ -192,7 +204,7 @@ class SteamBotService:
         self._invite_task: Optional[asyncio.Task[None]] = None
         self._last_refresh_source: Optional[str] = None
 
-        # register steam events
+        # steam events registrieren
         self.client.event(self._on_login)
         self.client.event(self._on_ready)
         self.client.event(self._on_disconnect)
@@ -261,11 +273,15 @@ class SteamBotService:
         await self._emit_connection(False)
 
     async def _on_invite(self, invite) -> None:  # type: ignore[override]
-        if isinstance(invite, UserInvite):  # pragma: no branch - runtime path
+        # Duck-Typing statt isinstance(UserInvite) – robuster über Versionen
+        if hasattr(invite, "accept"):  # pragma: no branch
             try:
                 await invite.accept()
-                log.info("Accepted friend invite from %s", getattr(invite.author, "name", invite.author))
-            except Exception:  # pragma: no cover - relies on live Steam
+                log.info(
+                    "Accepted friend invite from %s",
+                    getattr(invite, "author", None) and getattr(invite.author, "name", invite.author),
+                )
+            except Exception:  # pragma: no cover
                 log.exception("Failed to accept friend invite")
 
     async def _on_user_update(self, before: User, after: User) -> None:  # type: ignore[override]
@@ -273,7 +289,7 @@ class SteamBotService:
             self._status_dirty.set()
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Token-Laden
     # ------------------------------------------------------------------
     def _persist_refresh_token(self, token: str) -> None:
         account = self.config.account_name or self.config.username or "unknown"
@@ -333,6 +349,7 @@ class SteamBotService:
         return None
 
     def _select_refresh_token(self) -> Optional[str]:
+        """Prio: externe Datei → Konfiguration → DB. Gibt None, wenn keiner vorhanden."""
         for source, loader in (
             ("external file", self._load_external_refresh_token),
             ("configuration", lambda: self.config.refresh_token),
@@ -345,76 +362,9 @@ class SteamBotService:
                     self._last_refresh_source = source
                 return token
         if self._last_refresh_source != "interactive":
-            log.info("No refresh token available – waiting for Steam Guard input")
+            log.info("No refresh token available – waiting for Steam Guard input command (!sg CODE)")
             self._last_refresh_source = "interactive"
         return None
-
-    async def _refresh_friend_snapshot(self) -> None:
-        try:
-            friends: Iterable[Friend] = await self.client.user.friends()
-        except Exception:
-            log.exception("Failed to refresh Steam friend snapshot")
-            return
-        now = time.time()
-        for friend in friends:
-            self._update_deadlock_friend(friend, timestamp=now)
-
-    def _update_deadlock_friend(self, friend: Friend | User, *, timestamp: Optional[float] = None) -> bool:
-        steam_id = str(getattr(friend, "id64", ""))
-        if not steam_id:
-            return False
-        app = getattr(friend, "app", None)
-        app_id = getattr(app, "id", None)
-        app_name = getattr(app, "name", None)
-        rich_presence = getattr(friend, "rich_presence", None) or {}
-        persona = getattr(getattr(friend, "state", None), "name", "Unknown")
-        in_deadlock = app_id is not None and str(app_id) == str(self.config.deadlock_app_id)
-        ts = timestamp or time.time()
-
-        changed = False
-        if in_deadlock:
-            entry = FriendPresence(
-                steam_id=steam_id,
-                name=getattr(friend, "name", steam_id),
-                persona_state=persona,
-                app_id=app_id,
-                app_name=app_name,
-                rich_presence=dict(rich_presence),
-                last_update=ts,
-            )
-            old = self._deadlock_friends.get(steam_id)
-            if old != entry:
-                changed = True
-            self._deadlock_friends[steam_id] = entry
-        else:
-            if steam_id in self._deadlock_friends:
-                changed = True
-            self._deadlock_friends.pop(steam_id, None)
-        return changed
-
-    async def _broadcast_status(self) -> None:
-        if not self._status_callbacks:
-            return
-        snapshot = sorted(self._deadlock_friends.values(), key=lambda item: item.name.lower())
-        for callback in list(self._status_callbacks):
-            try:
-                await callback(snapshot)
-            except Exception:  # pragma: no cover - callback failures handled via log
-                log.exception("Steam status callback failed")
-
-    async def _emit_connection(self, online: bool) -> None:
-        if not self._connection_callbacks:
-            return
-        for callback in list(self._connection_callbacks):
-            try:
-                await callback(online)
-            except Exception:
-                log.exception("Steam connection callback failed")
-
-    async def _ensure_session(self) -> aiohttp.ClientSession:
-        if self._web_session is None or self._web_session.closed:
-            self._web_session = aiohttp.ClientSession()
-        return self._web_session
 
     # ------------------------------------------------------------------
     # Background loops
@@ -423,23 +373,37 @@ class SteamBotService:
         backoff = 5.0
         while not self._stop.is_set():
             try:
+                # 1) Versuche Login mit Refresh-Token
                 refresh_token = self._select_refresh_token()
-                async with self.client:  # pragma: no cover - requires live Steam
+                if refresh_token:
+                    async with self.client:  # pragma: no cover - requires live Steam
+                        await self.client.login(refresh_token=refresh_token)
+                        await self.client.wait_for("logout")
+                else:
+                    # 2) KEIN Auto-Login! Warten, bis du manuell per !sg CODE einen Guard-Code lieferst
+                    log.info("Awaiting manual Steam Guard code via Discord command (!sg CODE). No auto login.")
+                    # Warte „endlos“ (bis stop) – Wunschverhalten: kein automatischer Versuch
+                    # Sobald ein Code kommt, starten wir den Passwort-Login; der Client ruft dann code() auf,
+                    # welches sofort den bereits vorliegenden Code zurückgibt.
+                    code = await self.guard_codes.wait_for_code(timeout=None)  # blockierend warten
+                    # Optional: Code kurz „zurücklegen“, falls steamio code() später aufruft (Queue ist bereits gefüllt)
+                    self.guard_codes.submit(code)  # sicherstellen, dass der Code in der Queue liegt
+
                     username = self.config.username
                     password = self.config.password
-                    if username and password:
+                    if not (username and password):
+                        raise RuntimeError("Steam login requires credentials when no refresh token is available")
+
+                    async with self.client:  # pragma: no cover - requires live Steam
                         await self.client.login(
                             username,
                             password,
                             shared_secret=self.config.shared_secret,
                             identity_secret=self.config.identity_secret,
-                            refresh_token=refresh_token,
+                            # refresh_token bleibt None
                         )
-                    elif refresh_token:
-                        await self.client.login(refresh_token=refresh_token)
-                    else:
-                        raise RuntimeError("Steam login requires credentials or a refresh token")
-                    await self.client.wait_for("logout")
+                        await self.client.wait_for("logout")
+
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -452,6 +416,9 @@ class SteamBotService:
                     log.warning("Steam client logged out unexpectedly; reconnecting…")
         log.info("Steam client runner stopped")
 
+    # ------------------------------------------------------------------
+    # Status/Invites/Friends
+    # ------------------------------------------------------------------
     async def _friend_request_loop(self) -> None:
         while not self._stop.is_set():
             try:
