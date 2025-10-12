@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import logging
 import os
@@ -86,6 +87,7 @@ class PresenceInfo:
     map_name: Optional[str]
     party_size: Optional[int]
     raw: Dict[str, Any]
+    summary_raw: Optional[Dict[str, Any]]
     phase_hint: Optional[str]
     is_match: bool
     is_lobby: bool
@@ -132,6 +134,7 @@ class LiveMatchMaster(commands.Cog):
         # Neu: Merker des letzten geschriebenen Zustands pro Channel
         self._last_state: Dict[int, Dict[str, Any]] = {}
         self._last_debug_payload: Dict[int, str] = {}
+        self._last_presence_snapshot: Optional[str] = None
 
     async def cog_load(self):
         db.connect()
@@ -328,6 +331,7 @@ class LiveMatchMaster(commands.Cog):
                 "lobbysteamid": lobby_id or None,
                 "gameserversteamid": server_id or None,
             },
+            "summary_raw": dict(summary),
         }
         return self._build_presence_info(entry)
 
@@ -346,6 +350,7 @@ class LiveMatchMaster(commands.Cog):
             "map_name": info.map_name,
             "party_size": info.party_size,
             "raw": dict(info.raw),
+            "summary_raw": dict(info.summary_raw) if isinstance(info.summary_raw, dict) else info.summary_raw,
         }
 
     def _merge_presence_entries(
@@ -353,6 +358,11 @@ class LiveMatchMaster(commands.Cog):
     ) -> Dict[str, Any]:
         merged = dict(primary)
         merged_raw = dict(primary.get("raw") or {})
+        primary_summary = primary.get("summary_raw")
+        if isinstance(primary_summary, dict):
+            merged_summary: Optional[Dict[str, Any]] = dict(primary_summary)
+        else:
+            merged_summary = primary_summary if primary_summary is not None else None
         for key, value in (secondary.get("raw") or {}).items():
             if value is not None:
                 merged_raw[key] = value
@@ -380,6 +390,13 @@ class LiveMatchMaster(commands.Cog):
                 "",
             ):
                 merged[key] = new_value
+        secondary_summary = secondary.get("summary_raw")
+        if isinstance(secondary_summary, dict):
+            merged_summary = dict(secondary_summary)
+        elif secondary_summary is not None:
+            merged_summary = secondary_summary
+        if merged_summary is not None:
+            merged["summary_raw"] = merged_summary
         return merged
 
     def _build_presence_info(self, entry: Dict[str, Any]) -> PresenceInfo:
@@ -403,6 +420,16 @@ class LiveMatchMaster(commands.Cog):
         except (TypeError, ValueError):
             party_size = None
         raw = entry.get("raw") if isinstance(entry.get("raw"), dict) else {}
+        summary_payload = entry.get("summary_raw")
+        if isinstance(summary_payload, str):
+            try:
+                summary_raw: Optional[Dict[str, Any]] = json.loads(summary_payload)
+            except json.JSONDecodeError:
+                summary_raw = None
+        elif isinstance(summary_payload, dict):
+            summary_raw = dict(summary_payload)
+        else:
+            summary_raw = None
 
         phase_hint = self._presence_phase_hint(
             {
@@ -439,6 +466,7 @@ class LiveMatchMaster(commands.Cog):
             map_name=map_name,
             party_size=party_size,
             raw=raw,
+            summary_raw=summary_raw,
             phase_hint=phase_hint,
             is_match=is_match,
             is_lobby=is_lobby,
@@ -536,6 +564,16 @@ class LiveMatchMaster(commands.Cog):
                     "is_match": bool(presence.is_match) if presence else False,
                     "is_lobby": bool(presence.is_lobby) if presence else False,
                     "is_deadlock": bool(presence.is_deadlock) if presence else False,
+                    "presence_display": presence.display if presence else None,
+                    "presence_status": presence.status if presence else None,
+                    "presence_status_text": presence.status_text if presence else None,
+                    "presence_updated_at": presence.updated_at if presence else None,
+                    "presence_raw": dict(presence.raw) if presence else None,
+                    "summary_raw": (
+                        dict(presence.summary_raw)
+                        if presence and isinstance(presence.summary_raw, dict)
+                        else (presence.summary_raw if presence else None)
+                    ),
                 }
             )
 
@@ -642,6 +680,17 @@ class LiveMatchMaster(commands.Cog):
             "Mitglieder:",
         ]
 
+        def _json_preview(data: Any) -> Optional[str]:
+            if not data:
+                return None
+            try:
+                text = json.dumps(data, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError):
+                text = str(data)
+            if len(text) > 500:
+                text = f"{text[:497]}…"
+            return text
+
         member_lines: List[str] = []
         for member in phase_result.get("member_states", []):
             steam_ids = ", ".join(member.get("steam_ids") or []) or "-"
@@ -665,6 +714,12 @@ class LiveMatchMaster(commands.Cog):
                     )
                 )
             )
+            presence_preview = _json_preview(member.get("presence_raw"))
+            if presence_preview:
+                member_lines.append(f"    rp={presence_preview}")
+            summary_preview = _json_preview(member.get("summary_raw"))
+            if summary_preview:
+                member_lines.append(f"    summary={summary_preview}")
 
         max_members = 15
         if len(member_lines) > max_members:
@@ -677,6 +732,43 @@ class LiveMatchMaster(commands.Cog):
         if len(content) > 1900:
             content = f"{content[:1897]}…"
         return content
+
+    @staticmethod
+    def _safe_json_value(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {
+                str(k): LiveMatchMaster._safe_json_value(v)
+                for k, v in value.items()
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [LiveMatchMaster._safe_json_value(v) for v in value]
+        try:
+            return str(value)
+        except Exception:  # pragma: no cover - defensive
+            return repr(value)
+
+    def _serialize_presence_info(self, info: PresenceInfo) -> Dict[str, Any]:
+        return {
+            "steam_id": info.steam_id,
+            "updated_at": info.updated_at,
+            "display": info.display,
+            "status": info.status,
+            "status_text": info.status_text,
+            "player_group": info.player_group,
+            "player_group_size": info.player_group_size,
+            "connect": info.connect,
+            "mode": info.mode,
+            "map_name": info.map_name,
+            "party_size": info.party_size,
+            "phase_hint": info.phase_hint,
+            "is_match": info.is_match,
+            "is_lobby": info.is_lobby,
+            "is_deadlock": info.is_deadlock,
+            "raw": self._safe_json_value(info.raw),
+            "summary_raw": self._safe_json_value(info.summary_raw),
+        }
 
     async def _send_debug_report(
         self,
@@ -702,6 +794,49 @@ class LiveMatchMaster(commands.Cog):
             self._last_debug_payload[channel.id] = payload
         except discord.HTTPException as exc:  # pragma: no cover - defensive
             log.debug("Debug-Ausgabe fehlgeschlagen für %s: %s", channel.id, exc)
+
+    async def _send_presence_snapshot(self, now: int) -> None:
+        debug_channel = self.bot.get_channel(DEBUG_CHANNEL_ID)
+        if not isinstance(debug_channel, discord.TextChannel):
+            return
+        snapshot_items = {
+            steam_id: self._serialize_presence_info(info)
+            for steam_id, info in sorted(self._presence_cache.items())
+        }
+        try:
+            payload = json.dumps(
+                snapshot_items,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            log.warning("Snapshot Serialisierung fehlgeschlagen: %s", exc)
+            return
+        if not snapshot_items and self._last_presence_snapshot:
+            self._last_presence_snapshot = None
+        if payload == self._last_presence_snapshot:
+            return
+        data = payload.encode("utf-8")
+        if len(data) > 7_500_000:
+            log.warning(
+                "Snapshot zu groß (%d Bytes) – Ausgabe übersprungen", len(data)
+            )
+            return
+        file_name = f"steam_presence_{now}.json"
+        try:
+            await debug_channel.send(
+                content=(
+                    "Steam Friend Presence Snapshot ({count} Einträge) — {ts} UTC".format(
+                        count=len(snapshot_items),
+                        ts=time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now)),
+                    )
+                ),
+                file=discord.File(io.BytesIO(data), filename=file_name),
+            )
+            self._last_presence_snapshot = payload
+        except discord.HTTPException as exc:  # pragma: no cover - defensive
+            log.debug("Snapshot-Ausgabe fehlgeschlagen: %s", exc)
 
     def _write_lane_state(
         self,
@@ -772,6 +907,8 @@ class LiveMatchMaster(commands.Cog):
                     self._presence_cache[steam_id] = self._build_presence_info(merged_entry)
                 else:
                     self._presence_cache[steam_id] = summary_info
+
+        await self._send_presence_snapshot(now)
 
         for channel in channels:
             members = members_per_channel.get(channel.id, [])
