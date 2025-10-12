@@ -23,7 +23,7 @@ log = logging.getLogger("LiveMatchWorker")
 
 # Festwerte
 TICK_SEC = 20                                   # Poll-Intervall Worker
-PER_CHANNEL_RENAME_COOLDOWN_SEC = 305           # ~5 Minuten Cooldown pro Channel
+PER_CHANNEL_RENAME_COOLDOWN_SEC = 310           # ~5 Minuten + 10 Sekunden Cooldown pro Channel
 STALE_STATE_MAX_AGE_SEC = 600                   # 10 Minuten: älter = kein Rename
 
 # Erlaubte Suffix-Varianten (kanonische Textteile)
