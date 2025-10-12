@@ -49,9 +49,61 @@ function log(level, message, extra = undefined) {
 // --------------- Single-instance lock ---------------
 const LOCK_PATH = path.join(__dirname, 'presence.lock');
 let lockFd;
-try { lockFd = fs.openSync(LOCK_PATH, 'wx'); fs.writeFileSync(lockFd, String(process.pid)); }
-catch { console.error('Another presence instance seems to be running. Exiting.'); process.exit(0); }
-function cleanupLock(){ try{ if(lockFd) fs.closeSync(lockFd); fs.unlinkSync(LOCK_PATH); }catch{} }
+
+function acquireLock(attempt = 0) {
+  try {
+    lockFd = fs.openSync(LOCK_PATH, 'wx');
+    fs.writeFileSync(lockFd, String(process.pid));
+    return true;
+  } catch (err) {
+    if (!err || err.code !== 'EEXIST') {
+      console.error('Failed to acquire presence lock:', err && err.message ? err.message : String(err));
+      process.exit(1);
+    }
+
+    let existingPid = Number.NaN;
+    try {
+      existingPid = parseInt(fs.readFileSync(LOCK_PATH, 'utf8'), 10);
+    } catch {
+      existingPid = Number.NaN;
+    }
+
+    if (Number.isFinite(existingPid) && existingPid > 0) {
+      try {
+        process.kill(existingPid, 0);
+        console.error(`Another presence instance seems to be running (pid=${existingPid}). Exiting.`);
+        process.exit(0);
+      } catch (checkErr) {
+        if (checkErr && checkErr.code === 'ESRCH') {
+          try { fs.unlinkSync(LOCK_PATH); } catch {}
+          if (attempt === 0) return acquireLock(attempt + 1);
+        } else {
+          const msg = checkErr && checkErr.message ? checkErr.message : String(checkErr);
+          console.error(`Presence lock held by pid=${existingPid} but cannot be verified: ${msg}`);
+          process.exit(0);
+        }
+      }
+    } else {
+      try { fs.unlinkSync(LOCK_PATH); } catch {}
+      if (attempt === 0) return acquireLock(attempt + 1);
+    }
+  }
+
+  console.error('Unable to acquire presence lock. Exiting.');
+  process.exit(0);
+}
+
+acquireLock();
+
+function cleanupLock(){
+  try {
+    if (typeof lockFd === 'number') {
+      fs.closeSync(lockFd);
+      lockFd = undefined;
+    }
+    fs.unlinkSync(LOCK_PATH);
+  } catch {}
+}
 process.on('exit', cleanupLock); process.on('SIGINT', ()=>{ cleanupLock(); process.exit(0); });
 process.on('SIGTERM', ()=>{ cleanupLock(); process.exit(0); });
 
