@@ -1,11 +1,13 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
+import aiohttp
 import discord
 from discord.ext import commands, tasks
 
@@ -32,6 +34,9 @@ PHASE_OFF = "OFF"
 PHASE_GAME = "GAME"
 PHASE_LOBBY = "LOBBY"
 PHASE_MATCH = "MATCH"
+
+STEAM_API_KEY = os.getenv("STEAM_API_KEY", "").strip()
+DEADLOCK_APP_ID = os.getenv("DEADLOCK_APP_ID", "1422450").strip()
 
 _MATCH_TERMS = (
     "#deadlock_status_inmatch",
@@ -254,6 +259,129 @@ class LiveMatchMaster(commands.Cog):
             presence[steam_id] = self._build_presence_info(info_dict)
         return presence
 
+    async def _fetch_player_summaries(self, steam_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+        if not STEAM_API_KEY:
+            return {}
+        ids = [sid for sid in {str(s) for s in steam_ids if s}]
+        if not ids:
+            return {}
+        summaries: Dict[str, Dict[str, Any]] = {}
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for i in range(0, len(ids), 100):
+                chunk = ids[i : i + 100]
+                params = {"key": STEAM_API_KEY, "steamids": ",".join(chunk)}
+                try:
+                    async with session.get(
+                        "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/",
+                        params=params,
+                    ) as resp:
+                        if resp.status != 200:
+                            log.debug(
+                                "Steam summaries HTTP %s (chunk=%d)",
+                                resp.status,
+                                len(chunk),
+                            )
+                            continue
+                        data = await resp.json()
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    log.warning("Steam summaries fehlgeschlagen: %s", exc)
+                    continue
+                except Exception as exc:  # pragma: no cover - defensive
+                    log.warning("Steam summaries unerwartet: %s", exc)
+                    continue
+                for player in data.get("response", {}).get("players", []):
+                    sid = str(player.get("steamid") or "").strip()
+                    if sid:
+                        summaries[sid] = player
+        return summaries
+
+    def _build_presence_from_summary(
+        self, summary: Dict[str, Any], now: int
+    ) -> Optional[PresenceInfo]:
+        steam_id = str(summary.get("steamid") or "").strip()
+        if not steam_id:
+            return None
+        game_id = str(summary.get("gameid") or "").strip()
+        if not game_id or (DEADLOCK_APP_ID and game_id != DEADLOCK_APP_ID):
+            return None
+        display = summary.get("gameextrainfo") or summary.get("rich_presence")
+        lobby_id = str(summary.get("lobbysteamid") or "").strip()
+        server_id = str(summary.get("gameserversteamid") or "").strip()
+
+        entry = {
+            "steam_id": steam_id,
+            "updated_at": int(now),
+            "status": summary.get("personastate"),
+            "status_text": summary.get("personaname"),
+            "display": display,
+            "player_group": lobby_id or None,
+            "player_group_size": 1 if lobby_id else None,
+            "connect": server_id or None,
+            "mode": None,
+            "map_name": None,
+            "party_size": None,
+            "raw": {
+                "steam_display": display,
+                "status": summary.get("personastate"),
+                "gameid": game_id,
+                "lobbysteamid": lobby_id or None,
+                "gameserversteamid": server_id or None,
+            },
+        }
+        return self._build_presence_info(entry)
+
+    @staticmethod
+    def _presence_info_to_entry(info: PresenceInfo) -> Dict[str, Any]:
+        return {
+            "steam_id": info.steam_id,
+            "updated_at": info.updated_at,
+            "status": info.status,
+            "status_text": info.status_text,
+            "display": info.display,
+            "player_group": info.player_group,
+            "player_group_size": info.player_group_size,
+            "connect": info.connect,
+            "mode": info.mode,
+            "map_name": info.map_name,
+            "party_size": info.party_size,
+            "raw": dict(info.raw),
+        }
+
+    def _merge_presence_entries(
+        self, primary: Dict[str, Any], secondary: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        merged = dict(primary)
+        merged_raw = dict(primary.get("raw") or {})
+        for key, value in (secondary.get("raw") or {}).items():
+            if value is not None:
+                merged_raw[key] = value
+        merged["raw"] = merged_raw
+
+        merged["updated_at"] = max(
+            int(primary.get("updated_at") or 0), int(secondary.get("updated_at") or 0)
+        )
+
+        for key in (
+            "status",
+            "status_text",
+            "display",
+            "player_group",
+            "player_group_size",
+            "connect",
+            "mode",
+            "map_name",
+            "party_size",
+        ):
+            current = merged.get(key)
+            new_value = secondary.get(key)
+            if (current is None or current == "" or current == 0) and new_value not in (
+                None,
+                "",
+            ):
+                merged[key] = new_value
+        return merged
+
     def _build_presence_info(self, entry: Dict[str, Any]) -> PresenceInfo:
         steam_id = str(entry.get("steam_id") or "")
         updated_at = int(entry.get("updated_at") or 0)
@@ -328,8 +456,9 @@ class LiveMatchMaster(commands.Cog):
             group_size_int = int(group_size) if group_size is not None else 0
         except (TypeError, ValueError):
             group_size_int = 0
-        if group and group_size_int:
-            return PHASE_LOBBY
+        if group:
+            if group_size is None or group_size_int:
+                return PHASE_LOBBY
 
         texts: List[str] = []
         for key in ("status", "status_text", "display"):
@@ -621,6 +750,28 @@ class LiveMatchMaster(commands.Cog):
         all_steam_ids = [sid for ids in self._links_cache.values() for sid in ids]
         # Rich Presence nur laden, wenn überhaupt Links da sind
         self._presence_cache = self._load_presence_map(all_steam_ids, now) if all_steam_ids else {}
+
+        summary_ids: List[str] = []
+        for sid in all_steam_ids:
+            info = self._presence_cache.get(str(sid)) if sid else None
+            if not info or not info.is_deadlock or not info.display:
+                summary_ids.append(str(sid))
+
+        if summary_ids:
+            summaries = await self._fetch_player_summaries(summary_ids)
+            for steam_id, payload in summaries.items():
+                summary_info = self._build_presence_from_summary(payload, now)
+                if not summary_info:
+                    continue
+                existing = self._presence_cache.get(steam_id)
+                if existing:
+                    merged_entry = self._merge_presence_entries(
+                        self._presence_info_to_entry(existing),
+                        self._presence_info_to_entry(summary_info),
+                    )
+                    self._presence_cache[steam_id] = self._build_presence_info(merged_entry)
+                else:
+                    self._presence_cache[steam_id] = summary_info
 
         for channel in channels:
             members = members_per_channel.get(channel.id, [])
