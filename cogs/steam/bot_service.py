@@ -163,6 +163,7 @@ class SteamBotService:
         self._stop = asyncio.Event()
         self._deadlock_friends: Dict[str, FriendPresence] = {}
         self._status_callbacks: List[Callable[[List[FriendPresence]], Awaitable[None]]] = []
+        self._connection_callbacks: List[Callable[[bool], Awaitable[None]]] = []
         self._web_session: Optional[aiohttp.ClientSession] = None
 
         # background tasks
@@ -210,6 +211,9 @@ class SteamBotService:
     def register_status_callback(self, callback: Callable[[List[FriendPresence]], Awaitable[None]]) -> None:
         self._status_callbacks.append(callback)
 
+    def register_connection_callback(self, callback: Callable[[bool], Awaitable[None]]) -> None:
+        self._connection_callbacks.append(callback)
+
     # ------------------------------------------------------------------
     # Steam event handlers
     # ------------------------------------------------------------------
@@ -224,10 +228,12 @@ class SteamBotService:
         await self._refresh_friend_snapshot()
         self._ready.set()
         self._status_dirty.set()
+        await self._emit_connection(True)
 
     async def _on_disconnect(self) -> None:
         log.warning("Steam connection lost – waiting for reconnect")
         self._ready.clear()
+        await self._emit_connection(False)
 
     async def _on_invite(self, invite) -> None:  # type: ignore[override]
         if isinstance(invite, UserInvite):  # pragma: no branch - runtime path
@@ -360,6 +366,15 @@ class SteamBotService:
                 await callback(snapshot)
             except Exception:  # pragma: no cover - callback failures handled via log
                 log.exception("Steam status callback failed")
+
+    async def _emit_connection(self, online: bool) -> None:
+        if not self._connection_callbacks:
+            return
+        for callback in list(self._connection_callbacks):
+            try:
+                await callback(online)
+            except Exception:
+                log.exception("Steam connection callback failed")
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._web_session is None or self._web_session.closed:

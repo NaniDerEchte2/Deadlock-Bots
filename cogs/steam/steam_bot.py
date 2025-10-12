@@ -47,6 +47,11 @@ class SteamBotCog(commands.Cog):
         self.channel_id = self._resolve_channel_id()
         self.service = SteamBotService(self.config, self.guard_codes)
         self.service.register_status_callback(self._handle_status_update)
+        self.service.register_connection_callback(self._handle_connection_change)
+        self._status_message_id: Optional[int] = None
+        self._status_lock = asyncio.Lock()
+        self._last_status_payload: Optional[str] = None
+        self._online_announced = False
         self._status_message_id: Optional[int] = None
         self._status_lock = asyncio.Lock()
         self._last_status_payload: Optional[str] = None
@@ -90,6 +95,23 @@ class SteamBotCog(commands.Cog):
                 self._status_message_id = message.id
             except discord.HTTPException as exc:
                 log.exception("Failed to publish Steam status update: %s", exc)
+
+    async def _handle_connection_change(self, online: bool) -> None:
+        if online:
+            await self.bot.wait_until_ready()
+            if self._online_announced:
+                return
+            channel = await self._fetch_channel()
+            if channel is None:
+                log.warning("Steam status channel %s not found", self.channel_id)
+                return
+            try:
+                await channel.send("✅ Steam-Bot ist online.")
+                self._online_announced = True
+            except discord.HTTPException as exc:
+                log.exception("Failed to announce Steam bot availability: %s", exc)
+        else:
+            self._online_announced = False
 
     def _format_status_message(self, snapshot: List[FriendPresence]) -> str:
         timestamp = datetime.now(tz=timezone.utc).strftime("%H:%M:%S UTC")
