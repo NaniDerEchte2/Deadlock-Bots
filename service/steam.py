@@ -95,3 +95,48 @@ def load_rich_presence(steam_ids: List[str]) -> Dict[str, dict]:
         }
         out[entry["steam_id"]] = entry
     return out
+
+
+def load_friend_snapshots(steam_ids: List[str]) -> Dict[str, dict]:
+    """Lädt die letzten Steam-Freundes-Snapshots inkl. Persona- und Rich-Presence-Rohdaten."""
+    if not steam_ids:
+        return {}
+    placeholders = ",".join("?" for _ in steam_ids)
+    rows = db.query_all(
+        f"""
+        SELECT steam_id, relationship, persona_state, persona_name, game_app_id, game_name,
+               last_logoff, last_logon, persona_flags, avatar_hash, persona_json, rich_presence_json, updated_at
+        FROM steam_friend_snapshots
+        WHERE steam_id IN ({placeholders})
+        """,
+        tuple(steam_ids),
+    )
+    snapshots: Dict[str, dict] = {}
+    for row in rows:
+        persona_raw_json = row["persona_json"] if isinstance(row, dict) else row[10]
+        presence_raw_json = row["rich_presence_json"] if isinstance(row, dict) else row[11]
+        try:
+            persona_raw = json.loads(persona_raw_json) if persona_raw_json else None
+        except json.JSONDecodeError:
+            persona_raw = None
+        try:
+            presence_raw = json.loads(presence_raw_json) if presence_raw_json else None
+        except json.JSONDecodeError:
+            presence_raw = None
+        steam_id = str(row["steam_id"] if isinstance(row, dict) else row[0])
+        snapshots[steam_id] = {
+            "steam_id": steam_id,
+            "relationship": row["relationship"] if isinstance(row, dict) else row[1],
+            "persona_state": row["persona_state"] if isinstance(row, dict) else row[2],
+            "persona_name": row["persona_name"] if isinstance(row, dict) else row[3],
+            "game_app_id": row["game_app_id"] if isinstance(row, dict) else row[4],
+            "game_name": row["game_name"] if isinstance(row, dict) else row[5],
+            "last_logoff": row["last_logoff"] if isinstance(row, dict) else row[6],
+            "last_logon": row["last_logon"] if isinstance(row, dict) else row[7],
+            "persona_flags": row["persona_flags"] if isinstance(row, dict) else row[8],
+            "avatar_hash": row["avatar_hash"] if isinstance(row, dict) else row[9],
+            "persona_raw": persona_raw,
+            "rich_presence_raw": presence_raw,
+            "updated_at": row["updated_at"] if isinstance(row, dict) else row[12],
+        }
+    return snapshots
