@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,20 @@ except Exception as exc:  # pragma: no cover - runtime safety for environments w
     logging.getLogger(__name__).warning("steam package not available: %s", exc)
 
 from service import db
+
+
+def _missing_steam_message() -> str:
+    """Provide a helpful installation hint for the missing ``steam`` package."""
+
+    python_exe = Path(sys.executable).resolve()
+    if " " in str(python_exe):
+        python_cmd = f'"{python_exe}"'
+    else:
+        python_cmd = str(python_exe)
+    return (
+        "steam package is required to start the SteamBotService. Install it via "
+        f"{python_cmd} -m pip install steam[client] to match the bot environment."
+    )
 
 log = logging.getLogger(__name__)
 
@@ -156,10 +171,7 @@ class SteamBotService:
 
     def __init__(self, config: SteamBotConfig, guard_codes: GuardCodeManager) -> None:
         if not STEAM_AVAILABLE:
-            raise RuntimeError(
-                "steam package is required to start the SteamBotService. "
-                "Install it via 'pip install steam[client]' in your bot environment."
-            )
+            raise RuntimeError(_missing_steam_message())
 
         self.config = config
         self.guard_codes = guard_codes
