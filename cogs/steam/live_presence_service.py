@@ -1,7 +1,8 @@
 import json
 import logging
+import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from service import db
 from service import steam as steam_service
@@ -17,6 +18,9 @@ class SteamPresenceInfo:
     display: Optional[str]
     status: Optional[str]
     status_text: Optional[str]
+    display_activity: Optional[str]
+    hero: Optional[str]
+    session_minutes: Optional[int]
     player_group: Optional[str]
     player_group_size: Optional[int]
     connect: Optional[str]
@@ -196,6 +200,13 @@ class SteamPresenceService:
         else:
             friend_snapshot = friend_snapshot_raw if friend_snapshot_raw is None else friend_snapshot_raw
 
+        display_activity, hero, minutes = self._extract_deadlock_activity(
+            display,
+            status,
+            status_text,
+            raw,
+        )
+
         phase_hint = self._presence_phase_hint(
             {
                 "status": status,
@@ -224,6 +235,9 @@ class SteamPresenceService:
             display=display,
             status=status,
             status_text=status_text,
+            display_activity=display_activity,
+            hero=hero,
+            session_minutes=minutes,
             player_group=str(player_group) if player_group else None,
             player_group_size=player_group_size,
             connect=connect,
@@ -238,6 +252,56 @@ class SteamPresenceService:
             is_lobby=is_lobby,
             is_deadlock=is_deadlock,
         )
+
+    @staticmethod
+    def _extract_deadlock_activity(
+        display: Optional[str],
+        status: Optional[str],
+        status_text: Optional[str],
+        raw: Dict[str, Any],
+    ) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+        """Ermittelt Aktivität, Heldenname und Spielzeit aus den Presence-Daten."""
+
+        def _clean(text: Optional[str]) -> Optional[str]:
+            if not text:
+                return None
+            cleaned = str(text).strip()
+            return cleaned or None
+
+        primary_display = _clean(display) or _clean(raw.get("steam_display"))
+        fallback_status = _clean(status_text) or _clean(status)
+
+        activity = None
+        hero = _clean(raw.get("hero") or raw.get("character") or raw.get("role"))
+        minutes: Optional[int] = None
+
+        target = primary_display or fallback_status
+        if target:
+            # Erwartetes Format: "Deadlock: Abrams (7 Min.)" o.Ä.
+            parts = target.split(":", 1)
+            if len(parts) == 2 and parts[0].strip().lower() == "deadlock":
+                activity = _clean(parts[1])
+            else:
+                activity = _clean(target)
+
+        if activity:
+            # Extrahiere optionale Minutenangabe und Heldenname aus dem Aktivitätstext
+            minute_match = re.search(
+                r"\((?P<num>\d{1,3})\s*(?:min(?:\.|uten)?|minutes?|mins?)\)",
+                activity,
+                flags=re.IGNORECASE,
+            )
+            if minute_match:
+                try:
+                    minutes = int(minute_match.group("num"))
+                except ValueError:
+                    minutes = None
+                activity = _clean(activity[: minute_match.start()].strip())
+
+        if not hero and activity:
+            hero = activity
+
+        return activity, hero, minutes
 
     @staticmethod
     def _presence_phase_hint(data: Dict[str, Any]) -> Optional[str]:

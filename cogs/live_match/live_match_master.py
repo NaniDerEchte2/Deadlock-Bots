@@ -188,6 +188,9 @@ class LiveMatchMaster(commands.Cog):
                     "is_lobby": bool(presence.is_lobby) if presence else False,
                     "is_deadlock": bool(presence.is_deadlock) if presence else False,
                     "presence_display": presence.display if presence else None,
+                    "presence_activity": presence.display_activity if presence else None,
+                    "presence_hero": presence.hero if presence else None,
+                    "presence_session_minutes": presence.session_minutes if presence else None,
                     "presence_status": presence.status if presence else None,
                     "presence_status_text": presence.status_text if presence else None,
                     "presence_updated_at": presence.updated_at if presence else None,
@@ -349,6 +352,19 @@ class LiveMatchMaster(commands.Cog):
             presence_preview = _json_preview(member.get("presence_raw"))
             if presence_preview:
                 member_lines.append(f"    rp={presence_preview}")
+            activity = member.get("presence_activity")
+            hero = member.get("presence_hero")
+            minutes = member.get("presence_session_minutes")
+            if activity or hero or minutes is not None:
+                detail_parts = []
+                if activity:
+                    detail_parts.append(f"activity={activity}")
+                if hero:
+                    detail_parts.append(f"hero={hero}")
+                if minutes is not None:
+                    detail_parts.append(f"minutes={minutes}")
+                if detail_parts:
+                    member_lines.append("    details=" + ", ".join(detail_parts))
             summary_preview = _json_preview(member.get("summary_raw"))
             if summary_preview:
                 member_lines.append(f"    summary={summary_preview}")
@@ -391,6 +407,9 @@ class LiveMatchMaster(commands.Cog):
             "display": info.display,
             "status": info.status,
             "status_text": info.status_text,
+            "display_activity": info.display_activity,
+            "hero": info.hero,
+            "session_minutes": info.session_minutes,
             "player_group": info.player_group,
             "player_group_size": info.player_group_size,
             "connect": info.connect,
