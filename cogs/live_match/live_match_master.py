@@ -5,9 +5,8 @@ import logging
 import os
 import time
 from collections import Counter
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
-import aiohttp
 import discord
 from discord.ext import commands, tasks
 
@@ -42,6 +41,16 @@ PHASE_MATCH = "MATCH"
 STEAM_API_KEY = os.getenv("STEAM_API_KEY", "").strip()
 DEADLOCK_APP_ID = os.getenv("DEADLOCK_APP_ID", "1422450").strip()
 
+EXCLUDED_RENAME_CHANNEL_IDS = {
+    1412804671432818890,
+    1330278323145801758,
+    1357422958544420944,
+    1413991108983263252,
+    1423662511001043075,
+    1411391356278018245,
+    1426160735469174875,
+}
+
 
 def _fmt_suffix(majority_n: int, voice_n: int, label: str, dl_count: int) -> str:
     voice_n = max(0, int(voice_n))
@@ -49,7 +58,7 @@ def _fmt_suffix(majority_n: int, voice_n: int, label: str, dl_count: int) -> str
     dl_count = max(0, min(int(dl_count), voice_n))
     suffix = f"• {majority_n}/{voice_n} {label}"
     if dl_count:
-        suffix = f"{suffix} ({dl_count} DL)"
+        suffix = f"{suffix} ({dl_count})"
     return suffix.strip()
 def _ensure_schema() -> None:
     db.execute(
@@ -466,12 +475,6 @@ class LiveMatchMaster(commands.Cog):
             log.debug("Snapshot-Ausgabe fehlgeschlagen: %s", exc)
 
     # ----------------------------------------------------------------- legacy
-    async def _fetch_player_summaries(
-        self, steam_ids: Iterable[str]
-    ) -> Dict[str, Dict[str, Any]]:
-        """Compat wrapper for older call sites expecting a cog-local helper."""
-        return await self._steam.fetch_player_summaries(steam_ids)
-
     def _write_lane_state(
         self,
         channel_id: int,
@@ -527,16 +530,6 @@ class LiveMatchMaster(commands.Cog):
         else:
             self._presence_cache = {}
 
-        summary_ids: List[str] = []
-        for sid in all_steam_ids:
-            info = self._presence_cache.get(str(sid)) if sid else None
-            if not info or not info.is_deadlock or not info.display:
-                summary_ids.append(str(sid))
-
-        if summary_ids:
-            summaries = await self._steam.fetch_player_summaries(summary_ids)
-            self._steam.merge_with_summaries(self._presence_cache, summaries, now=now)
-
         friend_snapshots = self._steam.load_friend_snapshots(all_steam_ids)
         self._friend_snapshot_cache = friend_snapshots
         self._steam.attach_friend_snapshots(self._presence_cache, friend_snapshots)
@@ -559,6 +552,12 @@ class LiveMatchMaster(commands.Cog):
 
             # Phase bestimmen (nutzt intern Presence aus dem Cache)
             phase_result = self._determine_phase(members)
+
+            if channel.id in EXCLUDED_RENAME_CHANNEL_IDS:
+                phase_result = dict(phase_result)
+                phase_result["phase"] = PHASE_OFF
+                phase_result["suffix"] = None
+                phase_result["reason"] = f"{phase_result['reason']}|excluded_channel"
 
             # Log der Entscheidung: nur INFO, wenn aktiv oder sich was ändert
             will_write = self._should_write_state(channel.id, phase_result, now)

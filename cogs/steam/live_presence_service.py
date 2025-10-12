@@ -1,10 +1,7 @@
-import asyncio
 import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
-
-import aiohttp
 
 from service import db
 from service import steam as steam_service
@@ -141,63 +138,6 @@ class SteamPresenceService:
             presence[steam_id] = self._build_presence_info(info_dict)
         return presence
 
-    async def fetch_player_summaries(
-        self, steam_ids: Iterable[str]
-    ) -> Dict[str, Dict[str, Any]]:
-        if not self._steam_api_key:
-            return {}
-        ids = [sid for sid in {str(s) for s in steam_ids if s}]
-        if not ids:
-            return {}
-        summaries: Dict[str, Dict[str, Any]] = {}
-        timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            for i in range(0, len(ids), 100):
-                chunk = ids[i : i + 100]
-                params = {"key": self._steam_api_key, "steamids": ",".join(chunk)}
-                try:
-                    async with session.get(
-                        "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/",
-                        params=params,
-                    ) as resp:
-                        if resp.status != 200:
-                            log.debug(
-                                "Steam summaries HTTP %s (chunk=%d)",
-                                resp.status,
-                                len(chunk),
-                            )
-                            continue
-                        data = await resp.json()
-                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                    log.warning("Steam summaries fehlgeschlagen: %s", exc)
-                    continue
-                except Exception as exc:  # pragma: no cover - defensive
-                    log.warning("Steam summaries unerwartet: %s", exc)
-                    continue
-                for player in data.get("response", {}).get("players", []):
-                    sid = str(player.get("steamid") or "").strip()
-                    if sid:
-                        summaries[sid] = player
-        return summaries
-
-    def merge_with_summaries(
-        self,
-        presence: Dict[str, SteamPresenceInfo],
-        summaries: Dict[str, Dict[str, Any]],
-        *,
-        now: int,
-    ) -> None:
-        for steam_id, payload in summaries.items():
-            summary_info = self._build_presence_from_summary(payload, now)
-            if not summary_info:
-                continue
-            existing = presence.get(steam_id)
-            if existing:
-                merged = self._merge_presence_infos(existing, summary_info)
-                presence[steam_id] = merged
-            else:
-                presence[steam_id] = summary_info
-
     def load_friend_snapshots(self, steam_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
         ids = [str(sid) for sid in steam_ids if sid]
         if not ids:
@@ -218,132 +158,6 @@ class SteamPresenceService:
                 info.friend_snapshot_raw = None
 
     # ----------------------------------------------------------------- helpers
-    def _build_presence_from_summary(
-        self, summary: Dict[str, Any], now: int
-    ) -> Optional[SteamPresenceInfo]:
-        steam_id = str(summary.get("steamid") or "").strip()
-        if not steam_id:
-            return None
-        game_id = str(summary.get("gameid") or "").strip()
-        if not game_id or (self._deadlock_app_id and game_id != self._deadlock_app_id):
-            return None
-        display = summary.get("gameextrainfo") or summary.get("rich_presence")
-        lobby_id = str(summary.get("lobbysteamid") or "").strip()
-        server_id = str(summary.get("gameserversteamid") or "").strip()
-
-        entry = {
-            "steam_id": steam_id,
-            "updated_at": int(now),
-            "status": summary.get("personastate"),
-            "status_text": summary.get("personaname"),
-            "display": display,
-            "player_group": lobby_id or None,
-            "player_group_size": 1 if lobby_id else None,
-            "connect": server_id or None,
-            "mode": None,
-            "map_name": None,
-            "party_size": None,
-            "raw": {
-                "steam_display": display,
-                "status": summary.get("personastate"),
-                "gameid": game_id,
-                "lobbysteamid": lobby_id or None,
-                "gameserversteamid": server_id or None,
-            },
-            "summary_raw": dict(summary),
-        }
-        return self._build_presence_info(entry)
-
-    @staticmethod
-    def _presence_info_to_entry(info: SteamPresenceInfo) -> Dict[str, Any]:
-        return {
-            "steam_id": info.steam_id,
-            "updated_at": info.updated_at,
-            "status": info.status,
-            "status_text": info.status_text,
-            "display": info.display,
-            "player_group": info.player_group,
-            "player_group_size": info.player_group_size,
-            "connect": info.connect,
-            "mode": info.mode,
-            "map_name": info.map_name,
-            "party_size": info.party_size,
-            "raw": dict(info.raw),
-            "summary_raw": dict(info.summary_raw)
-            if isinstance(info.summary_raw, dict)
-            else info.summary_raw,
-            "friend_snapshot_raw": (
-                dict(info.friend_snapshot_raw)
-                if isinstance(info.friend_snapshot_raw, dict)
-                else info.friend_snapshot_raw
-            ),
-        }
-
-    def _merge_presence_infos(
-        self,
-        primary: SteamPresenceInfo,
-        secondary: SteamPresenceInfo,
-    ) -> SteamPresenceInfo:
-        merged_entry = self._merge_presence_entries(
-            self._presence_info_to_entry(primary),
-            self._presence_info_to_entry(secondary),
-        )
-        return self._build_presence_info(merged_entry)
-
-    def _merge_presence_entries(
-        self,
-        primary: Dict[str, Any],
-        secondary: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        merged = dict(primary)
-        merged_raw = dict(primary.get("raw") or {})
-        primary_summary = primary.get("summary_raw")
-        if isinstance(primary_summary, dict):
-            merged_summary: Optional[Dict[str, Any]] = dict(primary_summary)
-        else:
-            merged_summary = primary_summary if primary_summary is not None else None
-        for key, value in (secondary.get("raw") or {}).items():
-            if value is not None:
-                merged_raw[key] = value
-        merged["raw"] = merged_raw
-
-        merged["updated_at"] = max(
-            int(primary.get("updated_at") or 0), int(secondary.get("updated_at") or 0)
-        )
-
-        for key in (
-            "status",
-            "status_text",
-            "display",
-            "player_group",
-            "player_group_size",
-            "connect",
-            "mode",
-            "map_name",
-            "party_size",
-        ):
-            current = merged.get(key)
-            new_value = secondary.get(key)
-            if (current is None or current == "" or current == 0) and new_value not in (
-                None,
-                "",
-            ):
-                merged[key] = new_value
-        secondary_summary = secondary.get("summary_raw")
-        if isinstance(secondary_summary, dict):
-            merged_summary = dict(secondary_summary)
-        elif secondary_summary is not None:
-            merged_summary = secondary_summary
-        if merged_summary is not None:
-            merged["summary_raw"] = merged_summary
-        if "friend_snapshot_raw" in secondary:
-            snapshot_value = secondary.get("friend_snapshot_raw")
-            if isinstance(snapshot_value, dict):
-                merged["friend_snapshot_raw"] = dict(snapshot_value)
-            else:
-                merged["friend_snapshot_raw"] = snapshot_value
-        return merged
-
     def _build_presence_info(self, entry: Dict[str, Any]) -> SteamPresenceInfo:
         steam_id = str(entry.get("steam_id") or "")
         updated_at = int(entry.get("updated_at") or 0)
