@@ -7,6 +7,7 @@ import time
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional
 
+import aiohttp
 import discord
 from discord.ext import commands, tasks
 
