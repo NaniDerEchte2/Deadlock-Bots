@@ -342,6 +342,13 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               last_seen INTEGER
             );
 
+            -- Gespeicherte Refresh-Token für den Steam-Bot-Login
+            CREATE TABLE IF NOT EXISTS steam_refresh_tokens(
+              account_name TEXT PRIMARY KEY,
+              refresh_token TEXT NOT NULL,
+              received_at INTEGER DEFAULT (strftime('%s','now'))
+            );
+
             -- Live-Lane-Status (pro Voice-Channel)
             CREATE TABLE IF NOT EXISTS live_lane_state(
               channel_id  INTEGER PRIMARY KEY,
