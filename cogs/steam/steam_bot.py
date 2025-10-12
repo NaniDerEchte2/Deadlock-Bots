@@ -14,11 +14,24 @@ from .bot_service import FriendPresence, GuardCodeManager, SteamBotConfig, Steam
 log = logging.getLogger("SteamBotCog")
 
 DEFAULT_CHANNEL_ID = 1374364800817303632
-DEFAULT_REFRESH_TOKEN_PATH = r"C:\\Users\\Nani-cogs\\steam\\steam_presence\\.steam-data\\refresh.token"
+DEFAULT_REFRESH_TOKEN_PATH = (
+    r"C:\\Users\\Nani-Admin\\Documents\\Deadlock\\cogs\\steam\\steam_presence"
+    r"\\.steam-data\\refresh.token"
+)
+
+
 def _env_optional(key: str) -> Optional[str]:
     value = os.getenv(key)
     if value:
         value = value.strip()
+        if value:
+            return value
+    return None
+
+
+def _env_first(*keys: str) -> Optional[str]:
+    for key in keys:
+        value = _env_optional(key)
         if value:
             return value
     return None
@@ -121,28 +134,39 @@ class SteamBotCog(commands.Cog):
         return self.guard_codes.submit(code)
 
     def _build_config(self) -> SteamBotConfig:
-        username = _env_optional("STEAM_ACCOUNT_USERNAME")
-        password = _env_optional("STEAM_ACCOUNT_PASSWORD")
+        username = _env_first("STEAM_ACCOUNT_USERNAME", "STEAM_USERNAME", "STEAM_ACCOUNT")
+        password = _env_first("STEAM_ACCOUNT_PASSWORD", "STEAM_PASSWORD")
         if not username or not password:
-            raise RuntimeError("Steam credentials missing (STEAM_ACCOUNT_USERNAME / STEAM_ACCOUNT_PASSWORD)")
-        refresh_token_path = _env_optional("STEAM_REFRESH_TOKEN_PATH") or DEFAULT_REFRESH_TOKEN_PATH
+            raise RuntimeError(
+                "Steam credentials missing (STEAM_ACCOUNT_USERNAME/STEAM_USERNAME and "
+                "STEAM_ACCOUNT_PASSWORD/STEAM_PASSWORD)"
+            )
+        refresh_token_path = _env_first("STEAM_REFRESH_TOKEN_PATH", "STEAM_REFRESH_TOKEN_FILE")
+        if not refresh_token_path:
+            refresh_token_path = DEFAULT_REFRESH_TOKEN_PATH
         if refresh_token_path:
             refresh_token_path = os.path.expanduser(os.path.expandvars(refresh_token_path))
 
         return SteamBotConfig(
             username=username,
             password=password,
-            shared_secret=_env_optional("STEAM_SHARED_SECRET"),
+            shared_secret=_env_first("STEAM_SHARED_SECRET", "STEAM_TOTP_SECRET"),
             identity_secret=_env_optional("STEAM_IDENTITY_SECRET"),
-            refresh_token=_env_optional("STEAM_REFRESH_TOKEN"),
+            refresh_token=_env_first("STEAM_REFRESH_TOKEN", "STEAM_TOKEN"),
             refresh_token_path=refresh_token_path,
-            account_name=_env_optional("STEAM_ACCOUNT_NAME") or username,
-            web_api_key=_env_optional("STEAM_WEB_API_KEY") or _env_optional("STEAM_API_KEY"),
-            deadlock_app_id=_env_optional("DEADLOCK_APP_ID") or "1422450",
+            account_name=_env_first(
+                "STEAM_ACCOUNT_NAME",
+                "STEAM_USERNAME",
+                "STEAM_ACCOUNT_USERNAME",
+                "STEAM_ACCOUNT",
+            )
+            or username,
+            web_api_key=_env_first("STEAM_WEB_API_KEY", "STEAM_API_KEY"),
+            deadlock_app_id=_env_first("DEADLOCK_APP_ID", "DEADLOCK_APPID") or "1422450",
         )
 
     def _resolve_channel_id(self) -> int:
-        channel_env = _env_optional("STEAM_STATUS_CHANNEL_ID")
+        channel_env = _env_first("STEAM_STATUS_CHANNEL_ID", "DEADLOCK_PRESENCE_CHANNEL_ID")
         if channel_env:
             try:
                 return int(channel_env)
