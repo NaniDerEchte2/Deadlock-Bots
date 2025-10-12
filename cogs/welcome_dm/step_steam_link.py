@@ -23,14 +23,14 @@ __all__ = [
 # --- optionale Steam-Link-Integration (kann fehlen) ---
 _LOGGER = logging.getLogger(__name__)
 try:
-    from cogs.live_match import steam_link_oauth as _oauth  # type: ignore
+    from cogs.steam import steam_link_oauth as _oauth  # type: ignore
 except Exception:
     _oauth = None  # type: ignore[assignment]
     _LOGGER.info("Steam link OAuth module unavailable – link buttons will be disabled.")
 
 if _oauth is not None and not hasattr(_oauth, "start_urls_for"):
     _LOGGER.warning(
-        "cogs.live_match.steam_link_oauth is missing 'start_urls_for'; disabling Steam link buttons.",
+        "cogs.steam.steam_link_oauth is missing 'start_urls_for'; disabling Steam link buttons.",
     )
     _oauth = None  # type: ignore[assignment]
 
