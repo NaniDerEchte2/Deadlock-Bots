@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from textwrap import dedent
@@ -19,18 +20,21 @@ __all__ = [
     "steam_link_detailed_description",
 ]
 
-# --- harte Abhängigkeit auf das OAuth/Link-Modul (keine Fallbacks) ---
+# --- optionale Steam-Link-Integration (kann fehlen) ---
+_LOGGER = logging.getLogger(__name__)
 try:
-    from cogs.live_match import steam_link_oauth as _oauth
-except Exception as e:
-    raise ImportError(
-        "Erforderliches Modul fehlt: cogs.live_match.steam_link_oauth. Abbruch."
-    ) from e
+    from cogs.live_match import steam_link_oauth as _oauth  # type: ignore
+except Exception:
+    _oauth = None  # type: ignore[assignment]
+    _LOGGER.info("Steam link OAuth module unavailable – link buttons will be disabled.")
 
-if not hasattr(_oauth, "start_urls_for") or not callable(getattr(_oauth, "start_urls_for")):
-    raise ImportError(
-        "Ungültige Schnittstelle: cogs.live_match.steam_link_oauth exportiert keine start_urls_for(uid)."
+if _oauth is not None and not hasattr(_oauth, "start_urls_for"):
+    _LOGGER.warning(
+        "cogs.live_match.steam_link_oauth is missing 'start_urls_for'; disabling Steam link buttons.",
     )
+    _oauth = None  # type: ignore[assignment]
+
+_LINKS_ENABLED: bool = _oauth is not None
 
 # --- ENV: Discord OAuth Deep-Link (in-App Dialog) ---
 _DEEPLINK_EN = str(os.getenv("DISCORD_OAUTH_DEEPLINK", "0")).strip().lower() not in ("", "0", "false", "no")
@@ -80,24 +84,23 @@ _STEAM_LINK_DM_DESC = dedent(
 
 _STEAM_LINK_DETAILED_DESC = dedent(
     """
-    • Wozu ist das gut? Wir können deinen **Spiel-Status**
-      (z. B. *Lobby/In-Game*, **Anzahl im Match**) als Status für den Sprach Kanel nehmen.
-      Dadurch können wir präziser anzeigen wie der Status ist und Events sauberer balancen.
+    • Wozu ist das gut? Über den Steam-Bot kannst du Freundschaftsanfragen austauschen
+      und Einladungen schneller koordinieren.
 
 
     **Ablauf & Optionen:**
-    • **Via Discord verknüpfen** – Schnellster Weg.
+    • **Via Discord verknüpfen** – Schnellster Weg (falls verfügbar).
     • **SteamID manuell eingeben**: Du trägst **ID64 / Vanity / Profil-Link** selbst ein.
-    • **Steam Profil suchen**: Offizieller Steam OpenID-Flow (kein Passwort, wir sehen nur die **SteamID64**).
+    • **Steam Profil suchen**: Offizieller Steam OpenID-Flow (kein Passwort, nur die **SteamID64** wird gelesen).
 
 
-    • Sobald du dich via Discord oder Steam authentifizierst, schickt dir unser Bot automatisch eine Anfrage.
-      Alternativ kannst du diesen manuell adden:
+    • Sobald du dich authentifizierst, kann dir unser Bot automatisch eine Freundschaftsanfrage schicken.
+      Alternativ kannst du den Bot selbst hinzufügen:
       ⚡ Über den Button **„Schnelle Anfrage senden“** erhältst du einen persönlichen Link.
-      🔢 Freundescode: **820142646** oder schick dem Bot eine Freundschaftsanfrage über die ID
+      🔢 Freundescode: **820142646** oder schick dem Bot eine Freundschaftsanfrage über die ID.
 
 
-    **Wichtig:** In Steam → Profil → **Datenschutzeinstellungen** → **Spieldetails = Öffentlich** sonst funktioniert das nicht.
+    **Hinweis:** Automatische Status-Anzeigen über Steam sind aktuell deaktiviert – die Verknüpfung ist freiwillig.
     """
 ).strip()
 
@@ -239,6 +242,12 @@ class SteamLinkStepView(discord.ui.View):
         self.show_next = show_next
         self.proceed: bool = False
 
+        if not _LINKS_ENABLED:
+            for child in self.children:
+                if isinstance(child, discord.ui.Button) and child.custom_id in {"steam:discord", "steam:openid"}:
+                    child.disabled = True
+                    child.label = "Verknüpfung deaktiviert"
+
     # --- Buttons (nur custom_id, keine URLs – dadurch persistent-fähig) ---
 
     @discord.ui.button(
@@ -260,6 +269,16 @@ class SteamLinkStepView(discord.ui.View):
         emoji="🔗",
     )
     async def _start_discord(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        if not _LINKS_ENABLED or _oauth is None:
+            message = (
+                "ℹ️ Die automatische Steam-Verknüpfung ist derzeit deaktiviert. "
+                "Nutze bitte die manuelle Eingabe oder sende dem Bot direkt eine Anfrage."
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+            return
         uid = interaction.user.id
         try:
             urls = _oauth.start_urls_for(uid)
