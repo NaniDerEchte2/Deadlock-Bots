@@ -16,6 +16,7 @@ try:  # pragma: no cover - optional dependency guard
     from steam.enums import PersonaState
     from steam.invite import UserInvite
     from steam.user import Friend, User
+    STEAM_AVAILABLE = True
 except Exception as exc:  # pragma: no cover - runtime safety for environments without steam
     Client = object  # type: ignore[assignment]
     Intents = object  # type: ignore[assignment]
@@ -23,6 +24,7 @@ except Exception as exc:  # pragma: no cover - runtime safety for environments w
     UserInvite = object  # type: ignore[assignment]
     Friend = object  # type: ignore[assignment]
     User = object  # type: ignore[assignment]
+    STEAM_AVAILABLE = False
     logging.getLogger(__name__).warning("steam package not available: %s", exc)
 
 from service import db
@@ -115,6 +117,8 @@ class DiscordSteamClient(Client):  # type: ignore[misc]
     """Steam client subclass that obtains guard codes from Discord."""
 
     def __init__(self, guard_codes: GuardCodeManager, *, guard_timeout: float = 300.0, **options):
+        if not STEAM_AVAILABLE:  # pragma: no cover - sanity check
+            raise RuntimeError("steam package is required to create DiscordSteamClient")
         intents = options.pop("intents", None)
         if intents is None and hasattr(Intents, "Users"):
             intents = getattr(Intents, "Users", 0) | getattr(Intents, "Chat", 0)
@@ -129,8 +133,8 @@ class DiscordSteamClient(Client):  # type: ignore[misc]
 
 @dataclass(slots=True)
 class SteamBotConfig:
-    username: str
-    password: str
+    username: Optional[str]
+    password: Optional[str]
     shared_secret: Optional[str] = None
     identity_secret: Optional[str] = None
     refresh_token: Optional[str] = None
@@ -151,7 +155,7 @@ class SteamBotService:
     """Encapsulates the Steam client connection and background maintenance loops."""
 
     def __init__(self, config: SteamBotConfig, guard_codes: GuardCodeManager) -> None:
-        if not isinstance(Client, type):  # steam not available
+        if not STEAM_AVAILABLE:
             raise RuntimeError("steam package is required to start the SteamBotService")
 
         self.config = config
@@ -218,7 +222,13 @@ class SteamBotService:
     # Steam event handlers
     # ------------------------------------------------------------------
     async def _on_login(self) -> None:
-        log.info("Steam account logged in as %s", getattr(self.client.user, "name", self.config.username))
+        display_name = (
+            getattr(self.client.user, "name", None)
+            or self.config.account_name
+            or self.config.username
+            or "unknown"
+        )
+        log.info("Steam account logged in as %s", display_name)
         token = getattr(self.client, "refresh_token", None)
         if token:
             self._persist_refresh_token(token)
@@ -251,7 +261,7 @@ class SteamBotService:
     # Internal helpers
     # ------------------------------------------------------------------
     def _persist_refresh_token(self, token: str) -> None:
-        account = self.config.account_name or self.config.username
+        account = self.config.account_name or self.config.username or "unknown"
         try:
             db.execute(
                 """
@@ -266,9 +276,19 @@ class SteamBotService:
             log.debug("Stored Steam refresh token for %s", account)
         except Exception:
             log.exception("Failed to persist Steam refresh token")
+        path = self.config.refresh_token_path
+        if not path:
+            return
+        candidate = Path(path)
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_text(token.strip() + "\n", encoding="utf-8")
+            log.debug("Wrote Steam refresh token to %s", candidate)
+        except OSError:
+            log.exception("Failed to write refresh token to %s", candidate)
 
     def _load_persisted_refresh_token(self) -> Optional[str]:
-        account = self.config.account_name or self.config.username
+        account = self.config.account_name or self.config.username or "unknown"
         try:
             row = db.query_one(
                 "SELECT refresh_token FROM steam_refresh_tokens WHERE account_name = ?",
@@ -390,13 +410,20 @@ class SteamBotService:
             try:
                 refresh_token = self._select_refresh_token()
                 async with self.client:  # pragma: no cover - requires live Steam
-                    await self.client.login(
-                        self.config.username,
-                        self.config.password,
-                        shared_secret=self.config.shared_secret,
-                        identity_secret=self.config.identity_secret,
-                        refresh_token=refresh_token,
-                    )
+                    username = self.config.username
+                    password = self.config.password
+                    if username and password:
+                        await self.client.login(
+                            username,
+                            password,
+                            shared_secret=self.config.shared_secret,
+                            identity_secret=self.config.identity_secret,
+                            refresh_token=refresh_token,
+                        )
+                    elif refresh_token:
+                        await self.client.login(refresh_token=refresh_token)
+                    else:
+                        raise RuntimeError("Steam login requires credentials or a refresh token")
                     await self.client.wait_for("logout")
             except asyncio.CancelledError:
                 break
