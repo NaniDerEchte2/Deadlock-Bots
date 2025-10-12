@@ -190,7 +190,8 @@ class LiveMatchLogger(commands.Cog):
         summaries: Dict[str, dict] = {}
         if STEAM_API_KEY:
             async with aiohttp.ClientSession() as session:
-                for chunk in _chunks(sorted({sid for arr in links.values() for sid in arr}), 100):
+                steam_ids = sorted({sid for arr in links.values() for sid in arr})
+                for chunk_index, chunk in enumerate(_chunks(steam_ids, 100), start=1):
                     url = (
                         "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/"
                         f"?key={STEAM_API_KEY}&steamids={','.join(chunk)}"
@@ -203,7 +204,13 @@ class LiveMatchLogger(commands.Cog):
                                 if sid:
                                     summaries[sid] = p
                     except (asyncio.TimeoutError, aiohttp.ClientError) as e:
-                        log.warning("Steam GetPlayerSummaries Netzwerkfehler/Timeout: %s (chunk=%d)", e, len(chunk))
+                        message = str(e).strip() or e.__class__.__name__
+                        log.warning(
+                            "Steam GetPlayerSummaries Netzwerkfehler/Timeout (%s) [chunk_index=%d, chunk_size=%d]",
+                            message,
+                            chunk_index,
+                            len(chunk),
+                        )
                     except Exception as e:
                         log.warning("Steam GetPlayerSummaries unerwarteter Fehler: %s", e)
 
