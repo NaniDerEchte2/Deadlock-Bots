@@ -303,6 +303,22 @@ function safeJsonStringify(value) {
   }
 }
 
+function logSteamTimeout(context, err) {
+  const eresult = err && typeof err.eresult === 'number' ? err.eresult : undefined;
+  const rawMessage = err && err.message ? String(err.message) : (err ? String(err) : '');
+  const lower = rawMessage.toLowerCase();
+  const isTimeout = (typeof eresult === 'number' && eresult === SteamUser.EResult.Timeout)
+    || lower.includes('timeout');
+  if (!isTimeout) return false;
+  log('warn', 'STEAM_TIMEOUT', {
+    context,
+    hint: 'Steam meldet ein Timeout – laut Steam bitte später erneut versuchen.',
+    steamMessage: rawMessage || null,
+    eresult,
+  });
+  return true;
+}
+
 function normalizeRichPresence(source) {
   const normalized = {};
   if (!source || typeof source !== 'object') {
@@ -388,7 +404,11 @@ const friendSnapshotMemo = new Map();
 function tryRequestPresence(steamID) {
   if (tokens <= 0) return false;
   try { client.requestFriendRichPresence(steamID, APP_ID); tokens--; return true; }
-  catch (err) { log('debug', 'requestFriendRichPresence failed', { steamId: String(steamID), error: err.message }); return false; }
+  catch (err) {
+    logSteamTimeout('requestFriendRichPresence', err);
+    log('debug', 'requestFriendRichPresence failed', { steamId: String(steamID), error: err.message });
+    return false;
+  }
 }
 
 function scheduleFriendSnapshot(delayMs = 2000) {
@@ -411,6 +431,7 @@ async function snapshotFriends() {
       try {
         client.getPersonas(ids, (err, data) => {
           if (err) {
+            logSteamTimeout('getPersonas', err);
             log('warn', 'Failed to fetch friend personas', { error: err.message });
             resolve(null);
             return;
@@ -418,6 +439,7 @@ async function snapshotFriends() {
           resolve(data || {});
         });
       } catch (err) {
+        logSteamTimeout('getPersonas', err);
         log('warn', 'getPersonas threw error', { error: err && err.message ? err.message : String(err) });
         resolve(null);
       }
@@ -651,6 +673,7 @@ function ensureFriendQueued(steamId) {
       log('info', 'FA_OUTGOING_ENQUEUED', { steamId: sid });
     }
   } catch (err) {
+    logSteamTimeout('enqueueFriendRequest', err);
     log('warn', 'Failed to enqueue friend request', { steamId: sid, error: err.message });
   }
 }
@@ -676,9 +699,10 @@ function processFriendQueue() {
     const message = err && err.message ? err.message : String(err);
     markFriendRequestFailureStmt.run({ steam_id: steamId, attempts, ts, error: message });
     const lower = message.toLowerCase();
+    const timeoutLogged = logSteamTimeout('addFriend', err);
     if ((err && err.eresult === SteamUser.EResult.RateLimitExceeded) || lower.includes('rate')) {
       log('warn', 'FA_RATE_LIMIT_HIT', { steamId, error: message });
-    } else {
+    } else if (!timeoutLogged) {
       log('warn', 'FA_OUTGOING_FAILED', { steamId, error: message });
     }
   }
@@ -834,6 +858,7 @@ client.on('disconnected', (eresult, msg) => {
   isLoggedOn = false;
   isConnecting = false;
   log('warn', 'Steam disconnected', { eresult, msg });
+  logSteamTimeout('disconnected', { eresult, message: msg });
   friendSnapshotMemo.clear();
   // Nur reconnecten, wenn wir einen Refresh-Token haben (Auto-Login erlaubt)
   if (refreshToken) scheduleReconnect();
@@ -841,6 +866,7 @@ client.on('disconnected', (eresult, msg) => {
 
 client.on('error', (err) => {
   log('error', 'Steam client error', { error: err.message });
+  logSteamTimeout('client_error', err);
   const text = (err && err.message) ? err.message.toLowerCase() : '';
 
   // Offensichtliche Token-Probleme -> Token löschen, NICHT automatisch neu versuchen
