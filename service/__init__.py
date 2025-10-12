@@ -2,14 +2,6 @@
 # Re-export der Submodule, damit "from service import db" etc. funktioniert.
 from . import db
 try:
-    from . import steam  # Rich-Presence/Steam-Hilfen
-except Exception:
-    steam = None
-try:
-    from . import steam_friend_requests  # Queue für Steam-Freundschaftsanfragen
-except Exception:
-    steam_friend_requests = None
-try:
     from . import socket_bus  # falls vorhanden
 except Exception:
     socket_bus = None
@@ -22,5 +14,4 @@ __all__ = [
     "db",
     "socket_bus",
     "worker_client",
-    "steam",
 ]
