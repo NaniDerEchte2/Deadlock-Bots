@@ -19,11 +19,11 @@ LIVE_CATEGORIES: List[int] = [
     1412804540994162789,
 ]
 
+DEBUG_CHANNEL_ID = 1374364800817303632
+
 # Scan-Intervalle/Frische
 CHECK_INTERVAL_SEC = 15
 PRESENCE_FRESH_SEC = 120
-MIN_MATCH_GROUP = 2
-MAX_MATCH_CAP = 6
 
 # Neu: Debounce für identische Zustände
 LOG_RATE_SEC = 600  # 10 Minuten
@@ -57,10 +57,14 @@ _GAME_TERMS = (
 )
 
 
-def _fmt_suffix(dl_count: int, voice_n: int, label: str) -> str:
+def _fmt_suffix(majority_n: int, voice_n: int, label: str, dl_count: int) -> str:
     voice_n = max(0, int(voice_n))
+    majority_n = max(0, min(int(majority_n), voice_n))
     dl_count = max(0, min(int(dl_count), voice_n))
-    return f"• {dl_count}/{voice_n} (max {MAX_MATCH_CAP}) {label}".strip()
+    suffix = f"• {majority_n}/{voice_n} {label}"
+    if dl_count:
+        suffix = f"{suffix} ({dl_count} DL)"
+    return suffix.strip()
 
 
 @dataclass
@@ -122,6 +126,7 @@ class LiveMatchMaster(commands.Cog):
         self._presence_cache: Dict[str, PresenceInfo] = {}
         # Neu: Merker des letzten geschriebenen Zustands pro Channel
         self._last_state: Dict[int, Dict[str, Any]] = {}
+        self._last_debug_payload: Dict[int, str] = {}
 
     async def cog_load(self):
         db.connect()
@@ -374,55 +379,80 @@ class LiveMatchMaster(commands.Cog):
     ) -> Dict[str, Any]:
         voice_n = len(voice_members)
         dl_count = 0
-        match_signals = 0
-        lobby_signals = 0
-        group_match_counter: Counter[str] = Counter()
+        state_counts: Counter[str] = Counter()
+        member_states: List[Dict[str, Any]] = []
 
         for member in voice_members:
             presence = self.get_presence_for_discord_user(member.id)
-            if not presence:
-                continue
-            dl_count += 1
-            if presence.player_group and presence.is_match:
-                group_match_counter[presence.player_group] += 1
-            if presence.is_match:
-                match_signals += 1
-            if presence.is_lobby:
-                lobby_signals += 1
+            links = self._links_cache.get(member.id, [])
+            state: Optional[str] = None
+            if presence:
+                state = PHASE_OFF
+                dl_count += 1
+                if presence.is_match:
+                    state = PHASE_MATCH
+                elif presence.is_lobby:
+                    state = PHASE_LOBBY
+                elif presence.is_deadlock:
+                    state = PHASE_GAME
+                state_counts[state] += 1
 
-        majority_id: Optional[str] = None
+            member_states.append(
+                {
+                    "id": int(member.id),
+                    "name": str(member.display_name),
+                    "steam_ids": list(links),
+                    "status": state or "NO_LINK",
+                    "phase_hint": presence.phase_hint if presence else None,
+                    "is_match": bool(presence.is_match) if presence else False,
+                    "is_lobby": bool(presence.is_lobby) if presence else False,
+                    "is_deadlock": bool(presence.is_deadlock) if presence else False,
+                }
+            )
+
+        match_signals = state_counts.get(PHASE_MATCH, 0)
+        lobby_signals = state_counts.get(PHASE_LOBBY, 0)
+        game_signals = state_counts.get(PHASE_GAME, 0)
+        off_signals = state_counts.get(PHASE_OFF, 0)
+
+        majority_phase = PHASE_OFF
         majority_n = 0
-        if group_match_counter:
-            majority_id, majority_n = group_match_counter.most_common(1)[0]
+        for candidate in (PHASE_MATCH, PHASE_LOBBY, PHASE_GAME, PHASE_OFF):
+            count = state_counts.get(candidate, 0)
+            if count > majority_n:
+                majority_phase = candidate
+                majority_n = count
 
         phase = PHASE_OFF
         suffix = None
-        if dl_count == 0:
-            phase = PHASE_OFF
-        elif majority_id and majority_n >= MIN_MATCH_GROUP:
+        if majority_phase == PHASE_MATCH and majority_n > 0:
             phase = PHASE_MATCH
-            suffix = _fmt_suffix(dl_count, voice_n, "Im Match")
-        elif lobby_signals > match_signals and lobby_signals > 0:
+            suffix = _fmt_suffix(majority_n, voice_n, "Im Match", dl_count)
+        elif majority_phase == PHASE_LOBBY and majority_n > 0:
             phase = PHASE_LOBBY
-            suffix = _fmt_suffix(dl_count, voice_n, "In der Lobby")
-        else:
+            suffix = _fmt_suffix(majority_n, voice_n, "In der Lobby", dl_count)
+        elif majority_phase == PHASE_GAME and dl_count > 0:
             phase = PHASE_GAME
-            suffix = _fmt_suffix(dl_count, voice_n, "Im Spiel")
+            suffix = _fmt_suffix(majority_n, voice_n, "Im Spiel", dl_count)
 
         reason = (
-            f"voice={voice_n};dl={dl_count};match={match_signals};lobby={lobby_signals};"
-            f"majority={majority_id or '-'}:{majority_n};phase={phase}"
+            f"voice={voice_n};dl={dl_count};match={match_signals};lobby={lobby_signals};game={game_signals};"
+            f"off={off_signals};majority={majority_phase}:{majority_n};phase={phase}"
         )
         return {
             "voice_n": voice_n,
             "dl_count": dl_count,
             "match_signals": match_signals,
             "lobby_signals": lobby_signals,
-            "majority_id": majority_id,
+            "game_signals": game_signals,
+            "off_signals": off_signals,
+            "majority_phase": majority_phase,
             "majority_n": majority_n,
             "phase": phase,
             "suffix": suffix,
             "reason": reason,
+            "state_counts": dict(state_counts),
+            "member_states": member_states,
         }
 
     def _should_write_state(self, channel_id: int, phase_result: Dict[str, Any], now: int) -> bool:
@@ -445,6 +475,104 @@ class LiveMatchMaster(commands.Cog):
             "reason": phase_result.get("reason"),
             "ts": int(now),
         }
+
+    def _format_debug_payload(
+        self,
+        channel: discord.VoiceChannel,
+        phase_result: Dict[str, Any],
+        *,
+        will_write: bool,
+    ) -> Optional[str]:
+        state_counts = phase_result.get("state_counts", {})
+        counts_line = (
+            f"Match={state_counts.get(PHASE_MATCH, 0)} | "
+            f"Lobby={state_counts.get(PHASE_LOBBY, 0)} | "
+            f"Spiel={state_counts.get(PHASE_GAME, 0)} | "
+            f"Off={state_counts.get(PHASE_OFF, 0)}"
+        )
+
+        lines = [
+            f"Channel: {channel.name} ({channel.id})",
+            (
+                "Phase={phase} | Mehrheit={majority}:{count} | WillWrite={write}".format(
+                    phase=phase_result.get("phase"),
+                    majority=phase_result.get("majority_phase"),
+                    count=phase_result.get("majority_n"),
+                    write="ja" if will_write else "nein",
+                )
+            ),
+            f"Suffix={phase_result.get('suffix') or '-'}",
+            (
+                "Voice={voice} | Deadlock={dl}".format(
+                    voice=phase_result.get("voice_n"),
+                    dl=phase_result.get("dl_count"),
+                )
+            ),
+            f"Counts: {counts_line}",
+            f"Reason: {phase_result.get('reason')}",
+            "Mitglieder:",
+        ]
+
+        member_lines: List[str] = []
+        for member in phase_result.get("member_states", []):
+            steam_ids = ", ".join(member.get("steam_ids") or []) or "-"
+            flags: List[str] = []
+            if member.get("is_match"):
+                flags.append("match")
+            if member.get("is_lobby"):
+                flags.append("lobby")
+            if member.get("is_deadlock"):
+                flags.append("deadlock")
+            flag_text = ",".join(flags) if flags else "-"
+            member_lines.append(
+                (
+                    "- {name} ({mid}): {status} | steam={steam} | flags={flags} | hint={hint}".format(
+                        name=member.get("name"),
+                        mid=member.get("id"),
+                        status=member.get("status"),
+                        steam=steam_ids,
+                        flags=flag_text,
+                        hint=member.get("phase_hint") or "-",
+                    )
+                )
+            )
+
+        max_members = 15
+        if len(member_lines) > max_members:
+            extra = len(member_lines) - max_members
+            member_lines = member_lines[:max_members]
+            member_lines.append(f"… ({extra} weitere Mitglieder)")
+
+        lines.extend(member_lines)
+        content = "\n".join(lines)
+        if len(content) > 1900:
+            content = f"{content[:1897]}…"
+        return content
+
+    async def _send_debug_report(
+        self,
+        channel: discord.VoiceChannel,
+        phase_result: Dict[str, Any],
+        *,
+        will_write: bool,
+    ) -> None:
+        debug_channel = self.bot.get_channel(DEBUG_CHANNEL_ID)
+        if not isinstance(debug_channel, discord.TextChannel):
+            return
+
+        payload = self._format_debug_payload(channel, phase_result, will_write=will_write)
+        if not payload:
+            return
+
+        last_payload = self._last_debug_payload.get(channel.id)
+        if last_payload == payload:
+            return
+
+        try:
+            await debug_channel.send(payload)
+            self._last_debug_payload[channel.id] = payload
+        except discord.HTTPException as exc:  # pragma: no cover - defensive
+            log.debug("Debug-Ausgabe fehlgeschlagen für %s: %s", channel.id, exc)
 
     def _write_lane_state(
         self,
@@ -515,26 +643,32 @@ class LiveMatchMaster(commands.Cog):
             will_write = self._should_write_state(channel.id, phase_result, now)
             if phase_result["phase"] == PHASE_OFF and not will_write:
                 log.debug(
-                    "PHASE_DECISION (no-change) channel_members=%d dl_count=%d match=%d lobby=%d majority_id=%s majority_n=%d phase=%s",
+                    "PHASE_DECISION (no-change) channel_members=%d dl_count=%d match=%d lobby=%d game=%d off=%d majority_phase=%s majority_n=%d phase=%s",
                     phase_result["voice_n"],
                     phase_result["dl_count"],
                     phase_result["match_signals"],
                     phase_result["lobby_signals"],
-                    phase_result["majority_id"],
+                    phase_result["game_signals"],
+                    phase_result["off_signals"],
+                    phase_result["majority_phase"],
                     phase_result["majority_n"],
                     phase_result["phase"],
                 )
             else:
                 log.info(
-                    "PHASE_DECISION channel_members=%d dl_count=%d match=%d lobby=%d majority_id=%s majority_n=%d phase=%s",
+                    "PHASE_DECISION channel_members=%d dl_count=%d match=%d lobby=%d game=%d off=%d majority_phase=%s majority_n=%d phase=%s",
                     phase_result["voice_n"],
                     phase_result["dl_count"],
                     phase_result["match_signals"],
                     phase_result["lobby_signals"],
-                    phase_result["majority_id"],
+                    phase_result["game_signals"],
+                    phase_result["off_signals"],
+                    phase_result["majority_phase"],
                     phase_result["majority_n"],
                     phase_result["phase"],
                 )
+
+            await self._send_debug_report(channel, phase_result, will_write=will_write)
 
             # Nur schreiben, wenn nötig (Change / Re-Log Intervall)
             if will_write:
