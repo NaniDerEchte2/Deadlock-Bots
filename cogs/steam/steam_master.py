@@ -111,9 +111,13 @@ class DiscordSteamClient(Client):  # type: ignore[misc]
 @dataclass(slots=True)
 class SteamMasterConfig:
     username: str
-    password: str
+    password: Optional[str] = None
     guard_timeout: float = 300.0
     deadlock_app_id: str = "1422450"  # nur falls du später Präsenz sammeln willst
+
+
+class SteamMasterDisabled(RuntimeError):
+    """Ausnahme, wenn der Cog nicht initialisiert werden kann (z. B. fehlende ENV)."""
 
 
 # -----------------------------
@@ -132,31 +136,108 @@ class SteamMasterCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.guard_codes = GuardCodeManager()
-        self.config = self._load_config_from_env()
-        self.client = DiscordSteamClient(self.guard_codes, guard_timeout=self.config.guard_timeout)
+
+        self.config: Optional[SteamMasterConfig] = None
+        self.client: Optional[DiscordSteamClient] = None
+        self._disabled_reason: Optional[str] = None
+
+        try:
+            self.config = self._load_config_from_env()
+        except SteamMasterDisabled as exc:
+            self._disabled_reason = str(exc)
+            log.warning("Steam master disabled: %s", exc)
+        else:
+            try:
+                self.client = DiscordSteamClient(
+                    self.guard_codes,
+                    guard_timeout=self.config.guard_timeout,
+                )
+            except Exception as exc:  # pragma: no cover - steam lib fehlt im Test
+                self._disabled_reason = f"steam client unavailable: {exc!s}"
+                log.warning("Steam master disabled (steam client unavailable): %s", exc)
+                self.client = None
+            else:
+                # Steam-Eventbindung nur wenn Client existiert
+                self.client.event(self._on_login)
+                self.client.event(self._on_ready)
+                self.client.event(self._on_disconnect)
+                self.client.event(self._on_invite)
+                self.client.event(self._on_user_update)
 
         # Status
         self._ready = asyncio.Event()
         self._stop = asyncio.Event()
         self._runner_task: Optional[asyncio.Task[None]] = None
 
-        # Steam-Eventbindung
-        self.client.event(self._on_login)
-        self.client.event(self._on_ready)
-        self.client.event(self._on_disconnect)
-        self.client.event(self._on_invite)
-        self.client.event(self._on_user_update)
-
     # ------------- ENV laden
+    def _infer_username_from_db(self) -> Optional[str]:
+        try:
+            row = db.query_one(
+                """
+                SELECT account_name
+                FROM steam_refresh_tokens
+                WHERE account_name IS NOT NULL AND account_name <> ''
+                ORDER BY received_at DESC
+                LIMIT 1
+                """,
+            )
+        except Exception:
+            log.exception("Failed to infer Steam username from DB")
+            return None
+        if not row:
+            return None
+        try:
+            account = row["account_name"]
+        except (KeyError, TypeError):  # pragma: no cover - defensive
+            account = row[0]  # type: ignore[index]
+        account = str(account or "").strip()
+        return account or None
+
     def _load_config_from_env(self) -> SteamMasterConfig:
-        u = os.getenv("STEAM_USERNAME", "").strip()
-        p = os.getenv("STEAM_PASSWORD", "").strip()
-        if not u or not p:
-            raise RuntimeError("Missing STEAM_USERNAME / STEAM_PASSWORD in environment")
-        return SteamMasterConfig(username=u, password=p)
+        username = (os.getenv("STEAM_USERNAME") or "").strip()
+        password = (os.getenv("STEAM_PASSWORD") or "").strip() or None
+
+        if not username:
+            inferred = self._infer_username_from_db()
+            if inferred:
+                username = inferred
+                log.info(
+                    "Using Steam username from stored refresh token: %s",
+                    username,
+                )
+
+        if not username:
+            raise SteamMasterDisabled(
+                "Missing STEAM_USERNAME (and no stored steam_refresh_tokens entry).",
+            )
+
+        guard_timeout = 300.0
+        guard_timeout_env = (os.getenv("STEAM_GUARD_TIMEOUT") or "").strip()
+        if guard_timeout_env:
+            try:
+                guard_timeout = max(30.0, float(guard_timeout_env))
+            except ValueError:
+                log.warning(
+                    "Invalid STEAM_GUARD_TIMEOUT=%r – using default %.1fs",
+                    guard_timeout_env,
+                    guard_timeout,
+                )
+
+        config = SteamMasterConfig(username=username, password=password, guard_timeout=guard_timeout)
+
+        if not config.password:
+            log.info(
+                "Steam password missing – username '%s' available for refresh-token login only.",
+                config.username,
+            )
+
+        return config
 
     # ------------- DB: Refresh-Token persistieren/lesen (optional nutzbar)
     def _persist_refresh_token(self, token: str) -> None:
+        if not self.config:
+            log.warning("Cannot persist Steam refresh token – config missing")
+            return
         account = self.config.username or "unknown"
         try:
             db.execute(
@@ -174,6 +255,8 @@ class SteamMasterCog(commands.Cog):
             log.exception("Failed to persist Steam refresh token")
 
     def _load_refresh_token(self) -> Optional[str]:
+        if not self.config:
+            return None
         account = self.config.username or "unknown"
         try:
             row = db.query_one(
@@ -189,6 +272,9 @@ class SteamMasterCog(commands.Cog):
 
     # ------------- Steam Events
     async def _on_login(self) -> None:
+        if not self.config:
+            log.warning("Steam login event received without config – ignoring")
+            return
         display_name = getattr(self.client.user, "name", None) or self.config.username
         log.info("Steam account logged in as %s", display_name)
         token = getattr(self.client, "refresh_token", None)
@@ -227,6 +313,10 @@ class SteamMasterCog(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         # keinen Auto-Login starten – nur Runner für sauberes Stop/Start
+        if self.client is None:
+            if self._disabled_reason:
+                log.info("Steam master cog loaded without active client: %s", self._disabled_reason)
+            return
         if self._runner_task is None:
             self._runner_task = asyncio.create_task(self._runner_loop(), name="SteamMasterRunner")
 
@@ -240,11 +330,20 @@ class SteamMasterCog(commands.Cog):
         self._stop.set()
         if self._runner_task and not self._runner_task.done():
             self._runner_task.cancel()
+        if self.client is None:
+            return
         try:
             async with self.client:
                 await self.client.logout()  # falls eingeloggt
         except Exception:
             pass
+
+    async def _ensure_client_available(self, ctx: commands.Context) -> bool:
+        if self.client is None or self.config is None:
+            reason = self._disabled_reason or "Steam-Client nicht initialisiert."
+            await ctx.reply(f"❌ Steam Master ist deaktiviert: {reason}")
+            return False
+        return True
 
     # ------------- Commands
     @commands.command(name="sg")
@@ -252,7 +351,11 @@ class SteamMasterCog(commands.Cog):
     async def cmd_guard(self, ctx: commands.Context, code: str):
         """Übermittelt den Steam Guard Code."""
         ok = self.guard_codes.submit(code)
-        await ctx.reply("✅ Code angenommen." if ok else "❌ Ungültiger Code.")
+        message = "✅ Code angenommen." if ok else "❌ Ungültiger Code."
+        if self.client is None:
+            reason = self._disabled_reason or "Steam Master ist derzeit deaktiviert."
+            message += f"\n⚠️ Hinweis: {reason}"
+        await ctx.reply(message)
 
     @commands.command(name="steam_login")
     @commands.has_permissions(administrator=True)
@@ -263,6 +366,15 @@ class SteamMasterCog(commands.Cog):
         """
         if not STEAM_AVAILABLE:
             return await ctx.reply("❌ steamio nicht installiert.")
+
+        if not await self._ensure_client_available(ctx):
+            return
+
+        if not self.config.password:
+            return await ctx.reply(
+                "❌ STEAM_PASSWORD fehlt – Login mit Benutzername/Passwort nicht möglich."
+                " Nutze ggf. `!steam_login_token`.",
+            )
 
         await ctx.reply("⏳ Warte auf Guard-Code via `!sg CODE` …")
 
@@ -295,6 +407,9 @@ class SteamMasterCog(commands.Cog):
         if not STEAM_AVAILABLE:
             return await ctx.reply("❌ steamio nicht installiert.")
 
+        if not await self._ensure_client_available(ctx):
+            return
+
         token = self._load_refresh_token()
         if not token:
             return await ctx.reply("❌ Kein gespeicherter Refresh-Token gefunden.")
@@ -314,6 +429,8 @@ class SteamMasterCog(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def cmd_logout(self, ctx: commands.Context):
         """Loggt den Steam-Client aus, falls eingeloggt."""
+        if not await self._ensure_client_available(ctx):
+            return
         try:
             async with self.client:
                 await self.client.logout()
@@ -325,14 +442,29 @@ class SteamMasterCog(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def cmd_status(self, ctx: commands.Context):
         """Zeigt Online-/Offline-Status und einige Eckdaten."""
-        online = self._ready.is_set()
-        name = getattr(getattr(self.client, "user", None), "name", None) or "—"
         has_token = bool(self._load_refresh_token())
+        configured_user = self.config.username if self.config else self._infer_username_from_db() or "—"
+        if self.client is None:
+            reason = self._disabled_reason or "Steam-Client nicht initialisiert."
+            await ctx.reply(
+                f"Steam: **offline**\n"
+                f"User: `{configured_user}`\n"
+                f"Refresh-Token gespeichert: **{'ja' if has_token else 'nein'}**\n"
+                f"Status: {reason}"
+            )
+            return
+
+        online = self._ready.is_set()
+        name = getattr(getattr(self.client, "user", None), "name", None) or configured_user
+        extra = "Login: **manuell** via `!sg CODE` (kein Auto-Login)."
+        if self.config and not self.config.password:
+            extra += "\nHinweis: Kein STEAM_PASSWORD gesetzt – verwende `!steam_login_token`."
+
         await ctx.reply(
             f"Steam: **{'online' if online else 'offline'}**\n"
             f"User: `{name}`\n"
             f"Refresh-Token gespeichert: **{'ja' if has_token else 'nein'}**\n"
-            f"Login: **manuell** via `!sg CODE` (kein Auto-Login)."
+            f"{extra}",
         )
 
 
