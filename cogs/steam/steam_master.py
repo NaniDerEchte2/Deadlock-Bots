@@ -1,39 +1,46 @@
-# filename: steam_master.py
+"""Steam login manager cog for the master bot."""
+
 from __future__ import annotations
-import os, sys, time, asyncio, threading
+
+import logging
+import os
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
 import discord
 from discord.ext import commands
-
 from steam.client import SteamClient
 from steam.enums import EResult
 from steam.enums.emsg import EMsg
 
-# ---- Pfade für persistente Tokens ----
-DATA_DIR = Path(".steam-data"); DATA_DIR.mkdir(exist_ok=True)
-LOGIN_KEY_FILE = DATA_DIR / "login_key.txt"   # Dauer-Token (äquivalent zur JS-"Refresh"-Wirkung)
-SENTRY_FILE    = DATA_DIR / "sentry.bin"      # Machine-Auth ("remember this device")
+log = logging.getLogger(__name__)
 
-# ---- ENV laden ----
-load_dotenv(r"C:\Users\Nani-Admin\Documents\.env")
-DISCORD_TOKEN  = os.getenv("DISCORD_TOKEN", "")
-STEAM_USERNAME = os.getenv("STEAM_USERNAME", "")
-STEAM_PASSWORD = os.getenv("STEAM_PASSWORD", "")
-if not (DISCORD_TOKEN and STEAM_USERNAME and STEAM_PASSWORD):
-    print("Bitte DISCORD_TOKEN, STEAM_USERNAME, STEAM_PASSWORD in der .env setzen.")
-    sys.exit(1)
 
-# ==== Steam-Login-Thread ====
+def _data_dir() -> Path:
+    """Resolve the data directory used to persist Steam auth artefacts."""
+    base = os.getenv("STEAM_MASTER_DATA_DIR", ".steam-data").strip() or ".steam-data"
+    path = Path(base)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 class SteamLoginManager(threading.Thread):
-    def __init__(self):
+    """Background thread that manages a persistent Steam session."""
+
+    def __init__(self, username: str, password: str, data_dir: Path):
         super().__init__(daemon=True)
+        self.username = username
+        self.password = password
+        self.data_dir = data_dir
+        self.login_key_file = self.data_dir / "login_key.txt"
+        self.sentry_file = self.data_dir / "sentry.bin"
+
         self.client = SteamClient()
         self.guard_code: Optional[str] = None
         self._lock = threading.Lock()
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self.logged_on = False
         self.last_result: Optional[EResult] = None
 
@@ -42,164 +49,229 @@ class SteamLoginManager(threading.Thread):
         self.client.on(EMsg.ClientLoggedOff, self._on_logged_off)
 
     # ---- API für Discord-Commands ----
-    def set_guard_code(self, code: str):
+    def set_guard_code(self, code: str) -> None:
         with self._lock:
             self.guard_code = code.strip()
-        print("[Steam] Guard-Code übernommen.")
+        log.info("Steam Guard-Code übernommen. Login wird erneut versucht.")
 
     def status(self) -> str:
-        has_key = LOGIN_KEY_FILE.exists() and LOGIN_KEY_FILE.stat().st_size > 0
-        has_sentry = SENTRY_FILE.exists() and SENTRY_FILE.stat().st_size > 0
-        return f"logged_on={self.logged_on} last_result={self.last_result} login_key={'yes' if has_key else 'no'} sentry={'yes' if has_sentry else 'no'}"
+        has_key = self.login_key_file.exists() and self.login_key_file.stat().st_size > 0
+        has_sentry = self.sentry_file.exists() and self.sentry_file.stat().st_size > 0
+        return (
+            "logged_on={logged} last_result={result} login_key={key} sentry={sentry}".format(
+                logged=self.logged_on,
+                result=self.last_result,
+                key="yes" if has_key else "no",
+                sentry="yes" if has_sentry else "no",
+            )
+        )
 
     def clear_login_key(self) -> bool:
         try:
-            if LOGIN_KEY_FILE.exists():
-                LOGIN_KEY_FILE.unlink()
+            if self.login_key_file.exists():
+                self.login_key_file.unlink()
                 return True
             return False
         except Exception:
+            log.exception("Konnte login_key nicht löschen")
             return False
 
     # ---- Persist helpers ----
     def _read_login_key(self) -> Optional[str]:
         try:
-            return LOGIN_KEY_FILE.read_text(encoding="utf-8").strip() if LOGIN_KEY_FILE.exists() else None
+            if self.login_key_file.exists():
+                return self.login_key_file.read_text(encoding="utf-8").strip()
         except Exception:
-            return None
+            log.exception("Konnte login_key nicht lesen")
+        return None
 
-    def _write_login_key(self, key: str):
+    def _write_login_key(self, key: str) -> None:
         try:
-            LOGIN_KEY_FILE.write_text(key, encoding="utf-8")
-            print("[Steam] login_key gespeichert.")
-        except Exception as e:
-            print(f"[Steam] login_key speichern fehlgeschlagen: {e}")
+            self.login_key_file.write_text(key, encoding="utf-8")
+            log.info("Steam login_key gespeichert (%s)", self.login_key_file)
+        except Exception:
+            log.exception("Konnte login_key nicht speichern")
 
-    def _write_sentry(self, data: bytes):
+    def _write_sentry(self, data: bytes) -> None:
         try:
-            SENTRY_FILE.write_bytes(data)
-            print(f"[Steam] Sentry gespeichert: {SENTRY_FILE}")
-        except Exception as e:
-            print(f"[Steam] Sentry speichern fehlgeschlagen: {e}")
+            self.sentry_file.write_bytes(data)
+            log.info("Steam Sentry gespeichert (%s)", self.sentry_file)
+        except Exception:
+            log.exception("Konnte Sentry nicht speichern")
 
     # ---- Steam Events ----
-    def _on_machine_auth(self, msg):
+    def _on_machine_auth(self, msg) -> None:
         data = getattr(msg.body, "bytes", b"")
         if data:
             self._write_sentry(data)
 
-    def _on_logon_response(self, msg):
+    def _on_logon_response(self, msg) -> None:
         self.last_result = msg.body.eresult
         if self.last_result == EResult.OK:
             self.logged_on = True
-            # Manche Builds setzen den login_key als Attribut
             key = getattr(self.client, "login_key", None)
             if key:
                 self._write_login_key(str(key))
-            print(f"[Steam] Eingeloggt als: {self.client.user.name}")
+            user = getattr(self.client.user, "name", "<unknown>")
+            log.info("Steam eingeloggt als %s", user)
         else:
             self.logged_on = False
-            print(f"[Steam] LogOnResponse: {self.last_result}")
+            log.warning("Steam LogOnResponse: %s", self.last_result)
 
-    def _on_logged_off(self, msg):
+    def _on_logged_off(self, msg) -> None:
         self.logged_on = False
-        print(f"[Steam] Logged off: {msg.body.eresult}")
+        result = getattr(getattr(msg, "body", None), "eresult", None)
+        log.warning("Steam Logged off: %s", result)
 
     # ---- Login-Loop ----
     def _try_login(self) -> EResult:
-        # 1) zuerst mit login_key
+        if not self.username:
+            log.error("STEAM_USERNAME ist nicht gesetzt. Abbruch.")
+            return EResult.InvalidParam
+
         login_key = self._read_login_key()
         if login_key:
-            print("[Steam] Login mit login_key ...")
-            return self.client.login(username=STEAM_USERNAME, login_key=login_key)
+            log.info("Steam-Login mit login_key ...")
+            return self.client.login(username=self.username, login_key=login_key)
 
-        # 2) Username/Passwort; 2FA nur wenn vom Benutzer via !sg geliefert
         with self._lock:
             code = self.guard_code
             self.guard_code = None
 
         if code:
-            print("[Steam] Login mit Passwort + 2FA ...")
-            return self.client.login(username=STEAM_USERNAME, password=STEAM_PASSWORD, two_factor_code=code)
+            log.info("Steam-Login mit Passwort + 2FA ...")
+            return self.client.login(
+                username=self.username,
+                password=self.password,
+                two_factor_code=code,
+            )
 
-        print("[Steam] Login mit Passwort (ohne 2FA)...")
-        return self.client.login(username=STEAM_USERNAME, password=STEAM_PASSWORD)
+        log.info("Steam-Login mit Passwort (ohne 2FA) ...")
+        return self.client.login(username=self.username, password=self.password)
 
-    def run(self):
-        while not self._stop.is_set():
+    def run(self) -> None:
+        while not self._stop_event.is_set():
             try:
                 res = self._try_login()
                 self.last_result = res
 
                 if res == EResult.AccountLoginDeniedNeedTwoFactor:
-                    print("[Steam] 2FA benötigt. Bitte per !sg CODE senden.")
-                    # Warten bis Code ankommt
-                    while not self._stop.is_set():
+                    log.warning("Steam benötigt 2FA. Bitte per !sg CODE senden.")
+                    while not self._stop_event.is_set():
                         with self._lock:
                             if self.guard_code:
                                 break
                         time.sleep(1)
-                    # nächster Loop versucht erneut
                     continue
 
                 if res != EResult.OK:
-                    print(f"[Steam] Login fehlgeschlagen: {res}. Neuer Versuch in 15s.")
+                    log.warning("Steam-Login fehlgeschlagen: %s. Neuer Versuch in 15s.", res)
                     time.sleep(15)
                     continue
 
-                # Erfolgreich -> Pumpen bis Disconnect
                 self.client.run_forever()
-                print("[Steam] Disconnected. Reconnect in 10s.")
+                if not self._stop_event.is_set():
+                    log.warning("Steam getrennt. Reconnect in 10s.")
+                    time.sleep(10)
+
+            except Exception:
+                log.exception("Fehler im Steam Login-Loop")
                 time.sleep(10)
 
-            except Exception as e:
-                print(f"[Steam] Fehler im Login-Loop: {e}")
-                time.sleep(10)
+    def stop(self) -> None:
+        self._stop_event.set()
+        try:
+            self.client.logout()
+        except Exception:
+            log.exception("Steam-Logout fehlgeschlagen", exc_info=True)
 
-    def stop(self):
-        self._stop.set()
-        try: self.client.logout()
-        except Exception: pass
 
-# ==== Discord-Bot: nur die Login/Token-Commands ====
-intents = discord.Intents.none()
-bot = commands.Bot(command_prefix="!", intents=intents)
-steam_manager = SteamLoginManager()
+class SteamMaster(commands.Cog):
+    """Discord Cog zur Verwaltung des Steam-Login-Managers."""
 
-@bot.event
-async def on_ready():
-    print(f"[Discord] eingeloggt als {bot.user} ({bot.user.id})")
-    if not steam_manager.is_alive():
-        steam_manager.start()
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+        self.manager: Optional[SteamLoginManager] = None
+        self.data_dir = _data_dir()
+        self._manager_lock = threading.Lock()
 
-@bot.command(name="sg", aliases=["steam_guard","steamguard"])
-@commands.has_permissions(administrator=True)
-async def cmd_sg(ctx: commands.Context, code: str):
-    steam_manager.set_guard_code(code)
-    await ctx.reply("✅ Guard-Code gesetzt. Login wird erneut versucht.")
+    async def cog_load(self) -> None:
+        self._ensure_manager()
 
-@bot.command(name="steam_status")
-@commands.has_permissions(administrator=True)
-async def cmd_status(ctx: commands.Context):
-    await ctx.reply(f"```{steam_manager.status()}```")
+    async def cog_unload(self) -> None:
+        if self.manager:
+            self.manager.stop()
+            self.manager.join(timeout=5)
+            self.manager = None
 
-@bot.command(name="steam_token")
-@commands.has_permissions(administrator=True)
-async def cmd_token(ctx: commands.Context):
-    has_key = LOGIN_KEY_FILE.exists() and LOGIN_KEY_FILE.stat().st_size > 0
-    await ctx.reply(f"🔐 login_key: {'vorhanden' if has_key else 'nicht vorhanden'}\nPfad: `{LOGIN_KEY_FILE}`")
+    # ---- Helpers ----
+    def _credentials(self) -> tuple[str, str]:
+        username = (os.getenv("STEAM_USERNAME") or "").strip()
+        password = (os.getenv("STEAM_PASSWORD") or "").strip()
+        if not username or not password:
+            raise RuntimeError("STEAM_USERNAME oder STEAM_PASSWORD fehlen.")
+        return username, password
 
-@bot.command(name="steam_token_clear")
-@commands.has_permissions(administrator=True)
-async def cmd_token_clear(ctx: commands.Context):
-    ok = steam_manager.clear_login_key()
-    await ctx.reply("🧹 login_key gelöscht." if ok else "ℹ️ Kein login_key vorhanden.")
+    def _ensure_manager(self) -> SteamLoginManager:
+        with self._manager_lock:
+            if self.manager and self.manager.is_alive():
+                return self.manager
 
-def main():
-    try:
-        bot.run(DISCORD_TOKEN, log_handler=None)
-    finally:
-        steam_manager.stop()
+            username, password = self._credentials()
+            manager = SteamLoginManager(username=username, password=password, data_dir=self.data_dir)
+            manager.start()
+            self.manager = manager
+            log.info("SteamLoginManager gestartet (DataDir=%s)", self.data_dir)
+            return manager
 
-if __name__ == "__main__":
-    main()
+    async def _get_manager(self, ctx: commands.Context) -> Optional[SteamLoginManager]:
+        try:
+            return self._ensure_manager()
+        except RuntimeError as exc:
+            await ctx.reply(f"❌ {exc}")
+            return None
+
+    # ---- Commands ----
+    @commands.command(name="sg", aliases=["steam_guard", "steamguard"])
+    @commands.has_permissions(administrator=True)
+    async def cmd_sg(self, ctx: commands.Context, code: str) -> None:
+        manager = await self._get_manager(ctx)
+        if not manager:
+            return
+        manager.set_guard_code(code)
+        await ctx.reply("✅ Guard-Code gesetzt. Login wird erneut versucht.")
+
+    @commands.command(name="steam_status")
+    @commands.has_permissions(administrator=True)
+    async def cmd_status(self, ctx: commands.Context) -> None:
+        manager = await self._get_manager(ctx)
+        if not manager:
+            return
+        await ctx.reply(f"```{manager.status()}```")
+
+    @commands.command(name="steam_token")
+    @commands.has_permissions(administrator=True)
+    async def cmd_token(self, ctx: commands.Context) -> None:
+        manager = await self._get_manager(ctx)
+        if not manager:
+            return
+        has_key = manager.login_key_file.exists() and manager.login_key_file.stat().st_size > 0
+        await ctx.reply(
+            "🔐 login_key: {status}\nPfad: `{path}`".format(
+                status="vorhanden" if has_key else "nicht vorhanden",
+                path=manager.login_key_file,
+            )
+        )
+
+    @commands.command(name="steam_token_clear")
+    @commands.has_permissions(administrator=True)
+    async def cmd_token_clear(self, ctx: commands.Context) -> None:
+        manager = await self._get_manager(ctx)
+        if not manager:
+            return
+        ok = manager.clear_login_key()
+        await ctx.reply("🧹 login_key gelöscht." if ok else "ℹ️ Kein login_key vorhanden.")
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(SteamMaster(bot))
