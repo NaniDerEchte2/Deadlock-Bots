@@ -15,6 +15,9 @@ TWITCH_NOTIFY_CHANNEL_ID = 1304169815505637458     # Live-Postings (optional glo
 TWITCH_ALERT_CHANNEL_ID  = 1374364800817303632     # Warnungen (30d Re-Check)
 TWITCH_ALERT_MENTION     = "<@USER_OR_ROLE_ID>"    # z. B. <@123> oder <@&ROLEID>
 
+# Öffentlicher Statistik-Kanal (nur dort reagiert !twl)
+TWITCH_STATS_CHANNEL_ID  = 1428062025145385111
+
 # Stats/Sampling: alle N Ticks (Tick=60s) in DB loggen
 TWITCH_LOG_EVERY_N_TICKS = 5
 
@@ -77,6 +80,7 @@ class TwitchStreamCog(commands.Cog):
         self._dashboard_noauth = bool(TWITCH_DASHBOARD_NOAUTH)
         self._dashboard_host = TWITCH_DASHBOARD_HOST or ("127.0.0.1" if self._dashboard_noauth else "0.0.0.0")
         self._dashboard_port = int(TWITCH_DASHBOARD_PORT)
+        self._partner_dashboard_token = os.getenv("TWITCH_PARTNER_TOKEN") or None
         self._required_marker_default = TWITCH_REQUIRED_DISCORD_MARKER or None
 
         # Channels/Alerts
@@ -185,6 +189,7 @@ class TwitchStreamCog(commands.Cog):
         Dashboard(
             app_token=self._dashboard_token,
             noauth=self._dashboard_noauth,
+            partner_token=self._partner_dashboard_token,
             add_cb=add,
             remove_cb=remove,
             list_cb=list_items,
@@ -422,6 +427,114 @@ class TwitchStreamCog(commands.Cog):
         else:
             urls = [f"https://discord.gg/{c}" for c in codes]
             await ctx.reply("Aktive Einladungen:\n" + "\n".join(urls)[:1900])
+
+    @commands.command(name="twl")
+    async def twitch_leaderboard(self, ctx: commands.Context, *, filters: str = ""):
+        """Zeigt Twitch-Statistiken im Partner-Kanal an."""
+
+        if ctx.channel.id != TWITCH_STATS_CHANNEL_ID:
+            channel_hint = f"<#{TWITCH_STATS_CHANNEL_ID}>"
+            await ctx.reply(f"Dieser Befehl kann nur in {channel_hint} verwendet werden.")
+            return
+
+        if filters.strip().lower() in {"help", "?", "hilfe"}:
+            help_text = (
+                "Verwendung: !twl [samples=Zahl] [avg=Zahl] [partner=only|exclude|any] [limit=Zahl]\n"
+                "Beispiel: !twl samples=15 avg=25 partner=only"
+            )
+            await ctx.reply(help_text)
+            return
+
+        min_samples: Optional[int] = None
+        min_avg: Optional[float] = None
+        partner_filter = "any"
+        limit = 5
+
+        for token in filters.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            key = key.lower().strip()
+            value = value.strip()
+            if key in {"samples", "min_samples"}:
+                try:
+                    parsed = max(0, int(value))
+                except ValueError:
+                    continue
+                min_samples = parsed
+            elif key in {"avg", "min_avg", "avg_viewers"}:
+                try:
+                    parsed_avg = max(0.0, float(value))
+                except ValueError:
+                    continue
+                min_avg = parsed_avg
+            elif key == "partner":
+                lowered = value.lower()
+                if lowered in {"only", "exclude", "any", "all"}:
+                    partner_filter = "any" if lowered in {"any", "all"} else lowered
+            elif key == "limit":
+                try:
+                    limit_val = max(1, min(20, int(value)))
+                except ValueError:
+                    continue
+                limit = limit_val
+
+        try:
+            stats = await self._compute_stats()
+        except Exception as exc:
+            log.exception("!twl stats fetch failed: %s", exc)
+            await ctx.reply("Konnte Statistiken nicht laden.")
+            return
+
+        tracked_items = stats.get("tracked", {}).get("top", [])
+        category_items = stats.get("category", {}).get("top", [])
+
+        tracked_filtered = self._filter_stats_items(
+            tracked_items,
+            min_samples=min_samples,
+            min_avg_viewers=min_avg,
+            partner_filter=partner_filter,
+        )[:limit]
+        category_filtered = self._filter_stats_items(
+            category_items,
+            min_samples=min_samples,
+            min_avg_viewers=min_avg,
+            partner_filter=partner_filter,
+        )[:limit]
+
+        filter_parts = []
+        if min_samples is not None:
+            filter_parts.append(f"Samples ≥ {min_samples}")
+        if min_avg is not None:
+            filter_parts.append(f"Ø Viewer ≥ {min_avg:.1f}")
+        if partner_filter == "only":
+            filter_parts.append("nur Partner")
+        elif partner_filter == "exclude":
+            filter_parts.append("ohne Partner")
+
+        if not filter_parts:
+            filter_parts.append("keine Filter")
+
+        def _format_lines(title: str, items: List[dict]) -> List[str]:
+            if not items:
+                return [f"**{title}:** keine Daten für die aktuellen Filter."]
+            lines = [f"**{title}:**"]
+            for idx, item in enumerate(items, start=1):
+                streamer = item.get("streamer") or "?"
+                avg_viewers = float(item.get("avg_viewers") or 0.0)
+                samples = int(item.get("samples") or 0)
+                peak = int(item.get("max_viewers") or 0)
+                partner_flag = " (Partner)" if item.get("is_partner") else ""
+                lines.append(
+                    f"{idx}. {streamer} — Ø {avg_viewers:.1f} Viewer (Samples: {samples}, Peak: {peak}){partner_flag}"
+                )
+            return lines
+
+        response_lines = ["Filter: " + ", ".join(filter_parts)]
+        response_lines.extend(_format_lines("Top Tracked", tracked_filtered))
+        response_lines.extend(_format_lines("Top Kategorie", category_filtered))
+
+        await ctx.reply("\n".join(response_lines)[:1900])
 
     # ---------- Polling & Posting ----------
     @staticmethod
@@ -728,26 +841,46 @@ class TwitchStreamCog(commands.Cog):
                 "SELECT AVG(COALESCE(viewers,0)) AS avg_v FROM twitch_stream_logs WHERE is_tracked=1"
             ).fetchone()["avg_v"]
             top_tracked_rows = c.execute(
-                "SELECT streamer_login, COUNT(*) AS samples, AVG(COALESCE(viewers,0)) AS avg_viewers, "
-                "MAX(COALESCE(viewers,0)) AS max_viewers "
-                "FROM twitch_stream_logs WHERE is_tracked=1 GROUP BY streamer_login ORDER BY avg_viewers DESC, max_viewers DESC"
+                "SELECT l.streamer_login, COUNT(*) AS samples, AVG(COALESCE(l.viewers,0)) AS avg_viewers, "
+                "MAX(COALESCE(l.viewers,0)) AS max_viewers, "
+                "MAX(COALESCE(s.manual_verified_permanent,0)) AS manual_verified_permanent, "
+                "MAX(CASE WHEN s.manual_verified_until IS NULL THEN '' ELSE s.manual_verified_until END) AS manual_verified_until "
+                "FROM twitch_stream_logs l "
+                "LEFT JOIN twitch_streamers s ON s.twitch_login = l.streamer_login "
+                "WHERE l.is_tracked=1 "
+                "GROUP BY l.streamer_login "
+                "ORDER BY avg_viewers DESC, max_viewers DESC"
             ).fetchall()
             top_category_rows = c.execute(
-                "SELECT streamer_login, COUNT(*) AS samples, AVG(COALESCE(viewers,0)) AS avg_viewers, "
-                "MAX(COALESCE(viewers,0)) AS max_viewers "
-                "FROM twitch_stream_logs GROUP BY streamer_login ORDER BY avg_viewers DESC, max_viewers DESC"
+                "SELECT l.streamer_login, COUNT(*) AS samples, AVG(COALESCE(l.viewers,0)) AS avg_viewers, "
+                "MAX(COALESCE(l.viewers,0)) AS max_viewers, "
+                "MAX(COALESCE(s.manual_verified_permanent,0)) AS manual_verified_permanent, "
+                "MAX(CASE WHEN s.manual_verified_until IS NULL THEN '' ELSE s.manual_verified_until END) AS manual_verified_until "
+                "FROM twitch_stream_logs l "
+                "LEFT JOIN twitch_streamers s ON s.twitch_login = l.streamer_login "
+                "GROUP BY l.streamer_login "
+                "ORDER BY avg_viewers DESC, max_viewers DESC"
             ).fetchall()
 
         def _rows_to_list(rows):
-            return [
-                {
-                    "streamer": r["streamer_login"],
-                    "samples": r["samples"],
-                    "avg_viewers": round(r["avg_viewers"] or 0, 2),
-                    "max_viewers": r["max_viewers"] or 0,
-                }
-                for r in rows
-            ]
+            items = []
+            for r in rows:
+                row_dict = dict(r)
+                is_partner = False
+                try:
+                    is_partner = self._is_verified_now(row_dict)
+                except Exception:
+                    is_partner = False
+                items.append(
+                    {
+                        "streamer": row_dict.get("streamer_login"),
+                        "samples": row_dict.get("samples", 0),
+                        "avg_viewers": round((row_dict.get("avg_viewers") or 0), 2),
+                        "max_viewers": row_dict.get("max_viewers") or 0,
+                        "is_partner": bool(is_partner),
+                    }
+                )
+            return items
 
         return {
             "total_sessions": total_samples,
@@ -765,3 +898,30 @@ class TwitchStreamCog(commands.Cog):
                 "top": _rows_to_list(top_category_rows),
             },
         }
+
+    @staticmethod
+    def _filter_stats_items(
+        items: List[dict],
+        *,
+        min_samples: Optional[int] = None,
+        min_avg_viewers: Optional[float] = None,
+        partner_filter: str = "any",
+    ) -> List[dict]:
+        partner_filter = (partner_filter or "any").lower()
+        out: List[dict] = []
+        for item in items:
+            samples = int(item.get("samples") or 0)
+            avg_viewers = float(item.get("avg_viewers") or 0.0)
+            is_partner = bool(item.get("is_partner"))
+
+            if min_samples is not None and samples < min_samples:
+                continue
+            if min_avg_viewers is not None and avg_viewers < min_avg_viewers:
+                continue
+            if partner_filter == "only" and not is_partner:
+                continue
+            if partner_filter == "exclude" and is_partner:
+                continue
+
+            out.append(item)
+        return out
