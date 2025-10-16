@@ -305,11 +305,45 @@ class SteamMaster(commands.Cog):
             self.manager = None
 
     # ---------- helpers ----------
+    def _lookup_env(self, *names: str, secret: bool = False) -> tuple[str, Optional[str]]:
+        """Return the first non-empty env var value together with its name."""
+        for name in names:
+            raw = os.getenv(name)
+            if raw is None:
+                log.debug("Env %s ist nicht gesetzt.", name)
+                continue
+            value = raw.strip()
+            if not value:
+                log.debug("Env %s ist gesetzt, aber leer.", name)
+                continue
+            if secret:
+                log.debug("Credential in %s gefunden (len=%s).", name, len(value))
+            else:
+                log.debug("Env %s -> %s", name, value)
+            return value, name
+        return "", None
+
     def _credentials(self) -> tuple[str, str]:
-        username = (os.getenv("STEAM_USERNAME") or "").strip()
-        password = (os.getenv("STEAM_PASSWORD") or "").strip()
-        if not username or not password:
-            raise RuntimeError("STEAM_USERNAME oder STEAM_PASSWORD fehlen.")
+        username, user_env = self._lookup_env("STEAM_USERNAME", "STEAM_USER", "STEAM_ACCOUNT")
+        password, pass_env = self._lookup_env("STEAM_PASSWORD", "STEAM_PASSWORT", "STEAM_PW", secret=True)
+
+        missing = []
+        if not username:
+            missing.append("Username")
+        if not password:
+            missing.append("Passwort")
+
+        if missing:
+            raise RuntimeError(
+                " oder ".join(missing)
+                + " fehlt. Erwartet einen der ENV Variablennamen: Username -> STEAM_USERNAME/STEAM_USER/STEAM_ACCOUNT, Passwort -> STEAM_PASSWORD/STEAM_PASSWORT/STEAM_PW."
+            )
+
+        if user_env:
+            log.info("Steam Username aus %s geladen.", user_env)
+        if pass_env:
+            log.info("Steam Passwort aus %s geladen (Wert verborgen).", pass_env)
+
         return username, password
 
     def _ensure_manager(self) -> SteamLoginManager:
