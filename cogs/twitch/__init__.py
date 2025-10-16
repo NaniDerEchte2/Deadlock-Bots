@@ -3,6 +3,7 @@
 # =========================================
 """Package entry point for the Twitch stream monitor cog."""
 
+import inspect
 import logging
 from functools import wraps
 from typing import Optional
@@ -34,7 +35,83 @@ async def setup(bot):
         if not isinstance(active_cog, TwitchStreamCog):
             await ctx.reply("Twitch-Statistiken sind derzeit nicht verfügbar.")
             return
-        await active_cog.twitch_leaderboard(ctx, filters=filters)
+        leaderboard_cb = getattr(active_cog, "twitch_leaderboard", None)
+        if not callable(leaderboard_cb):
+            await ctx.reply("Twitch-Statistiken sind derzeit nicht verfügbar.")
+            log.error("twitch_leaderboard callable missing on active cog")
+            return
+
+        try:
+            signature = inspect.signature(leaderboard_cb)
+        except (TypeError, ValueError):
+            params = None
+        else:
+            params = list(signature.parameters.values())
+
+        accepts_ctx = True
+        accepts_filters = False
+        if params is not None:
+            accepts_ctx = any(
+                p.kind
+                in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.VAR_POSITIONAL,
+                )
+                for p in params
+            )
+            accepts_filters = any(
+                p.name == "filters"
+                or p.kind in (inspect.Parameter.VAR_KEYWORD,)
+                for p in params
+            )
+
+        call_args = []
+        if accepts_ctx:
+            call_args.append(ctx)
+
+        call_kwargs = {}
+        if accepts_filters:
+            call_kwargs["filters"] = filters
+        elif filters.strip():
+            await ctx.reply("Diese Version des Befehls unterstützt keine Filterargumente.")
+            return
+
+        try:
+            await leaderboard_cb(*call_args, **call_kwargs)
+            return
+        except TypeError:
+            log.warning("Signature mismatch when calling twitch_leaderboard; attempting fallbacks", exc_info=True)
+
+        # Fallback 1: force ctx positional if it wasn't passed
+        if call_args != [ctx]:
+            try:
+                await leaderboard_cb(ctx, **call_kwargs)
+                return
+            except TypeError:
+                pass
+
+        # Fallback 2: try positional ctx + filters
+        if filters:
+            try:
+                await leaderboard_cb(ctx, filters)
+                return
+            except TypeError:
+                pass
+            try:
+                await leaderboard_cb(filters=filters)
+                return
+            except TypeError:
+                pass
+
+        # Final attempt: call without arguments
+        try:
+            await leaderboard_cb()
+            return
+        except TypeError:
+            pass
+
+        await ctx.reply("Twitch-Statistiken konnten nicht geladen werden (Kompatibilitätsproblem).")
 
     prefix_command = commands.Command(
         _twl_proxy,
