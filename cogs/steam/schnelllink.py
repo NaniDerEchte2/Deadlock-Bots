@@ -43,14 +43,16 @@ _MARK_RESERVED = """
 UPDATE steam_quick_invites
 SET status = 'reserved',
     reserved_by = ?,
-    reserved_at = strftime('%s','now')
+    reserved_at = strftime('%s','now'),
+    last_seen = strftime('%s','now')
 WHERE token = ? AND status = 'available'
 """
 
 _MARK_INVALID = """
 UPDATE steam_quick_invites
 SET status = 'invalid',
-    reserved_at = strftime('%s','now')
+    reserved_at = strftime('%s','now'),
+    last_seen = strftime('%s','now')
 WHERE token = ? AND status = 'available'
 """
 
@@ -60,45 +62,49 @@ def _reserve_pre_generated_link(discord_user_id: Optional[int]) -> Optional[Schn
 
     try:
         conn = db.connect()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-        except sqlite3.OperationalError as exc:
-            log.debug("Failed to open transaction for schnelllink reservation: %s", exc)
-            return None
-
-        try:
-            row = conn.execute(_SELECT_AVAILABLE).fetchone()
-            if not row:
-                conn.execute("ROLLBACK")
-                return None
-
-            invite_link = str(row["invite_link"])
-            if not _INVITE_LINK_PATTERN.fullmatch(invite_link):
-                conn.execute(_MARK_INVALID, (row["token"],))
-                conn.execute("COMMIT")
-                log.warning(
-                    "Discarded invalid quick invite link",
-                    extra={
-                        "user_id": discord_user_id,
-                        "token": row["token"],
-                        "invite_link": row["invite_link"],
-                    },
+        with db._LOCK:  # type: ignore[attr-defined]
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as exc:
+                log.debug(
+                    "Failed to open transaction for schnelllink reservation: %s",
+                    exc,
                 )
                 return None
 
-            token = row["token"]
-            cursor = conn.execute(
-                _MARK_RESERVED,
-                (int(discord_user_id) if discord_user_id else None, token),
-            )
-            if cursor.rowcount < 1:
-                conn.execute("ROLLBACK")
-                return None
+            try:
+                row = conn.execute(_SELECT_AVAILABLE).fetchone()
+                if not row:
+                    conn.execute("ROLLBACK")
+                    return None
 
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
+                invite_link = str(row["invite_link"])
+                if not _INVITE_LINK_PATTERN.fullmatch(invite_link):
+                    conn.execute(_MARK_INVALID, (row["token"],))
+                    conn.execute("COMMIT")
+                    log.warning(
+                        "Discarded invalid quick invite link",
+                        extra={
+                            "user_id": discord_user_id,
+                            "token": row["token"],
+                            "invite_link": row["invite_link"],
+                        },
+                    )
+                    return None
+
+                token = row["token"]
+                cursor = conn.execute(
+                    _MARK_RESERVED,
+                    (int(discord_user_id) if discord_user_id else None, token),
+                )
+                if cursor.rowcount < 1:
+                    conn.execute("ROLLBACK")
+                    return None
+
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
     except Exception:
         log.exception("Failed to reserve schnelllink from DB", extra={"user_id": discord_user_id})
         return None
