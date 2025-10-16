@@ -107,6 +107,20 @@ class TwitchStreamCog(commands.Cog):
         self.bot.loop.create_task(self._start_dashboard())
         self.bot.loop.create_task(self._refresh_all_invites())
 
+    async def cog_load(self):
+        """Stellt sicher, dass der !twl-Befehl als Prefix-Command registriert ist."""
+
+        try:
+            existing = self.bot.get_command("twl")
+            if existing is None or getattr(existing, "cog", None) is not self:
+                # commands.command dekoriert Methoden zu Command-Objekten, wir können sie direkt hinzufügen
+                cmd = next((cmd for cmd in self.get_commands() if cmd.name == "twl"), None)
+                if cmd is not None:
+                    self.bot.add_command(cmd)
+                    log.info("Registered !twl prefix command on load")
+        except Exception:
+            log.exception("Failed to register !twl command")
+
     def cog_unload(self):
         """Sauberer Shutdown ohne leere except-Blöcke (CWE-390/703-freundlich)."""
         loops = (self.poll_streams, self.invites_refresh)
