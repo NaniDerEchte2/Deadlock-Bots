@@ -13,6 +13,14 @@ log = logging.getLogger("TwitchStreams")
 async def setup(bot):
     """Add the Twitch stream cog to the master bot."""
 
+    existing = bot.get_command("twl")
+    if existing is not None:
+        # Entfernt alte/stale Command-Objekte (z. B. nach fehlgeschlagenem Reload),
+        # bevor das Cog hinzugefügt wird – sonst schlägt discord.py mit
+        # CommandRegistrationError fehl.
+        bot.remove_command(existing.name)
+        log.warning("Removed pre-existing !twl command before adding Twitch cog")
+
     cog = TwitchStreamCog(bot)
     await bot.add_cog(cog)
 
