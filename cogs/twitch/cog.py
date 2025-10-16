@@ -36,12 +36,13 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from typing import Dict, List, Optional, Set
 from urllib.parse import urlparse
 
 import discord
 from discord.ext import commands, tasks
-from aiohttp import web
+from aiohttp import ClientError, web
 
 from .twitch_api import TwitchAPI
 from . import storage
@@ -624,8 +625,28 @@ class TwitchStreamCog(commands.Cog):
                 colour=discord.Colour.purple(),
             )
             thumb = (s.get("thumbnail_url") or "").replace("{width}", "640").replace("{height}", "360")
+            thumb_cache_buster = f"?t={int(datetime.now(timezone.utc).timestamp())}"
+            file: Optional[discord.File] = None
             if thumb:
-                embed.set_image(url=thumb)
+                thumb_with_cache_buster = f"{thumb}{thumb_cache_buster}"
+                if self.api:
+                    try:
+                        session = self.api.get_http_session()
+                        async with session.get(thumb_with_cache_buster) as resp:
+                            if resp.status == 200:
+                                data = await resp.read()
+                                filename = f"{login}_preview.jpg"
+                                file = discord.File(BytesIO(data), filename=filename)
+                                embed.set_image(url=f"attachment://{filename}")
+                            else:
+                                embed.set_image(url=thumb_with_cache_buster)
+                    except ClientError:
+                        embed.set_image(url=thumb_with_cache_buster)
+                    except Exception:
+                        log.exception("preview fetch failed for %s", login)
+                        embed.set_image(url=thumb_with_cache_buster)
+                else:
+                    embed.set_image(url=thumb_with_cache_buster)
             embed.add_field(name="Viewer", value=str(s.get("viewer_count")))
             embed.add_field(name="Kategorie", value=s.get("game_name") or "Deadlock", inline=True)
             url = f"https://twitch.tv/{login}"
@@ -633,7 +654,14 @@ class TwitchStreamCog(commands.Cog):
             try:
                 view = discord.ui.View()
                 view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label="Auf Twitch ansehen", url=url))
-                msg = await channel.send(content=f"🔴 **{s.get('user_name')}** ist live: {url}", embed=embed, view=view)
+                kwargs = {
+                    "content": f"🔴 **{s.get('user_name')}** ist live: {url}",
+                    "embed": embed,
+                    "view": view,
+                }
+                if file:
+                    kwargs["file"] = file
+                msg = await channel.send(**kwargs)
                 with storage.get_conn() as c:
                     c.execute(
                         "UPDATE twitch_live_state SET last_discord_message_id=?, last_notified_at=CURRENT_TIMESTAMP WHERE streamer_login=?",
