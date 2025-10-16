@@ -100,6 +100,9 @@ class TwitchStreamCog(commands.Cog):
         # Invite-Cache: {guild_id: {code, ...}}
         self._invite_codes: Dict[int, Set[str]] = {}
 
+        # Prefix-Command-Referenz (wird im setup() gesetzt)
+        self._twl_command: Optional[commands.Command] = None
+
         # Background tasks
         self.poll_streams.start()
         self.invites_refresh.start()
@@ -157,11 +160,18 @@ class TwitchStreamCog(commands.Cog):
             log.exception("Fehler beim Start des Shutdown-Tasks")
 
         try:
-            existing = self.bot.get_command("twl")
-            if existing and getattr(existing, "cog", None) is self:
-                self.bot.remove_command(existing.name)
+            if self._twl_command is not None:
+                existing = self.bot.get_command(self._twl_command.name)
+                if existing is self._twl_command:
+                    self.bot.remove_command(self._twl_command.name)
         except Exception:
             log.exception("Konnte !twl-Command nicht deregistrieren")
+        finally:
+            self._twl_command = None
+
+    def set_prefix_command(self, command: commands.Command) -> None:
+        """Speichert die Referenz auf den dynamisch registrierten Prefix-Command."""
+        self._twl_command = command
 
     # ---------- Dashboard (aiohttp) ----------
     async def _start_dashboard(self):
@@ -449,7 +459,6 @@ class TwitchStreamCog(commands.Cog):
             urls = [f"https://discord.gg/{c}" for c in codes]
             await ctx.reply("Aktive Einladungen:\n" + "\n".join(urls)[:1900])
 
-    @commands.command(name="twl")
     async def twitch_leaderboard(self, ctx: commands.Context, *, filters: str = ""):
         """Zeigt Twitch-Statistiken im Partner-Kanal an."""
 
