@@ -70,9 +70,10 @@ class SteamLoginManager(threading.Thread):
 
     # ---------- public API (used by Cog commands) ----------
     def set_guard_code(self, code: str) -> None:
+        sanitized = code.strip()
         with self._lock:
-            self.guard_code = code.strip()
-        log.info("Steam Guard-Code übernommen. Login wird erneut versucht.")
+            self.guard_code = sanitized
+        log.info("Steam Guard-Code übernommen (len=%s). Login wird erneut versucht.", len(sanitized))
 
     def status(self) -> str:
         has_key = self.login_key_file.exists() and self.login_key_file.stat().st_size > 0
@@ -100,7 +101,13 @@ class SteamLoginManager(threading.Thread):
     def _read_login_key(self) -> Optional[str]:
         try:
             if self.login_key_file.exists():
-                return self.login_key_file.read_text(encoding="utf-8").strip()
+                key = self.login_key_file.read_text(encoding="utf-8").strip()
+                if key:
+                    log.debug("login_key gelesen (len=%s)", len(key))
+                else:
+                    log.debug("login_key-Datei vorhanden, aber leer")
+                return key or None
+            log.debug("login_key-Datei %s existiert nicht", self.login_key_file)
         except Exception:
             log.exception("Konnte login_key nicht lesen")
         return None
@@ -123,10 +130,22 @@ class SteamLoginManager(threading.Thread):
     def _on_machine_auth(self, msg) -> None:
         data = getattr(msg.body, "bytes", b"")
         if data:
+            log.debug(
+                "MachineAuth erhalten (offset=%s, sha1=%s)",
+                getattr(msg.body, "offset", "?"),
+                getattr(msg.body, "sha_file", "?"),
+            )
             self._write_sentry(data)
+        else:
+            log.debug("MachineAuth Event ohne Daten erhalten: %s", msg.body)
 
     def _on_logon_response(self, msg) -> None:
         self.last_result = msg.body.eresult
+        log.debug(
+            "LogOnResponse erhalten: eresult=%s, extended=%s",
+            self.last_result,
+            getattr(msg.body, "eresult_extended", None),
+        )
         if self.last_result == EResult.OK:
             self.logged_on = True
             key = getattr(self.client, "login_key", None)
@@ -136,15 +155,26 @@ class SteamLoginManager(threading.Thread):
             log.info("Steam eingeloggt als %s", user)
         else:
             self.logged_on = False
-            log.warning("Steam LogOnResponse: %s", self.last_result)
+            log.warning(
+                "Steam LogOnResponse: %s (eresult_extended=%s, msg=%s)",
+                self.last_result,
+                getattr(msg.body, "eresult_extended", None),
+                getattr(msg.body, "error_message", None),
+            )
 
     def _on_logged_off(self, msg) -> None:
         self.logged_on = False
         result = getattr(getattr(msg, "body", None), "eresult", None)
-        log.warning("Steam Logged off: %s", result)
+        log.warning(
+            "Steam Logged off: %s (client_connected=%s)",
+            result,
+            getattr(self.client, "connected", None),
+        )
 
     # ---------- login loop ----------
     def _try_login(self) -> EResult:
+        log.debug("Login-Versuch gestartet. logged_on=%s", self.logged_on)
+
         if not self.username:
             log.error("STEAM_USERNAME ist nicht gesetzt. Abbruch.")
             return EResult.InvalidParam
@@ -153,6 +183,7 @@ class SteamLoginManager(threading.Thread):
         login_key = self._read_login_key()
         if login_key:
             log.info("Steam-Login mit login_key ...")
+            log.debug("Login-Parameter: username=%s (login_key len=%s)", self.username, len(login_key))
             return self.client.login(username=self.username, login_key=login_key)
 
         # 2) Passwort (+ optional 2FA, wenn via !sg gesetzt)
@@ -160,8 +191,19 @@ class SteamLoginManager(threading.Thread):
             code = self.guard_code
             self.guard_code = None
 
+        log.debug(
+            "Guard-Code %s gefunden und %s.",
+            "wurde" if code else "wurde nicht",
+            "verbraucht" if code else "nicht benötigt",
+        )
+
         if code:
             log.info("Steam-Login mit Passwort + 2FA ...")
+            log.debug(
+                "Login-Parameter: username=%s, two_factor_code_len=%s",
+                self.username,
+                len(code),
+            )
             return self.client.login(
                 username=self.username,
                 password=self.password,
@@ -169,6 +211,7 @@ class SteamLoginManager(threading.Thread):
             )
 
         log.info("Steam-Login mit Passwort (ohne 2FA) ...")
+        log.debug("Login-Parameter: username=%s", self.username)
         return self.client.login(username=self.username, password=self.password)
 
     def run(self) -> None:
@@ -181,21 +224,39 @@ class SteamLoginManager(threading.Thread):
         try:
             while not self._stop_event.is_set():
                 try:
+                    with self._lock:
+                        has_guard = bool(self.guard_code)
+                    log.debug(
+                        "Starte Steam-Login-Iteration. guard_code=%s, login_key=%s, logged_on=%s",
+                        has_guard,
+                        self.login_key_file.exists(),
+                        self.logged_on,
+                    )
                     res = self._try_login()
                     self.last_result = res
 
                     if res == EResult.AccountLoginDeniedNeedTwoFactor:
                         log.warning("Steam benötigt 2FA. Bitte per !sg CODE senden.")
+                        wait_logged = False
                         # auf Guard-Code warten
                         while not self._stop_event.is_set():
                             with self._lock:
                                 if self.guard_code:
                                     break
+                            if not wait_logged:
+                                log.debug("Warte auf neuen Guard-Code ...")
+                                wait_logged = True
                             gevent.sleep(1.0)
+                        log.debug("Guard-Code wurde gesetzt. Fahre mit neuem Login-Fenster fort.")
                         continue
 
                     if res != EResult.OK:
-                        log.warning("Steam-Login fehlgeschlagen: %s. Neuer Versuch in 15s.", res)
+                        log.warning(
+                            "Steam-Login fehlgeschlagen: %s. Details: logged_on=%s, connected=%s. Neuer Versuch in 15s.",
+                            res,
+                            self.logged_on,
+                            getattr(self.client, "connected", None),
+                        )
                         gevent.sleep(15.0)
                         continue
 
