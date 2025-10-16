@@ -36,6 +36,12 @@ class TwitchAPI:
             self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
             self._own_session = True
 
+    def get_http_session(self) -> aiohttp.ClientSession:
+        """Return the internal aiohttp session, ensuring it exists."""
+        self._ensure_session()
+        assert self._session is not None
+        return self._session
+
     async def aclose(self) -> None:
         if self._own_session and self._session and not self._session.closed:
             await self._session.close()
