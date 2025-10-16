@@ -281,12 +281,34 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               steam_id TEXT PRIMARY KEY,
               app_id INTEGER,
               status TEXT,
+              status_text TEXT,
               display TEXT,
               player_group TEXT,
               player_group_size INTEGER,
               connect TEXT,
+              mode TEXT,
+              map TEXT,
+              party_size INTEGER,
               raw_json TEXT,
-              last_update INTEGER
+              last_update INTEGER,
+              updated_at INTEGER
+            );
+
+            -- Steam Freundes-Snapshots (Rohdaten aus der Freundesliste)
+            CREATE TABLE IF NOT EXISTS steam_friend_snapshots(
+              steam_id TEXT PRIMARY KEY,
+              relationship INTEGER,
+              persona_state INTEGER,
+              persona_name TEXT,
+              game_app_id INTEGER,
+              game_name TEXT,
+              last_logoff INTEGER,
+              last_logon INTEGER,
+              persona_flags INTEGER,
+              avatar_hash TEXT,
+              persona_json TEXT,
+              rich_presence_json TEXT,
+              updated_at INTEGER
             );
 
             -- Optionale zusätzliche Watchlist für den Presence-Service
@@ -318,6 +340,13 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               reserved_by INTEGER,
               reserved_at INTEGER,
               last_seen INTEGER
+            );
+
+            -- Gespeicherte Refresh-Token für den Steam-Bot-Login
+            CREATE TABLE IF NOT EXISTS steam_refresh_tokens(
+              account_name TEXT PRIMARY KEY,
+              refresh_token TEXT NOT NULL,
+              received_at INTEGER DEFAULT (strftime('%s','now'))
             );
 
             -- Live-Lane-Status (pro Voice-Channel)
@@ -355,7 +384,8 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_quick_invites_reserved ON steam_quick_invites(reserved_by)"
             )
-            c.execute("CREATE INDEX IF NOT EXISTS idx_rich_presence_updated ON steam_rich_presence(last_update)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_rich_presence_updated ON steam_rich_presence(updated_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_friend_snapshots_updated ON steam_friend_snapshots(updated_at)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ranks_rank ON ranks(rank)")
         except sqlite3.Error as e:
             logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)

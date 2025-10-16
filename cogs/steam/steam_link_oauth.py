@@ -1,4 +1,4 @@
-# cogs/live_match/steam_link_oauth.py
+# cogs/steam/steam_link_oauth.py
 import os
 import re
 import time
@@ -16,9 +16,9 @@ import discord
 from discord.ext import commands
 
 from service import db
-from service.steam_friend_requests import queue_friend_request, queue_friend_requests
 
-from cogs.steam import QuickInviteButton, queue_friend_request, queue_friend_requests
+from cogs.steam import SchnellLinkButton
+from cogs.steam.friend_requests import queue_friend_request, queue_friend_requests
 
 log = logging.getLogger("SteamLink")
 
@@ -315,11 +315,7 @@ class SteamLink(commands.Cog):
             await self._cleanup_recent_bot_dms(user, limit=25)
             shine = (
                 "✨ **Connection complete.**\n"
-                "Du funkelst jetzt ein Stückchen heller — und die Welt ein winziges bisschen auch.\n\n"
                 "🤝 Unser Steam-Bot schickt dir gleich eine Freundschaftsanfrage. "
-                "Falls nichts ankommt, nutze den Button **„Schnelle Anfrage senden“** für einen frischen Link "
-                "(einmalig, 30 Tage gültig) oder den Freundescode **820142646**.\n\n"
-                "_Tipp: Mit `/links` siehst du deine verknüpften Accounts._"
             )
             await user.send(shine)
         except Exception as e:
@@ -771,7 +767,7 @@ class SteamLink(commands.Cog):
         start_url = f"{PUBLIC_BASE_URL}/discord/login?uid={ctx.author.id}"
         view = discord.ui.View()
         view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label=LINK_BUTTON_LABEL, url=start_url))
-        view.add_item(QuickInviteButton(row=1, source="slash_link"))
+        view.add_item(SchnellLinkButton(row=1, source="slash_link"))
         await self._send_ephemeral(ctx, embed=embed, view=view)
 
     @commands.hybrid_command(
@@ -796,7 +792,7 @@ class SteamLink(commands.Cog):
         start_url = f"{PUBLIC_BASE_URL}/steam/login?uid={ctx.author.id}"
         view = discord.ui.View()
         view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label=STEAM_BUTTON_LABEL, url=start_url))
-        view.add_item(QuickInviteButton(row=1, source="slash_link_steam"))
+        view.add_item(SchnellLinkButton(row=1, source="slash_link_steam"))
         await self._send_ephemeral(ctx, embed=embed, view=view)
 
     @commands.hybrid_command(name="links", description="Zeigt deine gespeicherten Steam-Links")

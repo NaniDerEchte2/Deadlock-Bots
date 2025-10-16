@@ -1,11 +1,11 @@
-# cogs/twitch_deadlock/storage.py
+# cogs/twitch/storage.py
 import logging
 import os
 import sqlite3
 from contextlib import contextmanager
 from typing import Iterable
 
-log = logging.getLogger("TwitchDeadlock")
+log = logging.getLogger("TwitchStreams")
 
 # --- zentrale DB anbinden, mit Fallback auf lokale Datei --------------------
 try:
@@ -81,6 +81,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             last_link_ok           INTEGER DEFAULT 0,
             last_link_checked_at   TEXT,
             next_link_check_at     TEXT,
+            manual_verified_permanent INTEGER DEFAULT 0,
+            manual_verified_until  TEXT,
+            manual_verified_at     TEXT,
             created_at             TEXT DEFAULT CURRENT_TIMESTAMP
         )
         """
@@ -93,6 +96,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ("last_link_ok", "INTEGER DEFAULT 0"),
         ("last_link_checked_at", "TEXT"),
         ("next_link_check_at", "TEXT"),
+        ("manual_verified_permanent", "INTEGER DEFAULT 0"),
+        ("manual_verified_until", "TEXT"),
+        ("manual_verified_at", "TEXT"),
         ("created_at", "TEXT DEFAULT CURRENT_TIMESTAMP"),
     ]:
         _add_column_if_missing(conn, "twitch_streamers", col, spec)
@@ -132,13 +138,15 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             started_at     TEXT,
             language       TEXT,
             game_id        TEXT,
-            game_name      TEXT
+            game_name      TEXT,
+            is_tracked     INTEGER DEFAULT 0
         )
         """
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_stream_logs_login_ts ON twitch_stream_logs(streamer_login, ts)"
     )
+    _add_column_if_missing(conn, "twitch_stream_logs", "is_tracked", "INTEGER DEFAULT 0")
 
     # 4) twitch_settings – Channel je Guild
     conn.execute(

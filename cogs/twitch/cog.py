@@ -7,7 +7,7 @@ TWITCH_DASHBOARD_HOST = "127.0.0.1"
 TWITCH_DASHBOARD_PORT = 8765
 
 TWITCH_LANGUAGE = "de"
-TWITCH_DEADLOCK_NAME = "Deadlock"
+TWITCH_TARGET_GAME_NAME = "Deadlock"
 TWITCH_REQUIRED_DISCORD_MARKER = ""                # optionaler Marker im Profiltext (zusätzlich zur Discord-URL)
 
 # Benachrichtigungskanäle
@@ -17,6 +17,9 @@ TWITCH_ALERT_MENTION     = "<@USER_OR_ROLE_ID>"    # z. B. <@123> oder <@&ROLEID
 
 # Stats/Sampling: alle N Ticks (Tick=60s) in DB loggen
 TWITCH_LOG_EVERY_N_TICKS = 5
+
+# Zusätzliche Streams aus der Deadlock-Kategorie für Statistiken loggen (Maximalanzahl je Tick)
+TWITCH_CATEGORY_SAMPLE_LIMIT = 400
 
 # Invite-Refresh alle X Stunden
 INVITES_REFRESH_INTERVAL_HOURS = 12
@@ -32,34 +35,27 @@ import asyncio
 import logging
 import os
 import re
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from typing import Dict, List, Optional, Set
+from urllib.parse import urlparse
 
 import discord
 from discord.ext import commands, tasks
-from aiohttp import web
+from aiohttp import ClientError, web
 
 from .twitch_api import TwitchAPI
 from . import storage
 from .dashboard import Dashboard
 
-log = logging.getLogger("TwitchDeadlock")
+log = logging.getLogger("TwitchStreams")
 
-# Regex: Discord-Invite-URL -> Code
-INVITE_URL_RE = re.compile(
-    r"(?:https?://)?(?:discord(?:app)?\.com/invite|discord\.gg)/([A-Za-z0-9-]+)",
-    re.I,
-)
-
-# Deadlock-Kategorie-Name (vom Config-Header)
-DEADLOCK_GAME_NAME = TWITCH_DEADLOCK_NAME
+# Spiel-Kategorie, die als „Deadlock-Stream“ gilt (Standard: Deadlock)
+TARGET_GAME_NAME = TWITCH_TARGET_GAME_NAME
 
 
-class TwitchDeadlockCog(commands.Cog):
-    """
-    Postet Live-Messages nur, wenn beobachtete Streamer Deadlock streamen.
-    Prüft Twitch-Profilbeschreibung auf Invite-Links und matcht sie gegen unsere(n) Discord-Server.
-    Mit Dashboard (Tabs), optionalem Sprachfilter und 30d Re-Check.
-    """
+class TwitchStreamCog(commands.Cog):
+    """Monitor Twitch streamers and post go-live messages for the target game."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -91,18 +87,17 @@ class TwitchDeadlockCog(commands.Cog):
         # Stats logging cadence
         self._tick_count = 0
         self._log_every_n = max(1, int(TWITCH_LOG_EVERY_N_TICKS or 5))
+        self._category_sample_limit = max(50, int(TWITCH_CATEGORY_SAMPLE_LIMIT or 400))
 
         # Dashboard
         self._web: Optional[web.AppRunner] = None
         self._web_app: Optional[web.Application] = None
 
-        # Invite-Cache: {guild_id: {code, ...}} und {code: guild_id}
+        # Invite-Cache: {guild_id: {code, ...}}
         self._invite_codes: Dict[int, Set[str]] = {}
-        self._invite_code_cache: Dict[str, int] = {}
 
         # Background tasks
         self.poll_streams.start()
-        self.link_reverify.start()
         self.invites_refresh.start()
         self.bot.loop.create_task(self._ensure_category_id())
         self.bot.loop.create_task(self._start_dashboard())
@@ -110,7 +105,7 @@ class TwitchDeadlockCog(commands.Cog):
 
     def cog_unload(self):
         """Sauberer Shutdown ohne leere except-Blöcke (CWE-390/703-freundlich)."""
-        loops = (self.poll_streams, self.link_reverify, self.invites_refresh)
+        loops = (self.poll_streams, self.invites_refresh)
 
         async def _graceful_shutdown():
             # 1) laufende Tasks abbrechen
@@ -158,12 +153,10 @@ class TwitchDeadlockCog(commands.Cog):
         async def list_items():
             with storage.get_conn() as c:
                 rows = c.execute(
-                    "SELECT twitch_login, require_discord_link, last_link_ok FROM twitch_streamers ORDER BY twitch_login"
+                    "SELECT twitch_login, manual_verified_permanent, manual_verified_until, manual_verified_at "
+                    "FROM twitch_streamers ORDER BY twitch_login"
                 ).fetchall()
                 return [dict(r) for r in rows]
-
-        async def rescan():
-            await self._rescan_all_links()
 
         async def stats_cb():
             return await self._compute_stats()
@@ -176,15 +169,18 @@ class TwitchDeadlockCog(commands.Cog):
         async def export_csv_cb():
             with storage.get_conn() as c:
                 rows = c.execute(
-                    "SELECT ts, streamer_login, viewers, title, started_at, language, game_name FROM twitch_stream_logs ORDER BY ts"
+                    "SELECT ts, streamer_login, viewers, title, started_at, language, game_name, is_tracked FROM twitch_stream_logs ORDER BY ts"
                 ).fetchall()
-            out = ["Timestamp,Streamer,Viewers,Title,Started_At,Language,Game\n"]
+            out = ["Timestamp,Streamer,Viewers,Title,Started_At,Language,Game,Is_Tracked\n"]
             for r in rows:
                 title = (r["title"] or "").replace('"', '""').replace("\n", " ")
                 out.append(
-                    f'"{r["ts"]}","{r["streamer_login"]}",{r["viewers"] or 0},"{title}","{r["started_at"]}","{r["language"] or ""}","{r["game_name"] or ""}"\n'
+                    f'"{r["ts"]}","{r["streamer_login"]}",{r["viewers"] or 0},"{title}","{r["started_at"]}","{r["language"] or ""}","{r["game_name"] or ""}",{int(r["is_tracked"] or 0)}\n'
                 )
             return "".join(out)
+
+        async def verify_cb(login: str, mode: str) -> str:
+            return await self._set_manual_verification(login, mode)
 
         Dashboard(
             app_token=self._dashboard_token,
@@ -192,10 +188,10 @@ class TwitchDeadlockCog(commands.Cog):
             add_cb=add,
             remove_cb=remove,
             list_cb=list_items,
-            rescan_cb=rescan,
             stats_cb=stats_cb,
             export_cb=export_cb,
             export_csv_cb=export_csv_cb,
+            verify_cb=verify_cb,
         ).attach(self._web_app)
 
         runner = web.AppRunner(self._web_app)
@@ -241,40 +237,6 @@ class TwitchDeadlockCog(commands.Cog):
         self._invite_codes[guild.id] = codes
         log.debug("invite cache for %s: %d codes", guild.id, len(codes))
 
-    def _extract_invite_codes(self, text: str) -> Set[str]:
-        return {m.group(1) for m in INVITE_URL_RE.finditer(text or "")}
-
-    async def _codes_match_our_guild(self, codes: Set[str]) -> bool:
-        """True, wenn einer der Codes zu einer Guild gehört, in der unser Bot ist."""
-        if not codes:
-            return False
-
-        our_guild_ids = {g.id for g in self.bot.guilds}
-
-        # 1) Schnell: lokaler Cache
-        for gid, known in self._invite_codes.items():
-            if codes & known:
-                return True
-
-        # 2) Fallback: API-Auflösung (Code -> Guild-ID)
-        for code in list(codes)[:5]:  # harte Obergrenze
-            if code in self._invite_code_cache:
-                if self._invite_code_cache[code] in our_guild_ids:
-                    return True
-                continue
-            try:
-                inv = await self.bot.fetch_invite(code)
-                gid = getattr(getattr(inv, "guild", None), "id", None)
-                if gid:
-                    gid = int(gid)
-                    self._invite_code_cache[code] = gid
-                    if gid in our_guild_ids:
-                        return True
-            except Exception as e:
-                log.debug("invite fetch failed for %s: %s", code, e)
-            await asyncio.sleep(0.25)
-        return False
-
     # ---------- DB helpers ----------
     def _get_settings(self, guild_id: int) -> Optional[dict]:
         with storage.get_conn() as c:
@@ -289,43 +251,82 @@ class TwitchDeadlockCog(commands.Cog):
                 (guild_id, channel_id, self._language_filter, self._required_marker_default),
             )
 
-    # ---------- Link check (Profil-Bio + Invite-Quervergleich) ----------
-    async def _check_discord_link(self, login: str) -> bool:
-        assert self.api
-        users = await self.api.get_users([login])
-        u = users.get(login.lower())
-        if not u:
+    async def _set_manual_verification(self, login: str, mode: str) -> str:
+        normalized = self._normalize_login(login)
+        if not normalized:
+            return "Ungültiger Twitch-Login"
+
+        with storage.get_conn() as c:
+            existing = c.execute(
+                "SELECT twitch_login FROM twitch_streamers WHERE twitch_login=?",
+                (normalized,),
+            ).fetchone()
+
+        if not existing:
+            return f"{normalized} ist nicht in der Liste"
+
+        now = datetime.now(timezone.utc)
+
+        if mode == "permanent":
+            with storage.get_conn() as c:
+                c.execute(
+                    "UPDATE twitch_streamers SET manual_verified_permanent=1, manual_verified_until=NULL, manual_verified_at=? WHERE twitch_login=?",
+                    (now.isoformat(), normalized),
+                )
+            return f"{normalized} dauerhaft verifiziert"
+
+        if mode == "temp":
+            until = now + timedelta(days=30)
+            with storage.get_conn() as c:
+                c.execute(
+                    "UPDATE twitch_streamers SET manual_verified_permanent=0, manual_verified_until=?, manual_verified_at=? WHERE twitch_login=?",
+                    (until.isoformat(), now.isoformat(), normalized),
+                )
+            return f"{normalized} für 30 Tage verifiziert"
+
+        if mode == "clear":
+            with storage.get_conn() as c:
+                c.execute(
+                    "UPDATE twitch_streamers SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL WHERE twitch_login=?",
+                    (normalized,),
+                )
+            return f"Verifizierung für {normalized} zurückgesetzt"
+
+        return "Unbekannter Verifizierungsmodus"
+
+    def _format_list_line(self, row: dict) -> str:
+        login = row.get("twitch_login", "")
+        if row.get("manual_verified_permanent"):
+            status = "permanent verifiziert"
+        else:
+            until = row.get("manual_verified_until")
+            if until:
+                try:
+                    dt = datetime.fromisoformat(str(until))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    status = f"verifiziert bis {dt.date().isoformat()}"
+                except ValueError:
+                    status = f"verifiziert bis {until}"
+            else:
+                status = "nicht verifiziert"
+        return f"• {login} — {status}"
+
+    def _is_verified_now(self, row: dict) -> bool:
+        if row.get("manual_verified_permanent"):
+            return True
+        until = row.get("manual_verified_until")
+        if not until:
             return False
-        desc = (u.get("description") or "").strip()
-
-        codes = self._extract_invite_codes(desc)
-        link_matches_our_guild = await self._codes_match_our_guild(codes)
-
-        marker_ok = True
-        if self._required_marker_default:
-            marker_ok = self._required_marker_default.lower() in desc.lower()
-
-        has_link_and_ok = bool(link_matches_our_guild and marker_ok)
-
-        with storage.get_conn() as c:
-            c.execute(
-                "UPDATE twitch_streamers SET last_description=?, last_link_ok=?, "
-                "last_link_checked_at=CURRENT_TIMESTAMP, next_link_check_at=datetime('now','+30 days') "
-                "WHERE twitch_login=?",
-                (desc[:4000], int(has_link_and_ok), login.lower()),
-            )
-        return has_link_and_ok
-
-    async def _rescan_all_links(self):
-        assert self.api
-        with storage.get_conn() as c:
-            rows = c.execute("SELECT twitch_login FROM twitch_streamers").fetchall()
-        for r in rows:
-            try:
-                await self._check_discord_link(r["twitch_login"])
-                await asyncio.sleep(0.2)
-            except Exception as e:
-                log.warning("rescan failed for %s: %s", r["twitch_login"], e)
+        try:
+            dt = datetime.fromisoformat(str(until))
+        except ValueError:
+            return False
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt >= datetime.now(timezone.utc)
 
     # ---------- Commands (hybrid) ----------
     @commands.hybrid_group(name="twitch", with_app_command=True)
@@ -343,8 +344,12 @@ class TwitchDeadlockCog(commands.Cog):
 
     async def _cmd_add(self, login: str, require_link: bool) -> str:
         assert self.api
-        users = await self.api.get_users([login])
-        u = users.get(login.lower())
+        normalized = self._normalize_login(login)
+        if not normalized:
+            return "Ungültiger Twitch-Login"
+
+        users = await self.api.get_users([normalized])
+        u = users.get(normalized)
         if not u:
             return "Unbekannter Twitch-Login"
         with storage.get_conn() as c:
@@ -352,17 +357,26 @@ class TwitchDeadlockCog(commands.Cog):
                 "INSERT OR IGNORE INTO twitch_streamers (twitch_login, twitch_user_id, require_discord_link, next_link_check_at) VALUES (?, ?, ?, datetime('now','+30 days'))",
                 (u["login"].lower(), u["id"], int(require_link)),
             )
-        try:
-            await self._check_discord_link(login)
-        except Exception as e:
-            log.debug("initial link check failed for %s: %s", login, e)
+        with storage.get_conn() as c:
+            c.execute(
+                "UPDATE twitch_streamers SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL WHERE twitch_login=?",
+                (normalized,),
+            )
         return f"{u['display_name']} hinzugefügt"
 
     async def _cmd_remove(self, login: str) -> str:
+        normalized = self._normalize_login(login)
+        if not normalized:
+            return "Ungültiger Twitch-Login"
+
         with storage.get_conn() as c:
-            c.execute("DELETE FROM twitch_streamers WHERE twitch_login=?", (login.lower(),))
-            c.execute("DELETE FROM twitch_live_state WHERE streamer_login=?", (login.lower(),))
-        return f"{login} entfernt"
+            cur = c.execute("DELETE FROM twitch_streamers WHERE twitch_login=?", (normalized,))
+            deleted = cur.rowcount or 0
+            c.execute("DELETE FROM twitch_live_state WHERE streamer_login=?", (normalized,))
+
+        if deleted:
+            return f"{normalized} entfernt"
+        return f"{normalized} war nicht gespeichert"
 
     @twitch_group.command(name="add")
     @commands.has_guild_permissions(manage_guild=True)
@@ -381,13 +395,13 @@ class TwitchDeadlockCog(commands.Cog):
     async def twitch_list(self, ctx: commands.Context):
         with storage.get_conn() as c:
             rows = c.execute(
-                "SELECT twitch_login, require_discord_link, last_link_ok FROM twitch_streamers ORDER BY twitch_login"
+                "SELECT twitch_login, manual_verified_permanent, manual_verified_until FROM twitch_streamers ORDER BY twitch_login"
             ).fetchall()
         if not rows:
             await ctx.reply("Keine Streamer gespeichert.")
             return
         lines = [
-            f"• {r['twitch_login']}  (require_link={'ja' if r['require_discord_link'] else 'nein'}, has_link={'ja' if r['last_link_ok'] else 'nein'})"
+            self._format_list_line(dict(r))
             for r in rows
         ]
         await ctx.reply("\n".join(lines)[:1900])
@@ -410,17 +424,83 @@ class TwitchDeadlockCog(commands.Cog):
             await ctx.reply("Aktive Einladungen:\n" + "\n".join(urls)[:1900])
 
     # ---------- Polling & Posting ----------
+    @staticmethod
+    def _normalize_login(raw: str) -> str:
+        login = (raw or "").strip()
+        if not login:
+            return ""
+
+        login = login.split("?")[0].split("#")[0].strip()
+
+        lowered = login.lower()
+        if "twitch.tv" in lowered:
+            if "//" not in login:
+                login = f"https://{login}"
+            try:
+                parsed = urlparse(login)
+                path = (parsed.path or "").strip("/")
+                if path:
+                    login = path.split("/")[0]
+                else:
+                    login = ""
+            except Exception:
+                login = ""
+
+        login = login.strip().lstrip("@")
+        login = login.lower()
+
+        if not re.fullmatch(r"[a-z0-9_]+", login):
+            return ""
+        return login
+
     async def _ensure_category_id(self):
         if not self.api:
             return
         try:
-            self._category_id = await self.api.get_category_id(DEADLOCK_GAME_NAME)
+            self._category_id = await self.api.get_category_id(TARGET_GAME_NAME)
             if self._category_id:
                 log.info("Deadlock category_id = %s", self._category_id)
             else:
                 log.warning("Deadlock category not found via Search Categories; fallback by game_name.")
         except Exception as e:
             log.error("could not resolve category id: %r", e)
+
+    async def _fetch_category_streams(self) -> List[dict]:
+        """Hole eine Liste aller Live-Streams in der Deadlock-Kategorie."""
+        assert self.api
+        try:
+            streams = await self.api.get_streams_for_game(
+                game_id=self._category_id,
+                game_name=TARGET_GAME_NAME,
+                language=self._language_filter,
+                limit=self._category_sample_limit,
+            )
+        except Exception as e:
+            log.debug("category stream fetch failed: %s", e)
+            streams = []
+        return streams
+
+    def _log_stream_samples(self, streams: List[dict], tracked_logins: Set[str]) -> None:
+        if not streams:
+            return
+        tracked = {login.lower() for login in tracked_logins}
+        with storage.get_conn() as c:
+            for s in streams:
+                login = (s.get("user_login") or "").lower()
+                c.execute(
+                    "INSERT INTO twitch_stream_logs (streamer_login, user_id, title, viewers, started_at, language, game_id, game_name, is_tracked) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        login or s.get("user_login"),
+                        s.get("user_id"),
+                        s.get("title"),
+                        s.get("viewer_count"),
+                        s.get("started_at"),
+                        s.get("language"),
+                        s.get("game_id"),
+                        s.get("game_name"),
+                        1 if login in tracked else 0,
+                    ),
+                )
 
     @tasks.loop(seconds=60.0)
     async def poll_streams(self):
@@ -435,27 +515,32 @@ class TwitchDeadlockCog(commands.Cog):
         # Liste der beobachteten Logins
         with storage.get_conn() as c:
             rows = c.execute(
-                "SELECT twitch_login, twitch_user_id, require_discord_link, last_link_ok FROM twitch_streamers"
+                "SELECT twitch_login, twitch_user_id, require_discord_link, manual_verified_permanent, manual_verified_until FROM twitch_streamers"
             ).fetchall()
         if not rows:
             return
         logins = [r["twitch_login"] for r in rows]
-        require_map = {
-            r["twitch_login"].lower(): (bool(r["require_discord_link"]), bool(r["last_link_ok"])) for r in rows
+        require_flags = {r["twitch_login"].lower(): bool(r["require_discord_link"]) for r in rows}
+        verification_state = {
+            r["twitch_login"].lower(): self._is_verified_now(dict(r)) for r in rows
         }
+        tracked_logins = {login.lower() for login in logins}
+
+        self._tick_count += 1
+        should_log = self._tick_count % self._log_every_n == 0
 
         # Streams (live) holen
         streams = await self.api.get_streams(
             user_logins=logins, game_id=self._category_id, language=self._language_filter
         )
         if not self._category_id and streams:
-            streams = [s for s in streams if (s.get("game_name") or "").lower() == DEADLOCK_GAME_NAME.lower()]
+            streams = [s for s in streams if (s.get("game_name") or "").lower() == TARGET_GAME_NAME.lower()]
 
         # Fallback: wenn keine Streams mit Kategorie gefunden wurden, erneut ohne Kategorie filtern
         if not streams and logins:
             try:
                 fallback_streams = await self.api.get_streams(user_logins=logins, language=self._language_filter)
-                streams = [s for s in fallback_streams if (s.get("game_name") or "").lower() == DEADLOCK_GAME_NAME.lower()]
+                streams = [s for s in fallback_streams if (s.get("game_name") or "").lower() == TARGET_GAME_NAME.lower()]
             except Exception as e:
                 log.debug("fallback get_streams (ohne Kategorie) failed: %s", e)
 
@@ -474,8 +559,7 @@ class TwitchDeadlockCog(commands.Cog):
             st = states.get(login_l)
 
             if is_live:
-                req, has = require_map.get(login_l, (False, False))
-                if req and not has:
+                if require_flags.get(login_l, False) and not verification_state.get(login_l, False):
                     continue  # solange Linkpflicht nicht erfüllt, nix posten
                 s = live_by_login[login_l]
                 stream_id = s.get("id")
@@ -503,23 +587,14 @@ class TwitchDeadlockCog(commands.Cog):
             await self._mark_offline(now_offline)
 
         # periodisches Logging (Stats)
-        self._tick_count += 1
-        if self._tick_count % self._log_every_n == 0 and streams:
-            with storage.get_conn() as c:
-                for s in streams:
-                    c.execute(
-                        "INSERT INTO twitch_stream_logs (streamer_login, user_id, title, viewers, started_at, language, game_id, game_name) VALUES (?,?,?,?,?,?,?,?)",
-                        (
-                            s.get("user_login"),
-                            s.get("user_id"),
-                            s.get("title"),
-                            s.get("viewer_count"),
-                            s.get("started_at"),
-                            s.get("language"),
-                            s.get("game_id"),
-                            s.get("game_name"),
-                        ),
-                    )
+        category_streams: List[dict] = []
+        if should_log:
+            category_streams = await self._fetch_category_streams()
+            if category_streams:
+                self._log_stream_samples(category_streams, tracked_logins)
+            elif streams:
+                # Fallback: wenigstens die beobachteten Streams loggen
+                self._log_stream_samples(streams, tracked_logins)
 
     async def _post_go_live(self, logins: List[str], live_by_login: Dict[str, dict]):
         """
@@ -550,8 +625,28 @@ class TwitchDeadlockCog(commands.Cog):
                 colour=discord.Colour.purple(),
             )
             thumb = (s.get("thumbnail_url") or "").replace("{width}", "640").replace("{height}", "360")
+            thumb_cache_buster = f"?t={int(datetime.now(timezone.utc).timestamp())}"
+            file: Optional[discord.File] = None
             if thumb:
-                embed.set_image(url=thumb)
+                thumb_with_cache_buster = f"{thumb}{thumb_cache_buster}"
+                if self.api:
+                    try:
+                        session = self.api.get_http_session()
+                        async with session.get(thumb_with_cache_buster) as resp:
+                            if resp.status == 200:
+                                data = await resp.read()
+                                filename = f"{login}_preview.jpg"
+                                file = discord.File(BytesIO(data), filename=filename)
+                                embed.set_image(url=f"attachment://{filename}")
+                            else:
+                                embed.set_image(url=thumb_with_cache_buster)
+                    except ClientError:
+                        embed.set_image(url=thumb_with_cache_buster)
+                    except Exception:
+                        log.exception("preview fetch failed for %s", login)
+                        embed.set_image(url=thumb_with_cache_buster)
+                else:
+                    embed.set_image(url=thumb_with_cache_buster)
             embed.add_field(name="Viewer", value=str(s.get("viewer_count")))
             embed.add_field(name="Kategorie", value=s.get("game_name") or "Deadlock", inline=True)
             url = f"https://twitch.tv/{login}"
@@ -559,7 +654,14 @@ class TwitchDeadlockCog(commands.Cog):
             try:
                 view = discord.ui.View()
                 view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label="Auf Twitch ansehen", url=url))
-                msg = await channel.send(content=f"🔴 **{s.get('user_name')}** ist live: {url}", embed=embed, view=view)
+                kwargs = {
+                    "content": f"🔴 **{s.get('user_name')}** ist live: {url}",
+                    "embed": embed,
+                    "view": view,
+                }
+                if file:
+                    kwargs["file"] = file
+                msg = await channel.send(**kwargs)
                 with storage.get_conn() as c:
                     c.execute(
                         "UPDATE twitch_live_state SET last_discord_message_id=?, last_notified_at=CURRENT_TIMESTAMP WHERE streamer_login=?",
@@ -606,54 +708,60 @@ class TwitchDeadlockCog(commands.Cog):
             except Exception as e:
                 log.debug("cannot edit message %s: %s", mid, e)
 
-    # ---------- 30-Tage-Check (täglich) ----------
-    @tasks.loop(hours=24)
-    async def link_reverify(self):
-        if not self.api:
-            return
-        with storage.get_conn() as c:
-            rows = c.execute(
-                "SELECT twitch_login, require_discord_link FROM twitch_streamers WHERE require_discord_link=1 AND (next_link_check_at IS NULL OR next_link_check_at <= CURRENT_TIMESTAMP)"
-            ).fetchall()
-        for r in rows:
-            login = r["twitch_login"]
-            log.info("[twitch] 30d re-check: %s", login)
-            try:
-                ok = await self._check_discord_link(login)
-                if not ok:
-                    await self._notify_missing_link(login)
-                await asyncio.sleep(0.25)
-            except Exception as e:
-                log.warning("link reverification failed for %s: %s", login, e)
-
-    async def _notify_missing_link(self, login: str):
-        if not self._alert_channel_id:
-            return
-        ch = self.bot.get_channel(self._alert_channel_id)
-        if not isinstance(ch, (discord.TextChannel, discord.Thread)):
-            return
-        mention = self._alert_mention or ""
-        try:
-            await ch.send(f"⚠️ {mention} Twitch-Profillink fehlt oder ungültig bei **{login}**.")
-        except Exception as e:
-            log.warning("failed to send alert: %s", e)
-
     # ---------- simple stats for dashboard ----------
     async def _compute_stats(self) -> dict:
         with storage.get_conn() as c:
-            total_sessions = c.execute("SELECT COUNT(*) AS c FROM twitch_stream_logs").fetchone()["c"]
+            total_samples = c.execute("SELECT COUNT(*) AS c FROM twitch_stream_logs").fetchone()["c"]
             unique_streamers = c.execute("SELECT COUNT(DISTINCT streamer_login) AS c FROM twitch_stream_logs").fetchone()["c"]
-            rows = c.execute(
-                "SELECT streamer_login, COUNT(*) AS sessions, AVG(COALESCE(viewers,0)) AS avg_viewers, MAX(COALESCE(viewers,0)) AS max_viewers "
-                "FROM twitch_stream_logs GROUP BY streamer_login ORDER BY sessions DESC LIMIT 10"
+            tracked_samples = (
+                c.execute("SELECT COUNT(*) AS c FROM twitch_stream_logs WHERE is_tracked=1").fetchone()["c"]
+            )
+            tracked_unique = (
+                c.execute(
+                    "SELECT COUNT(DISTINCT streamer_login) AS c FROM twitch_stream_logs WHERE is_tracked=1"
+                ).fetchone()["c"]
+            )
+            avg_all = c.execute(
+                "SELECT AVG(COALESCE(viewers,0)) AS avg_v FROM twitch_stream_logs"
+            ).fetchone()["avg_v"]
+            avg_tracked = c.execute(
+                "SELECT AVG(COALESCE(viewers,0)) AS avg_v FROM twitch_stream_logs WHERE is_tracked=1"
+            ).fetchone()["avg_v"]
+            top_tracked_rows = c.execute(
+                "SELECT streamer_login, COUNT(*) AS samples, AVG(COALESCE(viewers,0)) AS avg_viewers, "
+                "MAX(COALESCE(viewers,0)) AS max_viewers "
+                "FROM twitch_stream_logs WHERE is_tracked=1 GROUP BY streamer_login ORDER BY avg_viewers DESC, max_viewers DESC"
             ).fetchall()
-        top = [
-            {
-                "streamer": r["streamer_login"],
-                "sessions": r["sessions"],
-                "avg_viewers": r["avg_viewers"] or 0,
-                "max_viewers": r["max_viewers"] or 0,
-            }
-            for r in rows
-        ]
-        return {"total_sessions": total_sessions, "unique_streamers": unique_streamers, "top": top}
+            top_category_rows = c.execute(
+                "SELECT streamer_login, COUNT(*) AS samples, AVG(COALESCE(viewers,0)) AS avg_viewers, "
+                "MAX(COALESCE(viewers,0)) AS max_viewers "
+                "FROM twitch_stream_logs GROUP BY streamer_login ORDER BY avg_viewers DESC, max_viewers DESC"
+            ).fetchall()
+
+        def _rows_to_list(rows):
+            return [
+                {
+                    "streamer": r["streamer_login"],
+                    "samples": r["samples"],
+                    "avg_viewers": round(r["avg_viewers"] or 0, 2),
+                    "max_viewers": r["max_viewers"] or 0,
+                }
+                for r in rows
+            ]
+
+        return {
+            "total_sessions": total_samples,
+            "unique_streamers": unique_streamers,
+            "avg_viewers_all": round(avg_all or 0, 2),
+            "avg_viewers_tracked": round(avg_tracked or 0, 2),
+            "tracked": {
+                "samples": tracked_samples,
+                "unique_streamers": tracked_unique,
+                "top": _rows_to_list(top_tracked_rows),
+            },
+            "category": {
+                "samples": total_samples,
+                "unique_streamers": unique_streamers,
+                "top": _rows_to_list(top_category_rows),
+            },
+        }

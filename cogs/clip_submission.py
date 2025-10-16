@@ -24,7 +24,7 @@ AUTO_POST_ON_READY = True                 # Beim Start/Reload Interface automati
 # --- Ziele ---
 REVIEW_CHANNEL_ENABLED = False            # Clip im Review-Channel posten?
 SEND_TO_USER = True                       # Am Ende des Fensters: Gesamt-Dump an User senden?
-SEND_TO_USER_ID = 662995601738170389      # Ziel-User-ID für Wochen-Dump (Gesamtpaket)
+SEND_TO_USER_ID = 388772056717590539      # Ziel-User-ID für Wochen-Dump (Gesamtpaket)
 
 # --- Wöchentliche Fenster (Europe/Berlin) ---
 WEEKLY_WINDOW_ENABLED = True
