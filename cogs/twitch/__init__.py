@@ -44,7 +44,14 @@ async def setup(bot):
 
     # Der Command gehört logisch zum Cog, wird aber bewusst außerhalb von add_cog registriert,
     # um Doppel-Registrierungen des Decorators zu vermeiden.
-    prefix_command._set_cog(cog)  # type: ignore[attr-defined]
+    set_cog = getattr(prefix_command, "_set_cog", None)
+    if callable(set_cog):
+        set_cog(cog)
+    else:  # Fallback für discord.py-Versionen ohne _set_cog (z. B. neuere Py-Cord Builds)
+        try:
+            setattr(prefix_command, "cog", cog)  # type: ignore[attr-defined]
+        except AttributeError:
+            log.debug("Prefix command binding API unavailable; continuing without binding")
     bot.add_command(prefix_command)
     cog.set_prefix_command(prefix_command)
     log.info("Registered !twl prefix command via setup hook")
