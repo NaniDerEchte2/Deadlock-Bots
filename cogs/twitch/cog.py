@@ -500,8 +500,7 @@ class TwitchStreamCog(commands.Cog):
                 tracked.append(
                     (login, str(row["twitch_user_id"]), bool(row["require_discord_link"]))
                 )
-                if self._is_partner_verified(dict(row), now_utc):
-                    partner_logins.add(login.lower())
+                partner_logins.add(login.lower())
         except Exception:
             log.exception("Konnte tracked Streamer nicht aus DB lesen")
             tracked = []
