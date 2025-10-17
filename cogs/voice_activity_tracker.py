@@ -6,7 +6,7 @@ import os
 import asyncio
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Set, Optional, List
+from typing import Dict, Optional
 from functools import lru_cache
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -118,12 +118,11 @@ class ConfigManager:
         self._save_to_db(guild_id, cfg)
         self._cache[guild_id] = cfg
 
-# ========= Voice Cog (nur zentrale DB-Tabellen: voice_sessions, voice_stats, kv_store) =========
+# ========= Voice Cog (nur zentrale DB-Tabellen: voice_stats, kv_store) =========
 class VoiceActivityTrackerCog(commands.Cog):
     """
     Voice-Tracking auf EINER zentralen DB:
-      - schreibt in voice_sessions (user_id, channel_id, joined_at, left_at, seconds)
-      - aggregiert in voice_stats (user_id, total_seconds, last_update)
+      - aggregiert pro User in voice_stats (user_id, total_seconds, total_points, last_update)
       - Config pro Guild in kv_store(ns='voice_cfg')
     Keine Migration, keine Table-Erzeugung in diesem Cog.
     """
@@ -180,6 +179,40 @@ class VoiceActivityTrackerCog(commands.Cog):
         cfg = await self.cfg(member.guild.id)
         return any(role.id == cfg.special_role_id for role in member.roles)
 
+    def calculate_points(self, seconds: int, peak_users: int) -> int:
+        """Berechnet Punkte für eine abgeschlossene Session."""
+        if seconds <= 0:
+            return 0
+        base_points = seconds // 60  # 1 Punkt pro Minute
+        # kleiner Bonus bei hoher Aktivität im Channel
+        if base_points > 0:
+            if peak_users >= 5:
+                base_points += max(1, base_points // 10)
+            elif peak_users >= 3:
+                base_points += max(1, base_points // 20)
+        return max(0, base_points)
+
+    def _finalize_session(self, session: Dict, end_time: datetime):
+        seconds = max(0, int((end_time - session['start_time']).total_seconds()))
+        if seconds <= 0:
+            return 0, 0
+        points = self.calculate_points(seconds, session.get('peak_users') or 1)
+        try:
+            central_db.execute(
+                """
+                INSERT INTO voice_stats(user_id, total_seconds, total_points, last_update)
+                VALUES(?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                  total_seconds = total_seconds + excluded.total_seconds,
+                  total_points  = total_points  + excluded.total_points,
+                  last_update   = CURRENT_TIMESTAMP
+                """,
+                (session['user_id'], seconds, points)
+            )
+        except Exception as e:
+            logger.error(f"DB write failed on session finalize: {e}")
+        return seconds, points
+
     def is_user_active_basic(self, voice_state: discord.VoiceState) -> bool:
         if not voice_state or not voice_state.channel:
             return False
@@ -225,6 +258,37 @@ class VoiceActivityTrackerCog(commands.Cog):
             del self.grace_period_users[grace_key]
             logger.info(f"Grace period ended for {member_id} ({reason})")
 
+    async def _resolve_display_name(self, guild: discord.Guild, user_id: int) -> str:
+        """Resolve a stable display name for leaderboard rows."""
+        member = guild.get_member(user_id)
+        if member:
+            return member.display_name
+
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.NotFound:
+            member = None
+        except discord.HTTPException as e:
+            logger.debug(f"Failed to fetch guild member {user_id}: {e}")
+            member = None
+
+        if member:
+            return member.display_name
+
+        user = self.bot.get_user(user_id)
+        if user:
+            return user.display_name
+
+        try:
+            user = await self.bot.fetch_user(user_id)
+        except discord.NotFound:
+            user = None
+        except discord.HTTPException as e:
+            logger.debug(f"Failed to fetch user {user_id}: {e}")
+            user = None
+
+        return user.display_name if user else f"User {user_id}"
+
     async def start_voice_session(self, member: discord.Member, channel: discord.VoiceChannel):
         key = f"{member.id}:{channel.guild.id}"
         if key not in self.voice_sessions:
@@ -236,7 +300,7 @@ class VoiceActivityTrackerCog(commands.Cog):
                 'start_time': datetime.utcnow(),
                 'last_update': datetime.utcnow(),
                 'total_time': 0,  # Sekunden seit Start
-                'peak_users': 0,
+                'peak_users': 1,
                 'user_counts': [],
             }
             self.session_stats['total_sessions_created'] += 1
@@ -250,33 +314,12 @@ class VoiceActivityTrackerCog(commands.Cog):
             return
 
         # finalisieren & persistieren
-        seconds = int((datetime.utcnow() - session['start_time']).total_seconds())
-        try:
-            # voice_sessions: INSERT eines abgeschlossenen Intervalls
-            central_db.execute(
-                """
-                INSERT INTO voice_sessions(user_id, channel_id, joined_at, left_at, seconds)
-                VALUES(?,?,?,?,?)
-                """,
-                (session['user_id'], session['channel_id'],
-                 session['start_time'].isoformat(timespec='seconds'),
-                 datetime.utcnow().isoformat(timespec='seconds'),
-                 seconds)
+        end_time = datetime.utcnow()
+        seconds, points = self._finalize_session(session, end_time)
+        if seconds > 0:
+            logger.info(
+                f"Ended voice session: {member.display_name}, {seconds}s, {points}pts"
             )
-            # voice_stats: aggregieren (global pro user_id)
-            central_db.execute(
-                """
-                INSERT INTO voice_stats(user_id, total_seconds, last_update)
-                VALUES(?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(user_id) DO UPDATE SET
-                  total_seconds = total_seconds + excluded.total_seconds,
-                  last_update   = CURRENT_TIMESTAMP
-                """,
-                (session['user_id'], seconds)
-            )
-            logger.info(f"Ended voice session: {member.display_name}, {seconds}s")
-        except Exception as e:
-            logger.error(f"DB write failed on session end: {e}")
 
         await self.end_grace_period(member.id, guild_id, "voice_leave")
 
@@ -402,33 +445,14 @@ class VoiceActivityTrackerCog(commands.Cog):
             s = self.voice_sessions.get(k)
             if not s:
                 continue
-            # Session bis last_update persistieren
-            seconds = int((s['last_update'] - s['start_time']).total_seconds())
-            try:
-                central_db.execute(
-                    """
-                    INSERT INTO voice_sessions(user_id, channel_id, joined_at, left_at, seconds)
-                    VALUES(?,?,?,?,?)
-                    """,
-                    (s['user_id'], s['channel_id'],
-                     s['start_time'].isoformat(timespec='seconds'),
-                     s['last_update'].isoformat(timespec='seconds'),
-                     max(0, seconds))
-                )
-                central_db.execute(
-                    """
-                    INSERT INTO voice_stats(user_id, total_seconds, last_update)
-                    VALUES(?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(user_id) DO UPDATE SET
-                      total_seconds = total_seconds + excluded.total_seconds,
-                      last_update   = CURRENT_TIMESTAMP
-                    """,
-                    (s['user_id'], max(0, seconds))
-                )
-            except Exception as e:
-                logger.error(f"DB write failed on cleanup: {e}")
+            end_time = s['last_update']
+            seconds, points = self._finalize_session(s, end_time)
             user = self.bot.get_user(s['user_id'])
-            logger.info(f"Cleaned up inactive session: {user.display_name if user else s['user_id']}")
+            if seconds > 0:
+                display_name = user.display_name if user else s['user_id']
+                logger.info(
+                    f"Cleaned up inactive session: {display_name} ({seconds}s, {points}pts)"
+                )
             self.voice_sessions.pop(k, None)
 
     @cleanup_sessions.before_loop
@@ -463,29 +487,34 @@ class VoiceActivityTrackerCog(commands.Cog):
         try:
             # Gesamtzeit (global über voice_stats)
             row = central_db.query_one(
-                "SELECT total_seconds FROM voice_stats WHERE user_id=?",
+                "SELECT total_seconds, total_points FROM voice_stats WHERE user_id=?",
                 (target_user.id,)
             )
             total_seconds = int(row[0]) if row and row[0] else 0
+            total_points = int(row[1]) if row and len(row) > 1 and row[1] is not None else 0
 
             # Live-Session addieren (nur Anzeige)
             session_key = f"{target_user.id}:{ctx.guild.id}"
             live_add = 0
             live_info = ""
+            live_points = 0
             if session_key in self.voice_sessions:
                 s = self.voice_sessions[session_key]
                 live_add = int((datetime.utcnow() - s['start_time']).total_seconds())
-                live_info = f"🔴 Live: +{live_add//60}m"
+                live_points = self.calculate_points(live_add, s.get('peak_users') or 1)
+                live_info = f"🔴 Live: +{live_add//60}m / +{live_points}pts"
 
             total = total_seconds + live_add
             total_hours = total // 3600
             total_minutes = (total % 3600) // 60
+            total_points_display = total_points + live_points
 
             embed = discord.Embed(
                 title=f"📊 Voice-Statistiken - {target_user.display_name}",
                 color=discord.Color.blue()
             )
             embed.add_field(name="⏱️ Gesamtzeit", value=f"{total_hours}h {total_minutes}m", inline=True)
+            embed.add_field(name="⭐ Punkte", value=str(total_points_display), inline=True)
             if live_info:
                 embed.add_field(name="Status", value=live_info, inline=True)
 
@@ -504,20 +533,20 @@ class VoiceActivityTrackerCog(commands.Cog):
 
     @commands.command(name="vleaderboard", aliases=["vlb", "voicetop"])
     @commands.cooldown(1, 15, commands.BucketType.guild)
-    async def voice_leaderboard_command(self, ctx, limit: Optional[int] = 10):
+    async def voice_leaderboard_command(self, ctx):
         if not self.rate_limiter.is_allowed(ctx.author.id):
             remaining = self.rate_limiter.get_remaining_time(ctx.author.id)
             await ctx.send(f"⏰ Rate limit reached. Try again in {remaining} seconds.")
             return
-        if limit < 1 or limit > 25:
-            limit = 10
+
+        limit = 10
 
         try:
             rows = central_db.query_all(
                 """
-                SELECT user_id, total_seconds
+                SELECT user_id, total_seconds, total_points
                 FROM voice_stats
-                ORDER BY total_seconds DESC
+                ORDER BY total_points DESC, total_seconds DESC
                 LIMIT ?
                 """,
                 (limit,)
@@ -532,13 +561,13 @@ class VoiceActivityTrackerCog(commands.Cog):
             )
 
             desc = ""
-            for i, (uid, secs) in enumerate(rows, 1):
-                member = ctx.guild.get_member(uid) or self.bot.get_user(uid)
-                name = member.display_name if member else f"User {uid}"
+            for i, (uid, secs, pts) in enumerate(rows, 1):
+                name = await self._resolve_display_name(ctx.guild, uid)
                 hours = (secs or 0) // 3600
                 minutes = ((secs or 0) % 3600) // 60
                 medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-                desc += f"{medal} **{name}** — {hours}h {minutes}m\n"
+                points_display = int(pts or 0)
+                desc += f"{medal} **{name}** — {hours}h {minutes}m · {points_display} Punkte\n"
             embed.description = desc
             await ctx.send(embed=embed)
 
