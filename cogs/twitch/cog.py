@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlparse
@@ -66,6 +67,338 @@ POLL_INTERVAL_SECONDS = 60
 # ============================
 
 
+@dataclass
+class LeaderboardOptions:
+    min_samples: Optional[int] = None
+    min_avg: Optional[float] = None
+    partner_filter: str = "any"
+    limit: int = 5
+    sort_key: str = "avg"
+    sort_order: str = "desc"
+
+    _SORT_LABELS = {
+        "avg": "Ø Viewer",
+        "samples": "Samples",
+        "peak": "Peak",
+        "name": "Name",
+    }
+    _PARTNER_LABELS = {
+        "any": "Alle",
+        "only": "Nur Partner",
+        "exclude": "Ohne Partner",
+    }
+    _SAMPLES_STEPS: Tuple[Optional[int], ...] = (None, 5, 10, 15, 20, 30, 40, 50)
+    _AVG_STEPS: Tuple[Optional[float], ...] = (
+        None,
+        5.0,
+        10.0,
+        15.0,
+        20.0,
+        25.0,
+        30.0,
+        40.0,
+        50.0,
+        75.0,
+        100.0,
+    )
+    _LIMIT_STEPS: Tuple[int, ...] = (5, 10, 15, 20)
+
+    def clone(self) -> "LeaderboardOptions":
+        return LeaderboardOptions(
+            min_samples=self.min_samples,
+            min_avg=self.min_avg,
+            partner_filter=self.partner_filter,
+            limit=self.limit,
+            sort_key=self.sort_key,
+            sort_order=self.sort_order,
+        )
+
+    @property
+    def sort_label(self) -> str:
+        return self._SORT_LABELS.get(self.sort_key, "Ø Viewer")
+
+    @property
+    def order_label(self) -> str:
+        return "aufsteigend" if self.sort_order == "asc" else "absteigend"
+
+    @property
+    def partner_label(self) -> str:
+        return self._PARTNER_LABELS.get(self.partner_filter, "Alle")
+
+    @property
+    def samples_label(self) -> str:
+        if self.min_samples is None:
+            return "keine"
+        return f"≥ {self.min_samples}"
+
+    @property
+    def avg_label(self) -> str:
+        if self.min_avg is None:
+            return "keine"
+        return f"≥ {self.min_avg:.0f}"
+
+    @property
+    def limit_label(self) -> str:
+        return f"Top {self.limit}"
+
+    def filter_summary(self) -> List[str]:
+        parts: List[str] = []
+        if self.min_samples is not None:
+            parts.append(f"Samples ≥ {self.min_samples}")
+        if self.min_avg is not None:
+            parts.append(f"Ø Viewer ≥ {self.min_avg:.1f}")
+        if self.partner_filter == "only":
+            parts.append("nur Partner")
+        elif self.partner_filter == "exclude":
+            parts.append("ohne Partner")
+        if not parts:
+            parts.append("keine Filter")
+        return parts
+
+    def sort_summary(self) -> str:
+        return f"Sortierung: {self.sort_label} {self.order_label}"
+
+    def clamp(self) -> None:
+        self.limit = max(1, min(20, int(self.limit or 5)))
+        if self.sort_key not in {"avg", "samples", "peak", "name"}:
+            self.sort_key = "avg"
+        if self.sort_order not in {"asc", "desc"}:
+            self.sort_order = "desc"
+        if self.partner_filter not in {"any", "only", "exclude"}:
+            self.partner_filter = "any"
+        if self.min_samples is not None:
+            self.min_samples = max(0, int(self.min_samples))
+            if self.min_samples == 0:
+                self.min_samples = None
+        if self.min_avg is not None:
+            self.min_avg = max(0.0, float(self.min_avg))
+            if self.min_avg == 0:
+                self.min_avg = None
+
+    def cycle_sort_key(self) -> None:
+        order = ("avg", "samples", "peak", "name")
+        try:
+            idx = order.index(self.sort_key)
+        except ValueError:
+            idx = 0
+        self.sort_key = order[(idx + 1) % len(order)]
+
+    def toggle_sort_order(self) -> None:
+        self.sort_order = "asc" if self.sort_order == "desc" else "desc"
+
+    def cycle_partner_filter(self) -> None:
+        order = ("any", "only", "exclude")
+        try:
+            idx = order.index(self.partner_filter)
+        except ValueError:
+            idx = 0
+        self.partner_filter = order[(idx + 1) % len(order)]
+
+    @staticmethod
+    def _cycle_value(levels: Sequence[Optional[float]], current: Optional[float]):
+        if current in levels:
+            idx = levels.index(current)
+            return levels[(idx + 1) % len(levels)]
+        if current is None:
+            return levels[1] if len(levels) > 1 else levels[0]
+        numeric_levels = [v for v in levels if v is not None]
+        numeric_levels.sort()
+        for val in numeric_levels:
+            if current < val:
+                return val
+        return levels[0]
+
+    def cycle_min_samples(self) -> None:
+        next_val = self._cycle_value(self._SAMPLES_STEPS, self.min_samples)
+        self.min_samples = None if next_val is None else int(next_val)
+
+    def cycle_min_avg(self) -> None:
+        next_val = self._cycle_value(self._AVG_STEPS, self.min_avg)
+        self.min_avg = None if next_val is None else float(next_val)
+
+    def cycle_limit(self) -> None:
+        next_val = self._cycle_value(self._LIMIT_STEPS, self.limit)
+        self.limit = int(next_val or 5)
+
+    def reset(self) -> None:
+        self.min_samples = None
+        self.min_avg = None
+        self.partner_filter = "any"
+        self.limit = 5
+        self.sort_key = "avg"
+        self.sort_order = "desc"
+
+
+class TwitchLeaderboardView(discord.ui.View):
+    """Interaktive Ansicht für das Twitch-Leaderboard."""
+
+    def __init__(
+        self,
+        cog: "TwitchStreamCog",
+        ctx: commands.Context,
+        tracked_items: Sequence[dict],
+        category_items: Sequence[dict],
+        options: LeaderboardOptions,
+    ):
+        super().__init__(timeout=180)
+        self._cog = cog
+        self._ctx = ctx
+        self._author_id = ctx.author.id
+        self._tracked_items = list(tracked_items)
+        self._category_items = list(category_items)
+        self._options = options.clone()
+        self._message: Optional[discord.Message] = None
+        self._refresh_labels()
+
+    async def send_initial(self) -> discord.Message:
+        embed = self._cog._build_leaderboard_embed(
+            self._tracked_items,
+            self._category_items,
+            self._options,
+        )
+        message = await self._ctx.reply(embed=embed, view=self, mention_author=False)
+        self._message = message
+        return message
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self._author_id:
+            try:
+                await interaction.response.send_message(
+                    "Nur der ursprüngliche Aufrufer kann diese Steuerung verwenden.",
+                    ephemeral=True,
+                )
+            except Exception:
+                pass
+            return False
+        return True
+
+    async def update(
+        self,
+        interaction: discord.Interaction,
+        *,
+        refresh_stats: bool = False,
+    ) -> None:
+        if refresh_stats:
+            try:
+                stats = await self._cog._compute_stats()
+            except Exception:
+                log.exception("Konnte Leaderboard für Refresh nicht laden")
+                await interaction.response.send_message(
+                    "Konnte Daten nicht neu laden.",
+                    ephemeral=True,
+                )
+                return
+            self._tracked_items = stats.get("tracked", {}).get("top", []) or []
+            self._category_items = stats.get("category", {}).get("top", []) or []
+
+        embed = self._cog._build_leaderboard_embed(
+            self._tracked_items,
+            self._category_items,
+            self._options,
+        )
+        self._refresh_labels()
+
+        try:
+            if interaction.response.is_done():
+                await interaction.edit_original_response(embed=embed, view=self)
+            else:
+                await interaction.response.edit_message(embed=embed, view=self)
+            if interaction.message is not None:
+                self._message = interaction.message
+        except Exception:
+            log.exception("Konnte Leaderboard-Interaktion nicht aktualisieren")
+
+    def _refresh_labels(self) -> None:
+        arrow = "⬆️" if self._options.sort_order == "asc" else "⬇️"
+        self.sort_button.label = f"Sortierung: {self._options.sort_label}"
+        self.order_button.label = f"Reihenfolge: {arrow}"
+        self.partner_button.label = f"Partner: {self._options.partner_label}"
+        self.samples_button.label = f"Samples: {self._options.samples_label}"
+        self.avg_button.label = f"Ø Viewer: {self._options.avg_label}"
+        self.limit_button.label = f"Limit: {self._options.limit_label}"
+
+    def _disable_all(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    async def on_timeout(self) -> None:
+        self._disable_all()
+        if self._message is not None:
+            try:
+                await self._message.edit(view=self)
+            except Exception:
+                pass
+
+    @discord.ui.button(label="Sortierung", style=discord.ButtonStyle.primary, row=0)
+    async def sort_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self._options.cycle_sort_key()
+        await self.update(interaction)
+
+    @discord.ui.button(label="Reihenfolge", style=discord.ButtonStyle.secondary, row=0)
+    async def order_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self._options.toggle_sort_order()
+        await self.update(interaction)
+
+    @discord.ui.button(label="Partner", style=discord.ButtonStyle.secondary, row=0)
+    async def partner_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self._options.cycle_partner_filter()
+        await self.update(interaction)
+
+    @discord.ui.button(label="Samples", style=discord.ButtonStyle.secondary, row=1)
+    async def samples_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self._options.cycle_min_samples()
+        await self.update(interaction)
+
+    @discord.ui.button(label="Ø Viewer", style=discord.ButtonStyle.secondary, row=1)
+    async def avg_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self._options.cycle_min_avg()
+        await self.update(interaction)
+
+    @discord.ui.button(label="Limit", style=discord.ButtonStyle.secondary, row=1)
+    async def limit_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self._options.cycle_limit()
+        await self.update(interaction)
+
+    @discord.ui.button(label="Neu laden", style=discord.ButtonStyle.success, row=2)
+    async def refresh_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self.update(interaction, refresh_stats=True)
+
+    @discord.ui.button(label="Zurücksetzen", style=discord.ButtonStyle.secondary, row=2)
+    async def reset_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self._options.reset()
+        await self.update(interaction)
+
+    @discord.ui.button(label="Schließen", style=discord.ButtonStyle.danger, row=2)
+    async def close_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self._disable_all()
+        self.stop()
+        try:
+            if interaction.response.is_done():
+                await interaction.edit_original_response(view=self)
+            else:
+                await interaction.response.edit_message(view=self)
+            if interaction.message is not None:
+                self._message = interaction.message
+        except Exception:
+            log.exception("Konnte Leaderboard schließen nicht anwenden")
 class TwitchStreamCog(commands.Cog):
     """Monitor Twitch-Streamer (Deadlock), poste Go-Live, sammle Stats, Dashboard."""
 
@@ -295,8 +628,7 @@ class TwitchStreamCog(commands.Cog):
     ):
         """Zeigt Twitch-Statistiken im Partner-Kanal an.
 
-        Nutzung: !twl [samples=Zahl] [avg=Zahl] [partner=only|exclude|any]
-                [limit=Zahl] [sort=avg|samples|peak|name] [order=asc|desc]
+        Nutzung: !twl [samples=Zahl] [avg=Zahl] [partner=only|exclude|any] [limit=Zahl] [sort=avg|samples|peak|name] [order=asc|desc]
         """
 
         # Flexible Signatur robust entfalten
@@ -400,90 +732,18 @@ class TwitchStreamCog(commands.Cog):
         tracked_items = stats.get("tracked", {}).get("top", [])
         category_items = stats.get("category", {}).get("top", [])
 
-        tracked_filtered = self._filter_stats_items(
-            tracked_items,
+        options = LeaderboardOptions(
             min_samples=min_samples,
-            min_avg_viewers=min_avg,
+            min_avg=min_avg,
             partner_filter=partner_filter,
+            limit=limit,
+            sort_key=sort_key,
+            sort_order=sort_order,
         )
-        category_filtered = self._filter_stats_items(
-            category_items,
-            min_samples=min_samples,
-            min_avg_viewers=min_avg,
-            partner_filter=partner_filter,
-        )
+        options.clamp()
 
-        reverse = sort_order != "asc"
-
-        def _sort_items(items: List[dict]) -> List[dict]:
-            def _key_func(item: dict):
-                if sort_key == "samples":
-                    return int(item.get("samples") or 0)
-                if sort_key == "peak":
-                    return int(item.get("max_viewers") or 0)
-                if sort_key == "name":
-                    return str(item.get("streamer") or "").lower()
-                return float(item.get("avg_viewers") or 0.0)
-
-            return sorted(items, key=_key_func, reverse=reverse)[:limit]
-
-        tracked_filtered = _sort_items(tracked_filtered)
-        category_filtered = _sort_items(category_filtered)
-
-        # Ausgabe
-        filter_parts = []
-        if min_samples is not None:
-            filter_parts.append(f"Samples ≥ {min_samples}")
-        if min_avg is not None:
-            filter_parts.append(f"Ø Viewer ≥ {min_avg:.1f}")
-        if partner_filter == "only":
-            filter_parts.append("nur Partner")
-        elif partner_filter == "exclude":
-            filter_parts.append("ohne Partner")
-        if not filter_parts:
-            filter_parts.append("keine Filter")
-
-        sort_part = "aufsteigend" if sort_order == "asc" else "absteigend"
-        if sort_key == "avg":
-            sort_label = "Ø Viewer"
-        elif sort_key == "samples":
-            sort_label = "Samples"
-        elif sort_key == "peak":
-            sort_label = "Peak"
-        else:
-            sort_label = "Name"
-
-        sort_summary = f"Sortierung: {sort_label} {sort_part}"
-
-        def _format_lines(items: List[dict]) -> str:
-            if not items:
-                return "Keine Daten für die aktuellen Filter."
-            lines: List[str] = []
-            for idx, item in enumerate(items, start=1):
-                streamer = item.get("streamer") or "?"
-                avg_viewers = float(item.get("avg_viewers") or 0.0)
-                samples = int(item.get("samples") or 0)
-                peak = int(item.get("max_viewers") or 0)
-                partner_flag = " (Partner)" if item.get("is_partner") else ""
-                lines.append(
-                    f"{idx}. {streamer} — Ø {avg_viewers:.1f} Viewer (Samples: {samples}, Peak: {peak}){partner_flag}"
-                )
-            text = "\n".join(lines)
-            if len(text) > 1024:
-                text = text[:1021] + "…"
-            return text
-
-        embed = discord.Embed(
-            title="Twitch Leaderboard",
-            description="Filter: " + ", ".join(filter_parts) + f"\n{sort_summary}",
-            color=discord.Color.purple(),
-        )
-
-        embed.add_field(name="Top Tracked", value=_format_lines(tracked_filtered), inline=False)
-        embed.add_field(name="Top Kategorie", value=_format_lines(category_filtered), inline=False)
-        embed.set_footer(text="Nutze !twl help für weitere Optionen.")
-
-        await ctx.reply(embed=embed, mention_author=False)
+        view = TwitchLeaderboardView(self, ctx, tracked_items, category_items, options)
+        await view.send_initial()
 
     # -------------------------------------------------------
     # Background: Polling / Invites / Dashboard
@@ -773,6 +1033,92 @@ class TwitchStreamCog(commands.Cog):
             return True
 
         return [d for d in items if _ok(d)]
+
+    @staticmethod
+    def _sort_stats_items(
+        items: Sequence[dict],
+        *,
+        sort_key: str,
+        descending: bool,
+        limit: int,
+    ) -> List[dict]:
+        def _key_func(item: dict):
+            if sort_key == "samples":
+                return int(item.get("samples") or 0)
+            if sort_key == "peak":
+                return int(item.get("max_viewers") or 0)
+            if sort_key == "name":
+                return str(item.get("streamer") or "").lower()
+            return float(item.get("avg_viewers") or 0.0)
+
+        limited = sorted(items, key=_key_func, reverse=descending)
+        return list(limited[: max(1, limit)])
+
+    def _build_leaderboard_embed(
+        self,
+        tracked_items: Sequence[dict],
+        category_items: Sequence[dict],
+        options: LeaderboardOptions,
+    ) -> discord.Embed:
+        tracked_filtered = self._filter_stats_items(
+            tracked_items,
+            min_samples=options.min_samples,
+            min_avg_viewers=options.min_avg,
+            partner_filter=options.partner_filter,
+        )
+        category_filtered = self._filter_stats_items(
+            category_items,
+            min_samples=options.min_samples,
+            min_avg_viewers=options.min_avg,
+            partner_filter=options.partner_filter,
+        )
+
+        tracked_sorted = self._sort_stats_items(
+            tracked_filtered,
+            sort_key=options.sort_key,
+            descending=options.sort_order != "asc",
+            limit=options.limit,
+        )
+        category_sorted = self._sort_stats_items(
+            category_filtered,
+            sort_key=options.sort_key,
+            descending=options.sort_order != "asc",
+            limit=options.limit,
+        )
+
+        def _format_lines(items: Sequence[dict]) -> str:
+            if not items:
+                return "Keine Daten für die aktuellen Filter."
+            lines: List[str] = []
+            for idx, item in enumerate(items, start=1):
+                streamer = item.get("streamer") or "?"
+                avg_viewers = float(item.get("avg_viewers") or 0.0)
+                samples = int(item.get("samples") or 0)
+                peak = int(item.get("max_viewers") or 0)
+                partner_flag = " (Partner)" if item.get("is_partner") else ""
+                lines.append(
+                    f"{idx}. {streamer} — Ø {avg_viewers:.1f} Viewer (Samples: {samples}, Peak: {peak}){partner_flag}"
+                )
+            text = "\n".join(lines)
+            if len(text) > 1024:
+                text = text[:1021] + "…"
+            return text
+
+        filter_summary = ", ".join(options.filter_summary())
+        description_lines = [
+            f"Filter: {filter_summary}",
+            options.sort_summary(),
+            f"Anzeige: {options.limit_label}",
+        ]
+        embed = discord.Embed(
+            title="Twitch Leaderboard",
+            description="\n".join(description_lines),
+            color=discord.Color.purple(),
+        )
+        embed.add_field(name="Top Tracked", value=_format_lines(tracked_sorted), inline=False)
+        embed.add_field(name="Top Kategorie", value=_format_lines(category_sorted), inline=False)
+        embed.set_footer(text="Nutze !twl help für weitere Optionen.")
+        return embed
 
     # -------------------------------------------------------
     # Dashboard-Callbacks (für volle UI)
