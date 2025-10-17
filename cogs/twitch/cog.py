@@ -48,7 +48,7 @@ TWITCH_ALERT_CHANNEL_ID  = 1374364800817303632     # Warnungen (30d Re-Check)
 TWITCH_ALERT_MENTION     = ""                      # z. B. "<@123>" oder "<@&456>"
 
 # Öffentlicher Statistik-Kanal (nur dort reagiert !twl)
-TWITCH_STATS_CHANNEL_ID  = 1428062025145385111
+TWITCH_STATS_CHANNEL_IDS  = [1428062025145385111, 1374364800817303632]
 
 # Stats/Sampling: alle N Ticks (Tick=60s) in DB loggen
 TWITCH_LOG_EVERY_N_TICKS = 5
@@ -656,10 +656,15 @@ class TwitchStreamCog(commands.Cog):
             log.error("twitch_leaderboard invoked ohne discord Context; aborting call")
             return
 
-        # Kanal-Gate
-        if ctx.channel.id != TWITCH_STATS_CHANNEL_ID:
-            channel_hint = f"<#{TWITCH_STATS_CHANNEL_ID}>"
-            await ctx.reply(f"Dieser Befehl kann nur in {channel_hint} verwendet werden.")
+        allowed_ids = {int(x) for x in TWITCH_STATS_CHANNEL_IDS}
+
+        if ctx.channel.id not in allowed_ids:
+            mentions = []
+            for cid in allowed_ids:
+                ch = ctx.bot.get_channel(cid)
+                mentions.append(ch.mention if ch else f"<#{cid}>")
+            erlaubt = ", ".join(mentions)
+            await ctx.reply(f"Dieser Befehl kann nur in {erlaubt} verwendet werden.")
             return
 
         # Help
@@ -809,8 +814,7 @@ class TwitchStreamCog(commands.Cog):
                 tracked.append(
                     (login, str(row["twitch_user_id"]), bool(row["require_discord_link"]))
                 )
-                if self._is_partner_verified(dict(row), now_utc):
-                    partner_logins.add(login.lower())
+                partner_logins.add(login.lower())
         except Exception:
             log.exception("Konnte tracked Streamer nicht aus DB lesen")
             tracked = []
