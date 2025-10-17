@@ -47,7 +47,7 @@ TWITCH_ALERT_CHANNEL_ID  = 1374364800817303632     # Warnungen (30d Re-Check)
 TWITCH_ALERT_MENTION     = ""                      # z. B. "<@123>" oder "<@&456>"
 
 # Öffentlicher Statistik-Kanal (nur dort reagiert !twl)
-TWITCH_STATS_CHANNEL_ID  = 1428062025145385111
+TWITCH_STATS_CHANNEL_IDS  = [1428062025145385111, 1374364800817303632]
 
 # Stats/Sampling: alle N Ticks (Tick=60s) in DB loggen
 TWITCH_LOG_EVERY_N_TICKS = 5
@@ -295,7 +295,8 @@ class TwitchStreamCog(commands.Cog):
     ):
         """Zeigt Twitch-Statistiken im Partner-Kanal an.
 
-        Nutzung: !twl [samples=Zahl] [avg=Zahl] [partner=only|exclude|any] [limit=Zahl] [sort=avg|samples|peak|name] [order=asc|desc]
+        Nutzung: !twl [samples=Zahl] [avg=Zahl] [partner=only|exclude|any]
+                [limit=Zahl] [sort=avg|samples|peak|name] [order=asc|desc]
         """
 
         # Flexible Signatur robust entfalten
@@ -323,10 +324,15 @@ class TwitchStreamCog(commands.Cog):
             log.error("twitch_leaderboard invoked ohne discord Context; aborting call")
             return
 
-        # Kanal-Gate
-        if ctx.channel.id != TWITCH_STATS_CHANNEL_ID:
-            channel_hint = f"<#{TWITCH_STATS_CHANNEL_ID}>"
-            await ctx.reply(f"Dieser Befehl kann nur in {channel_hint} verwendet werden.")
+        allowed_ids = {int(x) for x in TWITCH_STATS_CHANNEL_IDS}
+
+        if ctx.channel.id not in allowed_ids:
+            mentions = []
+            for cid in allowed_ids:
+                ch = ctx.bot.get_channel(cid)
+                mentions.append(ch.mention if ch else f"<#{cid}>")
+            erlaubt = ", ".join(mentions)
+            await ctx.reply(f"Dieser Befehl kann nur in {erlaubt} verwendet werden.")
             return
 
         # Help
