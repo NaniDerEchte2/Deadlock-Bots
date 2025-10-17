@@ -231,6 +231,7 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             CREATE TABLE IF NOT EXISTS voice_stats(
               user_id       INTEGER PRIMARY KEY,
               total_seconds INTEGER NOT NULL DEFAULT 0,
+              total_points  INTEGER NOT NULL DEFAULT 0,
               last_update   DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -371,6 +372,14 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             );
             """
         )
+        # Nachträglich hinzugefügte Spalten idempotent sicherstellen
+        try:
+            c.execute(
+                "ALTER TABLE voice_stats ADD COLUMN total_points INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
         # Indizes ergänzen (idempotent)
         try:
             c.execute("CREATE INDEX IF NOT EXISTS idx_lls_active   ON live_lane_state(is_active)")
