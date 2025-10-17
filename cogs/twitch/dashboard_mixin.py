@@ -58,22 +58,6 @@ class TwitchDashboardMixin:
         stats["avg_viewers_tracked"] = tr_avg
         return stats
 
-    async def _dashboard_export(self) -> dict:
-        return await self._dashboard_stats()
-
-    async def _dashboard_export_csv(self) -> str:
-        stats = await self._compute_stats()
-        items = stats.get("tracked", {}).get("top", []) or []
-        lines = ["streamer,samples,avg_viewers,max_viewers,is_partner"]
-        for data in items:
-            streamer = str(data.get("streamer") or "")
-            samples = int(data.get("samples") or 0)
-            avgv = float(data.get("avg_viewers") or 0.0)
-            peak = int(data.get("max_viewers") or 0)
-            isp = 1 if data.get("is_partner") else 0
-            lines.append(f"{streamer},{samples},{avgv:.3f},{peak},{isp}")
-        return "\n".join(lines)
-
     async def _dashboard_verify(self, login: str, mode: str) -> str:
         login = self._normalize_login(login)
         if not login:
@@ -117,8 +101,6 @@ class TwitchDashboardMixin:
                 remove_cb=self._dashboard_remove,
                 list_cb=self._dashboard_list,
                 stats_cb=self._dashboard_stats,
-                export_cb=self._dashboard_export,
-                export_csv_cb=self._dashboard_export_csv,
                 verify_cb=self._dashboard_verify,
             )
             runner = web.AppRunner(app)
