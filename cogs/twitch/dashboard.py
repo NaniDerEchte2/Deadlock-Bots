@@ -714,3 +714,51 @@ class Dashboard:
             web.get("/twitch/export", self.export_json),
             web.get("/twitch/export/csv", self.export_csv),
         ])
+# --- Lightweight Factory -----------------------------------------------
+# Optional: Volle UI nur, wenn alle Callbacks übergeben werden.
+def build_app(
+    *,
+    noauth: bool,
+    token: Optional[str],
+    partner_token: Optional[str] = None,
+    add_cb=None,
+    remove_cb=None,
+    list_cb=None,
+    stats_cb=None,
+    export_cb=None,
+    export_csv_cb=None,
+    verify_cb=None,
+) -> web.Application:
+    app = web.Application()
+    have_full_ui = all(cb is not None for cb in (
+        add_cb, remove_cb, list_cb, stats_cb, export_cb, export_csv_cb, verify_cb
+    ))
+
+    if have_full_ui:
+        ui = Dashboard(
+            app_token=token,
+            noauth=noauth,
+            partner_token=partner_token,
+            add_cb=add_cb,
+            remove_cb=remove_cb,
+            list_cb=list_cb,
+            stats_cb=stats_cb,
+            export_cb=export_cb,
+            export_csv_cb=export_csv_cb,
+            verify_cb=verify_cb,
+        )
+        ui.attach(app)
+    else:
+        # Minimaler Health-Endpoint, damit der Cog-Start nicht crasht
+        async def index(request: web.Request):
+            return web.Response(text="Twitch dashboard is running.")
+        app.add_routes([web.get("/twitch", index)])
+
+    return app
+
+# --- Backwards-Compatibility Shim --------------------------------------
+# Erlaubt Aufrufe wie: Dashboard.build_app(...)
+try:
+    Dashboard.build_app = staticmethod(build_app)  # type: ignore[attr-defined]
+except Exception:
+    pass
