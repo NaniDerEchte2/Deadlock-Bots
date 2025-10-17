@@ -53,7 +53,7 @@ class FeedbackHubModal(discord.ui.Modal):
             required=True,
         )
         self.wish = discord.ui.TextInput(
-            label="Beschreibe deinen Wunsch möglichst genau.",
+            label="Beschreibe deinen Wunsch so genau wie möglich.",
             style=discord.TextStyle.paragraph,
             max_length=1024,
             required=False,
