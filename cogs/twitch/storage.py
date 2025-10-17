@@ -3,7 +3,7 @@ import logging
 import os
 import sqlite3
 from contextlib import contextmanager
-from typing import Iterable
+from typing import Iterable, Optional
 
 log = logging.getLogger("TwitchStreams")
 
@@ -11,58 +11,66 @@ log = logging.getLogger("TwitchStreams")
 try:
     from service.db import get_conn as _central_get_conn  # type: ignore
 except Exception:
-    _central_get_conn = None
-    _FALLBACK_PATH = os.getenv("DEADLOCK_DB_PATH") or os.path.join(os.getcwd(), "deadlock.db")
-    os.makedirs(os.path.dirname(_FALLBACK_PATH), exist_ok=True)
+    _central_get_conn = None  # type: ignore[assignment]
 
-    @contextmanager
-    def _fallback_ctx():
-        conn = sqlite3.connect(_FALLBACK_PATH)
-        conn.row_factory = sqlite3.Row
-        try:
-            ensure_schema(conn)
-            yield conn
-            conn.commit()
-        finally:
-            conn.close()
+_FALLBACK_PATH = os.getenv("DEADLOCK_DB_PATH") or os.path.join(os.getcwd(), "deadlock.db")
+_dir = os.path.dirname(_FALLBACK_PATH)
+if _dir:
+    os.makedirs(_dir, exist_ok=True)
 
 
+@contextmanager
+def _fallback_ctx():
+    conn = sqlite3.connect(_FALLBACK_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@contextmanager
 def get_conn():
     """
-    Liefert einen Context-Manager, der beim Öffnen `ensure_schema()` ausführt.
-    Bevorzugt die zentrale DB aus service.db, sonst Fallback-Datei.
+    Contextmanager für eine SQLite-Connection.
+    - Nutzt die zentrale DB (service.db.get_conn), wenn verfügbar.
+    - Fällt ansonsten auf eine lokale Datei (deadlock.db) zurück.
+    Wichtig: In *jedem* Zweig muss 'yield' verwendet werden (kein 'return' eines Generators)!
     """
+    # Versuch: zentrale DB
     if _central_get_conn:
-        cm = _central_get_conn()
+        try:
+            cm = _central_get_conn()  # liefert selbst einen Contextmanager
+        except Exception:
+            log.exception("Zentrale DB nicht verfügbar – nutze lokalen Fallback")
+            cm = None
+        if cm is not None:
+            with cm as conn:  # type: ignore[misc]
+                ensure_schema(conn)
+                yield conn
+                return
 
-        class _Wrapper:
-            def __enter__(self):
-                self._conn = cm.__enter__()
-                # zentrale DB -> Schema bei Bedarf anheben
-                ensure_schema(self._conn)
-                return self._conn
-
-            def __exit__(self, exc_type, exc, tb):
-                return cm.__exit__(exc_type, exc, tb)
-
-        return _Wrapper()
-    else:
-        return _fallback_ctx()
+    # Fallback: lokale Datei
+    with _fallback_ctx() as conn:
+        yield conn
 
 
 # --- Schema / Migration -----------------------------------------------------
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    cur = conn.execute(f"PRAGMA table_info({table})")  # Spalten introspektieren
-    return {row[1] for row in cur.fetchall()}          # name ist Index 1
-# Siehe Doku zu PRAGMA table_info. :contentReference[oaicite:1]{index=1}
+    cur = conn.execute(f"PRAGMA table_info({table})")
+    return {row[1] for row in cur.fetchall()}  # Spaltenname ist Index 1
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, name: str, spec: str) -> None:
     cols = _columns(conn, table)
     if name not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {spec}")
         log.info("DB: added column %s.%s", table, name)
-# SQLite hat kein "ADD COLUMN IF NOT EXISTS" → erst via PRAGMA prüfen. :contentReference[oaicite:2]{index=2}
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -74,27 +82,20 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS twitch_streamers (
-            twitch_login           TEXT PRIMARY KEY,
-            twitch_user_id         TEXT,
-            require_discord_link   INTEGER DEFAULT 0,
-            last_description       TEXT,
-            last_link_ok           INTEGER DEFAULT 0,
-            last_link_checked_at   TEXT,
-            next_link_check_at     TEXT,
-            manual_verified_permanent INTEGER DEFAULT 0,
-            manual_verified_until  TEXT,
-            manual_verified_at     TEXT,
-            created_at             TEXT DEFAULT CURRENT_TIMESTAMP
+            twitch_login               TEXT PRIMARY KEY,
+            twitch_user_id             TEXT,
+            require_discord_link       INTEGER DEFAULT 0,
+            next_link_check_at         TEXT,
+            manual_verified_permanent  INTEGER DEFAULT 0,
+            manual_verified_until      TEXT,
+            manual_verified_at         TEXT,
+            created_at                 TEXT DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
-    # bestehende Alt-Tabellen anheben
     for col, spec in [
         ("twitch_user_id", "TEXT"),
         ("require_discord_link", "INTEGER DEFAULT 0"),
-        ("last_description", "TEXT"),
-        ("last_link_ok", "INTEGER DEFAULT 0"),
-        ("last_link_checked_at", "TEXT"),
         ("next_link_check_at", "TEXT"),
         ("manual_verified_permanent", "INTEGER DEFAULT 0"),
         ("manual_verified_until", "TEXT"),
@@ -106,9 +107,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_twitch_streamers_user_id ON twitch_streamers(twitch_user_id)"
     )
-    # (INSERT OR IGNORE nutzt diese PK/UNIQUEs als Konfliktziel. :contentReference[oaicite:3]{index=3})
 
-    # 2) twitch_live_state – wird per ON CONFLICT(twitch_user_id) upserted
+    # 2) twitch_live_state
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS twitch_live_state (
@@ -124,29 +124,34 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Neue/zusätzliche Spalten für neuere Cog-Versionen:
+    _add_column_if_missing(conn, "twitch_live_state", "last_seen_at", "TEXT")
+    _add_column_if_missing(conn, "twitch_live_state", "last_game", "TEXT")
+    _add_column_if_missing(conn, "twitch_live_state", "last_viewer_count", "INTEGER DEFAULT 0")
 
-    # 3) twitch_stream_logs – periodische Samples
+    # 3) Stats-Logs
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS twitch_stream_logs (
-            id             INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts             TEXT DEFAULT CURRENT_TIMESTAMP,
-            streamer_login TEXT,
-            user_id        TEXT,
-            title          TEXT,
-            viewers        INTEGER,
-            started_at     TEXT,
-            language       TEXT,
-            game_id        TEXT,
-            game_name      TEXT,
-            is_tracked     INTEGER DEFAULT 0
+        CREATE TABLE IF NOT EXISTS twitch_stats_tracked (
+            ts_utc       TEXT,
+            streamer     TEXT,
+            viewer_count INTEGER,
+            is_partner   INTEGER DEFAULT 0
         )
         """
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_stream_logs_login_ts ON twitch_stream_logs(streamer_login, ts)"
+        """
+        CREATE TABLE IF NOT EXISTS twitch_stats_category (
+            ts_utc       TEXT,
+            streamer     TEXT,
+            viewer_count INTEGER,
+            is_partner   INTEGER DEFAULT 0
+        )
+        """
     )
-    _add_column_if_missing(conn, "twitch_stream_logs", "is_tracked", "INTEGER DEFAULT 0")
+    _add_column_if_missing(conn, "twitch_stats_tracked", "is_partner", "INTEGER DEFAULT 0")
+    _add_column_if_missing(conn, "twitch_stats_category", "is_partner", "INTEGER DEFAULT 0")
 
     # 4) twitch_settings – Channel je Guild
     conn.execute(

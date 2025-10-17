@@ -30,6 +30,7 @@ class Dashboard:
         *,
         app_token: Optional[str],
         noauth: bool,
+        partner_token: Optional[str],
         # add_cb soll eine Statusmeldung zurückgeben (z. B. "DisplayName hinzugefügt")
         add_cb: Callable[[str, bool], Awaitable[str]],
         remove_cb: Callable[[str], Awaitable[None]],
@@ -41,6 +42,7 @@ class Dashboard:
     ):
         self._token = app_token
         self._noauth = noauth
+        self._partner_token = partner_token
         self._add = add_cb
         self._remove = remove_cb
         self._list = list_cb
@@ -57,6 +59,24 @@ class Dashboard:
         if not token or not self._token or token != self._token:
             raise web.HTTPUnauthorized(text="missing or invalid token")
 
+    def _require_partner_token(self, request: web.Request):
+        if self._noauth:
+            return
+        partner_header = request.headers.get("X-Partner-Token")
+        partner_query = request.query.get("partner_token")
+        admin_header = request.headers.get("X-Admin-Token")
+        admin_query = request.query.get("token")
+
+        if self._partner_token:
+            if partner_header == self._partner_token or partner_query == self._partner_token:
+                return
+            if self._token and (admin_header == self._token or admin_query == self._token):
+                return
+            raise web.HTTPUnauthorized(text="missing or invalid partner token")
+
+        # Fallback: wenn kein Partner-Token gesetzt ist, gilt das Admin-Token
+        self._require_token(request)
+
     # ---------- UI ----------
     def _tabs(self, active: str) -> str:
         def a(href: str, label: str, key: str) -> str:
@@ -71,12 +91,20 @@ class Dashboard:
             "</nav>"
         )
 
-    def _html(self, body: str, active: str, msg: str = "", err: str = "") -> str:
+    def _html(
+        self,
+        body: str,
+        active: str,
+        msg: str = "",
+        err: str = "",
+        nav: Optional[str] = None,
+    ) -> str:
         flash = ""
         if msg:
             flash = f'<div class="flash ok">{html.escape(msg)}</div>'
         elif err:
             flash = f'<div class="flash err">{html.escape(err)}</div>'
+        nav_html = self._tabs(active) if nav is None else nav
         return f"""
 <!doctype html>
 <meta charset="utf-8">
@@ -103,6 +131,7 @@ class Dashboard:
   th, td {{ border-bottom:1px solid var(--bd); padding:.6rem; text-align:left; }}
   th {{ color:var(--accent-2); }}
   input[type="text"] {{ background:#0f1422; border:1px solid var(--bd); color:var(--text); padding:.45rem .6rem; border-radius:.4rem; width:28rem; }}
+  input[type="number"], select {{ background:#0f1422; border:1px solid var(--bd); color:var(--text); padding:.45rem .6rem; border-radius:.4rem; }}
   small {{ color:var(--muted); }}
   .flash {{ margin:.7rem 0; padding:.5rem .7rem; border-radius:.4rem; }}
   .flash.ok {{ background:var(--ok-bg); border:1px solid var(--ok-bd); color:var(--ok-fg); }}
@@ -121,8 +150,11 @@ class Dashboard:
   table.sortable-table th[data-sort-type]::after {{ content:"⇅"; position:absolute; right:.4rem; color:var(--muted); font-size:.75rem; top:50%; transform:translateY(-50%); }}
   table.sortable-table th[data-sort-type][data-sort-dir="asc"]::after {{ content:"↑"; color:var(--accent-2); }}
   table.sortable-table th[data-sort-type][data-sort-dir="desc"]::after {{ content:"↓"; color:var(--accent-2); }}
+  .filter-form {{ margin-top:.6rem; }}
+  .filter-form .row {{ align-items:flex-end; gap:1rem; }}
+  .filter-label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.9rem; color:var(--muted); }}
 </style>
-{self._tabs(active)}
+{nav_html}
 {flash}
 {body}
 """
@@ -354,8 +386,7 @@ class Dashboard:
             log.exception("dashboard verify failed: %s", e)
             raise web.HTTPFound(location="/twitch?err=" + quote_plus("Verifizierung fehlgeschlagen"))
 
-    async def stats(self, request: web.Request):
-        self._require_token(request)
+    async def _render_stats_page(self, request: web.Request, *, partner_view: bool) -> web.Response:
         stats = await self._stats()
         tracked = stats.get("tracked", {}) or {}
         category = stats.get("category", {}) or {}
@@ -363,42 +394,111 @@ class Dashboard:
         view_mode = (request.query.get("view") or "top").lower()
         show_all = view_mode == "all"
 
+        def _parse_int(*names: str) -> Optional[int]:
+            for name in names:
+                raw = request.query.get(name)
+                if raw is None or raw == "":
+                    continue
+                try:
+                    value = int(raw)
+                except ValueError:
+                    continue
+                return max(0, value)
+            return None
+
+        def _parse_float(*names: str) -> Optional[float]:
+            for name in names:
+                raw = request.query.get(name)
+                if raw is None or raw == "":
+                    continue
+                try:
+                    value = float(raw)
+                except ValueError:
+                    continue
+                return max(0.0, value)
+            return None
+
+        min_samples = _parse_int("min_samples", "samples")
+        min_avg = _parse_float("min_avg", "avg")
+        partner_filter = (request.query.get("partner") or "any").lower()
+        if partner_filter not in {"only", "exclude", "any"}:
+            partner_filter = "any"
+
+        base_path = request.rel_url.path
+
+        preserved_params = {}
+        if not self._noauth:
+            admin_token = request.query.get("token")
+            if admin_token:
+                preserved_params["token"] = admin_token
+        partner_token = request.query.get("partner_token")
+        if partner_token:
+            preserved_params["partner_token"] = partner_token
+
+        filter_params = {}
+        if min_samples is not None:
+            filter_params["min_samples"] = str(min_samples)
+        if min_avg is not None:
+            filter_params["min_avg"] = f"{min_avg:g}"
+        if partner_filter in {"only", "exclude"}:
+            filter_params["partner"] = partner_filter
+
         def build_stats_url(view: str) -> str:
-            params = {}
+            params = dict(preserved_params)
+            params.update(filter_params)
             if view != "top":
                 params["view"] = view
-            if not self._noauth:
-                token = request.query.get("token")
-                if token:
-                    params["token"] = token
+            else:
+                params.pop("view", None)
             query = urlencode(params)
-            return "/twitch/stats" + (f"?{query}" if query else "")
+            return base_path + (f"?{query}" if query else "")
 
         toggle_href = build_stats_url("top" if show_all else "all")
         toggle_label = "Top 10 anzeigen" if show_all else "Alle anzeigen"
         current_view_label = "Alle" if show_all else "Top 10"
 
-        tracked_items = tracked.get("top", []) or []
-        category_items = category.get("top", []) or []
+        def apply_filters(items: List[dict]) -> List[dict]:
+            result: List[dict] = []
+            for item in items:
+                samples = int(item.get("samples") or 0)
+                avg_viewers = float(item.get("avg_viewers") or 0.0)
+                is_partner = bool(item.get("is_partner"))
+                if min_samples is not None and samples < min_samples:
+                    continue
+                if min_avg is not None and avg_viewers < min_avg:
+                    continue
+                if partner_filter == "only" and not is_partner:
+                    continue
+                if partner_filter == "exclude" and is_partner:
+                    continue
+                result.append(item)
+            return result
+
+        tracked_items = apply_filters(tracked.get("top", []) or [])
+        category_items = apply_filters(category.get("top", []) or [])
         if not show_all:
             tracked_items = tracked_items[:10]
             category_items = category_items[:10]
 
-        def render_table(items):
+        def render_table(items: List[dict]) -> str:
             if not items:
-                return "<tr><td colspan=4><i>No data yet.</i></td></tr>"
+                return "<tr><td colspan=5><i>Keine Daten für die aktuellen Filter.</i></td></tr>"
             rows = []
             for item in items:
-                streamer = html.escape(str(item.get('streamer', '')))
-                samples = int(item.get('samples') or 0)
-                avg_viewers = float(item.get('avg_viewers') or 0.0)
-                max_viewers = int(item.get('max_viewers') or 0)
+                streamer = html.escape(str(item.get("streamer", "")))
+                samples = int(item.get("samples") or 0)
+                avg_viewers = float(item.get("avg_viewers") or 0.0)
+                max_viewers = int(item.get("max_viewers") or 0)
+                is_partner = bool(item.get("is_partner"))
+                partner_text = "Ja" if is_partner else "Nein"
+                partner_value = "1" if is_partner else "0"
                 rows.append(
                     "<tr>"
                     f"<td>{streamer}</td>"
                     f"<td data-value=\"{samples}\">{samples}</td>"
                     f"<td data-value=\"{avg_viewers:.4f}\">{avg_viewers:.1f}</td>"
                     f"<td data-value=\"{max_viewers}\">{max_viewers}</td>"
+                    f"<td data-value=\"{partner_value}\">{partner_text}</td>"
                     "</tr>"
                 )
             return "".join(rows)
@@ -451,10 +551,50 @@ class Dashboard:
 </script>
 """
 
+        filter_descriptions = []
+        if min_samples is not None:
+            filter_descriptions.append(f"Samples ≥ {min_samples}")
+        if min_avg is not None:
+            filter_descriptions.append(f"Ø Viewer ≥ {min_avg:.1f}")
+        if partner_filter == "only":
+            filter_descriptions.append("Nur Partner")
+        elif partner_filter == "exclude":
+            filter_descriptions.append("Ohne Partner")
+        if not filter_descriptions:
+            filter_descriptions.append("Keine Filter aktiv")
+
+        hidden_inputs = []
+        for key, value in preserved_params.items():
+            hidden_inputs.append(
+                f"<input type='hidden' name='{html.escape(key)}' value='{html.escape(value)}'>"
+            )
+        if show_all:
+            hidden_inputs.append("<input type='hidden' name='view' value='all'>")
+        hidden_inputs_html = "".join(hidden_inputs)
+
+        clear_params = dict(preserved_params)
+        if show_all:
+            clear_params["view"] = "all"
+        clear_query = urlencode(clear_params)
+        clear_url = base_path + (f"?{clear_query}" if clear_query else "")
+
+        partner_select_options = {
+            "any": "Alle",
+            "only": "Nur Partner",
+            "exclude": "Ohne Partner",
+        }
+
+        def build_partner_options() -> str:
+            options = []
+            for value, label in partner_select_options.items():
+                selected = " selected" if partner_filter == value else ""
+                options.append(f"<option value='{value}'{selected}>{label}</option>")
+            return "".join(options)
+
         body = f"""
 <h1>📊 Stats</h1>
 
-<div class="card">
+<div class=\"card\">
   <h2>Deadlock Kategorie Überblick</h2>
   <p>
     Samples: {category.get('samples', 0)}<br>
@@ -467,39 +607,64 @@ class Dashboard:
   </p>
 </div>
 
-<div class="card" style="margin-top:1.2rem;">
-  <div class="card-header">
+<div class=\"card\" style=\"margin-top:1.2rem;\">
+  <h2>Filter</h2>
+  <form method=\"get\" action=\"{html.escape(base_path)}\" class=\"filter-form\">
+    {hidden_inputs_html}
+    <div class=\"row\">
+      <label class=\"filter-label\">Min. Samples
+        <input type=\"number\" name=\"min_samples\" value=\"{'' if min_samples is None else min_samples}\" min=\"0\">
+      </label>
+      <label class=\"filter-label\">Min. Ø Viewer
+        <input type=\"number\" step=\"0.1\" name=\"min_avg\" value=\"{'' if min_avg is None else f'{min_avg:.1f}'}\" min=\"0\">
+      </label>
+      <label class=\"filter-label\">Partner Filter
+        <select name=\"partner\">{build_partner_options()}</select>
+      </label>
+    </div>
+    <div class=\"row\" style=\"margin-top:.8rem;\">
+      <button class=\"btn\">Anwenden</button>
+      <a class=\"btn btn-secondary\" href=\"{html.escape(clear_url)}\">Reset</a>
+    </div>
+  </form>
+  <div class=\"status-meta\" style=\"margin-top:.8rem;\">Aktive Filter: {' • '.join(filter_descriptions)}</div>
+</div>
+
+<div class=\"card\" style=\"margin-top:1.2rem;\">
+  <div class=\"card-header\">
     <h2>Top Partner Streamer (Tracked)</h2>
-    <div class="row" style="gap:.6rem; align-items:center;">
-      <div style="color:var(--muted); font-size:.9rem;">Ansicht: {current_view_label}</div>
-      <a class="btn" href="{toggle_href}">{toggle_label}</a>
+    <div class=\"row\" style=\"gap:.6rem; align-items:center;\">
+      <div style=\"color:var(--muted); font-size:.9rem;\">Ansicht: {current_view_label}</div>
+      <a class=\"btn\" href=\"{html.escape(toggle_href)}\">{toggle_label}</a>
     </div>
   </div>
-  <table class="sortable-table" data-table="tracked">
+  <table class=\"sortable-table\" data-table=\"tracked\">
     <thead>
       <tr>
-        <th data-sort-type="string">Streamer</th>
-        <th data-sort-type="number">Samples</th>
-        <th data-sort-type="number">Ø Viewer</th>
-        <th data-sort-type="number">Peak Viewer</th>
+        <th data-sort-type=\"string\">Streamer</th>
+        <th data-sort-type=\"number\">Samples</th>
+        <th data-sort-type=\"number\">Ø Viewer</th>
+        <th data-sort-type=\"number\">Peak Viewer</th>
+        <th data-sort-type=\"number\">Partner</th>
       </tr>
     </thead>
     <tbody>{render_table(tracked_items)}</tbody>
   </table>
 </div>
 
-<div class="card" style="margin-top:1.2rem;">
-  <div class="card-header">
+<div class=\"card\" style=\"margin-top:1.2rem;\">
+  <div class=\"card-header\">
     <h2>Top Deadlock Streamer (Kategorie gesamt)</h2>
-    <div style="color:var(--muted); font-size:.9rem;">Ansicht: {current_view_label}</div>
+    <div style=\"color:var(--muted); font-size:.9rem;\">Ansicht: {current_view_label}</div>
   </div>
-  <table class="sortable-table" data-table="category">
+  <table class=\"sortable-table\" data-table=\"category\">
     <thead>
       <tr>
-        <th data-sort-type="string">Streamer</th>
-        <th data-sort-type="number">Samples</th>
-        <th data-sort-type="number">Ø Viewer</th>
-        <th data-sort-type="number">Peak Viewer</th>
+        <th data-sort-type=\"string\">Streamer</th>
+        <th data-sort-type=\"number\">Samples</th>
+        <th data-sort-type=\"number\">Ø Viewer</th>
+        <th data-sort-type=\"number\">Peak Viewer</th>
+        <th data-sort-type=\"number\">Partner</th>
       </tr>
     </thead>
     <tbody>{render_table(category_items)}</tbody>
@@ -507,7 +672,20 @@ class Dashboard:
 </div>
 {script}
 """
-        return web.Response(text=self._html(body, active="stats"), content_type="text/html")
+
+        nav_html = None
+        if partner_view:
+            nav_html = "<nav class=\"tabs\"><span class=\"tab active\">Stats</span></nav>"
+
+        return web.Response(text=self._html(body, active="stats", nav=nav_html), content_type="text/html")
+
+    async def stats(self, request: web.Request):
+        self._require_token(request)
+        return await self._render_stats_page(request, partner_view=False)
+
+    async def partner_stats(self, request: web.Request):
+        self._require_partner_token(request)
+        return await self._render_stats_page(request, partner_view=True)
 
     async def export_json(self, request: web.Request):
         self._require_token(request)
@@ -532,6 +710,55 @@ class Dashboard:
             web.post("/twitch/remove", self.remove),
             web.post("/twitch/verify", self.verify),
             web.get("/twitch/stats", self.stats),
+            web.get("/twitch/partners", self.partner_stats),
             web.get("/twitch/export", self.export_json),
             web.get("/twitch/export/csv", self.export_csv),
         ])
+# --- Lightweight Factory -----------------------------------------------
+# Optional: Volle UI nur, wenn alle Callbacks übergeben werden.
+def build_app(
+    *,
+    noauth: bool,
+    token: Optional[str],
+    partner_token: Optional[str] = None,
+    add_cb=None,
+    remove_cb=None,
+    list_cb=None,
+    stats_cb=None,
+    export_cb=None,
+    export_csv_cb=None,
+    verify_cb=None,
+) -> web.Application:
+    app = web.Application()
+    have_full_ui = all(cb is not None for cb in (
+        add_cb, remove_cb, list_cb, stats_cb, export_cb, export_csv_cb, verify_cb
+    ))
+
+    if have_full_ui:
+        ui = Dashboard(
+            app_token=token,
+            noauth=noauth,
+            partner_token=partner_token,
+            add_cb=add_cb,
+            remove_cb=remove_cb,
+            list_cb=list_cb,
+            stats_cb=stats_cb,
+            export_cb=export_cb,
+            export_csv_cb=export_csv_cb,
+            verify_cb=verify_cb,
+        )
+        ui.attach(app)
+    else:
+        # Minimaler Health-Endpoint, damit der Cog-Start nicht crasht
+        async def index(request: web.Request):
+            return web.Response(text="Twitch dashboard is running.")
+        app.add_routes([web.get("/twitch", index)])
+
+    return app
+
+# --- Backwards-Compatibility Shim --------------------------------------
+# Erlaubt Aufrufe wie: Dashboard.build_app(...)
+try:
+    Dashboard.build_app = staticmethod(build_app)  # type: ignore[attr-defined]
+except Exception:
+    pass
