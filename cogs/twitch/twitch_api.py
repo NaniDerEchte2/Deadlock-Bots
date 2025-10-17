@@ -14,9 +14,8 @@ class TwitchAPI:
     Async Wrapper für Twitch Helix mit App-Access-Token.
 
     - Eine wiederverwendete aiohttp.ClientSession (lazy erstellt)
-    - Keine Secrets im Log
-    - Timeouts + Backoff bei 5xx/429
-    - Kategorien via /search/categories; Streams via /streams; Profile via /users
+    - Token wird automatisch geholt/refresh't
+    - Hilfsfunktionen für Users, Streams & Kategorien
     """
 
     def __init__(self, client_id: str, client_secret: str, session: Optional[aiohttp.ClientSession] = None):
@@ -50,7 +49,7 @@ class TwitchAPI:
         self._ensure_session()
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, exc_type, exc, tb):
         await self.aclose()
 
     # ---- OAuth -------------------------------------------------------------
@@ -83,27 +82,15 @@ class TwitchAPI:
         await self._ensure_token()
         self._ensure_session()
         assert self._session is not None
-        backoff = 1.0
-        for _ in range(4):
-            try:
-                async with self._session.get(
-                    f"{TWITCH_API_BASE}{path}", headers=self._headers(), params=params
-                ) as r:
-                    if r.status == 429:
-                        await asyncio.sleep(min(10, backoff))
-                        backoff *= 2
-                        continue
-                    r.raise_for_status()
-                    return await r.json()
-            except aiohttp.ClientResponseError as e:
-                if e.status in (500, 502, 503, 504):
-                    await asyncio.sleep(backoff)
-                    backoff *= 2
-                    continue
-                raise
-        raise RuntimeError("Twitch API retries exhausted")
+        url = f"{TWITCH_API_BASE}{path}"
+        async with self._session.get(url, headers=self._headers(), params=params) as r:
+            if r.status != 200:
+                txt = await r.text()
+                self._log.error("GET %s failed: HTTP %s: %s", path, r.status, txt[:300].replace("\n", " "))
+                r.raise_for_status()
+            return await r.json()
 
-    # ---- Categories (Games) -----------------------------------------------
+    # ---- Categories --------------------------------------------------------
     async def search_category_id(self, query: str) -> Optional[str]:
         if not query:
             return None
@@ -136,48 +123,35 @@ class TwitchAPI:
             params: List[Tuple[str, str]] = [("login", x) for x in chunk]
             js = await self._get("/users", params=params)
             for u in js.get("data", []) or []:
-                out[u["login"].lower()] = u
+                login = (u.get("login") or "").lower()
+                out[login] = u
         return out
 
     async def _fetch_stream_page(
         self,
         *,
-        user_logins: Optional[List[str]] = None,
         game_id: Optional[str] = None,
         language: Optional[str] = None,
         first: int = 100,
         after: Optional[str] = None,
+        logins: Optional[List[str]] = None,
     ) -> Tuple[List[Dict], Optional[str]]:
         params: List[Tuple[str, str]] = []
-        if user_logins:
-            for u in user_logins[:100]:
-                params.append(("user_login", u))
         if game_id:
             params.append(("game_id", game_id))
         if language:
             params.append(("language", language))
-        params.append(("first", str(min(max(first, 1), 100))))
+        if logins:
+            for lg in logins:
+                params.append(("user_login", lg))
+        params.append(("first", str(max(1, min(first, 100)))))
         if after:
             params.append(("after", after))
-        js = await self._get("/streams", params=params)
-        pagination = js.get("pagination") or {}
-        return js.get("data", []), pagination.get("cursor")
 
-    async def get_streams(
-        self,
-        *,
-        user_logins: Optional[List[str]] = None,
-        game_id: Optional[str] = None,
-        language: Optional[str] = None,
-        first: int = 100,
-    ) -> List[Dict]:
-        data, _ = await self._fetch_stream_page(
-            user_logins=user_logins,
-            game_id=game_id,
-            language=language,
-            first=first,
-        )
-        return data
+        js = await self._get("/streams", params=params)
+        data = js.get("data", []) or []
+        cursor = (js.get("pagination") or {}).get("cursor")
+        return data, cursor
 
     async def get_streams_for_game(
         self,
@@ -191,7 +165,6 @@ class TwitchAPI:
 
         Falls die Game-ID unbekannt ist, wird nach ``game_name`` gefiltert.
         """
-
         limit = max(1, min(limit, 1200))  # hard cap to protect API limits
         out: List[Dict] = []
         after: Optional[str] = None
@@ -208,8 +181,10 @@ class TwitchAPI:
                 if not after or not data:
                     break
         else:
-            # Ohne Kategorie-ID bleibt nur ein allgemeiner Stream-Call mit Filtern
-            while len(out) < limit:
+            # Fallback: ohne game_id viele Streams ziehen und anschließend filtern
+            scanned = 0
+            after = None
+            while scanned < limit:
                 data, after = await self._fetch_stream_page(
                     language=language,
                     first=100,
@@ -226,3 +201,30 @@ class TwitchAPI:
         if len(out) > limit:
             out = out[:limit]
         return out
+
+    async def get_streams_by_logins(self, logins: List[str], language: Optional[str] = None) -> List[Dict]:
+        """Return live streams for the given user logins.
+        Wrapper around Helix /streams with user_login filters (batched).
+        """
+        if not logins:
+            return []
+        await self._ensure_token()
+        out: List[Dict] = []
+        for i in range(0, len(logins), 100):
+            chunk = [x for x in logins[i:i+100] if x]
+            if not chunk:
+                continue
+            params: List[Tuple[str, str]] = []
+            for lg in chunk:
+                params.append(("user_login", lg))
+            if language:
+                params.append(("language", language))
+            js = await self._get("/streams", params=params)
+            out.extend(js.get("data", []) or [])
+        return out
+
+    async def get_streams_by_category(self, category_id: str, language: Optional[str] = None, limit: int = 500) -> List[Dict]:
+        """Return live streams for a given category/game id.
+        Convenience wrapper that delegates to get_streams_for_game.
+        """
+        return await self.get_streams_for_game(game_id=category_id, game_name="", language=language, limit=limit)
