@@ -485,17 +485,26 @@ class TwitchStreamCog(commands.Cog):
             await self._ensure_category_id()
 
         # 1) Tracked Streamer aus DB lesen
+        now_utc = datetime.now(tz=timezone.utc)
+        partner_logins: Set[str] = set()
         try:
             with storage.get_conn() as c:
                 rows = c.execute(
-                    "SELECT twitch_login, twitch_user_id, require_discord_link FROM twitch_streamers"
+                    "SELECT twitch_login, twitch_user_id, require_discord_link, "
+                    "       manual_verified_permanent, manual_verified_until "
+                    "FROM twitch_streamers"
                 ).fetchall()
-            tracked: List[Tuple[str, str, bool]] = [
-                (str(r["twitch_login"]), str(r["twitch_user_id"]), bool(r["require_discord_link"])) for r in rows
-            ]
+            tracked: List[Tuple[str, str, bool]] = []
+            for row in rows:
+                login = str(row["twitch_login"])
+                tracked.append(
+                    (login, str(row["twitch_user_id"]), bool(row["require_discord_link"]))
+                )
+                partner_logins.add(login.lower())
         except Exception:
             log.exception("Konnte tracked Streamer nicht aus DB lesen")
             tracked = []
+            partner_logins = set()
 
         logins = [login for login, _, _ in tracked]
         streams_by_login: Dict[str, dict] = {}
@@ -512,6 +521,11 @@ class TwitchStreamCog(commands.Cog):
         except Exception:
             log.exception("Konnte Streams für tracked Logins nicht abrufen")
 
+        # Partner-Flag für live tracked Streams anwenden
+        for login, stream in list(streams_by_login.items()):
+            if login in partner_logins:
+                stream["is_partner"] = True
+
         # 3) Kategorie-Streams (optional für Statistiken)
         category_streams: List[dict] = []
         if self._category_id:
@@ -523,6 +537,12 @@ class TwitchStreamCog(commands.Cog):
                 )
             except Exception:
                 log.exception("Konnte Kategorie-Streams nicht abrufen")
+
+        # Partner-Flag für Kategorie-Streams anwenden (wenn sie tracked Partner sind)
+        for stream in category_streams:
+            login = (stream.get("user_login") or "").lower()
+            if login in partner_logins:
+                stream["is_partner"] = True
 
         # 4) Postings/Warnungen verarbeiten (z. B. Live-Ankündigungen, Link-Checks)
         try:
@@ -868,6 +888,32 @@ class TwitchStreamCog(commands.Cog):
     # -------------------------------------------------------
     # Admin-Commands: Add/Remove Helpers
     # -------------------------------------------------------
+    @staticmethod
+    def _parse_db_datetime(value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    @classmethod
+    def _is_partner_verified(cls, row: Dict[str, Any], now_utc: datetime) -> bool:
+        try:
+            if bool(row.get("manual_verified_permanent")):
+                return True
+        except Exception:
+            pass
+
+        until_raw = row.get("manual_verified_until")
+        until_dt = cls._parse_db_datetime(str(until_raw)) if until_raw else None
+        if until_dt and until_dt >= now_utc:
+            return True
+        return False
+
     async def _cmd_add(self, login: str, require_link: bool) -> str:
         assert self.api is not None
         normalized = self._normalize_login(login)
