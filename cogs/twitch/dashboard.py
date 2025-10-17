@@ -366,8 +366,11 @@ class Dashboard:
         data = await request.post()
         login = (data.get("login") or "").strip()
         try:
-            await self._remove(login)
-            raise web.HTTPFound(location="/twitch?ok=" + quote_plus(f"{login} removed"))
+            msg = await self._remove(login)
+            message = msg or f"{login} removed"
+            raise web.HTTPFound(location="/twitch?ok=" + quote_plus(message))
+        except web.HTTPException:
+            raise
         except Exception as e:
             log.exception("dashboard remove failed: %s", e)
             raise web.HTTPFound(location="/twitch?err=" + quote_plus("could not remove"))

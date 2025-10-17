@@ -17,8 +17,8 @@ class TwitchDashboardMixin:
     async def _dashboard_add(self, login: str, require_link: bool) -> str:
         return await self._cmd_add(login, require_link)
 
-    async def _dashboard_remove(self, login: str) -> None:
-        await self._cmd_remove(login)
+    async def _dashboard_remove(self, login: str) -> str:
+        return await self._cmd_remove(login)
 
     async def _dashboard_list(self):
         with storage.get_conn() as c:
