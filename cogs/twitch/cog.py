@@ -295,7 +295,7 @@ class TwitchStreamCog(commands.Cog):
     ):
         """Zeigt Twitch-Statistiken im Partner-Kanal an.
 
-        Nutzung: !twl [samples=Zahl] [avg=Zahl] [partner=only|exclude|any] [limit=Zahl]
+        Nutzung: !twl [samples=Zahl] [avg=Zahl] [partner=only|exclude|any] [limit=Zahl] [sort=avg|samples|peak|name] [order=asc|desc]
         """
 
         # Flexible Signatur robust entfalten
@@ -332,8 +332,8 @@ class TwitchStreamCog(commands.Cog):
         # Help
         if filter_text.lower() in {"help", "?", "hilfe"}:
             help_text = (
-                "Verwendung: !twl [samples=Zahl] [avg=Zahl] [partner=only|exclude|any] [limit=Zahl]\n"
-                "Beispiel: !twl samples=15 avg=25 partner=only"
+                "Verwendung: !twl [samples=Zahl] [avg=Zahl] [partner=only|exclude|any] [limit=Zahl] [sort=avg|samples|peak|name] [order=asc|desc]\n"
+                "Beispiel: !twl samples=15 avg=25 partner=only sort=avg order=desc"
             )
             await ctx.reply(help_text)
             return
@@ -343,6 +343,8 @@ class TwitchStreamCog(commands.Cog):
         min_avg: Optional[float] = None
         partner_filter = "any"
         limit = 5
+        sort_key = "avg"
+        sort_order = "desc"
 
         for token in filter_text.split():
             if "=" not in token:
@@ -372,6 +374,14 @@ class TwitchStreamCog(commands.Cog):
                 except ValueError:
                     continue
                 limit = limit_val
+            elif key == "sort":
+                lowered = value.lower()
+                if lowered in {"avg", "samples", "peak", "name"}:
+                    sort_key = lowered
+            elif key in {"order", "direction"}:
+                lowered = value.lower()
+                if lowered in {"asc", "desc"}:
+                    sort_order = lowered
 
         # Stats holen
         try:
@@ -389,13 +399,30 @@ class TwitchStreamCog(commands.Cog):
             min_samples=min_samples,
             min_avg_viewers=min_avg,
             partner_filter=partner_filter,
-        )[:limit]
+        )
         category_filtered = self._filter_stats_items(
             category_items,
             min_samples=min_samples,
             min_avg_viewers=min_avg,
             partner_filter=partner_filter,
-        )[:limit]
+        )
+
+        reverse = sort_order != "asc"
+
+        def _sort_items(items: List[dict]) -> List[dict]:
+            def _key_func(item: dict):
+                if sort_key == "samples":
+                    return int(item.get("samples") or 0)
+                if sort_key == "peak":
+                    return int(item.get("max_viewers") or 0)
+                if sort_key == "name":
+                    return str(item.get("streamer") or "").lower()
+                return float(item.get("avg_viewers") or 0.0)
+
+            return sorted(items, key=_key_func, reverse=reverse)[:limit]
+
+        tracked_filtered = _sort_items(tracked_filtered)
+        category_filtered = _sort_items(category_filtered)
 
         # Ausgabe
         filter_parts = []
@@ -410,10 +437,22 @@ class TwitchStreamCog(commands.Cog):
         if not filter_parts:
             filter_parts.append("keine Filter")
 
-        def _format_lines(title: str, items: List[dict]) -> List[str]:
+        sort_part = "aufsteigend" if sort_order == "asc" else "absteigend"
+        if sort_key == "avg":
+            sort_label = "Ø Viewer"
+        elif sort_key == "samples":
+            sort_label = "Samples"
+        elif sort_key == "peak":
+            sort_label = "Peak"
+        else:
+            sort_label = "Name"
+
+        sort_summary = f"Sortierung: {sort_label} {sort_part}"
+
+        def _format_lines(items: List[dict]) -> str:
             if not items:
-                return [f"**{title}:** keine Daten für die aktuellen Filter."]
-            lines = [f"**{title}:**"]
+                return "Keine Daten für die aktuellen Filter."
+            lines: List[str] = []
             for idx, item in enumerate(items, start=1):
                 streamer = item.get("streamer") or "?"
                 avg_viewers = float(item.get("avg_viewers") or 0.0)
@@ -423,13 +462,22 @@ class TwitchStreamCog(commands.Cog):
                 lines.append(
                     f"{idx}. {streamer} — Ø {avg_viewers:.1f} Viewer (Samples: {samples}, Peak: {peak}){partner_flag}"
                 )
-            return lines
+            text = "\n".join(lines)
+            if len(text) > 1024:
+                text = text[:1021] + "…"
+            return text
 
-        response_lines = ["Filter: " + ", ".join(filter_parts)]
-        response_lines.extend(_format_lines("Top Tracked", tracked_filtered))
-        response_lines.extend(_format_lines("Top Kategorie", category_filtered))
+        embed = discord.Embed(
+            title="Twitch Leaderboard",
+            description="Filter: " + ", ".join(filter_parts) + f"\n{sort_summary}",
+            color=discord.Color.purple(),
+        )
 
-        await ctx.reply("\n".join(response_lines)[:1900])
+        embed.add_field(name="Top Tracked", value=_format_lines(tracked_filtered), inline=False)
+        embed.add_field(name="Top Kategorie", value=_format_lines(category_filtered), inline=False)
+        embed.set_footer(text="Nutze !twl help für weitere Optionen.")
+
+        await ctx.reply(embed=embed, mention_author=False)
 
     # -------------------------------------------------------
     # Background: Polling / Invites / Dashboard
