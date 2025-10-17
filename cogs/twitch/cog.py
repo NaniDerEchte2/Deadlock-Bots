@@ -40,7 +40,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlparse
 
 import discord
@@ -459,15 +459,50 @@ class TwitchStreamCog(commands.Cog):
             urls = [f"https://discord.gg/{c}" for c in codes]
             await ctx.reply("Aktive Einladungen:\n" + "\n".join(urls)[:1900])
 
-    async def twitch_leaderboard(self, ctx: commands.Context, *, filters: str = ""):
-        """Zeigt Twitch-Statistiken im Partner-Kanal an."""
+    async def twitch_leaderboard(
+        self,
+        ctx: Optional[commands.Context] = None,
+        *maybe_filters: Any,
+        filters: str = "",
+    ):
+        """Zeigt Twitch-Statistiken im Partner-Kanal an.
+
+        Der Befehl kann je nach discord.py-Version mit unterschiedlichen
+        Argument-Kombinationen aufgerufen werden (z. B. via Proxy-Wrapper,
+        alte Direktregistrierung oder Slash-Adapter). Wir akzeptieren daher
+        mehrere Signaturen und normalisieren sie hier.
+        """
+
+        extra_parts: List[str] = []
+
+        if ctx is not None and not isinstance(ctx, commands.Context):
+            extra_parts.append(str(ctx))
+            ctx = None
+
+        remaining = list(maybe_filters)
+        if ctx is None and remaining and isinstance(remaining[0], commands.Context):
+            ctx = remaining.pop(0)
+
+        for part in remaining:
+            if isinstance(part, str):
+                extra_parts.append(part)
+            elif part is not None:
+                extra_parts.append(str(part))
+
+        filter_text = " ".join(extra_parts).strip()
+        if filters.strip():
+            filter_text = f"{filter_text} {filters.strip()}".strip()
+
+        if ctx is None:
+            log.error("twitch_leaderboard invoked without a discord Context; aborting call")
+            return
 
         if ctx.channel.id != TWITCH_STATS_CHANNEL_ID:
             channel_hint = f"<#{TWITCH_STATS_CHANNEL_ID}>"
             await ctx.reply(f"Dieser Befehl kann nur in {channel_hint} verwendet werden.")
             return
 
-        if filters.strip().lower() in {"help", "?", "hilfe"}:
+        if filter_text.lower() in {"help", "?", "hilfe"}:
             help_text = (
                 "Verwendung: !twl [samples=Zahl] [avg=Zahl] [partner=only|exclude|any] [limit=Zahl]\n"
                 "Beispiel: !twl samples=15 avg=25 partner=only"
@@ -480,7 +515,7 @@ class TwitchStreamCog(commands.Cog):
         partner_filter = "any"
         limit = 5
 
-        for token in filters.split():
+        for token in filter_text.split():
             if "=" not in token:
                 continue
             key, value = token.split("=", 1)
