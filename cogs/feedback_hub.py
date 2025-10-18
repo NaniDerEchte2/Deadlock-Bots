@@ -199,7 +199,8 @@ class FeedbackHub(commands.Cog):
         embed = discord.Embed(
             title="Feedback Hub",
             description=(
-                "Teile uns dein anonymes Feedback zu dem Server mit, zu den Spielern oder deinem Spielerlebnis. "
+                "Teile uns dein anonymes Feedback zu dem Server mit,"
+                "zu den Spielern oder deinem Spielerlebnis. "
                 "Deine Antworten werden nur intern weitergegeben."
             ),
             colour=discord.Colour.blurple(),
