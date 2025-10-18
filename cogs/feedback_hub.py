@@ -10,7 +10,7 @@ from service import db
 
 log = logging.getLogger(__name__)
 
-FEEDBACK_CHANNEL_ID = 1289721245281292291
+FEEDBACK_CHANNEL_ID = 1374364800817303632
 FEEDBACK_RECIPIENT_ID = 662995601738170389
 
 
@@ -53,7 +53,7 @@ class FeedbackHubModal(discord.ui.Modal):
             required=True,
         )
         self.wish = discord.ui.TextInput(
-            label="Beschreibe deinen Wunsch so genau wie möglich.",
+            label="Hast du sonst noch einen Wunsch?",
             style=discord.TextStyle.paragraph,
             max_length=1024,
             required=False,
@@ -199,7 +199,7 @@ class FeedbackHub(commands.Cog):
         embed = discord.Embed(
             title="Feedback Hub",
             description=(
-                "Teile dein anonymes Feedback zu unserem Server, den Spielern oder deinem Spielerlebnis. "
+                "Teile uns dein anonymes Feedback zu dem Server mit, zu den Spielern oder deinem Spielerlebnis. "
                 "Deine Antworten werden nur intern weitergegeben."
             ),
             colour=discord.Colour.blurple(),
@@ -208,7 +208,7 @@ class FeedbackHub(commands.Cog):
             name="So funktioniert's",
             value=(
                 "Klicke auf den Button, beantworte die Fragen im Formular und bestätige. "
-                "Dein Feedback bleibt anonym und wird direkt an das Team weitergeleitet."
+                "Dein Feedback bleibt anonym und trägt zur Verbesserung des Servers bei."
             ),
             inline=False,
         )
