@@ -1,982 +1,630 @@
 #!/usr/bin/env node
+'use strict';
+
 /**
- * Steam Rich Presence bridge (safe login flow, v5 tokens)
- * - Auto-Login NUR wenn ./.steam-data/refresh.token existiert
- * - Sonst: KEIN Auto-Login, nur via "!sg <CODE>" oder "<CODE>" + Passwort/TOTP
- * - KEINE device-Approval-Wartepfade (kein Timeout). Bei device -> abbrechen & auf !sg warten.
- * - Bei ungültigem refresh.token: löschen, nicht automatisch neu versuchen.
- * - Machine-Auth-Token: wird gespeichert/geladen; reduziert erneute Guard-Prompts bei PW-Login.
- * - Restliche Funktionen (Presence, DB etc.) bleiben unverändert.
+ * Steam bridge focused on authentication and task execution.
+ *
+ * Responsibilities:
+ *   - Manage Steam login using refresh tokens or explicit login tasks.
+ *   - Persist refresh- & machine-auth tokens on disk.
+ *   - Poll the shared SQLite database for tasks and execute them.
+ *   - Keep the connection alive (reconnect only when a refresh token exists).
+ *
+ * Non-goals:
+ *   - Rich presence handling, friend management, snapshots, etc.
  */
 
 const fs = require('fs');
-const path = require('path');
 const os = require('os');
-const readline = require('readline');
+const path = require('path');
 const SteamUser = require('steam-user');
-const SteamTotp = require('steam-totp');
 const Database = require('better-sqlite3');
 
-let SteamIDCtor = null;
-try { SteamIDCtor = require('steamid'); } catch { SteamIDCtor = SteamUser.SteamID; }
-
-// ---------------- Config ----------------
-const APP_ID = parseInt(process.env.DEADLOCK_APP_ID || '1422450', 10);
-const WATCH_REFRESH_MS = parseInt(process.env.RP_WATCH_REFRESH_SEC || '60', 10) * 1000;
-const POLL_INTERVAL_MS  = parseInt(process.env.RP_POLL_INTERVAL_MS  || '30000', 10);
-const FRIEND_QUEUE_INTERVAL_MS = parseInt(process.env.FRIEND_QUEUE_INTERVAL_MS || '1000', 10);
-const FRIEND_SYNC_INTERVAL_MS = parseInt(process.env.FRIEND_SYNC_INTERVAL_SEC || '60', 10) * 1000;
-const FRIEND_REQUEST_INTERVAL_MS = parseInt(process.env.FRIEND_REQUEST_INTERVAL_MS || '5000', 10);
-const FRIEND_SNAPSHOT_INTERVAL_MS = parseInt(process.env.FRIEND_SNAPSHOT_INTERVAL_MS || '30000', 10);
-
-// Token-Bucket
-const CHUNK_SIZE      = parseInt(process.env.RP_CHUNK_SIZE      || '20', 10);
-const CHUNK_DELAY_MS  = parseInt(process.env.RP_CHUNK_DELAY_MS  || '500', 10);
-const MAX_REQ_PER_MIN = parseInt(process.env.RP_MAX_REQ_PER_MIN || '120', 10);
-
-// Logging
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
-const LOG_THRESHOLD = Object.prototype.hasOwnProperty.call(LOG_LEVELS, LOG_LEVEL) ? LOG_LEVELS[LOG_LEVEL] : LOG_LEVELS.info;
+const LOG_THRESHOLD = Object.prototype.hasOwnProperty.call(LOG_LEVELS, LOG_LEVEL)
+  ? LOG_LEVELS[LOG_LEVEL]
+  : LOG_LEVELS.info;
+
 function log(level, message, extra = undefined) {
   const lvl = LOG_LEVELS[level];
   if (lvl === undefined || lvl > LOG_THRESHOLD) return;
   const payload = { time: new Date().toISOString(), level, msg: message };
-  if (extra && typeof extra === 'object') for (const [k, v] of Object.entries(extra)) if (v !== undefined) payload[k] = v;
+  if (extra && typeof extra === 'object') {
+    for (const [key, value] of Object.entries(extra)) {
+      if (value === undefined) continue;
+      payload[key] = value;
+    }
+  }
   console.log(JSON.stringify(payload));
 }
 
-// --------------- Single-instance lock ---------------
-const LOCK_PATH = path.join(__dirname, 'presence.lock');
-let lockFd;
+const nowSeconds = () => Math.floor(Date.now() / 1000);
 
-function acquireLock(attempt = 0) {
-  try {
-    lockFd = fs.openSync(LOCK_PATH, 'wx');
-    fs.writeFileSync(lockFd, String(process.pid));
-    return true;
-  } catch (err) {
-    if (!err || err.code !== 'EEXIST') {
-      console.error('Failed to acquire presence lock:', err && err.message ? err.message : String(err));
-      process.exit(1);
-    }
-
-    let existingPid = Number.NaN;
-    try {
-      existingPid = parseInt(fs.readFileSync(LOCK_PATH, 'utf8'), 10);
-    } catch {
-      existingPid = Number.NaN;
-    }
-
-    if (Number.isFinite(existingPid) && existingPid > 0) {
-      try {
-        process.kill(existingPid, 0);
-        console.error(`Another presence instance seems to be running (pid=${existingPid}). Exiting.`);
-        process.exit(0);
-      } catch (checkErr) {
-        if (checkErr && checkErr.code === 'ESRCH') {
-          try { fs.unlinkSync(LOCK_PATH); } catch {}
-          if (attempt === 0) return acquireLock(attempt + 1);
-        } else {
-          const msg = checkErr && checkErr.message ? checkErr.message : String(checkErr);
-          console.error(`Presence lock held by pid=${existingPid} but cannot be verified: ${msg}`);
-          process.exit(0);
-        }
-      }
-    } else {
-      try { fs.unlinkSync(LOCK_PATH); } catch {}
-      if (attempt === 0) return acquireLock(attempt + 1);
-    }
-  }
-
-  console.error('Unable to acquire presence lock. Exiting.');
-  process.exit(0);
-}
-
-acquireLock();
-
-function cleanupLock(){
-  try {
-    if (typeof lockFd === 'number') {
-      fs.closeSync(lockFd);
-      lockFd = undefined;
-    }
-    fs.unlinkSync(LOCK_PATH);
-  } catch {}
-}
-process.on('exit', cleanupLock); process.on('SIGINT', ()=>{ cleanupLock(); process.exit(0); });
-process.on('SIGTERM', ()=>{ cleanupLock(); process.exit(0); });
-
-// --------------- DB init ---------------
 function resolveDbPath() {
-  if (process.env.DEADLOCK_DB_PATH) return path.resolve(process.env.DEADLOCK_DB_PATH);
-  const baseDir = process.env.DEADLOCK_DB_DIR ? path.resolve(process.env.DEADLOCK_DB_DIR) : path.join(os.homedir(), 'Documents', 'Deadlock', 'service');
+  if (process.env.DEADLOCK_DB_PATH) {
+    return path.resolve(process.env.DEADLOCK_DB_PATH);
+  }
+  const baseDir = process.env.DEADLOCK_DB_DIR
+    ? path.resolve(process.env.DEADLOCK_DB_DIR)
+    : path.join(os.homedir(), 'Documents', 'Deadlock', 'service');
   return path.join(baseDir, 'deadlock.sqlite3');
 }
-const dbPath = resolveDbPath();
-log('info', 'Using SQLite database', { dbPath });
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
-db.pragma('synchronous = NORMAL');
 
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS steam_rich_presence (
-    steam_id TEXT PRIMARY KEY,
-    app_id INTEGER,
-    status TEXT,
-    status_text TEXT,
-    display TEXT,
-    player_group TEXT,
-    player_group_size INTEGER,
-    connect TEXT,
-    mode TEXT,
-    map TEXT,
-    party_size INTEGER,
-    raw_json TEXT,
-    last_update INTEGER,
-    updated_at INTEGER
-  )
-`).run();
-
-const presenceSchemaMigrations = [
-  "ALTER TABLE steam_rich_presence ADD COLUMN status_text TEXT",
-  "ALTER TABLE steam_rich_presence ADD COLUMN mode TEXT",
-  "ALTER TABLE steam_rich_presence ADD COLUMN map TEXT",
-  "ALTER TABLE steam_rich_presence ADD COLUMN party_size INTEGER",
-  "ALTER TABLE steam_rich_presence ADD COLUMN updated_at INTEGER"
-];
-for (const sql of presenceSchemaMigrations) {
-  try { db.prepare(sql).run(); }
-  catch (err) { if (!String(err.message || err).includes('duplicate column name')) throw err; }
-}
-
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS steam_friend_requests (
-    steam_id TEXT PRIMARY KEY,
-    status TEXT DEFAULT 'pending',
-    requested_at INTEGER DEFAULT (strftime('%s','now')),
-    last_attempt INTEGER,
-    attempts INTEGER DEFAULT 0,
-    error TEXT
-  )
-`).run();
-
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS steam_presence_watchlist (
-    steam_id TEXT PRIMARY KEY,
-    note TEXT,
-    added_at INTEGER DEFAULT (strftime('%s','now'))
-  )
-`).run();
-
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS steam_friend_snapshots (
-    steam_id TEXT PRIMARY KEY,
-    relationship INTEGER,
-    persona_state INTEGER,
-    persona_name TEXT,
-    game_app_id INTEGER,
-    game_name TEXT,
-    last_logoff INTEGER,
-    last_logon INTEGER,
-    persona_flags INTEGER,
-    avatar_hash TEXT,
-    persona_json TEXT,
-    rich_presence_json TEXT,
-    updated_at INTEGER
-  )
-`).run();
-
-try {
-  db.prepare(`CREATE INDEX IF NOT EXISTS idx_friend_snapshots_updated ON steam_friend_snapshots(updated_at)`).run();
-} catch (err) {
-  log('debug', 'Failed to ensure friend snapshot index', { error: err && err.message ? err.message : String(err) });
-}
-
-const upsertPresence = db.prepare(`
-  INSERT INTO steam_rich_presence(
-    steam_id, app_id, status, status_text, display, player_group, player_group_size,
-    connect, mode, map, party_size, raw_json, last_update, updated_at
-  )
-  VALUES (
-    @steam_id, @app_id, @status, @status_text, @display, @player_group, @player_group_size,
-    @connect, @mode, @map, @party_size, @raw_json, @updated_at, @updated_at
-  )
-  ON CONFLICT(steam_id) DO UPDATE SET
-    app_id=excluded.app_id,
-    status=excluded.status,
-    status_text=excluded.status_text,
-    display=excluded.display,
-    player_group=excluded.player_group,
-    player_group_size=excluded.player_group_size,
-    connect=excluded.connect,
-    mode=excluded.mode,
-    map=excluded.map,
-    party_size=excluded.party_size,
-    raw_json=excluded.raw_json,
-    last_update=excluded.last_update,
-    updated_at=excluded.updated_at
-`);
-
-const upsertFriendSnapshot = db.prepare(`
-  INSERT INTO steam_friend_snapshots(
-    steam_id, relationship, persona_state, persona_name, game_app_id, game_name,
-    last_logoff, last_logon, persona_flags, avatar_hash, persona_json, rich_presence_json, updated_at
-  ) VALUES (
-    @steam_id, @relationship, @persona_state, @persona_name, @game_app_id, @game_name,
-    @last_logoff, @last_logon, @persona_flags, @avatar_hash, @persona_json, @rich_presence_json, @updated_at
-  )
-  ON CONFLICT(steam_id) DO UPDATE SET
-    relationship=excluded.relationship,
-    persona_state=excluded.persona_state,
-    persona_name=excluded.persona_name,
-    game_app_id=excluded.game_app_id,
-    game_name=excluded.game_name,
-    last_logoff=excluded.last_logoff,
-    last_logon=excluded.last_logon,
-    persona_flags=excluded.persona_flags,
-    avatar_hash=excluded.avatar_hash,
-    persona_json=excluded.persona_json,
-    rich_presence_json=excluded.rich_presence_json,
-    updated_at=excluded.updated_at
-`);
-
-const watchlistQuery = db.prepare(`
-  SELECT DISTINCT steam_id FROM (
-    SELECT steam_id FROM steam_links
-    UNION
-    SELECT steam_id FROM steam_presence_watchlist
-  )
-  WHERE steam_id IS NOT NULL AND steam_id != ''
-`);
-
-const steamLinksForFriendsQuery = db.prepare(`
-  SELECT steam_id FROM steam_links
-  WHERE steam_id IS NOT NULL AND steam_id != ''
-`);
-
-const pendingFriendRequestQuery = db.prepare(`
-  SELECT steam_id, attempts FROM steam_friend_requests
-  WHERE status = 'pending'
-  ORDER BY COALESCE(last_attempt, 0) ASC, requested_at ASC
-  LIMIT 1
-`);
-
-const markFriendRequestSuccessStmt = db.prepare(`
-  UPDATE steam_friend_requests
-  SET status='sent', last_attempt=@ts, attempts=@attempts, error=NULL
-  WHERE steam_id=@steam_id
-`);
-
-const markFriendRequestFailureStmt = db.prepare(`
-  UPDATE steam_friend_requests
-  SET last_attempt=@ts, attempts=@attempts, error=@error
-  WHERE steam_id=@steam_id
-`);
-
-const markFriendRequestKnownStmt = db.prepare(`
-  UPDATE steam_friend_requests
-  SET status='sent', error=NULL
-  WHERE steam_id=@steam_id
-`);
-
-const enqueueFriendRequestStmt = db.prepare(`
-  INSERT INTO steam_friend_requests(steam_id, status)
-  VALUES (@steam_id, 'pending')
-  ON CONFLICT(steam_id) DO UPDATE SET
-    status=excluded.status,
-    last_attempt=NULL,
-    attempts=0,
-    error=NULL
-  WHERE steam_friend_requests.status NOT IN ('sent', 'pending')
-`);
-
-function toOptionalInt(value) {
-  if (value === undefined || value === null) return null;
-  const num = Number(value);
-  if (Number.isNaN(num) || !Number.isFinite(num)) return null;
-  return Math.trunc(num);
-}
-
-function sanitizeForJson(value, seen = new Set()) {
-  if (value === undefined) return undefined;
-  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return value;
-  }
-  if (typeof value === 'bigint') {
-    return value.toString();
-  }
-  if (Buffer.isBuffer(value)) {
-    return value.toString('utf8');
-  }
-  if (value && typeof value.getSteamID64 === 'function') {
-    try { return value.getSteamID64(); }
-    catch { return String(value); }
-  }
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizeForJson(item, seen));
-  }
-  if (typeof value === 'object') {
-    if (seen.has(value)) {
-      return null;
-    }
-    seen.add(value);
-    const out = {};
-    for (const [k, v] of Object.entries(value)) {
-      if (v === undefined) continue;
-      out[String(k)] = sanitizeForJson(v, seen);
-    }
-    seen.delete(value);
-    return out;
-  }
+function ensureDir(dirPath) {
   try {
-    return String(value);
-  } catch {
-    return null;
+    fs.mkdirSync(dirPath, { recursive: true });
+  } catch (err) {
+    if (err && err.code !== 'EEXIST') throw err;
+  }
+}
+
+function readToken(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return '';
+    return fs.readFileSync(filePath, 'utf8').trim();
+  } catch (err) {
+    log('warn', 'Failed to read token file', { path: filePath, error: err.message });
+    return '';
+  }
+}
+
+function writeToken(filePath, value) {
+  try {
+    if (!value) {
+      fs.rmSync(filePath, { force: true });
+      return;
+    }
+    fs.writeFileSync(filePath, `${value}\n`, 'utf8');
+  } catch (err) {
+    log('warn', 'Failed to persist token', { path: filePath, error: err.message });
   }
 }
 
 function safeJsonStringify(value) {
-  if (value === undefined) return null;
   try {
     return JSON.stringify(value);
   } catch (err) {
-    try {
-      return JSON.stringify(sanitizeForJson(value));
-    } catch (err2) {
-      log('debug', 'Failed to stringify friend payload', {
-        error: err2 && err2.message ? err2.message : String(err2),
-      });
-      return null;
-    }
+    log('warn', 'Failed to stringify JSON', { error: err.message });
+    return null;
   }
 }
 
-function logSteamTimeout(context, err) {
-  const eresult = err && typeof err.eresult === 'number' ? err.eresult : undefined;
-  const rawMessage = err && err.message ? String(err.message) : (err ? String(err) : '');
-  const lower = rawMessage.toLowerCase();
-  const isTimeout = (typeof eresult === 'number' && eresult === SteamUser.EResult.Timeout)
-    || lower.includes('timeout');
-  if (!isTimeout) return false;
-  log('warn', 'STEAM_TIMEOUT', {
-    context,
-    hint: 'Steam meldet ein Timeout – laut Steam bitte später erneut versuchen.',
-    steamMessage: rawMessage || null,
-    eresult,
-  });
-  return true;
-}
-
-function normalizeRichPresence(source) {
-  const normalized = {};
-  if (!source || typeof source !== 'object') {
-    return normalized;
+function safeJsonParse(value) {
+  if (!value) return {};
+  try {
+    return JSON.parse(value);
+  } catch (err) {
+    throw new Error(`Invalid JSON payload: ${err.message}`);
   }
-  for (const [key, value] of Object.entries(source)) {
-    if (value === undefined || value === null) continue;
-    if (typeof value === 'string') {
-      normalized[key] = value;
-      continue;
-    }
-    if (typeof value === 'number' || typeof value === 'boolean') {
-      normalized[key] = String(value);
-      continue;
-    }
-    if (Buffer.isBuffer(value)) {
-      normalized[key] = value.toString('utf8');
-      continue;
-    }
-    try {
-      normalized[key] = String(value);
-    } catch {
-      normalized[key] = '[unserializable]';
-    }
-  }
-  return normalized;
 }
 
-function normalizePersona(persona) {
-  if (!persona || typeof persona !== 'object') return {};
-  const sanitized = sanitizeForJson(persona);
-  return sanitized && typeof sanitized === 'object' ? sanitized : {};
-}
-
-// --------------- Steam client ---------------
-// WICHTIG: v5 – wir nutzen Token-Flow
-const client = new SteamUser({ renewRefreshTokens: true });
-client.setOption('promptSteamGuardCode', false);
-client.setOption('machineName', 'DeadlockPresence');
-
-// Feste „Cookie“-Ablage
-const DATA_DIR = path.join(__dirname, '.steam-data');
-try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
-client.setOption('dataDirectory', DATA_DIR);
-
-// Login creds (für Erstlogin ohne Token)
-const loginAccount = process.env.STEAM_BOT_USERNAME || process.env.STEAM_LOGIN || process.env.STEAM_ACCOUNT;
-const password   = process.env.STEAM_BOT_PASSWORD || process.env.STEAM_PASSWORD || '';
-const totpSecret = process.env.STEAM_TOTP_SECRET || '';
-let   guardCode  = ''; // nur via !sg
-
-// Token-Dateien (neuer Standard)
+const DATA_DIR = path.resolve(
+  process.env.STEAM_PRESENCE_DATA_DIR || path.join(__dirname, '.steam-data'),
+);
+ensureDir(DATA_DIR);
 const REFRESH_TOKEN_PATH = path.join(DATA_DIR, 'refresh.token');
 const MACHINE_TOKEN_PATH = path.join(DATA_DIR, 'machine_auth_token.txt');
 
-let refreshToken = '';
-try { if (fs.existsSync(REFRESH_TOKEN_PATH)) { refreshToken = fs.readFileSync(REFRESH_TOKEN_PATH, 'utf8').trim(); if (refreshToken) log('info', 'Loaded refresh token', { path: REFRESH_TOKEN_PATH }); } }
-catch (err) { log('warn', 'Failed to read refresh token', { path: REFRESH_TOKEN_PATH, error: err.message }); }
+const ACCOUNT_NAME =
+  process.env.STEAM_BOT_USERNAME ||
+  process.env.STEAM_LOGIN ||
+  process.env.STEAM_ACCOUNT ||
+  '';
+const ACCOUNT_PASSWORD = process.env.STEAM_BOT_PASSWORD || process.env.STEAM_PASSWORD || '';
 
-let machineAuthToken = '';
-try { if (fs.existsSync(MACHINE_TOKEN_PATH)) { machineAuthToken = fs.readFileSync(MACHINE_TOKEN_PATH, 'utf8').trim(); if (machineAuthToken) log('info', 'Loaded machine auth token', { path: MACHINE_TOKEN_PATH }); } }
-catch (err) { log('warn', 'Failed to read machine auth token', { path: MACHINE_TOKEN_PATH, error: err.message }); }
+const TASK_POLL_INTERVAL_MS = parseInt(process.env.STEAM_TASK_POLL_MS || '2000', 10);
+const RECONNECT_DELAY_MS = parseInt(process.env.STEAM_RECONNECT_DELAY_MS || '5000', 10);
 
-// --------------- State ---------------
-let isLoggedOn = false;
-let isConnecting = false;
+const dbPath = resolveDbPath();
+ensureDir(path.dirname(dbPath));
+log('info', 'Using SQLite database', { dbPath });
+const db = new Database(dbPath);
+db.pragma('journal_mode = WAL');
+db.pragma('synchronous = NORMAL');
+db.pragma('busy_timeout = 5000');
 
-// Keine Device-Approval-Engine, keine Timer/Timeouts.
+db.prepare(
+  `CREATE TABLE IF NOT EXISTS steam_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    payload TEXT,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    result TEXT,
+    error TEXT,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    started_at INTEGER,
+    finished_at INTEGER
+  )`,
+).run();
+
+db.prepare(
+  `CREATE INDEX IF NOT EXISTS idx_steam_tasks_status ON steam_tasks(status, id)`,
+).run();
+
+db.prepare(
+  `CREATE INDEX IF NOT EXISTS idx_steam_tasks_updated ON steam_tasks(updated_at)`,
+).run();
+
+const selectPendingTaskStmt = db.prepare(
+  `SELECT id, type, payload FROM steam_tasks
+   WHERE status = 'PENDING'
+   ORDER BY id ASC
+   LIMIT 1`,
+);
+
+const markTaskRunningStmt = db.prepare(
+  `UPDATE steam_tasks
+     SET status = 'RUNNING',
+         started_at = ?,
+         updated_at = ?
+   WHERE id = ? AND status = 'PENDING'`,
+);
+
+const finishTaskStmt = db.prepare(
+  `UPDATE steam_tasks
+      SET status = ?,
+          result = ?,
+          error = ?,
+          finished_at = ?,
+          updated_at = ?
+    WHERE id = ?`,
+);
+
+let refreshToken = readToken(REFRESH_TOKEN_PATH);
+let machineAuthToken = readToken(MACHINE_TOKEN_PATH);
+
+const runtimeState = {
+  account_name: ACCOUNT_NAME || null,
+  logged_on: false,
+  logging_in: false,
+  steam_id64: null,
+  refresh_token_present: Boolean(refreshToken),
+  machine_token_present: Boolean(machineAuthToken),
+  guard_required: null,
+  last_error: null,
+  last_login_attempt_at: null,
+  last_login_source: null,
+  last_logged_on_at: null,
+  last_disconnect_at: null,
+  last_disconnect_eresult: null,
+  last_guard_submission_at: null,
+};
+
+let loginInProgress = false;
+let pendingGuard = null;
 let reconnectTimer = null;
-let backoffMs = 10_000;
-const backoffMaxMs = 5 * 60_000;
+let manualLogout = false;
 
-// Token-Bucket
-let tokens = MAX_REQ_PER_MIN;
-setInterval(() => { tokens = MAX_REQ_PER_MIN; }, 60_000);
+const client = new SteamUser();
+client.setOption('autoRelogin', false);
+client.setOption('machineName', process.env.STEAM_MACHINE_NAME || 'DeadlockBridge');
 
-let lastFriendActionAt = 0;
-let friendSnapshotTimer = null;
-let friendSnapshotInFlight = false;
-const friendSnapshotMemo = new Map();
+function updateRefreshToken(token) {
+  refreshToken = token ? String(token).trim() : '';
+  runtimeState.refresh_token_present = Boolean(refreshToken);
+}
 
-// --------------- Helpers ---------------
-function tryRequestPresence(steamID) {
-  if (tokens <= 0) return false;
-  try { client.requestFriendRichPresence(steamID, APP_ID); tokens--; return true; }
-  catch (err) {
-    logSteamTimeout('requestFriendRichPresence', err);
-    log('debug', 'requestFriendRichPresence failed', { steamId: String(steamID), error: err.message });
-    return false;
+function updateMachineToken(token) {
+  machineAuthToken = token ? String(token).trim() : '';
+  runtimeState.machine_token_present = Boolean(machineAuthToken);
+}
+
+function clearReconnectTimer() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
   }
 }
 
-function scheduleFriendSnapshot(delayMs = 2000) {
-  const delay = Math.max(0, Number.isFinite(delayMs) ? delayMs : 0);
-  if (friendSnapshotTimer) return;
-  friendSnapshotTimer = setTimeout(() => {
-    friendSnapshotTimer = null;
-    snapshotFriends().catch(() => {});
-  }, delay);
-}
+function scheduleReconnect(reason, delayMs = RECONNECT_DELAY_MS) {
+  if (!refreshToken) return;
+  if (manualLogout) return;
+  if (runtimeState.logged_on) return;
+  if (loginInProgress) return;
+  if (reconnectTimer) return;
 
-async function snapshotFriends() {
-  if (!isLoggedOn || friendSnapshotInFlight) return;
-  const friendMap = client.myFriends || {};
-  const ids = Object.keys(friendMap).filter((sid) => sid);
-  if (ids.length === 0) return;
-  friendSnapshotInFlight = true;
-  try {
-    const personas = await new Promise((resolve) => {
-      try {
-        client.getPersonas(ids, (err, data) => {
-          if (err) {
-            logSteamTimeout('getPersonas', err);
-            log('warn', 'Failed to fetch friend personas', { error: err.message });
-            resolve(null);
-            return;
-          }
-          resolve(data || {});
-        });
-      } catch (err) {
-        logSteamTimeout('getPersonas', err);
-        log('warn', 'getPersonas threw error', { error: err && err.message ? err.message : String(err) });
-        resolve(null);
-      }
-    });
-    if (!personas) return;
-
-    const now = Math.floor(Date.now() / 1000);
-    let updated = 0;
-    for (const sid of ids) {
-      const personaRaw = personas[sid] || null;
-      const persona = normalizePersona(personaRaw);
-      let presenceRaw = {};
-      try {
-        presenceRaw = client.getFriendRichPresence(sid) || {};
-      } catch (err) {
-        try {
-          const steamObj = new SteamIDCtor(sid);
-          presenceRaw = client.getFriendRichPresence(steamObj) || {};
-        } catch (inner) {
-          const error = inner && inner.message ? inner.message : err && err.message ? err.message : String(inner || err);
-          log('debug', 'getFriendRichPresence snapshot failed', { steamId: sid, error });
-        }
-      }
-      const presence = normalizeRichPresence(presenceRaw);
-      const relationship = friendMap[sid] ?? null;
-
-      const dedupeKeyObj = {
-        relationship,
-        persona,
-        presence,
-      };
-      const dedupeKey = safeJsonStringify(dedupeKeyObj) || '__friend_snapshot__';
-      if (friendSnapshotMemo.get(sid) === dedupeKey) {
-        continue;
-      }
-      friendSnapshotMemo.set(sid, dedupeKey);
-
-      const entry = {
-        steam_id: sid,
-        relationship: toOptionalInt(relationship),
-        persona_state: toOptionalInt(persona.persona_state ?? persona.personaState),
-        persona_name: persona.player_name || persona.persona_name || null,
-        game_app_id: toOptionalInt(persona.gameid ?? persona.game_played_app_id ?? persona.gameid_appid),
-        game_name: persona.game_name || null,
-        last_logoff: toOptionalInt(persona.last_logoff),
-        last_logon: toOptionalInt(persona.last_logon),
-        persona_flags: toOptionalInt(persona.persona_flags),
-        avatar_hash: persona.avatar_hash || null,
-        persona_json: safeJsonStringify(persona),
-        rich_presence_json: safeJsonStringify(presence),
-        updated_at: now,
-      };
-      try {
-        upsertFriendSnapshot.run(entry);
-        updated++;
-      } catch (err) {
-        log('warn', 'Failed to persist friend snapshot', { steamId: sid, error: err && err.message ? err.message : String(err) });
-      }
-    }
-    if (updated > 0) {
-      log('debug', 'FRIEND_SNAPSHOT_UPDATED', { count: updated });
-    }
-  } finally {
-    friendSnapshotInFlight = false;
-  }
-}
-
-function scheduleReconnect(opts = {}) {
-  const { immediate = false } = opts;
-  if (reconnectTimer || isConnecting) return;
-  const delay = immediate ? 0 : backoffMs;
+  const delay = Math.max(1000, Number.isFinite(delayMs) ? delayMs : RECONNECT_DELAY_MS);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    backoffMs = Math.min(backoffMaxMs, Math.floor(backoffMs * 1.8));
-    // Nur reconnecten, wenn wir Auto-Login dürfen (refresh token existiert)
-    if (refreshToken) {
-      log('info', 'Reconnecting to Steam…', { delayMs: delay, nextBackoffMs: backoffMs });
-      logOn();
-    } else {
-      log('info', 'No refresh token present — staying idle (waiting for !sg).');
+    try {
+      const result = initiateLogin('auto-reconnect', {});
+      log('info', 'Auto reconnect attempt', { reason, result });
+    } catch (err) {
+      log('warn', 'Auto reconnect failed to start', { error: err.message, reason });
     }
   }, delay);
 }
-function resetBackoff() { backoffMs = 10_000; }
 
-function buildLogonOptions() {
-  // v5-Regeln:
-  // - Mit refreshToken: KEIN accountName/password/machineAuthToken übergeben
-  if (refreshToken) {
+function guardTypeFromDomain(domain) {
+  const norm = String(domain || '').toLowerCase();
+  if (norm.includes('email')) return 'email';
+  if (norm.includes('two-factor') || norm.includes('authenticator') || norm.includes('mobile')) return 'totp';
+  if (norm.includes('device')) return 'device';
+  return norm || 'unknown';
+}
+
+function buildLoginOptions(overrides = {}) {
+  if (overrides.refreshToken) {
+    return { refreshToken: overrides.refreshToken };
+  }
+
+  if (refreshToken && !overrides.forceAccountCredentials) {
     return { refreshToken };
   }
 
-  // Ohne refreshToken: Passwort-Login erforderlich (+ 2FA), optional machineAuthToken
-  if (!loginAccount) {
-    log('error', 'Missing STEAM_BOT_USERNAME/STEAM_LOGIN env variable'); throw new Error('No account');
+  const accountName =
+    overrides.accountName !== undefined && overrides.accountName !== null
+      ? String(overrides.accountName)
+      : ACCOUNT_NAME;
+  const password =
+    overrides.password !== undefined && overrides.password !== null
+      ? String(overrides.password)
+      : ACCOUNT_PASSWORD;
+
+  if (!accountName) {
+    throw new Error('Missing Steam account name');
   }
   if (!password) {
-    log('error', 'Missing STEAM_BOT_PASSWORD and no refresh token — cannot login. Use !sg <CODE> after setting password env.');
-    throw new Error('No password');
+    throw new Error('Missing Steam account password');
   }
 
-  const opts = { accountName: loginAccount, password };
+  const options = { accountName, password };
 
-  // 2FA: bevorzugt TOTP, sonst Guard-Code via !sg
-  if (totpSecret) {
-    opts.twoFactorCode = SteamTotp.generateAuthCode(totpSecret);
-  } else if (guardCode) {
-    opts.twoFactorCode = guardCode.trim().toUpperCase();
-    guardCode = '';
-  } else {
-    log('info', 'No refresh token and no guard/TOTP code — skipping login until !sg.');
-    throw new Error('No code');
+  if (overrides.twoFactorCode) {
+    options.twoFactorCode = String(overrides.twoFactorCode);
+  }
+  if (overrides.authCode) {
+    options.authCode = String(overrides.authCode);
+  }
+  if (Object.prototype.hasOwnProperty.call(overrides, 'rememberPassword')) {
+    options.rememberPassword = Boolean(overrides.rememberPassword);
+  }
+  if (overrides.machineAuthToken) {
+    options.machineAuthToken = String(overrides.machineAuthToken);
+  } else if (machineAuthToken) {
+    options.machineAuthToken = machineAuthToken;
   }
 
-  // machineAuthToken hilft, erneute device-Prompts zu vermeiden (entscheidet Steam)
-  if (machineAuthToken) {
-    opts.machineAuthToken = machineAuthToken;
-  }
-  return opts;
+  return options;
 }
 
-function logOn() {
-  if (isLoggedOn || isConnecting) return;
-
-  // Regel: nur auto, wenn refreshToken existiert
-  if (!refreshToken && !guardCode && !totpSecret) {
-    log('info', 'Auto-login disabled (no refresh token). Waiting for !sg <CODE>.');
-    return;
+function initiateLogin(source, payload) {
+  if (client.steamID && client.steamID.isValid()) {
+    const steamId64 = typeof client.steamID.getSteamID64 === 'function'
+      ? client.steamID.getSteamID64()
+      : String(client.steamID);
+    return { started: false, reason: 'already_logged_on', steam_id64: steamId64 };
   }
 
-  let options;
-  try { options = buildLogonOptions(); }
-  catch { return; }
-
-  isConnecting = true;
-  log('info', 'Logging in to Steam', { usingRefreshToken: Boolean(options.refreshToken), account: options.refreshToken ? undefined : loginAccount });
-  try { client.logOn(options); }
-  catch (e) { isConnecting = false; log('error', 'client.logOn threw', { error: e.message || String(e) }); }
-}
-
-// --------------- stdin (!sg / status) ---------------
-const stdinRL = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-stdinRL.on('line', (line) => {
-  let txt = (line || '').trim();
-  if (!txt) return;
-
-  // Plain Code: 5–7 alphanumerische Zeichen
-  const plainCodeMatch = txt.match(/^[A-Z0-9]{5,7}$/i);
-
-  // Varianten: "!sg CODE", "sg CODE", "/sg CODE"
-  const cmdMatch = txt.match(/^(?:!|\/)?sg\s+([A-Z0-9]{5,7})$/i);
-
-  if (/^status$/i.test(txt)) {
-    log('info', 'Status', {
-      isLoggedOn, isConnecting,
-      hasRefreshToken: Boolean(refreshToken),
-      hasMachineAuthToken: Boolean(machineAuthToken),
-      dataDir: DATA_DIR
-    });
-    return;
+  if (loginInProgress) {
+    return { started: false, reason: 'login_in_progress' };
   }
 
-  if (/^cancel$/i.test(txt)) {
-    try { client.logOff(); } catch {}
-    isConnecting = false;
-    log('info', 'Cancelled any ongoing login; waiting for !sg.');
-    return;
-  }
-
-  const code = cmdMatch ? cmdMatch[1] : (plainCodeMatch ? plainCodeMatch[0] : null);
-  if (code) {
-    guardCode = code.toUpperCase();
-    log('info', 'Guard code received via console; attempting login now.');
-    logOn(); // unmittelbarer Versuch (durch User ausgelöst)
-    return;
-  }
-
-  log('info', 'Unknown console input. Use "!sg <CODE>" or "STATUS".');
-});
-
-// --------------- Presence helpers ---------------
-const watchList = new Map();
-function refreshWatchList() {
-  let rows = [];
-  try { rows = watchlistQuery.all(); }
-  catch (err) { log('error', 'Failed to read watchlist from DB', { error: err.message }); return; }
-  const next = new Set();
-  for (const row of rows) {
-    const sid = String(row.steam_id || '').trim();
-    if (!sid) continue;
-    next.add(sid);
-    if (!watchList.has(sid)) {
-      try {
-        const steamID = new SteamIDCtor(sid);
-        watchList.set(sid, steamID);
-        log('info', 'Added SteamID to watch list', { steamId: sid });
-        if (isLoggedOn) tryRequestPresence(steamID);
-      } catch (err) {
-        log('warn', 'Ignoring invalid SteamID', { steamId: sid, error: err.message });
-      }
+  const overrides = {};
+  if (payload) {
+    if (Object.prototype.hasOwnProperty.call(payload, 'use_refresh_token') && !payload.use_refresh_token) {
+      overrides.forceAccountCredentials = true;
     }
-  }
-  for (const sid of Array.from(watchList.keys())) {
-    if (!next.has(sid)) { watchList.delete(sid); log('info', 'Removed SteamID from watch list', { steamId: sid }); }
-  }
-}
-
-async function pollPresence() {
-  if (!isLoggedOn || watchList.size === 0) return;
-  const ids = Array.from(watchList.values());
-  for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
-    const chunk = ids.slice(i, i + CHUNK_SIZE);
-    for (const sid of chunk) {
-      if (tokens <= 0) {
-        log('warn', 'Presence request budget exhausted; pausing chunk loop until refill.');
-        await new Promise(r => setTimeout(r, Math.max(CHUNK_DELAY_MS, 1000)));
-      }
-      tryRequestPresence(sid);
+    if (Object.prototype.hasOwnProperty.call(payload, 'force_credentials') && payload.force_credentials) {
+      overrides.forceAccountCredentials = true;
     }
-    await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
+    if (payload.account_name) overrides.accountName = payload.account_name;
+    if (payload.password) overrides.password = payload.password;
+    if (payload.refresh_token) overrides.refreshToken = payload.refresh_token;
+    if (payload.two_factor_code) overrides.twoFactorCode = payload.two_factor_code;
+    if (payload.auth_code) overrides.authCode = payload.auth_code;
+    if (Object.prototype.hasOwnProperty.call(payload, 'remember_password')) {
+      overrides.rememberPassword = Boolean(payload.remember_password);
+    }
+    if (payload.machine_auth_token) overrides.machineAuthToken = payload.machine_auth_token;
   }
-}
 
-function ensureFriendQueued(steamId) {
-  if (!steamId) return;
-  const sid = String(steamId).trim();
-  if (!sid) return;
+  const options = buildLoginOptions(overrides);
+
+  if (options.accountName) {
+    runtimeState.account_name = options.accountName;
+  }
+
+  loginInProgress = true;
+  runtimeState.logging_in = true;
+  runtimeState.last_login_attempt_at = nowSeconds();
+  runtimeState.last_login_source = source;
+  runtimeState.last_error = null;
+  pendingGuard = null;
+  runtimeState.guard_required = null;
+  manualLogout = false;
+  clearReconnectTimer();
+
+  log('info', 'Initiating Steam login', {
+    using_refresh_token: Boolean(options.refreshToken),
+    source,
+  });
+
   try {
-    const result = enqueueFriendRequestStmt.run({ steam_id: sid });
-    if (result.changes > 0) {
-      log('info', 'FA_OUTGOING_ENQUEUED', { steamId: sid });
-    }
+    client.logOn(options);
   } catch (err) {
-    logSteamTimeout('enqueueFriendRequest', err);
-    log('warn', 'Failed to enqueue friend request', { steamId: sid, error: err.message });
+    loginInProgress = false;
+    runtimeState.logging_in = false;
+    runtimeState.last_error = { message: err.message };
+    throw err;
   }
-}
 
-function processFriendQueue() {
-  if (!isLoggedOn) return;
-  if (Date.now() - lastFriendActionAt < FRIEND_REQUEST_INTERVAL_MS) return;
-  let job;
-  try { job = pendingFriendRequestQuery.get(); }
-  catch (err) { log('warn', 'Failed to read pending friend request', { error: err.message }); return; }
-  if (!job || !job.steam_id) return;
-  const steamId = String(job.steam_id).trim();
-  if (!steamId) return;
-  const attempts = Number(job.attempts || 0) + 1;
-  const ts = Math.floor(Date.now() / 1000);
-  try {
-    client.addFriend(steamId);
-    markFriendRequestSuccessStmt.run({ steam_id: steamId, attempts, ts });
-    lastFriendActionAt = Date.now();
-    log('info', 'FA_OUTGOING_SENT', { steamId, attempts });
-  } catch (err) {
-    lastFriendActionAt = Date.now();
-    const message = err && err.message ? err.message : String(err);
-    markFriendRequestFailureStmt.run({ steam_id: steamId, attempts, ts, error: message });
-    const lower = message.toLowerCase();
-    const timeoutLogged = logSteamTimeout('addFriend', err);
-    if ((err && err.eresult === SteamUser.EResult.RateLimitExceeded) || lower.includes('rate')) {
-      log('warn', 'FA_RATE_LIMIT_HIT', { steamId, error: message });
-    } else if (!timeoutLogged) {
-      log('warn', 'FA_OUTGOING_FAILED', { steamId, error: message });
-    }
-  }
-}
-
-function syncFriendsWithDb() {
-  if (!isLoggedOn) return;
-  let rows;
-  try { rows = steamLinksForFriendsQuery.all(); }
-  catch (err) { log('error', 'Failed to read steam_links for friend sync', { error: err.message }); return; }
-  const desired = new Set();
-  for (const row of rows) {
-    const sid = String(row.steam_id || '').trim();
-    if (sid) desired.add(sid);
-  }
-  const friendMap = client.myFriends || {};
-  for (const sid of desired) {
-    const relationship = friendMap[sid];
-    if (relationship === SteamUser.EFriendRelationship.Friend || relationship === SteamUser.EFriendRelationship.RequestInitiator) {
-      try { markFriendRequestKnownStmt.run({ steam_id: sid }); } catch {}
-      continue;
-    }
-    ensureFriendQueued(sid);
-  }
-}
-
-// --------------- Events ---------------
-client.on('loggedOn', () => {
-  isLoggedOn = true;
-  isConnecting = false;
-  resetBackoff();
-  log('info', 'Logged in to Steam', { account: loginAccount, usingRefreshToken: Boolean(refreshToken) });
-  client.setPersona(SteamUser.EPersonaState.Online);
-  friendSnapshotMemo.clear();
-
-  setTimeout(() => {
-    refreshWatchList();
-    pollPresence().catch(() => {});
-    syncFriendsWithDb();
-    processFriendQueue();
-    snapshotFriends().catch(() => {});
-  }, 5000);
-});
-
-// Neuer Standard: Refresh-Token speichern
-client.on('refreshToken', (token) => {
-  try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(REFRESH_TOKEN_PATH, token, 'utf8');
-    refreshToken = token;
-    log('info', 'Stored refresh token', { path: REFRESH_TOKEN_PATH });
-  } catch (err) {
-    log('warn', 'Failed to persist refresh token', { path: REFRESH_TOKEN_PATH, error: err.message });
-  }
-});
-
-// Neuer Standard: Machine-Auth-Token speichern
-client.on('machineAuthToken', (token) => {
-  try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(MACHINE_TOKEN_PATH, token, 'utf8');
-    machineAuthToken = token;
-    log('info', 'Stored machine auth token', { path: MACHINE_TOKEN_PATH });
-  } catch (err) {
-    log('warn', 'Failed to write machine auth token', { path: MACHINE_TOKEN_PATH, error: err.message });
-  }
-});
-
-// SteamGuard-Flow: keine device-Wartepfade
-client.on('steamGuard', (domain, callback) => {
-  const d = (domain || 'device').toLowerCase();
-  if (d === 'device') {
-    log('warn', 'Steam Guard (device) requested — blocked by config. Use !sg <CODE> instead.');
-    try { client.logOff(); } catch {}
-    isConnecting = false;
-    return; // kein callback()-Loop
-  }
-  // Codebasierte Varianten: akzeptieren, wenn vorhanden
-  if (totpSecret) {
-    const code = SteamTotp.generateAuthCode(totpSecret);
-    log('info', 'Supplying TOTP Steam Guard code');
-    return void callback(code);
-  }
-  if (guardCode) {
-    const code = guardCode.trim().toUpperCase(); guardCode = '';
-    log('info', 'Supplying guard code from console (!sg)');
-    return void callback(code);
-  }
-  // Kein Code vorhanden: abbrechen, auf !sg warten
-  log('info', 'Steam Guard required but no code present — waiting for !sg.');
-  try { client.logOff(); } catch {}
-  isConnecting = false;
-});
-
-client.on('friendRichPresence', (steamID, appID) => {
-  const sid64 = typeof steamID.getSteamID64 === 'function' ? steamID.getSteamID64() : String(steamID);
-  const presence = normalizeRichPresence(client.getFriendRichPresence(steamID) || {});
-  const entry = {
-    steam_id: sid64,
-    app_id: Number(appID) || null,
-    status: presence.status || null,
-    status_text: presence.status_text || presence.status || null,
-    display: presence.steam_display || presence.display || null,
-    player_group: presence.steam_player_group || null,
-    player_group_size: toOptionalInt(presence.steam_player_group_size),
-    connect: presence.connect || null,
-    mode: presence.mode || presence.gamemode || null,
-    map: presence.map || null,
-    party_size: toOptionalInt(presence.party_size),
-    raw_json: safeJsonStringify(presence) || JSON.stringify({}),
-    updated_at: Math.floor(Date.now() / 1000),
+  return {
+    started: true,
+    using_refresh_token: Boolean(options.refreshToken),
+    source,
   };
-  try {
-    upsertPresence.run(entry);
-    log('info', 'PRESENCE_UPSERT', {
-      steamId: sid64,
-      updatedAt: entry.updated_at,
-      status: entry.status_text || entry.status || null,
-      display: entry.display,
-      mode: entry.mode || null,
-    });
-    friendSnapshotMemo.delete(sid64);
-    scheduleFriendSnapshot(1500);
+}
+
+function handleGuardCodeTask(payload) {
+  if (!pendingGuard || !pendingGuard.callback) {
+    throw new Error('No Steam Guard challenge is pending');
   }
-  catch (err) { log('error', 'Failed to persist rich presence', { steamId: sid64, error: err.message }); }
+  const code = payload && payload.code ? String(payload.code).trim() : '';
+  if (!code) {
+    throw new Error('Steam Guard code is required');
+  }
+
+  const callback = pendingGuard.callback;
+  const domain = pendingGuard.domain;
+  pendingGuard = null;
+  runtimeState.guard_required = null;
+  runtimeState.last_guard_submission_at = nowSeconds();
+
+  try {
+    callback(code);
+    log('info', 'Submitted Steam Guard code', { domain: domain || null });
+  } catch (err) {
+    throw new Error(`Failed to submit guard code: ${err.message}`);
+  }
+
+  return {
+    accepted: true,
+    domain: domain || null,
+    type: guardTypeFromDomain(domain),
+  };
+}
+
+function handleLogoutTask() {
+  manualLogout = true;
+  clearReconnectTimer();
+  runtimeState.logging_in = false;
+  loginInProgress = false;
+  pendingGuard = null;
+  runtimeState.guard_required = null;
+  runtimeState.last_error = null;
+
+  try {
+    client.logOff();
+  } catch (err) {
+    log('warn', 'logOff failed', { error: err.message });
+  }
+
+  return { logged_off: true };
+}
+
+function getStatusPayload() {
+  return {
+    account_name: runtimeState.account_name,
+    logged_on: runtimeState.logged_on,
+    logging_in: runtimeState.logging_in,
+    steam_id64: runtimeState.steam_id64,
+    refresh_token_present: runtimeState.refresh_token_present,
+    machine_token_present: runtimeState.machine_token_present,
+    guard_required: runtimeState.guard_required,
+    last_error: runtimeState.last_error,
+    last_login_attempt_at: runtimeState.last_login_attempt_at,
+    last_login_source: runtimeState.last_login_source,
+    last_logged_on_at: runtimeState.last_logged_on_at,
+    last_disconnect_at: runtimeState.last_disconnect_at,
+    last_disconnect_eresult: runtimeState.last_disconnect_eresult,
+    last_guard_submission_at: runtimeState.last_guard_submission_at,
+  };
+}
+
+function completeTask(id, status, result = undefined, error = undefined) {
+  const finishedAt = nowSeconds();
+  const resultJson = result === undefined ? null : safeJsonStringify(result);
+  const errorText = error ? String(error) : null;
+
+  finishTaskStmt.run(status, resultJson, errorText, finishedAt, finishedAt, id);
+}
+
+let taskInProgress = false;
+
+function processNextTask() {
+  if (taskInProgress) return;
+  taskInProgress = true;
+
+  let task = null;
+  try {
+    task = selectPendingTaskStmt.get();
+    if (!task) return;
+
+    const startedAt = nowSeconds();
+    const updated = markTaskRunningStmt.run(startedAt, startedAt, task.id);
+    if (!updated.changes) return;
+
+    const payload = safeJsonParse(task.payload);
+    let result;
+
+    log('info', 'Executing steam task', { id: task.id, type: task.type });
+
+    switch (task.type) {
+      case 'AUTH_STATUS':
+        result = getStatusPayload();
+        completeTask(task.id, 'DONE', result, null);
+        break;
+      case 'AUTH_LOGIN':
+        result = initiateLogin('task', payload);
+        completeTask(task.id, 'DONE', result, null);
+        break;
+      case 'AUTH_GUARD_CODE':
+        result = handleGuardCodeTask(payload);
+        completeTask(task.id, 'DONE', result, null);
+        break;
+      case 'AUTH_LOGOUT':
+        result = handleLogoutTask();
+        completeTask(task.id, 'DONE', result, null);
+        break;
+      default:
+        throw new Error(`Unsupported task type: ${task.type}`);
+    }
+  } catch (err) {
+    log('error', 'Failed to process steam task', { error: err.message });
+    if (task && task.id) {
+      completeTask(task.id, 'FAILED', null, err.message);
+    } else if (typeof err.taskId === 'number') {
+      completeTask(err.taskId, 'FAILED', null, err.message);
+    }
+  } finally {
+    taskInProgress = false;
+  }
+}
+
+setInterval(() => {
+  try {
+    processNextTask();
+  } catch (err) {
+    log('error', 'Task polling loop failed', { error: err.message });
+  }
+}, Math.max(500, TASK_POLL_INTERVAL_MS));
+
+function markLoggedOn(details) {
+  runtimeState.logged_on = true;
+  runtimeState.logging_in = false;
+  loginInProgress = false;
+  runtimeState.guard_required = null;
+  pendingGuard = null;
+  runtimeState.last_logged_on_at = nowSeconds();
+  runtimeState.last_error = null;
+
+  if (client.steamID && typeof client.steamID.getSteamID64 === 'function') {
+    runtimeState.steam_id64 = client.steamID.getSteamID64();
+  } else if (client.steamID) {
+    runtimeState.steam_id64 = String(client.steamID);
+  } else {
+    runtimeState.steam_id64 = null;
+  }
+
+  log('info', 'Steam login successful', {
+    country: details ? details.publicIPCountry : undefined,
+    cellId: details ? details.cellID : undefined,
+    steam_id64: runtimeState.steam_id64,
+  });
+}
+
+client.on('loggedOn', (details) => {
+  markLoggedOn(details);
 });
 
-client.on('friendRelationship', (steamID, relationship) => {
-  const sid64 = typeof steamID.getSteamID64 === 'function' ? steamID.getSteamID64() : String(steamID);
-  friendSnapshotMemo.delete(sid64);
-  scheduleFriendSnapshot(2000);
-  if (relationship === SteamUser.EFriendRelationship.RequestRecipient) {
-    try {
-      client.addFriend(steamID);
-      lastFriendActionAt = Date.now();
-      log('info', 'FA_INCOMING_ACCEPTED', { steamId: sid64 });
-      try { markFriendRequestKnownStmt.run({ steam_id: sid64 }); } catch {}
-    } catch (err) {
-      log('error', 'Failed to accept incoming friend request', { steamId: sid64, error: err.message });
-    }
-    return;
-  }
-  if (relationship === SteamUser.EFriendRelationship.Friend || relationship === SteamUser.EFriendRelationship.RequestInitiator) {
-    try { markFriendRequestKnownStmt.run({ steam_id: sid64 }); } catch {}
-  }
-  if (relationship === SteamUser.EFriendRelationship.None) {
-    if (watchList.delete(sid64)) log('info', 'Friend relationship removed, deleting from watch list', { steamId: sid64 });
-    log('info', 'FA_REMOVED', { steamId: sid64 });
-  }
+client.on('webSession', () => {
+  log('debug', 'Steam web session established');
+});
+
+client.on('steamGuard', (domain, callback, lastCodeWrong) => {
+  pendingGuard = { domain, callback };
+  runtimeState.guard_required = {
+    domain: domain || null,
+    type: guardTypeFromDomain(domain),
+    last_code_wrong: Boolean(lastCodeWrong),
+    requested_at: nowSeconds(),
+  };
+  runtimeState.logging_in = true;
+  log('info', 'Steam Guard challenge received', {
+    domain: domain || null,
+    lastCodeWrong: Boolean(lastCodeWrong),
+  });
+});
+
+client.on('refreshToken', (token) => {
+  updateRefreshToken(token);
+  writeToken(REFRESH_TOKEN_PATH, refreshToken);
+  log('info', 'Stored refresh token', { path: REFRESH_TOKEN_PATH });
+});
+
+client.on('machineAuthToken', (token) => {
+  updateMachineToken(token);
+  writeToken(MACHINE_TOKEN_PATH, machineAuthToken);
+  log('info', 'Stored machine auth token', { path: MACHINE_TOKEN_PATH });
 });
 
 client.on('disconnected', (eresult, msg) => {
-  isLoggedOn = false;
-  isConnecting = false;
+  runtimeState.logged_on = false;
+  runtimeState.logging_in = false;
+  loginInProgress = false;
+  runtimeState.last_disconnect_at = nowSeconds();
+  runtimeState.last_disconnect_eresult = eresult;
   log('warn', 'Steam disconnected', { eresult, msg });
-  logSteamTimeout('disconnected', { eresult, message: msg });
-  friendSnapshotMemo.clear();
-  // Nur reconnecten, wenn wir einen Refresh-Token haben (Auto-Login erlaubt)
-  if (refreshToken) scheduleReconnect();
+  scheduleReconnect('disconnect');
 });
 
 client.on('error', (err) => {
-  log('error', 'Steam client error', { error: err.message });
-  logSteamTimeout('client_error', err);
-  const text = (err && err.message) ? err.message.toLowerCase() : '';
+  runtimeState.last_error = {
+    message: err && err.message ? err.message : String(err),
+    eresult: err && typeof err.eresult === 'number' ? err.eresult : undefined,
+  };
+  runtimeState.logging_in = false;
+  loginInProgress = false;
 
-  // Offensichtliche Token-Probleme -> Token löschen, NICHT automatisch neu versuchen
+  const text = String(err && err.message ? err.message : '').toLowerCase();
+  log('error', 'Steam client error', { error: runtimeState.last_error.message, eresult: runtimeState.last_error.eresult });
+
   if (text.includes('invalid refresh') || text.includes('expired') || text.includes('refresh token')) {
     if (refreshToken) {
-      log('warn', 'Refresh token likely invalid — clearing token and waiting for !sg');
-      try { fs.unlinkSync(REFRESH_TOKEN_PATH); } catch {}
-      refreshToken = '';
+      log('warn', 'Clearing refresh token after authentication failure');
+      updateRefreshToken('');
+      writeToken(REFRESH_TOKEN_PATH, '');
     }
-    isConnecting = false;
     return;
   }
 
-  // RateLimit o.ä. -> kein Autosturm; nur bei vorhandenem Token später reconnecten
   if (text.includes('ratelimit') || text.includes('rate limit') || text.includes('throttle')) {
-    isConnecting = false;
-    log('warn', 'Server throttle — no auto retry without refresh token. Wait and use !sg if needed.');
+    log('warn', 'Rate limit encountered; waiting for explicit login task');
     return;
   }
 
-  // Standard: bei sonstigen Errors nur reconnecten, wenn Token existiert
-  isConnecting = false;
-  if (refreshToken) scheduleReconnect();
+  scheduleReconnect('error');
 });
 
-client.on('webSession', () => log('debug', 'Web session established'));
+client.on('sessionExpired', () => {
+  log('warn', 'Steam session expired');
+  runtimeState.logged_on = false;
+  scheduleReconnect('session-expired');
+});
 
-// --------------- Kickoff / Shutdown ---------------
-refreshWatchList();
-setInterval(refreshWatchList, WATCH_REFRESH_MS);
-setInterval(() => { pollPresence().catch(() => {}); }, POLL_INTERVAL_MS);
-setInterval(() => {
-  try { processFriendQueue(); }
-  catch (err) { log('warn', 'processFriendQueue failed', { error: err.message }); }
-}, Math.max(250, FRIEND_QUEUE_INTERVAL_MS));
-setInterval(() => {
-  try { syncFriendsWithDb(); }
-  catch (err) { log('warn', 'syncFriendsWithDb failed', { error: err.message }); }
-}, Math.max(1_000, FRIEND_SYNC_INTERVAL_MS));
-setInterval(() => {
-  try { snapshotFriends().catch(() => {}); }
-  catch (err) { log('warn', 'snapshotFriends failed', { error: err.message }); }
-}, Math.max(5_000, FRIEND_SNAPSHOT_INTERVAL_MS));
+function autoLoginIfPossible() {
+  if (!refreshToken) {
+    log('info', 'Auto-login disabled (no refresh token). Waiting for tasks.');
+    return;
+  }
 
-// Startregel: nur wenn refresh.token existiert
-if (refreshToken) {
-  log('info', 'Auto-login enabled (refresh.token present).');
-  logOn();
-} else {
-  log('info', 'Auto-login disabled (no refresh token). Waiting for !sg <CODE>.');
+  const result = initiateLogin('auto-start', {});
+  log('info', 'Auto-login kick-off', result);
 }
 
-function shutdown() {
-  log('info', 'Shutting down presence service');
-  try { client.logOff(); } catch {}
-  try { db.close(); } catch {}
-  process.exit(0);
+autoLoginIfPossible();
+
+function shutdown(code = 0) {
+  try {
+    log('info', 'Shutting down Steam bridge');
+    clearReconnectTimer();
+    client.logOff();
+  } catch {}
+  try {
+    db.close();
+  } catch {}
+  process.exit(code);
 }
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
-process.on('uncaughtException', (err) => { log('error', 'Uncaught exception', { error: err.stack || err.message }); shutdown(); });
+
+process.on('SIGINT', () => shutdown(0));
+process.on('SIGTERM', () => shutdown(0));
+process.on('uncaughtException', (err) => {
+  log('error', 'Uncaught exception', { error: err && err.stack ? err.stack : err });
+  shutdown(1);
+});
+process.on('unhandledRejection', (err) => {
+  log('error', 'Unhandled rejection', { error: err && err.stack ? err.stack : err });
+});
