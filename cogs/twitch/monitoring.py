@@ -150,15 +150,19 @@ class TwitchMonitoringMixin:
             is_live = bool(stream)
 
             if is_live and not was_live and notify_ch is not None:
-                title = stream.get("title") or "Live!"
                 url = f"https://twitch.tv/{login}"
-                game = stream.get("game_name") or TWITCH_TARGET_GAME_NAME
-                viewer_count = stream.get("viewer_count") or 0
+                display_name = stream.get("user_name") or login
+                message_prefix = []
+                if self._alert_mention:
+                    message_prefix.append(self._alert_mention)
+                message_prefix.append(f"**{display_name}** ist live: {url}")
+                content = " ".join(part for part in message_prefix if part).strip()
+
+                embed = self._build_live_embed(login, stream)
+                view = self._build_live_view(url)
 
                 try:
-                    await notify_ch.send(
-                        f"🔴 **{login}** ist jetzt live in **{game}** — *{title}*  (👀 {viewer_count})\n{url}"
-                    )
+                    await notify_ch.send(content=content or None, embed=embed, view=view)
                 except Exception:
                     log.exception("Konnte Go-Live-Posting nicht senden: %s", login)
 
@@ -209,3 +213,51 @@ class TwitchMonitoringMixin:
                     )
         except Exception:
             log.exception("Konnte category-Stats nicht loggen")
+
+    def _build_live_embed(self, login: str, stream: dict) -> discord.Embed:
+        """Erzeuge ein Discord-Embed für das Go-Live-Posting mit Stream-Vorschau."""
+
+        display_name = stream.get("user_name") or login
+        url = f"https://twitch.tv/{login}"
+        game = stream.get("game_name") or TWITCH_TARGET_GAME_NAME
+        title = stream.get("title") or "Live!"
+        viewer_count = int(stream.get("viewer_count") or 0)
+
+        timestamp = datetime.now(tz=timezone.utc)
+        started_at_raw = stream.get("started_at")
+        if isinstance(started_at_raw, str) and started_at_raw:
+            try:
+                timestamp = datetime.fromisoformat(started_at_raw.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+        embed = discord.Embed(
+            title=f"{display_name} ist LIVE in {game}!",
+            description=title,
+            url=url,
+            colour=discord.Color(0x9146FF),
+            timestamp=timestamp,
+        )
+
+        embed.add_field(name="Viewer", value=str(viewer_count), inline=True)
+        embed.add_field(name="Kategorie", value=game, inline=True)
+        embed.add_field(name="Link", value=url, inline=False)
+
+        thumbnail_url = (stream.get("thumbnail_url") or "").strip()
+        if thumbnail_url:
+            thumbnail_url = thumbnail_url.replace("{width}", "1280").replace("{height}", "720")
+            cache_bust = int(datetime.now(tz=timezone.utc).timestamp())
+            embed.set_image(url=f"{thumbnail_url}?rand={cache_bust}")
+
+        embed.set_footer(text="Auf Twitch ansehen für mehr Deadlock-Action!")
+        embed.set_author(name=display_name, url=url)
+
+        return embed
+
+    @staticmethod
+    def _build_live_view(url: str) -> discord.ui.View:
+        """Stellt eine View mit Button zum Öffnen des Streams bereit."""
+
+        view = discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(label="Auf Twitch ansehen", url=url))
+        return view
