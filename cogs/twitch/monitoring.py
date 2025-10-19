@@ -63,13 +63,11 @@ class TwitchMonitoringMixin:
         if not self._category_id:
             await self._ensure_category_id()
 
-        now_utc = datetime.now(tz=timezone.utc)
         partner_logins: set[str] = set()
         try:
             with storage.get_conn() as c:
                 rows = c.execute(
-                    "SELECT twitch_login, twitch_user_id, require_discord_link, "
-                    "       manual_verified_permanent, manual_verified_until "
+                    "SELECT twitch_login, twitch_user_id, require_discord_link "
                     "FROM twitch_streamers"
                 ).fetchall()
             tracked: List[Tuple[str, str, bool]] = []
