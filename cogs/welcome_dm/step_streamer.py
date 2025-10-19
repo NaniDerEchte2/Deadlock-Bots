@@ -90,12 +90,28 @@ async def _resolve_guild_and_member(
     g1, m1 = await _try(guild)
 
     # DM-Fallback über MAIN_GUILD_ID
+    bot: commands.Bot = interaction.client  # type: ignore
     if (not g1 or not m1) and MAIN_GUILD_ID:
-        bot: commands.Bot = interaction.client  # type: ignore
         mg = bot.get_guild(MAIN_GUILD_ID)
         g2, m2 = await _try(mg)
         if g2 and m2:
             return g2, m2
+
+    # Letzter Fallback: durchsuche alle Guilds nach einer, die die Streamer-Rolle enthält
+    if not g1 or not m1:
+        seen_ids = {g1.id} if g1 else set()
+        for guild_candidate in bot.guilds:
+            if guild_candidate.id in seen_ids:
+                continue
+            seen_ids.add(guild_candidate.id)
+
+            # Wenn die gesuchte Rolle nicht existiert, lohnt sich kein weiterer Versuch
+            if not guild_candidate.get_role(STREAMER_ROLE_ID):
+                continue
+
+            g3, m3 = await _try(guild_candidate)
+            if g3 and m3:
+                return g3, m3
 
     return g1, m1
 
