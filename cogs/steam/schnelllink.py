@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import json
 import logging
@@ -9,6 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+import aiohttp
 import discord
 
 from service import db
@@ -244,6 +246,42 @@ def _format_link_message(link: SchnellLink) -> str:
     return "".join(parts)
 
 
+async def _check_link_validity(url: str) -> Optional[bool]:
+    """Return ``True`` if the link appears valid, ``False`` if definitely invalid."""
+
+    timeout = aiohttp.ClientTimeout(total=6)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for method in ("HEAD", "GET"):
+                try:
+                    async with session.request(method, url, allow_redirects=False) as response:
+                        status = int(response.status)
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    log.debug(
+                        "Quick invite validity check inconclusive",
+                        extra={"url": url, "error": str(exc), "method": method},
+                    )
+                    return None
+
+                if status in {404, 410}:
+                    return False
+
+                if 200 <= status < 400 or status in {401, 403}:
+                    return True
+
+                if method == "HEAD" and status in {405}:
+                    # Retry with GET which is more broadly supported.
+                    continue
+
+                if status == 429:
+                    return None
+
+            return None
+    except Exception:  # pragma: no cover - defensive
+        log.exception("Unexpected error while checking quick invite validity", extra={"url": url})
+        return None
+
+
 async def respond_with_schnelllink(
     interaction: discord.Interaction,
     *,
@@ -270,19 +308,51 @@ async def respond_with_schnelllink(
         else:
             await interaction.response.send_message(message, ephemeral=True)
 
-    try:
-        link = reserve_invite(getattr(interaction.user, "id", None))
-    except RuntimeError as exc:
-        await _send(str(exc))
-        return
-    except Exception:  # pragma: no cover - defensive
-        log.exception("Unexpected error while reserving quick invite")
+    attempts = 0
+    link: Optional[SchnellLink] = None
+    while attempts < 3 and link is None:
+        attempts += 1
+        try:
+            candidate = reserve_invite(getattr(interaction.user, "id", None))
+        except RuntimeError as exc:
+            await _send(str(exc))
+            return
+        except Exception:  # pragma: no cover - defensive
+            log.exception("Unexpected error while reserving quick invite")
+            await _send(
+                "\u26a0\ufe0f Aktuell k\u00f6nnen keine Links erzeugt werden. Bitte versuche es sp\u00e4ter erneut."
+            )
+            return
+
+        is_valid: Optional[bool]
+        try:
+            is_valid = await _check_link_validity(candidate.url)
+        except Exception:  # pragma: no cover - defensive
+            log.exception(
+                "Unexpected error while validating quick invite link",
+                extra={"source": source, "url": candidate.url},
+            )
+            is_valid = None
+
+        if is_valid is False:
+            log.warning(
+                "Discarded invalid quick invite link during delivery",
+                extra={"token": candidate.token, "url": candidate.url},
+            )
+            mark_invalid(candidate.token)
+            ensure_pool(min_available=1)
+            continue
+
+        link = candidate
+
+    if link is None:
         await _send(
-            "\u26a0\ufe0f Aktuell k\u00f6nnen keine Links erzeugt werden. Bitte versuche es sp\u00e4ter erneut."
+            "\u26a0\ufe0f Aktuell k\u00f6nnen keine g\u00fcltigen Schnell-Links bereitgestellt werden. Bitte versuche es sp\u00e4ter erneut."
         )
         return
 
     await _send(_format_link_message(link))
+    ensure_pool(min_available=1)
 
 
 class SchnellLinkButton(discord.ui.Button):
