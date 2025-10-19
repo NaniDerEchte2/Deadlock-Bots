@@ -455,7 +455,13 @@ class DashboardServer:
 
             # Unter Windows bleibt der Port häufig kurzzeitig im TIME_WAIT-Zustand.
             # reuse_address ermöglicht schnelle Neustarts ohne Fehlermeldung.
-            site_kwargs: Dict[str, Any] = {"reuse_address": True}
+            #
+            # Allerdings führt reuse_address auf Windows-Installationen (insbesondere
+            # seit Python 3.11) zu "WinError 10013". Daher aktivieren wir die Option
+            # nur auf Plattformen, die sie sicher unterstützen.
+            site_kwargs: Dict[str, Any] = {}
+            if os.name != "nt":
+                site_kwargs["reuse_address"] = True
 
             try:
                 self._site = web.TCPSite(self._runner, self.host, self.port, **site_kwargs)
