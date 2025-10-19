@@ -76,7 +76,12 @@ class TwitchMonitoringMixin:
             for row in rows:
                 login = str(row["twitch_login"])
                 tracked.append((login, str(row["twitch_user_id"]), bool(row["require_discord_link"])))
-                partner_logins.add(login.lower())
+                try:
+                    is_verified = self._is_partner_verified(dict(row), now_utc)
+                except AttributeError:
+                    is_verified = False
+                if is_verified:
+                    partner_logins.add(login.lower())
         except Exception:
             log.exception("Konnte tracked Streamer nicht aus DB lesen")
             tracked = []
