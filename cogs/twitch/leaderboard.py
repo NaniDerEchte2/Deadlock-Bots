@@ -435,19 +435,56 @@ class TwitchLeaderboardMixin:
         view = TwitchLeaderboardView(self, ctx, tracked_items, category_items, options)
         await view.send_initial()
 
-    async def _compute_stats(self) -> Dict[str, Any]:
+    async def _compute_stats(
+        self,
+        *,
+        hour_from: Optional[int] = None,
+        hour_to: Optional[int] = None,
+    ) -> Dict[str, Any]:
         out: Dict[str, Any] = {"tracked": {}, "category": {}}
 
-        def _aggregate(sql: str) -> List[dict]:
+        def _normalize_hour(value: Optional[int]) -> Optional[int]:
+            if value is None:
+                return None
+            if value < 0:
+                return 0
+            if value > 23:
+                return 23
+            return value
+
+        start_hour = _normalize_hour(hour_from)
+        end_hour = _normalize_hour(hour_to)
+        if start_hour is None and end_hour is None:
+            hour_clause = ""
+            hour_params: List[int] = []
+        else:
+            if start_hour is None:
+                start_hour = end_hour
+            if end_hour is None:
+                end_hour = start_hour
+            assert start_hour is not None
+            assert end_hour is not None
+            if start_hour <= end_hour:
+                hour_clause = " AND CAST(strftime('%H', ts_utc) AS INTEGER) BETWEEN ? AND ?"
+                hour_params = [start_hour, end_hour]
+            else:
+                hour_clause = (
+                    " AND (CAST(strftime('%H', ts_utc) AS INTEGER) >= ?"
+                    " OR CAST(strftime('%H', ts_utc) AS INTEGER) <= ?)"
+                )
+                hour_params = [start_hour, end_hour]
+
+        def _aggregate(sql: str, params: Sequence[int]) -> List[dict]:
             try:
                 with storage.get_conn() as c:
-                    rows = c.execute(sql).fetchall()
+                    rows = c.execute(sql, tuple(params)).fetchall()
                 return [dict(r) for r in rows]
             except Exception:
                 log.exception("Fehler bei Stats-Aggregation")
                 return []
 
-        tracked_sql = """
+        tracked_sql = (
+            """
         SELECT streamer,
                AVG(viewer_count) AS avg_viewers,
                MAX(viewer_count) AS max_viewers,
@@ -455,11 +492,14 @@ class TwitchLeaderboardMixin:
                MAX(is_partner)   AS is_partner
         FROM twitch_stats_tracked
         WHERE ts_utc >= datetime('now', '-30 days')
+        {hour_clause}
         GROUP BY streamer
         ORDER BY avg_viewers DESC
         LIMIT 100
         """
-        category_sql = """
+        ).format(hour_clause=hour_clause)
+        category_sql = (
+            """
         SELECT streamer,
                AVG(viewer_count) AS avg_viewers,
                MAX(viewer_count) AS max_viewers,
@@ -467,13 +507,74 @@ class TwitchLeaderboardMixin:
                MAX(is_partner)   AS is_partner
         FROM twitch_stats_category
         WHERE ts_utc >= datetime('now', '-30 days')
+        {hour_clause}
         GROUP BY streamer
         ORDER BY avg_viewers DESC
         LIMIT 100
         """
+        ).format(hour_clause=hour_clause)
 
-        out["tracked"]["top"] = _aggregate(tracked_sql)
-        out["category"]["top"] = _aggregate(category_sql)
+        out["tracked"]["top"] = _aggregate(tracked_sql, hour_params)
+        out["category"]["top"] = _aggregate(category_sql, hour_params)
+
+        tracked_hourly_sql = (
+            """
+        SELECT CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM twitch_stats_tracked
+         WHERE ts_utc >= datetime('now', '-30 days')
+        {hour_clause}
+         GROUP BY hour
+         ORDER BY hour
+        """
+        ).format(hour_clause=hour_clause)
+        category_hourly_sql = (
+            """
+        SELECT CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM twitch_stats_category
+         WHERE ts_utc >= datetime('now', '-30 days')
+        {hour_clause}
+         GROUP BY hour
+         ORDER BY hour
+        """
+        ).format(hour_clause=hour_clause)
+
+        tracked_weekday_sql = (
+            """
+        SELECT CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM twitch_stats_tracked
+         WHERE ts_utc >= datetime('now', '-30 days')
+        {hour_clause}
+         GROUP BY weekday
+         ORDER BY weekday
+        """
+        ).format(hour_clause=hour_clause)
+        category_weekday_sql = (
+            """
+        SELECT CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM twitch_stats_category
+         WHERE ts_utc >= datetime('now', '-30 days')
+        {hour_clause}
+         GROUP BY weekday
+         ORDER BY weekday
+        """
+        ).format(hour_clause=hour_clause)
+
+        out["tracked"]["hourly"] = _aggregate(tracked_hourly_sql, hour_params)
+        out["category"]["hourly"] = _aggregate(category_hourly_sql, hour_params)
+        out["tracked"]["weekday"] = _aggregate(tracked_weekday_sql, hour_params)
+        out["category"]["weekday"] = _aggregate(category_weekday_sql, hour_params)
         return out
 
     @staticmethod

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from aiohttp import web
 
@@ -34,8 +34,13 @@ class TwitchDashboardMixin:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    async def _dashboard_stats(self) -> dict:
-        stats = await self._compute_stats()
+    async def _dashboard_stats(
+        self,
+        *,
+        hour_from: Optional[int] = None,
+        hour_to: Optional[int] = None,
+    ) -> dict:
+        stats = await self._compute_stats(hour_from=hour_from, hour_to=hour_to)
         tracked_top = stats.get("tracked", {}).get("top", []) or []
         category_top = stats.get("category", {}).get("top", []) or []
 
