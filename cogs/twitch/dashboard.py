@@ -120,7 +120,7 @@ class Dashboard:
   .btn {{ background:var(--accent); color:white; border:none; padding:.5rem .8rem; border-radius:.5rem; cursor:pointer; }}
   .btn:hover {{ opacity:.95; }}
   .btn-small {{ padding:.35rem .6rem; font-size:.85rem; }}
-  .btn-secondary {{ background:#2a3044; color:var(--text); }}
+  .btn-secondary {{ background:#2a3044; color:var(--text); border:1px solid var(--bd); }}
   .btn-danger {{ background:#792e2e; }}
   table {{ width:100%; border-collapse: collapse; margin-top:1rem; }}
   th, td {{ border-bottom:1px solid var(--bd); padding:.6rem; text-align:left; }}
@@ -153,6 +153,8 @@ class Dashboard:
   .chart-panel canvas {{ width:100%; height:320px; max-height:360px; }}
   .chart-note {{ margin-top:.6rem; font-size:.85rem; color:var(--muted); }}
   .chart-empty {{ margin-top:1rem; font-size:.9rem; color:var(--muted); font-style:italic; }}
+  .toggle-group {{ display:flex; gap:.4rem; flex-wrap:wrap; }}
+  .btn-active {{ background:var(--accent); color:#fff; border:1px solid var(--accent); }}
 </style>
 {nav_html}
 {flash}
@@ -392,6 +394,9 @@ class Dashboard:
     async def _render_stats_page(self, request: web.Request, *, partner_view: bool) -> web.Response:
         view_mode = (request.query.get("view") or "top").lower()
         show_all = view_mode == "all"
+        display_mode = (request.query.get("display") or "charts").lower()
+        if display_mode not in {"charts", "raw"}:
+            display_mode = "charts"
 
         def _parse_int(*names: str) -> Optional[int]:
             for name in names:
@@ -469,19 +474,35 @@ class Dashboard:
         if hour_to is not None:
             filter_params["hour_to"] = str(hour_to)
 
-        def build_stats_url(view: str) -> str:
+        def build_stats_url(view: Optional[str] = None, display: Optional[str] = None) -> str:
             params = dict(preserved_params)
             params.update(filter_params)
-            if view != "top":
-                params["view"] = view
+            target_view = view if view is not None else ("all" if show_all else "top")
+            target_display = display if display is not None else display_mode
+            if target_view != "top":
+                params["view"] = target_view
             else:
                 params.pop("view", None)
+            if target_display != "charts":
+                params["display"] = target_display
+            else:
+                params.pop("display", None)
             query = urlencode(params)
             return base_path + (f"?{query}" if query else "")
 
         toggle_href = build_stats_url("top" if show_all else "all")
         toggle_label = "Top 10 anzeigen" if show_all else "Alle anzeigen"
         current_view_label = "Alle" if show_all else "Top 10"
+        charts_href = build_stats_url(display="charts")
+        raw_href = build_stats_url(display="raw")
+        charts_active = " btn-active" if display_mode == "charts" else ""
+        raw_active = " btn-active" if display_mode == "raw" else ""
+        display_toggle_html = (
+            "<div class=\"toggle-group\">"
+            f"<a class=\"btn btn-secondary{charts_active}\" href=\"{html.escape(charts_href)}\">Charts</a>"
+            f"<a class=\"btn btn-secondary{raw_active}\" href=\"{html.escape(raw_href)}\">Rohdaten</a>"
+            "</div>"
+        )
 
         def apply_filters(items: List[dict]) -> List[dict]:
             result: List[dict] = []
@@ -787,6 +808,79 @@ class Dashboard:
             else "<div class=\"chart-empty\">Noch keine Wochentags-Daten vorhanden.</div>"
         )
 
+        hour_tables_block = (
+            "<div style=\"display:flex; gap:1.2rem; flex-wrap:wrap;\">"
+            "  <div style=\"flex:1 1 260px;\">"
+            "    <h3>Kategorie gesamt — nach Stunde</h3>"
+            "    <table class=\"sortable-table\" data-table=\"category-hour\">"
+            "      <thead>"
+            "        <tr>"
+            "          <th data-sort-type=\"number\">Stunde</th>"
+            "          <th data-sort-type=\"number\">Samples</th>"
+            "          <th data-sort-type=\"number\">Ø Viewer</th>"
+            "          <th data-sort-type=\"number\">Peak Viewer</th>"
+            "        </tr>"
+            "      </thead>"
+            f"      <tbody>{category_hour_rows}</tbody>"
+            "    </table>"
+            "  </div>"
+            "  <div style=\"flex:1 1 260px;\">"
+            "    <h3>Tracked Streamer — nach Stunde</h3>"
+            "    <table class=\"sortable-table\" data-table=\"tracked-hour\">"
+            "      <thead>"
+            "        <tr>"
+            "          <th data-sort-type=\"number\">Stunde</th>"
+            "          <th data-sort-type=\"number\">Samples</th>"
+            "          <th data-sort-type=\"number\">Ø Viewer</th>"
+            "          <th data-sort-type=\"number\">Peak Viewer</th>"
+            "        </tr>"
+            "      </thead>"
+            f"      <tbody>{tracked_hour_rows}</tbody>"
+            "    </table>"
+            "  </div>"
+            "</div>"
+        )
+
+        weekday_tables_block = (
+            "<div style=\"display:flex; gap:1.2rem; flex-wrap:wrap;\">"
+            "  <div style=\"flex:1 1 260px;\">"
+            "    <h3>Kategorie gesamt — nach Wochentag</h3>"
+            "    <table class=\"sortable-table\" data-table=\"category-weekday\">"
+            "      <thead>"
+            "        <tr>"
+            "          <th data-sort-type=\"number\">Tag</th>"
+            "          <th data-sort-type=\"number\">Samples</th>"
+            "          <th data-sort-type=\"number\">Ø Viewer</th>"
+            "          <th data-sort-type=\"number\">Peak Viewer</th>"
+            "        </tr>"
+            "      </thead>"
+            f"      <tbody>{category_weekday_rows}</tbody>"
+            "    </table>"
+            "  </div>"
+            "  <div style=\"flex:1 1 260px;\">"
+            "    <h3>Tracked Streamer — nach Wochentag</h3>"
+            "    <table class=\"sortable-table\" data-table=\"tracked-weekday\">"
+            "      <thead>"
+            "        <tr>"
+            "          <th data-sort-type=\"number\">Tag</th>"
+            "          <th data-sort-type=\"number\">Samples</th>"
+            "          <th data-sort-type=\"number\">Ø Viewer</th>"
+            "          <th data-sort-type=\"number\">Peak Viewer</th>"
+            "        </tr>"
+            "      </thead>"
+            f"      <tbody>{tracked_weekday_rows}</tbody>"
+            "    </table>"
+            "  </div>"
+            "</div>"
+        )
+
+        if display_mode == "charts":
+            hour_section = hour_chart_block
+            weekday_section = weekday_chart_block
+        else:
+            hour_section = hour_tables_block
+            weekday_section = weekday_tables_block
+
         chart_payload = {
             "hour": {
                 "labels": hour_labels,
@@ -1009,11 +1103,17 @@ class Dashboard:
             )
         if show_all:
             hidden_inputs.append("<input type='hidden' name='view' value='all'>")
+        if display_mode != "charts":
+            hidden_inputs.append(
+                f"<input type='hidden' name='display' value='{html.escape(display_mode)}'>"
+            )
         hidden_inputs_html = "".join(hidden_inputs)
 
         clear_params = dict(preserved_params)
         if show_all:
             clear_params["view"] = "all"
+        if display_mode != "charts":
+            clear_params["display"] = display_mode
         clear_query = urlencode(clear_params)
         clear_url = base_path + (f"?{clear_query}" if clear_query else "")
 
@@ -1077,73 +1177,16 @@ class Dashboard:
 </div>
 
 <div class=\"card\" style=\"margin-top:1.2rem;\">
-  <h2>Zeitliche Trends (UTC)</h2>
-  {hour_chart_block}
-  <div style=\"display:flex; gap:1.2rem; flex-wrap:wrap;\">
-    <div style=\"flex:1 1 260px;\">
-      <h3>Kategorie gesamt — nach Stunde</h3>
-      <table class=\"sortable-table\" data-table=\"category-hour\">
-        <thead>
-          <tr>
-            <th data-sort-type=\"number\">Stunde</th>
-            <th data-sort-type=\"number\">Samples</th>
-            <th data-sort-type=\"number\">Ø Viewer</th>
-            <th data-sort-type=\"number\">Peak Viewer</th>
-          </tr>
-        </thead>
-        <tbody>{category_hour_rows}</tbody>
-      </table>
-    </div>
-    <div style=\"flex:1 1 260px;\">
-      <h3>Tracked Streamer — nach Stunde</h3>
-      <table class=\"sortable-table\" data-table=\"tracked-hour\">
-        <thead>
-          <tr>
-            <th data-sort-type=\"number\">Stunde</th>
-            <th data-sort-type=\"number\">Samples</th>
-            <th data-sort-type=\"number\">Ø Viewer</th>
-            <th data-sort-type=\"number\">Peak Viewer</th>
-          </tr>
-        </thead>
-        <tbody>{tracked_hour_rows}</tbody>
-      </table>
-    </div>
+  <div class=\"card-header\">
+    <h2>Zeitliche Trends (UTC)</h2>
+    {display_toggle_html}
   </div>
+  {hour_section}
 </div>
 
 <div class=\"card\" style=\"margin-top:1.2rem;\">
   <h2>Tagestrends</h2>
-  {weekday_chart_block}
-  <div style=\"display:flex; gap:1.2rem; flex-wrap:wrap;\">
-    <div style=\"flex:1 1 260px;\">
-      <h3>Kategorie gesamt — nach Wochentag</h3>
-      <table class=\"sortable-table\" data-table=\"category-weekday\">
-        <thead>
-          <tr>
-            <th data-sort-type=\"number\">Tag</th>
-            <th data-sort-type=\"number\">Samples</th>
-            <th data-sort-type=\"number\">Ø Viewer</th>
-            <th data-sort-type=\"number\">Peak Viewer</th>
-          </tr>
-        </thead>
-        <tbody>{category_weekday_rows}</tbody>
-      </table>
-    </div>
-    <div style=\"flex:1 1 260px;\">
-      <h3>Tracked Streamer — nach Wochentag</h3>
-      <table class=\"sortable-table\" data-table=\"tracked-weekday\">
-        <thead>
-          <tr>
-            <th data-sort-type=\"number\">Tag</th>
-            <th data-sort-type=\"number\">Samples</th>
-            <th data-sort-type=\"number\">Ø Viewer</th>
-            <th data-sort-type=\"number\">Peak Viewer</th>
-          </tr>
-        </thead>
-        <tbody>{tracked_weekday_rows}</tbody>
-      </table>
-    </div>
-  </div>
+  {weekday_section}
 </div>
 
 <div class=\"card\" style=\"margin-top:1.2rem;\">
