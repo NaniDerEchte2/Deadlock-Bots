@@ -363,13 +363,57 @@ class StreamerIntroView(StepView):
         custom_id="wdm:streamer:intro_yes",
     )
     async def btn_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        view = StreamerRequirementsView()
-        view.bound_message = interaction.message
-        await interaction.response.edit_message(
-            embed=StreamerRequirementsView.build_embed(),
-            view=view,
-        )
-        self.stop()
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(thinking=False)
+            except Exception:
+                log.debug("Intro defer failed", exc_info=True)
+
+        requirements_view = StreamerRequirementsView()
+        requirements_embed = StreamerRequirementsView.build_embed()
+
+        sent_message: Optional[discord.Message] = None
+
+        # Entferne die ursprüngliche Intro-Nachricht, damit nur noch die Anforderungen sichtbar sind.
+        try:
+            if interaction.message:
+                await interaction.message.delete()
+        except Exception:
+            log.debug("Konnte Intro-Nachricht nicht löschen.", exc_info=True)
+
+        try:
+            channel = interaction.channel
+            if channel is None:
+                if isinstance(interaction.user, (discord.User, discord.Member)):
+                    channel = await interaction.user.create_dm()
+
+            if channel is not None:
+                sent_message = await channel.send(embed=requirements_embed, view=requirements_view)
+            else:
+                sent_message = await interaction.followup.send(
+                    embed=requirements_embed,
+                    view=requirements_view,
+                    wait=True,
+                )
+        except Exception:
+            log.exception("Senden der Anforderungen fehlgeschlagen")
+            await _safe_send(
+                interaction,
+                content="⚠️ Die Anforderungen konnten nicht angezeigt werden. Bitte versuche es später erneut.",
+                ephemeral=True,
+            )
+            self.stop()
+            return
+
+        if hasattr(requirements_view, "bound_message") and sent_message is not None:
+            requirements_view.bound_message = sent_message
+
+        try:
+            await requirements_view.wait()
+        finally:
+            # Weiter mit dem Welcome-Flow, nachdem die Anforderungen abgeschlossen oder abgebrochen wurden.
+            self.proceed = getattr(requirements_view, "proceed", False)
+            self.stop()
 
     @discord.ui.button(
         label="Nein, kein Partner",
