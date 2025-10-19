@@ -435,6 +435,8 @@ class MasterBot(commands.Bot):
         if self.dashboard:
             try:
                 await self.dashboard.start()
+            except RuntimeError as e:
+                logging.error(f"Dashboard konnte nicht gestartet werden: {e}. Läuft bereits ein anderer Prozess?")
             except Exception as e:
                 logging.error(f"Dashboard konnte nicht gestartet werden: {e}")
 

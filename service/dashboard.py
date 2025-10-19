@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import errno
 import logging
 import os
 from typing import Any, Dict, Iterable, List, Optional, TYPE_CHECKING
@@ -396,48 +397,67 @@ class DashboardServer:
         self._lock = asyncio.Lock()
         self._started = False
 
+    async def _cleanup(self) -> None:
+        if self._site:
+            await self._site.stop()
+        if self._runner:
+            await self._runner.cleanup()
+        self._site = None
+        self._runner = None
+
     async def start(self) -> None:
-        if self._started:
-            return
+        async with self._lock:
+            if self._started:
+                return
 
-        app = web.Application()
-        app["dashboard"] = self
-        app.add_routes(
-            [
-                web.get("/", self._handle_index),
-                web.get("/admin", self._handle_index),
-                web.get("/twitch/admin", self._handle_index),
-                web.get("/twitch/admin/", self._handle_index),
-                web.get("/api/status", self._handle_status),
-                web.post("/api/cogs/reload", self._handle_reload),
-                web.post("/api/cogs/load", self._handle_load),
-                web.post("/api/cogs/unload", self._handle_unload),
-                web.post("/api/cogs/reload-all", self._handle_reload_all),
-                web.post("/api/cogs/reload-namespace", self._handle_reload_namespace),
-                web.post("/api/cogs/discover", self._handle_discover),
-            ]
-        )
+            app = web.Application()
+            app["dashboard"] = self
+            app.add_routes(
+                [
+                    web.get("/", self._handle_index),
+                    web.get("/admin", self._handle_index),
+                    web.get("/twitch/admin", self._handle_index),
+                    web.get("/twitch/admin/", self._handle_index),
+                    web.get("/api/status", self._handle_status),
+                    web.post("/api/cogs/reload", self._handle_reload),
+                    web.post("/api/cogs/load", self._handle_load),
+                    web.post("/api/cogs/unload", self._handle_unload),
+                    web.post("/api/cogs/reload-all", self._handle_reload_all),
+                    web.post("/api/cogs/reload-namespace", self._handle_reload_namespace),
+                    web.post("/api/cogs/discover", self._handle_discover),
+                ]
+            )
 
-        self._runner = web.AppRunner(app)
-        await self._runner.setup()
-        self._site = web.TCPSite(self._runner, self.host, self.port)
-        await self._site.start()
-        self._started = True
-        logging.info("Master dashboard available on http://%s:%s", self.host, self.port)
+            self._runner = web.AppRunner(app)
+            await self._runner.setup()
+
+            # Unter Windows bleibt der Port häufig kurzzeitig im TIME_WAIT-Zustand.
+            # reuse_address ermöglicht schnelle Neustarts ohne Fehlermeldung.
+            site_kwargs: Dict[str, Any] = {"reuse_address": True}
+
+            try:
+                self._site = web.TCPSite(self._runner, self.host, self.port, **site_kwargs)
+                await self._site.start()
+            except OSError as e:
+                await self._cleanup()
+                if e.errno in {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", 10048)}:
+                    raise RuntimeError(
+                        f"Dashboard-Port {self.host}:{self.port} ist bereits belegt"
+                    ) from e
+                raise
+
+            self._started = True
+            logging.info("Master dashboard available on http://%s:%s", self.host, self.port)
 
     async def stop(self) -> None:
-        if not self._started:
-            return
-        try:
-            if self._site:
-                await self._site.stop()
-            if self._runner:
-                await self._runner.cleanup()
-        finally:
-            self._site = None
-            self._runner = None
-            self._started = False
-            logging.info("Master dashboard stopped")
+        async with self._lock:
+            if not self._started:
+                return
+            try:
+                await self._cleanup()
+            finally:
+                self._started = False
+                logging.info("Master dashboard stopped")
 
     # ------------------------------------------------------------------
     # Helpers
