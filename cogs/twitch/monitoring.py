@@ -161,16 +161,21 @@ class TwitchMonitoringMixin:
         now_utc = datetime.now(tz=timezone.utc)
 
         with storage.get_conn() as c:
-            live_state = {
-                str(row["streamer_login"]): dict(row)
-                for row in c.execute("SELECT * FROM twitch_live_state").fetchall()
-            }
+            live_state_rows = c.execute("SELECT * FROM twitch_live_state").fetchall()
+
+        live_state: Dict[str, dict] = {}
+        for row in live_state_rows:
+            row_dict = dict(row)
+            key = str(row_dict.get("streamer_login") or "").lower()
+            if key:
+                live_state[key] = row_dict
 
         target_game_lower = self._get_target_game_lower()
 
         for login, user_id, need_link in tracked:
-            stream = streams_by_login.get(login.lower())
-            previous_state = live_state.get(login, {})
+            login_lower = login.lower()
+            stream = streams_by_login.get(login_lower)
+            previous_state = live_state.get(login_lower, {})
             was_live = bool(previous_state.get("is_live", 0))
             is_live = bool(stream)
             previous_game = (previous_state.get("last_game") or "").strip()
@@ -196,7 +201,11 @@ class TwitchMonitoringMixin:
                 message_prefix: List[str] = []
                 if self._alert_mention:
                     message_prefix.append(self._alert_mention)
-                message_prefix.append(f"**{display_name}** ist live: {url}")
+                stream_title = (stream.get("title") or "").strip()
+                live_announcement = f"🔴 **{display_name}** ist live: {url}"
+                if stream_title:
+                    live_announcement = f"{live_announcement} – {stream_title}"
+                message_prefix.append(live_announcement)
                 content = " ".join(part for part in message_prefix if part).strip()
 
                 embed = self._build_live_embed(login, stream)
@@ -212,7 +221,6 @@ class TwitchMonitoringMixin:
             ended_deadlock = (
                 notify_ch is not None
                 and message_id_previous
-                and was_deadlock
                 and (not is_live or not is_deadlock)
             )
 
@@ -252,9 +260,10 @@ class TwitchMonitoringMixin:
                         else:
                             message_id_to_store = None
 
-            db_user_id = user_id or previous_state.get("twitch_user_id") or login
+            db_user_id = user_id or previous_state.get("twitch_user_id") or login_lower
             db_user_id = str(db_user_id)
             db_message_id = str(message_id_to_store) if message_id_to_store else None
+            db_streamer_login = login_lower
 
             with storage.get_conn() as c:
                 c.execute(
@@ -263,7 +272,7 @@ class TwitchMonitoringMixin:
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         db_user_id,
-                        login,
+                        db_streamer_login,
                         int(is_live),
                         now_utc.isoformat(timespec="seconds"),
                         (stream.get("title") if stream else None),
