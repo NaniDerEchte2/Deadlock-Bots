@@ -38,6 +38,27 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             padding: 1.5rem;
             box-shadow: 0 6px 24px rgba(0,0,0,0.35);
         }
+        .top-nav {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 1rem;
+        }
+        .top-nav a {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            text-decoration: none;
+            background: #1c7ed6;
+            color: #fff;
+            padding: 0.45rem 0.9rem;
+            border-radius: 999px;
+            font-weight: 600;
+            border: 1px solid rgba(255,255,255,0.2);
+            transition: background 0.15s ease;
+        }
+        .top-nav a:hover {
+            background: #1971c2;
+        }
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -114,6 +135,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     </style>
 </head>
 <body>
+    <div class="top-nav">
+        <a href="/twitch">Twitch Dashboard öffnen</a>
+    </div>
     <h1>Master Bot Dashboard</h1>
     <section>
         <div class=\"toolbar\">
@@ -416,8 +440,6 @@ class DashboardServer:
                 [
                     web.get("/", self._handle_index),
                     web.get("/admin", self._handle_index),
-                    web.get("/twitch/admin", self._handle_index),
-                    web.get("/twitch/admin/", self._handle_index),
                     web.get("/api/status", self._handle_status),
                     web.post("/api/cogs/reload", self._handle_reload),
                     web.post("/api/cogs/load", self._handle_load),

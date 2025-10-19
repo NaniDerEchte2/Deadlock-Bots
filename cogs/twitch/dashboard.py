@@ -83,7 +83,7 @@ class Dashboard:
             '<nav class="tabs">'
             f'{a("/twitch", "Live", "live")}'
             f'{a("/twitch/stats", "Stats", "stats")}'
-            '<a class="tab tab-admin" href="/twitch/admin">Admin</a>'
+            '<a class="tab tab-admin" href="/admin">Admin</a>'
             "</nav>"
         )
 
