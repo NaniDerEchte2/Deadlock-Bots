@@ -17,8 +17,9 @@ import atexit
 import sqlite3
 import threading
 import logging
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 # ---- Env-Keys (nur diese beiden werden unterstützt) ----
 ENV_DB_PATH = "DEADLOCK_DB_PATH"   # kompletter Pfad zur DB-Datei (höchste Prio)
@@ -124,6 +125,14 @@ def connect() -> sqlite3.Connection:
         init_schema(_CONN)
 
     return _CONN
+
+
+@contextmanager
+def get_conn() -> Iterator[sqlite3.Connection]:
+    """Contextmanager, der die zentrale Verbindung thread-safe bereitstellt."""
+    conn = connect()
+    with _LOCK:
+        yield conn
 
 
 def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
