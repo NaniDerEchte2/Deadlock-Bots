@@ -18,7 +18,6 @@
  *   - AUTH_LOGOUT
  *
  * Erfordert: steam-user, better-sqlite3
- * Optional:  steam-totp (nur falls du TOTP-Code generieren willst – hier nicht genutzt)
  */
 
 const fs = require('fs');
@@ -171,7 +170,14 @@ client.setOption('autoRelogin', false);
 client.setOption('machineName', process.env.STEAM_MACHINE_NAME || 'DeadlockBridge');
 
 // Quick Invites (DB + client)
-const quickInvites = new QuickInvites(db, client, log);
+// Auto-Ensure-Konfiguration: mind. 1 verfügbar halten (kein Ablauf, Limit=1)
+const quickInvites = new QuickInvites(db, client, log, {
+  inviteLimit: 1,
+  inviteDuration: null,          // kein Ablauf
+  poolTarget: 1,                 // mindestens 1 available
+  autoEnsure: true,              // Hintergrund-Ensure aktiv
+  autoEnsureIntervalMs: Number(process.env.STEAM_INVITE_AUTO_ENSURE_MS ?? 30000) // alle 30s prüfen
+});
 
 // ---------- Helpers ----------
 function updateRefreshToken(token) { refreshToken = token ? String(token).trim() : ''; runtimeState.refresh_token_present = Boolean(refreshToken); }
@@ -198,9 +204,9 @@ function guardTypeFromDomain(domain) {
 function buildLoginOptions(overrides = {}) {
   if (overrides.refreshToken) return { refreshToken: overrides.refreshToken };
   if (refreshToken && !overrides.forceAccountCredentials) return { refreshToken };
+  const accountName = overrides.accountName ?? ACCOUNT_NAME;
+  const password = overrides.password ?? ACCOUNT_PASSWORD;
 
-  const accountName = (overrides.accountName ?? ACCOUNT_NAME);
-  const password = (overrides.password ?? ACCOUNT_PASSWORD);
   if (!accountName) throw new Error('Missing Steam account name');
   if (!password) throw new Error('Missing Steam account password');
 
@@ -375,7 +381,7 @@ function processNextTask() {
       }
       case 'AUTH_QUICK_INVITE_ENSURE_POOL': {
         const p = {
-          target: payload?.target ?? 5,
+          target: payload?.target ?? 5, // Default: Poolgröße 5
           inviteLimit: payload?.invite_limit ?? 1,
           inviteDuration: (Object.prototype.hasOwnProperty.call(payload || {}, 'invite_duration'))
             ? payload.invite_duration
@@ -428,15 +434,23 @@ function markLoggedOn(details) {
     cellId: details ? details.cellID : undefined,
     steam_id64: runtimeState.steam_id64,
   });
+
+  // Direkt nach erfolgreichem Login: mind. 1 Invite sicherstellen
+  if (typeof quickInvites.ensureAtLeastOne === 'function') {
+    quickInvites.ensureAtLeastOne();
+  } else if (typeof quickInvites.ensurePool === 'function') {
+    quickInvites.ensurePool({ target: 1 }).catch((e) => log('warn', 'ensurePool-after-login failed', { error: e.message }));
+  }
 }
 
 client.on('loggedOn', (details) => { markLoggedOn(details); });
 client.on('webSession', () => { log('debug', 'Steam web session established'); });
 client.on('steamGuard', (domain, callback, lastCodeWrong) => {
   pendingGuard = { domain, callback };
+  const norm = String(domain || '').toLowerCase();
   runtimeState.guard_required = {
     domain: domain || null,
-    type: guardTypeFromDomain(domain),
+    type: norm.includes('email') ? 'email' : (norm.includes('two-factor') || norm.includes('authenticator') || norm.includes('mobile')) ? 'totp' : (norm.includes('device') ? 'device' : 'unknown'),
     last_code_wrong: Boolean(lastCodeWrong),
     requested_at: nowSeconds(),
   };
@@ -471,8 +485,13 @@ function autoLoginIfPossible() {
 }
 autoLoginIfPossible();
 
+// QuickInvites: Auto-Ensure-Loop starten (hält >=1 available), sofern Modul die Methode anbietet
+if (typeof quickInvites.startAutoEnsure === 'function') {
+  quickInvites.startAutoEnsure();
+}
+
 function shutdown(code = 0) {
-  try { log('info', 'Shutting down Steam bridge'); clearReconnectTimer(); client.logOff(); } catch {}
+  try { log('info', 'Shutting down Steam bridge'); if (typeof quickInvites.stopAutoEnsure === 'function') quickInvites.stopAutoEnsure(); client.logOff(); } catch {}
   try { db.close(); } catch {}
   process.exit(code);
 }
