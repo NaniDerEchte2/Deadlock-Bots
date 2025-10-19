@@ -405,6 +405,9 @@ class DashboardServer:
         app.add_routes(
             [
                 web.get("/", self._handle_index),
+                web.get("/admin", self._handle_index),
+                web.get("/twitch/admin", self._handle_index),
+                web.get("/twitch/admin/", self._handle_index),
                 web.get("/api/status", self._handle_status),
                 web.post("/api/cogs/reload", self._handle_reload),
                 web.post("/api/cogs/load", self._handle_load),

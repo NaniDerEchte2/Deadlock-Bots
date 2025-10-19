@@ -83,6 +83,7 @@ class Dashboard:
             '<nav class="tabs">'
             f'{a("/twitch", "Live", "live")}'
             f'{a("/twitch/stats", "Stats", "stats")}'
+            '<a class="tab tab-admin" href="/twitch/admin">Admin</a>'
             "</nav>"
         )
 
@@ -115,6 +116,8 @@ class Dashboard:
   .tabs {{ display:flex; gap:.5rem; margin-bottom:1rem; }}
   .tab {{ padding:.5rem .8rem; border-radius:.5rem; text-decoration:none; color:#ddd; background:#1a1f2e; border:1px solid var(--bd); }}
   .tab.active {{ background:var(--accent); color:#fff; }}
+  .tab.tab-admin {{ margin-left:auto; background:#2d255b; color:#fff; border-color:var(--accent); font-weight:600; }}
+  .tab.tab-admin:hover {{ background:var(--accent); color:#fff; }}
   .card {{ background:var(--card); border:1px solid var(--bd); border-radius:.7rem; padding:1rem; }}
   .row {{ display:flex; gap:1rem; align-items:center; flex-wrap:wrap; }}
   .btn {{ background:var(--accent); color:white; border:none; padding:.5rem .8rem; border-radius:.5rem; cursor:pointer; }}
