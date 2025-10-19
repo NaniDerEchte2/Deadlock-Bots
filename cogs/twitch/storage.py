@@ -129,20 +129,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "twitch_live_state", "last_game", "TEXT")
     _add_column_if_missing(conn, "twitch_live_state", "last_viewer_count", "INTEGER DEFAULT 0")
 
-    # 3) Streamer-Signup-Logs (von Discord-Setup)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS twitch_signup_requests (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            discord_user_id  INTEGER,
-            twitch_login     TEXT NOT NULL,
-            raw_input        TEXT,
-            created_at       TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-
-    # 4) Stats-Logs
+    # 3) Stats-Logs
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS twitch_stats_tracked (
@@ -166,7 +153,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "twitch_stats_tracked", "is_partner", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_stats_category", "is_partner", "INTEGER DEFAULT 0")
 
-    # 5) twitch_settings – Channel je Guild
+    # 4) twitch_settings – Channel je Guild
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS twitch_settings (

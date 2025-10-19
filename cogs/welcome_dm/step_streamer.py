@@ -10,7 +10,7 @@ Step 1  (StreamerIntroView):
 
 Step 2  (StreamerRequirementsView):
   Zeigt die Anforderungen. Button:
-    - Abgeschlossen       -> Rolle vergeben + Kontroll-Ping + (optional) Twitch-Register
+    - Abgeschlossen       -> Twitch-Profil-Modal -> speichern (unverifiziert) + Rolle vergeben + Kontroll-Ping
     - Abbrechen           -> ohne Änderung beenden
 
 Hinweise:
@@ -250,8 +250,6 @@ def _store_twitch_signup(discord_user_id: int, raw_input: str) -> Tuple[bool, Op
         log.error("Twitch storage module unavailable – cannot persist signup for %s", discord_user_id)
         return False, None, "⚠️ Interner Fehler beim Speichern deines Twitch-Profils. Bitte informiere das Team."
 
-    raw_trimmed = (raw_input or "").strip()
-
     try:
         with twitch_storage.get_conn() as conn:
             cur = conn.execute(
@@ -265,11 +263,6 @@ def _store_twitch_signup(discord_user_id: int, raw_input: str) -> Tuple[bool, Op
                 "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL "
                 "WHERE twitch_login=?",
                 (login,),
-            )
-
-            conn.execute(
-                "INSERT INTO twitch_signup_requests (discord_user_id, twitch_login, raw_input) VALUES (?, ?, ?)",
-                (int(discord_user_id), login, raw_trimmed),
             )
     except Exception as exc:  # pragma: no cover - robust gegen DB-Fehler
         log.exception("Failed to persist Twitch signup for %s: %r", discord_user_id, exc)
@@ -290,7 +283,7 @@ def _store_twitch_signup(discord_user_id: int, raw_input: str) -> Tuple[bool, Op
 class StreamerTwitchProfileModal(discord.ui.Modal):
     """Fragt nach dem Twitch-Profil und speichert es direkt unverifiziert."""
 
-    def __init__(self, parent_view: "StreamerIntroView"):
+    def __init__(self, parent_view: "StreamerRequirementsView"):
         super().__init__(title="Twitch-Profil angeben")
         self.parent_view = parent_view
         self.twitch_input = discord.ui.TextInput(
@@ -302,34 +295,22 @@ class StreamerTwitchProfileModal(discord.ui.Modal):
         self.add_item(self.twitch_input)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+
         ok, login, error_msg = _store_twitch_signup(interaction.user.id, str(self.twitch_input.value))
         if not ok or not login:
-            if interaction.response.is_done():
-                await interaction.followup.send(error_msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(error_msg, ephemeral=True)
+            await interaction.followup.send(error_msg, ephemeral=True)
             return
 
-        if self.parent_view is not None and self.parent_view.bound_message is not None:
-            for child in self.parent_view.children:
-                try:
-                    child.disabled = True
-                except Exception:
-                    pass
-            try:
-                await self.parent_view.bound_message.edit(view=self.parent_view)
-            except Exception as exc:  # pragma: no cover - rein informativ
-                log.debug("Failed to disable intro view after modal submit: %r", exc)
+        assign_ok, assign_msg = await _assign_role_and_notify(interaction)
+        if not assign_ok:
+            await interaction.followup.send(f"⚠️ {assign_msg}", ephemeral=True)
+            return
 
         if self.parent_view is not None:
-            self.parent_view.force_finish()
+            await self.parent_view.mark_completed(interaction, twitch_login=login)
 
-        embed = StreamerRequirementsView.build_embed(twitch_login=login)
-        view = StreamerRequirementsView()
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, view=view, ephemeral=False)
-        else:
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+        await _safe_send(interaction, content=assign_msg, ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:  # pragma: no cover - defensive
         log.exception("StreamerTwitchProfileModal failed: %r", error)
@@ -382,8 +363,13 @@ class StreamerIntroView(StepView):
         custom_id="wdm:streamer:intro_yes",
     )
     async def btn_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.bound_message = interaction.message
-        await interaction.response.send_modal(StreamerTwitchProfileModal(self))
+        view = StreamerRequirementsView()
+        view.bound_message = interaction.message
+        await interaction.response.edit_message(
+            embed=StreamerRequirementsView.build_embed(),
+            view=view,
+        )
+        self.force_finish()
 
     @discord.ui.button(
         label="Nein, kein Partner",
@@ -434,6 +420,12 @@ class StreamerRequirementsView(StepView):
             "wir verstehen uns nicht als Konkurrenz, sondern als Hub für deutschsprachige Deadlock-Spieler."
         )
 
+        if not twitch_login:
+            description += (
+                "\n\nNach dem Klick auf **Abgeschlossen** fragen wir dich nach deinem Twitch-Profil "
+                "und speichern es zur manuellen Prüfung."
+            )
+
         e = discord.Embed(
             title="Partner-Voraussetzungen",
             description=description,
@@ -448,14 +440,7 @@ class StreamerRequirementsView(StepView):
         custom_id="wdm:streamer:req_done",
     )
     async def btn_done(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-
-        ok, msg = await _assign_role_and_notify(interaction)
-        if ok:
-            await _safe_send(interaction, content=msg, ephemeral=True)
-            await self._finish(interaction)
-        else:
-            await _safe_send(interaction, content=f"⚠️ {msg}", ephemeral=True)
+        await interaction.response.send_modal(StreamerTwitchProfileModal(self))
 
     @discord.ui.button(
         label="Abbrechen",
@@ -469,6 +454,24 @@ class StreamerRequirementsView(StepView):
             content="Abgebrochen. Du kannst es später mit **/streamer** erneut starten.",
             ephemeral=True,
         )
+        await self._finish(interaction)
+
+    async def mark_completed(self, interaction: discord.Interaction, *, twitch_login: str) -> None:
+        embed = self.build_embed(twitch_login=twitch_login)
+        for child in self.children:
+            try:
+                child.disabled = True
+            except Exception:
+                pass
+
+        try:
+            if interaction.message:
+                await interaction.message.edit(embed=embed, view=self)
+            elif interaction.response.is_done():
+                await interaction.edit_original_response(embed=embed, view=self)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            log.debug("Failed to edit requirements message after Twitch submit: %r", exc)
+
         await self._finish(interaction)
 
 
