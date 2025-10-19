@@ -1,5 +1,6 @@
 # cogs/twitch/dashboard.py
 import html
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -147,6 +148,11 @@ class Dashboard:
   .filter-form {{ margin-top:.6rem; }}
   .filter-form .row {{ align-items:flex-end; gap:1rem; }}
   .filter-label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.9rem; color:var(--muted); }}
+  .chart-panel {{ background:#10162a; border:1px solid var(--bd); border-radius:.7rem; padding:1rem; margin-top:1rem; }}
+  .chart-panel h3 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-2); }}
+  .chart-panel canvas {{ width:100%; height:320px; max-height:360px; }}
+  .chart-note {{ margin-top:.6rem; font-size:.85rem; color:var(--muted); }}
+  .chart-empty {{ margin-top:1rem; font-size:.9rem; color:var(--muted); font-style:italic; }}
 </style>
 {nav_html}
 {flash}
@@ -531,6 +537,22 @@ class Dashboard:
         def _format_float(value: float) -> str:
             return f"{value:.1f}"
 
+        def _float_or_none(value, *, digits: int = 1):
+            if value is None:
+                return None
+            try:
+                return round(float(value), digits)
+            except (TypeError, ValueError):
+                return None
+
+        def _int_or_none(value):
+            if value is None:
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
         def render_hour_table(items: List[dict]) -> str:
             if not items:
                 return "<tr><td colspan=4><i>Keine Daten verfügbar.</i></td></tr>"
@@ -591,9 +613,326 @@ class Dashboard:
         category_weekday_rows = render_weekday_table(category_weekday)
         tracked_weekday_rows = render_weekday_table(tracked_weekday)
 
+        category_hour_map = {
+            int(item.get("hour") or 0): item for item in category_hourly if isinstance(item, dict)
+        }
+        tracked_hour_map = {
+            int(item.get("hour") or 0): item for item in tracked_hourly if isinstance(item, dict)
+        }
+
+        def _build_dataset(
+            data_points,
+            *,
+            label: str,
+            color: str,
+            background: str,
+            axis: str = "yAvg",
+            fill: bool = True,
+            dash: Optional[List[int]] = None,
+            tension: float = 0.35,
+        ) -> Optional[dict]:
+            if not data_points or not any(value is not None for value in data_points):
+                return None
+            dataset = {
+                "label": label,
+                "data": data_points,
+                "borderColor": color,
+                "backgroundColor": background,
+                "fill": fill,
+                "tension": tension,
+                "spanGaps": True,
+                "borderWidth": 2,
+                "yAxisID": axis,
+                "pointRadius": 3,
+                "pointHoverRadius": 4,
+            }
+            if dash:
+                dataset["borderDash"] = dash
+            return dataset
+
+        hour_labels = [f"{hour:02d}:00" for hour in range(24)]
+        category_hour_avg = [
+            _float_or_none((category_hour_map.get(hour) or {}).get("avg_viewers")) for hour in range(24)
+        ]
+        tracked_hour_avg = [
+            _float_or_none((tracked_hour_map.get(hour) or {}).get("avg_viewers")) for hour in range(24)
+        ]
+        category_hour_peak = [
+            _int_or_none((category_hour_map.get(hour) or {}).get("max_viewers")) for hour in range(24)
+        ]
+        tracked_hour_peak = [
+            _int_or_none((tracked_hour_map.get(hour) or {}).get("max_viewers")) for hour in range(24)
+        ]
+
+        hour_datasets = [
+            ds
+            for ds in (
+                _build_dataset(
+                    category_hour_avg,
+                    label="Kategorie Ø Viewer",
+                    color="#6d4aff",
+                    background="rgba(109, 74, 255, 0.25)",
+                ),
+                _build_dataset(
+                    tracked_hour_avg,
+                    label="Tracked Ø Viewer",
+                    color="#4adede",
+                    background="rgba(74, 222, 222, 0.2)",
+                ),
+                _build_dataset(
+                    category_hour_peak,
+                    label="Kategorie Peak Viewer",
+                    color="#ffb347",
+                    background="rgba(255, 179, 71, 0.1)",
+                    axis="yPeak",
+                    fill=False,
+                    dash=[6, 4],
+                    tension=0.25,
+                ),
+                _build_dataset(
+                    tracked_hour_peak,
+                    label="Tracked Peak Viewer",
+                    color="#ff6f91",
+                    background="rgba(255, 111, 145, 0.1)",
+                    axis="yPeak",
+                    fill=False,
+                    dash=[4, 4],
+                    tension=0.25,
+                ),
+            )
+            if ds
+        ]
+
+        category_weekday_map = {
+            int(item.get("weekday") or 0): item for item in category_weekday if isinstance(item, dict)
+        }
+        tracked_weekday_map = {
+            int(item.get("weekday") or 0): item for item in tracked_weekday if isinstance(item, dict)
+        }
+
+        weekday_labels_list = [weekday_labels.get(idx, str(idx)) for idx in weekday_order]
+        category_weekday_avg = [
+            _float_or_none((category_weekday_map.get(idx) or {}).get("avg_viewers"))
+            for idx in weekday_order
+        ]
+        tracked_weekday_avg = [
+            _float_or_none((tracked_weekday_map.get(idx) or {}).get("avg_viewers"))
+            for idx in weekday_order
+        ]
+        category_weekday_peak = [
+            _int_or_none((category_weekday_map.get(idx) or {}).get("max_viewers"))
+            for idx in weekday_order
+        ]
+        tracked_weekday_peak = [
+            _int_or_none((tracked_weekday_map.get(idx) or {}).get("max_viewers"))
+            for idx in weekday_order
+        ]
+
+        weekday_datasets = [
+            ds
+            for ds in (
+                _build_dataset(
+                    category_weekday_avg,
+                    label="Kategorie Ø Viewer",
+                    color="#6d4aff",
+                    background="rgba(109, 74, 255, 0.25)",
+                ),
+                _build_dataset(
+                    tracked_weekday_avg,
+                    label="Tracked Ø Viewer",
+                    color="#4adede",
+                    background="rgba(74, 222, 222, 0.2)",
+                ),
+                _build_dataset(
+                    category_weekday_peak,
+                    label="Kategorie Peak Viewer",
+                    color="#ffb347",
+                    background="rgba(255, 179, 71, 0.1)",
+                    axis="yPeak",
+                    fill=False,
+                    dash=[6, 4],
+                    tension=0.25,
+                ),
+                _build_dataset(
+                    tracked_weekday_peak,
+                    label="Tracked Peak Viewer",
+                    color="#ff6f91",
+                    background="rgba(255, 111, 145, 0.1)",
+                    axis="yPeak",
+                    fill=False,
+                    dash=[4, 4],
+                    tension=0.25,
+                ),
+            )
+            if ds
+        ]
+
+        hour_chart_block = (
+            "<div class=\"chart-panel\">"
+            "  <h3>Viewer nach Stunde (UTC)</h3>"
+            "  <canvas id=\"hourly-viewers-chart\" height=\"320\"></canvas>"
+            "  <div class=\"chart-note\">Durchschnitt (gefüllt) und Peak (gestrichelt).</div>"
+            "</div>"
+            if hour_datasets
+            else "<div class=\"chart-empty\">Noch keine Stunden-Daten vorhanden.</div>"
+        )
+
+        weekday_chart_block = (
+            "<div class=\"chart-panel\">"
+            "  <h3>Viewer nach Wochentag</h3>"
+            "  <canvas id=\"weekday-viewers-chart\" height=\"320\"></canvas>"
+            "  <div class=\"chart-note\">Vergleich von Ø und Peak Viewer je Tag.</div>"
+            "</div>"
+            if weekday_datasets
+            else "<div class=\"chart-empty\">Noch keine Wochentags-Daten vorhanden.</div>"
+        )
+
+        chart_payload = {
+            "hour": {
+                "labels": hour_labels,
+                "datasets": hour_datasets,
+                "xTitle": "Stunde (UTC)",
+            },
+            "weekday": {
+                "labels": weekday_labels_list,
+                "datasets": weekday_datasets,
+                "xTitle": "Wochentag",
+            },
+        }
+
+        chart_payload_json = json.dumps(chart_payload, ensure_ascii=False)
+
         script = """
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 (function () {
+  const chartData = __CHART_DATA__;
+
+  function hasRenderableData(dataset) {
+    if (!dataset || !Array.isArray(dataset.data)) {
+      return false;
+    }
+    return dataset.data.some((value) => value !== null && value !== undefined);
+  }
+
+  function renderLineChart(config) {
+    if (typeof Chart === "undefined") {
+      return;
+    }
+    const canvas = document.getElementById(config.id);
+    if (!canvas) {
+      return;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+    const datasets = (config.data.datasets || [])
+      .filter((dataset) => hasRenderableData(dataset))
+      .map((dataset) => ({
+        ...dataset,
+        data: dataset.data.map((value) =>
+          value === null || value === undefined ? null : Number(value)
+        ),
+      }));
+    if (!datasets.length) {
+      return;
+    }
+    const gridColor = "rgba(154, 164, 178, 0.2)";
+    const options = {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: {
+          labels: { color: "#dddddd" },
+        },
+        tooltip: {
+          callbacks: {
+            label: function (ctx) {
+              const value = ctx.parsed.y;
+              if (value === null || value === undefined || Number.isNaN(value)) {
+                return ctx.dataset.label + ": –";
+              }
+              const isAverage = /Ø/.test(ctx.dataset.label);
+              const digits = isAverage ? 1 : 0;
+              return (
+                ctx.dataset.label +
+                ": " +
+                Number(value).toLocaleString("de-DE", {
+                  minimumFractionDigits: digits,
+                  maximumFractionDigits: digits,
+                })
+              );
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          ticks: { color: "#dddddd" },
+          grid: { color: gridColor },
+        },
+        yAvg: {
+          type: "linear",
+          position: "left",
+          ticks: { color: "#dddddd" },
+          grid: { color: gridColor },
+          title: { display: true, text: "Ø Viewer", color: "#9bb0ff" },
+        },
+      },
+      elements: {
+        point: {
+          hitRadius: 6,
+        },
+      },
+    };
+
+    if (config.data && config.data.xTitle) {
+      options.scales.x.title = {
+        display: true,
+        text: config.data.xTitle,
+        color: "#dddddd",
+      };
+    }
+
+    const hasPeakDataset = datasets.some((dataset) => dataset.yAxisID === "yPeak");
+    if (hasPeakDataset) {
+      options.scales.yPeak = {
+        type: "linear",
+        position: "right",
+        ticks: { color: "#dddddd" },
+        grid: { drawOnChartArea: false },
+        title: { display: true, text: "Peak Viewer", color: "#ffb347" },
+      };
+    }
+
+    new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: config.data.labels || [],
+        datasets,
+      },
+      options,
+    });
+  }
+
+  if (
+    chartData.hour &&
+    Array.isArray(chartData.hour.datasets) &&
+    chartData.hour.datasets.length
+  ) {
+    renderLineChart({ id: "hourly-viewers-chart", data: chartData.hour });
+  }
+
+  if (
+    chartData.weekday &&
+    Array.isArray(chartData.weekday.datasets) &&
+    chartData.weekday.datasets.length
+  ) {
+    renderLineChart({ id: "weekday-viewers-chart", data: chartData.weekday });
+  }
+
   const tables = document.querySelectorAll("table.sortable-table");
   tables.forEach((table) => {
     const headers = table.querySelectorAll("th[data-sort-type]");
@@ -637,7 +976,7 @@ class Dashboard:
   });
 })();
 </script>
-"""
+""".replace("__CHART_DATA__", chart_payload_json)
 
         filter_descriptions = []
         if min_samples is not None:
@@ -739,6 +1078,7 @@ class Dashboard:
 
 <div class=\"card\" style=\"margin-top:1.2rem;\">
   <h2>Zeitliche Trends (UTC)</h2>
+  {hour_chart_block}
   <div style=\"display:flex; gap:1.2rem; flex-wrap:wrap;\">
     <div style=\"flex:1 1 260px;\">
       <h3>Kategorie gesamt — nach Stunde</h3>
@@ -773,6 +1113,7 @@ class Dashboard:
 
 <div class=\"card\" style=\"margin-top:1.2rem;\">
   <h2>Tagestrends</h2>
+  {weekday_chart_block}
   <div style=\"display:flex; gap:1.2rem; flex-wrap:wrap;\">
     <div style=\"flex:1 1 260px;\">
       <h3>Kategorie gesamt — nach Wochentag</h3>
