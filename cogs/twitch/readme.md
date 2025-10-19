@@ -10,6 +10,6 @@
 - `GET /twitch`
 - `POST /twitch/add`, `GET /twitch/add_url?url=https://twitch.tv/<login>`, `GET /twitch/add_login/<login>`
 - `POST /twitch/rescan`
-- `GET /twitch/stats`, `/twitch/export`, `/twitch/export/csv`
+- `GET /twitch/stats`
 
 *Helix-Referenzen: **Search Categories**, **Get Streams**, **Get Users**.* :contentReference[oaicite:1]{index=1}

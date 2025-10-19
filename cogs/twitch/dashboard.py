@@ -36,8 +36,6 @@ class Dashboard:
         remove_cb: Callable[[str], Awaitable[None]],
         list_cb: Callable[[], Awaitable[List[dict]]],
         stats_cb: Callable[[], Awaitable[dict]],
-        export_cb: Callable[[], Awaitable[dict]],
-        export_csv_cb: Callable[[], Awaitable[str]],
         verify_cb: Callable[[str, str], Awaitable[str]],
     ):
         self._token = app_token
@@ -47,8 +45,6 @@ class Dashboard:
         self._remove = remove_cb
         self._list = list_cb
         self._stats = stats_cb
-        self._export = export_cb
-        self._export_csv = export_csv_cb
         self._verify = verify_cb
 
     # ---------- Auth ----------
@@ -86,8 +82,6 @@ class Dashboard:
             '<nav class="tabs">'
             f'{a("/twitch", "Live", "live")}'
             f'{a("/twitch/stats", "Stats", "stats")}'
-            f'{a("/twitch/export", "JSON", "json")}'
-            f'{a("/twitch/export/csv", "CSV", "csv")}'
             "</nav>"
         )
 
@@ -366,8 +360,11 @@ class Dashboard:
         data = await request.post()
         login = (data.get("login") or "").strip()
         try:
-            await self._remove(login)
-            raise web.HTTPFound(location="/twitch?ok=" + quote_plus(f"{login} removed"))
+            msg = await self._remove(login)
+            message = msg or f"{login} removed"
+            raise web.HTTPFound(location="/twitch?ok=" + quote_plus(message))
+        except web.HTTPException:
+            raise
         except Exception as e:
             log.exception("dashboard remove failed: %s", e)
             raise web.HTTPFound(location="/twitch?err=" + quote_plus("could not remove"))
@@ -687,20 +684,6 @@ class Dashboard:
         self._require_partner_token(request)
         return await self._render_stats_page(request, partner_view=True)
 
-    async def export_json(self, request: web.Request):
-        self._require_token(request)
-        data = await self._export()
-        return web.json_response(data)
-
-    async def export_csv(self, request: web.Request):
-        self._require_token(request)
-        data = await self._export_csv()
-        return web.Response(
-            text=data,
-            content_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=deadlock_streams.csv"},
-        )
-
     def attach(self, app: web.Application):
         app.add_routes([
             web.get("/twitch", self.index),
@@ -711,8 +694,6 @@ class Dashboard:
             web.post("/twitch/verify", self.verify),
             web.get("/twitch/stats", self.stats),
             web.get("/twitch/partners", self.partner_stats),
-            web.get("/twitch/export", self.export_json),
-            web.get("/twitch/export/csv", self.export_csv),
         ])
 # --- Lightweight Factory -----------------------------------------------
 # Optional: Volle UI nur, wenn alle Callbacks übergeben werden.
@@ -725,13 +706,11 @@ def build_app(
     remove_cb=None,
     list_cb=None,
     stats_cb=None,
-    export_cb=None,
-    export_csv_cb=None,
     verify_cb=None,
 ) -> web.Application:
     app = web.Application()
     have_full_ui = all(cb is not None for cb in (
-        add_cb, remove_cb, list_cb, stats_cb, export_cb, export_csv_cb, verify_cb
+        add_cb, remove_cb, list_cb, stats_cb, verify_cb
     ))
 
     if have_full_ui:
@@ -743,8 +722,6 @@ def build_app(
             remove_cb=remove_cb,
             list_cb=list_cb,
             stats_cb=stats_cb,
-            export_cb=export_cb,
-            export_csv_cb=export_csv_cb,
             verify_cb=verify_cb,
         )
         ui.attach(app)

@@ -231,6 +231,7 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             CREATE TABLE IF NOT EXISTS voice_stats(
               user_id       INTEGER PRIMARY KEY,
               total_seconds INTEGER NOT NULL DEFAULT 0,
+              total_points  INTEGER NOT NULL DEFAULT 0,
               last_update   DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -349,6 +350,20 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               received_at INTEGER DEFAULT (strftime('%s','now'))
             );
 
+            -- Steuer-Tabelle für den Steam-Task-Consumer
+            CREATE TABLE IF NOT EXISTS steam_tasks(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              type TEXT NOT NULL,
+              payload TEXT,
+              status TEXT NOT NULL DEFAULT 'PENDING',
+              result TEXT,
+              error TEXT,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              started_at INTEGER,
+              finished_at INTEGER
+            );
+
             -- Live-Lane-Status (pro Voice-Channel)
             CREATE TABLE IF NOT EXISTS live_lane_state(
               channel_id  INTEGER PRIMARY KEY,
@@ -371,6 +386,14 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             );
             """
         )
+        # Nachträglich hinzugefügte Spalten idempotent sicherstellen
+        try:
+            c.execute(
+                "ALTER TABLE voice_stats ADD COLUMN total_points INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
         # Indizes ergänzen (idempotent)
         try:
             c.execute("CREATE INDEX IF NOT EXISTS idx_lls_active   ON live_lane_state(is_active)")
@@ -386,6 +409,8 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             )
             c.execute("CREATE INDEX IF NOT EXISTS idx_rich_presence_updated ON steam_rich_presence(updated_at)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_friend_snapshots_updated ON steam_friend_snapshots(updated_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_status ON steam_tasks(status, id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_updated ON steam_tasks(updated_at)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ranks_rank ON ranks(rank)")
         except sqlite3.Error as e:
             logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)

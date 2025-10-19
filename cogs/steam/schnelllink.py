@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
+import json
 import logging
-import os
 import re
 import sqlite3
+import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
+import aiohttp
 import discord
 
 from service import db
@@ -23,15 +26,15 @@ class SchnellLink:
     """Represents a generated Steam link for the bot account."""
 
     url: str
-    token: Optional[str] = None
+    token: str
     friend_code: Optional[str] = None
     expires_at: Optional[int] = None
-    single_use: bool = False
+    single_use: bool = True
 
 
 _SELECT_AVAILABLE = """
-SELECT token, invite_link, invite_limit, invite_duration, created_at,
-       expires_at, status, reserved_by, reserved_at
+SELECT rowid AS _rowid_, token, invite_link, invite_limit, invite_duration,
+       created_at, expires_at, status, reserved_by, reserved_at
 FROM steam_quick_invites
 WHERE status = 'available'
   AND (expires_at IS NULL OR expires_at > strftime('%s','now'))
@@ -39,111 +42,187 @@ ORDER BY created_at ASC
 LIMIT 1
 """
 
-_MARK_RESERVED = """
+_UPDATE_RESERVED = """
 UPDATE steam_quick_invites
 SET status = 'reserved',
     reserved_by = ?,
     reserved_at = strftime('%s','now'),
     last_seen = strftime('%s','now')
-WHERE token = ? AND status = 'available'
+WHERE rowid = ? AND status = 'available'
 """
 
-_MARK_INVALID = """
+_MARK_INVALID_BY_ROWID = """
 UPDATE steam_quick_invites
 SET status = 'invalid',
-    reserved_at = strftime('%s','now'),
     last_seen = strftime('%s','now')
-WHERE token = ? AND status = 'available'
+WHERE rowid = ?
 """
 
 
-def _reserve_pre_generated_link(discord_user_id: Optional[int]) -> Optional[SchnellLink]:
-    """Fetch a pre-generated single-use link from the shared SQLite pool."""
+def _enqueue_ensure_pool(conn: Optional[sqlite3.Connection] = None) -> bool:
+    connection = conn or db.connect()
+    payload = json.dumps(
+        {"target": 5, "invite_limit": 1, "invite_duration": None},
+        separators=(",", ":"),
+    )
+    existing = connection.execute(
+        """
+        SELECT 1
+        FROM steam_tasks
+        WHERE type = ?
+          AND status = 'PENDING'
+        LIMIT 1
+        """,
+        ("AUTH_QUICK_INVITE_ENSURE_POOL",),
+    ).fetchone()
+    if existing:
+        return False
 
-    try:
-        conn = db.connect()
-        with db._LOCK:  # type: ignore[attr-defined]
+    connection.execute(
+        "INSERT INTO steam_tasks(type, payload, status) VALUES (?, ?, 'PENDING')",
+        ("AUTH_QUICK_INVITE_ENSURE_POOL", payload),
+    )
+    return True
+
+
+def reserve_invite(discord_user_id: Optional[int]) -> SchnellLink:
+    conn = db.connect()
+    reserved_row = None
+
+    with db._LOCK:  # type: ignore[attr-defined]
+        attempts = 0
+        while True:
             try:
                 conn.execute("BEGIN IMMEDIATE")
-            except sqlite3.OperationalError as exc:
-                log.debug(
-                    "Failed to open transaction for schnelllink reservation: %s",
-                    exc,
-                )
-                return None
+            except sqlite3.OperationalError as exc:  # noqa: PERF203
+                attempts += 1
+                log.debug("Could not begin reservation transaction: %s", exc)
+                if attempts >= 5:
+                    raise RuntimeError(
+                        "Kein Quick-Invite verfügbar – Produktion angestoßen"
+                    ) from exc
+                time.sleep(0.05)
+                continue
 
-            try:
-                row = conn.execute(_SELECT_AVAILABLE).fetchone()
-                if not row:
-                    conn.execute("ROLLBACK")
-                    return None
-
-                invite_link = str(row["invite_link"])
-                if not _INVITE_LINK_PATTERN.fullmatch(invite_link):
-                    conn.execute(_MARK_INVALID, (row["token"],))
-                    conn.execute("COMMIT")
-                    log.warning(
-                        "Discarded invalid quick invite link",
-                        extra={
-                            "user_id": discord_user_id,
-                            "token": row["token"],
-                            "invite_link": row["invite_link"],
-                        },
-                    )
-                    return None
-
-                token = row["token"]
-                cursor = conn.execute(
-                    _MARK_RESERVED,
-                    (int(discord_user_id) if discord_user_id else None, token),
-                )
-                if cursor.rowcount < 1:
-                    conn.execute("ROLLBACK")
-                    return None
-
-                conn.execute("COMMIT")
-            except Exception:
+            row = conn.execute(_SELECT_AVAILABLE).fetchone()
+            if not row:
                 conn.execute("ROLLBACK")
-                raise
-    except Exception:
-        log.exception("Failed to reserve schnelllink from DB", extra={"user_id": discord_user_id})
-        return None
+                enqueued = _enqueue_ensure_pool(conn)
+                if enqueued:
+                    log.info("Triggered quick invite production because pool is empty")
+                raise RuntimeError("Kein Quick-Invite verfügbar – Produktion angestoßen")
 
-    expires_at = row["expires_at"]
+            invite_link = str(row["invite_link"])
+            if not _INVITE_LINK_PATTERN.fullmatch(invite_link):
+                conn.execute(_MARK_INVALID_BY_ROWID, (row["_rowid_"],))
+                conn.execute("COMMIT")
+                log.warning(
+                    "Discarded malformed quick invite link",
+                    extra={"token": row["token"], "invite_link": invite_link},
+                )
+                continue
+
+            reserved_by = int(discord_user_id) if discord_user_id is not None else None
+            cursor = conn.execute(_UPDATE_RESERVED, (reserved_by, row["_rowid_"]))
+            if cursor.rowcount != 1:
+                conn.execute("ROLLBACK")
+                continue
+
+            conn.execute("COMMIT")
+            reserved_row = row
+            break
+
+    expires_at = reserved_row["expires_at"]
     try:
-        expires_at = int(expires_at) if expires_at is not None else None
-    except Exception:
-        expires_at = None
+        expires_at_int = int(expires_at) if expires_at is not None else None
+    except Exception:  # pragma: no cover - defensive, DB should ensure type
+        expires_at_int = None
+
+    invite_limit = reserved_row["invite_limit"]
+    single_use = True
+    if invite_limit is not None:
+        try:
+            single_use = int(invite_limit) == 1
+        except Exception:  # pragma: no cover - defensive
+            single_use = True
 
     return SchnellLink(
-        url=str(row["invite_link"]),
-        token=str(row["token"]),
-        friend_code=_friend_code(),
-        expires_at=expires_at,
-        single_use=True,
+        url=str(reserved_row["invite_link"]),
+        token=str(reserved_row["token"]),
+        expires_at=expires_at_int,
+        single_use=single_use,
     )
 
 
-def _friend_code() -> Optional[str]:
-    code = (os.getenv("STEAM_FRIEND_CODE") or "820142646").strip()
-    return code or None
+def mark_used(token: str) -> bool:
+    conn = db.connect()
+    with db._LOCK:  # type: ignore[attr-defined]
+        cursor = conn.execute(
+            """
+            UPDATE steam_quick_invites
+            SET status = 'used',
+                last_seen = strftime('%s','now')
+            WHERE token = ?
+            """,
+            (token,),
+        )
+    return cursor.rowcount > 0
 
 
-def _fallback_link() -> Optional[SchnellLink]:
-    url = (os.getenv("STEAM_FRIEND_LINK") or "").strip()
-    friend_code = _friend_code()
+def mark_invalid(token: str) -> bool:
+    conn = db.connect()
+    with db._LOCK:  # type: ignore[attr-defined]
+        cursor = conn.execute(
+            """
+            UPDATE steam_quick_invites
+            SET status = 'invalid',
+                last_seen = strftime('%s','now')
+            WHERE token = ?
+            """,
+            (token,),
+        )
+    return cursor.rowcount > 0
 
-    if not url:
-        profile = (os.getenv("STEAM_PROFILE_URL") or "").strip()
-        if profile:
-            url = profile
-        elif friend_code:
-            url = f"Freundescode: {friend_code}"
 
-    if not url:
-        return None
+def ensure_pool(min_available: int = 5) -> Tuple[int, bool]:
+    conn = db.connect()
+    with db._LOCK:  # type: ignore[attr-defined]
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM steam_quick_invites
+            WHERE status = 'available'
+              AND (expires_at IS NULL OR expires_at > strftime('%s','now'))
+            """,
+        ).fetchone()
+        available = int(row["cnt"]) if row is not None else 0
+        if available >= min_available:
+            return available, False
 
-    return SchnellLink(url=url, friend_code=friend_code, single_use=False)
+        enqueued = _enqueue_ensure_pool(conn)
+        if enqueued:
+            log.info(
+                "Triggered quick invite production because available=%s below threshold %s",
+                available,
+                min_available,
+            )
+        return available, enqueued
+
+
+def expire_links() -> int:
+    conn = db.connect()
+    with db._LOCK:  # type: ignore[attr-defined]
+        cursor = conn.execute(
+            """
+            UPDATE steam_quick_invites
+            SET status = 'invalid',
+                last_seen = strftime('%s','now')
+            WHERE status IN ('available', 'reserved')
+              AND expires_at IS NOT NULL
+              AND expires_at <= strftime('%s','now')
+            """,
+        )
+    return cursor.rowcount
 
 
 def _format_link_message(link: SchnellLink) -> str:
@@ -164,11 +243,43 @@ def _format_link_message(link: SchnellLink) -> str:
     else:
         parts.append("\nDieser Link kann mehrfach verwendet werden.")
 
-    friend_code = link.friend_code or _friend_code()
-    if friend_code:
-        parts.append(f"\nAlternativ bleibt der Freundescode **{friend_code}** verf\u00fcgbar.")
-
     return "".join(parts)
+
+
+async def _check_link_validity(url: str) -> Optional[bool]:
+    """Return ``True`` if the link appears valid, ``False`` if definitely invalid."""
+
+    timeout = aiohttp.ClientTimeout(total=6)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for method in ("HEAD", "GET"):
+                try:
+                    async with session.request(method, url, allow_redirects=False) as response:
+                        status = int(response.status)
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    log.debug(
+                        "Quick invite validity check inconclusive",
+                        extra={"url": url, "error": str(exc), "method": method},
+                    )
+                    return None
+
+                if status in {404, 410}:
+                    return False
+
+                if 200 <= status < 400 or status in {401, 403}:
+                    return True
+
+                if method == "HEAD" and status in {405}:
+                    # Retry with GET which is more broadly supported.
+                    continue
+
+                if status == 429:
+                    return None
+
+            return None
+    except Exception:  # pragma: no cover - defensive
+        log.exception("Unexpected error while checking quick invite validity", extra={"url": url})
+        return None
 
 
 async def respond_with_schnelllink(
@@ -197,18 +308,51 @@ async def respond_with_schnelllink(
         else:
             await interaction.response.send_message(message, ephemeral=True)
 
-    link: Optional[SchnellLink] = _reserve_pre_generated_link(
-        getattr(interaction.user, "id", None)
-    )
+    attempts = 0
+    link: Optional[SchnellLink] = None
+    while attempts < 3 and link is None:
+        attempts += 1
+        try:
+            candidate = reserve_invite(getattr(interaction.user, "id", None))
+        except RuntimeError as exc:
+            await _send(str(exc))
+            return
+        except Exception:  # pragma: no cover - defensive
+            log.exception("Unexpected error while reserving quick invite")
+            await _send(
+                "\u26a0\ufe0f Aktuell k\u00f6nnen keine Links erzeugt werden. Bitte versuche es sp\u00e4ter erneut."
+            )
+            return
 
-    if not link:
-        link = _fallback_link()
+        is_valid: Optional[bool]
+        try:
+            is_valid = await _check_link_validity(candidate.url)
+        except Exception:  # pragma: no cover - defensive
+            log.exception(
+                "Unexpected error while validating quick invite link",
+                extra={"source": source, "url": candidate.url},
+            )
+            is_valid = None
 
-    if not link:
-        await _send("\u26a0\ufe0f Aktuell k\u00f6nnen keine Links erzeugt werden. Bitte versuche es sp\u00e4ter erneut.")
+        if is_valid is False:
+            log.warning(
+                "Discarded invalid quick invite link during delivery",
+                extra={"token": candidate.token, "url": candidate.url},
+            )
+            mark_invalid(candidate.token)
+            ensure_pool(min_available=1)
+            continue
+
+        link = candidate
+
+    if link is None:
+        await _send(
+            "\u26a0\ufe0f Aktuell k\u00f6nnen keine g\u00fcltigen Schnell-Links bereitgestellt werden. Bitte versuche es sp\u00e4ter erneut."
+        )
         return
 
     await _send(_format_link_message(link))
+    ensure_pool(min_available=1)
 
 
 class SchnellLinkButton(discord.ui.Button):
@@ -232,6 +376,11 @@ class SchnellLinkButton(discord.ui.Button):
 __all__ = [
     "SCHNELL_LINK_CUSTOM_ID",
     "SchnellLink",
+    "ensure_pool",
+    "expire_links",
+    "mark_invalid",
+    "mark_used",
+    "reserve_invite",
     "SchnellLinkButton",
     "respond_with_schnelllink",
 ]
