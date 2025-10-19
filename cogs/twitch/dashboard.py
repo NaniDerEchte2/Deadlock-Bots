@@ -523,6 +523,74 @@ class Dashboard:
                 )
             return "".join(rows)
 
+        tracked_hourly = tracked.get("hourly", []) or []
+        category_hourly = category.get("hourly", []) or []
+        tracked_weekday = tracked.get("weekday", []) or []
+        category_weekday = category.get("weekday", []) or []
+
+        def _format_float(value: float) -> str:
+            return f"{value:.1f}"
+
+        def render_hour_table(items: List[dict]) -> str:
+            if not items:
+                return "<tr><td colspan=4><i>Keine Daten verfügbar.</i></td></tr>"
+            rows = []
+            for item in sorted(items, key=lambda d: int(d.get("hour") or 0)):
+                hour = int(item.get("hour") or 0)
+                samples = int(item.get("samples") or 0)
+                avg_viewers = float(item.get("avg_viewers") or 0.0)
+                max_viewers = int(item.get("max_viewers") or 0)
+                rows.append(
+                    "<tr>"
+                    f"<td data-value=\"{hour}\">{hour:02d}:00</td>"
+                    f"<td data-value=\"{samples}\">{samples}</td>"
+                    f"<td data-value=\"{avg_viewers:.4f}\">{_format_float(avg_viewers)}</td>"
+                    f"<td data-value=\"{max_viewers}\">{max_viewers}</td>"
+                    "</tr>"
+                )
+            return "".join(rows)
+
+        weekday_labels = {
+            0: "Sonntag",
+            1: "Montag",
+            2: "Dienstag",
+            3: "Mittwoch",
+            4: "Donnerstag",
+            5: "Freitag",
+            6: "Samstag",
+        }
+        weekday_order = [1, 2, 3, 4, 5, 6, 0]
+
+        def render_weekday_table(items: List[dict]) -> str:
+            if not items:
+                return "<tr><td colspan=4><i>Keine Daten verfügbar.</i></td></tr>"
+            by_day = {int(d.get("weekday") or 0): d for d in items}
+            rows = []
+            for idx in weekday_order:
+                item = by_day.get(idx)
+                if not item:
+                    continue
+                samples = int(item.get("samples") or 0)
+                avg_viewers = float(item.get("avg_viewers") or 0.0)
+                max_viewers = int(item.get("max_viewers") or 0)
+                label = weekday_labels.get(idx, str(idx))
+                rows.append(
+                    "<tr>"
+                    f"<td data-value=\"{idx}\">{html.escape(label)}</td>"
+                    f"<td data-value=\"{samples}\">{samples}</td>"
+                    f"<td data-value=\"{avg_viewers:.4f}\">{_format_float(avg_viewers)}</td>"
+                    f"<td data-value=\"{max_viewers}\">{max_viewers}</td>"
+                    "</tr>"
+                )
+            if not rows:
+                return "<tr><td colspan=4><i>Keine Daten verfügbar.</i></td></tr>"
+            return "".join(rows)
+
+        category_hour_rows = render_hour_table(category_hourly)
+        tracked_hour_rows = render_hour_table(tracked_hourly)
+        category_weekday_rows = render_weekday_table(category_weekday)
+        tracked_weekday_rows = render_weekday_table(tracked_weekday)
+
         script = """
 <script>
 (function () {
@@ -667,6 +735,74 @@ class Dashboard:
   </form>
   <div class=\"status-meta\" style=\"margin-top:.4rem;\">Hinweis: Stundenangaben beziehen sich auf UTC.</div>
   <div class=\"status-meta\" style=\"margin-top:.8rem;\">Aktive Filter: {' • '.join(filter_descriptions)}</div>
+</div>
+
+<div class=\"card\" style=\"margin-top:1.2rem;\">
+  <h2>Zeitliche Trends (UTC)</h2>
+  <div style=\"display:flex; gap:1.2rem; flex-wrap:wrap;\">
+    <div style=\"flex:1 1 260px;\">
+      <h3>Kategorie gesamt — nach Stunde</h3>
+      <table class=\"sortable-table\" data-table=\"category-hour\">
+        <thead>
+          <tr>
+            <th data-sort-type=\"number\">Stunde</th>
+            <th data-sort-type=\"number\">Samples</th>
+            <th data-sort-type=\"number\">Ø Viewer</th>
+            <th data-sort-type=\"number\">Peak Viewer</th>
+          </tr>
+        </thead>
+        <tbody>{category_hour_rows}</tbody>
+      </table>
+    </div>
+    <div style=\"flex:1 1 260px;\">
+      <h3>Tracked Streamer — nach Stunde</h3>
+      <table class=\"sortable-table\" data-table=\"tracked-hour\">
+        <thead>
+          <tr>
+            <th data-sort-type=\"number\">Stunde</th>
+            <th data-sort-type=\"number\">Samples</th>
+            <th data-sort-type=\"number\">Ø Viewer</th>
+            <th data-sort-type=\"number\">Peak Viewer</th>
+          </tr>
+        </thead>
+        <tbody>{tracked_hour_rows}</tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class=\"card\" style=\"margin-top:1.2rem;\">
+  <h2>Tagestrends</h2>
+  <div style=\"display:flex; gap:1.2rem; flex-wrap:wrap;\">
+    <div style=\"flex:1 1 260px;\">
+      <h3>Kategorie gesamt — nach Wochentag</h3>
+      <table class=\"sortable-table\" data-table=\"category-weekday\">
+        <thead>
+          <tr>
+            <th data-sort-type=\"number\">Tag</th>
+            <th data-sort-type=\"number\">Samples</th>
+            <th data-sort-type=\"number\">Ø Viewer</th>
+            <th data-sort-type=\"number\">Peak Viewer</th>
+          </tr>
+        </thead>
+        <tbody>{category_weekday_rows}</tbody>
+      </table>
+    </div>
+    <div style=\"flex:1 1 260px;\">
+      <h3>Tracked Streamer — nach Wochentag</h3>
+      <table class=\"sortable-table\" data-table=\"tracked-weekday\">
+        <thead>
+          <tr>
+            <th data-sort-type=\"number\">Tag</th>
+            <th data-sort-type=\"number\">Samples</th>
+            <th data-sort-type=\"number\">Ø Viewer</th>
+            <th data-sort-type=\"number\">Peak Viewer</th>
+          </tr>
+        </thead>
+        <tbody>{tracked_weekday_rows}</tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <div class=\"card\" style=\"margin-top:1.2rem;\">

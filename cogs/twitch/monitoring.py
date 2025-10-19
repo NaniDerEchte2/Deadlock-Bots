@@ -82,6 +82,7 @@ class TwitchMonitoringMixin:
             await self._ensure_category_id()
 
         partner_logins: set[str] = set()
+        now_utc = datetime.now(tz=timezone.utc)
         try:
             with storage.get_conn() as c:
                 rows = c.execute(

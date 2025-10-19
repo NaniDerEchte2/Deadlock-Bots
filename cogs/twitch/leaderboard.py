@@ -516,6 +516,65 @@ class TwitchLeaderboardMixin:
 
         out["tracked"]["top"] = _aggregate(tracked_sql, hour_params)
         out["category"]["top"] = _aggregate(category_sql, hour_params)
+
+        tracked_hourly_sql = (
+            """
+        SELECT CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM twitch_stats_tracked
+         WHERE ts_utc >= datetime('now', '-30 days')
+        {hour_clause}
+         GROUP BY hour
+         ORDER BY hour
+        """
+        ).format(hour_clause=hour_clause)
+        category_hourly_sql = (
+            """
+        SELECT CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM twitch_stats_category
+         WHERE ts_utc >= datetime('now', '-30 days')
+        {hour_clause}
+         GROUP BY hour
+         ORDER BY hour
+        """
+        ).format(hour_clause=hour_clause)
+
+        tracked_weekday_sql = (
+            """
+        SELECT CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM twitch_stats_tracked
+         WHERE ts_utc >= datetime('now', '-30 days')
+        {hour_clause}
+         GROUP BY weekday
+         ORDER BY weekday
+        """
+        ).format(hour_clause=hour_clause)
+        category_weekday_sql = (
+            """
+        SELECT CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM twitch_stats_category
+         WHERE ts_utc >= datetime('now', '-30 days')
+        {hour_clause}
+         GROUP BY weekday
+         ORDER BY weekday
+        """
+        ).format(hour_clause=hour_clause)
+
+        out["tracked"]["hourly"] = _aggregate(tracked_hourly_sql, hour_params)
+        out["category"]["hourly"] = _aggregate(category_hourly_sql, hour_params)
+        out["tracked"]["weekday"] = _aggregate(tracked_weekday_sql, hour_params)
+        out["category"]["weekday"] = _aggregate(category_weekday_sql, hour_params)
         return out
 
     @staticmethod
