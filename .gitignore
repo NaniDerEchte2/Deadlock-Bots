@@ -29,3 +29,4 @@ cogs/steam/steam_presence/*
 *.db
 cogs/faq_menu.py
 clip_submission*
+!quick_invites.js
