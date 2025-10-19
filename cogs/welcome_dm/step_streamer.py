@@ -369,7 +369,7 @@ class StreamerIntroView(StepView):
             embed=StreamerRequirementsView.build_embed(),
             view=view,
         )
-        self.force_finish()
+        self.stop()
 
     @discord.ui.button(
         label="Nein, kein Partner",

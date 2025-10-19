@@ -212,7 +212,7 @@ class SteamLinkStepView(discord.ui.View):
         await self._start_discord(interaction, _button)
 
     @discord.ui.button(
-        label="Freundschafts-Optionen",
+        label="Schnelle Anfrage senden",
         style=discord.ButtonStyle.secondary,
         custom_id="steam:friendopts",
         row=1,
@@ -223,21 +223,14 @@ class SteamLinkStepView(discord.ui.View):
             await respond_with_schnelllink(
                 interaction,
                 source="welcome_dm_friend_options",
+                extra_note=(
+                    "🔢 Falls der Schnell-Link nicht funktioniert: **820142646** ist unsere Freundschafts-ID.\n"
+                    "Sende sie uns – dann fügen wir dich manuell hinzu."
+                ),
+                suppress_embeds=True,
             )
         except Exception:
             _LOGGER.debug("Schnell-Link Bereitstellung fehlgeschlagen", exc_info=True)
-
-        fallback_note = (
-            "🔢 Falls der Schnell-Link nicht funktioniert: **820142646** ist unsere Freundschafts-ID.\n"
-            "Sende sie uns – dann fügen wir dich manuell hinzu."
-        )
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(fallback_note, ephemeral=True)
-            else:
-                await interaction.response.send_message(fallback_note, ephemeral=True)
-        except Exception:
-            _LOGGER.debug("Fallback-Hinweis zur Freundschafts-ID konnte nicht gesendet werden.", exc_info=True)
 
     @discord.ui.button(
         label="Weiter",
@@ -255,10 +248,6 @@ class SteamLinkStepView(discord.ui.View):
                 return
             except Exception:
                 pass
-        if interaction.response.is_done():
-            await interaction.followup.send("Alles klar – weiter geht’s! ✅", ephemeral=True)
-        else:
-            await interaction.response.send_message("Alles klar – weiter geht’s! ✅", ephemeral=True)
 
 
 # --- Aliase für ältere Imports ---
