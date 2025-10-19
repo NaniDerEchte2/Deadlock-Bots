@@ -10,7 +10,12 @@ import discord
 from discord.ext import tasks
 
 from . import storage
-from .constants import INVITES_REFRESH_INTERVAL_HOURS, POLL_INTERVAL_SECONDS, TWITCH_TARGET_GAME_NAME
+from .constants import (
+    INVITES_REFRESH_INTERVAL_HOURS,
+    POLL_INTERVAL_SECONDS,
+    TWITCH_BRAND_COLOR_HEX,
+    TWITCH_TARGET_GAME_NAME,
+)
 from .logger import log
 
 
@@ -338,7 +343,7 @@ class TwitchMonitoringMixin:
             title=f"{display_name} ist LIVE in {game}!",
             description=title,
             url=url,
-            colour=discord.Color(0x9146FF),
+            colour=discord.Color(TWITCH_BRAND_COLOR_HEX),
             timestamp=timestamp,
         )
 
@@ -353,7 +358,7 @@ class TwitchMonitoringMixin:
             embed.set_image(url=f"{thumbnail_url}?rand={cache_bust}")
 
         embed.set_footer(text="Auf Twitch ansehen für mehr Deadlock-Action!")
-        embed.set_author(name=display_name, url=url)
+        embed.set_author(name=f"🔴 {display_name}", url=url)
 
         return embed
 
@@ -362,5 +367,11 @@ class TwitchMonitoringMixin:
         """Stellt eine View mit Button zum Öffnen des Streams bereit."""
 
         view = discord.ui.View(timeout=None)
-        view.add_item(discord.ui.Button(label="Auf Twitch ansehen", url=url))
+        view.add_item(
+            discord.ui.Button(
+                label="Auf Twitch ansehen",
+                style=discord.ButtonStyle.link,
+                url=url,
+            )
+        )
         return view
