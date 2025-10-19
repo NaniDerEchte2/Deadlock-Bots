@@ -9,9 +9,14 @@ try:
     from . import worker_client  # falls vorhanden
 except Exception:
     worker_client = None
+try:
+    from . import dashboard  # neues Dashboard-Modul
+except Exception:
+    dashboard = None
 
 __all__ = [
     "db",
     "socket_bus",
     "worker_client",
+    "dashboard",
 ]

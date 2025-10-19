@@ -11,7 +11,7 @@ import types
 import builtins
 import threading
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import datetime as _dt
 import pytz
@@ -22,6 +22,14 @@ from discord.ext import commands
 # --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
 import sys as _sys, os as _os, importlib, inspect, logging as _logging, hashlib
 import re
+
+try:
+    from service.dashboard import DashboardServer
+except Exception as _dashboard_import_error:
+    DashboardServer = None  # type: ignore[assignment]
+    logging.getLogger(__name__).warning(
+        "Dashboard module unavailable: %s", _dashboard_import_error
+    )
 
 def _log_src(modname: str):
     try:
@@ -213,6 +221,28 @@ class MasterBot(commands.Bot):
         self.startup_time = _dt.datetime.now(tz=tz)
         self.cog_status: Dict[str, str] = {}
 
+        self.dashboard: Optional[DashboardServer] = None
+        dash_env = (os.getenv("MASTER_DASHBOARD_ENABLED", "1") or "1").lower()
+        dashboard_enabled = dash_env in {"1", "true", "yes", "on"}
+        if dashboard_enabled:
+            host = os.getenv("MASTER_DASHBOARD_HOST", "127.0.0.1")
+            try:
+                port = int(os.getenv("MASTER_DASHBOARD_PORT", "8765"))
+            except ValueError:
+                logging.error("MASTER_DASHBOARD_PORT ist ungültig – verwende 8765")
+                port = 8765
+            token = os.getenv("MASTER_DASHBOARD_TOKEN")
+            if DashboardServer is None:
+                logging.warning("DashboardServer nicht verfügbar – Dashboard wird deaktiviert")
+            else:
+                try:
+                    self.dashboard = DashboardServer(self, host=host, port=port, token=token)
+                    logging.info("Dashboard initialisiert (Host %s, Port %s)", host, port)
+                except Exception as e:
+                    logging.error("Konnte Dashboard nicht initialisieren: %s", e)
+        else:
+            logging.info("Master Dashboard deaktiviert (MASTER_DASHBOARD_ENABLED=0)")
+
         # Hinweis: Der frühere SteamPresenceServiceManager wurde entfernt.
         # Die neue Deadlock-Presence-Integration läuft vollständig im Cog selbst.
 
@@ -299,6 +329,33 @@ class MasterBot(commands.Bot):
             logging.error("❌ CRITICAL: No cogs will be loaded! Check cogs/ directory")
             self.cogs_list = []
 
+    def resolve_cog_identifier(self, identifier: str | None) -> Tuple[Optional[str], List[str]]:
+        if not identifier:
+            return None, []
+
+        ident = identifier.strip()
+        if not ident:
+            return None, []
+
+        if ident in self.extensions:
+            return ident, []
+        if ident in self.cogs_list:
+            return ident, []
+        if ident.startswith("cogs."):
+            return ident, []
+
+        matches = [c for c in self.cogs_list if c.endswith(f".{ident}")]
+        if len(matches) == 1:
+            return matches[0], []
+        if len(matches) > 1:
+            return None, matches
+
+        prefixed = f"cogs.{ident}"
+        if prefixed in self.cogs_list or prefixed in self.extensions:
+            return prefixed, []
+
+        return None, []
+
     # --------------------- Logging ------------------------------------
     def setup_logging(self):
         log_dir = Path(__file__).parent / "logs"
@@ -374,6 +431,12 @@ class MasterBot(commands.Bot):
             logging.info(f"Synced {len(synced)} slash commands")
         except Exception as e:
             logging.error(f"Failed to sync slash commands: {e}")
+
+        if self.dashboard:
+            try:
+                await self.dashboard.start()
+            except Exception as e:
+                logging.error(f"Dashboard konnte nicht gestartet werden: {e}")
 
         # ⚠️ KEIN Autostart des Steam-Services hier!
         logging.info("Master Bot setup completed")
@@ -527,13 +590,24 @@ class MasterBot(commands.Bot):
                 logging.error(f"Health check error: {e}")
 
     # --------- Reload für den Ordner cogs/steam ----------
-    async def reload_steam_folder(self) -> Dict[str, str]:
+    async def reload_namespace(self, namespace: str) -> Dict[str, str]:
+        target_ns = namespace.strip()
+        if not target_ns:
+            return {}
+        if not target_ns.startswith("cogs."):
+            target_ns = f"cogs.{target_ns}"
+
         self.auto_discover_cogs()
         targets = [
-            mod for mod in self.cogs_list
-            if mod.startswith("cogs.steam.")
+            mod
+            for mod in self.cogs_list
+            if mod.startswith(target_ns)
             and not self._should_exclude(mod)
         ]
+
+        if not targets:
+            logging.info("Keine Cogs für Namespace %s gefunden", target_ns)
+            return {}
 
         results: Dict[str, str] = {}
         for mod in targets:
@@ -548,11 +622,16 @@ class MasterBot(commands.Bot):
                     logging.info(f"✅ Loaded {mod}")
                 self.cog_status[mod] = "loaded"
             except Exception as e:
-                results[mod] = f"error: {str(e)[:200]}"
-                self.cog_status[mod] = f"error: {str(e)[:100]}"
+                trimmed = str(e)[:200]
+                results[mod] = f"error: {trimmed}"
+                self.cog_status[mod] = f"error: {trimmed[:100]}"
                 logging.error(f"❌ Reload error for {mod}: {e}")
+
         await self.update_presence()
         return results
+
+    async def reload_steam_folder(self) -> Dict[str, str]:
+        return await self.reload_namespace("cogs.steam")
 
 
     # --------- Gezieltes Unload (mit Timeout) ----------
@@ -584,6 +663,12 @@ class MasterBot(commands.Bot):
 
     async def close(self):
         logging.info("Master Bot shutting down...")
+
+        if self.dashboard:
+            try:
+                await self.dashboard.stop()
+            except Exception as e:
+                logging.error(f"Fehler beim Stoppen des Dashboards: {e}")
 
         # 1) Alle Cogs entladen (parallel/sequenziell mit Timeout pro Cog)
         to_unload = [ext for ext in list(self.extensions.keys()) if ext.startswith("cogs.")]
@@ -690,20 +775,29 @@ class MasterControlCog(commands.Cog):
 
     @master_control.command(name="reload", aliases=["rl"])
     async def master_reload(self, ctx, cog_name: str = None):
-        if cog_name:
-            matches = [c for c in self.bot.cogs_list if cog_name.lower() in c.lower()]
-            if not matches:
-                await ctx.send(f"❌ Cog '{cog_name}' nicht gefunden!")
-                return
-            target = matches[0]
-            ok, msg = await self.bot.reload_cog(target)
-            await self.bot.update_presence()
-            embed = discord.Embed(title="🔄 Cog Reload", description=msg, color=0x00FF00 if ok else 0xFF0000)
-            await ctx.send(embed=embed)
-        else:
+        if not cog_name:
             await ctx.send(
                 "❌ Bitte Cog-Namen angeben! Verfügbar:\n" + "\n".join([c.split(".")[-1] for c in self.bot.cogs_list])
             )
+            return
+
+        self.bot.auto_discover_cogs()
+        target, collisions = self.bot.resolve_cog_identifier(cog_name)
+        if not target:
+            if collisions:
+                options = "\n".join(f"• {c}" for c in collisions[:10])
+                if len(collisions) > 10:
+                    options += "\n…"
+                await ctx.send(
+                    f"❌ Mehrdeutiger Cog-Name `{cog_name}`. Bitte präzisieren:\n{options}"
+                )
+            else:
+                await ctx.send(f"❌ Cog `{cog_name}` nicht gefunden!")
+            return
+
+        ok, msg = await self.bot.reload_cog(target)
+        embed = discord.Embed(title="🔄 Cog Reload", description=msg, color=0x00FF00 if ok else 0xFF0000)
+        await ctx.send(embed=embed)
 
     @master_control.command(name="reloadall", aliases=["rla"])
     async def master_reload_all(self, ctx):
@@ -750,7 +844,6 @@ class MasterControlCog(commands.Cog):
     )
     async def master_reload_steam_folder(self, ctx):
         results = await self.bot.reload_steam_folder()
-        await self.bot.update_presence()
 
         ok = [k for k, v in results.items() if v in ("reloaded", "loaded")]
         err = {k: v for k, v in results.items() if v.startswith("error:")}
