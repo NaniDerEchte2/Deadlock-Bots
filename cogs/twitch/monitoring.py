@@ -17,6 +17,24 @@ from .logger import log
 class TwitchMonitoringMixin:
     """Polling loops and helpers used by the Twitch cog."""
 
+    def _get_target_game_lower(self) -> str:
+        target = getattr(self, "_target_game_lower", None)
+        if isinstance(target, str) and target:
+            return target
+        resolved = (TWITCH_TARGET_GAME_NAME or "").strip().lower()
+        # Cache for subsequent lookups to avoid repeated normalization
+        setattr(self, "_target_game_lower", resolved)
+        return resolved
+
+    def _stream_is_in_target_category(self, stream: Optional[dict]) -> bool:
+        if not stream:
+            return False
+        target_game_lower = self._get_target_game_lower()
+        if not target_game_lower:
+            return False
+        game_name = (stream.get("game_name") or "").strip().lower()
+        return game_name == target_game_lower
+
     @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
     async def poll_streams(self):
         if self.api is None:
@@ -147,10 +165,7 @@ class TwitchMonitoringMixin:
                 for row in c.execute("SELECT * FROM twitch_live_state").fetchall()
             }
 
-        target_game_lower = (
-            getattr(self, "_target_game_lower", None)
-            or (TWITCH_TARGET_GAME_NAME or "")
-        ).strip().lower()
+        target_game_lower = self._get_target_game_lower()
 
         for login, user_id, need_link in tracked:
             stream = streams_by_login.get(login.lower())
@@ -267,6 +282,8 @@ class TwitchMonitoringMixin:
         try:
             with storage.get_conn() as c:
                 for stream in streams_by_login.values():
+                    if not self._stream_is_in_target_category(stream):
+                        continue
                     login = (stream.get("user_login") or "").lower()
                     viewers = int(stream.get("viewer_count") or 0)
                     is_partner = 1 if stream.get("is_partner") else 0

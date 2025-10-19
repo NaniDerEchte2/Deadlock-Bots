@@ -35,7 +35,7 @@ class Dashboard:
         add_cb: Callable[[str, bool], Awaitable[str]],
         remove_cb: Callable[[str], Awaitable[None]],
         list_cb: Callable[[], Awaitable[List[dict]]],
-        stats_cb: Callable[[], Awaitable[dict]],
+        stats_cb: Callable[..., Awaitable[dict]],
         verify_cb: Callable[[str, str], Awaitable[str]],
     ):
         self._token = app_token
@@ -384,10 +384,6 @@ class Dashboard:
             raise web.HTTPFound(location="/twitch?err=" + quote_plus("Verifizierung fehlgeschlagen"))
 
     async def _render_stats_page(self, request: web.Request, *, partner_view: bool) -> web.Response:
-        stats = await self._stats()
-        tracked = stats.get("tracked", {}) or {}
-        category = stats.get("category", {}) or {}
-
         view_mode = (request.query.get("view") or "top").lower()
         show_all = view_mode == "all"
 
@@ -415,6 +411,29 @@ class Dashboard:
                 return max(0.0, value)
             return None
 
+        def _clamp_hour(value: Optional[int]) -> Optional[int]:
+            if value is None:
+                return None
+            if value < 0:
+                return 0
+            if value > 23:
+                return 23
+            return value
+
+        stats_hour = _clamp_hour(_parse_int("hour"))
+        hour_from = _clamp_hour(_parse_int("hour_from", "from_hour", "start_hour"))
+        hour_to = _clamp_hour(_parse_int("hour_to", "to_hour", "end_hour"))
+
+        if stats_hour is not None:
+            if hour_from is None:
+                hour_from = stats_hour
+            if hour_to is None:
+                hour_to = stats_hour
+
+        stats = await self._stats(hour_from=hour_from, hour_to=hour_to)
+        tracked = stats.get("tracked", {}) or {}
+        category = stats.get("category", {}) or {}
+
         min_samples = _parse_int("min_samples", "samples")
         min_avg = _parse_float("min_avg", "avg")
         partner_filter = (request.query.get("partner") or "any").lower()
@@ -439,6 +458,10 @@ class Dashboard:
             filter_params["min_avg"] = f"{min_avg:g}"
         if partner_filter in {"only", "exclude"}:
             filter_params["partner"] = partner_filter
+        if hour_from is not None:
+            filter_params["hour_from"] = str(hour_from)
+        if hour_to is not None:
+            filter_params["hour_to"] = str(hour_to)
 
         def build_stats_url(view: str) -> str:
             params = dict(preserved_params)
@@ -557,6 +580,18 @@ class Dashboard:
             filter_descriptions.append("Nur Partner")
         elif partner_filter == "exclude":
             filter_descriptions.append("Ohne Partner")
+        if hour_from is not None or hour_to is not None:
+            start = hour_from if hour_from is not None else hour_to
+            end = hour_to if hour_to is not None else hour_from
+            if start is None:
+                start = 0
+            if end is None:
+                end = start
+            if start == end:
+                filter_descriptions.append(f"Stunde {start:02d} UTC")
+            else:
+                wrap_hint = " (über Mitternacht)" if start > end else ""
+                filter_descriptions.append(f"Stunden {start:02d}–{end:02d} UTC{wrap_hint}")
         if not filter_descriptions:
             filter_descriptions.append("Keine Filter aktiv")
 
@@ -618,12 +653,19 @@ class Dashboard:
       <label class=\"filter-label\">Partner Filter
         <select name=\"partner\">{build_partner_options()}</select>
       </label>
+      <label class=\"filter-label\">Von Stunde (UTC)
+        <input type=\"number\" name=\"hour_from\" value=\"{'' if hour_from is None else hour_from}\" min=\"0\" max=\"23\">
+      </label>
+      <label class=\"filter-label\">Bis Stunde (UTC)
+        <input type=\"number\" name=\"hour_to\" value=\"{'' if hour_to is None else hour_to}\" min=\"0\" max=\"23\">
+      </label>
     </div>
     <div class=\"row\" style=\"margin-top:.8rem;\">
       <button class=\"btn\">Anwenden</button>
       <a class=\"btn btn-secondary\" href=\"{html.escape(clear_url)}\">Reset</a>
     </div>
   </form>
+  <div class=\"status-meta\" style=\"margin-top:.4rem;\">Hinweis: Stundenangaben beziehen sich auf UTC.</div>
   <div class=\"status-meta\" style=\"margin-top:.8rem;\">Aktive Filter: {' • '.join(filter_descriptions)}</div>
 </div>
 
