@@ -147,15 +147,37 @@ class TwitchMonitoringMixin:
                 for row in c.execute("SELECT * FROM twitch_live_state").fetchall()
             }
 
-        for login, _user_id, need_link in tracked:
-            stream = streams_by_login.get(login.lower())
-            was_live = bool(live_state.get(login, {}).get("is_live", 0))
-            is_live = bool(stream)
+        target_game_lower = (
+            getattr(self, "_target_game_lower", None)
+            or (TWITCH_TARGET_GAME_NAME or "")
+        ).strip().lower()
 
-            if is_live and not was_live and notify_ch is not None:
+        for login, user_id, need_link in tracked:
+            stream = streams_by_login.get(login.lower())
+            previous_state = live_state.get(login, {})
+            was_live = bool(previous_state.get("is_live", 0))
+            is_live = bool(stream)
+            previous_game = (previous_state.get("last_game") or "").strip()
+            previous_game_lower = previous_game.lower()
+            was_deadlock = previous_game_lower == target_game_lower
+
+            message_id_previous = str(previous_state.get("last_discord_message_id") or "").strip() or None
+            message_id_to_store = message_id_previous
+
+            game_name = (stream.get("game_name") or "").strip() if stream else ""
+            game_name_lower = game_name.lower()
+            is_deadlock = is_live and bool(target_game_lower) and game_name_lower == target_game_lower
+
+            should_post = (
+                notify_ch is not None
+                and is_deadlock
+                and (not was_live or not was_deadlock or not message_id_previous)
+            )
+
+            if should_post:
                 url = f"https://twitch.tv/{login}"
                 display_name = stream.get("user_name") or login
-                message_prefix = []
+                message_prefix: List[str] = []
                 if self._alert_mention:
                     message_prefix.append(self._alert_mention)
                 message_prefix.append(f"**{display_name}** ist live: {url}")
@@ -165,22 +187,73 @@ class TwitchMonitoringMixin:
                 view = self._build_live_view(url)
 
                 try:
-                    await notify_ch.send(content=content or None, embed=embed, view=view)
+                    message = await notify_ch.send(content=content or None, embed=embed, view=view)
                 except Exception:
                     log.exception("Konnte Go-Live-Posting nicht senden: %s", login)
+                else:
+                    message_id_to_store = str(message.id)
+
+            ended_deadlock = (
+                notify_ch is not None
+                and message_id_previous
+                and was_deadlock
+                and (not is_live or not is_deadlock)
+            )
+
+            if ended_deadlock:
+                url = f"https://twitch.tv/{login}"
+                display_name = (
+                    (stream.get("user_name") if stream else previous_state.get("streamer_login"))
+                    or login
+                )
+                try:
+                    message_id_int = int(message_id_previous)
+                except (TypeError, ValueError):
+                    message_id_int = None
+
+                if message_id_int is None:
+                    log.warning("Ungültige Message-ID für Deadlock-Ende bei %s: %r", login, message_id_previous)
+                else:
+                    try:
+                        fetched_message = await notify_ch.fetch_message(message_id_int)
+                    except discord.NotFound:
+                        log.warning(
+                            "Deadlock-Ende-Posting nicht mehr vorhanden für %s (ID %s)",
+                            login,
+                            message_id_previous,
+                        )
+                        message_id_to_store = None
+                    except Exception:
+                        log.exception("Konnte Deadlock-Ende-Posting nicht laden: %s", login)
+                    else:
+                        ended_content = f"**{display_name}** (Beendet): {url}"
+                        try:
+                            await fetched_message.edit(content=ended_content, embed=None, view=None)
+                        except Exception:
+                            log.exception(
+                                "Konnte Deadlock-Ende-Posting nicht aktualisieren: %s", login
+                            )
+                        else:
+                            message_id_to_store = None
+
+            db_user_id = user_id or previous_state.get("twitch_user_id") or login
+            db_user_id = str(db_user_id)
+            db_message_id = str(message_id_to_store) if message_id_to_store else None
 
             with storage.get_conn() as c:
                 c.execute(
                     "INSERT OR REPLACE INTO twitch_live_state "
-                    "(streamer_login, is_live, last_seen_at, last_title, last_game, last_viewer_count) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "(twitch_user_id, streamer_login, is_live, last_seen_at, last_title, last_game, last_viewer_count, last_discord_message_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
+                        db_user_id,
                         login,
                         int(is_live),
                         now_utc.isoformat(timespec="seconds"),
                         (stream.get("title") if stream else None),
                         (stream.get("game_name") if stream else None),
                         int(stream.get("viewer_count") or 0) if stream else 0,
+                        db_message_id,
                     ),
                 )
 
