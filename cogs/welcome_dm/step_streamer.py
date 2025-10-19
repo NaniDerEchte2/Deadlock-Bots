@@ -29,7 +29,16 @@ from __future__ import annotations
 
 import os
 import logging
+import re
 from typing import Optional, Tuple
+from urllib.parse import urlparse
+
+try:
+    from cogs.twitch import storage as twitch_storage
+    from cogs.twitch.base import TwitchBaseCog
+except Exception:
+    twitch_storage = None  # type: ignore[assignment]
+    TwitchBaseCog = None  # type: ignore[assignment]
 
 import discord
 from discord.ext import commands
@@ -201,6 +210,145 @@ async def _disable_all_and_edit(
 
 
 # ------------------------------
+# Twitch-Helper
+# ------------------------------
+def _normalize_twitch_login(raw: str) -> str:
+    if TwitchBaseCog is not None:
+        try:
+            normalized = TwitchBaseCog._normalize_login(raw)
+            if normalized:
+                return normalized
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            log.debug("TwitchBaseCog._normalize_login failed: %r", exc)
+
+    value = (raw or "").strip()
+    if not value:
+        return ""
+
+    value = value.split("?")[0].split("#")[0].strip()
+    if "twitch.tv" in value.lower():
+        if "//" not in value:
+            value = f"https://{value}"
+        try:
+            parsed = urlparse(value)
+            path = (parsed.path or "").strip("/")
+            if path:
+                value = path.split("/")[0]
+        except Exception:
+            return ""
+
+    value = value.strip().lstrip("@")
+    return re.sub(r"[^a-z0-9_]", "", value.lower())
+
+
+def _store_twitch_signup(discord_user_id: int, raw_input: str) -> Tuple[bool, Optional[str], str]:
+    login = _normalize_twitch_login(raw_input)
+    if not login:
+        return False, None, "⚠️ Der eingegebene Twitch-Link oder Login wirkt ungültig. Bitte probiere es erneut."
+
+    if twitch_storage is None:
+        log.error("Twitch storage module unavailable – cannot persist signup for %s", discord_user_id)
+        return False, None, "⚠️ Interner Fehler beim Speichern deines Twitch-Profils. Bitte informiere das Team."
+
+    raw_trimmed = (raw_input or "").strip()
+
+    try:
+        with twitch_storage.get_conn() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO twitch_streamers (twitch_login) VALUES (?)",
+                (login,),
+            )
+            inserted = bool(cur.rowcount)
+
+            conn.execute(
+                "UPDATE twitch_streamers "
+                "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL "
+                "WHERE twitch_login=?",
+                (login,),
+            )
+
+            conn.execute(
+                "INSERT INTO twitch_signup_requests (discord_user_id, twitch_login, raw_input) VALUES (?, ?, ?)",
+                (int(discord_user_id), login, raw_trimmed),
+            )
+    except Exception as exc:  # pragma: no cover - robust gegen DB-Fehler
+        log.exception("Failed to persist Twitch signup for %s: %r", discord_user_id, exc)
+        return (
+            False,
+            None,
+            "⚠️ Dein Twitch-Profil konnte nicht gespeichert werden. Bitte versuche es später erneut oder melde dich beim Team.",
+        )
+
+    if inserted:
+        log.info("Twitch signup stored for user %s with login %s", discord_user_id, login)
+    else:
+        log.info("Twitch signup updated for user %s with existing login %s", discord_user_id, login)
+
+    return True, login, ""
+
+
+class StreamerTwitchProfileModal(discord.ui.Modal):
+    """Fragt nach dem Twitch-Profil und speichert es direkt unverifiziert."""
+
+    def __init__(self, parent_view: "StreamerIntroView"):
+        super().__init__(title="Twitch-Profil angeben")
+        self.parent_view = parent_view
+        self.twitch_input = discord.ui.TextInput(
+            label="Dein Twitch-Profil oder Login",
+            placeholder="z. B. twitch.tv/DeinName",
+            required=True,
+            max_length=100,
+        )
+        self.add_item(self.twitch_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        ok, login, error_msg = _store_twitch_signup(interaction.user.id, str(self.twitch_input.value))
+        if not ok or not login:
+            if interaction.response.is_done():
+                await interaction.followup.send(error_msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(error_msg, ephemeral=True)
+            return
+
+        if self.parent_view is not None and self.parent_view.bound_message is not None:
+            for child in self.parent_view.children:
+                try:
+                    child.disabled = True
+                except Exception:
+                    pass
+            try:
+                await self.parent_view.bound_message.edit(view=self.parent_view)
+            except Exception as exc:  # pragma: no cover - rein informativ
+                log.debug("Failed to disable intro view after modal submit: %r", exc)
+
+        if self.parent_view is not None:
+            self.parent_view.force_finish()
+
+        embed = StreamerRequirementsView.build_embed(twitch_login=login)
+        view = StreamerRequirementsView()
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, view=view, ephemeral=False)
+        else:
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:  # pragma: no cover - defensive
+        log.exception("StreamerTwitchProfileModal failed: %r", error)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "⚠️ Unerwarteter Fehler beim Speichern deines Twitch-Profils. Bitte probiere es später erneut.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "⚠️ Unerwarteter Fehler beim Speichern deines Twitch-Profils. Bitte probiere es später erneut.",
+                    ephemeral=True,
+                )
+        except Exception:
+            log.debug("Modal error response failed", exc_info=True)
+
+
+# ------------------------------
 # Schritt 1: Intro / Entscheidung
 # ------------------------------
 class StreamerIntroView(StepView):
@@ -234,18 +382,8 @@ class StreamerIntroView(StepView):
         custom_id="wdm:streamer:intro_yes",
     )
     async def btn_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Öffentliche Antwort akzeptieren
-        await interaction.response.defer(ephemeral=False)
-
-        # Step-1-Nachricht deaktivieren
-        await _disable_all_and_edit(self, interaction)
-
-        # Step 2 in **EINER** Nachricht: Embed + View zusammen -> kein „Buttons über Embed“
-        await interaction.followup.send(
-            embed=StreamerRequirementsView.build_embed(),
-            view=StreamerRequirementsView(),
-            ephemeral=False,
-        )
+        self.bound_message = interaction.message
+        await interaction.response.send_modal(StreamerTwitchProfileModal(self))
 
     @discord.ui.button(
         label="Nein, kein Partner",
@@ -276,19 +414,29 @@ class StreamerRequirementsView(StepView):
         super().__init__()
 
     @staticmethod
-    def build_embed() -> discord.Embed:
+    def build_embed(*, twitch_login: Optional[str] = None) -> discord.Embed:
+        intro = ""
+        if twitch_login:
+            intro = (
+                f"Wir haben dein Twitch-Profil **{twitch_login}** gespeichert. "
+                "Ein Team-Mitglied prüft es manuell und schaltet dich nach erfolgreicher Kontrolle frei.\n\n"
+            )
+
+        description = (
+            f"{intro}"
+            "Bitte erfülle kurz die Voraussetzungen:\n\n"
+            "1) Nutze einen **nicht ablaufenden Invite-Link** zu unserem Server (persönlich für dich).\n"
+            "2) Packe den **Server-Link** in deine **Twitch-Bio** – z. B. mit dem Text:\n"
+            "   *„Deutscher Deadlock Community Server“*\n"
+            "3) Wünchenswert wäre es wenn du Zuschauer auf den Server verweist.\n"
+            "4) Genauso wünschenswert ist es, wenn du Deadlock-Content postest, verlinke da gerne den Server.\n\n"
+            "Du **darfst** selbstverständlich deinen **eigenen Server** weiterführen – \n"
+            "wir verstehen uns nicht als Konkurrenz, sondern als Hub für deutschsprachige Deadlock-Spieler."
+        )
+
         e = discord.Embed(
             title="Partner-Voraussetzungen",
-            description=(
-                "Bitte erfülle kurz die Voraussetzungen:\n\n"
-                "1) Nutze einen **nicht ablaufenden Invite-Link** zu unserem Server (persönlich für dich).\n"
-                "2) Packe den **Server-Link** in deine **Twitch-Bio** – z. B. mit dem Text:\n"
-                "   *„Deutscher Deadlock Community Server“*\n"
-                "3) Wünchenswert wäre es wenn du Zuschauer auf den Server verweist.\n"
-                "4) Genauso wünschenswert ist es, wenn du Deadlock-Content postest, verlinke da gerne den Server.\n\n"
-                "Du **darfst** selbstverständlich deinen **eigenen Server** weiterführen – \n"
-                "wir verstehen uns nicht als Konkurrenz, sondern als Hub für deutschsprachige Deadlock-Spieler."
-            ),
+            description=description,
             color=0x32CD32
         )
         e.set_footer(text="Schritt 2/2")
