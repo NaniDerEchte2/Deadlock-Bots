@@ -379,6 +379,7 @@ class MasterBot(commands.Bot):
 
     def auto_discover_cogs(self):
         try:
+            importlib.invalidate_caches()
             if not self.cogs_dir.exists():
                 logging.warning(f"Cogs directory not found: {self.cogs_dir}")
                 return
@@ -587,6 +588,7 @@ class MasterBot(commands.Bot):
 
         async def load_single_cog(cog_name: str):
             try:
+                self._purge_namespace_modules(cog_name)
                 await self.load_extension(cog_name)
                 self.cog_status[cog_name] = "loaded"
                 logging.info(f"✅ Loaded cog: {cog_name}")
@@ -617,6 +619,7 @@ class MasterBot(commands.Bot):
             for ext_name in loaded_extensions:
                 try:
                     await asyncio.wait_for(self.unload_extension(ext_name), timeout=self.per_cog_unload_timeout)
+                    self._purge_namespace_modules(ext_name)
                     unload_results.append(f"✅ Unloaded: {ext_name}")
                     self.cog_status[ext_name] = "unloaded"
                     logging.info(f"Unloaded extension: {ext_name}")
@@ -650,8 +653,30 @@ class MasterBot(commands.Bot):
             logging.error(f"Error during full cog reload: {e}")
             return False, f"Error: {str(e)}"
 
+    def _purge_namespace_modules(self, namespace: str) -> None:
+        """Ensure that a namespace will be freshly imported on the next load."""
+
+        try:
+            importlib.invalidate_caches()
+        except Exception as e:
+            logging.debug("Failed to invalidate import caches: %s", e)
+
+        trimmed = namespace.rstrip(".")
+        if not trimmed:
+            return
+
+        removed = []
+        for mod_name in list(sys.modules.keys()):
+            if mod_name == trimmed or mod_name.startswith(f"{trimmed}."):
+                removed.append(mod_name)
+                sys.modules.pop(mod_name, None)
+
+        if removed:
+            logging.debug("Cold reload purge for %s: %s", trimmed, removed)
+
     async def reload_cog(self, cog_name: str) -> Tuple[bool, str]:
         try:
+            self._purge_namespace_modules(cog_name)
             await self.reload_extension(cog_name)
             self.cog_status[cog_name] = "loaded"
             await self.update_presence()
@@ -660,6 +685,7 @@ class MasterBot(commands.Bot):
             return True, msg
         except commands.ExtensionNotLoaded:
             try:
+                self._purge_namespace_modules(cog_name)
                 await self.load_extension(cog_name)
                 self.cog_status[cog_name] = "loaded"
                 await self.update_presence()
@@ -732,6 +758,7 @@ class MasterBot(commands.Bot):
         results: Dict[str, str] = {}
         for mod in targets:
             try:
+                self._purge_namespace_modules(mod)
                 if mod in self.extensions:
                     await self.reload_extension(mod)
                     results[mod] = "reloaded"
