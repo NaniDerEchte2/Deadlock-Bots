@@ -185,6 +185,7 @@ const presenceLogger = new DeadlockPresenceLogger(client, log, {
   language: process.env.STEAM_PRESENCE_LANGUAGE || 'german',
   csvPath: path.join(DATA_DIR, 'deadlock_presence_log.csv'),
 });
+log('info', 'Presence logger configured', { csvPath: presenceLogger.csvPath });
 presenceLogger.start();
 
 // ---------- Helpers ----------
