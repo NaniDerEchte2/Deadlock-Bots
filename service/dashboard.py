@@ -306,6 +306,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const opLog = document.getElementById('operation-log');
     const treeContainer = document.getElementById('tree-container');
     const tokenInput = document.getElementById('token-input');
+    const selectionTitle = document.getElementById('selection-title');
+    const selectionDescription = document.getElementById('selection-description');
+    const resetSelectionBtn = document.getElementById('reset-selection');
     let authToken = localStorage.getItem('master-dashboard-token') || '';
     let selectedNode = null;
     tokenInput.value = authToken;
@@ -726,6 +729,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         } catch (err) {
             log('Unblock failed: ' + err.message, 'error');
         }
+    }
+
+    if (resetSelectionBtn) {
+        resetSelectionBtn.addEventListener('click', () => {
+            clearSelection();
+        });
     }
 
     document.getElementById('apply-token').addEventListener('click', () => {
