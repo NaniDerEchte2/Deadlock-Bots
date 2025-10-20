@@ -67,13 +67,25 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             gap: 1rem;
         }
         .cog-management {
+            margin-top: 1rem;
+        }
+        .cog-management h3,
+        .cog-management h4 {
+            margin-top: 0;
+        }
+        .cog-management h4 {
+            font-weight: 600;
+        }
+        .management-columns {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
             gap: 1rem;
             margin-top: 1rem;
         }
-        .cog-management .card {
-            height: 100%;
+        .management-columns > div {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
         }
         .card h3 {
             margin-top: 0;
@@ -261,24 +273,27 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
     <section>
         <h2>Cog Management</h2>
-        <div class=\"cog-management\">
-            <div class=\"card\">
-                <h3>Cog Explorer</h3>
-                <div id=\"tree-container\" class=\"tree-container\"></div>
-            </div>
-            <div class=\"card\">
-                <h3>Cogs</h3>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Status</th>
-                            <th>Namespace</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id=\"cog-table\"></tbody>
-                </table>
+        <div class=\"card cog-management\">
+            <h3>Management Tools</h3>
+            <div class=\"management-columns\">
+                <div>
+                    <h4>Cog Explorer</h4>
+                    <div id=\"tree-container\" class=\"tree-container\"></div>
+                </div>
+                <div>
+                    <h4>Cog List</h4>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Status</th>
+                                <th>Namespace</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id=\"cog-table\"></tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </section>
