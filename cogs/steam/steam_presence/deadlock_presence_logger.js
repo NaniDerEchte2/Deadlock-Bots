@@ -50,6 +50,11 @@ class DeadlockPresenceLogger {
   start() {
     if (this.started) return;
     this.started = true;
+    try {
+      this.ensureCsvHeader();
+    } catch (err) {
+      this.log('warn', 'Failed to initialise presence CSV', { error: err.message || String(err) });
+    }
     this.client.on('loggedOn', this.handlers.loggedOn);
     this.client.on('friendsList', this.handlers.friendsList);
     this.client.on('user', this.handlers.user);
