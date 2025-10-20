@@ -304,23 +304,6 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               updated_at INTEGER
             );
 
-            -- Steam Freundes-Snapshots (Rohdaten aus der Freundesliste)
-            CREATE TABLE IF NOT EXISTS steam_friend_snapshots(
-              steam_id TEXT PRIMARY KEY,
-              relationship INTEGER,
-              persona_state INTEGER,
-              persona_name TEXT,
-              game_app_id INTEGER,
-              game_name TEXT,
-              last_logoff INTEGER,
-              last_logon INTEGER,
-              persona_flags INTEGER,
-              avatar_hash TEXT,
-              persona_json TEXT,
-              rich_presence_json TEXT,
-              updated_at INTEGER
-            );
-
             -- Optionale zusätzliche Watchlist für den Presence-Service
             CREATE TABLE IF NOT EXISTS steam_presence_watchlist(
               steam_id TEXT PRIMARY KEY,
@@ -417,7 +400,6 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_quick_invites_reserved ON steam_quick_invites(reserved_by)"
             )
             c.execute("CREATE INDEX IF NOT EXISTS idx_rich_presence_updated ON steam_rich_presence(updated_at)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_friend_snapshots_updated ON steam_friend_snapshots(updated_at)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_status ON steam_tasks(status, id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_updated ON steam_tasks(updated_at)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ranks_rank ON ranks(rank)")

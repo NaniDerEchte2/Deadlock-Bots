@@ -26,6 +26,7 @@ const path = require('path');
 const SteamUser = require('steam-user');
 const Database = require('better-sqlite3');
 const { QuickInvites } = require('./quick_invites');
+const { DeadlockPresenceLogger } = require('./deadlock_presence_logger');
 
 // ---------- Logging ----------
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
@@ -178,6 +179,13 @@ const quickInvites = new QuickInvites(db, client, log, {
   autoEnsure: true,              // Hintergrund-Ensure aktiv
   autoEnsureIntervalMs: Number(process.env.STEAM_INVITE_AUTO_ENSURE_MS ?? 30000) // alle 30s prüfen
 });
+
+const presenceLogger = new DeadlockPresenceLogger(client, log, {
+  appId: Number.parseInt(process.env.DEADLOCK_APPID || '1422450', 10),
+  language: process.env.STEAM_PRESENCE_LANGUAGE || 'german',
+  csvPath: path.join(DATA_DIR, 'deadlock_presence_log.csv'),
+});
+presenceLogger.start();
 
 // ---------- Helpers ----------
 function updateRefreshToken(token) { refreshToken = token ? String(token).trim() : ''; runtimeState.refresh_token_present = Boolean(refreshToken); }
@@ -491,7 +499,12 @@ if (typeof quickInvites.startAutoEnsure === 'function') {
 }
 
 function shutdown(code = 0) {
-  try { log('info', 'Shutting down Steam bridge'); if (typeof quickInvites.stopAutoEnsure === 'function') quickInvites.stopAutoEnsure(); client.logOff(); } catch {}
+  try {
+    log('info', 'Shutting down Steam bridge');
+    if (typeof quickInvites.stopAutoEnsure === 'function') quickInvites.stopAutoEnsure();
+    presenceLogger.stop();
+    client.logOff();
+  } catch {}
   try { db.close(); } catch {}
   process.exit(code);
 }
