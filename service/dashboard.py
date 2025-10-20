@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, TYPE_CHECKING
+from urllib.parse import urlparse, urlunparse
 
 from aiohttp import web
 
@@ -664,7 +665,14 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 class DashboardServer:
     """Simple aiohttp based dashboard for managing the master bot."""
 
-    def __init__(self, bot: "MasterBot", *, host: str = "127.0.0.1", port: int = 8766, token: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        bot: "MasterBot",
+        *,
+        host: str = "127.0.0.1",
+        port: int = 8766,
+        token: Optional[str] = None,
+    ) -> None:
         self.bot = bot
         self.host = host
         self.port = port
@@ -673,62 +681,25 @@ class DashboardServer:
         self._site: Optional[web.TCPSite] = None
         self._lock = asyncio.Lock()
         self._started = False
-        self._twitch_dashboard_url = self._resolve_twitch_dashboard_url()
-        self._twitch_dashboard_href = self._escape_href(self._twitch_dashboard_url)
-
-    @staticmethod
-    def _escape_href(url: str) -> str:
-        import html
-
-        return html.escape(url, quote=True)
-
-    @staticmethod
-    def _normalize_host(host: Optional[str]) -> str:
-        if not host:
-            return "127.0.0.1"
-        host = host.strip()
-        if not host:
-            return "127.0.0.1"
-        if host in {"0.0.0.0", "::", "*"}:
-            return "127.0.0.1"
-        return host
-
-    @staticmethod
-    def _resolve_int(value: Optional[str], default: int) -> int:
-        if not value:
-            return default
-        try:
-            parsed = int(value)
-            if parsed > 0:
-                return parsed
-        except ValueError:
-            pass
-        logging.warning("Ungültiger Portwert '%s' – verwende %s", value, default)
-        return default
-
-    @staticmethod
-    def _format_url(host: str, port: int, path: str) -> str:
-        host = DashboardServer._normalize_host(host)
-        if ":" in host and not host.startswith("["):
-            host = f"[{host}]"
-        netloc = f"{host}:{port}"
-        normalized_path = path if path.startswith("/") else f"/{path}"
-        return urlunparse(("http", netloc, normalized_path, "", "", ""))
-
-    def _resolve_twitch_dashboard_url(self) -> str:
-        default_host = "127.0.0.1"
-        default_port = 8765
-        try:
-            from cogs.twitch import constants as twitch_constants
-
-            default_host = getattr(twitch_constants, "TWITCH_DASHBOARD_HOST", default_host) or default_host
-            default_port = int(getattr(twitch_constants, "TWITCH_DASHBOARD_PORT", default_port))
-        except Exception:
-            logging.debug("Konnte Twitch-Konstanten nicht laden – verwende Standardwerte")
-
-        host = os.getenv("TWITCH_DASHBOARD_HOST") or default_host
-        port = self._resolve_int(os.getenv("TWITCH_DASHBOARD_PORT"), default_port)
-        return self._format_url(host, port, "/twitch")
+        scheme_env = (os.getenv("MASTER_DASHBOARD_SCHEME") or "").strip().lower()
+        self._scheme = scheme_env or "http"
+        self._listen_base_url = self._format_base_url(self.host, self.port, self._scheme)
+        public_env = (os.getenv("MASTER_DASHBOARD_PUBLIC_URL") or "").strip()
+        if public_env:
+            try:
+                self._public_base_url = self._normalize_public_url(
+                    public_env,
+                    default_scheme=self._scheme,
+                )
+            except Exception as exc:
+                logging.warning(
+                    "MASTER_DASHBOARD_PUBLIC_URL '%s' invalid (%s) – falling back to listen URL",
+                    public_env,
+                    exc,
+                )
+                self._public_base_url = self._listen_base_url
+        else:
+            self._public_base_url = self._listen_base_url
 
     async def _cleanup(self) -> None:
         if self._site:
@@ -833,7 +804,15 @@ class DashboardServer:
                     raise RuntimeError("Dashboard konnte nicht gestartet werden")
 
             self._started = True
-            logging.info("Master dashboard available on http://%s:%s", self.host, self.port)
+            base_no_slash = self._public_base_url.rstrip("/")
+            if base_no_slash.lower().endswith("/admin"):
+                admin_path = base_no_slash
+            else:
+                admin_path = base_no_slash + "/admin"
+            logging.info("Master dashboard listening on %s", self._listen_base_url)
+            if self._public_base_url != self._listen_base_url:
+                logging.info("Master dashboard public URL set to %s", self._public_base_url)
+            logging.info("Master dashboard admin UI: %s", admin_path)
 
     async def stop(self) -> None:
         async with self._lock:
@@ -874,6 +853,66 @@ class DashboardServer:
                 raise web.HTTPBadRequest(text=f"Identifier '{raw}' is ambiguous: {', '.join(matches)}")
             raise web.HTTPBadRequest(text=f"Cog '{raw}' not found")
         return normalized
+
+    @staticmethod
+    def _format_netloc(host: str, port: Optional[int], scheme: str) -> str:
+        safe_host = host.strip() or "127.0.0.1"
+        if ":" in safe_host and not (safe_host.startswith("[") and safe_host.endswith("]")):
+            safe_host = f"[{safe_host}]"
+        default_ports = {"http": 80, "https": 443}
+        default_port = default_ports.get(scheme, None)
+        if port is None or (default_port is not None and port == default_port):
+            return safe_host
+        return f"{safe_host}:{port}"
+
+    @staticmethod
+    def _format_base_url(host: str, port: Optional[int], scheme: str) -> str:
+        netloc = DashboardServer._format_netloc(host, port, scheme)
+        return urlunparse((scheme, netloc, "", "", "", ""))
+
+    @staticmethod
+    def _normalize_public_url(value: str, *, default_scheme: str) -> str:
+        raw = value.strip()
+        if not raw:
+            raise ValueError("Dashboard public URL must not be empty")
+        parsed = urlparse(raw)
+        if parsed.scheme and parsed.netloc:
+            try:
+                parsed_port: Optional[int] = parsed.port
+            except ValueError:
+                parsed_port = None
+            netloc = DashboardServer._format_netloc(
+                parsed.hostname or parsed.netloc,
+                parsed_port,
+                parsed.scheme,
+            )
+            path = parsed.path.rstrip("/")
+            return urlunparse((parsed.scheme, netloc, path, parsed.params, parsed.query, parsed.fragment))
+
+        if parsed.netloc and not parsed.scheme:
+            scheme = default_scheme
+            try:
+                parsed_port = parsed.port
+            except ValueError:
+                parsed_port = None
+            netloc = DashboardServer._format_netloc(parsed.hostname or parsed.netloc, parsed_port, scheme)
+            path = parsed.path.rstrip("/")
+            return urlunparse((scheme, netloc, path, parsed.params, parsed.query, parsed.fragment))
+
+        fallback = urlparse(f"{default_scheme}://{raw}")
+        try:
+            fallback_port = fallback.port
+        except ValueError:
+            fallback_port = None
+        netloc = DashboardServer._format_netloc(
+            fallback.hostname or fallback.netloc or fallback.path,
+            fallback_port,
+            fallback.scheme,
+        )
+        path = fallback.path.rstrip("/")
+        return urlunparse(
+            (fallback.scheme, netloc, path, fallback.params, fallback.query, fallback.fragment)
+        )
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
@@ -922,6 +961,10 @@ class DashboardServer:
                 "discovered": discovered,
                 "tree": self._build_tree(),
                 "blocked": sorted(self.bot.blocked_namespaces),
+            },
+            "dashboard": {
+                "listen_url": self._listen_base_url,
+                "public_url": self._public_base_url,
             },
             "settings": {
                 "per_cog_unload_timeout": bot.per_cog_unload_timeout,
