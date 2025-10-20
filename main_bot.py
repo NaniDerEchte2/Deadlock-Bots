@@ -224,11 +224,11 @@ class MasterBot(commands.Bot):
         self._load_blocklist()
 
         self.cogs_list: List[str] = []
+        self.cog_status: Dict[str, str] = {}
         self.auto_discover_cogs()
 
         tz = pytz.timezone("Europe/Berlin")
         self.startup_time = _dt.datetime.now(tz=tz)
-        self.cog_status: Dict[str, str] = {}
 
         self.dashboard: Optional[DashboardServer] = None
         dash_env = (os.getenv("MASTER_DASHBOARD_ENABLED", "1") or "1").lower()
