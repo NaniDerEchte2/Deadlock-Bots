@@ -2,10 +2,11 @@
 import html
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from typing import List, Callable, Awaitable, Optional
-from urllib.parse import unquote, urlsplit, quote_plus, urlencode
+from urllib.parse import unquote, urlsplit, quote_plus, urlencode, urlunparse
 
 from aiohttp import web
 
@@ -47,6 +48,46 @@ class Dashboard:
         self._list = list_cb
         self._stats = stats_cb
         self._verify = verify_cb
+        self._master_dashboard_url = self._resolve_master_dashboard_url()
+        self._master_dashboard_href = html.escape(self._master_dashboard_url, quote=True)
+
+    @staticmethod
+    def _normalize_host(host: Optional[str]) -> str:
+        if not host:
+            return "127.0.0.1"
+        host = host.strip()
+        if not host:
+            return "127.0.0.1"
+        if host in {"0.0.0.0", "::", "*"}:
+            return "127.0.0.1"
+        return host
+
+    @staticmethod
+    def _parse_port(raw: Optional[str], default: int) -> int:
+        if not raw:
+            return default
+        try:
+            parsed = int(raw)
+            if parsed > 0:
+                return parsed
+        except ValueError:
+            pass
+        log.warning("Ungültiger Portwert '%s' – verwende %s", raw, default)
+        return default
+
+    @staticmethod
+    def _format_url(host: str, port: int, path: str) -> str:
+        host = Dashboard._normalize_host(host)
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        netloc = f"{host}:{port}"
+        normalized_path = path if path.startswith("/") else f"/{path}"
+        return urlunparse(("http", netloc, normalized_path, "", "", ""))
+
+    def _resolve_master_dashboard_url(self) -> str:
+        host = os.getenv("MASTER_DASHBOARD_HOST") or "127.0.0.1"
+        port = self._parse_port(os.getenv("MASTER_DASHBOARD_PORT"), 8766)
+        return self._format_url(host, port, "/admin")
 
     # ---------- Auth ----------
     def _require_token(self, request: web.Request):
@@ -83,7 +124,7 @@ class Dashboard:
             '<nav class="tabs">'
             f'{a("/twitch", "Live", "live")}'
             f'{a("/twitch/stats", "Stats", "stats")}'
-            '<a class="tab tab-admin" href="/admin">Admin</a>'
+            f'<a class="tab tab-admin" href="{self._master_dashboard_href}">Admin</a>'
             "</nav>"
         )
 
