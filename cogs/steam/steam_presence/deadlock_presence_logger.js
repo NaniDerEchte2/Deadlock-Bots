@@ -16,6 +16,13 @@ class DeadlockPresenceLogger {
     }
 
     this.language = options.language || process.env.STEAM_PRESENCE_LANGUAGE || 'german';
+    if (this.language) {
+      try {
+        this.client.setOption('language', this.language);
+      } catch (err) {
+        this.log('warn', 'Failed to set Steam language option', { error: err.message || String(err) });
+      }
+    }
 
     const outputDir = options.outputDir
       ? path.resolve(options.outputDir)
@@ -99,8 +106,7 @@ class DeadlockPresenceLogger {
     const sid = this.toSteamId(steamID);
     if (!sid || Number(appID) !== this.appId) return;
     const persona = this.client.users && this.client.users[sid] ? this.client.users[sid] : null;
-    const payload = { richPresence, localizedString: null };
-    this.writeSnapshotForUser(sid, persona, payload);
+    this.fetchAndWriteRichPresence([sid]);
   }
 
   fetchPersonasAndRichPresence(ids) {
@@ -127,7 +133,7 @@ class DeadlockPresenceLogger {
   fetchAndWriteRichPresence(ids) {
     if (!ids.length) return;
     try {
-      this.client.requestRichPresence(this.appId, ids, this.language, (err, resp) => {
+      this.client.requestRichPresence(this.appId, ids, (err, resp) => {
         if (err) {
           this.log('warn', 'requestRichPresence failed', { error: err.message || String(err) });
           return;
@@ -162,7 +168,14 @@ class DeadlockPresenceLogger {
       this.sessionStart.delete(steamId);
     }
 
-    const richPresence = richObj && richObj.richPresence ? richObj.richPresence : {};
+    const richPresence = (richObj && typeof richObj.richPresence === 'object' && richObj.richPresence) ? richObj.richPresence : {};
+    const hasRichPresenceData = richPresence && Object.keys(richPresence).length > 0;
+    const hasLocalizedString = typeof localizedString === 'string' && localizedString.length > 0;
+
+    if (!inDeadlock && !hasRichPresenceData && !hasLocalizedString) {
+      return;
+    }
+
     const heroGuess = this.guessHero(localizedString);
     const minutes = this.computeMinutes(richPresence, steamId, capturedAtMs);
     const partyHint = this.extractPartyHint(richPresence);
