@@ -450,23 +450,76 @@ class DashboardServer:
                 ]
             )
 
-            self._runner = web.AppRunner(app)
-            await self._runner.setup()
+            addr_in_use = {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", 10048)}
+            win_access = {getattr(errno, "WSAEACCES", 10013), errno.EACCES}
 
-            # Unter Windows bleibt der Port häufig kurzzeitig im TIME_WAIT-Zustand.
-            # reuse_address ermöglicht schnelle Neustarts ohne Fehlermeldung.
-            site_kwargs: Dict[str, Any] = {"reuse_address": True}
+            async def _start_with(reuse_address: Optional[bool]) -> str:
+                runner = web.AppRunner(app)
+                await runner.setup()
 
-            try:
-                self._site = web.TCPSite(self._runner, self.host, self.port, **site_kwargs)
-                await self._site.start()
-            except OSError as e:
-                await self._cleanup()
-                if e.errno in {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", 10048)}:
+                site_kwargs: Dict[str, Any] = {}
+                if reuse_address:
+                    site_kwargs["reuse_address"] = True
+
+                try:
+                    site = web.TCPSite(runner, self.host, self.port, **site_kwargs)
+                    await site.start()
+                except OSError as e:
+                    await runner.cleanup()
+                    if reuse_address and os.name == "nt" and e.errno in win_access:
+                        logging.warning(
+                            "reuse_address konnte auf Windows nicht aktiviert werden (%s). "
+                            "Starte Dashboard ohne reuse_address.",
+                            e,
+                        )
+                        return "retry_without_reuse"
+                    if e.errno in addr_in_use:
+                        return "addr_in_use"
+                    raise
+
+                self._runner = runner
+                self._site = site
+                return "started"
+
+            async def _start_without_reuse_with_retries() -> None:
+                retries = 3
+                delay = 0.5
+                for attempt in range(retries):
+                    attempt_result = await _start_with(reuse_address=False)
+                    if attempt_result == "started":
+                        return
+                    if attempt_result == "addr_in_use" and attempt < retries - 1:
+                        await asyncio.sleep(delay)
+                        delay *= 2
+                        continue
+                    if attempt_result == "addr_in_use":
+                        raise RuntimeError(
+                            f"Dashboard-Port {self.host}:{self.port} ist bereits belegt"
+                        )
+                    raise RuntimeError("Dashboard konnte nicht gestartet werden")
+                raise RuntimeError("Dashboard konnte nicht gestartet werden")
+
+            if os.name != "nt":
+                result = await _start_with(reuse_address=True)
+                if result == "addr_in_use":
                     raise RuntimeError(
                         f"Dashboard-Port {self.host}:{self.port} ist bereits belegt"
-                    ) from e
-                raise
+                    )
+                if result != "started":
+                    raise RuntimeError("Dashboard konnte nicht gestartet werden")
+            else:
+                result = await _start_with(reuse_address=True)
+                if result == "started":
+                    pass
+                elif result == "retry_without_reuse":
+                    await _start_without_reuse_with_retries()
+                elif result == "addr_in_use":
+                    # reuse_address hat trotzdem einen Konflikt ausgelöst – wir warten
+                    # kurz und versuchen den Start ohne reuse_address erneut.
+                    await asyncio.sleep(0.5)
+                    await _start_without_reuse_with_retries()
+                else:
+                    raise RuntimeError("Dashboard konnte nicht gestartet werden")
 
             self._started = True
             logging.info("Master dashboard available on http://%s:%s", self.host, self.port)
