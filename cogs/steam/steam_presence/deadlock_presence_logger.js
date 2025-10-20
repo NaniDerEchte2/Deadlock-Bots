@@ -38,6 +38,12 @@ class DeadlockPresenceLogger {
     this.batchRows = [];
     this.batchTimer = null;
 
+    try {
+      this.ensureCsvHeader();
+    } catch (err) {
+      this.log('warn', 'Failed to initialize Deadlock presence CSV', { error: err.message || String(err) });
+    }
+
     this.handlers = {
       loggedOn: this.handleLoggedOn.bind(this),
       friendsList: this.handleFriendsList.bind(this),
@@ -50,11 +56,6 @@ class DeadlockPresenceLogger {
   start() {
     if (this.started) return;
     this.started = true;
-    try {
-      this.ensureCsvHeader();
-    } catch (err) {
-      this.log('warn', 'Failed to initialise presence CSV', { error: err.message || String(err) });
-    }
     this.client.on('loggedOn', this.handlers.loggedOn);
     this.client.on('friendsList', this.handlers.friendsList);
     this.client.on('user', this.handlers.user);
@@ -129,6 +130,7 @@ class DeadlockPresenceLogger {
     }
 
     try {
+      this.log('info', 'Requesting personas for presence snapshot', { count: steamIds.length });
       this.client.getPersonas(steamIds, (err) => {
         if (err) {
           this.log('warn', 'getPersonas failed', { error: err.message || String(err) });
@@ -144,6 +146,7 @@ class DeadlockPresenceLogger {
   fetchAndWriteRichPresence(ids) {
     if (!ids.length) return;
     try {
+      this.log('info', 'Fetching Deadlock rich presence', { count: ids.length });
       const args = [this.appId, ids];
       if (this.language) {
         args.push(this.language);
@@ -154,6 +157,10 @@ class DeadlockPresenceLogger {
           return;
         }
         const users = (resp && resp.users) ? resp.users : {};
+        const received = Object.keys(users).length;
+        if (!received) {
+          this.log('info', 'No Deadlock rich presence returned', { requested: ids.length });
+        }
         ids.forEach((sid) => {
           const persona = (this.client.users && this.client.users[sid]) ? this.client.users[sid] : null;
           const rich = users[sid] || null;
@@ -210,6 +217,14 @@ class DeadlockPresenceLogger {
     ];
 
     this.pushCsvRow(row);
+
+    if (inDeadlock) {
+      this.log('info', 'Queued Deadlock presence row', {
+        steamId,
+        localized: localizedString || null,
+        minutes,
+      });
+    }
   }
 
   computeMinutes(rp, steamId, capturedAtMs) {
