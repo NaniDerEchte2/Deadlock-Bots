@@ -220,7 +220,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
     <div class="top-nav">
-        <a href="/twitch">Twitch Dashboard öffnen</a>
+        <a href="{{TWITCH_URL}}">Twitch Dashboard öffnen</a>
     </div>
     <h1>Master Bot Dashboard</h1>
     <section>
@@ -673,6 +673,62 @@ class DashboardServer:
         self._site: Optional[web.TCPSite] = None
         self._lock = asyncio.Lock()
         self._started = False
+        self._twitch_dashboard_url = self._resolve_twitch_dashboard_url()
+        self._twitch_dashboard_href = self._escape_href(self._twitch_dashboard_url)
+
+    @staticmethod
+    def _escape_href(url: str) -> str:
+        import html
+
+        return html.escape(url, quote=True)
+
+    @staticmethod
+    def _normalize_host(host: Optional[str]) -> str:
+        if not host:
+            return "127.0.0.1"
+        host = host.strip()
+        if not host:
+            return "127.0.0.1"
+        if host in {"0.0.0.0", "::", "*"}:
+            return "127.0.0.1"
+        return host
+
+    @staticmethod
+    def _resolve_int(value: Optional[str], default: int) -> int:
+        if not value:
+            return default
+        try:
+            parsed = int(value)
+            if parsed > 0:
+                return parsed
+        except ValueError:
+            pass
+        logging.warning("Ungültiger Portwert '%s' – verwende %s", value, default)
+        return default
+
+    @staticmethod
+    def _format_url(host: str, port: int, path: str) -> str:
+        host = DashboardServer._normalize_host(host)
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        netloc = f"{host}:{port}"
+        normalized_path = path if path.startswith("/") else f"/{path}"
+        return urlunparse(("http", netloc, normalized_path, "", "", ""))
+
+    def _resolve_twitch_dashboard_url(self) -> str:
+        default_host = "127.0.0.1"
+        default_port = 8765
+        try:
+            from cogs.twitch import constants as twitch_constants
+
+            default_host = getattr(twitch_constants, "TWITCH_DASHBOARD_HOST", default_host) or default_host
+            default_port = int(getattr(twitch_constants, "TWITCH_DASHBOARD_PORT", default_port))
+        except Exception:
+            logging.debug("Konnte Twitch-Konstanten nicht laden – verwende Standardwerte")
+
+        host = os.getenv("TWITCH_DASHBOARD_HOST") or default_host
+        port = self._resolve_int(os.getenv("TWITCH_DASHBOARD_PORT"), default_port)
+        return self._format_url(host, port, "/twitch")
 
     async def _cleanup(self) -> None:
         if self._site:
@@ -821,7 +877,8 @@ class DashboardServer:
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
-        return web.Response(text=_HTML_TEMPLATE, content_type="text/html")
+        html_text = _HTML_TEMPLATE.replace("{{TWITCH_URL}}", self._twitch_dashboard_href)
+        return web.Response(text=html_text, content_type="text/html")
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
