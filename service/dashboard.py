@@ -66,6 +66,30 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
             gap: 1rem;
         }
+        .cog-management {
+            margin-top: 1rem;
+        }
+        .cog-management h3,
+        .cog-management h4 {
+            margin-top: 0;
+        }
+        .cog-management h4 {
+            font-weight: 600;
+        }
+        .management-columns {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        .management-columns > div {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        .card h3 {
+            margin-top: 0;
+        }
         .card {
             background: #161616;
             border-radius: 8px;
@@ -244,26 +268,34 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                 <p id=\"bot-guilds\">-</p>
                 <p id=\"bot-latency\">-</p>
             </div>
-            <div class=\"card\">
-                <h2>Cog Explorer</h2>
-                <div id=\"tree-container\" class=\"tree-container\"></div>
-            </div>
         </div>
     </section>
 
     <section>
-        <h2>Cogs</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Status</th>
-                    <th>Namespace</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody id=\"cog-table\"></tbody>
-        </table>
+        <h2>Cog Management</h2>
+        <div class=\"card cog-management\">
+            <h3>Management Tools</h3>
+            <div class=\"management-columns\">
+                <div>
+                    <h4>Cog Explorer</h4>
+                    <div id=\"tree-container\" class=\"tree-container\"></div>
+                </div>
+                <div>
+                    <h4>Cog List</h4>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Status</th>
+                                <th>Namespace</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id=\"cog-table\"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
     </section>
 
     <section>
@@ -522,6 +554,32 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                 reloadCog(node.path);
             });
             actions.appendChild(reloadBtn);
+
+            const loadBtn = document.createElement('button');
+            loadBtn.textContent = 'Load';
+            loadBtn.className = 'load';
+            if (node.loaded) {
+                loadBtn.disabled = true;
+            }
+            loadBtn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                loadCog(node.path);
+            });
+            actions.appendChild(loadBtn);
+
+            const unloadBtn = document.createElement('button');
+            unloadBtn.textContent = 'Unload';
+            unloadBtn.className = 'unload';
+            if (!node.loaded) {
+                unloadBtn.disabled = true;
+            }
+            unloadBtn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                unloadCog(node.path);
+            });
+            actions.appendChild(unloadBtn);
         }
         const blockBtn = document.createElement('button');
         if (node.blocked) {
