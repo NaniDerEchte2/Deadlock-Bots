@@ -82,7 +82,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             gap: 1rem;
             margin-top: 1rem;
         }
-        .management-columns > div {
+        .tree-panel,
+        .detail-panel {
             display: flex;
             flex-direction: column;
             gap: 0.75rem;
@@ -167,6 +168,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             flex-direction: column;
             gap: 0.4rem;
         }
+        .tree-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+        }
         details.directory {
             background: #141414;
             border: 1px solid rgba(255,255,255,0.06);
@@ -197,6 +204,15 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             gap: 0.35rem;
             flex-wrap: wrap;
         }
+        .tree-node.selected,
+        .tree-leaf.selected {
+            border-color: rgba(51, 154, 240, 0.55);
+            box-shadow: 0 0 0 1px rgba(51, 154, 240, 0.35);
+        }
+        .tree-node.selected > summary {
+            background: rgba(51, 154, 240, 0.12);
+            border-radius: 4px;
+        }
         .tree-children {
             margin-left: 1rem;
             margin-top: 0.4rem;
@@ -213,6 +229,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             padding: 0.35rem 0.5rem;
             border-radius: 6px;
             border: 1px solid rgba(255,255,255,0.05);
+        }
+        .tree-leaf.selected {
+            background: rgba(51, 154, 240, 0.12);
         }
         .tree-leaf .leaf-meta {
             display: flex;
@@ -241,6 +260,47 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         .tag.package { background: rgba(112, 72, 232, 0.2); color: #d0bfff; }
         .error { color: #ff8787; }
         .success { color: #69db7c; }
+        .detail-header {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+        }
+        .detail-header h4 {
+            margin-bottom: 0.1rem;
+        }
+        .selection-info {
+            color: #adb5bd;
+            font-size: 0.85rem;
+            margin: 0;
+        }
+        .ghost-button {
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.18);
+            color: inherit;
+            padding: 0.35rem 0.75rem;
+            border-radius: 999px;
+            cursor: pointer;
+            transition: border-color 0.2s ease, background 0.2s ease;
+        }
+        .ghost-button:hover:enabled {
+            border-color: rgba(51, 154, 240, 0.65);
+            background: rgba(51, 154, 240, 0.12);
+        }
+        .ghost-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .detail-panel table {
+            margin-top: 0;
+        }
+        .empty-cell {
+            text-align: center;
+            padding: 1rem;
+            color: #868e96;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
@@ -276,12 +336,21 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         <div class=\"card cog-management\">
             <h3>Management Tools</h3>
             <div class=\"management-columns\">
-                <div>
-                    <h4>Cog Explorer</h4>
+                <div class=\"tree-panel\">
+                    <div class=\"tree-header\">
+                        <h4>Namespaces &amp; Cogs</h4>
+                        <span class=\"selection-info\">Explorer mit direkter Steuerung</span>
+                    </div>
                     <div id=\"tree-container\" class=\"tree-container\"></div>
                 </div>
-                <div>
-                    <h4>Cog List</h4>
+                <div class=\"detail-panel\">
+                    <div class=\"detail-header\">
+                        <div>
+                            <h4 id=\"selection-title\">Alle Cogs</h4>
+                            <p id=\"selection-description\" class=\"selection-info\">Es werden alle Cogs angezeigt.</p>
+                        </div>
+                        <button id=\"reset-selection\" class=\"ghost-button\" type=\"button\" disabled>Filter zurücksetzen</button>
+                    </div>
                     <table>
                         <thead>
                             <tr>
@@ -308,7 +377,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const tableBody = document.getElementById('cog-table');
     const treeContainer = document.getElementById('tree-container');
     const tokenInput = document.getElementById('token-input');
+    const selectionTitle = document.getElementById('selection-title');
+    const selectionDescription = document.getElementById('selection-description');
+    const resetSelectionBtn = document.getElementById('reset-selection');
     let authToken = localStorage.getItem('master-dashboard-token') || '';
+    let selectedNode = null;
+    let cogData = { items: [], tree: null };
     tokenInput.value = authToken;
 
     function log(message, type='info') {
@@ -360,6 +434,194 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         return container;
     }
 
+    function getNodePath(node) {
+        if (!node) {
+            return '';
+        }
+        return node.path || node.namespace || node.name || '';
+    }
+
+    function isDirectoryLike(type) {
+        return type === 'directory' || type === 'root' || type === 'package' || type === 'namespace';
+    }
+
+    function updateSelectionInfo(node) {
+        if (!selectionTitle || !selectionDescription || !resetSelectionBtn) {
+            return;
+        }
+        if (!node || !node.path) {
+            selectionTitle.textContent = 'Alle Cogs';
+            selectionDescription.textContent = 'Es werden alle Cogs angezeigt.';
+            resetSelectionBtn.disabled = true;
+            return;
+        }
+        selectionTitle.textContent = node.name || node.path;
+        const infoParts = [];
+        if (typeof node.loadedCount === 'number' && typeof node.moduleCount === 'number') {
+            infoParts.push(node.loadedCount + '/' + node.moduleCount + ' geladen');
+        } else if (typeof node.loadedCount === 'number') {
+            infoParts.push(node.loadedCount + ' geladen');
+        }
+        if (typeof node.discoveredCount === 'number') {
+            infoParts.push(node.discoveredCount + ' entdeckt');
+        }
+        if (node.blocked) {
+            infoParts.push('blockiert');
+        }
+        infoParts.push('Pfad: ' + node.path);
+        if (node.status) {
+            infoParts.push('Status: ' + node.status);
+        }
+        selectionDescription.textContent = infoParts.join(' • ');
+        resetSelectionBtn.disabled = false;
+    }
+
+    function matchesSelection(cog) {
+        if (!selectedNode || !selectedNode.path) {
+            return true;
+        }
+        const path = selectedNode.path;
+        const normalized = path.endsWith('.') ? path : path + '.';
+        if (isDirectoryLike(selectedNode.type)) {
+            return cog.namespace === path || cog.namespace.startsWith(normalized);
+        }
+        return (
+            cog.namespace === path ||
+            cog.name === selectedNode.name ||
+            cog.name === path ||
+            cog.namespace.startsWith(normalized)
+        );
+    }
+
+    function renderTable() {
+        if (!tableBody) {
+            return;
+        }
+        tableBody.innerHTML = '';
+        if (!cogData.items || !cogData.items.length) {
+            const emptyRow = document.createElement('tr');
+            const emptyCell = document.createElement('td');
+            emptyCell.colSpan = 4;
+            emptyCell.className = 'empty-cell';
+            emptyCell.textContent = 'Keine Cogs verfügbar.';
+            emptyRow.appendChild(emptyCell);
+            tableBody.appendChild(emptyRow);
+            return;
+        }
+        const filtered = cogData.items.filter(matchesSelection);
+        if (!filtered.length) {
+            const emptyRow = document.createElement('tr');
+            const emptyCell = document.createElement('td');
+            emptyCell.colSpan = 4;
+            emptyCell.className = 'empty-cell';
+            emptyCell.textContent = 'Keine Cogs für diese Auswahl.';
+            emptyRow.appendChild(emptyCell);
+            tableBody.appendChild(emptyRow);
+            return;
+        }
+        for (const cog of filtered) {
+            const tr = document.createElement('tr');
+            const nameTd = document.createElement('td');
+            nameTd.textContent = cog.name;
+            tr.appendChild(nameTd);
+
+            const statusTd = document.createElement('td');
+            statusTd.appendChild(renderStatus(cog.status));
+            tr.appendChild(statusTd);
+
+            const nsTd = document.createElement('td');
+            nsTd.textContent = cog.namespace;
+            tr.appendChild(nsTd);
+
+            const actionTd = document.createElement('td');
+            const reloadBtn = document.createElement('button');
+            reloadBtn.textContent = 'Reload';
+            reloadBtn.className = 'reload';
+            reloadBtn.addEventListener('click', () => reloadCog(cog.name));
+            actionTd.appendChild(reloadBtn);
+
+            const unloadBtn = document.createElement('button');
+            unloadBtn.textContent = 'Unload';
+            unloadBtn.className = 'unload';
+            unloadBtn.addEventListener('click', () => unloadCog(cog.name));
+            if (!cog.loaded) {
+                unloadBtn.disabled = true;
+            }
+            actionTd.appendChild(unloadBtn);
+
+            const loadBtn = document.createElement('button');
+            loadBtn.textContent = 'Load';
+            loadBtn.className = 'load';
+            loadBtn.addEventListener('click', () => loadCog(cog.name));
+            if (cog.loaded) {
+                loadBtn.disabled = true;
+            }
+            actionTd.appendChild(loadBtn);
+
+            tr.appendChild(actionTd);
+            tableBody.appendChild(tr);
+        }
+    }
+
+    function applySelection() {
+        if (!treeContainer) {
+            return false;
+        }
+        const current = treeContainer.querySelectorAll('.selected');
+        current.forEach((el) => el.classList.remove('selected'));
+        if (!selectedNode || !selectedNode.path) {
+            return false;
+        }
+        let target = null;
+        const nodes = treeContainer.querySelectorAll('[data-path]');
+        for (const el of nodes) {
+            if (el.dataset.path === selectedNode.path) {
+                target = el;
+                break;
+            }
+        }
+        if (!target) {
+            return false;
+        }
+        target.classList.add('selected');
+        if (target.tagName === 'DETAILS') {
+            target.open = true;
+        }
+        let parent = target.parentElement;
+        while (parent) {
+            if (parent.tagName === 'DETAILS') {
+                parent.open = true;
+            }
+            parent = parent.parentElement;
+        }
+        return true;
+    }
+
+    function selectNode(node) {
+        const path = getNodePath(node);
+        const nodeType = node.type || (Array.isArray(node.children) ? 'directory' : 'module');
+        selectedNode = {
+            path,
+            type: nodeType,
+            name: node.name || path,
+            status: node.status || '',
+            blocked: Boolean(node.blocked),
+            moduleCount: typeof node.module_count === 'number' ? node.module_count : node.moduleCount,
+            discoveredCount: typeof node.discovered_count === 'number' ? node.discovered_count : node.discoveredCount,
+            loadedCount: typeof node.loaded_count === 'number' ? node.loaded_count : node.loadedCount,
+        };
+        updateSelectionInfo(selectedNode);
+        renderTable();
+        applySelection();
+    }
+
+    function clearSelection() {
+        selectedNode = null;
+        updateSelectionInfo(null);
+        renderTable();
+        applySelection();
+    }
+
     async function loadStatus() {
         try {
             const data = await fetchJSON('/api/status');
@@ -368,52 +630,14 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('bot-guilds').textContent = 'Guilds: ' + data.bot.guilds;
             document.getElementById('bot-latency').textContent = 'Latency: ' + data.bot.latency_ms + ' ms';
 
-            tableBody.innerHTML = '';
-            for (const cog of data.cogs.items) {
-                const tr = document.createElement('tr');
-                const nameTd = document.createElement('td');
-                nameTd.textContent = cog.name;
-                tr.appendChild(nameTd);
-
-                const statusTd = document.createElement('td');
-                statusTd.appendChild(renderStatus(cog.status));
-                tr.appendChild(statusTd);
-
-                const nsTd = document.createElement('td');
-                nsTd.textContent = cog.namespace;
-                tr.appendChild(nsTd);
-
-                const actionTd = document.createElement('td');
-                const reloadBtn = document.createElement('button');
-                reloadBtn.textContent = 'Reload';
-                reloadBtn.className = 'reload';
-                reloadBtn.addEventListener('click', () => reloadCog(cog.name));
-                actionTd.appendChild(reloadBtn);
-
-                const unloadBtn = document.createElement('button');
-                unloadBtn.textContent = 'Unload';
-                unloadBtn.className = 'unload';
-                unloadBtn.addEventListener('click', () => unloadCog(cog.name));
-                actionTd.appendChild(unloadBtn);
-
-                if (!cog.loaded) {
-                    unloadBtn.disabled = true;
-                }
-
-                const loadBtn = document.createElement('button');
-                loadBtn.textContent = 'Load';
-                loadBtn.className = 'load';
-                loadBtn.addEventListener('click', () => loadCog(cog.name));
-                actionTd.appendChild(loadBtn);
-                if (cog.loaded) {
-                    loadBtn.disabled = true;
-                }
-
-                tr.appendChild(actionTd);
-                tableBody.appendChild(tr);
+            const cogs = data.cogs || {};
+            cogData.items = Array.isArray(cogs.items) ? cogs.items : [];
+            cogData.tree = cogs.tree || null;
+            renderTree(cogData.tree);
+            if (!selectedNode) {
+                updateSelectionInfo(null);
             }
-
-            renderTree(data.cogs.tree);
+            renderTable();
         } catch (err) {
             log('Status konnte nicht geladen werden: ' + err.message, 'error');
         }
@@ -438,16 +662,27 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             treeContainer.appendChild(empty);
             return;
         }
-        treeContainer.appendChild(buildTreeNode(root, 0));
+        const built = buildTreeNode(root, 0);
+        if (built) {
+            treeContainer.appendChild(built);
+        }
+        const hasSelection = applySelection();
+        if (selectedNode && !hasSelection) {
+            clearSelection();
+        }
     }
 
     function buildTreeNode(node, depth = 0) {
-        if (node.type === 'directory') {
+        const nodePath = getNodePath(node);
+        const nodeType = node.type || (Array.isArray(node.children) ? 'directory' : 'module');
+        if (isDirectoryLike(nodeType)) {
             const details = document.createElement('details');
             details.className = 'directory tree-node';
             if (depth < 2) {
                 details.open = true;
             }
+            details.dataset.path = nodePath;
+            details.dataset.nodeType = nodeType;
             const summary = document.createElement('summary');
             const label = document.createElement('div');
             label.className = 'tree-label';
@@ -507,6 +742,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             summary.appendChild(actions);
             details.appendChild(summary);
 
+            summary.addEventListener('click', (ev) => {
+                if (ev.target.closest('button')) {
+                    return;
+                }
+                selectNode(node);
+            });
+
             const childrenContainer = document.createElement('div');
             childrenContainer.className = 'tree-children';
             if (node.children && node.children.length) {
@@ -526,6 +768,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
         const leaf = document.createElement('div');
         leaf.className = 'tree-leaf';
+        leaf.dataset.path = nodePath;
+        leaf.dataset.nodeType = nodeType;
         const meta = document.createElement('div');
         meta.className = 'leaf-meta';
         const title = document.createElement('span');
@@ -602,6 +846,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         actions.appendChild(blockBtn);
         leaf.appendChild(actions);
         leaf.title = node.path;
+        leaf.addEventListener('click', (ev) => {
+            if (ev.target.closest('button')) {
+                return;
+            }
+            selectNode(node);
+        });
         return leaf;
     }
 
@@ -684,6 +934,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         } catch (err) {
             log('Unblock failed: ' + err.message, 'error');
         }
+    }
+
+    if (resetSelectionBtn) {
+        resetSelectionBtn.addEventListener('click', () => {
+            clearSelection();
+        });
     }
 
     document.getElementById('apply-token').addEventListener('click', () => {
