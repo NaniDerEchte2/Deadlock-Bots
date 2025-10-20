@@ -221,7 +221,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
     <div class="top-nav">
-        <a href="/twitch">Twitch Dashboard öffnen</a>
+        <a href="{{TWITCH_URL}}">Twitch Dashboard öffnen</a>
     </div>
     <h1>Master Bot Dashboard</h1>
     <section>
@@ -916,7 +916,8 @@ class DashboardServer:
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
-        return web.Response(text=_HTML_TEMPLATE, content_type="text/html")
+        html_text = _HTML_TEMPLATE.replace("{{TWITCH_URL}}", self._twitch_dashboard_href)
+        return web.Response(text=html_text, content_type="text/html")
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
