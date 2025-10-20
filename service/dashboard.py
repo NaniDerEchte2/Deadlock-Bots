@@ -5,6 +5,7 @@ import datetime as _dt
 import errno
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, TYPE_CHECKING
 
 from aiohttp import web
@@ -96,6 +97,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         button.unload { background: #e8590c; color: #fff; }
         button.load { background: #37b24d; color: #fff; }
         button.namespace { background: #7048e8; color: #fff; }
+        button.block { background: #c92a2a; color: #fff; }
+        button.unblock { background: #66d9e8; color: #111; }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
         .status-dot {
             display: inline-block;
@@ -108,6 +111,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         .status-error { background: #e03131; }
         .status-unloaded { background: #fab005; }
         .status-unknown { background: #868e96; }
+        .status-blocked { background: #e8590c; }
         .toolbar {
             display: flex;
             flex-wrap: wrap;
@@ -130,6 +134,86 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             max-height: 240px;
             overflow-y: auto;
         }
+        .tree-container {
+            max-height: 420px;
+            overflow-y: auto;
+            padding-right: 0.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+        }
+        details.directory {
+            background: #141414;
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 8px;
+            padding: 0.35rem 0.6rem;
+        }
+        details.directory > summary {
+            list-style: none;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        details.directory > summary::-webkit-details-marker {
+            display: none;
+        }
+        .tree-label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .tree-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            flex-wrap: wrap;
+        }
+        .tree-children {
+            margin-left: 1rem;
+            margin-top: 0.4rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .tree-leaf {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            background: #101010;
+            padding: 0.35rem 0.5rem;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+        .tree-leaf .leaf-meta {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+            flex-wrap: wrap;
+        }
+        .tree-empty {
+            font-style: italic;
+            color: #868e96;
+            padding-left: 0.5rem;
+        }
+        .tag {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.1rem 0.5rem;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: rgba(255,255,255,0.12);
+            color: #f5f5f5;
+        }
+        .tag.blocked { background: rgba(233, 30, 99, 0.25); color: #ff8787; }
+        .tag.count { background: rgba(64, 192, 87, 0.18); color: #c0ffc0; }
+        .tag.partial { background: rgba(250, 176, 5, 0.25); color: #ffd43b; }
+        .tag.package { background: rgba(112, 72, 232, 0.2); color: #d0bfff; }
         .error { color: #ff8787; }
         .success { color: #69db7c; }
     </style>
@@ -160,8 +244,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                 <p id=\"bot-latency\">-</p>
             </div>
             <div class=\"card\">
-                <h2>Discovered Namespaces</h2>
-                <ul id=\"namespace-list\"></ul>
+                <h2>Cog Explorer</h2>
+                <div id=\"tree-container\" class=\"tree-container\"></div>
             </div>
         </div>
     </section>
@@ -189,7 +273,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     <script>
     const opLog = document.getElementById('operation-log');
     const tableBody = document.getElementById('cog-table');
-    const namespaceList = document.getElementById('namespace-list');
+    const treeContainer = document.getElementById('tree-container');
     const tokenInput = document.getElementById('token-input');
     let authToken = localStorage.getItem('master-dashboard-token') || '';
     tokenInput.value = authToken;
@@ -221,14 +305,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         return response.json();
     }
 
-    function namespaceFromCog(name) {
-        const parts = name.split('.');
-        if (parts.length >= 3) {
-            return parts.slice(0, 3).join('.');
-        }
-        return parts.slice(0, 2).join('.');
-    }
-
     function renderStatus(status) {
         const dot = document.createElement('span');
         dot.classList.add('status-dot');
@@ -238,6 +314,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             dot.classList.add('status-loaded');
         } else if (status.startsWith('error')) {
             dot.classList.add('status-error');
+        } else if (status === 'blocked') {
+            dot.classList.add('status-blocked');
         } else if (status === 'unloaded') {
             dot.classList.add('status-unloaded');
         } else {
@@ -256,19 +334,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('bot-uptime').textContent = 'Uptime: ' + data.bot.uptime;
             document.getElementById('bot-guilds').textContent = 'Guilds: ' + data.bot.guilds;
             document.getElementById('bot-latency').textContent = 'Latency: ' + data.bot.latency_ms + ' ms';
-
-            namespaceList.innerHTML = '';
-            for (const ns of data.cogs.namespaces) {
-                const li = document.createElement('li');
-                li.textContent = ns.namespace + ' (' + ns.count + ')';
-                const btn = document.createElement('button');
-                btn.textContent = 'Reload';
-                btn.className = 'namespace';
-                btn.addEventListener('click', () => reloadNamespace(ns.namespace));
-                li.appendChild(document.createTextNode(' '));
-                li.appendChild(btn);
-                namespaceList.appendChild(li);
-            }
 
             tableBody.innerHTML = '';
             for (const cog of data.cogs.items) {
@@ -314,9 +379,171 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                 tr.appendChild(actionTd);
                 tableBody.appendChild(tr);
             }
+
+            renderTree(data.cogs.tree);
         } catch (err) {
             log('Status konnte nicht geladen werden: ' + err.message, 'error');
         }
+    }
+
+    function createTag(label, className) {
+        const tag = document.createElement('span');
+        tag.className = 'tag ' + className;
+        tag.textContent = label;
+        return tag;
+    }
+
+    function renderTree(root) {
+        if (!treeContainer) {
+            return;
+        }
+        treeContainer.innerHTML = '';
+        if (!root) {
+            const empty = document.createElement('div');
+            empty.className = 'tree-empty';
+            empty.textContent = 'Keine Daten';
+            treeContainer.appendChild(empty);
+            return;
+        }
+        treeContainer.appendChild(buildTreeNode(root, 0));
+    }
+
+    function buildTreeNode(node, depth = 0) {
+        if (node.type === 'directory') {
+            const details = document.createElement('details');
+            details.className = 'directory tree-node';
+            if (depth < 2) {
+                details.open = true;
+            }
+            const summary = document.createElement('summary');
+            const label = document.createElement('div');
+            label.className = 'tree-label';
+            const title = document.createElement('span');
+            title.textContent = node.name;
+            label.appendChild(title);
+            if (node.is_package) {
+                label.appendChild(createTag('package', 'package'));
+            }
+            if (node.module_count > 0) {
+                label.appendChild(createTag(node.loaded_count + '/' + node.module_count + ' geladen', 'count'));
+            }
+            if (node.module_count > node.discovered_count) {
+                const hidden = node.module_count - node.discovered_count;
+                label.appendChild(createTag(hidden + ' versteckt', 'partial'));
+            }
+            if (node.blocked) {
+                label.appendChild(createTag('blockiert', 'blocked'));
+            }
+            if (node.status) {
+                label.appendChild(renderStatus(node.status));
+            }
+
+            const actions = document.createElement('div');
+            actions.className = 'tree-actions';
+            const reloadBtn = document.createElement('button');
+            reloadBtn.textContent = 'Reload';
+            reloadBtn.className = 'reload';
+            reloadBtn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                reloadPath(node.path);
+            });
+            actions.appendChild(reloadBtn);
+
+            const blockBtn = document.createElement('button');
+            if (node.blocked) {
+                blockBtn.textContent = 'Unblock';
+                blockBtn.className = 'unblock';
+                blockBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    unblockPath(node.path);
+                });
+            } else {
+                blockBtn.textContent = 'Block';
+                blockBtn.className = 'block';
+                blockBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    blockPath(node.path);
+                });
+            }
+            actions.appendChild(blockBtn);
+
+            summary.appendChild(label);
+            summary.appendChild(actions);
+            details.appendChild(summary);
+
+            const childrenContainer = document.createElement('div');
+            childrenContainer.className = 'tree-children';
+            if (node.children && node.children.length) {
+                for (const child of node.children) {
+                    childrenContainer.appendChild(buildTreeNode(child, depth + 1));
+                }
+            } else {
+                const empty = document.createElement('div');
+                empty.className = 'tree-empty';
+                empty.textContent = 'Keine Einträge';
+                childrenContainer.appendChild(empty);
+            }
+            details.appendChild(childrenContainer);
+            details.title = node.path;
+            return details;
+        }
+
+        const leaf = document.createElement('div');
+        leaf.className = 'tree-leaf';
+        const meta = document.createElement('div');
+        meta.className = 'leaf-meta';
+        const title = document.createElement('span');
+        title.textContent = node.name;
+        meta.appendChild(title);
+        if (node.blocked) {
+            meta.appendChild(createTag('blockiert', 'blocked'));
+        }
+        if (!node.discovered) {
+            meta.appendChild(createTag('nicht entdeckt', 'partial'));
+        }
+        if (node.status) {
+            meta.appendChild(renderStatus(node.status));
+        }
+        leaf.appendChild(meta);
+
+        const actions = document.createElement('div');
+        actions.className = 'tree-actions';
+        if (!node.blocked) {
+            const reloadBtn = document.createElement('button');
+            reloadBtn.textContent = 'Reload';
+            reloadBtn.className = 'reload';
+            reloadBtn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                reloadCog(node.path);
+            });
+            actions.appendChild(reloadBtn);
+        }
+        const blockBtn = document.createElement('button');
+        if (node.blocked) {
+            blockBtn.textContent = 'Unblock';
+            blockBtn.className = 'unblock';
+            blockBtn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                unblockPath(node.path);
+            });
+        } else {
+            blockBtn.textContent = 'Block';
+            blockBtn.className = 'block';
+            blockBtn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                blockPath(node.path);
+            });
+        }
+        actions.appendChild(blockBtn);
+        leaf.appendChild(actions);
+        leaf.title = node.path;
+        return leaf;
     }
 
     async function reloadCog(name) {
@@ -361,7 +588,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         }
     }
 
-    async function reloadNamespace(namespace) {
+    async function reloadPath(namespace) {
         try {
             const res = await fetchJSON('/api/cogs/reload-namespace', {
                 method: 'POST',
@@ -371,6 +598,32 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             await loadStatus();
         } catch (err) {
             log('Namespace reload failed: ' + err.message, 'error');
+        }
+    }
+
+    async function blockPath(path) {
+        try {
+            const res = await fetchJSON('/api/cogs/block', {
+                method: 'POST',
+                body: JSON.stringify({ path }),
+            });
+            log(res.message, res.ok ? 'success' : 'error');
+            await loadStatus();
+        } catch (err) {
+            log('Block failed: ' + err.message, 'error');
+        }
+    }
+
+    async function unblockPath(path) {
+        try {
+            const res = await fetchJSON('/api/cogs/unblock', {
+                method: 'POST',
+                body: JSON.stringify({ path }),
+            });
+            log(res.message, res.ok ? 'success' : 'error');
+            await loadStatus();
+        } catch (err) {
+            log('Unblock failed: ' + err.message, 'error');
         }
     }
 
@@ -446,6 +699,8 @@ class DashboardServer:
                     web.post("/api/cogs/unload", self._handle_unload),
                     web.post("/api/cogs/reload-all", self._handle_reload_all),
                     web.post("/api/cogs/reload-namespace", self._handle_reload_namespace),
+                    web.post("/api/cogs/block", self._handle_block),
+                    web.post("/api/cogs/unblock", self._handle_unblock),
                     web.post("/api/cogs/discover", self._handle_discover),
                 ]
             )
@@ -608,6 +863,8 @@ class DashboardServer:
                 "active": sorted(active),
                 "namespaces": namespaces,
                 "discovered": discovered,
+                "tree": self._build_tree(),
+                "blocked": sorted(self.bot.blocked_namespaces),
             },
             "settings": {
                 "per_cog_unload_timeout": bot.per_cog_unload_timeout,
@@ -633,6 +890,113 @@ class DashboardServer:
             for ns in sorted(counter.keys())
         ]
 
+    def _build_tree(self) -> Dict[str, Any]:
+        bot = self.bot
+        root_dir = bot.cogs_dir
+        active = set(bot.active_cogs())
+        discovered = set(bot.cogs_list)
+        status_map = bot.cog_status.copy()
+
+        def node_status(path: str, *, blocked: bool) -> Optional[str]:
+            status = status_map.get(path)
+            if status:
+                return status
+            if blocked:
+                return "blocked"
+            if path in active:
+                return "loaded"
+            if path in discovered:
+                return "unloaded"
+            return None
+
+        def walk(directory: Path, parts: List[str]) -> Dict[str, Any]:
+            module_path = "cogs"
+            if parts:
+                module_path = "cogs." + ".".join(parts)
+
+            blocked_dir = bot.is_namespace_blocked(module_path, assume_normalized=True)
+            status = node_status(module_path, blocked=blocked_dir)
+            is_package = (
+                module_path in discovered
+                or module_path in status_map
+                or module_path in active
+            ) and module_path != "cogs"
+
+            module_count = 1 if is_package else 0
+            loaded_count = 1 if is_package and module_path in active else 0
+            discovered_count = 1 if is_package and module_path in discovered else 0
+
+            children: List[Dict[str, Any]] = []
+            try:
+                entries = sorted(directory.iterdir(), key=lambda p: (p.is_file(), p.name))
+            except FileNotFoundError:
+                entries = []
+
+            for entry in entries:
+                if entry.name.startswith("__pycache__"):
+                    continue
+                if entry.is_dir():
+                    child = walk(entry, parts + [entry.name])
+                    children.append(child)
+                    module_count += child.get("module_count", 0)
+                    loaded_count += child.get("loaded_count", 0)
+                    discovered_count += child.get("discovered_count", 0)
+                    continue
+                if entry.suffix != ".py" or entry.name == "__init__.py":
+                    continue
+                if parts:
+                    mod_path = "cogs." + ".".join(parts + [entry.stem])
+                else:
+                    mod_path = f"cogs.{entry.stem}"
+                blocked_child = bot.is_namespace_blocked(mod_path, assume_normalized=True)
+                loaded_child = mod_path in active
+                discovered_child = mod_path in discovered
+                status_child = node_status(mod_path, blocked=blocked_child) or "not_discovered"
+                child = {
+                    "type": "module",
+                    "name": entry.stem,
+                    "path": mod_path,
+                    "blocked": blocked_child,
+                    "loaded": loaded_child,
+                    "discovered": discovered_child,
+                    "status": status_child,
+                }
+                children.append(child)
+                module_count += 1
+                if loaded_child:
+                    loaded_count += 1
+                if discovered_child:
+                    discovered_count += 1
+
+            return {
+                "type": "directory",
+                "name": directory.name if parts else "cogs",
+                "path": module_path,
+                "blocked": blocked_dir,
+                "status": status,
+                "is_package": is_package,
+                "module_count": module_count,
+                "loaded_count": loaded_count,
+                "discovered_count": discovered_count,
+                "children": children,
+            }
+
+        if not root_dir.exists():
+            return {
+                "type": "directory",
+                "name": "cogs",
+                "path": "cogs",
+                "blocked": bot.is_namespace_blocked("cogs"),
+                "status": None,
+                "is_package": False,
+                "module_count": 0,
+                "loaded_count": 0,
+                "discovered_count": 0,
+                "children": [],
+            }
+
+        return walk(root_dir, [])
+
     async def _handle_reload(self, request: web.Request) -> web.Response:
         self._check_auth(request)
         payload = await request.json()
@@ -644,6 +1008,12 @@ class DashboardServer:
         results: Dict[str, Dict[str, Any]] = {}
         async with self._lock:
             for name in normalized:
+                if self.bot.is_namespace_blocked(name, assume_normalized=True):
+                    results[name] = {
+                        "ok": False,
+                        "message": f"🚫 {name} ist blockiert",
+                    }
+                    continue
                 if name not in self.bot.extensions:
                     results[name] = {
                         "ok": False,
@@ -666,6 +1036,12 @@ class DashboardServer:
         results: Dict[str, Dict[str, Any]] = {}
         async with self._lock:
             for name in normalized:
+                if self.bot.is_namespace_blocked(name, assume_normalized=True):
+                    results[name] = {
+                        "ok": False,
+                        "message": f"🚫 {name} ist blockiert",
+                    }
+                    continue
                 ok, message = await self.bot.reload_cog(name)
                 results[name] = {"ok": ok, "message": message}
         return web.json_response({"results": results})
@@ -708,10 +1084,27 @@ class DashboardServer:
         if not namespace:
             raise web.HTTPBadRequest(text="'namespace' is required")
 
+        try:
+            normalized = self.bot.normalize_namespace(namespace)
+        except ValueError:
+            raise web.HTTPBadRequest(text="Invalid namespace")
+
+        if self.bot.is_namespace_blocked(normalized, assume_normalized=True):
+            return web.json_response(
+                {
+                    "ok": False,
+                    "results": {},
+                    "message": f"{normalized} ist blockiert",
+                }
+            )
+
         async with self._lock:
-            results = await self.bot.reload_namespace(namespace)
+            results = await self.bot.reload_namespace(normalized)
         ok = all(v in ("loaded", "reloaded") for v in results.values())
-        message = f"Reloaded {len(results)} cogs under {namespace}"
+        if not results:
+            message = f"Keine Cogs unter {normalized} gefunden"
+        else:
+            message = f"Reloaded {len(results)} cogs under {normalized}"
         return web.json_response({"ok": ok, "results": results, "message": message})
 
     async def _handle_discover(self, request: web.Request) -> web.Response:
@@ -721,6 +1114,58 @@ class DashboardServer:
         after = set(self.bot.cogs_list)
         new = sorted(after - before)
         return web.json_response({"ok": True, "new": new, "count": len(after)})
+
+    async def _handle_block(self, request: web.Request) -> web.Response:
+        self._check_auth(request)
+        payload = await request.json()
+        path = payload.get("path")
+        if not path:
+            raise web.HTTPBadRequest(text="'path' is required")
+        async with self._lock:
+            try:
+                result = await self.bot.block_namespace(path)
+            except ValueError:
+                raise web.HTTPBadRequest(text="Invalid namespace")
+        namespace = result.get("namespace", path)
+        changed = result.get("changed", False)
+        unloaded = result.get("unloaded", {})
+        message = (
+            f"🚫 {namespace} blockiert" if changed else f"{namespace} war bereits blockiert"
+        )
+        return web.json_response(
+            {
+                "ok": True,
+                "namespace": namespace,
+                "changed": changed,
+                "unloaded": unloaded,
+                "message": message,
+            }
+        )
+
+    async def _handle_unblock(self, request: web.Request) -> web.Response:
+        self._check_auth(request)
+        payload = await request.json()
+        path = payload.get("path")
+        if not path:
+            raise web.HTTPBadRequest(text="'path' is required")
+        async with self._lock:
+            try:
+                result = await self.bot.unblock_namespace(path)
+            except ValueError:
+                raise web.HTTPBadRequest(text="Invalid namespace")
+        namespace = result.get("namespace", path)
+        changed = result.get("changed", False)
+        message = (
+            f"✅ {namespace} freigegeben" if changed else f"{namespace} war nicht blockiert"
+        )
+        return web.json_response(
+            {
+                "ok": True,
+                "namespace": namespace,
+                "changed": changed,
+                "message": message,
+            }
+        )
 
 if TYPE_CHECKING:  # pragma: no cover - avoid runtime dependency cycle
     from main_bot import MasterBot
