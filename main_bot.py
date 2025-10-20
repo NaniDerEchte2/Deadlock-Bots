@@ -227,10 +227,10 @@ class MasterBot(commands.Bot):
         if dashboard_enabled:
             host = os.getenv("MASTER_DASHBOARD_HOST", "127.0.0.1")
             try:
-                port = int(os.getenv("MASTER_DASHBOARD_PORT", "8765"))
+                port = int(os.getenv("MASTER_DASHBOARD_PORT", "8766"))
             except ValueError:
-                logging.error("MASTER_DASHBOARD_PORT ist ungültig – verwende 8765")
-                port = 8765
+                logging.error("MASTER_DASHBOARD_PORT ist ungültig – verwende 8766")
+                port = 8766
             token = os.getenv("MASTER_DASHBOARD_TOKEN")
             if DashboardServer is None:
                 logging.warning("DashboardServer nicht verfügbar – Dashboard wird deaktiviert")

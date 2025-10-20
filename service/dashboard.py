@@ -5,6 +5,7 @@ import datetime as _dt
 import errno
 import logging
 import os
+from urllib.parse import urlunparse
 from typing import Any, Dict, Iterable, List, Optional, TYPE_CHECKING
 
 from aiohttp import web
@@ -136,7 +137,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
     <div class="top-nav">
-        <a href="/twitch">Twitch Dashboard öffnen</a>
+        <a href="{{TWITCH_URL}}">Twitch Dashboard öffnen</a>
     </div>
     <h1>Master Bot Dashboard</h1>
     <section>
@@ -411,7 +412,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 class DashboardServer:
     """Simple aiohttp based dashboard for managing the master bot."""
 
-    def __init__(self, bot: "MasterBot", *, host: str = "127.0.0.1", port: int = 8765, token: Optional[str] = None) -> None:
+    def __init__(self, bot: "MasterBot", *, host: str = "127.0.0.1", port: int = 8766, token: Optional[str] = None) -> None:
         self.bot = bot
         self.host = host
         self.port = port
@@ -420,6 +421,62 @@ class DashboardServer:
         self._site: Optional[web.TCPSite] = None
         self._lock = asyncio.Lock()
         self._started = False
+        self._twitch_dashboard_url = self._resolve_twitch_dashboard_url()
+        self._twitch_dashboard_href = self._escape_href(self._twitch_dashboard_url)
+
+    @staticmethod
+    def _escape_href(url: str) -> str:
+        import html
+
+        return html.escape(url, quote=True)
+
+    @staticmethod
+    def _normalize_host(host: Optional[str]) -> str:
+        if not host:
+            return "127.0.0.1"
+        host = host.strip()
+        if not host:
+            return "127.0.0.1"
+        if host in {"0.0.0.0", "::", "*"}:
+            return "127.0.0.1"
+        return host
+
+    @staticmethod
+    def _resolve_int(value: Optional[str], default: int) -> int:
+        if not value:
+            return default
+        try:
+            parsed = int(value)
+            if parsed > 0:
+                return parsed
+        except ValueError:
+            pass
+        logging.warning("Ungültiger Portwert '%s' – verwende %s", value, default)
+        return default
+
+    @staticmethod
+    def _format_url(host: str, port: int, path: str) -> str:
+        host = DashboardServer._normalize_host(host)
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        netloc = f"{host}:{port}"
+        normalized_path = path if path.startswith("/") else f"/{path}"
+        return urlunparse(("http", netloc, normalized_path, "", "", ""))
+
+    def _resolve_twitch_dashboard_url(self) -> str:
+        default_host = "127.0.0.1"
+        default_port = 8765
+        try:
+            from cogs.twitch import constants as twitch_constants
+
+            default_host = getattr(twitch_constants, "TWITCH_DASHBOARD_HOST", default_host) or default_host
+            default_port = int(getattr(twitch_constants, "TWITCH_DASHBOARD_PORT", default_port))
+        except Exception:
+            logging.debug("Konnte Twitch-Konstanten nicht laden – verwende Standardwerte")
+
+        host = os.getenv("TWITCH_DASHBOARD_HOST") or default_host
+        port = self._resolve_int(os.getenv("TWITCH_DASHBOARD_PORT"), default_port)
+        return self._format_url(host, port, "/twitch")
 
     async def _cleanup(self) -> None:
         if self._site:
@@ -450,23 +507,76 @@ class DashboardServer:
                 ]
             )
 
-            self._runner = web.AppRunner(app)
-            await self._runner.setup()
+            addr_in_use = {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", 10048)}
+            win_access = {getattr(errno, "WSAEACCES", 10013), errno.EACCES}
 
-            # Unter Windows bleibt der Port häufig kurzzeitig im TIME_WAIT-Zustand.
-            # reuse_address ermöglicht schnelle Neustarts ohne Fehlermeldung.
-            site_kwargs: Dict[str, Any] = {"reuse_address": True}
+            async def _start_with(reuse_address: Optional[bool]) -> str:
+                runner = web.AppRunner(app)
+                await runner.setup()
 
-            try:
-                self._site = web.TCPSite(self._runner, self.host, self.port, **site_kwargs)
-                await self._site.start()
-            except OSError as e:
-                await self._cleanup()
-                if e.errno in {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", 10048)}:
+                site_kwargs: Dict[str, Any] = {}
+                if reuse_address:
+                    site_kwargs["reuse_address"] = True
+
+                try:
+                    site = web.TCPSite(runner, self.host, self.port, **site_kwargs)
+                    await site.start()
+                except OSError as e:
+                    await runner.cleanup()
+                    if reuse_address and os.name == "nt" and e.errno in win_access:
+                        logging.warning(
+                            "reuse_address konnte auf Windows nicht aktiviert werden (%s). "
+                            "Starte Dashboard ohne reuse_address.",
+                            e,
+                        )
+                        return "retry_without_reuse"
+                    if e.errno in addr_in_use:
+                        return "addr_in_use"
+                    raise
+
+                self._runner = runner
+                self._site = site
+                return "started"
+
+            async def _start_without_reuse_with_retries() -> None:
+                retries = 3
+                delay = 0.5
+                for attempt in range(retries):
+                    attempt_result = await _start_with(reuse_address=False)
+                    if attempt_result == "started":
+                        return
+                    if attempt_result == "addr_in_use" and attempt < retries - 1:
+                        await asyncio.sleep(delay)
+                        delay *= 2
+                        continue
+                    if attempt_result == "addr_in_use":
+                        raise RuntimeError(
+                            f"Dashboard-Port {self.host}:{self.port} ist bereits belegt"
+                        )
+                    raise RuntimeError("Dashboard konnte nicht gestartet werden")
+                raise RuntimeError("Dashboard konnte nicht gestartet werden")
+
+            if os.name != "nt":
+                result = await _start_with(reuse_address=True)
+                if result == "addr_in_use":
                     raise RuntimeError(
                         f"Dashboard-Port {self.host}:{self.port} ist bereits belegt"
-                    ) from e
-                raise
+                    )
+                if result != "started":
+                    raise RuntimeError("Dashboard konnte nicht gestartet werden")
+            else:
+                result = await _start_with(reuse_address=True)
+                if result == "started":
+                    pass
+                elif result == "retry_without_reuse":
+                    await _start_without_reuse_with_retries()
+                elif result == "addr_in_use":
+                    # reuse_address hat trotzdem einen Konflikt ausgelöst – wir warten
+                    # kurz und versuchen den Start ohne reuse_address erneut.
+                    await asyncio.sleep(0.5)
+                    await _start_without_reuse_with_retries()
+                else:
+                    raise RuntimeError("Dashboard konnte nicht gestartet werden")
 
             self._started = True
             logging.info("Master dashboard available on http://%s:%s", self.host, self.port)
@@ -513,7 +623,8 @@ class DashboardServer:
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
-        return web.Response(text=_HTML_TEMPLATE, content_type="text/html")
+        html_text = _HTML_TEMPLATE.replace("{{TWITCH_URL}}", self._twitch_dashboard_href)
+        return web.Response(text=html_text, content_type="text/html")
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
