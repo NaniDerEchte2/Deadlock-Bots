@@ -411,7 +411,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 class DashboardServer:
     """Simple aiohttp based dashboard for managing the master bot."""
 
-    def __init__(self, bot: "MasterBot", *, host: str = "127.0.0.1", port: int = 8765, token: Optional[str] = None) -> None:
+    def __init__(self, bot: "MasterBot", *, host: str = "127.0.0.1", port: int = 8766, token: Optional[str] = None) -> None:
         self.bot = bot
         self.host = host
         self.port = port
