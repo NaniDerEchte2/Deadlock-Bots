@@ -77,13 +77,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             font-weight: 600;
         }
         .management-columns {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            display: flex;
+            flex-direction: column;
             gap: 1rem;
             margin-top: 1rem;
         }
-        .tree-panel,
-        .detail-panel {
+        .tree-panel {
             display: flex;
             flex-direction: column;
             gap: 0.75rem;
@@ -96,19 +95,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             border-radius: 8px;
             padding: 1rem;
             border: 1px solid rgba(255,255,255,0.05);
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 1rem;
-        }
-        th, td {
-            padding: 0.55rem 0.75rem;
-            text-align: left;
-            border-bottom: 1px solid rgba(255,255,255,0.08);
-        }
-        tbody tr:hover {
-            background: rgba(255,255,255,0.04);
         }
         button {
             border: none;
@@ -161,7 +147,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             overflow-y: auto;
         }
         .tree-container {
-            max-height: 420px;
+            max-height: 600px;
             overflow-y: auto;
             padding-right: 0.5rem;
             display: flex;
@@ -260,46 +246,10 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         .tag.package { background: rgba(112, 72, 232, 0.2); color: #d0bfff; }
         .error { color: #ff8787; }
         .success { color: #69db7c; }
-        .detail-header {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.75rem;
-        }
-        .detail-header h4 {
-            margin-bottom: 0.1rem;
-        }
         .selection-info {
             color: #adb5bd;
             font-size: 0.85rem;
             margin: 0;
-        }
-        .ghost-button {
-            background: transparent;
-            border: 1px solid rgba(255,255,255,0.18);
-            color: inherit;
-            padding: 0.35rem 0.75rem;
-            border-radius: 999px;
-            cursor: pointer;
-            transition: border-color 0.2s ease, background 0.2s ease;
-        }
-        .ghost-button:hover:enabled {
-            border-color: rgba(51, 154, 240, 0.65);
-            background: rgba(51, 154, 240, 0.12);
-        }
-        .ghost-button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        .detail-panel table {
-            margin-top: 0;
-        }
-        .empty-cell {
-            text-align: center;
-            padding: 1rem;
-            color: #868e96;
-            font-style: italic;
         }
     </style>
 </head>
@@ -343,26 +293,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                     </div>
                     <div id=\"tree-container\" class=\"tree-container\"></div>
                 </div>
-                <div class=\"detail-panel\">
-                    <div class=\"detail-header\">
-                        <div>
-                            <h4 id=\"selection-title\">Alle Cogs</h4>
-                            <p id=\"selection-description\" class=\"selection-info\">Es werden alle Cogs angezeigt.</p>
-                        </div>
-                        <button id=\"reset-selection\" class=\"ghost-button\" type=\"button\" disabled>Filter zurücksetzen</button>
-                    </div>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Status</th>
-                                <th>Namespace</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id=\"cog-table\"></tbody>
-                    </table>
-                </div>
             </div>
         </div>
     </section>
@@ -374,7 +304,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
     <script>
     const opLog = document.getElementById('operation-log');
-    const tableBody = document.getElementById('cog-table');
     const treeContainer = document.getElementById('tree-container');
     const tokenInput = document.getElementById('token-input');
     const selectionTitle = document.getElementById('selection-title');
@@ -382,7 +311,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const resetSelectionBtn = document.getElementById('reset-selection');
     let authToken = localStorage.getItem('master-dashboard-token') || '';
     let selectedNode = null;
-    let cogData = { items: [], tree: null };
     tokenInput.value = authToken;
 
     function log(message, type='info') {
@@ -445,124 +373,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         return type === 'directory' || type === 'root' || type === 'package' || type === 'namespace';
     }
 
-    function updateSelectionInfo(node) {
-        if (!selectionTitle || !selectionDescription || !resetSelectionBtn) {
-            return;
-        }
-        if (!node || !node.path) {
-            selectionTitle.textContent = 'Alle Cogs';
-            selectionDescription.textContent = 'Es werden alle Cogs angezeigt.';
-            resetSelectionBtn.disabled = true;
-            return;
-        }
-        selectionTitle.textContent = node.name || node.path;
-        const infoParts = [];
-        if (typeof node.loadedCount === 'number' && typeof node.moduleCount === 'number') {
-            infoParts.push(node.loadedCount + '/' + node.moduleCount + ' geladen');
-        } else if (typeof node.loadedCount === 'number') {
-            infoParts.push(node.loadedCount + ' geladen');
-        }
-        if (typeof node.discoveredCount === 'number') {
-            infoParts.push(node.discoveredCount + ' entdeckt');
-        }
-        if (node.blocked) {
-            infoParts.push('blockiert');
-        }
-        infoParts.push('Pfad: ' + node.path);
-        if (node.status) {
-            infoParts.push('Status: ' + node.status);
-        }
-        selectionDescription.textContent = infoParts.join(' • ');
-        resetSelectionBtn.disabled = false;
-    }
-
-    function matchesSelection(cog) {
-        if (!selectedNode || !selectedNode.path) {
-            return true;
-        }
-        const path = selectedNode.path;
-        const normalized = path.endsWith('.') ? path : path + '.';
-        if (isDirectoryLike(selectedNode.type)) {
-            return cog.namespace === path || cog.namespace.startsWith(normalized);
-        }
-        return (
-            cog.namespace === path ||
-            cog.name === selectedNode.name ||
-            cog.name === path ||
-            cog.namespace.startsWith(normalized)
-        );
-    }
-
-    function renderTable() {
-        if (!tableBody) {
-            return;
-        }
-        tableBody.innerHTML = '';
-        if (!cogData.items || !cogData.items.length) {
-            const emptyRow = document.createElement('tr');
-            const emptyCell = document.createElement('td');
-            emptyCell.colSpan = 4;
-            emptyCell.className = 'empty-cell';
-            emptyCell.textContent = 'Keine Cogs verfügbar.';
-            emptyRow.appendChild(emptyCell);
-            tableBody.appendChild(emptyRow);
-            return;
-        }
-        const filtered = cogData.items.filter(matchesSelection);
-        if (!filtered.length) {
-            const emptyRow = document.createElement('tr');
-            const emptyCell = document.createElement('td');
-            emptyCell.colSpan = 4;
-            emptyCell.className = 'empty-cell';
-            emptyCell.textContent = 'Keine Cogs für diese Auswahl.';
-            emptyRow.appendChild(emptyCell);
-            tableBody.appendChild(emptyRow);
-            return;
-        }
-        for (const cog of filtered) {
-            const tr = document.createElement('tr');
-            const nameTd = document.createElement('td');
-            nameTd.textContent = cog.name;
-            tr.appendChild(nameTd);
-
-            const statusTd = document.createElement('td');
-            statusTd.appendChild(renderStatus(cog.status));
-            tr.appendChild(statusTd);
-
-            const nsTd = document.createElement('td');
-            nsTd.textContent = cog.namespace;
-            tr.appendChild(nsTd);
-
-            const actionTd = document.createElement('td');
-            const reloadBtn = document.createElement('button');
-            reloadBtn.textContent = 'Reload';
-            reloadBtn.className = 'reload';
-            reloadBtn.addEventListener('click', () => reloadCog(cog.name));
-            actionTd.appendChild(reloadBtn);
-
-            const unloadBtn = document.createElement('button');
-            unloadBtn.textContent = 'Unload';
-            unloadBtn.className = 'unload';
-            unloadBtn.addEventListener('click', () => unloadCog(cog.name));
-            if (!cog.loaded) {
-                unloadBtn.disabled = true;
-            }
-            actionTd.appendChild(unloadBtn);
-
-            const loadBtn = document.createElement('button');
-            loadBtn.textContent = 'Load';
-            loadBtn.className = 'load';
-            loadBtn.addEventListener('click', () => loadCog(cog.name));
-            if (cog.loaded) {
-                loadBtn.disabled = true;
-            }
-            actionTd.appendChild(loadBtn);
-
-            tr.appendChild(actionTd);
-            tableBody.appendChild(tr);
-        }
-    }
-
     function applySelection() {
         if (!treeContainer) {
             return false;
@@ -603,22 +413,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         selectedNode = {
             path,
             type: nodeType,
-            name: node.name || path,
-            status: node.status || '',
-            blocked: Boolean(node.blocked),
-            moduleCount: typeof node.module_count === 'number' ? node.module_count : node.moduleCount,
-            discoveredCount: typeof node.discovered_count === 'number' ? node.discovered_count : node.discoveredCount,
-            loadedCount: typeof node.loaded_count === 'number' ? node.loaded_count : node.loadedCount,
         };
-        updateSelectionInfo(selectedNode);
-        renderTable();
         applySelection();
     }
 
     function clearSelection() {
         selectedNode = null;
-        updateSelectionInfo(null);
-        renderTable();
         applySelection();
     }
 
@@ -631,13 +431,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('bot-latency').textContent = 'Latency: ' + data.bot.latency_ms + ' ms';
 
             const cogs = data.cogs || {};
-            cogData.items = Array.isArray(cogs.items) ? cogs.items : [];
-            cogData.tree = cogs.tree || null;
-            renderTree(cogData.tree);
-            if (!selectedNode) {
-                updateSelectionInfo(null);
-            }
-            renderTable();
+            const tree = cogs.tree || null;
+            renderTree(tree);
         } catch (err) {
             log('Status konnte nicht geladen werden: ' + err.message, 'error');
         }
