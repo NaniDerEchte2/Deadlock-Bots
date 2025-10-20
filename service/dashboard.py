@@ -77,12 +77,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             font-weight: 600;
         }
         .management-columns {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            display: flex;
+            flex-direction: column;
             gap: 1rem;
             margin-top: 1rem;
         }
-        .management-columns > div {
+        .tree-panel {
             display: flex;
             flex-direction: column;
             gap: 0.75rem;
@@ -95,19 +95,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             border-radius: 8px;
             padding: 1rem;
             border: 1px solid rgba(255,255,255,0.05);
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 1rem;
-        }
-        th, td {
-            padding: 0.55rem 0.75rem;
-            text-align: left;
-            border-bottom: 1px solid rgba(255,255,255,0.08);
-        }
-        tbody tr:hover {
-            background: rgba(255,255,255,0.04);
         }
         button {
             border: none;
@@ -160,12 +147,18 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             overflow-y: auto;
         }
         .tree-container {
-            max-height: 420px;
+            max-height: 600px;
             overflow-y: auto;
             padding-right: 0.5rem;
             display: flex;
             flex-direction: column;
             gap: 0.4rem;
+        }
+        .tree-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
         }
         details.directory {
             background: #141414;
@@ -197,6 +190,15 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             gap: 0.35rem;
             flex-wrap: wrap;
         }
+        .tree-node.selected,
+        .tree-leaf.selected {
+            border-color: rgba(51, 154, 240, 0.55);
+            box-shadow: 0 0 0 1px rgba(51, 154, 240, 0.35);
+        }
+        .tree-node.selected > summary {
+            background: rgba(51, 154, 240, 0.12);
+            border-radius: 4px;
+        }
         .tree-children {
             margin-left: 1rem;
             margin-top: 0.4rem;
@@ -213,6 +215,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             padding: 0.35rem 0.5rem;
             border-radius: 6px;
             border: 1px solid rgba(255,255,255,0.05);
+        }
+        .tree-leaf.selected {
+            background: rgba(51, 154, 240, 0.12);
         }
         .tree-leaf .leaf-meta {
             display: flex;
@@ -241,6 +246,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         .tag.package { background: rgba(112, 72, 232, 0.2); color: #d0bfff; }
         .error { color: #ff8787; }
         .success { color: #69db7c; }
+        .selection-info {
+            color: #adb5bd;
+            font-size: 0.85rem;
+            margin: 0;
+        }
     </style>
 </head>
 <body>
@@ -276,23 +286,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         <div class=\"card cog-management\">
             <h3>Management Tools</h3>
             <div class=\"management-columns\">
-                <div>
-                    <h4>Cog Explorer</h4>
+                <div class=\"tree-panel\">
+                    <div class=\"tree-header\">
+                        <h4>Namespaces &amp; Cogs</h4>
+                        <span class=\"selection-info\">Explorer mit direkter Steuerung</span>
+                    </div>
                     <div id=\"tree-container\" class=\"tree-container\"></div>
-                </div>
-                <div>
-                    <h4>Cog List</h4>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Status</th>
-                                <th>Namespace</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id=\"cog-table\"></tbody>
-                    </table>
                 </div>
             </div>
         </div>
@@ -305,10 +304,10 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
     <script>
     const opLog = document.getElementById('operation-log');
-    const tableBody = document.getElementById('cog-table');
     const treeContainer = document.getElementById('tree-container');
     const tokenInput = document.getElementById('token-input');
     let authToken = localStorage.getItem('master-dashboard-token') || '';
+    let selectedNode = null;
     tokenInput.value = authToken;
 
     function log(message, type='info') {
@@ -360,6 +359,66 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         return container;
     }
 
+    function getNodePath(node) {
+        if (!node) {
+            return '';
+        }
+        return node.path || node.namespace || node.name || '';
+    }
+
+    function isDirectoryLike(type) {
+        return type === 'directory' || type === 'root' || type === 'package' || type === 'namespace';
+    }
+
+    function applySelection() {
+        if (!treeContainer) {
+            return false;
+        }
+        const current = treeContainer.querySelectorAll('.selected');
+        current.forEach((el) => el.classList.remove('selected'));
+        if (!selectedNode || !selectedNode.path) {
+            return false;
+        }
+        let target = null;
+        const nodes = treeContainer.querySelectorAll('[data-path]');
+        for (const el of nodes) {
+            if (el.dataset.path === selectedNode.path) {
+                target = el;
+                break;
+            }
+        }
+        if (!target) {
+            return false;
+        }
+        target.classList.add('selected');
+        if (target.tagName === 'DETAILS') {
+            target.open = true;
+        }
+        let parent = target.parentElement;
+        while (parent) {
+            if (parent.tagName === 'DETAILS') {
+                parent.open = true;
+            }
+            parent = parent.parentElement;
+        }
+        return true;
+    }
+
+    function selectNode(node) {
+        const path = getNodePath(node);
+        const nodeType = node.type || (Array.isArray(node.children) ? 'directory' : 'module');
+        selectedNode = {
+            path,
+            type: nodeType,
+        };
+        applySelection();
+    }
+
+    function clearSelection() {
+        selectedNode = null;
+        applySelection();
+    }
+
     async function loadStatus() {
         try {
             const data = await fetchJSON('/api/status');
@@ -368,52 +427,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('bot-guilds').textContent = 'Guilds: ' + data.bot.guilds;
             document.getElementById('bot-latency').textContent = 'Latency: ' + data.bot.latency_ms + ' ms';
 
-            tableBody.innerHTML = '';
-            for (const cog of data.cogs.items) {
-                const tr = document.createElement('tr');
-                const nameTd = document.createElement('td');
-                nameTd.textContent = cog.name;
-                tr.appendChild(nameTd);
-
-                const statusTd = document.createElement('td');
-                statusTd.appendChild(renderStatus(cog.status));
-                tr.appendChild(statusTd);
-
-                const nsTd = document.createElement('td');
-                nsTd.textContent = cog.namespace;
-                tr.appendChild(nsTd);
-
-                const actionTd = document.createElement('td');
-                const reloadBtn = document.createElement('button');
-                reloadBtn.textContent = 'Reload';
-                reloadBtn.className = 'reload';
-                reloadBtn.addEventListener('click', () => reloadCog(cog.name));
-                actionTd.appendChild(reloadBtn);
-
-                const unloadBtn = document.createElement('button');
-                unloadBtn.textContent = 'Unload';
-                unloadBtn.className = 'unload';
-                unloadBtn.addEventListener('click', () => unloadCog(cog.name));
-                actionTd.appendChild(unloadBtn);
-
-                if (!cog.loaded) {
-                    unloadBtn.disabled = true;
-                }
-
-                const loadBtn = document.createElement('button');
-                loadBtn.textContent = 'Load';
-                loadBtn.className = 'load';
-                loadBtn.addEventListener('click', () => loadCog(cog.name));
-                actionTd.appendChild(loadBtn);
-                if (cog.loaded) {
-                    loadBtn.disabled = true;
-                }
-
-                tr.appendChild(actionTd);
-                tableBody.appendChild(tr);
-            }
-
-            renderTree(data.cogs.tree);
+            const cogs = data.cogs || {};
+            const tree = cogs.tree || null;
+            renderTree(tree);
         } catch (err) {
             log('Status konnte nicht geladen werden: ' + err.message, 'error');
         }
@@ -438,16 +454,27 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             treeContainer.appendChild(empty);
             return;
         }
-        treeContainer.appendChild(buildTreeNode(root, 0));
+        const built = buildTreeNode(root, 0);
+        if (built) {
+            treeContainer.appendChild(built);
+        }
+        const hasSelection = applySelection();
+        if (selectedNode && !hasSelection) {
+            clearSelection();
+        }
     }
 
     function buildTreeNode(node, depth = 0) {
-        if (node.type === 'directory') {
+        const nodePath = getNodePath(node);
+        const nodeType = node.type || (Array.isArray(node.children) ? 'directory' : 'module');
+        if (isDirectoryLike(nodeType)) {
             const details = document.createElement('details');
             details.className = 'directory tree-node';
             if (depth < 2) {
                 details.open = true;
             }
+            details.dataset.path = nodePath;
+            details.dataset.nodeType = nodeType;
             const summary = document.createElement('summary');
             const label = document.createElement('div');
             label.className = 'tree-label';
@@ -507,6 +534,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             summary.appendChild(actions);
             details.appendChild(summary);
 
+            summary.addEventListener('click', (ev) => {
+                if (ev.target.closest('button')) {
+                    return;
+                }
+                selectNode(node);
+            });
+
             const childrenContainer = document.createElement('div');
             childrenContainer.className = 'tree-children';
             if (node.children && node.children.length) {
@@ -526,6 +560,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
         const leaf = document.createElement('div');
         leaf.className = 'tree-leaf';
+        leaf.dataset.path = nodePath;
+        leaf.dataset.nodeType = nodeType;
         const meta = document.createElement('div');
         meta.className = 'leaf-meta';
         const title = document.createElement('span');
@@ -602,6 +638,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         actions.appendChild(blockBtn);
         leaf.appendChild(actions);
         leaf.title = node.path;
+        leaf.addEventListener('click', (ev) => {
+            if (ev.target.closest('button')) {
+                return;
+            }
+            selectNode(node);
+        });
         return leaf;
     }
 
