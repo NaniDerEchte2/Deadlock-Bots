@@ -106,6 +106,12 @@ class DeadlockPresenceLogger {
     const sid = this.toSteamId(steamID);
     if (!sid || Number(appID) !== this.appId) return;
     const persona = this.client.users && this.client.users[sid] ? this.client.users[sid] : null;
+    const localizedString = persona && persona.rich_presence_string ? String(persona.rich_presence_string) : null;
+    const pushRichObj = {
+      richPresence: richPresence && typeof richPresence === 'object' ? richPresence : {},
+      localizedString,
+    };
+    this.writeSnapshotForUser(sid, persona, pushRichObj);
     this.fetchAndWriteRichPresence([sid]);
   }
 
@@ -133,7 +139,11 @@ class DeadlockPresenceLogger {
   fetchAndWriteRichPresence(ids) {
     if (!ids.length) return;
     try {
-      this.client.requestRichPresence(this.appId, ids, (err, resp) => {
+      const args = [this.appId, ids];
+      if (this.language) {
+        args.push(this.language);
+      }
+      args.push((err, resp) => {
         if (err) {
           this.log('warn', 'requestRichPresence failed', { error: err.message || String(err) });
           return;
@@ -145,6 +155,7 @@ class DeadlockPresenceLogger {
           this.writeSnapshotForUser(sid, persona, rich);
         });
       });
+      this.client.requestRichPresence(...args);
     } catch (err) {
       this.log('warn', 'requestRichPresence threw', { error: err.message || String(err) });
     }
