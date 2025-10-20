@@ -221,7 +221,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
     <div class="top-nav">
-        <a href="{{TWITCH_URL}}">Twitch Dashboard öffnen</a>
+        <a href="{{TWITCH_URL}}" target="_blank" rel="noopener">Twitch Dashboard öffnen</a>
     </div>
     <h1>Master Bot Dashboard</h1>
     <section>
@@ -701,6 +701,8 @@ class DashboardServer:
         else:
             self._public_base_url = self._listen_base_url
 
+        self._twitch_dashboard_href = self._resolve_twitch_dashboard_href()
+
     async def _cleanup(self) -> None:
         if self._site:
             await self._site.stop()
@@ -913,6 +915,40 @@ class DashboardServer:
         return urlunparse(
             (fallback.scheme, netloc, path, fallback.params, fallback.query, fallback.fragment)
         )
+
+    def _resolve_twitch_dashboard_href(self) -> str:
+        explicit = (
+            os.getenv("MASTER_TWITCH_DASHBOARD_URL")
+            or os.getenv("TWITCH_DASHBOARD_URL")
+            or ""
+        ).strip()
+        if explicit:
+            try:
+                return self._normalize_public_url(explicit, default_scheme=self._scheme)
+            except Exception as exc:
+                logging.warning(
+                    "Twitch dashboard URL '%s' invalid (%s) – falling back to derived host/port",
+                    explicit,
+                    exc,
+                )
+
+        host = (os.getenv("TWITCH_DASHBOARD_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+        scheme = (os.getenv("TWITCH_DASHBOARD_SCHEME") or self._scheme).strip() or self._scheme
+        port_value = (os.getenv("TWITCH_DASHBOARD_PORT") or "").strip()
+        port: Optional[int] = None
+        if port_value:
+            try:
+                port = int(port_value)
+            except ValueError:
+                logging.warning(
+                    "TWITCH_DASHBOARD_PORT '%s' invalid – using default 8765",
+                    port_value,
+                )
+        if port is None:
+            port = 8765
+
+        base = self._format_base_url(host, port, scheme)
+        return f"{base.rstrip('/')}/twitch"
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
