@@ -320,7 +320,7 @@ class StreamerRequirementsAcknowledgementModal(discord.ui.Modal):
         super().__init__(title="Partner-Voraussetzungen bestätigt")
         self.parent_view = parent_view
         self.confirm_input = discord.ui.TextInput(
-            label="Hiermit bestätige ich, dass ich die Voraussetzungen erfüllt habe.",
+            label="Hiermit bestätige ich die Voraussetzungen",
             placeholder="Bitte tippe hier 'bestätigen' ein",
             required=True,
             max_length=20,
