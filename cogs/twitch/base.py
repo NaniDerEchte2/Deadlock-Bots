@@ -24,6 +24,7 @@ from .constants import (
     TWITCH_LOG_EVERY_N_TICKS,
     TWITCH_NOTIFY_CHANNEL_ID,
     TWITCH_REQUIRED_DISCORD_MARKER,
+    TWITCH_TARGET_GAME_NAME,
 )
 from .logger import log
 from .twitch_api import TwitchAPI
@@ -54,6 +55,8 @@ class TwitchBaseCog(commands.Cog):
         self._alert_mention = TWITCH_ALERT_MENTION or ""
         self._invite_codes: Dict[int, Set[str]] = {}
         self._twl_command: Optional[commands.Command] = None
+        self._target_game_name = (TWITCH_TARGET_GAME_NAME or "").strip()
+        self._target_game_lower = self._target_game_name.lower()
 
         # Dashboard/Auth (aus Config-Header)
         self._dashboard_token = os.getenv("TWITCH_DASHBOARD_TOKEN") or None

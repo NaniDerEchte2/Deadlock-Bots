@@ -9,9 +9,11 @@ Step 1  (StreamerIntroView):
     - Nein, kein Partner  -> Abbruch
 
 Step 2  (StreamerRequirementsView):
-  Zeigt die Anforderungen. Button:
-    - Abgeschlossen       -> Rolle vergeben + Kontroll-Ping + (optional) Twitch-Register
-    - Abbrechen           -> ohne Änderung beenden
+  Zeigt die Anforderungen und führt durch 3 Schritte:
+    1. Voraussetzungen via Modal bestätigen ("bestätigen")
+    2. Twitch-Link eintragen (wird gespeichert, aber noch nicht freigeschaltet)
+    3. Button "Verifizierung anstoßen" vergibt Rolle + Kontroll-Ping
+  Zusätzlich: "Abbrechen" beendet ohne Änderungen.
 
 Hinweise:
 - Nutzt die bestehende StepView aus cogs/welcome_dm/base.py (keine timeout-Args!)
@@ -29,7 +31,16 @@ from __future__ import annotations
 
 import os
 import logging
+import re
 from typing import Optional, Tuple
+from urllib.parse import urlparse
+
+try:
+    from cogs.twitch import storage as twitch_storage
+    from cogs.twitch.base import TwitchBaseCog
+except Exception:
+    twitch_storage = None  # type: ignore[assignment]
+    TwitchBaseCog = None  # type: ignore[assignment]
 
 import discord
 from discord.ext import commands
@@ -81,12 +92,28 @@ async def _resolve_guild_and_member(
     g1, m1 = await _try(guild)
 
     # DM-Fallback über MAIN_GUILD_ID
+    bot: commands.Bot = interaction.client  # type: ignore
     if (not g1 or not m1) and MAIN_GUILD_ID:
-        bot: commands.Bot = interaction.client  # type: ignore
         mg = bot.get_guild(MAIN_GUILD_ID)
         g2, m2 = await _try(mg)
         if g2 and m2:
             return g2, m2
+
+    # Letzter Fallback: durchsuche alle Guilds nach einer, die die Streamer-Rolle enthält
+    if not g1 or not m1:
+        seen_ids = {g1.id} if g1 else set()
+        for guild_candidate in bot.guilds:
+            if guild_candidate.id in seen_ids:
+                continue
+            seen_ids.add(guild_candidate.id)
+
+            # Wenn die gesuchte Rolle nicht existiert, lohnt sich kein weiterer Versuch
+            if not guild_candidate.get_role(STREAMER_ROLE_ID):
+                continue
+
+            g3, m3 = await _try(guild_candidate)
+            if g3 and m3:
+                return g3, m3
 
     return g1, m1
 
@@ -145,7 +172,10 @@ async def _assign_role_and_notify(interaction: discord.Interaction) -> Tuple[boo
     else:
         log.warning("Notify channel %s nicht gefunden/kein Textkanal.", STREAMER_NOTIFY_CHANNEL_ID)
 
-    return True, "Top! Du hast jetzt die **Streamer-Rolle**. Wir prüfen kurz alles Weitere."
+    return (
+        True,
+        "Alles klar! Wir kümmern uns jetzt um deine Verifizierung. Falls wir Rückfragen haben, melden wir uns bei dir.",
+    )
 
 
 async def _safe_send(
@@ -201,6 +231,177 @@ async def _disable_all_and_edit(
 
 
 # ------------------------------
+# Twitch-Helper
+# ------------------------------
+def _normalize_twitch_login(raw: str) -> str:
+    if TwitchBaseCog is not None:
+        try:
+            normalized = TwitchBaseCog._normalize_login(raw)
+            if normalized:
+                return normalized
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            log.debug("TwitchBaseCog._normalize_login failed: %r", exc)
+
+    value = (raw or "").strip()
+    if not value:
+        return ""
+
+    value = value.split("?")[0].split("#")[0].strip()
+    if "twitch.tv" in value.lower():
+        if "//" not in value:
+            value = f"https://{value}"
+        try:
+            parsed = urlparse(value)
+            path = (parsed.path or "").strip("/")
+            if path:
+                value = path.split("/")[0]
+        except Exception:
+            return ""
+
+    value = value.strip().lstrip("@")
+    return re.sub(r"[^a-z0-9_]", "", value.lower())
+
+
+def _store_twitch_signup(
+    discord_user_id: int,
+    raw_input: str,
+    *,
+    discord_display_name: Optional[str] = None,
+) -> Tuple[bool, Optional[str], str]:
+    login = _normalize_twitch_login(raw_input)
+    if not login:
+        return False, None, "⚠️ Der eingegebene Twitch-Link oder Login wirkt ungültig. Bitte probiere es erneut."
+
+    if twitch_storage is None:
+        log.error("Twitch storage module unavailable – cannot persist signup for %s", discord_user_id)
+        return False, None, "⚠️ Interner Fehler beim Speichern deines Twitch-Profils. Bitte informiere das Team."
+
+    try:
+        with twitch_storage.get_conn() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO twitch_streamers (twitch_login) VALUES (?)",
+                (login,),
+            )
+            inserted = bool(cur.rowcount)
+
+            conn.execute(
+                "UPDATE twitch_streamers "
+                "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL, "
+                "    discord_user_id=?, discord_display_name=? "
+                "WHERE twitch_login=?",
+                (
+                    str(discord_user_id),
+                    str(discord_display_name or ""),
+                    login,
+                ),
+            )
+    except Exception as exc:  # pragma: no cover - robust gegen DB-Fehler
+        log.exception("Failed to persist Twitch signup for %s: %r", discord_user_id, exc)
+        return (
+            False,
+            None,
+            "⚠️ Dein Twitch-Profil konnte nicht gespeichert werden. Bitte versuche es später erneut oder melde dich beim Team.",
+        )
+
+    if inserted:
+        log.info("Twitch signup stored for user %s with login %s", discord_user_id, login)
+    else:
+        log.info("Twitch signup updated for user %s with existing login %s", discord_user_id, login)
+
+    return True, login, ""
+
+
+class StreamerRequirementsAcknowledgementModal(discord.ui.Modal):
+    """Fragt aktiv ab, dass die Voraussetzungen verstanden wurden."""
+
+    def __init__(self, parent_view: "StreamerRequirementsView"):
+        super().__init__(title="Partner-Voraussetzungen bestätigt")
+        self.parent_view = parent_view
+        self.confirm_input = discord.ui.TextInput(
+            label="Hiermit bestätige ich die Voraussetzungen",
+            placeholder="Bitte tippe hier 'bestätigen' ein",
+            required=True,
+            max_length=20,
+        )
+        self.add_item(self.confirm_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if str(self.confirm_input.value).strip().lower() != "bestätigen":
+            await _safe_send(
+                interaction,
+                content="⚠️ Bitte gib genau \"bestätigen\" ein, um zu bestätigen, dass du die Voraussetzungen erfüllt hast.",
+                ephemeral=True,
+            )
+            return
+
+        if self.parent_view is not None:
+            await self.parent_view.mark_acknowledged(interaction)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:  # pragma: no cover - defensive
+        log.exception("StreamerRequirementsAcknowledgementModal failed: %r", error)
+        try:
+            await _safe_send(
+                interaction,
+                content="⚠️ Unerwarteter Fehler beim Bestätigen der Voraussetzungen. Bitte probiere es erneut.",
+                ephemeral=True,
+            )
+        except Exception:
+            log.debug("Ack modal error response failed", exc_info=True)
+
+
+class StreamerTwitchProfileModal(discord.ui.Modal):
+    """Fragt nach dem Twitch-Profil und speichert es direkt unverifiziert."""
+
+    def __init__(self, parent_view: "StreamerRequirementsView"):
+        super().__init__(title="Twitch-Profil angeben")
+        self.parent_view = parent_view
+        self.twitch_input = discord.ui.TextInput(
+            label="Dein Twitch-Profil oder Login",
+            placeholder="z. B. twitch.tv/DeinName",
+            required=True,
+            max_length=100,
+        )
+        self.add_item(self.twitch_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        display_label = (
+            getattr(interaction.user, "global_name", None)
+            or getattr(interaction.user, "display_name", None)
+            or str(interaction.user)
+        )
+        ok, login, error_msg = _store_twitch_signup(
+            interaction.user.id,
+            str(self.twitch_input.value),
+            discord_display_name=display_label,
+        )
+        if not ok or not login:
+            await interaction.followup.send(error_msg, ephemeral=True)
+            return
+
+        if self.parent_view is not None:
+            await self.parent_view.mark_twitch_saved(interaction, twitch_login=login)
+
+        await _safe_send(
+            interaction,
+            content="✅ Dein Twitch-Profil wurde gespeichert. Starte jetzt die Verifizierung, sobald alles erfüllt ist.",
+            ephemeral=True,
+        )
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:  # pragma: no cover - defensive
+        log.exception("StreamerTwitchProfileModal failed: %r", error)
+        try:
+            await _safe_send(
+                interaction,
+                content="⚠️ Unerwarteter Fehler beim Speichern deines Twitch-Profils. Bitte probiere es später erneut.",
+                ephemeral=True,
+            )
+        except Exception:
+            log.debug("Modal error response failed", exc_info=True)
+
+
+# ------------------------------
 # Schritt 1: Intro / Entscheidung
 # ------------------------------
 class StreamerIntroView(StepView):
@@ -234,18 +435,57 @@ class StreamerIntroView(StepView):
         custom_id="wdm:streamer:intro_yes",
     )
     async def btn_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Öffentliche Antwort akzeptieren
-        await interaction.response.defer(ephemeral=False)
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(thinking=False)
+            except Exception:
+                log.debug("Intro defer failed", exc_info=True)
 
-        # Step-1-Nachricht deaktivieren
-        await _disable_all_and_edit(self, interaction)
+        requirements_view = StreamerRequirementsView()
+        requirements_embed = StreamerRequirementsView.build_embed()
 
-        # Step 2 in **EINER** Nachricht: Embed + View zusammen -> kein „Buttons über Embed“
-        await interaction.followup.send(
-            embed=StreamerRequirementsView.build_embed(),
-            view=StreamerRequirementsView(),
-            ephemeral=False,
-        )
+        sent_message: Optional[discord.Message] = None
+
+        # Entferne die ursprüngliche Intro-Nachricht, damit nur noch die Anforderungen sichtbar sind.
+        try:
+            if interaction.message:
+                await interaction.message.delete()
+        except Exception:
+            log.debug("Konnte Intro-Nachricht nicht löschen.", exc_info=True)
+
+        try:
+            channel = interaction.channel
+            if channel is None:
+                if isinstance(interaction.user, (discord.User, discord.Member)):
+                    channel = await interaction.user.create_dm()
+
+            if channel is not None:
+                sent_message = await channel.send(embed=requirements_embed, view=requirements_view)
+            else:
+                sent_message = await interaction.followup.send(
+                    embed=requirements_embed,
+                    view=requirements_view,
+                    wait=True,
+                )
+        except Exception:
+            log.exception("Senden der Anforderungen fehlgeschlagen")
+            await _safe_send(
+                interaction,
+                content="⚠️ Die Anforderungen konnten nicht angezeigt werden. Bitte versuche es später erneut.",
+                ephemeral=True,
+            )
+            self.stop()
+            return
+
+        if hasattr(requirements_view, "bound_message") and sent_message is not None:
+            requirements_view.bound_message = sent_message
+
+        try:
+            await requirements_view.wait()
+        finally:
+            # Weiter mit dem Welcome-Flow, nachdem die Anforderungen abgeschlossen oder abgebrochen wurden.
+            self.proceed = getattr(requirements_view, "proceed", False)
+            self.stop()
 
     @discord.ui.button(
         label="Nein, kein Partner",
@@ -266,48 +506,175 @@ class StreamerIntroView(StepView):
 # Schritt 2: Anforderungen + Abschluss
 # ------------------------------
 class StreamerRequirementsView(StepView):
-    """
-    Step 2: Zeigt die Anforderungen und vergibt Rolle + pingt Kontrollkanal nach "Abgeschlossen".
-    Buttons:
-      - Abgeschlossen  -> Rolle vergeben + Notify (+ optional Twitch-Register)
-      - Abbrechen      -> ohne Änderung beenden
-    """
+    """Mehrstufige Erfassung der Voraussetzungen, Twitch-Daten und finaler Start der Verifizierung."""
+
     def __init__(self):
         super().__init__()
+        self.acknowledged = False
+        self.twitch_login: Optional[str] = None
+        self.verification_started = False
+        self.verification_message: Optional[str] = None
+        self._sync_button_states()
 
     @staticmethod
-    def build_embed() -> discord.Embed:
+    def build_embed(
+        *,
+        acknowledged: bool = False,
+        twitch_login: Optional[str] = None,
+        verification_started: bool = False,
+        verification_message: Optional[str] = None,
+    ) -> discord.Embed:
+        twitch_entry = f"{'✅' if twitch_login else '⬜'} Twitch-Profil gespeichert"
+        if twitch_login:
+            twitch_entry += f" (**{twitch_login}**)"
+
+        checklist = [
+            f"{'✅' if acknowledged else '⬜'} Voraussetzungen bestätigt",
+            twitch_entry,
+            f"{'✅' if verification_started else '⬜'} Verifizierung angestoßen",
+        ]
+
+        checklist_text = "\n".join(checklist)
+
+        requirement_text = (
+            "Bitte erfülle kurz die Voraussetzungen:\n\n"
+            "1) Nutze einen **nicht ablaufenden Invite-Link** zu unserem Server (persönlich für dich).\n"
+            "2) Packe den **Server-Link** in deine **Twitch-Bio** – z. B. mit dem Text:\n"
+            "   *„Deutscher Deadlock Community Server“*\n"
+            "3) Wünchenswert wäre es wenn du Zuschauer auf den Server verweist.\n"
+            "4) Genauso wünschenswert ist es, wenn du Deadlock-Content postest, verlinke da gerne den Server.\n\n"
+            "Du **darfst** selbstverständlich deinen **eigenen Server** weiterführen – \n"
+            "wir verstehen uns nicht als Konkurrenz, sondern als Hub für deutschsprachige Deadlock-Spieler.\n\n"
+            "Wir prüfen selbstverständlich, ob du alle Voraussetzungen erfüllst."
+        )
+
+        if twitch_login:
+            requirement_text = (
+                f"Wir haben dein Twitch-Profil **{twitch_login}** gespeichert. "
+                "Ein Team-Mitglied prüft es manuell und schaltet dich nach erfolgreicher Kontrolle frei.\n\n"
+                f"{requirement_text}"
+            )
+
+        embed_description = f"{checklist_text}\n\n{requirement_text}" if checklist_text else requirement_text
+
+        if verification_started:
+            followup = (
+                verification_message
+                or "Danke! Wir prüfen jetzt alles und melden uns, sobald die manuelle Kontrolle abgeschlossen ist."
+            )
+            embed_description += f"\n\n{followup}"
+        else:
+            embed_description += (
+                "\n\nNutze die Buttons unten, um zuerst die Voraussetzungen zu bestätigen, danach deinen Twitch-Link "
+                "anzugeben und im letzten Schritt die Verifizierung anzustoßen."
+            )
+
+
         e = discord.Embed(
             title="Partner-Voraussetzungen",
-            description=(
-                "Bitte erfülle kurz die Voraussetzungen:\n\n"
-                "1) Nutze einen **nicht ablaufenden Invite-Link** zu unserem Server (persönlich für dich).\n"
-                "2) Packe den **Server-Link** in deine **Twitch-Bio** – z. B. mit dem Text:\n"
-                "   *„Deutscher Deadlock Community Server“*\n"
-                "3) Wünchenswert wäre es wenn du Zuschauer auf den Server verweist.\n"
-                "4) Genauso wünschenswert ist es, wenn du Deadlock-Content postest, verlinke da gerne den Server.\n\n"
-                "Du **darfst** selbstverständlich deinen **eigenen Server** weiterführen – \n"
-                "wir verstehen uns nicht als Konkurrenz, sondern als Hub für deutschsprachige Deadlock-Spieler."
-            ),
-            color=0x32CD32
+            description=embed_description,
+            color=0x32CD32,
         )
         e.set_footer(text="Schritt 2/2")
         return e
 
+    def _sync_button_states(self) -> None:
+        for child in self.children:
+            if not isinstance(child, discord.ui.Button):
+                continue
+
+            if child.custom_id == "wdm:streamer:req_ack":
+                child.disabled = self.acknowledged
+            elif child.custom_id == "wdm:streamer:req_twitch":
+                child.disabled = (not self.acknowledged) or self.verification_started
+            elif child.custom_id == "wdm:streamer:req_verify":
+                child.disabled = not (self.acknowledged and self.twitch_login and not self.verification_started)
+            elif child.custom_id == "wdm:streamer:req_cancel":
+                child.disabled = self.verification_started
+
+    async def _update_message(self, interaction: discord.Interaction) -> None:
+        self._sync_button_states()
+        embed = self.build_embed(
+            acknowledged=self.acknowledged,
+            twitch_login=self.twitch_login,
+            verification_started=self.verification_started,
+            verification_message=self.verification_message,
+        )
+
+        target_message = getattr(self, "bound_message", None)
+        if target_message is not None:
+            try:
+                await target_message.edit(embed=embed, view=self)
+                return
+            except Exception as exc:  # pragma: no cover - fallback auf Interaction
+                log.debug("Failed to edit bound message: %r", exc)
+
+        try:
+            if interaction.message:
+                await interaction.message.edit(embed=embed, view=self)
+            elif interaction.response.is_done():
+                await interaction.edit_original_response(embed=embed, view=self)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            log.debug("Failed to update requirements message: %r", exc)
+
     @discord.ui.button(
-        label="Abgeschlossen",
-        style=discord.ButtonStyle.success,
-        custom_id="wdm:streamer:req_done",
+        label="Voraussetzungen bestätigen",
+        style=discord.ButtonStyle.primary,
+        custom_id="wdm:streamer:req_ack",
     )
-    async def btn_done(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def btn_acknowledge(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.acknowledged:
+            await _safe_send(
+                interaction,
+                content="Du hast die Voraussetzungen bereits bestätigt.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(StreamerRequirementsAcknowledgementModal(self))
+
+    @discord.ui.button(
+        label="Twitch-Link angeben",
+        style=discord.ButtonStyle.secondary,
+        custom_id="wdm:streamer:req_twitch",
+    )
+    async def btn_twitch(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.acknowledged:
+            await _safe_send(
+                interaction,
+                content="Bitte bestätige zuerst, dass du die Voraussetzungen gelesen hast.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(StreamerTwitchProfileModal(self))
+
+    @discord.ui.button(
+        label="Verifizierung anstoßen",
+        style=discord.ButtonStyle.success,
+        custom_id="wdm:streamer:req_verify",
+    )
+    async def btn_verify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.acknowledged or not self.twitch_login:
+            await _safe_send(
+                interaction,
+                content="Bitte bestätige die Voraussetzungen und hinterlege dein Twitch-Profil, bevor du die Verifizierung startest.",
+                ephemeral=True,
+            )
+            return
+
         await interaction.response.defer(ephemeral=True)
 
-        ok, msg = await _assign_role_and_notify(interaction)
-        if ok:
-            await _safe_send(interaction, content=msg, ephemeral=True)
-            await self._finish(interaction)
-        else:
-            await _safe_send(interaction, content=f"⚠️ {msg}", ephemeral=True)
+        assign_ok, assign_msg = await _assign_role_and_notify(interaction)
+        if not assign_ok:
+            await interaction.followup.send(f"⚠️ {assign_msg}", ephemeral=True)
+            return
+
+        self.verification_started = True
+        self.verification_message = assign_msg
+        await self._update_message(interaction)
+        await interaction.followup.send(assign_msg, ephemeral=True)
+        await self._finish(interaction)
 
     @discord.ui.button(
         label="Abbrechen",
@@ -322,6 +689,23 @@ class StreamerRequirementsView(StepView):
             ephemeral=True,
         )
         await self._finish(interaction)
+
+    async def mark_acknowledged(self, interaction: discord.Interaction) -> None:
+        self.acknowledged = True
+        await self._update_message(interaction)
+        await _safe_send(
+            interaction,
+            content=(
+                "Danke! Wir schauen uns kurz an, ob du alle Voraussetzungen erfüllst. "
+                "Als nächstes gib bitte deinen Twitch-Link an."
+            ),
+            ephemeral=True,
+        )
+
+    async def mark_twitch_saved(self, interaction: discord.Interaction, *, twitch_login: str) -> None:
+        self.twitch_login = twitch_login
+        await self._update_message(interaction)
+
 
 
 # ---------------------------------------------------------

@@ -1,10 +1,12 @@
 # cogs/twitch/dashboard.py
 import html
+import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from typing import List, Callable, Awaitable, Optional
-from urllib.parse import unquote, urlsplit, quote_plus, urlencode
+from urllib.parse import unquote, urlsplit, quote_plus, urlencode, urlunparse
 
 from aiohttp import web
 
@@ -35,7 +37,7 @@ class Dashboard:
         add_cb: Callable[[str, bool], Awaitable[str]],
         remove_cb: Callable[[str], Awaitable[None]],
         list_cb: Callable[[], Awaitable[List[dict]]],
-        stats_cb: Callable[[], Awaitable[dict]],
+        stats_cb: Callable[..., Awaitable[dict]],
         verify_cb: Callable[[str, str], Awaitable[str]],
     ):
         self._token = app_token
@@ -46,6 +48,46 @@ class Dashboard:
         self._list = list_cb
         self._stats = stats_cb
         self._verify = verify_cb
+        self._master_dashboard_url = self._resolve_master_dashboard_url()
+        self._master_dashboard_href = html.escape(self._master_dashboard_url, quote=True)
+
+    @staticmethod
+    def _normalize_host(host: Optional[str]) -> str:
+        if not host:
+            return "127.0.0.1"
+        host = host.strip()
+        if not host:
+            return "127.0.0.1"
+        if host in {"0.0.0.0", "::", "*"}:
+            return "127.0.0.1"
+        return host
+
+    @staticmethod
+    def _parse_port(raw: Optional[str], default: int) -> int:
+        if not raw:
+            return default
+        try:
+            parsed = int(raw)
+            if parsed > 0:
+                return parsed
+        except ValueError:
+            pass
+        log.warning("Ungültiger Portwert '%s' – verwende %s", raw, default)
+        return default
+
+    @staticmethod
+    def _format_url(host: str, port: int, path: str) -> str:
+        host = Dashboard._normalize_host(host)
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        netloc = f"{host}:{port}"
+        normalized_path = path if path.startswith("/") else f"/{path}"
+        return urlunparse(("http", netloc, normalized_path, "", "", ""))
+
+    def _resolve_master_dashboard_url(self) -> str:
+        host = os.getenv("MASTER_DASHBOARD_HOST") or "127.0.0.1"
+        port = self._parse_port(os.getenv("MASTER_DASHBOARD_PORT"), 8766)
+        return self._format_url(host, port, "/admin")
 
     # ---------- Auth ----------
     def _require_token(self, request: web.Request):
@@ -82,6 +124,7 @@ class Dashboard:
             '<nav class="tabs">'
             f'{a("/twitch", "Live", "live")}'
             f'{a("/twitch/stats", "Stats", "stats")}'
+            f'<a class="tab tab-admin" href="{self._master_dashboard_href}">Admin</a>'
             "</nav>"
         )
 
@@ -114,13 +157,16 @@ class Dashboard:
   .tabs {{ display:flex; gap:.5rem; margin-bottom:1rem; }}
   .tab {{ padding:.5rem .8rem; border-radius:.5rem; text-decoration:none; color:#ddd; background:#1a1f2e; border:1px solid var(--bd); }}
   .tab.active {{ background:var(--accent); color:#fff; }}
+  .tab.tab-admin {{ margin-left:auto; background:#2d255b; color:#fff; border-color:var(--accent); font-weight:600; }}
+  .tab.tab-admin:hover {{ background:var(--accent); color:#fff; }}
   .card {{ background:var(--card); border:1px solid var(--bd); border-radius:.7rem; padding:1rem; }}
   .row {{ display:flex; gap:1rem; align-items:center; flex-wrap:wrap; }}
   .btn {{ background:var(--accent); color:white; border:none; padding:.5rem .8rem; border-radius:.5rem; cursor:pointer; }}
   .btn:hover {{ opacity:.95; }}
   .btn-small {{ padding:.35rem .6rem; font-size:.85rem; }}
-  .btn-secondary {{ background:#2a3044; color:var(--text); }}
+  .btn-secondary {{ background:#2a3044; color:var(--text); border:1px solid var(--bd); }}
   .btn-danger {{ background:#792e2e; }}
+  .btn-warn {{ background:#b8741a; color:#fff; }}
   table {{ width:100%; border-collapse: collapse; margin-top:1rem; }}
   th, td {{ border-bottom:1px solid var(--bd); padding:.6rem; text-align:left; }}
   th {{ color:var(--accent-2); }}
@@ -147,6 +193,13 @@ class Dashboard:
   .filter-form {{ margin-top:.6rem; }}
   .filter-form .row {{ align-items:flex-end; gap:1rem; }}
   .filter-label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.9rem; color:var(--muted); }}
+  .chart-panel {{ background:#10162a; border:1px solid var(--bd); border-radius:.7rem; padding:1rem; margin-top:1rem; }}
+  .chart-panel h3 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-2); }}
+  .chart-panel canvas {{ width:100%; height:320px; max-height:360px; }}
+  .chart-note {{ margin-top:.6rem; font-size:.85rem; color:var(--muted); }}
+  .chart-empty {{ margin-top:1rem; font-size:.9rem; color:var(--muted); font-style:italic; }}
+  .toggle-group {{ display:flex; gap:.4rem; flex-wrap:wrap; }}
+  .btn-active {{ background:var(--accent); color:#fff; border:1px solid var(--accent); }}
 </style>
 {nav_html}
 {flash}
@@ -266,6 +319,11 @@ class Dashboard:
                 "    <input type='hidden' name='mode' value='clear' />"
                 "    <button class='btn btn-small btn-secondary'>Reset</button>"
                 "  </form>"
+                "  <form class='inline' method='post' action='/twitch/verify'>"
+                f"    <input type='hidden' name='login' value='{escaped_login}' />"
+                "    <input type='hidden' name='mode' value='failed' />"
+                "    <button class='btn btn-small btn-warn'>Verifizierung fehlgeschlagen</button>"
+                "  </form>"
                 "  <form class='inline' method='post' action='/twitch/remove'>"
                 f"    <input type='hidden' name='login' value='{escaped_login}' />"
                 "    <button class='btn btn-small btn-danger'>Remove</button>"
@@ -384,12 +442,11 @@ class Dashboard:
             raise web.HTTPFound(location="/twitch?err=" + quote_plus("Verifizierung fehlgeschlagen"))
 
     async def _render_stats_page(self, request: web.Request, *, partner_view: bool) -> web.Response:
-        stats = await self._stats()
-        tracked = stats.get("tracked", {}) or {}
-        category = stats.get("category", {}) or {}
-
         view_mode = (request.query.get("view") or "top").lower()
         show_all = view_mode == "all"
+        display_mode = (request.query.get("display") or "charts").lower()
+        if display_mode not in {"charts", "raw"}:
+            display_mode = "charts"
 
         def _parse_int(*names: str) -> Optional[int]:
             for name in names:
@@ -415,6 +472,29 @@ class Dashboard:
                 return max(0.0, value)
             return None
 
+        def _clamp_hour(value: Optional[int]) -> Optional[int]:
+            if value is None:
+                return None
+            if value < 0:
+                return 0
+            if value > 23:
+                return 23
+            return value
+
+        stats_hour = _clamp_hour(_parse_int("hour"))
+        hour_from = _clamp_hour(_parse_int("hour_from", "from_hour", "start_hour"))
+        hour_to = _clamp_hour(_parse_int("hour_to", "to_hour", "end_hour"))
+
+        if stats_hour is not None:
+            if hour_from is None:
+                hour_from = stats_hour
+            if hour_to is None:
+                hour_to = stats_hour
+
+        stats = await self._stats(hour_from=hour_from, hour_to=hour_to)
+        tracked = stats.get("tracked", {}) or {}
+        category = stats.get("category", {}) or {}
+
         min_samples = _parse_int("min_samples", "samples")
         min_avg = _parse_float("min_avg", "avg")
         partner_filter = (request.query.get("partner") or "any").lower()
@@ -439,20 +519,40 @@ class Dashboard:
             filter_params["min_avg"] = f"{min_avg:g}"
         if partner_filter in {"only", "exclude"}:
             filter_params["partner"] = partner_filter
+        if hour_from is not None:
+            filter_params["hour_from"] = str(hour_from)
+        if hour_to is not None:
+            filter_params["hour_to"] = str(hour_to)
 
-        def build_stats_url(view: str) -> str:
+        def build_stats_url(view: Optional[str] = None, display: Optional[str] = None) -> str:
             params = dict(preserved_params)
             params.update(filter_params)
-            if view != "top":
-                params["view"] = view
+            target_view = view if view is not None else ("all" if show_all else "top")
+            target_display = display if display is not None else display_mode
+            if target_view != "top":
+                params["view"] = target_view
             else:
                 params.pop("view", None)
+            if target_display != "charts":
+                params["display"] = target_display
+            else:
+                params.pop("display", None)
             query = urlencode(params)
             return base_path + (f"?{query}" if query else "")
 
         toggle_href = build_stats_url("top" if show_all else "all")
         toggle_label = "Top 10 anzeigen" if show_all else "Alle anzeigen"
         current_view_label = "Alle" if show_all else "Top 10"
+        charts_href = build_stats_url(display="charts")
+        raw_href = build_stats_url(display="raw")
+        charts_active = " btn-active" if display_mode == "charts" else ""
+        raw_active = " btn-active" if display_mode == "raw" else ""
+        display_toggle_html = (
+            "<div class=\"toggle-group\">"
+            f"<a class=\"btn btn-secondary{charts_active}\" href=\"{html.escape(charts_href)}\">Charts</a>"
+            f"<a class=\"btn btn-secondary{raw_active}\" href=\"{html.escape(raw_href)}\">Rohdaten</a>"
+            "</div>"
+        )
 
         def apply_filters(items: List[dict]) -> List[dict]:
             result: List[dict] = []
@@ -500,9 +600,483 @@ class Dashboard:
                 )
             return "".join(rows)
 
+        tracked_hourly = tracked.get("hourly", []) or []
+        category_hourly = category.get("hourly", []) or []
+        tracked_weekday = tracked.get("weekday", []) or []
+        category_weekday = category.get("weekday", []) or []
+
+        def _format_float(value: float) -> str:
+            return f"{value:.1f}"
+
+        def _float_or_none(value, *, digits: int = 1):
+            if value is None:
+                return None
+            try:
+                return round(float(value), digits)
+            except (TypeError, ValueError):
+                return None
+
+        def _int_or_none(value):
+            if value is None:
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        def render_hour_table(items: List[dict]) -> str:
+            if not items:
+                return "<tr><td colspan=4><i>Keine Daten verfügbar.</i></td></tr>"
+            rows = []
+            for item in sorted(items, key=lambda d: int(d.get("hour") or 0)):
+                hour = int(item.get("hour") or 0)
+                samples = int(item.get("samples") or 0)
+                avg_viewers = float(item.get("avg_viewers") or 0.0)
+                max_viewers = int(item.get("max_viewers") or 0)
+                rows.append(
+                    "<tr>"
+                    f"<td data-value=\"{hour}\">{hour:02d}:00</td>"
+                    f"<td data-value=\"{samples}\">{samples}</td>"
+                    f"<td data-value=\"{avg_viewers:.4f}\">{_format_float(avg_viewers)}</td>"
+                    f"<td data-value=\"{max_viewers}\">{max_viewers}</td>"
+                    "</tr>"
+                )
+            return "".join(rows)
+
+        weekday_labels = {
+            0: "Sonntag",
+            1: "Montag",
+            2: "Dienstag",
+            3: "Mittwoch",
+            4: "Donnerstag",
+            5: "Freitag",
+            6: "Samstag",
+        }
+        weekday_order = [1, 2, 3, 4, 5, 6, 0]
+
+        def render_weekday_table(items: List[dict]) -> str:
+            if not items:
+                return "<tr><td colspan=4><i>Keine Daten verfügbar.</i></td></tr>"
+            by_day = {int(d.get("weekday") or 0): d for d in items}
+            rows = []
+            for idx in weekday_order:
+                item = by_day.get(idx)
+                if not item:
+                    continue
+                samples = int(item.get("samples") or 0)
+                avg_viewers = float(item.get("avg_viewers") or 0.0)
+                max_viewers = int(item.get("max_viewers") or 0)
+                label = weekday_labels.get(idx, str(idx))
+                rows.append(
+                    "<tr>"
+                    f"<td data-value=\"{idx}\">{html.escape(label)}</td>"
+                    f"<td data-value=\"{samples}\">{samples}</td>"
+                    f"<td data-value=\"{avg_viewers:.4f}\">{_format_float(avg_viewers)}</td>"
+                    f"<td data-value=\"{max_viewers}\">{max_viewers}</td>"
+                    "</tr>"
+                )
+            if not rows:
+                return "<tr><td colspan=4><i>Keine Daten verfügbar.</i></td></tr>"
+            return "".join(rows)
+
+        category_hour_rows = render_hour_table(category_hourly)
+        tracked_hour_rows = render_hour_table(tracked_hourly)
+        category_weekday_rows = render_weekday_table(category_weekday)
+        tracked_weekday_rows = render_weekday_table(tracked_weekday)
+
+        category_hour_map = {
+            int(item.get("hour") or 0): item for item in category_hourly if isinstance(item, dict)
+        }
+        tracked_hour_map = {
+            int(item.get("hour") or 0): item for item in tracked_hourly if isinstance(item, dict)
+        }
+
+        def _build_dataset(
+            data_points,
+            *,
+            label: str,
+            color: str,
+            background: str,
+            axis: str = "yAvg",
+            fill: bool = True,
+            dash: Optional[List[int]] = None,
+            tension: float = 0.35,
+        ) -> Optional[dict]:
+            if not data_points or not any(value is not None for value in data_points):
+                return None
+            dataset = {
+                "label": label,
+                "data": data_points,
+                "borderColor": color,
+                "backgroundColor": background,
+                "fill": fill,
+                "tension": tension,
+                "spanGaps": True,
+                "borderWidth": 2,
+                "yAxisID": axis,
+                "pointRadius": 3,
+                "pointHoverRadius": 4,
+            }
+            if dash:
+                dataset["borderDash"] = dash
+            return dataset
+
+        hour_labels = [f"{hour:02d}:00" for hour in range(24)]
+        category_hour_avg = [
+            _float_or_none((category_hour_map.get(hour) or {}).get("avg_viewers")) for hour in range(24)
+        ]
+        tracked_hour_avg = [
+            _float_or_none((tracked_hour_map.get(hour) or {}).get("avg_viewers")) for hour in range(24)
+        ]
+        category_hour_peak = [
+            _int_or_none((category_hour_map.get(hour) or {}).get("max_viewers")) for hour in range(24)
+        ]
+        tracked_hour_peak = [
+            _int_or_none((tracked_hour_map.get(hour) or {}).get("max_viewers")) for hour in range(24)
+        ]
+
+        hour_datasets = [
+            ds
+            for ds in (
+                _build_dataset(
+                    category_hour_avg,
+                    label="Kategorie Ø Viewer",
+                    color="#6d4aff",
+                    background="rgba(109, 74, 255, 0.25)",
+                ),
+                _build_dataset(
+                    tracked_hour_avg,
+                    label="Tracked Ø Viewer",
+                    color="#4adede",
+                    background="rgba(74, 222, 222, 0.2)",
+                ),
+                _build_dataset(
+                    category_hour_peak,
+                    label="Kategorie Peak Viewer",
+                    color="#ffb347",
+                    background="rgba(255, 179, 71, 0.1)",
+                    axis="yPeak",
+                    fill=False,
+                    dash=[6, 4],
+                    tension=0.25,
+                ),
+                _build_dataset(
+                    tracked_hour_peak,
+                    label="Tracked Peak Viewer",
+                    color="#ff6f91",
+                    background="rgba(255, 111, 145, 0.1)",
+                    axis="yPeak",
+                    fill=False,
+                    dash=[4, 4],
+                    tension=0.25,
+                ),
+            )
+            if ds
+        ]
+
+        category_weekday_map = {
+            int(item.get("weekday") or 0): item for item in category_weekday if isinstance(item, dict)
+        }
+        tracked_weekday_map = {
+            int(item.get("weekday") or 0): item for item in tracked_weekday if isinstance(item, dict)
+        }
+
+        weekday_labels_list = [weekday_labels.get(idx, str(idx)) for idx in weekday_order]
+        category_weekday_avg = [
+            _float_or_none((category_weekday_map.get(idx) or {}).get("avg_viewers"))
+            for idx in weekday_order
+        ]
+        tracked_weekday_avg = [
+            _float_or_none((tracked_weekday_map.get(idx) or {}).get("avg_viewers"))
+            for idx in weekday_order
+        ]
+        category_weekday_peak = [
+            _int_or_none((category_weekday_map.get(idx) or {}).get("max_viewers"))
+            for idx in weekday_order
+        ]
+        tracked_weekday_peak = [
+            _int_or_none((tracked_weekday_map.get(idx) or {}).get("max_viewers"))
+            for idx in weekday_order
+        ]
+
+        weekday_datasets = [
+            ds
+            for ds in (
+                _build_dataset(
+                    category_weekday_avg,
+                    label="Kategorie Ø Viewer",
+                    color="#6d4aff",
+                    background="rgba(109, 74, 255, 0.25)",
+                ),
+                _build_dataset(
+                    tracked_weekday_avg,
+                    label="Tracked Ø Viewer",
+                    color="#4adede",
+                    background="rgba(74, 222, 222, 0.2)",
+                ),
+                _build_dataset(
+                    category_weekday_peak,
+                    label="Kategorie Peak Viewer",
+                    color="#ffb347",
+                    background="rgba(255, 179, 71, 0.1)",
+                    axis="yPeak",
+                    fill=False,
+                    dash=[6, 4],
+                    tension=0.25,
+                ),
+                _build_dataset(
+                    tracked_weekday_peak,
+                    label="Tracked Peak Viewer",
+                    color="#ff6f91",
+                    background="rgba(255, 111, 145, 0.1)",
+                    axis="yPeak",
+                    fill=False,
+                    dash=[4, 4],
+                    tension=0.25,
+                ),
+            )
+            if ds
+        ]
+
+        hour_chart_block = (
+            "<div class=\"chart-panel\">"
+            "  <h3>Viewer nach Stunde (UTC)</h3>"
+            "  <canvas id=\"hourly-viewers-chart\" height=\"320\"></canvas>"
+            "  <div class=\"chart-note\">Durchschnitt (gefüllt) und Peak (gestrichelt).</div>"
+            "</div>"
+            if hour_datasets
+            else "<div class=\"chart-empty\">Noch keine Stunden-Daten vorhanden.</div>"
+        )
+
+        weekday_chart_block = (
+            "<div class=\"chart-panel\">"
+            "  <h3>Viewer nach Wochentag</h3>"
+            "  <canvas id=\"weekday-viewers-chart\" height=\"320\"></canvas>"
+            "  <div class=\"chart-note\">Vergleich von Ø und Peak Viewer je Tag.</div>"
+            "</div>"
+            if weekday_datasets
+            else "<div class=\"chart-empty\">Noch keine Wochentags-Daten vorhanden.</div>"
+        )
+
+        hour_tables_block = (
+            "<div style=\"display:flex; gap:1.2rem; flex-wrap:wrap;\">"
+            "  <div style=\"flex:1 1 260px;\">"
+            "    <h3>Kategorie gesamt — nach Stunde</h3>"
+            "    <table class=\"sortable-table\" data-table=\"category-hour\">"
+            "      <thead>"
+            "        <tr>"
+            "          <th data-sort-type=\"number\">Stunde</th>"
+            "          <th data-sort-type=\"number\">Samples</th>"
+            "          <th data-sort-type=\"number\">Ø Viewer</th>"
+            "          <th data-sort-type=\"number\">Peak Viewer</th>"
+            "        </tr>"
+            "      </thead>"
+            f"      <tbody>{category_hour_rows}</tbody>"
+            "    </table>"
+            "  </div>"
+            "  <div style=\"flex:1 1 260px;\">"
+            "    <h3>Tracked Streamer — nach Stunde</h3>"
+            "    <table class=\"sortable-table\" data-table=\"tracked-hour\">"
+            "      <thead>"
+            "        <tr>"
+            "          <th data-sort-type=\"number\">Stunde</th>"
+            "          <th data-sort-type=\"number\">Samples</th>"
+            "          <th data-sort-type=\"number\">Ø Viewer</th>"
+            "          <th data-sort-type=\"number\">Peak Viewer</th>"
+            "        </tr>"
+            "      </thead>"
+            f"      <tbody>{tracked_hour_rows}</tbody>"
+            "    </table>"
+            "  </div>"
+            "</div>"
+        )
+
+        weekday_tables_block = (
+            "<div style=\"display:flex; gap:1.2rem; flex-wrap:wrap;\">"
+            "  <div style=\"flex:1 1 260px;\">"
+            "    <h3>Kategorie gesamt — nach Wochentag</h3>"
+            "    <table class=\"sortable-table\" data-table=\"category-weekday\">"
+            "      <thead>"
+            "        <tr>"
+            "          <th data-sort-type=\"number\">Tag</th>"
+            "          <th data-sort-type=\"number\">Samples</th>"
+            "          <th data-sort-type=\"number\">Ø Viewer</th>"
+            "          <th data-sort-type=\"number\">Peak Viewer</th>"
+            "        </tr>"
+            "      </thead>"
+            f"      <tbody>{category_weekday_rows}</tbody>"
+            "    </table>"
+            "  </div>"
+            "  <div style=\"flex:1 1 260px;\">"
+            "    <h3>Tracked Streamer — nach Wochentag</h3>"
+            "    <table class=\"sortable-table\" data-table=\"tracked-weekday\">"
+            "      <thead>"
+            "        <tr>"
+            "          <th data-sort-type=\"number\">Tag</th>"
+            "          <th data-sort-type=\"number\">Samples</th>"
+            "          <th data-sort-type=\"number\">Ø Viewer</th>"
+            "          <th data-sort-type=\"number\">Peak Viewer</th>"
+            "        </tr>"
+            "      </thead>"
+            f"      <tbody>{tracked_weekday_rows}</tbody>"
+            "    </table>"
+            "  </div>"
+            "</div>"
+        )
+
+        if display_mode == "charts":
+            hour_section = hour_chart_block
+            weekday_section = weekday_chart_block
+        else:
+            hour_section = hour_tables_block
+            weekday_section = weekday_tables_block
+
+        chart_payload = {
+            "hour": {
+                "labels": hour_labels,
+                "datasets": hour_datasets,
+                "xTitle": "Stunde (UTC)",
+            },
+            "weekday": {
+                "labels": weekday_labels_list,
+                "datasets": weekday_datasets,
+                "xTitle": "Wochentag",
+            },
+        }
+
+        chart_payload_json = json.dumps(chart_payload, ensure_ascii=False)
+
         script = """
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 (function () {
+  const chartData = __CHART_DATA__;
+
+  function hasRenderableData(dataset) {
+    if (!dataset || !Array.isArray(dataset.data)) {
+      return false;
+    }
+    return dataset.data.some((value) => value !== null && value !== undefined);
+  }
+
+  function renderLineChart(config) {
+    if (typeof Chart === "undefined") {
+      return;
+    }
+    const canvas = document.getElementById(config.id);
+    if (!canvas) {
+      return;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+    const datasets = (config.data.datasets || [])
+      .filter((dataset) => hasRenderableData(dataset))
+      .map((dataset) => ({
+        ...dataset,
+        data: dataset.data.map((value) =>
+          value === null || value === undefined ? null : Number(value)
+        ),
+      }));
+    if (!datasets.length) {
+      return;
+    }
+    const gridColor = "rgba(154, 164, 178, 0.2)";
+    const options = {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: {
+          labels: { color: "#dddddd" },
+        },
+        tooltip: {
+          callbacks: {
+            label: function (ctx) {
+              const value = ctx.parsed.y;
+              if (value === null || value === undefined || Number.isNaN(value)) {
+                return ctx.dataset.label + ": –";
+              }
+              const isAverage = /Ø/.test(ctx.dataset.label);
+              const digits = isAverage ? 1 : 0;
+              return (
+                ctx.dataset.label +
+                ": " +
+                Number(value).toLocaleString("de-DE", {
+                  minimumFractionDigits: digits,
+                  maximumFractionDigits: digits,
+                })
+              );
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          ticks: { color: "#dddddd" },
+          grid: { color: gridColor },
+        },
+        yAvg: {
+          type: "linear",
+          position: "left",
+          ticks: { color: "#dddddd" },
+          grid: { color: gridColor },
+          title: { display: true, text: "Ø Viewer", color: "#9bb0ff" },
+        },
+      },
+      elements: {
+        point: {
+          hitRadius: 6,
+        },
+      },
+    };
+
+    if (config.data && config.data.xTitle) {
+      options.scales.x.title = {
+        display: true,
+        text: config.data.xTitle,
+        color: "#dddddd",
+      };
+    }
+
+    const hasPeakDataset = datasets.some((dataset) => dataset.yAxisID === "yPeak");
+    if (hasPeakDataset) {
+      options.scales.yPeak = {
+        type: "linear",
+        position: "right",
+        ticks: { color: "#dddddd" },
+        grid: { drawOnChartArea: false },
+        title: { display: true, text: "Peak Viewer", color: "#ffb347" },
+      };
+    }
+
+    new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: config.data.labels || [],
+        datasets,
+      },
+      options,
+    });
+  }
+
+  if (
+    chartData.hour &&
+    Array.isArray(chartData.hour.datasets) &&
+    chartData.hour.datasets.length
+  ) {
+    renderLineChart({ id: "hourly-viewers-chart", data: chartData.hour });
+  }
+
+  if (
+    chartData.weekday &&
+    Array.isArray(chartData.weekday.datasets) &&
+    chartData.weekday.datasets.length
+  ) {
+    renderLineChart({ id: "weekday-viewers-chart", data: chartData.weekday });
+  }
+
   const tables = document.querySelectorAll("table.sortable-table");
   tables.forEach((table) => {
     const headers = table.querySelectorAll("th[data-sort-type]");
@@ -546,7 +1120,7 @@ class Dashboard:
   });
 })();
 </script>
-"""
+""".replace("__CHART_DATA__", chart_payload_json)
 
         filter_descriptions = []
         if min_samples is not None:
@@ -557,6 +1131,18 @@ class Dashboard:
             filter_descriptions.append("Nur Partner")
         elif partner_filter == "exclude":
             filter_descriptions.append("Ohne Partner")
+        if hour_from is not None or hour_to is not None:
+            start = hour_from if hour_from is not None else hour_to
+            end = hour_to if hour_to is not None else hour_from
+            if start is None:
+                start = 0
+            if end is None:
+                end = start
+            if start == end:
+                filter_descriptions.append(f"Stunde {start:02d} UTC")
+            else:
+                wrap_hint = " (über Mitternacht)" if start > end else ""
+                filter_descriptions.append(f"Stunden {start:02d}–{end:02d} UTC{wrap_hint}")
         if not filter_descriptions:
             filter_descriptions.append("Keine Filter aktiv")
 
@@ -567,11 +1153,17 @@ class Dashboard:
             )
         if show_all:
             hidden_inputs.append("<input type='hidden' name='view' value='all'>")
+        if display_mode != "charts":
+            hidden_inputs.append(
+                f"<input type='hidden' name='display' value='{html.escape(display_mode)}'>"
+            )
         hidden_inputs_html = "".join(hidden_inputs)
 
         clear_params = dict(preserved_params)
         if show_all:
             clear_params["view"] = "all"
+        if display_mode != "charts":
+            clear_params["display"] = display_mode
         clear_query = urlencode(clear_params)
         clear_url = base_path + (f"?{clear_query}" if clear_query else "")
 
@@ -618,13 +1210,33 @@ class Dashboard:
       <label class=\"filter-label\">Partner Filter
         <select name=\"partner\">{build_partner_options()}</select>
       </label>
+      <label class=\"filter-label\">Von Stunde (UTC)
+        <input type=\"number\" name=\"hour_from\" value=\"{'' if hour_from is None else hour_from}\" min=\"0\" max=\"23\">
+      </label>
+      <label class=\"filter-label\">Bis Stunde (UTC)
+        <input type=\"number\" name=\"hour_to\" value=\"{'' if hour_to is None else hour_to}\" min=\"0\" max=\"23\">
+      </label>
     </div>
     <div class=\"row\" style=\"margin-top:.8rem;\">
       <button class=\"btn\">Anwenden</button>
       <a class=\"btn btn-secondary\" href=\"{html.escape(clear_url)}\">Reset</a>
     </div>
   </form>
+  <div class=\"status-meta\" style=\"margin-top:.4rem;\">Hinweis: Stundenangaben beziehen sich auf UTC.</div>
   <div class=\"status-meta\" style=\"margin-top:.8rem;\">Aktive Filter: {' • '.join(filter_descriptions)}</div>
+</div>
+
+<div class=\"card\" style=\"margin-top:1.2rem;\">
+  <div class=\"card-header\">
+    <h2>Zeitliche Trends (UTC)</h2>
+    {display_toggle_html}
+  </div>
+  {hour_section}
+</div>
+
+<div class=\"card\" style=\"margin-top:1.2rem;\">
+  <h2>Tagestrends</h2>
+  {weekday_section}
 </div>
 
 <div class=\"card\" style=\"margin-top:1.2rem;\">

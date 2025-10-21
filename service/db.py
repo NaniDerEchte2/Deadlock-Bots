@@ -17,8 +17,9 @@ import atexit
 import sqlite3
 import threading
 import logging
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 # ---- Env-Keys (nur diese beiden werden unterstützt) ----
 ENV_DB_PATH = "DEADLOCK_DB_PATH"   # kompletter Pfad zur DB-Datei (höchste Prio)
@@ -124,6 +125,14 @@ def connect() -> sqlite3.Connection:
         init_schema(_CONN)
 
     return _CONN
+
+
+@contextmanager
+def get_conn() -> Iterator[sqlite3.Connection]:
+    """Contextmanager, der die zentrale Verbindung thread-safe bereitstellt."""
+    conn = connect()
+    with _LOCK:
+        yield conn
 
 
 def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
@@ -295,23 +304,6 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               updated_at INTEGER
             );
 
-            -- Steam Freundes-Snapshots (Rohdaten aus der Freundesliste)
-            CREATE TABLE IF NOT EXISTS steam_friend_snapshots(
-              steam_id TEXT PRIMARY KEY,
-              relationship INTEGER,
-              persona_state INTEGER,
-              persona_name TEXT,
-              game_app_id INTEGER,
-              game_name TEXT,
-              last_logoff INTEGER,
-              last_logon INTEGER,
-              persona_flags INTEGER,
-              avatar_hash TEXT,
-              persona_json TEXT,
-              rich_presence_json TEXT,
-              updated_at INTEGER
-            );
-
             -- Optionale zusätzliche Watchlist für den Presence-Service
             CREATE TABLE IF NOT EXISTS steam_presence_watchlist(
               steam_id TEXT PRIMARY KEY,
@@ -408,7 +400,6 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_quick_invites_reserved ON steam_quick_invites(reserved_by)"
             )
             c.execute("CREATE INDEX IF NOT EXISTS idx_rich_presence_updated ON steam_rich_presence(updated_at)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_friend_snapshots_updated ON steam_friend_snapshots(updated_at)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_status ON steam_tasks(status, id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_updated ON steam_tasks(updated_at)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ranks_rank ON ranks(rank)")

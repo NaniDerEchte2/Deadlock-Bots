@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import logging.handlers
 import os
@@ -11,7 +12,7 @@ import types
 import builtins
 import threading
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import datetime as _dt
 import pytz
@@ -22,6 +23,14 @@ from discord.ext import commands
 # --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
 import sys as _sys, os as _os, importlib, inspect, logging as _logging, hashlib
 import re
+
+try:
+    from service.dashboard import DashboardServer
+except Exception as _dashboard_import_error:
+    DashboardServer = None  # type: ignore[assignment]
+    logging.getLogger(__name__).warning(
+        "Dashboard module unavailable: %s", _dashboard_import_error
+    )
 
 def _log_src(modname: str):
     try:
@@ -206,12 +215,42 @@ class MasterBot(commands.Bot):
         self.setup_logging()
 
         self.cogs_dir = Path(__file__).parent / "cogs"
+        blocklist_path = os.getenv("COG_BLOCKLIST_FILE")
+        if blocklist_path:
+            self.blocklist_path = Path(blocklist_path)
+        else:
+            self.blocklist_path = self.cogs_dir.parent / "cog_blocklist.json"
+        self.blocked_namespaces: Set[str] = set()
+        self._load_blocklist()
+
         self.cogs_list: List[str] = []
+        self.cog_status: Dict[str, str] = {}
         self.auto_discover_cogs()
 
         tz = pytz.timezone("Europe/Berlin")
         self.startup_time = _dt.datetime.now(tz=tz)
-        self.cog_status: Dict[str, str] = {}
+
+        self.dashboard: Optional[DashboardServer] = None
+        dash_env = (os.getenv("MASTER_DASHBOARD_ENABLED", "1") or "1").lower()
+        dashboard_enabled = dash_env in {"1", "true", "yes", "on"}
+        if dashboard_enabled:
+            host = os.getenv("MASTER_DASHBOARD_HOST", "127.0.0.1")
+            try:
+                port = int(os.getenv("MASTER_DASHBOARD_PORT", "8766"))
+            except ValueError:
+                logging.error("MASTER_DASHBOARD_PORT ist ungültig – verwende 8766")
+                port = 8766
+            token = os.getenv("MASTER_DASHBOARD_TOKEN")
+            if DashboardServer is None:
+                logging.warning("DashboardServer nicht verfügbar – Dashboard wird deaktiviert")
+            else:
+                try:
+                    self.dashboard = DashboardServer(self, host=host, port=port, token=token)
+                    logging.info("Dashboard initialisiert (Host %s, Port %s)", host, port)
+                except Exception as e:
+                    logging.error("Konnte Dashboard nicht initialisieren: %s", e)
+        else:
+            logging.info("Master Dashboard deaktiviert (MASTER_DASHBOARD_ENABLED=0)")
 
         # Hinweis: Der frühere SteamPresenceServiceManager wurde entfernt.
         # Die neue Deadlock-Presence-Integration läuft vollständig im Cog selbst.
@@ -222,6 +261,106 @@ class MasterBot(commands.Bot):
             self.per_cog_unload_timeout = 3.0
 
     # --------------------- Discovery & Filters -------------------------
+    def normalize_namespace(self, raw: str) -> str:
+        text = (raw or "").strip()
+        if not text:
+            raise ValueError("namespace must not be empty")
+
+        normalized = text.replace("\\", "/").strip("/")
+        if not normalized:
+            raise ValueError("namespace must not be empty")
+
+        if "." in normalized and "/" not in normalized:
+            parts = [segment for segment in normalized.split(".") if segment]
+        else:
+            parts = [segment for segment in normalized.split("/") if segment]
+
+        if not parts:
+            raise ValueError("namespace must not be empty")
+
+        if parts[0] != "cogs":
+            parts.insert(0, "cogs")
+
+        return ".".join(parts)
+
+    def _load_blocklist(self) -> None:
+        try:
+            if not self.blocklist_path.exists():
+                self.blocked_namespaces = set()
+                return
+            data = json.loads(self.blocklist_path.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                raise ValueError("blocklist must be a list")
+            loaded = set()
+            for item in data:
+                try:
+                    loaded.add(self.normalize_namespace(str(item)))
+                except Exception:
+                    continue
+            self.blocked_namespaces = loaded
+        except Exception as e:
+            logging.getLogger(__name__).warning("Konnte Blockliste nicht laden (%s): %s", self.blocklist_path, e)
+            self.blocked_namespaces = set()
+
+    def _save_blocklist(self) -> None:
+        try:
+            self.blocklist_path.parent.mkdir(parents=True, exist_ok=True)
+            self.blocklist_path.write_text(
+                json.dumps(sorted(self.blocked_namespaces)),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logging.getLogger(__name__).error("Blockliste konnte nicht gespeichert werden (%s): %s", self.blocklist_path, e)
+
+    def is_namespace_blocked(self, namespace: str, *, assume_normalized: bool = False) -> bool:
+        try:
+            target = namespace if assume_normalized else self.normalize_namespace(namespace)
+        except ValueError:
+            return False
+        for blocked in self.blocked_namespaces:
+            if target == blocked or target.startswith(f"{blocked}."):
+                return True
+        return False
+
+    async def block_namespace(self, namespace: str) -> Dict[str, Any]:
+        normalized = self.normalize_namespace(namespace)
+        if normalized in self.blocked_namespaces:
+            return {"namespace": normalized, "changed": False, "unloaded": {}}
+
+        self.blocked_namespaces.add(normalized)
+        self._save_blocklist()
+
+        to_unload = [
+            ext for ext in list(self.extensions.keys()) if ext.startswith(normalized)
+        ]
+        unload_results: Dict[str, str] = {}
+        if to_unload:
+            unload_results = await self.unload_many(to_unload)
+
+        for key in list(self.cog_status.keys()):
+            if key == normalized or key.startswith(f"{normalized}."):
+                self.cog_status[key] = "blocked"
+        if normalized not in self.cog_status:
+            self.cog_status[normalized] = "blocked"
+
+        self.auto_discover_cogs()
+        return {"namespace": normalized, "changed": True, "unloaded": unload_results}
+
+    async def unblock_namespace(self, namespace: str) -> Dict[str, Any]:
+        normalized = self.normalize_namespace(namespace)
+        if normalized not in self.blocked_namespaces:
+            return {"namespace": normalized, "changed": False}
+
+        self.blocked_namespaces.discard(normalized)
+        self._save_blocklist()
+
+        for key in list(self.cog_status.keys()):
+            if key == normalized or key.startswith(f"{normalized}."):
+                self.cog_status[key] = "unloaded"
+
+        self.auto_discover_cogs()
+        return {"namespace": normalized, "changed": True}
+
     def _should_exclude(self, module_path: str) -> bool:
         default_excludes = {
             "",
@@ -234,10 +373,13 @@ class MasterBot(commands.Bot):
             return module_path not in only
         if module_path in default_excludes:
             return True
+        if self.is_namespace_blocked(module_path, assume_normalized=True):
+            return True
         return False
 
     def auto_discover_cogs(self):
         try:
+            importlib.invalidate_caches()
             if not self.cogs_dir.exists():
                 logging.warning(f"Cogs directory not found: {self.cogs_dir}")
                 return
@@ -294,10 +436,41 @@ class MasterBot(commands.Bot):
             self.cogs_list = sorted(set(discovered))
             logging.info(f"✅ Auto-discovery complete: {len(self.cogs_list)} cogs found")
 
+            for key in list(self.cog_status.keys()):
+                if self.is_namespace_blocked(key, assume_normalized=True):
+                    self.cog_status[key] = "blocked"
+
         except Exception as e:
             logging.error(f"❌ Error during cog auto-discovery: {e}")
             logging.error("❌ CRITICAL: No cogs will be loaded! Check cogs/ directory")
             self.cogs_list = []
+
+    def resolve_cog_identifier(self, identifier: str | None) -> Tuple[Optional[str], List[str]]:
+        if not identifier:
+            return None, []
+
+        ident = identifier.strip()
+        if not ident:
+            return None, []
+
+        if ident in self.extensions:
+            return ident, []
+        if ident in self.cogs_list:
+            return ident, []
+        if ident.startswith("cogs."):
+            return ident, []
+
+        matches = [c for c in self.cogs_list if c.endswith(f".{ident}")]
+        if len(matches) == 1:
+            return matches[0], []
+        if len(matches) > 1:
+            return None, matches
+
+        prefixed = f"cogs.{ident}"
+        if prefixed in self.cogs_list or prefixed in self.extensions:
+            return prefixed, []
+
+        return None, []
 
     # --------------------- Logging ------------------------------------
     def setup_logging(self):
@@ -375,6 +548,14 @@ class MasterBot(commands.Bot):
         except Exception as e:
             logging.error(f"Failed to sync slash commands: {e}")
 
+        if self.dashboard:
+            try:
+                await self.dashboard.start()
+            except RuntimeError as e:
+                logging.error(f"Dashboard konnte nicht gestartet werden: {e}. Läuft bereits ein anderer Prozess?")
+            except Exception as e:
+                logging.error(f"Dashboard konnte nicht gestartet werden: {e}")
+
         # ⚠️ KEIN Autostart des Steam-Services hier!
         logging.info("Master Bot setup completed")
 
@@ -407,6 +588,7 @@ class MasterBot(commands.Bot):
 
         async def load_single_cog(cog_name: str):
             try:
+                self._purge_namespace_modules(cog_name)
                 await self.load_extension(cog_name)
                 self.cog_status[cog_name] = "loaded"
                 logging.info(f"✅ Loaded cog: {cog_name}")
@@ -437,6 +619,7 @@ class MasterBot(commands.Bot):
             for ext_name in loaded_extensions:
                 try:
                     await asyncio.wait_for(self.unload_extension(ext_name), timeout=self.per_cog_unload_timeout)
+                    self._purge_namespace_modules(ext_name)
                     unload_results.append(f"✅ Unloaded: {ext_name}")
                     self.cog_status[ext_name] = "unloaded"
                     logging.info(f"Unloaded extension: {ext_name}")
@@ -470,8 +653,30 @@ class MasterBot(commands.Bot):
             logging.error(f"Error during full cog reload: {e}")
             return False, f"Error: {str(e)}"
 
+    def _purge_namespace_modules(self, namespace: str) -> None:
+        """Ensure that a namespace will be freshly imported on the next load."""
+
+        try:
+            importlib.invalidate_caches()
+        except Exception as e:
+            logging.debug("Failed to invalidate import caches: %s", e)
+
+        trimmed = namespace.rstrip(".")
+        if not trimmed:
+            return
+
+        removed = []
+        for mod_name in list(sys.modules.keys()):
+            if mod_name == trimmed or mod_name.startswith(f"{trimmed}."):
+                removed.append(mod_name)
+                sys.modules.pop(mod_name, None)
+
+        if removed:
+            logging.debug("Cold reload purge for %s: %s", trimmed, removed)
+
     async def reload_cog(self, cog_name: str) -> Tuple[bool, str]:
         try:
+            self._purge_namespace_modules(cog_name)
             await self.reload_extension(cog_name)
             self.cog_status[cog_name] = "loaded"
             await self.update_presence()
@@ -480,6 +685,7 @@ class MasterBot(commands.Bot):
             return True, msg
         except commands.ExtensionNotLoaded:
             try:
+                self._purge_namespace_modules(cog_name)
                 await self.load_extension(cog_name)
                 self.cog_status[cog_name] = "loaded"
                 await self.update_presence()
@@ -527,17 +733,32 @@ class MasterBot(commands.Bot):
                 logging.error(f"Health check error: {e}")
 
     # --------- Reload für den Ordner cogs/steam ----------
-    async def reload_steam_folder(self) -> Dict[str, str]:
+    async def reload_namespace(self, namespace: str) -> Dict[str, str]:
+        try:
+            target_ns = self.normalize_namespace(namespace)
+        except ValueError:
+            return {}
+
+        if self.is_namespace_blocked(target_ns, assume_normalized=True):
+            logging.info("Namespace %s ist blockiert – kein Reload", target_ns)
+            return {}
+
         self.auto_discover_cogs()
         targets = [
-            mod for mod in self.cogs_list
-            if mod.startswith("cogs.steam.")
+            mod
+            for mod in self.cogs_list
+            if mod.startswith(target_ns)
             and not self._should_exclude(mod)
         ]
+
+        if not targets:
+            logging.info("Keine Cogs für Namespace %s gefunden", target_ns)
+            return {}
 
         results: Dict[str, str] = {}
         for mod in targets:
             try:
+                self._purge_namespace_modules(mod)
                 if mod in self.extensions:
                     await self.reload_extension(mod)
                     results[mod] = "reloaded"
@@ -548,11 +769,16 @@ class MasterBot(commands.Bot):
                     logging.info(f"✅ Loaded {mod}")
                 self.cog_status[mod] = "loaded"
             except Exception as e:
-                results[mod] = f"error: {str(e)[:200]}"
-                self.cog_status[mod] = f"error: {str(e)[:100]}"
+                trimmed = str(e)[:200]
+                results[mod] = f"error: {trimmed}"
+                self.cog_status[mod] = f"error: {trimmed[:100]}"
                 logging.error(f"❌ Reload error for {mod}: {e}")
+
         await self.update_presence()
         return results
+
+    async def reload_steam_folder(self) -> Dict[str, str]:
+        return await self.reload_namespace("cogs.steam")
 
 
     # --------- Gezieltes Unload (mit Timeout) ----------
@@ -584,6 +810,12 @@ class MasterBot(commands.Bot):
 
     async def close(self):
         logging.info("Master Bot shutting down...")
+
+        if self.dashboard:
+            try:
+                await self.dashboard.stop()
+            except Exception as e:
+                logging.error(f"Fehler beim Stoppen des Dashboards: {e}")
 
         # 1) Alle Cogs entladen (parallel/sequenziell mit Timeout pro Cog)
         to_unload = [ext for ext in list(self.extensions.keys()) if ext.startswith("cogs.")]
@@ -690,20 +922,29 @@ class MasterControlCog(commands.Cog):
 
     @master_control.command(name="reload", aliases=["rl"])
     async def master_reload(self, ctx, cog_name: str = None):
-        if cog_name:
-            matches = [c for c in self.bot.cogs_list if cog_name.lower() in c.lower()]
-            if not matches:
-                await ctx.send(f"❌ Cog '{cog_name}' nicht gefunden!")
-                return
-            target = matches[0]
-            ok, msg = await self.bot.reload_cog(target)
-            await self.bot.update_presence()
-            embed = discord.Embed(title="🔄 Cog Reload", description=msg, color=0x00FF00 if ok else 0xFF0000)
-            await ctx.send(embed=embed)
-        else:
+        if not cog_name:
             await ctx.send(
                 "❌ Bitte Cog-Namen angeben! Verfügbar:\n" + "\n".join([c.split(".")[-1] for c in self.bot.cogs_list])
             )
+            return
+
+        self.bot.auto_discover_cogs()
+        target, collisions = self.bot.resolve_cog_identifier(cog_name)
+        if not target:
+            if collisions:
+                options = "\n".join(f"• {c}" for c in collisions[:10])
+                if len(collisions) > 10:
+                    options += "\n…"
+                await ctx.send(
+                    f"❌ Mehrdeutiger Cog-Name `{cog_name}`. Bitte präzisieren:\n{options}"
+                )
+            else:
+                await ctx.send(f"❌ Cog `{cog_name}` nicht gefunden!")
+            return
+
+        ok, msg = await self.bot.reload_cog(target)
+        embed = discord.Embed(title="🔄 Cog Reload", description=msg, color=0x00FF00 if ok else 0xFF0000)
+        await ctx.send(embed=embed)
 
     @master_control.command(name="reloadall", aliases=["rla"])
     async def master_reload_all(self, ctx):
@@ -750,7 +991,6 @@ class MasterControlCog(commands.Cog):
     )
     async def master_reload_steam_folder(self, ctx):
         results = await self.bot.reload_steam_folder()
-        await self.bot.update_presence()
 
         ok = [k for k, v in results.items() if v in ("reloaded", "loaded")]
         err = {k: v for k, v in results.items() if v.startswith("error:")}

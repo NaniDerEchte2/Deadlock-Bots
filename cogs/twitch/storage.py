@@ -3,6 +3,7 @@ import logging
 import os
 import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterable, Optional
 
 log = logging.getLogger("TwitchStreams")
@@ -10,13 +11,29 @@ log = logging.getLogger("TwitchStreams")
 # --- zentrale DB anbinden, mit Fallback auf lokale Datei --------------------
 try:
     from service.db import get_conn as _central_get_conn  # type: ignore
+    from service.db import db_path as _central_db_path  # type: ignore
 except Exception:
     _central_get_conn = None  # type: ignore[assignment]
+    _central_db_path = None  # type: ignore[assignment]
 
-_FALLBACK_PATH = os.getenv("DEADLOCK_DB_PATH") or os.path.join(os.getcwd(), "deadlock.db")
-_dir = os.path.dirname(_FALLBACK_PATH)
-if _dir:
-    os.makedirs(_dir, exist_ok=True)
+if _central_get_conn is None:
+    _fallback = os.getenv("DEADLOCK_DB_PATH")
+    if not _fallback:
+        if _central_db_path is not None:
+            _fallback = _central_db_path()
+        else:
+            user_profile = os.environ.get("USERPROFILE")
+            if user_profile:
+                base_dir = Path(user_profile) / "Documents" / "Deadlock" / "service"
+            else:
+                base_dir = Path.home() / "Documents" / "Deadlock" / "service"
+            _fallback = str(base_dir / "deadlock.sqlite3")
+    _FALLBACK_PATH = _fallback
+else:
+    _FALLBACK_PATH = _central_db_path() if "_central_db_path" in globals() and _central_db_path else None
+
+if _FALLBACK_PATH:
+    Path(_FALLBACK_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 
 @contextmanager
@@ -86,6 +103,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             twitch_user_id             TEXT,
             require_discord_link       INTEGER DEFAULT 0,
             next_link_check_at         TEXT,
+            discord_user_id            TEXT,
+            discord_display_name       TEXT,
             manual_verified_permanent  INTEGER DEFAULT 0,
             manual_verified_until      TEXT,
             manual_verified_at         TEXT,
@@ -97,6 +116,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ("twitch_user_id", "TEXT"),
         ("require_discord_link", "INTEGER DEFAULT 0"),
         ("next_link_check_at", "TEXT"),
+        ("discord_user_id", "TEXT"),
+        ("discord_display_name", "TEXT"),
         ("manual_verified_permanent", "INTEGER DEFAULT 0"),
         ("manual_verified_until", "TEXT"),
         ("manual_verified_at", "TEXT"),

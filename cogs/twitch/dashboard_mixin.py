@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
+
+import discord
 
 from aiohttp import web
 
 from . import storage
 from .dashboard import Dashboard
 from .logger import log
+
+
+VERIFICATION_SUCCESS_DM_MESSAGE = (
+    "🎉 Glückwunsch! Du wurdest erfolgreich als **Streamer-Partner** verifiziert und bist jetzt offiziell Teil des "
+    "Streamer-Teams. Wir melden uns, falls wir noch Fragen haben – ansonsten schauen wir uns deine Angaben kurz an. "
+    "Bei Fragen kannst du dich gerne hier melden: https://discord.com/channels/1289721245281292288/1428062025145385111"
+)
 
 
 class TwitchDashboardMixin:
@@ -34,8 +43,13 @@ class TwitchDashboardMixin:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    async def _dashboard_stats(self) -> dict:
-        stats = await self._compute_stats()
+    async def _dashboard_stats(
+        self,
+        *,
+        hour_from: Optional[int] = None,
+        hour_to: Optional[int] = None,
+    ) -> dict:
+        stats = await self._compute_stats(hour_from=hour_from, hour_to=hour_to)
         tracked_top = stats.get("tracked", {}).get("top", []) or []
         category_top = stats.get("category", {}).get("top", []) or []
 
@@ -58,37 +72,169 @@ class TwitchDashboardMixin:
         stats["avg_viewers_tracked"] = tr_avg
         return stats
 
+    async def _notify_verification_success(self, login: str, row_data: Optional[dict]) -> str:
+        if not row_data:
+            log.info("Keine Discord-Daten für %s zum Versenden der Erfolgsnachricht gefunden", login)
+            return ""
+
+        user_id_raw = row_data.get("discord_user_id")
+        if not user_id_raw:
+            log.info("Keine Discord-ID für %s hinterlegt – überspringe Erfolgsnachricht", login)
+            return ""
+
+        try:
+            user_id_int = int(str(user_id_raw))
+        except (TypeError, ValueError):
+            log.warning("Ungültige Discord-ID %r für %s – keine Erfolgsnachricht", user_id_raw, login)
+            return "(Discord-DM konnte nicht zugestellt werden)"
+
+        user = self.bot.get_user(user_id_int)
+        if user is None:
+            try:
+                user = await self.bot.fetch_user(user_id_int)
+            except discord.NotFound:
+                user = None
+            except discord.HTTPException:
+                log.exception("Konnte Discord-User %s nicht abrufen", user_id_int)
+                user = None
+
+        if user is None:
+            log.warning("Discord-User %s (%s) konnte nicht gefunden werden", user_id_int, login)
+            return "(Discord-DM konnte nicht zugestellt werden)"
+
+        try:
+            await user.send(VERIFICATION_SUCCESS_DM_MESSAGE)
+        except discord.Forbidden:
+            log.warning(
+                "DM an %s (%s) wegen erfolgreicher Verifizierung blockiert", user_id_int, login
+            )
+            return "(Discord-DM konnte nicht zugestellt werden)"
+        except discord.HTTPException:
+            log.exception(
+                "Konnte Erfolgsnachricht nach Verifizierung nicht an %s senden", user_id_int
+            )
+            return "(Discord-DM konnte nicht zugestellt werden)"
+
+        log.info(
+            "Verifizierungs-Erfolgsnachricht an %s (%s) gesendet", user_id_int, login
+        )
+        return ""
+
     async def _dashboard_verify(self, login: str, mode: str) -> str:
         login = self._normalize_login(login)
         if not login:
             return "Ungültiger Login"
 
-        with storage.get_conn() as c:
-            if mode == "permanent":
-                c.execute(
-                    "UPDATE twitch_streamers "
-                    "SET manual_verified_permanent=1, manual_verified_until=NULL, manual_verified_at=datetime('now') "
-                    "WHERE twitch_login=?",
+        if mode in {"permanent", "temp"}:
+            row_data = None
+            should_notify = False
+            with storage.get_conn() as c:
+                row = c.execute(
+                    (
+                        "SELECT discord_user_id, discord_display_name, manual_verified_at "
+                        "FROM twitch_streamers WHERE twitch_login=?"
+                    ),
                     (login,),
-                )
-                return f"{login} dauerhaft verifiziert"
-            if mode == "temp":
-                c.execute(
-                    "UPDATE twitch_streamers "
-                    "SET manual_verified_permanent=0, manual_verified_until=datetime('now','+30 days'), "
-                    "    manual_verified_at=datetime('now') "
-                    "WHERE twitch_login=?",
-                    (login,),
-                )
-                return f"{login} für 30 Tage verifiziert"
-            if mode == "clear":
+                ).fetchone()
+                if row:
+                    row_data = dict(row)
+                    should_notify = row_data.get("manual_verified_at") is None
+
+                if mode == "permanent":
+                    c.execute(
+                        "UPDATE twitch_streamers "
+                        "SET manual_verified_permanent=1, manual_verified_until=NULL, manual_verified_at=datetime('now') "
+                        "WHERE twitch_login=?",
+                        (login,),
+                    )
+                    base_msg = f"{login} dauerhaft verifiziert"
+                else:
+                    c.execute(
+                        "UPDATE twitch_streamers "
+                        "SET manual_verified_permanent=0, manual_verified_until=datetime('now','+30 days'), "
+                        "    manual_verified_at=datetime('now') "
+                        "WHERE twitch_login=?",
+                        (login,),
+                    )
+                    base_msg = f"{login} für 30 Tage verifiziert"
+
+            note = ""
+            if should_notify:
+                note = await self._notify_verification_success(login, row_data)
+            return f"{base_msg} {note}".strip()
+
+        if mode == "clear":
+            with storage.get_conn() as c:
                 c.execute(
                     "UPDATE twitch_streamers "
                     "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL "
                     "WHERE twitch_login=?",
                     (login,),
                 )
-                return f"Verifizierung für {login} zurückgesetzt"
+            return f"Verifizierung für {login} zurückgesetzt"
+
+        if mode == "failed":
+            row_data = None
+            with storage.get_conn() as c:
+                row = c.execute(
+                    "SELECT discord_user_id, discord_display_name FROM twitch_streamers WHERE twitch_login=?",
+                    (login,),
+                ).fetchone()
+                if row:
+                    row_data = dict(row)
+                    c.execute(
+                        "UPDATE twitch_streamers "
+                        "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL "
+                        "WHERE twitch_login=?",
+                        (login,),
+                    )
+
+            if not row_data:
+                return f"{login} ist nicht gespeichert"
+
+            user_id_raw = row_data.get("discord_user_id")
+            if not user_id_raw:
+                return f"Keine Discord-ID für {login} hinterlegt"
+
+            try:
+                user_id_int = int(str(user_id_raw))
+            except (TypeError, ValueError):
+                return f"Ungültige Discord-ID für {login}"
+
+            user = self.bot.get_user(user_id_int)
+            if user is None:
+                try:
+                    user = await self.bot.fetch_user(user_id_int)
+                except discord.NotFound:
+                    user = None
+                except discord.HTTPException:
+                    log.exception("Konnte Discord-User %s nicht abrufen", user_id_int)
+                    user = None
+
+            if user is None:
+                return f"Discord-User {user_id_int} konnte nicht gefunden werden"
+
+            message = (
+                "Hey! Deine Deadlock-Streamer-Verifizierung konnte leider nicht abgeschlossen werden. "
+                "Du erfüllst aktuell nicht alle Voraussetzungen. Bitte prüfe die Anforderungen erneut "
+                "und starte die Verifizierung anschließend mit /streamer noch einmal."
+            )
+
+            try:
+                await user.send(message)
+            except discord.Forbidden:
+                log.warning("DM an %s (%s) wegen fehlgeschlagener Verifizierung blockiert", user_id_int, login)
+                return (
+                    f"Konnte {row_data.get('discord_display_name') or user.name} nicht per DM erreichen."
+                )
+            except discord.HTTPException:
+                log.exception("Konnte Verifizierungsfehler-Nachricht nicht senden an %s", user_id_int)
+                return "Nachricht konnte nicht gesendet werden"
+
+            log.info("Verifizierungsfehler-Benachrichtigung an %s (%s) gesendet", user_id_int, login)
+            return (
+                f"{login}: Discord-User wurde über die fehlgeschlagene Verifizierung informiert"
+            )
         return "Unbekannter Modus"
 
     async def _start_dashboard(self):

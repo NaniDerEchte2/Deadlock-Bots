@@ -286,6 +286,8 @@ async def respond_with_schnelllink(
     interaction: discord.Interaction,
     *,
     source: Optional[str] = None,
+    extra_note: Optional[str] = None,
+    suppress_embeds: bool = False,
 ) -> None:
     """Respond to the interaction with either a single-use or fallback Steam link."""
 
@@ -302,11 +304,16 @@ async def respond_with_schnelllink(
             )
             followup = False
 
+    if extra_note:
+        extra_note = extra_note.strip()
+
     async def _send(message: str) -> None:
+        if extra_note:
+            message = f"{message}\n\n{extra_note}"
         if followup:
-            await interaction.followup.send(message, ephemeral=True)
+            await interaction.followup.send(message, ephemeral=True, suppress_embeds=suppress_embeds)
         else:
-            await interaction.response.send_message(message, ephemeral=True)
+            await interaction.response.send_message(message, ephemeral=True, suppress_embeds=suppress_embeds)
 
     attempts = 0
     link: Optional[SchnellLink] = None

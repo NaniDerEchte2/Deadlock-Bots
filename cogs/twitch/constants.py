@@ -10,6 +10,7 @@ TWITCH_DASHBOARD_PORT = 8765
 
 TWITCH_LANGUAGE = "de"
 TWITCH_TARGET_GAME_NAME = "Deadlock"
+TWITCH_BRAND_COLOR_HEX = 0x9146FF                     # offizielles Twitch-Lila für Embeds
 TWITCH_REQUIRED_DISCORD_MARKER = ""                # optionaler Marker im Profiltext (zusätzl. zur Discord-URL)
 
 # Benachrichtigungskanäle

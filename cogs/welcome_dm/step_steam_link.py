@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from textwrap import dedent
 from typing import Optional, Tuple
-from urllib.parse import urlparse, urlsplit, urlunparse, urlunsplit
+from urllib.parse import urlparse, urlunparse
 
 import discord
 
-from cogs.steam import SchnellLinkButton
+from cogs.steam import respond_with_schnelllink
 
 __all__ = [
     "SteamLinkStepView",
@@ -64,17 +63,6 @@ def _prefer_discord_deeplink(browser_url: Optional[str]) -> Tuple[Optional[str],
         pass
     return browser_url, None
 
-# --- Eingabe-Validierung ---
-# Erlaubt:
-#  - reine Ziffern-IDs mit 16–20 Stellen (nicht fix 17)
-#  - Vanity (2–32) [A-Za-z0-9_-]
-#  - vollständige Profil-Links: /profiles/<id> oder /id/<vanity>
-STEAM_KEY_RE = re.compile(
-    r"^(?:https?://steamcommunity\.com/(?:profiles|id)/)?([0-9]{16,20}|[A-Za-z0-9_\-]{2,32})/?$",
-    re.I,
-)
-
-
 _STEAM_LINK_DM_DESC = dedent(
     """
     **Verknüpfe deinen Steam Account**
@@ -90,14 +78,12 @@ _STEAM_LINK_DETAILED_DESC = dedent(
 
     **Ablauf & Optionen:**
     • **Via Discord verknüpfen** – Schnellster Weg (falls verfügbar).
-    • **SteamID manuell eingeben**: Du trägst **ID64 / Vanity / Profil-Link** selbst ein.
-    • **Steam Profil suchen**: Offizieller Steam OpenID-Flow (kein Passwort, nur die **SteamID64** wird gelesen).
+    • **Steam Profil suchen** – Offizieller Steam OpenID-Flow (kein Passwort, nur die **SteamID64** wird gelesen).
+    • **Schnell-Link anfordern** – Wir schicken dir einen persönlichen Freundschaftslink zum Steam-Bot.
 
 
     • Sobald du dich authentifizierst, kann dir unser Bot automatisch eine Freundschaftsanfrage schicken.
-      Alternativ kannst du den Bot selbst hinzufügen:
-      ⚡ Über den Button **„Schnelle Anfrage senden“** erhältst du einen persönlichen Link.
-      🔢 Freundescode: **820142646** oder schick dem Bot eine Freundschaftsanfrage über die ID.
+      Falls der Schnell-Link nicht klappt, nutze die Freundschafts-ID **820142646** und schicke sie uns bei Bedarf.
 
 
     **Hinweis:** Automatische Status-Anzeigen über Steam sind aktuell deaktiviert – die Verknüpfung ist freiwillig.
@@ -114,7 +100,7 @@ def steam_link_detailed_description() -> str:
 
 
 def build_steam_intro_embed() -> discord.Embed:
-    """Intro/Erklärung für den Schritt – mit Hinweis auf 'SteamID manuell'."""
+    """Intro/Erklärung für den Schritt mit allen verfügbaren Optionen."""
     em = discord.Embed(
         title="Empfehlung für besseres Erlebnis",
         description=steam_link_detailed_description(),
@@ -122,71 +108,6 @@ def build_steam_intro_embed() -> discord.Embed:
     )
     em.set_footer(text="Kurzbefehle: /link, /link_steam, /addsteam")
     return em
-
-
-class _ManualSteamModal(discord.ui.Modal, title="SteamID manuell eintragen"):
-    """Modal zur manuellen Eingabe & Validierung der Steam-ID/Vanity/Links."""
-    def __init__(self, on_submit_cb=None):
-        super().__init__(timeout=300)
-        self.on_submit_cb = on_submit_cb
-        self.input: discord.ui.TextInput = discord.ui.TextInput(
-            label="SteamID64 / Vanity / Profil-Link",
-            placeholder="z. B. 76561198000000000 oder https://steamcommunity.com/profiles/7656…",
-            required=True,
-            max_length=200,
-        )
-        self.add_item(self.input)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        raw = (self.input.value or "").strip()
-        sanitized = raw
-        try:
-            parsed = urlsplit(raw)
-        except ValueError:
-            parsed = None
-
-        if parsed and parsed.scheme and parsed.netloc:
-            path = (parsed.path or "").split(";", 1)[0]
-            sanitized = urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
-        else:
-            sanitized = raw.split("?", 1)[0].split("#", 1)[0]
-        sanitized = sanitized.strip()
-        m = STEAM_KEY_RE.match(sanitized)
-        if not m:
-            await interaction.response.send_message(
-                "❌ Das sieht nicht nach einer gültigen SteamID/Profil-URL aus.\n"
-                "Akzeptiert: **ID64 (16–20 Ziffern)**, Vanity *(2–32 alphanum/`_`/`-`)*, "
-                "`/profiles/<id>` oder `/id/<vanity>`.",
-                ephemeral=True,
-            )
-            return
-
-        steam_key = m.group(1)
-
-        if callable(self.on_submit_cb):
-            try:
-                await self.on_submit_cb(interaction, steam_key)
-            except Exception:
-                if interaction.response.is_done():
-                    await interaction.followup.send(
-                        "⚠️ Eingabe erhalten, aber Speichern schlug fehl. Bitte später erneut versuchen.",
-                        ephemeral=True,
-                    )
-                else:
-                    await interaction.response.send_message(
-                        "⚠️ Eingabe erhalten, aber Speichern schlug fehl. Bitte später erneut versuchen.",
-                        ephemeral=True,
-                    )
-                return
-
-        content = (
-            f"✅ **Gespeichert:** `{steam_key}`\n"
-            f"_Wir prüfen die Verbindung in Kürze. Stelle sicher, dass **Spieldetails = Öffentlich** sind._"
-        )
-        if interaction.response.is_done():
-            await interaction.followup.send(content, ephemeral=True)
-        else:
-            await interaction.response.send_message(content, ephemeral=True)
 
 
 class _LinkSheet(discord.ui.View):
@@ -207,20 +128,6 @@ class _LinkSheet(discord.ui.View):
         ))
 
 
-class _FriendOptionsView(discord.ui.View):
-    def __init__(self) -> None:
-        super().__init__(timeout=180)
-        self.add_item(
-            SchnellLinkButton(
-                style=discord.ButtonStyle.success,
-                label="Schnelle Anfrage senden",
-                emoji="⚡",
-                row=0,
-                source="welcome_dm_friend_options",
-            )
-        )
-
-
 class SteamLinkStepView(discord.ui.View):
     """
     View für den Steam-Verknüpfungsschritt in der Welcome-DM.
@@ -232,13 +139,11 @@ class SteamLinkStepView(discord.ui.View):
         self,
         *,
         on_next=None,                 # async def (interaction) -> None
-        on_manual_save=None,          # async def (interaction, steam_key) -> None
         timeout: float | None = None, # persistent-fähig
         show_next: bool = True,
     ):
         super().__init__(timeout=timeout)
         self.on_next = on_next
-        self.on_manual_save = on_manual_save
         self.show_next = show_next
         self.proceed: bool = False
 
@@ -251,17 +156,6 @@ class SteamLinkStepView(discord.ui.View):
     # --- Buttons (nur custom_id, keine URLs – dadurch persistent-fähig) ---
 
     @discord.ui.button(
-        label="SteamID manuell",
-        style=discord.ButtonStyle.secondary,
-        custom_id="steam:manual",
-        row=0,
-        emoji="📝",
-    )
-    async def _open_manual(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        modal = _ManualSteamModal(on_submit_cb=self.on_manual_save)
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(
         label="Via Discord verknüpfen",
         style=discord.ButtonStyle.success,
         custom_id="steam:discord",
@@ -272,7 +166,7 @@ class SteamLinkStepView(discord.ui.View):
         if not _LINKS_ENABLED or _oauth is None:
             message = (
                 "ℹ️ Die automatische Steam-Verknüpfung ist derzeit deaktiviert. "
-                "Nutze bitte die manuelle Eingabe oder sende dem Bot direkt eine Anfrage."
+                "Nutze bitte die Freundschafts-Optionen oder sende dem Bot direkt eine Anfrage."
             )
             if interaction.response.is_done():
                 await interaction.followup.send(message, ephemeral=True)
@@ -318,26 +212,25 @@ class SteamLinkStepView(discord.ui.View):
         await self._start_discord(interaction, _button)
 
     @discord.ui.button(
-        label="Freundschafts-Optionen",
+        label="Schnelle Anfrage senden",
         style=discord.ButtonStyle.secondary,
         custom_id="steam:friendopts",
         row=1,
         emoji="🤝",
     )
     async def _show_friend_options(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        view = _FriendOptionsView()
-        content = (
-            "🤝 **So verbindest du dich mit unserem Steam-Bot:**\n"
-            "• Sobald du dich über Discord oder Steam verknüpfst, senden wir dir automatisch eine Freundschaftsanfrage.\n\n"
-            "• Alternativ kannst du den Bot selbst hinzufügen:\n"
-            "  ⚡ Nutze **„Schnelle Anfrage senden“** für einen persönlichen Link (einmalig, 30 Tage gültig).\n"
-            "  🔢 Freundescode: **820142646** (oder teile ihn uns mit, dann adden wir dich).\n\n"
-            "Teile Schnell-Links nur mit Leuten, denen du vertraust."
-        )
-        if interaction.response.is_done():
-            await interaction.followup.send(content, view=view, ephemeral=True)
-        else:
-            await interaction.response.send_message(content, view=view, ephemeral=True)
+        try:
+            await respond_with_schnelllink(
+                interaction,
+                source="welcome_dm_friend_options",
+                extra_note=(
+                    "🔢 Falls der Schnell-Link nicht funktioniert: **820142646** ist unsere Freundschafts-ID.\n"
+                    "Sende sie uns – dann fügen wir dich manuell hinzu."
+                ),
+                suppress_embeds=True,
+            )
+        except Exception:
+            _LOGGER.debug("Schnell-Link Bereitstellung fehlgeschlagen", exc_info=True)
 
     @discord.ui.button(
         label="Weiter",
@@ -355,10 +248,6 @@ class SteamLinkStepView(discord.ui.View):
                 return
             except Exception:
                 pass
-        if interaction.response.is_done():
-            await interaction.followup.send("Alles klar – weiter geht’s! ✅", ephemeral=True)
-        else:
-            await interaction.response.send_message("Alles klar – weiter geht’s! ✅", ephemeral=True)
 
 
 # --- Aliase für ältere Imports ---
