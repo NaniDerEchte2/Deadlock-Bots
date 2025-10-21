@@ -26,7 +26,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         body {
             margin: 0 auto;
             padding: 1.5rem;
-            max-width: 1100px;
+            max-width: 1650px;
             background: #111;
             color: #f5f5f5;
         }
@@ -225,6 +225,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             gap: 0.45rem;
             flex-wrap: wrap;
         }
+        .tree-actions .managed-info {
+            font-size: 0.75rem;
+            opacity: 0.7;
+            padding: 0.2rem 0;
+        }
         .tree-empty {
             font-style: italic;
             color: #868e96;
@@ -244,6 +249,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         .tag.count { background: rgba(64, 192, 87, 0.18); color: #c0ffc0; }
         .tag.partial { background: rgba(250, 176, 5, 0.25); color: #ffd43b; }
         .tag.package { background: rgba(112, 72, 232, 0.2); color: #d0bfff; }
+        .tag.managed { background: rgba(51, 154, 240, 0.22); color: #74c0fc; }
         .error { color: #ff8787; }
         .success { color: #69db7c; }
         .selection-info {
@@ -503,15 +509,45 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
             const actions = document.createElement('div');
             actions.className = 'tree-actions';
-            const reloadBtn = document.createElement('button');
-            reloadBtn.textContent = 'Reload';
-            reloadBtn.className = 'reload';
-            reloadBtn.addEventListener('click', (ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                reloadPath(node.path);
-            });
-            actions.appendChild(reloadBtn);
+            if (node.manageable) {
+                const reloadBtn = document.createElement('button');
+                reloadBtn.textContent = 'Reload';
+                reloadBtn.className = 'reload';
+                reloadBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    reloadPath(node.path);
+                });
+                actions.appendChild(reloadBtn);
+
+                if (!node.blocked) {
+                    const loadBtn = document.createElement('button');
+                    loadBtn.textContent = 'Load';
+                    loadBtn.className = 'load';
+                    if (node.loaded) {
+                        loadBtn.disabled = true;
+                    }
+                    loadBtn.addEventListener('click', (ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        loadCog(node.path);
+                    });
+                    actions.appendChild(loadBtn);
+
+                    const unloadBtn = document.createElement('button');
+                    unloadBtn.textContent = 'Unload';
+                    unloadBtn.className = 'unload';
+                    if (!node.loaded) {
+                        unloadBtn.disabled = true;
+                    }
+                    unloadBtn.addEventListener('click', (ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        unloadCog(node.path);
+                    });
+                    actions.appendChild(unloadBtn);
+                }
+            }
 
             const blockBtn = document.createElement('button');
             if (node.blocked) {
@@ -576,6 +612,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         if (!node.discovered) {
             meta.appendChild(createTag('nicht entdeckt', 'partial'));
         }
+        if (!node.manageable) {
+            meta.appendChild(createTag('intern', 'managed'));
+        }
         if (node.status) {
             meta.appendChild(renderStatus(node.status));
         }
@@ -583,7 +622,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
         const actions = document.createElement('div');
         actions.className = 'tree-actions';
-        if (!node.blocked) {
+        if (node.manageable && !node.blocked) {
             const reloadBtn = document.createElement('button');
             reloadBtn.textContent = 'Reload';
             reloadBtn.className = 'reload';
@@ -619,6 +658,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                 unloadCog(node.path);
             });
             actions.appendChild(unloadBtn);
+        } else if (!node.manageable) {
+            const info = document.createElement('span');
+            info.className = 'managed-info';
+            info.textContent = 'Nur über Eltern-Cog verwaltbar';
+            actions.appendChild(info);
         }
         const blockBtn = document.createElement('button');
         if (node.blocked) {
@@ -1142,6 +1186,11 @@ class DashboardServer:
         discovered = set(bot.cogs_list)
         status_map = bot.cog_status.copy()
 
+        def is_manageable(path: str) -> bool:
+            if path == "cogs":
+                return False
+            return path in active or path in discovered or path in status_map
+
         def node_status(path: str, *, blocked: bool) -> Optional[str]:
             status = status_map.get(path)
             if status:
@@ -1161,6 +1210,9 @@ class DashboardServer:
 
             blocked_dir = bot.is_namespace_blocked(module_path, assume_normalized=True)
             status = node_status(module_path, blocked=blocked_dir)
+            manageable_dir = is_manageable(module_path)
+            loaded_dir = module_path in active
+            discovered_dir = module_path in discovered
             is_package = (
                 module_path in discovered
                 or module_path in status_map
@@ -1168,8 +1220,8 @@ class DashboardServer:
             ) and module_path != "cogs"
 
             module_count = 1 if is_package else 0
-            loaded_count = 1 if is_package and module_path in active else 0
-            discovered_count = 1 if is_package and module_path in discovered else 0
+            loaded_count = 1 if is_package and loaded_dir else 0
+            discovered_count = 1 if is_package and discovered_dir else 0
 
             children: List[Dict[str, Any]] = []
             try:
@@ -1196,6 +1248,7 @@ class DashboardServer:
                 blocked_child = bot.is_namespace_blocked(mod_path, assume_normalized=True)
                 loaded_child = mod_path in active
                 discovered_child = mod_path in discovered
+                manageable_child = is_manageable(mod_path)
                 status_child = node_status(mod_path, blocked=blocked_child) or "not_discovered"
                 child = {
                     "type": "module",
@@ -1204,6 +1257,7 @@ class DashboardServer:
                     "blocked": blocked_child,
                     "loaded": loaded_child,
                     "discovered": discovered_child,
+                    "manageable": manageable_child,
                     "status": status_child,
                 }
                 children.append(child)
@@ -1220,6 +1274,9 @@ class DashboardServer:
                 "blocked": blocked_dir,
                 "status": status,
                 "is_package": is_package,
+                "manageable": manageable_dir,
+                "loaded": loaded_dir,
+                "discovered": discovered_dir,
                 "module_count": module_count,
                 "loaded_count": loaded_count,
                 "discovered_count": discovered_count,
@@ -1234,6 +1291,9 @@ class DashboardServer:
                 "blocked": bot.is_namespace_blocked("cogs"),
                 "status": None,
                 "is_package": False,
+                "manageable": False,
+                "loaded": False,
+                "discovered": False,
                 "module_count": 0,
                 "loaded_count": 0,
                 "discovered_count": 0,
