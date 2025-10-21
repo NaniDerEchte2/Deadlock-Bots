@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import discord
 from discord.ext import tasks
@@ -87,29 +87,45 @@ class TwitchMonitoringMixin:
             await self._ensure_category_id()
 
         partner_logins: set[str] = set()
-        now_utc = datetime.now(tz=timezone.utc)
         try:
             with storage.get_conn() as c:
                 rows = c.execute(
-                    "SELECT twitch_login, twitch_user_id, require_discord_link "
+                    "SELECT twitch_login, twitch_user_id, require_discord_link, "
+                    "       manual_verified_permanent, manual_verified_until "
                     "FROM twitch_streamers"
                 ).fetchall()
-            tracked: List[Tuple[str, str, bool]] = []
+            tracked: List[Dict[str, object]] = []
+            now_utc = datetime.now(timezone.utc)
             for row in rows:
-                login = str(row["twitch_login"])
-                tracked.append((login, str(row["twitch_user_id"]), bool(row["require_discord_link"])))
+                row_dict = dict(row)
+                login = str(row_dict.get("twitch_login") or "").strip()
+                if not login:
+                    continue
+                user_id = str(row_dict.get("twitch_user_id") or "").strip()
+                require_link = bool(row_dict.get("require_discord_link"))
+                is_verified = False
                 try:
-                    is_verified = self._is_partner_verified(dict(row), now_utc)
-                except AttributeError:
-                    is_verified = False
-                if is_verified:
-                    partner_logins.add(login.lower())
+                    is_verified = self._is_partner_verified(row_dict, now_utc)
+                except Exception:
+                    log.debug("Konnte Verifizierungsstatus für %s nicht bestimmen", login, exc_info=True)
+
+                tracked.append(
+                    {
+                        "login": login,
+                        "twitch_user_id": user_id,
+                        "require_link": require_link,
+                        "is_verified": is_verified,
+                    }
+                )
+                login_lower = login.lower()
+                if login_lower:
+                    partner_logins.add(login_lower)
         except Exception:
             log.exception("Konnte tracked Streamer nicht aus DB lesen")
             tracked = []
             partner_logins = set()
 
-        logins = [login for login, _, _ in tracked]
+        logins = [str(entry.get("login") or "") for entry in tracked if entry.get("login")]
         streams_by_login: Dict[str, dict] = {}
 
         try:
@@ -156,7 +172,7 @@ class TwitchMonitoringMixin:
 
     async def _process_postings(
         self,
-        tracked: List[Tuple[str, str, bool]],
+        tracked: List[Dict[str, object]],
         streams_by_login: Dict[str, dict],
     ):
         notify_ch: Optional[discord.TextChannel] = None
@@ -177,7 +193,11 @@ class TwitchMonitoringMixin:
 
         target_game_lower = self._get_target_game_lower()
 
-        for login, user_id, need_link in tracked:
+        for entry in tracked:
+            login = str(entry.get("login") or "").strip()
+            if not login:
+                continue
+
             login_lower = login.lower()
             stream = streams_by_login.get(login_lower)
             previous_state = live_state.get(login_lower, {})
@@ -190,6 +210,9 @@ class TwitchMonitoringMixin:
             message_id_previous = str(previous_state.get("last_discord_message_id") or "").strip() or None
             message_id_to_store = message_id_previous
 
+            need_link = bool(entry.get("require_link"))
+            is_verified = bool(entry.get("is_verified"))
+
             game_name = (stream.get("game_name") or "").strip() if stream else ""
             game_name_lower = game_name.lower()
             is_deadlock = is_live and bool(target_game_lower) and game_name_lower == target_game_lower
@@ -198,6 +221,7 @@ class TwitchMonitoringMixin:
                 notify_ch is not None
                 and is_deadlock
                 and (not was_live or not was_deadlock or not message_id_previous)
+                and is_verified
             )
 
             if should_post:
@@ -265,6 +289,7 @@ class TwitchMonitoringMixin:
                         else:
                             message_id_to_store = None
 
+            user_id = str(entry.get("twitch_user_id") or "").strip()
             db_user_id = user_id or previous_state.get("twitch_user_id") or login_lower
             db_user_id = str(db_user_id)
             db_message_id = str(message_id_to_store) if message_id_to_store else None

@@ -166,6 +166,7 @@ class Dashboard:
   .btn-small {{ padding:.35rem .6rem; font-size:.85rem; }}
   .btn-secondary {{ background:#2a3044; color:var(--text); border:1px solid var(--bd); }}
   .btn-danger {{ background:#792e2e; }}
+  .btn-warn {{ background:#b8741a; color:#fff; }}
   table {{ width:100%; border-collapse: collapse; margin-top:1rem; }}
   th, td {{ border-bottom:1px solid var(--bd); padding:.6rem; text-align:left; }}
   th {{ color:var(--accent-2); }}
@@ -317,6 +318,11 @@ class Dashboard:
                 f"    <input type='hidden' name='login' value='{escaped_login}' />"
                 "    <input type='hidden' name='mode' value='clear' />"
                 "    <button class='btn btn-small btn-secondary'>Reset</button>"
+                "  </form>"
+                "  <form class='inline' method='post' action='/twitch/verify'>"
+                f"    <input type='hidden' name='login' value='{escaped_login}' />"
+                "    <input type='hidden' name='mode' value='failed' />"
+                "    <button class='btn btn-small btn-warn'>Verifizierung fehlgeschlagen</button>"
                 "  </form>"
                 "  <form class='inline' method='post' action='/twitch/remove'>"
                 f"    <input type='hidden' name='login' value='{escaped_login}' />"
