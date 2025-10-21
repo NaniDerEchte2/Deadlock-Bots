@@ -443,6 +443,21 @@ class TwitchLeaderboardMixin:
     ) -> Dict[str, Any]:
         out: Dict[str, Any] = {"tracked": {}, "category": {}}
 
+        tracked_logins: set[str] = set()
+        try:
+            with storage.get_conn() as c:
+                rows = c.execute(
+                    "SELECT twitch_login FROM twitch_streamers"
+                ).fetchall()
+            for row in rows:
+                login_raw = row[0] if isinstance(row, tuple) else row["twitch_login"]
+                login = str(login_raw or "").strip().lower()
+                if login:
+                    tracked_logins.add(login)
+        except Exception:
+            log.exception("Konnte gespeicherte Twitch-Logins nicht laden")
+            tracked_logins = set()
+
         def _normalize_hour(value: Optional[int]) -> Optional[int]:
             if value is None:
                 return None
@@ -514,8 +529,17 @@ class TwitchLeaderboardMixin:
         """
         ).format(hour_clause=hour_clause)
 
-        out["tracked"]["top"] = _aggregate(tracked_sql, hour_params)
-        out["category"]["top"] = _aggregate(category_sql, hour_params)
+        def _apply_partner_flag(items: List[dict]) -> List[dict]:
+            if not tracked_logins:
+                return items
+            for item in items:
+                login = str(item.get("streamer") or "").strip().lower()
+                if login and login in tracked_logins:
+                    item["is_partner"] = 1
+            return items
+
+        out["tracked"]["top"] = _apply_partner_flag(_aggregate(tracked_sql, hour_params))
+        out["category"]["top"] = _apply_partner_flag(_aggregate(category_sql, hour_params))
 
         tracked_hourly_sql = (
             """
