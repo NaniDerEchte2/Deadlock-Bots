@@ -127,13 +127,18 @@ class TwitchDashboardMixin:
 
         if mode in {"permanent", "temp"}:
             row_data = None
+            should_notify = False
             with storage.get_conn() as c:
                 row = c.execute(
-                    "SELECT discord_user_id, discord_display_name FROM twitch_streamers WHERE twitch_login=?",
+                    (
+                        "SELECT discord_user_id, discord_display_name, manual_verified_at "
+                        "FROM twitch_streamers WHERE twitch_login=?"
+                    ),
                     (login,),
                 ).fetchone()
                 if row:
                     row_data = dict(row)
+                    should_notify = row_data.get("manual_verified_at") is None
 
                 if mode == "permanent":
                     c.execute(
@@ -153,7 +158,9 @@ class TwitchDashboardMixin:
                     )
                     base_msg = f"{login} für 30 Tage verifiziert"
 
-            note = await self._notify_verification_success(login, row_data)
+            note = ""
+            if should_notify:
+                note = await self._notify_verification_success(login, row_data)
             return f"{base_msg} {note}".strip()
 
         if mode == "clear":
