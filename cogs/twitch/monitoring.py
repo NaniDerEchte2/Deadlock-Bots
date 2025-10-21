@@ -91,7 +91,8 @@ class TwitchMonitoringMixin:
         try:
             with storage.get_conn() as c:
                 rows = c.execute(
-                    "SELECT twitch_login, twitch_user_id, require_discord_link "
+                    "SELECT twitch_login, twitch_user_id, require_discord_link, "
+                    "       manual_verified_permanent, manual_verified_until "
                     "FROM twitch_streamers"
                 ).fetchall()
             tracked: List[Tuple[str, str, bool]] = []
