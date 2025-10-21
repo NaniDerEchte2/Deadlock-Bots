@@ -10,7 +10,7 @@ Step 1  (StreamerIntroView):
 
 Step 2  (StreamerRequirementsView):
   Zeigt die Anforderungen und führt durch 3 Schritte:
-    1. Voraussetzungen via Modal bestätigen ("verstanden")
+    1. Voraussetzungen via Modal bestätigen ("bestätigen")
     2. Twitch-Link eintragen (wird gespeichert, aber noch nicht freigeschaltet)
     3. Button "Verifizierung anstoßen" vergibt Rolle + Kontroll-Ping
   Zusätzlich: "Abbrechen" beendet ohne Änderungen.
@@ -320,18 +320,18 @@ class StreamerRequirementsAcknowledgementModal(discord.ui.Modal):
         super().__init__(title="Partner-Voraussetzungen bestätigt")
         self.parent_view = parent_view
         self.confirm_input = discord.ui.TextInput(
-            label="Bestätige mit \"verstanden\"",
-            placeholder="Bitte tippe hier 'verstanden' ein",
+            label="Hiermit bestätige ich, dass ich die Voraussetzungen erfüllt habe.",
+            placeholder="Bitte tippe hier 'bestätigen' ein",
             required=True,
             max_length=20,
         )
         self.add_item(self.confirm_input)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        if str(self.confirm_input.value).strip().lower() != "verstanden":
+        if str(self.confirm_input.value).strip().lower() != "bestätigen":
             await _safe_send(
                 interaction,
-                content="⚠️ Bitte gib genau \"verstanden\" ein, um zu bestätigen, dass du die Voraussetzungen gelesen hast.",
+                content="⚠️ Bitte gib genau \"bestätigen\" ein, um zu bestätigen, dass du die Voraussetzungen erfüllt hast.",
                 ephemeral=True,
             )
             return
@@ -620,7 +620,7 @@ class StreamerRequirementsView(StepView):
             log.debug("Failed to update requirements message: %r", exc)
 
     @discord.ui.button(
-        label="Hiermit bestätige ich, dass ich die Voraussetzungen erfüllt habe.",
+        label="Voraussetzungen bestätigen",
         style=discord.ButtonStyle.primary,
         custom_id="wdm:streamer:req_ack",
     )
