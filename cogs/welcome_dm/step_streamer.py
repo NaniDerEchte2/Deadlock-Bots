@@ -172,7 +172,12 @@ async def _assign_role_and_notify(interaction: discord.Interaction) -> Tuple[boo
     else:
         log.warning("Notify channel %s nicht gefunden/kein Textkanal.", STREAMER_NOTIFY_CHANNEL_ID)
 
-    return True, "Top! Du hast jetzt die **Streamer-Rolle**. Wir prüfen kurz alles Weitere."
+    return (
+        True,
+        "🎉 Glückwunsch! Du wurdest erfolgreich als **Streamer-Partner** verifiziert und bist jetzt offiziell Teil des "
+        "Streamer-Teams. Wir melden uns, falls wir noch Fragen haben – ansonsten schauen wir uns deine Angaben kurz an. "
+        "Bei Fragen kannst du dich gerne hier melden: https://discord.com/channels/1289721245281292288/1428062025145385111",
+    )
 
 
 async def _safe_send(
@@ -541,7 +546,8 @@ class StreamerRequirementsView(StepView):
             "3) Wünchenswert wäre es wenn du Zuschauer auf den Server verweist.\n"
             "4) Genauso wünschenswert ist es, wenn du Deadlock-Content postest, verlinke da gerne den Server.\n\n"
             "Du **darfst** selbstverständlich deinen **eigenen Server** weiterführen – \n"
-            "wir verstehen uns nicht als Konkurrenz, sondern als Hub für deutschsprachige Deadlock-Spieler."
+            "wir verstehen uns nicht als Konkurrenz, sondern als Hub für deutschsprachige Deadlock-Spieler.\n\n"
+            "Wir prüfen selbstverständlich, ob du alle Voraussetzungen erfüllst."
         )
 
         if twitch_login:
@@ -614,7 +620,7 @@ class StreamerRequirementsView(StepView):
             log.debug("Failed to update requirements message: %r", exc)
 
     @discord.ui.button(
-        label="Voraussetzungen bestätigen",
+        label="Hiermit bestätige ich, dass ich die Voraussetzungen erfüllt habe.",
         style=discord.ButtonStyle.primary,
         custom_id="wdm:streamer:req_ack",
     )
@@ -691,7 +697,10 @@ class StreamerRequirementsView(StepView):
         await self._update_message(interaction)
         await _safe_send(
             interaction,
-            content="Danke! Als nächstes gib bitte deinen Twitch-Link an.",
+            content=(
+                "Danke! Wir schauen uns kurz an, ob du alle Voraussetzungen erfüllst. "
+                "Als nächstes gib bitte deinen Twitch-Link an."
+            ),
             ephemeral=True,
         )
 
