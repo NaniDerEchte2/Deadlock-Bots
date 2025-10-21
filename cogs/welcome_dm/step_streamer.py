@@ -174,9 +174,7 @@ async def _assign_role_and_notify(interaction: discord.Interaction) -> Tuple[boo
 
     return (
         True,
-        "🎉 Glückwunsch! Du wurdest erfolgreich als **Streamer-Partner** verifiziert und bist jetzt offiziell Teil des "
-        "Streamer-Teams. Wir melden uns, falls wir noch Fragen haben – ansonsten schauen wir uns deine Angaben kurz an. "
-        "Bei Fragen kannst du dich gerne hier melden: https://discord.com/channels/1289721245281292288/1428062025145385111",
+        "Alles klar! Wir kümmern uns jetzt um deine Verifizierung. Falls wir Rückfragen haben, melden wir uns bei dir.",
     )
 
 
