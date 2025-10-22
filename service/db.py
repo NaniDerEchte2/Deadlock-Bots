@@ -143,11 +143,10 @@ def get_conn() -> Iterator[sqlite3.Connection]:
 def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
     """
     Legt das Schema an (idempotent). Enthält u. a.:
-      - kv_store, templates, user_threads
-      - users, guild_settings, onboarding_sessions, user_preferences
-      - ranks, temp_voice_channels, voice_sessions, voice_stats
-      - matches, changelog_subscriptions, posted_changelogs
-      - steam_links, live_player_state, live_lane_state, live_lane_members
+      - schema_version, kv_store
+      - voice_stats (inkl. Migrations-Update)
+      - steam_links, live_player_state
+      - steam_friend_requests, steam_quick_invites, steam_tasks
     """
     c = conn or connect()
     with _LOCK:
@@ -167,106 +166,12 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               PRIMARY KEY(ns, k)
             );
 
-            -- Templates (Kompat-Schicht)
-            CREATE TABLE IF NOT EXISTS templates(
-              key        TEXT PRIMARY KEY,
-              content    TEXT NOT NULL,
-              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-
-            -- User↔Thread (Kompat-Schicht)
-            CREATE TABLE IF NOT EXISTS user_threads(
-              user_id    INTEGER PRIMARY KEY,
-              thread_id  INTEGER NOT NULL,
-              created_at TEXT    NOT NULL DEFAULT (datetime('now'))
-            );
-
-            -- Nutzer/Guild Basis
-            CREATE TABLE IF NOT EXISTS users(
-              user_id    INTEGER PRIMARY KEY,
-              name       TEXT,
-              created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-
-            -- Mehrere Settings je Guild: (guild_id, key) als PK
-            CREATE TABLE IF NOT EXISTS guild_settings(
-              guild_id INTEGER NOT NULL,
-              key      TEXT    NOT NULL,
-              value    TEXT,
-              PRIMARY KEY (guild_id, key)
-            );
-
-            -- Onboarding & Präferenzen
-            CREATE TABLE IF NOT EXISTS onboarding_sessions(
-              user_id   INTEGER PRIMARY KEY,
-              step      TEXT,
-              data_json TEXT,
-              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS user_preferences(
-              user_id      INTEGER PRIMARY KEY,
-              funny_custom INTEGER DEFAULT 0,
-              grind_custom INTEGER DEFAULT 0,
-              patch_notes  INTEGER DEFAULT 0,
-              rank         INTEGER,
-              updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-
-            -- Ranks
-            CREATE TABLE IF NOT EXISTS ranks(
-              user_id   INTEGER PRIMARY KEY,
-              rank      INTEGER NOT NULL,
-              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-
-            -- TempVoice
-            CREATE TABLE IF NOT EXISTS temp_voice_channels(
-              channel_id INTEGER PRIMARY KEY,
-              owner_id   INTEGER NOT NULL,
-              name       TEXT,
-              user_limit INTEGER,
-              privacy    TEXT DEFAULT 'public',
-              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              deleted_at DATETIME
-            );
-
-            -- Voice Tracking
-            CREATE TABLE IF NOT EXISTS voice_sessions(
-              id         INTEGER PRIMARY KEY AUTOINCREMENT,
-              user_id    INTEGER NOT NULL,
-              channel_id INTEGER NOT NULL,
-              joined_at  DATETIME NOT NULL,
-              left_at    DATETIME,
-              seconds    INTEGER
-            );
-            CREATE INDEX IF NOT EXISTS idx_voice_sessions_user_open
-              ON voice_sessions(user_id, left_at);
-
+            -- Voice Stats (aggregiert)
             CREATE TABLE IF NOT EXISTS voice_stats(
               user_id       INTEGER PRIMARY KEY,
               total_seconds INTEGER NOT NULL DEFAULT 0,
               total_points  INTEGER NOT NULL DEFAULT 0,
               last_update   DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-
-            -- Team Balancer / Matches
-            CREATE TABLE IF NOT EXISTS matches(
-              id         INTEGER PRIMARY KEY AUTOINCREMENT,
-              guild_id   INTEGER,
-              created_by INTEGER,
-              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              data_json  TEXT
-            );
-
-            -- Changelog Bot
-            CREATE TABLE IF NOT EXISTS changelog_subscriptions(
-              guild_id      INTEGER PRIMARY KEY,
-              channel_id    INTEGER NOT NULL,
-              role_ping_id  INTEGER
-            );
-            CREATE TABLE IF NOT EXISTS posted_changelogs(
-              id        TEXT PRIMARY KEY,
-              posted_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
             -- Steam-Links (mehrere Konten pro User möglich)
@@ -289,31 +194,6 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               last_seen_ts INTEGER,
               in_deadlock_now INTEGER DEFAULT 0,
               in_match_now_strict INTEGER DEFAULT 0
-            );
-
-            -- Steam Rich Presence Cache (gefüllt vom node-steam-user Service)
-            CREATE TABLE IF NOT EXISTS steam_rich_presence(
-              steam_id TEXT PRIMARY KEY,
-              app_id INTEGER,
-              status TEXT,
-              status_text TEXT,
-              display TEXT,
-              player_group TEXT,
-              player_group_size INTEGER,
-              connect TEXT,
-              mode TEXT,
-              map TEXT,
-              party_size INTEGER,
-              raw_json TEXT,
-              last_update INTEGER,
-              updated_at INTEGER
-            );
-
-            -- Optionale zusätzliche Watchlist für den Presence-Service
-            CREATE TABLE IF NOT EXISTS steam_presence_watchlist(
-              steam_id TEXT PRIMARY KEY,
-              note TEXT,
-              added_at INTEGER DEFAULT (strftime('%s','now'))
             );
 
             -- Ausgehende Freundschaftsanfragen des Steam-Bots
@@ -340,13 +220,6 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               last_seen INTEGER
             );
 
-            -- Gespeicherte Refresh-Token für den Steam-Bot-Login
-            CREATE TABLE IF NOT EXISTS steam_refresh_tokens(
-              account_name TEXT PRIMARY KEY,
-              refresh_token TEXT NOT NULL,
-              received_at INTEGER DEFAULT (strftime('%s','now'))
-            );
-
             -- Steuer-Tabelle für den Steam-Task-Consumer
             CREATE TABLE IF NOT EXISTS steam_tasks(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -361,26 +234,6 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               finished_at INTEGER
             );
 
-            -- Live-Lane-Status (pro Voice-Channel)
-            CREATE TABLE IF NOT EXISTS live_lane_state(
-              channel_id  INTEGER PRIMARY KEY,
-              is_active   INTEGER DEFAULT 0,
-              started_at  INTEGER,
-              last_update INTEGER,
-              minutes     INTEGER DEFAULT 0,
-              suffix      TEXT,
-              reason      TEXT
-            );
-
-            -- Pro Lane und Member letzter Check
-            CREATE TABLE IF NOT EXISTS live_lane_members(
-              channel_id INTEGER NOT NULL,
-              user_id    INTEGER NOT NULL,
-              in_match   INTEGER DEFAULT 0,
-              server_id  TEXT,
-              checked_ts INTEGER,
-              PRIMARY KEY(channel_id, user_id)
-            );
             """
         )
         # Nachträglich hinzugefügte Spalten idempotent sicherstellen
@@ -393,9 +246,6 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
                 raise
         # Indizes ergänzen (idempotent)
         try:
-            c.execute("CREATE INDEX IF NOT EXISTS idx_lls_active   ON live_lane_state(is_active)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_llm_channel  ON live_lane_members(channel_id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_llm_checked  ON live_lane_members(checked_ts)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_user  ON steam_links(user_id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)")
             c.execute(
@@ -404,10 +254,8 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_quick_invites_reserved ON steam_quick_invites(reserved_by)"
             )
-            c.execute("CREATE INDEX IF NOT EXISTS idx_rich_presence_updated ON steam_rich_presence(updated_at)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_status ON steam_tasks(status, id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_updated ON steam_tasks(updated_at)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_ranks_rank ON ranks(rank)")
         except sqlite3.Error as e:
             logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)
 
@@ -457,60 +305,6 @@ def set_kv(ns: str, k: str, v: str) -> None:
 def get_kv(ns: str, k: str) -> Optional[str]:
     row = query_one("SELECT v FROM kv_store WHERE ns=? AND k=?", (ns, k))
     return row[0] if row else None
-
-
-# ---------- Templates (Kompat-Schicht) ----------
-
-def get_template(key: str, default: Optional[str] = None) -> Optional[str]:
-    row = query_one("SELECT content FROM templates WHERE key = ?", (key,))
-    if row:
-        return row[0]
-    if default is not None:
-        execute(
-            "INSERT OR IGNORE INTO templates (key, content) VALUES (?, ?)",
-            (key, default),
-        )
-        return default
-    return None
-
-
-def set_template(key: str, content: str) -> None:
-    execute(
-        """
-        INSERT INTO templates (key, content)
-        VALUES (?, ?)
-        ON CONFLICT(key) DO UPDATE
-        SET content = excluded.content, updated_at = datetime('now')
-        """,
-        (key, content),
-    )
-
-
-# ---------- UserThreads (Kompat-Schicht) ----------
-
-def get_user_thread(user_id: int) -> Optional[int]:
-    row = query_one("SELECT thread_id FROM user_threads WHERE user_id = ?", (user_id,))
-    return int(row[0]) if row else None
-
-
-def set_user_thread(user_id: int, thread_id: int) -> None:
-    execute(
-        """
-        INSERT INTO user_threads (user_id, thread_id)
-        VALUES (?, ?)
-        ON CONFLICT(user_id) DO UPDATE
-        SET thread_id = excluded.thread_id, created_at = datetime('now')
-        """,
-        (user_id, thread_id),
-    )
-
-
-def delete_user_thread(user_id: int) -> None:
-    execute("DELETE FROM user_threads WHERE user_id = ?", (user_id,))
-
-
-def delete_user_thread_by_thread_id(thread_id: int) -> None:
-    execute("DELETE FROM user_threads WHERE thread_id = ?", (thread_id,))
 
 
 # ---------- Pflege ----------

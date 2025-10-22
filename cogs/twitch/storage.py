@@ -173,14 +173,3 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "twitch_stats_tracked", "is_partner", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_stats_category", "is_partner", "INTEGER DEFAULT 0")
 
-    # 4) twitch_settings – Channel je Guild
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS twitch_settings (
-            guild_id        INTEGER PRIMARY KEY,
-            channel_id      INTEGER,
-            language_filter TEXT,
-            required_marker TEXT
-        )
-        """
-    )

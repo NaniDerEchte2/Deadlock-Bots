@@ -293,10 +293,6 @@ class SteamMaster(commands.Cog):
         )
         lines.append(self._format_stats("quick_invites", invite_stats))
 
-        watch_count = _count_single("SELECT COUNT(*) FROM steam_presence_watchlist")
-        if watch_count is not None:
-            lines.append(f"presence_watchlist={watch_count}")
-
         links_count = _count_single(
             "SELECT COUNT(DISTINCT steam_id) FROM steam_links WHERE steam_id IS NOT NULL AND steam_id != ''"
         )
