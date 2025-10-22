@@ -19,6 +19,7 @@ from cogs.steam import (
     respond_with_schnelllink,
 )
 from cogs.steam.friend_requests import queue_friend_request
+from cogs.steam.logging_utils import safe_log_extra
 from cogs.welcome_dm.step_steam_link import steam_link_detailed_description
 
 
@@ -83,7 +84,10 @@ def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: 
     try:
         queue_friend_request(steam_id)
     except Exception:
-        log.exception("[nudge] Konnte Steam-Freundschaftsanfrage nicht einreihen", extra={"steam_id": steam_id})
+        log.exception(
+            "[nudge] Konnte Steam-Freundschaftsanfrage nicht einreihen",
+            extra=safe_log_extra({"steam_id": steam_id}),
+        )
 
 def _ensure_schema():
     db.execute("""
@@ -503,8 +507,9 @@ class SteamLinkVoiceNudge(commands.Cog):
                 raise
             except Exception as exc:
                 log.debug(
-                    "[nudge] Persistente DM konnte nicht aktualisiert werden: %r", exc,
-                    extra={"user_id": user_id},
+                    "[nudge] Persistente DM konnte nicht aktualisiert werden: %r",
+                    exc,
+                    extra=safe_log_extra({"user_id": user_id}),
                 )
                 continue
 
