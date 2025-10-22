@@ -19,22 +19,9 @@ from service import db
 
 from cogs.steam import SchnellLinkButton
 from cogs.steam.friend_requests import queue_friend_request, queue_friend_requests
+from cogs.steam.logging_utils import safe_log_extra
 
 log = logging.getLogger("SteamLink")
-
-
-def _sanitize_log_value(value):
-    if isinstance(value, str):
-        return value.replace("\n", "\\n").replace("\r", "\\r")
-    if isinstance(value, (list, tuple, set)):
-        return type(value)(_sanitize_log_value(v) for v in value)
-    if isinstance(value, dict):
-        return {k: _sanitize_log_value(v) for k, v in value.items()}
-    return value
-
-
-def _safe_log_extra(data: dict) -> dict:
-    return {k: _sanitize_log_value(v) for k, v in data.items()}
 
 DISCORD_API = "https://discord.com/api"
 STEAM_API_BASE = "https://api.steampowered.com"
@@ -168,7 +155,7 @@ def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: 
     except Exception:
         log.exception(
             "Konnte Steam-Freundschaftsanfrage nicht einreihen",
-            extra=_safe_log_extra({"steam_id": steam_id}),
+            extra=safe_log_extra({"steam_id": steam_id}),
         )
 
 
@@ -323,7 +310,7 @@ class SteamLink(commands.Cog):
         except Exception:
             log.exception(
                 "Konnte Steam-Freundschaftsanfragen nicht in die Queue legen",
-                extra=_safe_log_extra({"user_id": user_id, "steam_ids": steam_ids}),
+                extra=safe_log_extra({"user_id": user_id, "steam_ids": steam_ids}),
             )
         try:
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
