@@ -75,8 +75,8 @@ class SteamVerifiedRole(commands.Cog):
         if guild is None:
             try:
                 guild = await self.bot.fetch_guild(self.guild_id)
-            except discord.HTTPException:
-                pass
+            except discord.HTTPException as exc:
+                log.warning("Konnte Guild nicht abrufen (%s): %s", self.guild_id, exc)
         if guild is None:
             log.error("Guild %s nicht gefunden/zugreifbar.", self.guild_id)
             return None, None
@@ -94,8 +94,8 @@ class SteamVerifiedRole(commands.Cog):
             ch = await guild.fetch_channel(self.log_channel_id)
             if isinstance(ch, discord.TextChannel):
                 return ch
-        except discord.HTTPException:
-            pass
+        except discord.HTTPException as exc:
+            log.debug("Konnte Log-Channel nicht abrufen (%s): %s", self.log_channel_id, exc)
         return None
 
     async def _announce_assignments(self, guild: discord.Guild, lines: List[str]):
@@ -124,8 +124,10 @@ class SteamVerifiedRole(commands.Cog):
         # Rechte/Höhe vorab prüfen
         me = guild.me
         if not me:
-            try: me = await guild.fetch_member(self.bot.user.id)
-            except discord.HTTPException: pass
+            try:
+                me = await guild.fetch_member(self.bot.user.id)
+            except discord.HTTPException as exc:
+                log.warning("Konnte Bot-Member nicht abrufen (%s): %s", self.bot.user.id if self.bot.user else "?", exc)
         if not me:
             log.error("Konnte Bot-Member in Guild nicht bestimmen.")
             return 0
