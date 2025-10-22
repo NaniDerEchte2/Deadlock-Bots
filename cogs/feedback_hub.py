@@ -248,8 +248,8 @@ class FeedbackHub(commands.Cog):
         else:
             try:
                 await ctx.message.delete()
-            except discord.HTTPException:
-                pass
+            except discord.HTTPException as exc:
+                log.debug("Konnte Ursprungsnachricht nach Interface-Erstellung nicht löschen: %s", exc)
 
     @create_feedback_interface.error
     async def on_create_feedback_error(

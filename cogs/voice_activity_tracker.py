@@ -3,7 +3,6 @@ from discord.ext import commands, tasks
 import logging
 import json
 import os
-import asyncio
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional

@@ -293,27 +293,38 @@ class DeadlockPresenceLogger {
     }
   }
 
-  ensureCsvHeader() {
-    if (this.headerWritten && fs.existsSync(this.csvPath)) {
-      return;
+    ensureCsvHeader() {
+      if (this.headerWritten && fs.existsSync(this.csvPath)) {
+        return;
+      }
+      if (!fs.existsSync(this.csvPath)) {
+        const header = [
+          'timestamp_iso',
+          'steamid64',
+          'name',
+          'playing_appid',
+          'deadlock',
+          'localized_string',
+          'hero_guess',
+          'minutes',
+          'party_hint',
+          'raw_rich_presence_json',
+        ].join(',');
+        try {
+          const fd = fs.openSync(this.csvPath, 'ax');
+          try {
+            fs.writeFileSync(fd, `${header}\n`, 'utf8');
+          } finally {
+            fs.closeSync(fd);
+          }
+        } catch (err) {
+          if (!err || err.code !== 'EEXIST') {
+            throw err;
+          }
+        }
+      }
+      this.headerWritten = true;
     }
-    if (!fs.existsSync(this.csvPath)) {
-      const header = [
-        'timestamp_iso',
-        'steamid64',
-        'name',
-        'playing_appid',
-        'deadlock',
-        'localized_string',
-        'hero_guess',
-        'minutes',
-        'party_hint',
-        'raw_rich_presence_json',
-      ].join(',');
-      fs.writeFileSync(this.csvPath, `${header}\n`, 'utf8');
-    }
-    this.headerWritten = true;
-  }
 
   flushBatch(immediate = false) {
     if (this.batchRows.length === 0) {

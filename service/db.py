@@ -21,6 +21,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
+
+log = logging.getLogger(__name__)
+
 # ---- Env-Keys (nur diese beiden werden unterstützt) ----
 ENV_DB_PATH = "DEADLOCK_DB_PATH"   # kompletter Pfad zur DB-Datei (höchste Prio)
 ENV_DB_DIR  = "DEADLOCK_DB_DIR"    # nur Verzeichnis; Datei = deadlock.sqlite3
@@ -81,6 +84,7 @@ def db_path() -> str:
 
 # Praktischer Alias für Altcode:
 DB_PATH: Path = Path(db_path())
+log.debug("DB_PATH alias initialisiert: %s", DB_PATH)
 
 
 # ---------- Verbindung / PRAGMA / Schema ----------
@@ -101,6 +105,7 @@ def connect() -> sqlite3.Connection:
     _ensure_parent(path)
     _DB_PATH_CACHED = path
     DB_PATH = Path(path)  # Alias aktualisieren
+    log.debug("DB_PATH alias aktualisiert: %s", DB_PATH)
 
     _CONN = sqlite3.connect(
         path,

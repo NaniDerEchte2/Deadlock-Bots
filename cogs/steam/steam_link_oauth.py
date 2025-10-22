@@ -22,6 +22,20 @@ from cogs.steam.friend_requests import queue_friend_request, queue_friend_reques
 
 log = logging.getLogger("SteamLink")
 
+
+def _sanitize_log_value(value):
+    if isinstance(value, str):
+        return value.replace("\n", "\\n").replace("\r", "\\r")
+    if isinstance(value, (list, tuple, set)):
+        return type(value)(_sanitize_log_value(v) for v in value)
+    if isinstance(value, dict):
+        return {k: _sanitize_log_value(v) for k, v in value.items()}
+    return value
+
+
+def _safe_log_extra(data: dict) -> dict:
+    return {k: _sanitize_log_value(v) for k, v in data.items()}
+
 DISCORD_API = "https://discord.com/api"
 STEAM_API_BASE = "https://api.steampowered.com"
 STEAM_OPENID_ENDPOINT = "https://steamcommunity.com/openid/login"
@@ -152,7 +166,10 @@ def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: 
     try:
         queue_friend_request(steam_id)
     except Exception:
-        log.exception("Konnte Steam-Freundschaftsanfrage nicht einreihen", extra={"steam_id": steam_id})
+        log.exception(
+            "Konnte Steam-Freundschaftsanfrage nicht einreihen",
+            extra=_safe_log_extra({"steam_id": steam_id}),
+        )
 
 
 # ----------------------- Middleware (Top-Level) -------------------------------
@@ -306,7 +323,7 @@ class SteamLink(commands.Cog):
         except Exception:
             log.exception(
                 "Konnte Steam-Freundschaftsanfragen nicht in die Queue legen",
-                extra={"user_id": user_id, "steam_ids": steam_ids},
+                extra=_safe_log_extra({"user_id": user_id, "steam_ids": steam_ids}),
             )
         try:
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)

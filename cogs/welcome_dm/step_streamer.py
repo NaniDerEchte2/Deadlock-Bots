@@ -35,10 +35,13 @@ import re
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
+log = logging.getLogger("StreamerOnboarding")
+
 try:
     from cogs.twitch import storage as twitch_storage
     from cogs.twitch.base import TwitchBaseCog
-except Exception:
+except Exception as exc:  # pragma: no cover - optional dependency
+    log.warning("StreamerOnboarding: Twitch-Module nicht verfügbar: %s", exc, exc_info=True)
     twitch_storage = None  # type: ignore[assignment]
     TwitchBaseCog = None  # type: ignore[assignment]
 
@@ -48,8 +51,6 @@ from discord import app_commands
 
 # Bestehende StepView aus dem Projekt nutzen
 from .base import StepView  # WICHTIG: Diese StepView hat __init__(self) OHNE timeout-Argument
-
-log = logging.getLogger("StreamerOnboarding")
 
 # --- IDs (optional via ENV überschreibbar) ---
 STREAMER_ROLE_ID = int(os.getenv("STREAMER_ROLE_ID", "1313624729466441769"))
@@ -143,20 +144,31 @@ async def _assign_role_and_notify(interaction: discord.Interaction) -> Tuple[boo
     # 2) Twitch-Registrierung (optional, mehrere Cog-Namen probieren)
     try:
         possible_cogs = ("TwitchDeadlock", "TwitchBot", "Twitch")
+        registered = False
         for name in possible_cogs:
             cog = interaction.client.get_cog(name)  # type: ignore
-            if cog:
-                for meth in ("register_streamer", "add_streamer", "register"):
-                    if hasattr(cog, meth):
-                        try:
-                            res = await getattr(cog, meth)(member.id)  # type: ignore
-                            log.info("%s.%s(%s) -> %r", name, meth, member.id, res)
-                            raise StopIteration  # registriert – keine weiteren Versuche nötig
-                        except Exception as e:
-                            log.warning("Twitch registration via %s.%s failed for %s: %r", name, meth, member.id, e)
+            if not cog:
+                continue
+
+            method_found = False
+            for meth in ("register_streamer", "add_streamer", "register"):
+                if not hasattr(cog, meth):
+                    continue
+
+                method_found = True
+                try:
+                    res = await getattr(cog, meth)(member.id)  # type: ignore[attr-defined]
+                    log.info("%s.%s(%s) -> %r", name, meth, member.id, res)
+                    registered = True
+                    break
+                except Exception as e:
+                    log.warning("Twitch registration via %s.%s failed for %s: %r", name, meth, member.id, e)
+
+            if not method_found:
                 log.debug("Twitch cog '%s' gefunden, aber keine passende register-Methode.", name)
-    except StopIteration:
-        pass
+
+            if registered:
+                break
     except Exception as e:
         log.debug("Twitch registration check failed: %r", e)
 
@@ -211,8 +223,12 @@ async def _disable_all_and_edit(
     for child in view.children:
         try:
             child.disabled = True  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug(
+                "Konnte Button %s nicht deaktivieren: %s",
+                getattr(child, "custom_id", getattr(child, "label", "?")),
+                exc,
+            )
 
     try:
         if interaction.message:
@@ -255,7 +271,8 @@ def _normalize_twitch_login(raw: str) -> str:
             path = (parsed.path or "").strip("/")
             if path:
                 value = path.split("/")[0]
-        except Exception:
+        except Exception as exc:
+            log.debug("Twitch-URL konnte nicht geparst werden (%r): %s", value, exc)
             return ""
 
     value = value.strip().lstrip("@")
@@ -752,8 +769,8 @@ class StreamerOnboarding(commands.Cog):
             log.error("streamer_cmd failed: %r", e)
             try:
                 await interaction.followup.send("Unerwarteter Fehler beim Start. Bitte probiere es erneut.", ephemeral=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("streamer_cmd followup send failed: %s", exc)
 
 
 async def setup(bot: commands.Bot):

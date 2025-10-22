@@ -18,10 +18,13 @@ import datetime as _dt
 import pytz
 import traceback
 
+import importlib
+import inspect
+import hashlib
+
 import discord
 from discord.ext import commands
 # --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
-import sys as _sys, os as _os, importlib, inspect, logging as _logging, hashlib
 import re
 
 try:
@@ -528,8 +531,8 @@ class MasterBot(commands.Bot):
                 name=f"{len(self.active_cogs())} Cogs | {pfx}help",
             )
             await self.change_presence(activity=activity)
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.exception("Konnte Presence nicht aktualisieren: %s", exc)
 
     # --------------------- Lifecycle ----------------------------------
     async def setup_hook(self):
@@ -1144,8 +1147,8 @@ async def _graceful_shutdown(bot: MasterBot, reason: str = "signal",
     try:
         if _kill_timer:
             _kill_timer.cancel()
-    except Exception:
-        pass
+    except Exception as exc:
+        logging.getLogger().debug("Kill-Timer konnte nicht gestoppt werden: %s", exc)
 
     # 3) Loop stoppen + harter Exit als letzte Eskalationsstufe
     try:

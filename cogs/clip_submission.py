@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import io
+import logging
+import random
 import re
 import time
-import random
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Optional, Dict, List, Tuple
+from typing import Dict, Optional, Tuple
 
 import discord
 from discord import app_commands
@@ -36,6 +37,8 @@ WINDOW_END_HOUR = 23                      # Ende: Samstag 23:00
 URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 TZ = ZoneInfo(WINDOW_TZ)
 VIEW_TYPE = "clip_submission_v1"          # Schlüssel in persistent_views
+
+log = logging.getLogger(__name__)
 
 # ===== ZENTRALE DB (nutzt deine bestehende service/db.py) =====
 try:
@@ -251,18 +254,20 @@ class ClipSubmitModal(discord.ui.Modal, title="Gameplay-Clip einreichen"):
         permission = self.cog._pending_permission.pop(user.id, "unspecified")
 
         if not URL_RE.fullmatch(link):
-            return await interaction.response.send_message(
+            await interaction.response.send_message(
                 "❌ Der Link sieht nicht wie eine gültige URL aus. Bitte erneut versuchen.",
                 ephemeral=True,
             )
+            return
 
         now = time.time()
         last = self.cog._last_submit_ts.get(user.id, 0)
         if now - last < 60:
-            return await interaction.response.send_message(
+            await interaction.response.send_message(
                 "⏱️ Bitte warte kurz bevor du erneut einsendest (60 Sek. Cooldown).",
                 ephemeral=True,
             )
+            return
         self.cog._last_submit_ts[user.id] = now
 
         # Speichern
@@ -299,8 +304,13 @@ class ClipSubmitModal(discord.ui.Modal, title="Gameplay-Clip einreichen"):
                         embed.add_field(name="Info", value=info[:1024], inline=False)
                     embed.set_footer(text=f"UserID: {user.id}")
                     await ch.send(embed=embed)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning(
+                    "Konnte Clip-Einsendung nicht im Review-Kanal posten (Guild %s, User %s): %s",
+                    guild.id if guild else "?",
+                    user.id,
+                    exc,
+                )
 
         await interaction.response.send_message(
             "✅ Danke! Dein Clip ist eingegangen.\n\nMindestqualität **1080p**.",
@@ -377,8 +387,14 @@ class ClipSubmissionCog(commands.Cog):
                 ch = await guild.fetch_channel(SUBMIT_CHANNEL_ID)
                 if isinstance(ch, discord.TextChannel):
                     channel = ch
-            except Exception:
+            except Exception as exc:
                 channel = None
+                log.warning(
+                    "Konnte Submit-Channel %s in Guild %s nicht abrufen: %s",
+                    SUBMIT_CHANNEL_ID,
+                    guild.id,
+                    exc,
+                )
         if channel is None:
             return None
 
@@ -389,8 +405,14 @@ class ClipSubmissionCog(commands.Cog):
             try:
                 if int(pv["channel_id"]) == channel.id:
                     message = await channel.fetch_message(int(pv["message_id"]))
-            except Exception:
+            except Exception as exc:
                 message = None
+                log.debug(
+                    "Persistente Clip-Nachricht %s konnte nicht geladen werden (Guild %s): %s",
+                    pv["message_id"],
+                    guild.id,
+                    exc,
+                )
 
         embed = discord.Embed(
             title="🎥 Deadlock Gameplay-Clips einsenden",
@@ -422,7 +444,7 @@ class ClipSubmissionCog(commands.Cog):
             for g in self.bot.guilds:
                 await self.upsert_interface(g)
         except Exception:
-            pass
+            log.exception("Clip-Interface konnte nicht aktualisiert werden")
 
     @interface_refresher.before_loop
     async def _wait_ready(self):
@@ -459,7 +481,7 @@ class ClipSubmissionCog(commands.Cog):
                         c.execute("UPDATE clip_windows SET status='dumped', dump_sent_ts=? WHERE id=?", (now_ts, int(w["id"])))
                 # automatisch: nächstes Fenster wird durch _ensure_window() beim nächsten Tick abgedeckt
         except Exception:
-            pass
+            log.exception("Wochenfenster-Manager-Task fehlgeschlagen")
 
     @weekly_window_manager.before_loop
     async def _wait_ready2(self):
@@ -501,7 +523,8 @@ class ClipSubmissionCog(commands.Cog):
             try:
                 user = self.bot.get_user(SEND_TO_USER_ID) or await self.bot.fetch_user(SEND_TO_USER_ID)
                 await user.send(content=f"📦 **Wochen-Dump (Clips)** – {guild.name}", file=file)
-            except Exception:
+            except Exception as exc:
+                log.warning("Konnte Wochen-Dump nicht als DM senden: %s", exc)
                 # Fallback: in den Submit-Channel posten
                 ch = guild.get_channel(SUBMIT_CHANNEL_ID) or await guild.fetch_channel(SUBMIT_CHANNEL_ID)
                 if isinstance(ch, discord.TextChannel):
@@ -520,14 +543,14 @@ class ClipSubmissionCog(commands.Cog):
                 try:
                     await self.upsert_interface(g)
                 except Exception:
-                    pass
+                    log.exception("Konnte Clip-Interface für Guild %s beim Start nicht aktualisieren", g.id)
             return
 
         for g in self.bot.guilds:
             try:
                 await self.upsert_interface(g)
             except Exception:
-                pass
+                log.exception("Konnte Clip-Interface für Guild %s nicht aktualisieren", g.id)
 
     # ---------- Commands ----------
 
@@ -536,7 +559,8 @@ class ClipSubmissionCog(commands.Cog):
     async def clips_repost(self, interaction: discord.Interaction):
         guild = interaction.guild
         if guild is None:
-            return await interaction.response.send_message("Nur in einem Server nutzbar.", ephemeral=True)
+            await interaction.response.send_message("Nur in einem Server nutzbar.", ephemeral=True)
+            return
 
         msg_id = await self.upsert_interface(guild)
         if msg_id:
@@ -559,7 +583,8 @@ class ClipSubmissionCog(commands.Cog):
                          to_channel: Optional[discord.TextChannel] = None):
         guild = interaction.guild
         if not guild:
-            return await interaction.response.send_message("Nur im Server nutzbar.", ephemeral=True)
+            await interaction.response.send_message("Nur im Server nutzbar.", ephemeral=True)
+            return
 
         # Default: aktuelles Wochenfenster
         if start_ts is None or end_ts is None:
@@ -581,7 +606,8 @@ class ClipSubmissionCog(commands.Cog):
                                 end_ts: Optional[int] = None):
         guild = interaction.guild
         if not guild:
-            return await interaction.response.send_message("Nur im Server nutzbar.", ephemeral=True)
+            await interaction.response.send_message("Nur im Server nutzbar.", ephemeral=True)
+            return
 
         # Zeitraum default = aktuelles Wochenfenster
         if start_ts is None or end_ts is None:
@@ -599,7 +625,8 @@ class ClipSubmissionCog(commands.Cog):
         )
         users = [int(r[0]) for r in rows]
         if not users:
-            return await interaction.response.send_message("Keine Teilnehmenden im Zeitraum.", ephemeral=True)
+            await interaction.response.send_message("Keine Teilnehmenden im Zeitraum.", ephemeral=True)
+            return
 
         winner_id = random.choice(users)
         await interaction.response.send_message(f"🏆 Gewinner (Test): <@{winner_id}>", ephemeral=True)

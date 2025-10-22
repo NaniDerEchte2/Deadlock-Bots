@@ -54,8 +54,8 @@ async def _create_user_thread(interaction: discord.Interaction) -> Optional[disc
         )
         await thread.add_user(interaction.user)
         return thread
-    except discord.Forbidden:
-        pass
+    except discord.Forbidden as exc:
+        log.debug("Privater Thread konnte nicht erstellt werden: %s", exc)
 
     # Fallback: Public Thread
     try:
@@ -76,8 +76,8 @@ async def _send_step(thread: discord.Thread, embed: discord.Embed, view: discord
     msg = await thread.send(embed=embed, view=view)
     try:
         setattr(view, "bound_message", msg)  # kompatibel mit DM-Views
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("View besitzt kein bound_message-Attribut: %s", exc)
     try:
         await view.wait()
     finally:
@@ -141,8 +141,8 @@ class RulesPanel(commands.Cog):
                 await interaction.response.send_message(f"🧵 Onboarding in {thread.mention} gestartet.", ephemeral=True)
             else:
                 await interaction.followup.send(f"🧵 Onboarding in {thread.mention} gestartet.", ephemeral=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Konnte Start-Hinweis nicht senden: %s", exc)
 
         # Bevorzugt: WelcomeDM um Hilfe bitten
         wdm = self.bot.get_cog("WelcomeDM")

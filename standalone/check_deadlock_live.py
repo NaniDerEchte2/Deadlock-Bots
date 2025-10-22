@@ -7,12 +7,16 @@ import re
 import json
 import time
 import argparse
+import logging
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 from urllib.parse import urlparse
 
 import requests
 from dotenv import load_dotenv
+
+
+log = logging.getLogger("check_deadlock_live")
 
 
 # ------------------------------------------------------------
@@ -63,8 +67,9 @@ def _parse_steam_input(raw: str) -> Tuple[str, Optional[str], Optional[str]]:
     u = None
     try:
         u = urlparse(s)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Konnte Steam-Input nicht parsen (%r): %s", raw, exc)
+        u = None
 
     if u and _is_allowed_steamcommunity_host(getattr(u, "hostname", None)):
         path = (u.path or "").rstrip("/")
@@ -160,8 +165,8 @@ def fetch_steam_levels(steam_api_key: str, steam_ids: List[str], timeout: float 
             lvl = (r.json() or {}).get("response", {}).get("player_level")
             if isinstance(lvl, int):
                 out[sid] = lvl
-        except requests.RequestException:
-            pass
+        except requests.RequestException as exc:
+            log.debug("Steam-Level konnte nicht geladen werden für %s: %s", sid, exc)
     return out
 
 def fetch_user_stats_for_game(steam_api_key: str, steam_id: str, app_id: str, timeout: float = 10.0) -> Optional[dict]:
