@@ -526,6 +526,9 @@ class MasterBot(commands.Bot):
         """Presence immer anhand der echten Runtime-Anzahl setzen."""
         pfx = os.getenv("COMMAND_PREFIX", "!")
         try:
+            if not self.is_ready() or getattr(self, "ws", None) is None:
+                logging.debug("Presence-Update übersprungen – Bot noch nicht bereit")
+                return
             activity = discord.Activity(
                 type=discord.ActivityType.watching,
                 name=f"{len(self.active_cogs())} Cogs | {pfx}help",
