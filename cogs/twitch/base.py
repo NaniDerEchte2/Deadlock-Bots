@@ -107,8 +107,9 @@ class TwitchBaseCog(commands.Cog):
             if self.api is not None:
                 try:
                     await self.api.aclose()
-                except asyncio.CancelledError:
-                    pass
+                except asyncio.CancelledError as exc:
+                    log.debug("Schließen der TwitchAPI-Session abgebrochen: %s", exc)
+                    raise
                 except Exception:
                     log.exception("TwitchAPI-Session konnte nicht geschlossen werden")
 

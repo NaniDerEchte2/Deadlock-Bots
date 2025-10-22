@@ -70,8 +70,8 @@ class Dashboard:
             parsed = int(raw)
             if parsed > 0:
                 return parsed
-        except ValueError:
-            pass
+        except ValueError as exc:
+            log.debug("Ungültiger Portwert '%s': %s", raw, exc)
         log.warning("Ungültiger Portwert '%s' – verwende %s", raw, default)
         return default
 
@@ -1349,5 +1349,5 @@ def build_app(
 # Erlaubt Aufrufe wie: Dashboard.build_app(...)
 try:
     Dashboard.build_app = staticmethod(build_app)  # type: ignore[attr-defined]
-except Exception:
-    pass
+except Exception as exc:
+    log.debug("Konnte Dashboard.build_app nicht setzen: %s", exc)

@@ -59,8 +59,8 @@ def _prefer_discord_deeplink(browser_url: Optional[str]) -> Tuple[Optional[str],
             if _DEEPLINK_EN:
                 deeplink = urlunparse(("discord", "-/oauth2/authorize", "", "", u.query, ""))
                 return deeplink, browser_url
-    except Exception:
-        pass
+    except Exception as exc:
+        _LOGGER.debug("Konnte Deep-Link URL nicht parsen (%s): %s", browser_url, exc)
     return browser_url, None
 
 _STEAM_LINK_DM_DESC = dedent(

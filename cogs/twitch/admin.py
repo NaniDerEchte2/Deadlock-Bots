@@ -129,8 +129,8 @@ class TwitchAdminMixin:
         try:
             if bool(row.get("manual_verified_permanent")):
                 return True
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Partner-Flag konnte nicht gelesen werden: %s", exc)
 
         until_raw = row.get("manual_verified_until")
         until_dt = cls._parse_db_datetime(str(until_raw)) if until_raw else None

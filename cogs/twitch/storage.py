@@ -4,7 +4,6 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable, Optional
 
 log = logging.getLogger("TwitchStreams")
 

@@ -182,8 +182,12 @@ class TwitchLeaderboardView(discord.ui.View):
                     "Nur der ursprüngliche Aufrufer kann diese Steuerung verwenden.",
                     ephemeral=True,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug(
+                    "Konnte Hinweis für fremde Leaderboard-Interaktion nicht senden (user_id=%s): %s",
+                    interaction.user.id,
+                    exc,
+                )
             return False
         return True
 
@@ -241,8 +245,8 @@ class TwitchLeaderboardView(discord.ui.View):
         if self._message is not None:
             try:
                 await self._message.edit(view=self)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Konnte Leaderboard-Timeout-Nachricht nicht aktualisieren: %s", exc)
 
     @discord.ui.button(label="Sortierung", style=discord.ButtonStyle.primary, row=0)
     async def sort_button(

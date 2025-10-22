@@ -62,8 +62,8 @@ def _prefer_discord_deeplink(browser_url: Optional[str]) -> Tuple[Optional[str],
         ):
             deeplink = urlunparse(("discord", "-/oauth2/authorize", "", "", u.query, ""))
             return deeplink, browser_url
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("[nudge] Deeplink-Erkennung schlug fehl für %r: %s", browser_url, exc)
     return browser_url, None
 
 # ---------- DB ----------
@@ -103,8 +103,8 @@ def _ensure_schema():
     ):
         try:
             db.execute(sql)
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as exc:
+            log.debug("[nudge] Konnte Schema-Änderung nicht anwenden (%s): %s", sql, exc)
     db.execute("""
         CREATE TABLE IF NOT EXISTS steam_links(
           user_id         INTEGER NOT NULL,
@@ -302,8 +302,12 @@ class _ManualModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
                     "Für **Vanity**-URLs verwende „Via Discord verknüpfen“ oder „Mit Steam anmelden“.",
                     ephemeral=True,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning(
+                    "[nudge] Konnte Fehlerhinweis an %s nicht senden: %s",
+                    interaction.user.id,
+                    exc,
+                )
             return
 
         try:
@@ -322,8 +326,12 @@ class _ManualModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
             log.exception("[nudge] Manual Steam link failed: %r", e)
             try:
                 await interaction.response.send_message("❌ Unerwarteter Fehler beim manuellen Verknüpfen.", ephemeral=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning(
+                    "[nudge] Konnte Fehler-DM beim manuellen Verknüpfen nicht senden (User %s): %s",
+                    interaction.user.id,
+                    exc,
+                )
 
 class _ManualButton(discord.ui.Button):
     def __init__(self, row: int = 0):
@@ -415,12 +423,12 @@ class _PersistentRegistryView(discord.ui.View):
                 await interaction.response.defer(ephemeral=True)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("[nudge] Close-Button konnte nicht deferen: %s", exc)
         try:
             await interaction.message.delete()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("[nudge] Konnte Interaktionsnachricht nicht löschen: %s", exc)
 
 # ---------- Cog ----------
 class SteamLinkVoiceNudge(commands.Cog):
@@ -445,14 +453,14 @@ class SteamLinkVoiceNudge(commands.Cog):
         for uid, t in list(self._tasks.items()):
             try:
                 t.cancel()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("[nudge] Konnte Task %s nicht canceln: %s", uid, exc)
         self._tasks.clear()
         if self._restore_task:
             try:
                 self._restore_task.cancel()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("[nudge] Konnte Restore-Task nicht canceln: %s", exc)
             self._restore_task = None
 
     async def _restore_persistent_messages(self) -> None:
@@ -616,8 +624,8 @@ class SteamLinkVoiceNudge(commands.Cog):
                 if member.id in self._tasks and not self._tasks[member.id].done():
                     try:
                         self._tasks[member.id].cancel()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.debug("[nudge] Bestehenden Task für %s konnte nicht abgebrochen werden: %s", member.id, exc)
                 self._tasks[member.id] = asyncio.create_task(self._wait_and_notify(member))
         except Exception:
             log.exception("on_voice_state_update error")

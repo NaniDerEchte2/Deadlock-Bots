@@ -107,8 +107,8 @@ class WelcomeDM(commands.Cog):
         finally:
             try:
                 await msg.delete()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("_send_step_embed_channel: Nachricht konnte nicht gelöscht werden: %s", exc)
         return bool(getattr(view, "proceed", False))
 
     # ---------------- Öffentliche Flows ----------------
@@ -176,8 +176,8 @@ class WelcomeDM(commands.Cog):
                     await view.wait()
                     try:
                         await msg.delete()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("StreamerIntro DM-Message nicht gelöscht: %s", exc)
                 except Exception:
                     logger.debug("StreamerIntro Schritt übersprungen (kein Modul/Fehler).", exc_info=True)
 
@@ -295,8 +295,8 @@ class WelcomeDM(commands.Cog):
                 await view.wait()
                 try:
                     await msg.delete()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("StreamerIntro Channel-Message nicht gelöscht: %s", exc)
             except Exception:
                 logger.debug("StreamerIntro Schritt (Thread) übersprungen.", exc_info=True)
 
@@ -342,8 +342,8 @@ class WelcomeDM(commands.Cog):
             if closing_lines:
                 try:
                     await channel.send("\n\n".join(closing_lines))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Abschlussnachricht im Channel konnte nicht gesendet werden: %s", exc)
 
             return True
 

@@ -216,8 +216,8 @@ class FormView(discord.ui.View):
         try:
             if user.voice and user.voice.channel:
                 await user.move_to(ch, reason="Eigener Lane-Channel erstellt")
-        except discord.Forbidden:
-            pass
+        except discord.Forbidden as exc:
+            log.warning("Konnte %s nicht in neuen Voice-Channel verschieben: %s", user.id, exc)
 
         await interaction.response.edit_message(
             content=f"✅ **{ch.name}** wurde erstellt in **{ch.category.name}**.",

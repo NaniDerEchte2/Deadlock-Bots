@@ -361,8 +361,8 @@ class TwitchMonitoringMixin:
         if isinstance(started_at_raw, str) and started_at_raw:
             try:
                 timestamp = datetime.fromisoformat(started_at_raw.replace("Z", "+00:00"))
-            except ValueError:
-                pass
+            except ValueError as exc:
+                log.debug("Ungültiger started_at-Wert '%s': %s", started_at_raw, exc)
 
         embed = discord.Embed(
             title=f"{display_name} ist LIVE in {game}!",
