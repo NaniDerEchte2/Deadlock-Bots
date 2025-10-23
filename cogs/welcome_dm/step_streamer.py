@@ -556,11 +556,11 @@ class StreamerRequirementsView(StepView):
         requirement_text = (
             "📋 **Voraussetzungen:**\n\n"
             "**1️⃣ Invite-Link erstellen**\n"
-            "• Rechtsklick auf den Server → *Leute einladen* → **„Einladungslink bearbeiten“**\n"
-            "• Stelle ein: `Läuft ab: Nie` · `Kein Limit`\n\n"
+            " Rechtsklick auf den Server → *Leute einladen* → **„Einladungslink bearbeiten“**\n"
+            " Stelle ein: `Läuft ab: Nie` · `Kein Limit`\n\n"
 
             "**2️⃣ Twitch-Bio anpassen**\n"
-            "• Füge den Server-Link in deine Bio ein, z. B.:\n"
+            " Füge den Server-Link in deine Bio ein, z. B.:\n"
             "> *„Deutscher Deadlock Community Server“*\n\n"
 
             "**3️⃣ Unterstützung & Promo**\n"
