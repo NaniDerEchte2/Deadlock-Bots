@@ -234,6 +234,19 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               finished_at INTEGER
             );
 
+            -- Protokollierte Fragen & Antworten des Server-FAQ-Bots
+            CREATE TABLE IF NOT EXISTS server_faq_logs(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              guild_id INTEGER,
+              channel_id INTEGER,
+              user_id INTEGER,
+              question TEXT NOT NULL,
+              answer TEXT,
+              model TEXT,
+              metadata TEXT
+            );
+
             """
         )
         # Nachträglich hinzugefügte Spalten idempotent sicherstellen

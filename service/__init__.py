@@ -13,10 +13,15 @@ try:
     from . import dashboard  # neues Dashboard-Modul
 except Exception:
     dashboard = None
+try:
+    from . import faq_logs
+except Exception:
+    faq_logs = None
 
 __all__ = [
     "db",
     "socket_bus",
     "worker_client",
     "dashboard",
+    "faq_logs",
 ]
