@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import discord
@@ -21,6 +22,31 @@ except ImportError:  # pragma: no cover - optional dependency
 log = logging.getLogger(__name__)
 
 DEFAULT_MODEL_NAME = os.getenv("DEADLOCK_FAQ_MODEL", "gpt-5.0-turbo")
+
+
+def _ensure_central_env_loaded() -> None:
+    """Lädt den zentralen .env-Pfad, falls der API-Key noch fehlt."""
+
+    if os.getenv("OPENAI_API_KEY") or os.getenv("DEADLOCK_OPENAI_KEY"):
+        return
+
+    central_env = Path(os.path.expandvars(r"C:\Users\Nani-Admin\Documents\.env"))
+    if not central_env.is_file():
+        log.debug("Zentrale .env nicht gefunden: %s", central_env)
+        return
+
+    try:
+        from dotenv import load_dotenv
+    except Exception as exc:  # pragma: no cover - optionale Abhängigkeit
+        log.warning("python-dotenv nicht verfügbar: %s", exc)
+        return
+
+    try:
+        load_dotenv(dotenv_path=str(central_env), override=False)
+        log.info("Zentrale .env geladen: %s", central_env)
+    except Exception:  # pragma: no cover - Dateifehler
+        log.exception("Konnte zentrale .env nicht laden: %s", central_env)
+
 
 FAQ_SYSTEM_PROMPT = """
 Du bist der "Deadlock Server FAQ"-Assistent und agierst ausschließlich auf Deutsch.
@@ -115,6 +141,7 @@ class ServerFAQ(commands.Cog):
         if OpenAI is None:
             log.warning("OpenAI-Paket nicht installiert – Server FAQ reagiert mit Fallback.")
         else:
+            _ensure_central_env_loaded()
             api_key = os.getenv("OPENAI_API_KEY") or os.getenv("DEADLOCK_OPENAI_KEY")
             if not api_key:
                 log.warning("Kein OpenAI API Key für den Server FAQ gesetzt.")
