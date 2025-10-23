@@ -30,6 +30,7 @@ class RolePermissionVoiceManager(commands.Cog):
             1375933460841234514,
             1375934283931451512,
             1357422958544420944,
+            1412804671432818890,
         }
 
         # Discord Rollen-IDs zu Rang-Mapping
@@ -65,15 +66,15 @@ class RolePermissionVoiceManager(commands.Cog):
 
         # Balancing-Regeln (Rang -> (minus, plus))
         self.balancing_rules = {
-            "Initiate": (-1, 1),
-            "Seeker": (-1, 1),
-            "Alchemist": (-1, 1),
-            "Arcanist": (-1, 1),
-            "Ritualist": (-1, 1),
-            "Emissary": (-1, 1),
-            "Archon": (-1, 1),
-            "Oracle": (-1, 1),
-            "Phantom": (-1, 1),
+            "Initiate": (-3, 3),
+            "Seeker": (-3, 3),
+            "Alchemist": (-3, 3),
+            "Arcanist": (-3, 3),
+            "Ritualist": (-3, 2),
+            "Emissary": (-3, 2),
+            "Archon": (-2, 2),
+            "Oracle": (-2, 2),
+            "Phantom": (-2, 2),
             "Ascendant": (-1, 1),
             "Eternus": (-1, 1),
         }
@@ -449,11 +450,25 @@ class RolePermissionVoiceManager(commands.Cog):
         mode = self.get_channel_mode(channel)
         if mode == "grind":
             minus, plus = -2, 2
-        elif rank_name in self.balancing_rules:
-            minus, plus = self.balancing_rules[rank_name]
+        else:
+            minus, plus = self.balancing_rules.get(rank_name, (-1, 1))
+
+        initiate_value = self.deadlock_ranks["Initiate"]
+        emissary_value = self.deadlock_ranks["Emissary"]
+        archon_value = self.deadlock_ranks["Archon"]
+        phantom_value = self.deadlock_ranks["Phantom"]
+        eternus_value = self.deadlock_ranks["Eternus"]
 
         allowed_min = max(0, rank_value + minus)
-        allowed_max = min(11, rank_value + plus)
+        allowed_max = min(eternus_value, rank_value + plus)
+
+        if mode != "grind":
+            if rank_value <= emissary_value:
+                allowed_min = initiate_value
+                allowed_max = emissary_value
+            elif archon_value <= rank_value <= phantom_value:
+                allowed_min = max(self.deadlock_ranks["Ritualist"], allowed_min)
+                allowed_max = min(phantom_value, allowed_max)
 
         self.channel_anchors[channel.id] = (
             user.id,
