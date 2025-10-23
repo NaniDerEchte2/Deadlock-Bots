@@ -20,7 +20,10 @@ class RolePermissionVoiceManager(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
-        self.monitored_category_id = 1357422957017698478
+        self.monitored_categories = {
+            1357422957017698478: "ranked",
+            1412804540994162789: "grind",
+        }
 
         # Ausnahme-Kanäle die NICHT überwacht werden sollen
         self.excluded_channel_ids = {
@@ -72,7 +75,7 @@ class RolePermissionVoiceManager(commands.Cog):
             "Oracle": (-1, 1),
             "Phantom": (-1, 1),
             "Ascendant": (-1, 1),
-            "Eternus": (-2, 1),
+            "Eternus": (-1, 1),
         }
 
         # Cache
@@ -228,7 +231,8 @@ class RolePermissionVoiceManager(commands.Cog):
 
             logger.info("RolePermissionVoiceManager Cog erfolgreich geladen")
             print("✅ RolePermissionVoiceManager Cog geladen")
-            print(f"   Überwachte Kategorie: {self.monitored_category_id}")
+            monitored_list = ", ".join(str(cid) for cid in self.monitored_categories.keys())
+            print(f"   Überwachte Kategorien: {monitored_list}")
             print(f"   Überwachte Rollen: {len(self.discord_rank_roles)}")
             print(f"   Ausgeschlossene Kanäle: {len(self.excluded_channel_ids)}")
             print("   🔧 Persistenz: zentrale DB (Settings & Anker)")
@@ -441,12 +445,15 @@ class RolePermissionVoiceManager(commands.Cog):
     async def set_channel_anchor(
         self, channel: discord.VoiceChannel, user: discord.Member, rank_name: str, rank_value: int
     ):
-        if rank_name in self.balancing_rules:
+        minus = plus = 0
+        mode = self.get_channel_mode(channel)
+        if mode == "grind":
+            minus, plus = -2, 2
+        elif rank_name in self.balancing_rules:
             minus, plus = self.balancing_rules[rank_name]
-            allowed_min = max(0, rank_value + minus)
-            allowed_max = min(11, rank_value + plus)
-        else:
-            allowed_min = allowed_max = rank_value
+
+        allowed_min = max(0, rank_value + minus)
+        allowed_max = min(11, rank_value + plus)
 
         self.channel_anchors[channel.id] = (
             user.id,
@@ -484,7 +491,16 @@ class RolePermissionVoiceManager(commands.Cog):
     def is_monitored_channel(self, channel: discord.VoiceChannel) -> bool:
         if channel.id in self.excluded_channel_ids:
             return False
-        return channel.category_id == self.monitored_category_id if channel.category else False
+        return (
+            channel.category_id in self.monitored_categories
+            if channel.category
+            else False
+        )
+
+    def get_channel_mode(self, channel: discord.VoiceChannel) -> Optional[str]:
+        if channel.category:
+            return self.monitored_categories.get(channel.category_id)
+        return None
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild):
@@ -607,7 +623,11 @@ class RolePermissionVoiceManager(commands.Cog):
         )
         embed.add_field(
             name="📁 Überwachung",
-            value=f"Kategorie: {self.monitored_category_id}\nAusgeschlossen: {len(self.excluded_channel_ids)}\nRollen: {len(self.discord_rank_roles)}",
+            value=(
+                f"Kategorien: {', '.join(str(cid) for cid in self.monitored_categories.keys())}\n"
+                f"Ausgeschlossen: {len(self.excluded_channel_ids)}\n"
+                f"Rollen: {len(self.discord_rank_roles)}"
+            ),
             inline=True,
         )
         embed.add_field(
@@ -834,12 +854,20 @@ class RolePermissionVoiceManager(commands.Cog):
             description="Sprachkanal-Überwachung",
             color=discord.Color.blue(),
         )
-        category = ctx.guild.get_channel(self.monitored_category_id)
-        if category:
+        for cat_id, mode in self.monitored_categories.items():
+            category = ctx.guild.get_channel(cat_id)
+            if not category:
+                embed.add_field(
+                    name=f"📁 Kategorie (ID {cat_id})",
+                    value="❌ Kategorie nicht gefunden",
+                    inline=False,
+                )
+                continue
+
             vcs = [c for c in category.channels if isinstance(c, discord.VoiceChannel)]
             monitored = [c for c in vcs if c.id not in self.excluded_channel_ids]
             embed.add_field(
-                name=f"📁 Kategorie: {category.name}",
+                name=f"📁 {category.name} ({mode})",
                 value=f"Gesamt: {len(vcs)}\nÜberwacht: {len(monitored)}",
                 inline=False,
             )
