@@ -554,16 +554,31 @@ class StreamerRequirementsView(StepView):
         checklist_text = "\n".join(checklist)
 
         requirement_text = (
-            "Bitte erfülle kurz die Voraussetzungen:\n\n"
-            "1) Nutze einen **nicht ablaufenden Invite-Link** zu unserem Server (persönlich für dich).\n"
-            "2) Packe den **Server-Link** in deine **Twitch-Bio** – z. B. mit dem Text:\n"
-            "   *„Deutscher Deadlock Community Server“*\n"
-            "3) Wünchenswert wäre es wenn du Zuschauer auf den Server verweist.\n"
-            "4) Genauso wünschenswert ist es, wenn du Deadlock-Content postest, verlinke da gerne den Server.\n\n"
-            "Du **darfst** selbstverständlich deinen **eigenen Server** weiterführen – \n"
-            "wir verstehen uns nicht als Konkurrenz, sondern als Hub für deutschsprachige Deadlock-Spieler.\n\n"
+            "📋 **Voraussetzungen:**\n\n"
+            "**1️⃣ Invite-Link erstellen**\n"
+            "• Rechtsklick auf den Server → *Leute einladen* → **„Einladungslink bearbeiten“**\n"
+            "• Stelle ein: `Läuft ab: Nie` · `Kein Limit`\n\n"
+
+            "**2️⃣ Twitch-Bio anpassen**\n"
+            "• Füge den Server-Link in deine Bio ein, z. B.:\n"
+            "> *„Deutscher Deadlock Community Server“*\n\n"
+
+            "**3️⃣ Unterstützung & Promo**\n"
+            "• Wenn du Deadlock streamst oder Content erstellst, kannst du gern in den Promo-Kanälen posten.\n"
+            "• Erwähne den Server in Stream oder Chat und lade interessierte Zuschauer oder Mitspieler ein.\n"
+            "• Je mehr aktive Spieler zusammenkommen, desto stärker wächst die Community – "
+            "*eine Hand wäscht die andere.* ❤️\n\n"
+
+            "──────────────────────────────\n\n"
+            "**Eigener Discord? Kein Problem!**\n"
+            "• Du kannst natürlich weiterhin deinen eigenen Server führen – wir sehen uns nicht als Konkurrenz,\n"
+            "  sondern als zentralen Treffpunkt für deutschsprachige Deadlock-Spieler.\n"
+            "• Schau gerne hin und wieder bei uns vorbei – je mehr du mit anderen spielst, desto sichtbarer wirst du,\n"
+            "  und die Community lernt dich als Teil von uns kennen – nicht nur als jemand, der streamt.\n\n"
+
             "Wir prüfen selbstverständlich, ob du alle Voraussetzungen erfüllst."
         )
+
 
         if twitch_login:
             requirement_text = (
