@@ -222,6 +222,7 @@ class ServerFAQ(commands.Cog):
     @app_commands.describe(
         frage="Formuliere deine Frage zum Server, seinen Rollen, Kanälen oder Bots.",
     )
+    @app_commands.guild_only()
     async def serverfaq(self, interaction: discord.Interaction, frage: str) -> None:
         """Slash-Command für serverbezogene Fragen."""
 
@@ -252,8 +253,29 @@ class ServerFAQ(commands.Cog):
             metadata=metadata,
         )
 
-        await interaction.followup.send(answer, ephemeral=True)
+        if answer:
+            cleaned_answer = answer.strip()
+        else:
+            cleaned_answer = "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
+
+        if len(cleaned_answer) <= 4096:
+            embed = discord.Embed(
+                title="Server FAQ",
+                description=cleaned_answer,
+                colour=discord.Colour.blurple(),
+            )
+            embed.set_footer(text="Deadlock Master Bot • FAQ-Antwort")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.followup.send(cleaned_answer, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(ServerFAQ(bot))
+    faq_cog = ServerFAQ(bot)
+    await bot.add_cog(faq_cog)
+
+    try:
+        bot.tree.add_command(faq_cog.serverfaq)
+    except app_commands.CommandAlreadyRegistered:
+        bot.tree.remove_command(faq_cog.serverfaq.name, type=faq_cog.serverfaq.type)
+        bot.tree.add_command(faq_cog.serverfaq)
