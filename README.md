@@ -1,4 +1,4 @@
-# Deadlock DACH – Community-Bot-Übersicht
+Community-Bot-Übersicht
 
 Diese README fasst alle Features zusammen, die auf dem Server für Community-Mitglieder bereitstehen. Admin- oder Backoffice-Funktionen sind bewusst ausgelassen.
 
