@@ -277,5 +277,8 @@ async def setup(bot: commands.Bot) -> None:
     try:
         bot.tree.add_command(faq_cog.serverfaq)
     except app_commands.CommandAlreadyRegistered:
-        bot.tree.remove_command(faq_cog.serverfaq.name, type=faq_cog.serverfaq.type)
+        bot.tree.remove_command(
+            faq_cog.serverfaq.name,
+            type=discord.AppCommandType.chat_input,
+        )
         bot.tree.add_command(faq_cog.serverfaq)
