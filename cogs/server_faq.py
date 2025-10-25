@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Optional, List
 
 import discord
 from discord import app_commands
@@ -21,12 +21,23 @@ except ImportError:  # pragma: no cover - optional dependency
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL_NAME = os.getenv("DEADLOCK_FAQ_MODEL", "gpt-5.0-turbo")
+# --- Konfiguration ------------------------------------------------------------
 
+# Primäres Modell via ENV überschreibbar. Wir bieten eine Fallback-Liste an.
+PRIMARY_MODEL = os.getenv("DEADLOCK_FAQ_MODEL", "gpt-5.0-mini")
+MODEL_CANDIDATES: List[str] = [
+    PRIMARY_MODEL,
+    "gpt-5.0-mini",
+    "gpt-4.1-mini",
+    "gpt-4o-mini",
+]
+
+DEBUG_FAQ = os.getenv("DEADLOCK_FAQ_DEBUG", "0").strip() in {"1", "true", "TRUE"}
+
+# --- ENV-Loader ---------------------------------------------------------------
 
 def _ensure_central_env_loaded() -> None:
     """Lädt den zentralen .env-Pfad, falls der API-Key noch fehlt."""
-
     if os.getenv("OPENAI_API_KEY") or os.getenv("DEADLOCK_OPENAI_KEY"):
         return
 
@@ -37,27 +48,27 @@ def _ensure_central_env_loaded() -> None:
 
     try:
         from dotenv import load_dotenv
-    except Exception as exc:  # pragma: no cover - optionale Abhängigkeit
+    except Exception as exc:  # pragma: no cover
         log.warning("python-dotenv nicht verfügbar: %s", exc)
         return
 
     try:
         load_dotenv(dotenv_path=str(central_env), override=False)
         log.info("Zentrale .env geladen: %s", central_env)
-    except Exception:  # pragma: no cover - Dateifehler
+    except Exception:  # pragma: no cover
         log.exception("Konnte zentrale .env nicht laden: %s", central_env)
 
+
+# --- Prompts ------------------------------------------------------------------
 
 FAQ_SYSTEM_PROMPT = """
 Du bist der "Deadlock Server FAQ"-Assistent und agierst ausschließlich auf Deutsch.
 Deine Aufgabe:
 - Beantworte ausschließlich Fragen zum Discord-Server "Deutsche Deadlock Community", seinen Kanälen, Rollen, Bots und Angeboten rund um das Spiel Deadlock.
-- Allgemeine Fragen (z. B. zu Wetter, Weltwissen, Smalltalk) musst du konsequent ablehnen. Sage in diesen Fällen klar, dass du nur Server-bezogene Fragen beantworten darfst.
-- Falls eine Frage Informationen erfordert, die nicht im Kontext enthalten sind oder die nicht serverbezogen beantwortet werden können, antworte wörtlich: "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
-- Mache keine Annahmen außerhalb der bereitgestellten Fakten. Erfinde keine neuen Features oder Regeln.
-- Nenne Bots, Kanäle oder Rollen so, wie sie in der Dokumentation genannt werden. Sei präzise und hilfreich.
-- Erwähne in deiner Antwort, wenn relevante Aktionen über DMs mit dem Deadlock Master Bot stattfinden.
-- Wenn jemand Feedback geben möchte, verweise auf das anonyme Feedback-Formular im Feedback Hub.
+- Allgemeine oder spiel-unabhängige Fragen musst du konsequent ablehnen: Antworte dann genau mit „Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner.“
+- Wenn dir Informationen im Kontext fehlen, antworte ebenfalls genau so (kein Raten, nichts erfinden).
+- Benenne Bots/Kanäle/Rollen exakt wie in der Doku. Erwähne DMs mit dem Deadlock Master Bot, wo relevant.
+- Verweise bei Feedback auf das anonyme Formular im Feedback Hub.
 """.strip()
 
 FAQ_CONTEXT = """
@@ -80,59 +91,41 @@ Kategorie "Streamer Partner":
 - vip-lounge, vip VC (Voice Channel).
 
 Kategorie "Spawn":
-- hier-starten-regelwerk: enthält das Regelwerk.
-- ankündigungen: offizielle Server-Ankündigungen.
-- patchnotes: übersetzte Deadlock-Patchnotes auf Deutsch.
-- live-on-twitch: listet Deadlock-Streamer-Partner, die gerade live sind.
-- server-faq: Platz für das FAQ-Angebot.
+- hier-starten-regelwerk, ankündigungen, patchnotes, live-on-twitch, server-faq.
 
 Kategorie "Start":
-- allgemein: allgemeiner Austausch zum Spiel und zur Community.
-- build-discussion: Diskussionen über Builds für Deadlock-Helden.
-- off-topic: Themen außerhalb von Deadlock.
-- clip-submission: Anleitung und Einreichung von Clips (Details stehen in der README bzw. Channelbeschreibung).
-- deadlock-coaching: wird zukünftig zu "request-a-coaching" umgebaut, aktuell kostenlos.
-- leaks: Gerüchte oder frühe Informationen rund um Deadlock.
-- game-guides-und-tipps: praktische Videos, Tipps & Tricks rund um Deadlock.
-- yt-videos: unterhaltsame Deadlock-Videos ohne Lernfokus.
-- beta-zugang: für Anfragen zum Deadlock-Beta-Zugang (Spiel ist Invite-Only).
-- coaching-lane: Voice-Bereich, um in Ruhe zu zweit an Verbesserungen zu arbeiten.
+- allgemein, build-discussion, off-topic, clip-submission, deadlock-coaching (bald: request-a-coaching), leaks,
+  game-guides-und-tipps, yt-videos, beta-zugang, coaching-lane.
 
 Kategorie "Custom Game":
-- custom-game-umsetzung: Organisation eigener Deadlock-Matches, z. B. 6v6-Competitive, Melee-only oder Hide & Seek.
-- custom-games-ideen: Ideensammlung für zukünftige Custom Games, eigene Wünsche ausdrücklich willkommen.
-- Sammelpunkt: Treffpunkt für Custom-Games-Teilnehmer.
+- custom-game-umsetzung, custom-games-ideen, Sammelpunkt.
 
 Kategorie "Entspannte Lanes":
-- temp-voice: Verwaltung eigener Voice-Lanes über TempVoice (Panel erklärt Einstellungen und Verwaltung).
-- rank-auswahl: eigene Rang-Rolle wählen.
-- spieler-suche: Sucht Mitspieler (LFG) für Deadlock.
-- Spaß Lane: Voice-Kanal für lockeres Spielen.
+- temp-voice (Panel zur Verwaltung), rank-auswahl, spieler-suche, Spaß Lane.
 
 Kategorie "Grind Lanes":
-- Grind Lane: Voice-Kanal für konzentriertes Spielen.
+- Grind Lane.
 
 Kategorie "Ranked Lanes":
-- low-elo-ranked, mid-elo-ranked, high-elo-ranked: Text-Kanäle für koordinierte Spiele innerhalb derselben Elo.
-- High Elo Podium: Rückzugsort für High-Elo-Spieler, inkl. Streaming-Möglichkeit ohne Störung.
-- Rank Lane: Voice-Kanal für Rang-Spiele.
+- low-elo-ranked, mid-elo-ranked, high-elo-ranked, High Elo Podium, Rank Lane.
 
 Kategorie "AFK":
-- AFK: automatischer Voice-Kanal für abwesende Nutzer.
-- No Deadlock Voice: Voice-Kanal für Offtopic-Unterhaltungen.
+- AFK, No Deadlock Voice.
 
 Weiteres:
-- Unterschied Spaß / Grind / Ranked: Spaß = Casual ohne Ranglimit; Grind = fokussiertes Spielen mit Gewinnabsicht; Ranked = explizites Ranglisten-Spiel mit Spielern ähnlicher Wertung.
-- TempVoice-Lanes können über das Panel konfiguriert werden (Owner Claim, Kick/Ban, User-Limit, Regionenfilter, Mindest-Rang usw.).
-- Clip Submission hat Cooldown und sammelt Einreichungen pro Woche.
-- Deadlock Coaching: private Threads führen durch Rang-, Subrang- und Heldenauswahl; informiert Coaching-Team.
-- Feedback Hub: erlaubt anonymes Feedback an das Community-Team.
-- Voice Leaderboard & Stats: Befehle !vstats und !vleaderboard zeigen Voice-Aktivität.
-- Deadlock Team Balancer: !balance Befehle helfen faire Teams zu erstellen.
-- Twitch Statistik-Proxy: !twl bietet Leaderboards im Statistik-Channel.
-- Steam-Verknüpfung via /link oder /link_steam; erinnert bei Voice ohne Link. Verified-Rolle wird automatisch nach Prüfung vergeben.
+- Unterschied Spaß/Grind/Ranked: Spaß=Casual; Grind=fokussiert; Ranked=Rating.
+- TempVoice: Owner Claim, Kick/Ban, User-Limit, Regionenfilter, Mindest-Rang usw.
+- Clip Submission: Cooldown, sammelt pro Woche.
+- Coaching: private Threads führen durch Rang/Subrang/Heldenauswahl; informiert Coaching-Team.
+- Feedback Hub: anonymes Feedback ans Team.
+- Voice Leaderboard & Stats: !vstats / !vleaderboard.
+- Team Balancer: !balance.
+- Twitch Statistik-Proxy: !twl.
+- Steam-Verknüpfung via /link oder /link_steam; Verified-Rolle nach Prüfung automatisch.
 """.strip()
 
+
+# --- UI -----------------------------------------------------------------------
 
 class FAQModal(discord.ui.Modal):
     """Modal, um Fragen an das Server FAQ zu stellen."""
@@ -144,7 +137,7 @@ class FAQModal(discord.ui.Modal):
         faq_cog: "ServerFAQ",
         *,
         title: str = "Server FAQ",
-        default_question: str | None = None,
+        default_question: Optional[str] = None,
     ) -> None:
         super().__init__(title=title, timeout=None)
         self.faq_cog = faq_cog
@@ -182,7 +175,7 @@ class FAQAskView(discord.ui.View):
         self,
         interaction: discord.Interaction,
         button: discord.ui.Button["FAQAskView"],
-    ) -> None:  # pragma: no cover - rein UI-basiert
+    ) -> None:  # pragma: no cover
         if interaction.response.is_done():
             await interaction.followup.send(
                 "Bitte nutze /faq, um eine neue Frage zu stellen.",
@@ -193,25 +186,55 @@ class FAQAskView(discord.ui.View):
         await interaction.response.send_modal(FAQModal(self.faq_cog))
 
 
+# --- Cog ----------------------------------------------------------------------
+
 class ServerFAQ(commands.Cog):
     """Deadlock-spezifischer FAQ-Bot, der auf GPT-Antworten zurückgreift."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self._client = None
+        self._client: Optional[OpenAI] = None
+
         if OpenAI is None:
-            log.warning("OpenAI-Paket nicht installiert – Server FAQ reagiert mit Fallback.")
-        else:
-            _ensure_central_env_loaded()
-            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("DEADLOCK_OPENAI_KEY")
-            if not api_key:
-                log.warning("Kein OpenAI API Key für den Server FAQ gesetzt.")
-            else:
-                try:
-                    self._client = OpenAI(api_key=api_key)
-                except Exception:
-                    log.exception("Konnte OpenAI-Client nicht initialisieren")
-                    self._client = None
+            log.warning("OpenAI-Paket nicht installiert – Server FAQ nutzt Fallback.")
+            return
+
+        _ensure_central_env_loaded()
+        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("DEADLOCK_OPENAI_KEY")
+        if not api_key:
+            log.warning("Kein OpenAI API Key (OPENAI_API_KEY/DEADLOCK_OPENAI_KEY) gesetzt – Fallback aktiv.")
+            return
+
+        try:
+            self._client = OpenAI(api_key=api_key)
+        except Exception:
+            log.exception("Konnte OpenAI-Client nicht initialisieren")
+            self._client = None
+
+    # ---- Low-level Call mit Token-Param-Kompatibilität ----------------------
+
+    def _responses_create(self, **kwargs):
+        """
+        Ruft responses.create auf und ist kompatibel zu SDKs mit
+        max_output_tokens ODER max_tokens.
+        """
+        if self._client is None:
+            raise RuntimeError("OpenAI client not initialized")
+
+        # Erster Versuch: moderne Param-Namen
+        try:
+            return self._client.responses.create(
+                **kwargs,
+                max_output_tokens=800,
+            )
+        except TypeError:
+            # Fallback für ältere SDKs
+            return self._client.responses.create(
+                **kwargs,
+                max_tokens=800,
+            )
+
+    # ---- Antwort erzeugen ----------------------------------------------------
 
     async def _generate_answer(
         self,
@@ -223,7 +246,7 @@ class ServerFAQ(commands.Cog):
         """Fragt das Sprachmodell an und gibt Antwort + Metadaten zurück."""
 
         metadata: Dict[str, Any] = {
-            "model": DEFAULT_MODEL_NAME,
+            "model": PRIMARY_MODEL,
             "user_id": getattr(user, "id", None),
             "channel_id": getattr(channel, "id", None),
             "guild_id": getattr(getattr(channel, "guild", None), "id", None)
@@ -236,44 +259,59 @@ class ServerFAQ(commands.Cog):
                 "Der FAQ-Bot steht aktuell nicht zur Verfügung. "
                 "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
             )
+            metadata["error"] = "no_client"
             return fallback, metadata
 
         composed_user_prompt = f"Kontext:\n{FAQ_CONTEXT}\n\nFrage:\n{question.strip()}"
 
-        try:
-            response = await asyncio.to_thread(
-                self._client.responses.create,
-                model=DEFAULT_MODEL_NAME,
-                temperature=0.2,
-                max_output_tokens=800,
-                input=composed_user_prompt,
-                instructions=FAQ_SYSTEM_PROMPT,
-            )
-        except Exception as exc:  # pragma: no cover - Netzwerk/HTTP-Fehler
-            log.exception("OpenAI-Antwort fehlgeschlagen: %s", exc)
+        # Wir versuchen Modelle der Reihe nach, bis eins funktioniert.
+        last_exc: Optional[Exception] = None
+        response = None
+        used_model = None
+
+        for model_name in MODEL_CANDIDATES:
+            try:
+                used_model = model_name
+                response = await asyncio.to_thread(
+                    self._responses_create,
+                    model=model_name,
+                    temperature=0.2,
+                    input=composed_user_prompt,
+                    instructions=FAQ_SYSTEM_PROMPT,
+                )
+                break
+            except Exception as exc:  # pragma: no cover
+                last_exc = exc
+                log.warning("Model '%s' fehlgeschlagen (%s). Versuche nächstes Modell.", model_name, exc)
+
+        if response is None:
             fallback = (
                 "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
             )
-            metadata["error"] = str(exc)
+            metadata["error"] = repr(last_exc) if last_exc else "unknown_error"
             return fallback, metadata
 
+        # ---- Content-Extraction robust ----
         content = ""
+        try:
+            if getattr(response, "output_text", None):
+                content = response.output_text.strip()
+            else:
+                out = getattr(response, "output", None) or getattr(response, "outputs", None)
+                if out:
+                    fragments: List[str] = []
+                    for item in out:
+                        if getattr(item, "type", None) != "message":
+                            continue
+                        for part in getattr(item, "content", []) or []:
+                            txt = getattr(part, "text", None)
+                            if txt:
+                                fragments.append(txt)
+                    content = "".join(fragments).strip()
+        except Exception:
+            log.exception("Antwort-Parsing fehlgeschlagen")
+            content = ""
 
-        if hasattr(response, "output_text") and response.output_text is not None:
-            content = response.output_text.strip()
-        else:
-            outputs = getattr(response, "output", None)
-            if outputs:
-                text_fragments: list[str] = []
-                for item in outputs:
-                    item_type = getattr(item, "type", None)
-                    if item_type != "message":
-                        continue
-                    for part in getattr(item, "content", []) or []:
-                        text = getattr(part, "text", None)
-                        if text:
-                            text_fragments.append(text)
-                content = "".join(text_fragments).strip()
         if not content:
             content = (
                 "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
@@ -286,9 +324,11 @@ class ServerFAQ(commands.Cog):
                 "output_tokens": getattr(usage, "output_tokens", None),
                 "total_tokens": getattr(usage, "total_tokens", None),
             }
-        metadata["model"] = getattr(response, "model", DEFAULT_MODEL_NAME)
 
+        metadata["model"] = used_model or getattr(response, "model", PRIMARY_MODEL)
         return content, metadata
+
+    # ---- Handling der Interaktion -------------------------------------------
 
     async def handle_interaction_question(
         self,
@@ -316,6 +356,7 @@ class ServerFAQ(commands.Cog):
                 "„Anonymes Feedback senden“."
             )
 
+        # Persist Logs
         faq_logs.store_exchange(
             guild_id=guild_id,
             channel_id=channel_id,
@@ -326,9 +367,9 @@ class ServerFAQ(commands.Cog):
             metadata=metadata,
         )
 
-        if answer:
-            cleaned_answer = answer.strip()
-        else:
+        # Antwort bauen
+        cleaned_answer = (answer or "").strip()
+        if not cleaned_answer:
             cleaned_answer = "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
 
         if len(cleaned_answer) <= 4096:
@@ -337,11 +378,20 @@ class ServerFAQ(commands.Cog):
                 description=cleaned_answer,
                 colour=discord.Colour.blurple(),
             )
-            embed.set_footer(text="Deadlock Master Bot • FAQ-Antwort")
+            footer = "Deadlock Master Bot • FAQ-Antwort"
+            if DEBUG_FAQ and metadata:
+                err = metadata.get("error")
+                used_model = metadata.get("model")
+                if err:
+                    footer += f" • DEBUG: error={str(err)[:60]} • model={used_model}"
+                else:
+                    footer += f" • model={used_model}"
+            embed.set_footer(text=footer)
             await interaction.followup.send(embed=embed, ephemeral=True)
         else:
             await interaction.followup.send(cleaned_answer, ephemeral=True)
 
+    # ---- Commands ------------------------------------------------------------
 
     @app_commands.command(
         name="faq",
@@ -349,15 +399,12 @@ class ServerFAQ(commands.Cog):
     )
     @app_commands.guild_only()
     async def faq(self, interaction: discord.Interaction) -> None:
-        """Slash-Command, der ein Modal zur Fragestellung öffnet."""
-
         if interaction.response.is_done():
             await interaction.followup.send(
                 "Du kannst nur eine Anfrage gleichzeitig stellen.",
                 ephemeral=True,
             )
             return
-
         await interaction.response.send_modal(FAQModal(self))
 
     @app_commands.command(
@@ -369,8 +416,6 @@ class ServerFAQ(commands.Cog):
     )
     @app_commands.guild_only()
     async def serverfaq(self, interaction: discord.Interaction, frage: str) -> None:
-        """Slash-Command für serverbezogene Fragen (Legacy-Variante)."""
-
         await self.handle_interaction_question(
             interaction=interaction,
             question=frage,
@@ -379,8 +424,6 @@ class ServerFAQ(commands.Cog):
 
     @commands.command(name="faq")
     async def faq_prefix(self, ctx: commands.Context) -> None:
-        """Prefix-Befehl, der auf den Slash-Command verweist und eine UI anbietet."""
-
         if ctx.guild is None:
             await ctx.reply("Bitte nutze diesen Befehl auf dem Server.")
             return
