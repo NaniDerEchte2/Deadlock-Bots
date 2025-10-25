@@ -132,6 +132,65 @@ Weiteres:
 """.strip()
 
 
+class FAQModal(discord.ui.Modal):
+    """Modal, um Fragen an das Server FAQ zu stellen."""
+
+    question_input: discord.ui.TextInput
+
+    def __init__(
+        self,
+        faq_cog: "ServerFAQ",
+        *,
+        title: str = "Server FAQ",
+        default_question: str | None = None,
+    ) -> None:
+        super().__init__(title=title, timeout=None)
+        self.faq_cog = faq_cog
+        self.question_input = discord.ui.TextInput(
+            label="Welche Frage hast du zum Server?",
+            placeholder="Beschreibe dein Anliegen möglichst konkret.",
+            style=discord.TextStyle.long,
+            required=True,
+            max_length=400,
+            default=default_question or "",
+        )
+        self.add_item(self.question_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.faq_cog.handle_interaction_question(
+            interaction=interaction,
+            question=self.question_input.value,
+            defer=True,
+        )
+
+
+class FAQAskView(discord.ui.View):
+    """View mit Button, um das FAQ-Modal aufzurufen."""
+
+    def __init__(self, faq_cog: "ServerFAQ") -> None:
+        super().__init__(timeout=120)
+        self.faq_cog = faq_cog
+
+    @discord.ui.button(
+        label="Frage stellen",
+        style=discord.ButtonStyle.primary,
+        emoji="❓",
+    )
+    async def ask_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button["FAQAskView"],
+    ) -> None:  # pragma: no cover - rein UI-basiert
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                "Bitte nutze /faq, um eine neue Frage zu stellen.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(FAQModal(self.faq_cog))
+
+
 class ServerFAQ(commands.Cog):
     """Deadlock-spezifischer FAQ-Bot, der auf GPT-Antworten zurückgreift."""
 
@@ -215,20 +274,18 @@ class ServerFAQ(commands.Cog):
 
         return content, metadata
 
-    @app_commands.command(
-        name="serverfaq",
-        description="Stelle dem Deadlock Server FAQ eine Frage zum Discord-Server.",
-    )
-    @app_commands.describe(
-        frage="Formuliere deine Frage zum Server, seinen Rollen, Kanälen oder Bots.",
-    )
-    @app_commands.guild_only()
-    async def serverfaq(self, interaction: discord.Interaction, frage: str) -> None:
-        """Slash-Command für serverbezogene Fragen."""
+    async def handle_interaction_question(
+        self,
+        *,
+        interaction: discord.Interaction,
+        question: str,
+        defer: bool,
+    ) -> None:
+        if defer:
+            await interaction.response.defer(ephemeral=True, thinking=True)
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
         answer, metadata = await self._generate_answer(
-            question=frage,
+            question=question,
             user=interaction.user,
             channel=interaction.channel,
         )
@@ -237,7 +294,7 @@ class ServerFAQ(commands.Cog):
         channel_id = interaction.channel_id
         user_id = interaction.user.id if interaction.user else None
 
-        if "feedback" in frage.lower() and "feedback hub" not in answer.lower():
+        if "feedback" in question.lower() and "feedback hub" not in answer.lower():
             answer = (
                 f"{answer}\n\nFür anonymes Feedback nutzt du im Feedback Hub den Button "
                 "„Anonymes Feedback senden“."
@@ -247,7 +304,7 @@ class ServerFAQ(commands.Cog):
             guild_id=guild_id,
             channel_id=channel_id,
             user_id=user_id,
-            question=frage,
+            question=question,
             answer=answer,
             model=metadata.get("model"),
             metadata=metadata,
@@ -270,6 +327,64 @@ class ServerFAQ(commands.Cog):
             await interaction.followup.send(cleaned_answer, ephemeral=True)
 
 
+    @app_commands.command(
+        name="faq",
+        description="Öffnet das Server FAQ und beantwortet Server-bezogene Fragen.",
+    )
+    @app_commands.guild_only()
+    async def faq(self, interaction: discord.Interaction) -> None:
+        """Slash-Command, der ein Modal zur Fragestellung öffnet."""
+
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                "Du kannst nur eine Anfrage gleichzeitig stellen.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(FAQModal(self))
+
+    @app_commands.command(
+        name="serverfaq",
+        description="Stelle dem Deadlock Server FAQ eine Frage zum Discord-Server.",
+    )
+    @app_commands.describe(
+        frage="Formuliere deine Frage zum Server, seinen Rollen, Kanälen oder Bots.",
+    )
+    @app_commands.guild_only()
+    async def serverfaq(self, interaction: discord.Interaction, frage: str) -> None:
+        """Slash-Command für serverbezogene Fragen (Legacy-Variante)."""
+
+        await self.handle_interaction_question(
+            interaction=interaction,
+            question=frage,
+            defer=True,
+        )
+
+    @commands.command(name="faq")
+    async def faq_prefix(self, ctx: commands.Context) -> None:
+        """Prefix-Befehl, der auf den Slash-Command verweist und eine UI anbietet."""
+
+        if ctx.guild is None:
+            await ctx.reply("Bitte nutze diesen Befehl auf dem Server.")
+            return
+
+        view = FAQAskView(self)
+        description = (
+            "Nutze die Schaltfläche, um das Deadlock Server FAQ zu öffnen. "
+            "Alternativ steht dir jederzeit der Slash-Befehl /faq zur Verfügung."
+        )
+
+        embed = discord.Embed(
+            title="Deadlock Server FAQ",
+            description=description,
+            colour=discord.Colour.blurple(),
+        )
+        embed.set_footer(text="Deadlock Master Bot • FAQ")
+
+        await ctx.reply(embed=embed, view=view, mention_author=False)
+
+
 async def setup(bot: commands.Bot) -> None:
     faq_cog = ServerFAQ(bot)
     await bot.add_cog(faq_cog)
@@ -282,3 +397,12 @@ async def setup(bot: commands.Bot) -> None:
             type=discord.AppCommandType.chat_input,
         )
         bot.tree.add_command(faq_cog.serverfaq)
+
+    try:
+        bot.tree.add_command(faq_cog.faq)
+    except app_commands.CommandAlreadyRegistered:
+        bot.tree.remove_command(
+            faq_cog.faq.name,
+            type=discord.AppCommandType.chat_input,
+        )
+        bot.tree.add_command(faq_cog.faq)
