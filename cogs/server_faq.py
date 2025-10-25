@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 # --- Konfiguration ------------------------------------------------------------
 
 # Primäres Modell via ENV überschreibbar. Wir bieten eine Fallback-Liste an.
-PRIMARY_MODEL = os.getenv("DEADLOCK_FAQ_MODEL", "gpt-5.0-mini")
+PRIMARY_MODEL = os.getenv("DEADLOCK_FAQ_MODEL", "gpt-5.0")
 MODEL_CANDIDATES: List[str] = [
     PRIMARY_MODEL,
     "gpt-5.0-mini",
