@@ -65,10 +65,12 @@ FAQ_SYSTEM_PROMPT = """
 Du bist der "Deadlock Server FAQ"-Assistent und agierst ausschließlich auf Deutsch.
 Deine Aufgabe:
 - Beantworte ausschließlich Fragen zum Discord-Server "Deutsche Deadlock Community", seinen Kanälen, Rollen, Bots und Angeboten rund um das Spiel Deadlock.
-- Allgemeine oder spiel-unabhängige Fragen musst du konsequent ablehnen: Antworte dann genau mit „Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner.“
-- Wenn dir Informationen im Kontext fehlen, antworte ebenfalls genau so (kein Raten, nichts erfinden).
-- Benenne Bots/Kanäle/Rollen exakt wie in der Doku. Erwähne DMs mit dem Deadlock Master Bot, wo relevant.
-- Verweise bei Feedback auf das anonyme Formular im Feedback Hub.
+- Allgemeine Fragen (z. B. zu Wetter, Weltwissen, Smalltalk) musst du konsequent ablehnen. Sage in diesen Fällen klar, dass du nur Server-bezogene Fragen beantworten darfst.
+- Falls eine Frage Informationen erfordert, die nicht im Kontext enthalten sind oder die nicht serverbezogen beantwortet werden können, antworte wörtlich: "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
+- Mache keine Annahmen außerhalb der bereitgestellten Fakten. Erfinde keine neuen Features oder Regeln.
+- Nenne Bots, Kanäle oder Rollen so, wie sie in der Dokumentation genannt werden. Sei präzise und hilfreich.
+- Erwähne in deiner Antwort, wenn relevante Aktionen über DMs mit dem Deadlock Master Bot stattfinden.
+- Wenn jemand Feedback geben möchte, verweise auf das anonyme Feedback-Formular im Feedback Hub.
 """.strip()
 
 FAQ_CONTEXT = """
@@ -91,37 +93,57 @@ Kategorie "Streamer Partner":
 - vip-lounge, vip VC (Voice Channel).
 
 Kategorie "Spawn":
-- hier-starten-regelwerk, ankündigungen, patchnotes, live-on-twitch, server-faq.
+- hier-starten-regelwerk: enthält das Regelwerk.
+- ankündigungen: offizielle Server-Ankündigungen.
+- patchnotes: übersetzte Deadlock-Patchnotes auf Deutsch.
+- live-on-twitch: listet Deadlock-Streamer-Partner, die gerade live sind.
+- server-faq: Platz für das FAQ-Angebot.
 
 Kategorie "Start":
-- allgemein, build-discussion, off-topic, clip-submission, deadlock-coaching (bald: request-a-coaching), leaks,
-  game-guides-und-tipps, yt-videos, beta-zugang, coaching-lane.
+- allgemein: allgemeiner Austausch zum Spiel und zur Community.
+- build-discussion: Diskussionen über Builds für Deadlock-Helden.
+- off-topic: Themen außerhalb von Deadlock.
+- clip-submission: Anleitung und Einreichung von Clips (Details stehen in der README bzw. Channelbeschreibung).
+- deadlock-coaching: wird zukünftig zu "request-a-coaching" umgebaut, aktuell kostenlos.
+- leaks: Gerüchte oder frühe Informationen rund um Deadlock.
+- game-guides-und-tipps: praktische Videos, Tipps & Tricks rund um Deadlock.
+- yt-videos: unterhaltsame Deadlock-Videos ohne Lernfokus.
+- beta-zugang: für Anfragen zum Deadlock-Beta-Zugang (Spiel ist Invite-Only).
+- coaching-lane: Voice-Bereich, um in Ruhe zu zweit an Verbesserungen zu arbeiten.
 
 Kategorie "Custom Game":
-- custom-game-umsetzung, custom-games-ideen, Sammelpunkt.
+- custom-game-umsetzung: Organisation eigener Deadlock-Matches, z. B. 6v6-Competitive, Melee-only oder Hide & Seek.
+- custom-games-ideen: Ideensammlung für zukünftige Custom Games, eigene Wünsche ausdrücklich willkommen.
+- Sammelpunkt: Treffpunkt für Custom-Games-Teilnehmer.
 
 Kategorie "Entspannte Lanes":
-- temp-voice (Panel zur Verwaltung), rank-auswahl, spieler-suche, Spaß Lane.
+- temp-voice: Verwaltung eigener Voice-Lanes über TempVoice (Panel erklärt Einstellungen und Verwaltung).
+- rank-auswahl: eigene Rang-Rolle wählen.
+- spieler-suche: Sucht Mitspieler (LFG) für Deadlock.
+- Spaß Lane: Voice-Kanal für lockeres Spielen.
 
 Kategorie "Grind Lanes":
-- Grind Lane.
+- Grind Lane: Voice-Kanal für konzentriertes Spielen.
 
 Kategorie "Ranked Lanes":
-- low-elo-ranked, mid-elo-ranked, high-elo-ranked, High Elo Podium, Rank Lane.
+- low-elo-ranked, mid-elo-ranked, high-elo-ranked: Text-Kanäle für koordinierte Spiele innerhalb derselben Elo.
+- High Elo Podium: Rückzugsort für High-Elo-Spieler, inkl. Streaming-Möglichkeit ohne Störung.
+- Rank Lane: Voice-Kanal für Rang-Spiele.
 
 Kategorie "AFK":
-- AFK, No Deadlock Voice.
+- AFK: automatischer Voice-Kanal für abwesende Nutzer.
+- No Deadlock Voice: Voice-Kanal für Offtopic-Unterhaltungen.
 
 Weiteres:
-- Unterschied Spaß/Grind/Ranked: Spaß=Casual; Grind=fokussiert; Ranked=Rating.
-- TempVoice: Owner Claim, Kick/Ban, User-Limit, Regionenfilter, Mindest-Rang usw.
-- Clip Submission: Cooldown, sammelt pro Woche.
-- Coaching: private Threads führen durch Rang/Subrang/Heldenauswahl; informiert Coaching-Team.
-- Feedback Hub: anonymes Feedback ans Team.
-- Voice Leaderboard & Stats: !vstats / !vleaderboard.
-- Team Balancer: !balance.
-- Twitch Statistik-Proxy: !twl.
-- Steam-Verknüpfung via /link oder /link_steam; Verified-Rolle nach Prüfung automatisch.
+- Unterschied Spaß / Grind / Ranked: Spaß = Casual ohne Ranglimit; Grind = fokussiertes Spielen mit Gewinnabsicht; Ranked = explizites Ranglisten-Spiel mit Spielern ähnlicher Wertung.
+- TempVoice-Lanes können über das Panel konfiguriert werden (Owner Claim, Kick/Ban, User-Limit, Regionenfilter, Mindest-Rang usw.).
+- Clip Submission hat Cooldown und sammelt Einreichungen pro Woche.
+- Deadlock Coaching: private Threads führen durch Rang-, Subrang- und Heldenauswahl; informiert Coaching-Team.
+- Feedback Hub: erlaubt anonymes Feedback an das Community-Team.
+- Voice Leaderboard & Stats: Befehle !vstats und !vleaderboard zeigen Voice-Aktivität.
+- Deadlock Team Balancer: !balance Befehle helfen faire Teams zu erstellen.
+- Twitch Statistik-Proxy: !twl bietet Leaderboards im Statistik-Channel.
+- Steam-Verknüpfung via /link oder /link_steam; erinnert bei Voice ohne Link. Verified-Rolle wird automatisch nach Prüfung vergeben.
 """.strip()
 
 
