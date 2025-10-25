@@ -62,6 +62,8 @@ Deine Aufgabe:
 
 FAQ_CONTEXT = """
 Servername: "Deutsche Deadlock Community" – eine Community für das Spiel Deadlock.
+Hilfreiches:
+Für Statstiken +ber deadlock und dem eigenen Playstyle gibts https://statlocker.gg/ https://www.lockblaze.com/ für Statstiken für Items und co https://deadlock-api.com/
 
 Bots & Kontakte:
 - Deadlock Master Bot: offizieller Bot der Community. Für Streamer-Partnerschaften bitte dem Bot eine DM schicken und den Slash-Befehl /streamer ausführen, um das Setup zu starten.
