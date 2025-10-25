@@ -1,62 +1,52 @@
-"""Administrative command group for the Twitch cog."""
+"""Administrative helpers for the Twitch cog."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import discord
-from discord.ext import commands
 
 from . import storage
 from .logger import log
 
 
 class TwitchAdminMixin:
-    """Hybrid command group /twitch [...] including helpers."""
+    """Helper methods used by the admin dashboard without Discord commands."""
 
-    @commands.hybrid_group(name="twitch", with_app_command=True)
-    @commands.has_guild_permissions(manage_guild=True)
-    async def twitch_group(self, ctx: commands.Context):
-        if ctx.invoked_subcommand is None:
-            await ctx.send("Subcommands: add, remove, list, channel, forcecheck, invites")
+    async def _cmd_set_channel(
+        self, guild: discord.Guild, channel: Optional[discord.TextChannel] = None
+    ) -> str:
+        """Set the target channel for Twitch notifications."""
+        channel = channel or getattr(guild, "system_channel", None)
+        if channel is None:
+            return "Kein gültiger Kanal angegeben."
 
-    @twitch_group.command(name="channel")
-    @commands.has_guild_permissions(manage_guild=True)
-    async def twitch_channel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
-        channel = channel or ctx.channel
         try:
-            self._set_channel(ctx.guild.id, channel.id)
-            await ctx.reply(f"Live-Posts gehen jetzt in {channel.mention}")
+            self._set_channel(guild.id, channel.id)
         except Exception:
             log.exception("Konnte Twitch-Channel speichern")
-            await ctx.reply("Konnte Kanal nicht speichern.")
+            return "Konnte Kanal nicht speichern."
+        return f"Live-Posts gehen jetzt in {channel.mention}"
 
-    @twitch_group.command(name="add")
-    @commands.has_guild_permissions(manage_guild=True)
-    async def twitch_add(self, ctx: commands.Context, login: str, require_discord_link: Optional[bool] = False):
+    async def _cmd_add_wrapper(self, login: str, require_discord_link: Optional[bool] = False) -> str:
+        """Wrapper kept for backwards compatibility with removed Discord command."""
         try:
-            msg = await self._cmd_add(login, bool(require_discord_link))
+            return await self._cmd_add(login, bool(require_discord_link))
         except Exception:
             log.exception("twitch add fehlgeschlagen")
-            await ctx.reply("Fehler beim Hinzufügen.")
-            return
-        await ctx.reply(msg)
+            return "Fehler beim Hinzufügen."
 
-    @twitch_group.command(name="remove")
-    @commands.has_guild_permissions(manage_guild=True)
-    async def twitch_remove(self, ctx: commands.Context, login: str):
+    async def _cmd_remove_wrapper(self, login: str) -> str:
+        """Wrapper kept for backwards compatibility with removed Discord command."""
         try:
-            msg = await self._cmd_remove(login)
+            return await self._cmd_remove(login)
         except Exception:
             log.exception("twitch remove fehlgeschlagen")
-            await ctx.reply("Fehler beim Entfernen.")
-            return
-        await ctx.reply(msg)
+            return "Fehler beim Entfernen."
 
-    @twitch_group.command(name="list")
-    @commands.has_guild_permissions(manage_guild=True)
-    async def twitch_list(self, ctx: commands.Context):
+    async def _cmd_list_streamers(self) -> Tuple[str, Iterable[dict]]:
+        """Return a formatted list of streamers and the raw rows."""
         try:
             with storage.get_conn() as c:
                 rows = c.execute(
@@ -64,12 +54,10 @@ class TwitchAdminMixin:
                 ).fetchall()
         except Exception:
             log.exception("Konnte Streamer-Liste aus DB lesen")
-            await ctx.reply("Fehler beim Lesen der Streamer-Liste.")
-            return
+            return "Fehler beim Lesen der Streamer-Liste.", []
 
         if not rows:
-            await ctx.reply("Keine Streamer gespeichert.")
-            return
+            return "Keine Streamer gespeichert.", []
 
         def _fmt(row: dict) -> str:
             until = row.get("manual_verified_until")
@@ -78,36 +66,35 @@ class TwitchAdminMixin:
             return f"- {row.get('twitch_login','?')}{tail}"
 
         try:
-            lines = [_fmt(dict(r)) for r in rows]
-            await ctx.reply("\n".join(lines)[:1900])
+            formatted = [_fmt(dict(r)) for r in rows]
         except Exception:
             log.exception("Fehler beim Formatieren der Streamer-Liste")
-            await ctx.reply("Fehler beim Anzeigen der Liste.")
+            return "Fehler beim Anzeigen der Liste.", []
+        return "\n".join(formatted)[:1900], [dict(r) for r in rows]
 
-    @twitch_group.command(name="forcecheck")
-    @commands.has_guild_permissions(manage_guild=True)
-    async def twitch_forcecheck(self, ctx: commands.Context):
-        await ctx.reply("Prüfe jetzt…")
+    async def _cmd_forcecheck(self) -> str:
+        """Trigger a manual check of the Twitch state."""
         try:
             await self._tick()
         except Exception:
             log.exception("Forcecheck fehlgeschlagen")
-            await ctx.send("Fehler beim Forcecheck.")
+            return "Fehler beim Forcecheck."
+        return "Prüfung durchgeführt."
 
-    @twitch_group.command(name="invites")
-    @commands.has_guild_permissions(manage_guild=True)
-    async def twitch_invites(self, ctx: commands.Context):
+    async def _cmd_invites(self, guild: discord.Guild) -> Tuple[str, Iterable[str]]:
+        """Return the active invite URLs for a guild."""
         try:
-            await self._refresh_guild_invites(ctx.guild)
-            codes = sorted(self._invite_codes.get(ctx.guild.id, set()))
-            if not codes:
-                await ctx.reply("Keine aktiven Einladungen gefunden.")
-            else:
-                urls = [f"https://discord.gg/{code}" for code in codes]
-                await ctx.reply("Aktive Einladungen:\n" + "\n".join(urls)[:1900])
+            await self._refresh_guild_invites(guild)
+            codes = sorted(self._invite_codes.get(guild.id, set()))
         except Exception:
             log.exception("Konnte Einladungen nicht abrufen")
-            await ctx.reply("Fehler beim Abrufen der Einladungen.")
+            return "Fehler beim Abrufen der Einladungen.", []
+
+        if not codes:
+            return "Keine aktiven Einladungen gefunden.", []
+
+        urls = [f"https://discord.gg/{code}" for code in codes]
+        return "Aktive Einladungen:", urls
 
     # -------------------------------------------------------
     # Admin-Commands: Add/Remove Helpers
