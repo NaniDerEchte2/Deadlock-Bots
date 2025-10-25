@@ -242,14 +242,12 @@ class ServerFAQ(commands.Cog):
 
         try:
             response = await asyncio.to_thread(
-                self._client.chat.completions.create,
+                self._client.responses.create,
                 model=DEFAULT_MODEL_NAME,
                 temperature=0.2,
-                max_tokens=800,
-                messages=[
-                    {"role": "system", "content": FAQ_SYSTEM_PROMPT},
-                    {"role": "user", "content": composed_user_prompt},
-                ],
+                max_output_tokens=800,
+                input=composed_user_prompt,
+                instructions=FAQ_SYSTEM_PROMPT,
             )
         except Exception as exc:  # pragma: no cover - Netzwerk/HTTP-Fehler
             log.exception("OpenAI-Antwort fehlgeschlagen: %s", exc)
@@ -259,7 +257,23 @@ class ServerFAQ(commands.Cog):
             metadata["error"] = str(exc)
             return fallback, metadata
 
-        content = (response.choices[0].message.content or "").strip()
+        content = ""
+
+        if hasattr(response, "output_text") and response.output_text is not None:
+            content = response.output_text.strip()
+        else:
+            outputs = getattr(response, "output", None)
+            if outputs:
+                text_fragments: list[str] = []
+                for item in outputs:
+                    item_type = getattr(item, "type", None)
+                    if item_type != "message":
+                        continue
+                    for part in getattr(item, "content", []) or []:
+                        text = getattr(part, "text", None)
+                        if text:
+                            text_fragments.append(text)
+                content = "".join(text_fragments).strip()
         if not content:
             content = (
                 "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
@@ -268,8 +282,8 @@ class ServerFAQ(commands.Cog):
         usage = getattr(response, "usage", None)
         if usage is not None:
             metadata["usage"] = {
-                "prompt_tokens": getattr(usage, "prompt_tokens", None),
-                "completion_tokens": getattr(usage, "completion_tokens", None),
+                "input_tokens": getattr(usage, "input_tokens", None),
+                "output_tokens": getattr(usage, "output_tokens", None),
                 "total_tokens": getattr(usage, "total_tokens", None),
             }
         metadata["model"] = getattr(response, "model", DEFAULT_MODEL_NAME)
