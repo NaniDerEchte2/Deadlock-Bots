@@ -333,19 +333,39 @@ class ServerFAQ(commands.Cog):
         # ---- Content-Extraction robust ----
         content = ""
         try:
-            if getattr(response, "output_text", None):
-                content = response.output_text.strip()
+            output_text = getattr(response, "output_text", None)
+            if not output_text and isinstance(response, dict):  # pragma: no cover - defensive
+                output_text = response.get("output_text")
+
+            if output_text:
+                content = output_text.strip()
             else:
-                out = getattr(response, "output", None) or getattr(response, "outputs", None)
+                if isinstance(response, dict):  # pragma: no cover - defensive
+                    out = response.get("output") or response.get("outputs")
+                else:
+                    out = getattr(response, "output", None) or getattr(response, "outputs", None)
+
                 if out:
                     fragments: List[str] = []
                     for item in out:
-                        if getattr(item, "type", None) != "message":
+                        item_type = getattr(item, "type", None)
+                        if item_type is None and isinstance(item, dict):
+                            item_type = item.get("type")
+
+                        if item_type != "message":
                             continue
-                        for part in getattr(item, "content", []) or []:
+
+                        item_content = getattr(item, "content", None)
+                        if item_content is None and isinstance(item, dict):
+                            item_content = item.get("content")
+
+                        for part in item_content or []:
                             txt = getattr(part, "text", None)
+                            if txt is None and isinstance(part, dict):
+                                txt = part.get("text")
                             if txt:
                                 fragments.append(txt)
+
                     content = "".join(fragments).strip()
         except Exception:
             log.exception("Antwort-Parsing fehlgeschlagen")
@@ -357,6 +377,8 @@ class ServerFAQ(commands.Cog):
             )
 
         usage = getattr(response, "usage", None)
+        if usage is None and isinstance(response, dict):  # pragma: no cover - defensive
+            usage = response.get("usage")
         if usage is not None:
             metadata["usage"] = {
                 "input_tokens": getattr(usage, "input_tokens", None),
@@ -364,7 +386,11 @@ class ServerFAQ(commands.Cog):
                 "total_tokens": getattr(usage, "total_tokens", None),
             }
 
-        metadata["model"] = used_model or getattr(response, "model", PRIMARY_MODEL)
+        response_model = getattr(response, "model", None)
+        if response_model is None and isinstance(response, dict):  # pragma: no cover - defensive
+            response_model = response.get("model")
+
+        metadata["model"] = used_model or response_model or PRIMARY_MODEL
         return content, metadata
 
     # ---- Handling der Interaktion -------------------------------------------
