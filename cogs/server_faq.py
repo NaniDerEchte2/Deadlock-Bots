@@ -64,13 +64,14 @@ def _ensure_central_env_loaded() -> None:
 FAQ_SYSTEM_PROMPT = """
 Du bist der "Deadlock Server FAQ"-Assistent und agierst ausschließlich auf Deutsch.
 Deine Aufgabe:
-- Beantworte ausschließlich Fragen zum Discord-Server "Deutsche Deadlock Community", seinen Kanälen, Rollen, Bots und Angeboten rund um das Spiel Deadlock.
-- Allgemeine Fragen (z. B. zu Wetter, Weltwissen, Smalltalk) musst du konsequent ablehnen. Sage in diesen Fällen klar, dass du nur Server-bezogene Fragen beantworten darfst.
-- Falls eine Frage Informationen erfordert, die nicht im Kontext enthalten sind oder die nicht serverbezogen beantwortet werden können, antworte wörtlich: "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
+- Beantworte ausschließlich Fragen zum Discord-Server, seinen Kanälen, Rollen, Bots und Angeboten rund um das Spiel Deadlock.
+- Allgemeine Fragen (z. B. zu Wetter, Weltwissen, Smalltalk) musst du konsequent ablehnen. Sage in diesen Fällen klar, dass du nur Server-bezogene Fragen beantwortest.
+- Falls eine Frage Informationen erfordert, die nicht im Kontext enthalten sind oder die nicht serverbezogen beantwortet werden können, versuche die Frage zu Verstehen und zu Beantworten ansonsten antworte so ca so: Ich kann die Frage leider nicht Beantworten mein Wissenstand reicht daüfr nicht aus, wende dich bitte mit dieser Frage an @earlysalty, (den Server Owner)."
 - Mache keine Annahmen außerhalb der bereitgestellten Fakten. Erfinde keine neuen Features oder Regeln.
 - Nenne Bots, Kanäle oder Rollen so, wie sie in der Dokumentation genannt werden. Sei präzise und hilfreich.
 - Erwähne in deiner Antwort, wenn relevante Aktionen über DMs mit dem Deadlock Master Bot stattfinden.
 - Wenn jemand Feedback geben möchte, verweise auf das anonyme Feedback-Formular im Feedback Hub.
+- Dein Ziel ist es Präzise auf die Fragen zu Antworten und basieren auf den Infos die du hast die Frage(n) bestmöglich zu Beantworten.
 """.strip()
 
 FAQ_CONTEXT = """
@@ -81,6 +82,13 @@ Für Statstiken +ber deadlock und dem eigenen Playstyle gibts https://statlocker
 Bots & Kontakte:
 - Deadlock Master Bot: offizieller Bot der Community. Für Streamer-Partnerschaften bitte dem Bot eine DM schicken und den Slash-Befehl /streamer ausführen, um das Setup zu starten.
 - Server Owner: @earlysalty. Bei fehlenden Informationen oder Spezialfällen an ihn wenden.
+
+Funktionsweise des Temp Voice Bots:
+Es gibt die Sprachkanäle Lane erstellen mit dem + da joint man rein dann wird ein Voice Kanal erstellt und die Person durch den Bot rein gemoved.
+Über das Interface lassen sich folgende Dinge ändern. DE / EU ist entweder nur Deutsch Sprachige können in den Channel, und eu ist das auch (die Paar wenige Englische) joinen können.
+Owner Claim falls der Owner nicht mehr in der Lane ist, kann man damit die Eigentumsrechte übernehmen. Limit setzen ist das Limit an Personen 0-99.
+Kick (kann nur mit Owner Rechten gemacht werden) kickt eine Person aus dem Kanal, Ban bannt eine Person permanent aus deinem Voice Channel. Wichtig die Banns sind preresistent bedeutet auch nach dem Verlassen der Lane bleibt diese Einstellung gespeichert, und wird bei einem Späteren erstellen einer Lane re Applyed.
+Und Unban entbannt die Person. Mindest Rang setzen geht nur in den Grind Lanes und erklärt sich von selbst. Jedoch sind bei den Grind lanes kleine Rang Caps gesetzt damit es nicht einen riesigen Skill Gap gibt.
 
 Rollen & Zugänge:
 - Verified: wird nach erfolgreicher Steam-Verknüpfung automatisch vergeben.
@@ -144,6 +152,15 @@ Weiteres:
 - Deadlock Team Balancer: !balance Befehle helfen faire Teams zu erstellen.
 - Twitch Statistik-Proxy: !twl bietet Leaderboards im Statistik-Channel.
 - Steam-Verknüpfung via /link oder /link_steam; erinnert bei Voice ohne Link. Verified-Rolle wird automatisch nach Prüfung vergeben.
+- Für ein Lane 1:1 ist @cuzyoul immer zu Haben dadurch kansnt du dich einfach duelieren und verbessern.
+- Für ein Coaching oder gernerelle Hilfe zum Server zu Deadlock ist @earlysalty immer zu Haben
+
+Zufällige Fragen:
+Gehört der Deadlock Master Bot zu diesem Server? Ja er gehört zu dem Server und übernimmt die Wichtigsten aufgaben des Servers, bitte schalte ihn nicht Stumm sonst sind einige Funktionen nicht verfügbar.
+Warum bekomme ich eine DM von dem Bot nach Server join? Das ist gewollt und dient dazu das Servererlebniss zu verbessern und dir den einstieg in den Server zu ermöglichen. 
+Was ist dieses Kleiner Tipp für besseres Voice-Erlebnis vom Bot da warum bekomme ich das? Info nur für dich, die User sollen ihren Steam Account verknüpfen dafür gibt es mehrere Optionen, dies Dient dazu das wir 1. für Organistaorische Zwecke das Steam Profil mit dem Discord Profil haben, 2. für Statusanzeigen auf den Voice Kanälen, ob die Lane sich in einem Match in der Lobby befindet und ggf Minute. 
+
+
 """.strip()
 
 
