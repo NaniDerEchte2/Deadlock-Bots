@@ -77,7 +77,7 @@ Deine Aufgabe:
 FAQ_CONTEXT = """
 Servername: "Deutsche Deadlock Community" – eine Community für das Spiel Deadlock.
 Hilfreiches:
-Für Statstiken +ber deadlock und dem eigenen Playstyle gibts https://statlocker.gg/ https://www.lockblaze.com/ für Statstiken für Items und co https://deadlock-api.com/
+Für Statstiken +ber deadlock und dem eigenen Playstyle gibts https://statlocker.gg/ https://www.lockblaze.com/ für Statstiken für Items und co https://deadlock-api.com/ das sind so advanced Deadlock tracker with performance rank estimates and detailed stats analysis
 
 Bots & Kontakte:
 - Deadlock Master Bot: offizieller Bot der Community. Für Streamer-Partnerschaften bitte dem Bot eine DM schicken und den Slash-Befehl /streamer ausführen, um das Setup zu starten.
@@ -112,7 +112,7 @@ Kategorie "Start":
 - build-discussion: Diskussionen über Builds für Deadlock-Helden.
 - off-topic: Themen außerhalb von Deadlock.
 - clip-submission: Anleitung und Einreichung von Clips (Details stehen in der README bzw. Channelbeschreibung).
-- deadlock-coaching: wird zukünftig zu "request-a-coaching" umgebaut, aktuell kostenlos.
+- request-a-coaching wird aktuell umgebaut das Sowohl Matches als auch 1:1 Live Coachings angeboten werden, aktuell kostenlos.
 - leaks: Gerüchte oder frühe Informationen rund um Deadlock.
 - game-guides-und-tipps: praktische Videos, Tipps & Tricks rund um Deadlock.
 - yt-videos: unterhaltsame Deadlock-Videos ohne Lernfokus.
