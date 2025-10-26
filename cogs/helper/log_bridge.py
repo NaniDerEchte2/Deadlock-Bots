@@ -1,4 +1,4 @@
-'''import asyncio
+import asyncio
 import logging
 import os
 from typing import Optional
@@ -121,4 +121,4 @@ class LogBridgeCog(commands.Cog):
         await ctx.reply(f"✅ Log-Channel gesetzt auf {channel.mention}")
 
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(LogBridgeCog(bot, DEFAULT_CHANNEL_ID))'''
+    await bot.add_cog(LogBridgeCog(bot, DEFAULT_CHANNEL_ID))
