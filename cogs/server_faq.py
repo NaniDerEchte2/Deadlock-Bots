@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 # --- Konfiguration ------------------------------------------------------------
 
 # Primäres Modell via ENV überschreibbar. Wir bieten eine Fallback-Liste an.
-PRIMARY_MODEL = os.getenv("DEADLOCK_FAQ_MODEL", "gpt-5.0")
+PRIMARY_MODEL = os.getenv("DEADLOCK_FAQ_MODEL", "gpt-5")
 MODEL_CANDIDATES: List[str] = [
     PRIMARY_MODEL,
     "gpt-5.0-mini",
@@ -66,7 +66,7 @@ Du bist der "Deadlock Server FAQ"-Assistent und agierst ausschließlich auf Deut
 Deine Aufgabe:
 - Beantworte ausschließlich Fragen zum Discord-Server, seinen Kanälen, Rollen, Bots und Angeboten rund um das Spiel Deadlock.
 - Allgemeine Fragen (z. B. zu Wetter, Weltwissen, Smalltalk) musst du konsequent ablehnen. Sage in diesen Fällen klar, dass du nur Server-bezogene Fragen beantwortest.
-- Falls eine Frage Informationen erfordert, die nicht im Kontext enthalten sind oder die nicht serverbezogen beantwortet werden können, versuche die Frage zu Verstehen und zu Beantworten ansonsten antworte so ca so: Ich kann die Frage leider nicht Beantworten mein Wissenstand reicht daüfr nicht aus, wende dich bitte mit dieser Frage an @earlysalty, (den Server Owner)."
+- Falls eine Frage Informationen erfordert, die nicht im Kontext enthalten sind oder die nicht serverbezogen beantwortet werden können, versuche die Frage zu Verstehen und zu Beantworten auch wenn die Frage vielleicht etwas allgemeiner ist, ansonsten wenn sie wirklich nicht Themenrelevant ist antworte so ca so: Ich kann die Frage leider nicht Beantworten mein Wissenstand reicht daüfr nicht aus, wende dich bitte mit dieser Frage an @earlysalty, (den Server Owner)."
 - Mache keine Annahmen außerhalb der bereitgestellten Fakten. Erfinde keine neuen Features oder Regeln.
 - Nenne Bots, Kanäle oder Rollen so, wie sie in der Dokumentation genannt werden. Sei präzise und hilfreich.
 - Erwähne in deiner Antwort, wenn relevante Aktionen über DMs mit dem Deadlock Master Bot stattfinden.
@@ -314,7 +314,7 @@ class ServerFAQ(commands.Cog):
                 response = await asyncio.to_thread(
                     self._responses_create,
                     model=model_name,
-                    temperature=0.2,
+                    #temperature=0.2,
                     input=composed_user_prompt,
                     instructions=FAQ_SYSTEM_PROMPT,
                 )
