@@ -31,3 +31,8 @@ cogs/steam/steam_presence/*
 cogs/faq_menu.py
 clip_submission*
 !quick_invites.js
+service/changelogs.py
+standalone/csv_to_deadlock.py
+standalone/build_changelog_sqlite.py
+standalone/import_changelogs.py
+standalone/deadlock_changelogs.csv
