@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 # Fixiertes Primärmodell (keine ENV-Überschreibung, keine Fallbacks).
 PRIMARY_MODEL = "gpt-5"
 
-DEFAULT_MAX_OUTPUT_TOKENS = 4000
+DEFAULT_MAX_OUTPUT_TOKENS = 2000
 _max_tokens_env = os.getenv("DEADLOCK_FAQ_MAX_OUTPUT_TOKENS")
 if _max_tokens_env:
     try:
