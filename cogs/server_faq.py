@@ -26,6 +26,21 @@ log = logging.getLogger(__name__)
 # Fixiertes Primärmodell (keine ENV-Überschreibung, keine Fallbacks).
 PRIMARY_MODEL = "gpt-5"
 
+DEFAULT_MAX_OUTPUT_TOKENS = 4000
+_max_tokens_env = os.getenv("DEADLOCK_FAQ_MAX_OUTPUT_TOKENS")
+if _max_tokens_env:
+    try:
+        MAX_OUTPUT_TOKENS = max(1, int(_max_tokens_env))
+    except ValueError:
+        log.warning(
+            "Ungültiger Wert für DEADLOCK_FAQ_MAX_OUTPUT_TOKENS: %r – verwende %d.",
+            _max_tokens_env,
+            DEFAULT_MAX_OUTPUT_TOKENS,
+        )
+        MAX_OUTPUT_TOKENS = DEFAULT_MAX_OUTPUT_TOKENS
+else:
+    MAX_OUTPUT_TOKENS = DEFAULT_MAX_OUTPUT_TOKENS
+
 DEBUG_FAQ = os.getenv("DEADLOCK_FAQ_DEBUG", "0").strip() in {"1", "true", "TRUE"}
 
 # --- ENV-Loader ---------------------------------------------------------------
@@ -259,13 +274,13 @@ class ServerFAQ(commands.Cog):
         try:
             return self._client.responses.create(
                 **kwargs,
-                max_output_tokens=800,
+                max_output_tokens=MAX_OUTPUT_TOKENS,
             )
         except TypeError:
             # Fallback für ältere SDKs
             return self._client.responses.create(
                 **kwargs,
-                max_tokens=800,
+                max_tokens=MAX_OUTPUT_TOKENS,
             )
 
     # ---- Antwort erzeugen ----------------------------------------------------
@@ -319,6 +334,13 @@ class ServerFAQ(commands.Cog):
             )
             metadata["error"] = repr(exc)
             return fallback, metadata
+
+        incomplete = getattr(response, "incomplete_details", None)
+        if incomplete is None and isinstance(response, dict):  # pragma: no cover - defensive
+            incomplete = response.get("incomplete_details")
+        reason = getattr(incomplete, "reason", None) if incomplete is not None else None
+        if reason:
+            metadata["incomplete_reason"] = reason
 
         # ---- Content-Extraction robust ----
         content = ""
