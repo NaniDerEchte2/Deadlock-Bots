@@ -12,7 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from service import faq_logs
+from service import faq_logs, changelogs
 
 try:
     from openai import OpenAI
@@ -23,14 +23,8 @@ log = logging.getLogger(__name__)
 
 # --- Konfiguration ------------------------------------------------------------
 
-# Primäres Modell via ENV überschreibbar. Wir bieten eine Fallback-Liste an.
-PRIMARY_MODEL = os.getenv("DEADLOCK_FAQ_MODEL", "gpt-5")
-MODEL_CANDIDATES: List[str] = [
-    PRIMARY_MODEL,
-    "gpt-5.0-mini",
-    "gpt-4.1-mini",
-    "gpt-4o-mini",
-]
+# Fixiertes Primärmodell (keine ENV-Überschreibung, keine Fallbacks).
+PRIMARY_MODEL = "gpt-5"
 
 DEBUG_FAQ = os.getenv("DEADLOCK_FAQ_DEBUG", "0").strip() in {"1", "true", "TRUE"}
 
@@ -162,8 +156,6 @@ Zufällige Fragen:
 Gehört der Deadlock Master Bot zu diesem Server? Ja er gehört zu dem Server und übernimmt die Wichtigsten aufgaben des Servers, bitte schalte ihn nicht Stumm sonst sind einige Funktionen nicht verfügbar.
 Warum bekomme ich eine DM von dem Bot nach Server join? Das ist gewollt und dient dazu das Servererlebniss zu verbessern und dir den einstieg in den Server zu ermöglichen. 
 Was ist dieses Kleiner Tipp für besseres Voice-Erlebnis vom Bot da warum bekomme ich das? Info nur für dich, die User sollen ihren Steam Account verknüpfen dafür gibt es mehrere Optionen, dies Dient dazu das wir 1. für Organistaorische Zwecke das Steam Profil mit dem Discord Profil haben, 2. für Statusanzeigen auf den Voice Kanälen, ob die Lane sich in einem Match in der Lobby befindet und ggf Minute. 
-
-
 """.strip()
 
 
@@ -304,33 +296,28 @@ class ServerFAQ(commands.Cog):
             metadata["error"] = "no_client"
             return fallback, metadata
 
-        composed_user_prompt = f"Kontext:\n{FAQ_CONTEXT}\n\nFrage:\n{question.strip()}"
+        patchnote_context = changelogs.get_context_for_question(question)
 
-        # Wir versuchen Modelle der Reihe nach, bis eins funktioniert.
-        last_exc: Optional[Exception] = None
-        response = None
-        used_model = None
+        context_parts = [FAQ_CONTEXT]
+        if patchnote_context:
+            context_parts.append(f"Patchnotes:\n{patchnote_context}")
 
-        for model_name in MODEL_CANDIDATES:
-            try:
-                used_model = model_name
-                response = await asyncio.to_thread(
-                    self._responses_create,
-                    model=model_name,
-                    #temperature=0.2,
-                    input=composed_user_prompt,
-                    instructions=FAQ_SYSTEM_PROMPT,
-                )
-                break
-            except Exception as exc:  # pragma: no cover
-                last_exc = exc
-                log.warning("Model '%s' fehlgeschlagen (%s). Versuche nächstes Modell.", model_name, exc)
+        composed_user_prompt = "Kontext:\n" + "\n\n".join(context_parts) + f"\n\nFrage:\n{question.strip()}"
 
-        if response is None:
+        # Nur ein einziges, festes Modell ohne Fallbacks.
+        try:
+            response = await asyncio.to_thread(
+                self._responses_create,
+                model=PRIMARY_MODEL,
+                input=composed_user_prompt,
+                instructions=FAQ_SYSTEM_PROMPT,
+            )
+        except Exception as exc:  # pragma: no cover
+            log.warning("Model '%s' fehlgeschlagen (%s).", PRIMARY_MODEL, exc)
             fallback = (
                 "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
             )
-            metadata["error"] = repr(last_exc) if last_exc else "unknown_error"
+            metadata["error"] = repr(exc)
             return fallback, metadata
 
         # ---- Content-Extraction robust ----
@@ -393,7 +380,7 @@ class ServerFAQ(commands.Cog):
         if response_model is None and isinstance(response, dict):  # pragma: no cover - defensive
             response_model = response.get("model")
 
-        metadata["model"] = used_model or response_model or PRIMARY_MODEL
+        metadata["model"] = response_model or PRIMARY_MODEL
         return content, metadata
 
     # ---- Handling der Interaktion -------------------------------------------
