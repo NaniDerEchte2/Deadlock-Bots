@@ -106,6 +106,7 @@ class DashboardTemplateMixin:
   .discord-icon {{ font-weight:600; }}
   .discord-warning {{ color:var(--err-fg); font-size:.8rem; font-weight:600; }}
   .discord-cell {{ display:flex; flex-direction:column; gap:.3rem; align-items:flex-start; }}
+  .discord-cell .discord-main {{ display:flex; align-items:center; gap:.4rem; }}
   .discord-cell .discord-flag {{ font-weight:600; }}
   details.discord-inline {{ display:inline-block; }}
   details.discord-inline > summary {{
@@ -120,7 +121,7 @@ class DashboardTemplateMixin:
     background:#1a1f2e;
     color:var(--accent-2);
     font-weight:600;
-    margin-top:.2rem;
+    margin:0;
   }}
   details.discord-inline[open] > summary {{
     background:var(--accent);

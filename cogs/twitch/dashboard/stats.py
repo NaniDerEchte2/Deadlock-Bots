@@ -173,11 +173,16 @@ class DashboardStatsMixin:
                         "  </div>"
                         "</details>"
                     )
+                discord_main = (
+                    "<div class='discord-main'>"
+                    f"  <span class='discord-flag'>{discord_text}</span>"
+                    f"  {inline_link_html}"
+                    "</div>"
+                )
                 discord_cell = (
                     "<div class='discord-cell'>"
-                    f"  <span class='discord-flag'>{discord_text}</span>"
+                    f"  {discord_main}"
                     f"  {discord_meta_html}"
-                    f"  {inline_link_html}"
                     "</div>"
                 )
                 rows.append(
