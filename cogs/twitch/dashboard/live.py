@@ -216,6 +216,36 @@ class DashboardLiveMixin:
             for value, label in filter_options
         )
 
+        discord_link_card_html = (
+            "<div class='card discord-link-card'>"
+            "  <h2>Discord-Verknüpfung hinzufügen</h2>"
+            "  <form method='post' action='/twitch/discord_link' class='discord-link-form'>"
+            "    <div class='row'>"
+            "      <label>"
+            "        Twitch Login"
+            "        <input type='text' name='login' placeholder='twitch_login' required>"
+            "      </label>"
+            "      <label>"
+            "        Discord User ID"
+            "        <input type='text' name='discord_user_id' placeholder='123456789012345678'>"
+            "      </label>"
+            "      <label>"
+            "        Discord Anzeigename"
+            "        <input type='text' name='discord_display_name' placeholder='Discord-Name'>"
+            "      </label>"
+            "      <label class='checkbox-label'>"
+            "        <input type='checkbox' name='member_flag' value='1'>"
+            "        <span>Als Discord-Mitglied markieren</span>"
+            "      </label>"
+            "      <button class='btn'>Speichern</button>"
+            "    </div>"
+            "    <div class='hint'>"
+            "      Ohne Haken bleibt der Streamer ohne Partner-Markierung im Live-Panel, die Discord-Daten werden dennoch gespeichert."
+            "    </div>"
+            "  </form>"
+            "</div>"
+        )
+
         filter_card_html = (
             '<div class="card filter-card">'
             '  <form method="get" action="/twitch" class="row filter-row">'
@@ -243,6 +273,8 @@ class DashboardLiveMixin:
   </form>
 
 </div>
+
+{discord_link_card_html}
 
 {filter_card_html}
 

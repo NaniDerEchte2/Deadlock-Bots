@@ -85,25 +85,29 @@ class DashboardStatsMixin:
                 return f"{base_path}?{query}"
             return base_path
 
-        tracked_items = tracked.get("top", []) if show_all else tracked.get("top_partner", [])
-        category_items = category.get("top", [])
+        tracked_items = tracked.get("top", []) or []
+        category_items = category.get("top", []) or []
 
-        if min_samples is not None:
-            tracked_items = [item for item in tracked_items if int(item.get("samples") or 0) >= min_samples]
-            category_items = [item for item in category_items if int(item.get("samples") or 0) >= min_samples]
-        if min_avg is not None:
-            tracked_items = [item for item in tracked_items if float(item.get("avg_viewers") or 0.0) >= min_avg]
-            category_items = [item for item in category_items if float(item.get("avg_viewers") or 0.0) >= min_avg]
+        def _passes_filters(item: dict) -> bool:
+            samples = int(item.get("samples") or 0)
+            avg_viewers = float(item.get("avg_viewers") or 0.0)
+            is_partner_flag = bool(item.get("is_partner"))
+            if min_samples is not None and samples < min_samples:
+                return False
+            if min_avg is not None and avg_viewers < min_avg:
+                return False
+            if partner_filter == "only" and not is_partner_flag:
+                return False
+            if partner_filter == "exclude" and is_partner_flag:
+                return False
+            return True
 
-        if partner_filter == "only":
-            tracked_items = [item for item in tracked_items if bool(item.get("is_partner"))]
-            category_items = [item for item in category_items if bool(item.get("is_partner"))]
-        elif partner_filter == "exclude":
-            tracked_items = [item for item in tracked_items if not bool(item.get("is_partner"))]
-            category_items = [item for item in category_items if not bool(item.get("is_partner"))]
+        tracked_items = [item for item in tracked_items if _passes_filters(item)]
+        category_items = [item for item in category_items if _passes_filters(item)]
 
-        tracked_items = tracked_items or []
-        category_items = category_items or []
+        if not show_all:
+            tracked_items = tracked_items[:10]
+            category_items = category_items[:10]
 
         def render_table(items: List[dict]) -> str:
             if not items:
@@ -677,8 +681,8 @@ class DashboardStatsMixin:
             '</div>'
         )
 
-        current_view_label = "Alle Streamer" if show_all else "Partner-Streamer"
-        toggle_label = "Alle Streamer zeigen" if not show_all else "Nur Partner zeigen"
+        current_view_label = "Alle Streamer" if show_all else "Top 10"
+        toggle_label = "Alle Streamer zeigen" if not show_all else "Nur Top 10 anzeigen"
         toggle_href = _build_url(view="all" if not show_all else "top")
 
         clear_url = _build_url(

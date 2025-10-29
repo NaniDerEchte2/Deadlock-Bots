@@ -89,6 +89,12 @@ class DashboardTemplateMixin:
   .filter-row {{ align-items:flex-end; gap:1rem; flex-wrap:wrap; }}
   .filter-row .filter-label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
   .filter-row select {{ background:#0f1422; border:1px solid var(--bd); color:var(--text); padding:.4rem .6rem; border-radius:.4rem; min-width:12rem; }}
+  .discord-link-card {{ margin-top:1rem; }}
+  .discord-link-card h2 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-2); }}
+  .discord-link-card form .row {{ align-items:flex-end; gap:.8rem; flex-wrap:wrap; }}
+  .discord-link-card label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
+  .discord-link-card input[type="text"] {{ min-width:14rem; }}
+  .discord-link-card .hint {{ margin-top:.6rem; font-size:.8rem; color:var(--muted); }}
   .chart-panel {{ background:#10162a; border:1px solid var(--bd); border-radius:.7rem; padding:1rem; margin-top:1rem; }}
   .chart-panel h3 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-2); }}
   .chart-panel canvas {{ width:100%; height:320px; max-height:360px; }}

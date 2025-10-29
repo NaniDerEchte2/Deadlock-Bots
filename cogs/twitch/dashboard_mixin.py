@@ -41,7 +41,6 @@ class TwitchDashboardMixin:
                         manual_verified_permanent=1
                      OR manual_verified_until IS NOT NULL
                      OR manual_verified_at IS NOT NULL
-                     OR discord_user_id IS NOT NULL
                    )
                 """
             )
