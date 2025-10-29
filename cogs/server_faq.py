@@ -166,7 +166,7 @@ Weiteres:
 - Steam-Verknüpfung via /link oder /link_steam; erinnert bei Voice ohne Link. Verified-Rolle wird automatisch nach Prüfung vergeben.
 - Für ein Lane 1:1 ist @cuzyoul immer zu Haben dadurch kansnt du dich einfach duelieren und verbessern.
 - Für ein Coaching oder gernerelle Hilfe zum Server zu Deadlock ist @earlysalty immer zu Haben
-
+- Warum habe ich die Meldung 2FA Requirement for Moderation?`--> Dann hast du einer der Rollen wie Streamer,VIP (haben Rechte um Mitgleieder in Voice Calls zu Verschieben), Community Moderator Server Dev Moderator haben alle teilweise bis viele Moderations rechte.
 Zufällige Fragen:
 Gehört der Deadlock Master Bot zu diesem Server? Ja er gehört zu dem Server und übernimmt die Wichtigsten aufgaben des Servers, bitte schalte ihn nicht Stumm sonst sind einige Funktionen nicht verfügbar.
 Warum bekomme ich eine DM von dem Bot nach Server join? Das ist gewollt und dient dazu das Servererlebniss zu verbessern und dir den einstieg in den Server zu ermöglichen. 
