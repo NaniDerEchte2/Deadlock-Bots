@@ -304,7 +304,7 @@ def _store_twitch_signup(
             conn.execute(
                 "UPDATE twitch_streamers "
                 "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL, "
-                "    discord_user_id=?, discord_display_name=? "
+                "    discord_user_id=?, discord_display_name=?, is_on_discord=1 "
                 "WHERE twitch_login=?",
                 (
                     str(discord_user_id),
