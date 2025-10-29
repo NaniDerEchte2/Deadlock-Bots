@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from dataclasses import dataclass
 from typing import Optional
-from urllib.parse import urlparse
 
 import discord
 from discord import app_commands
@@ -15,6 +13,7 @@ from discord.ext import commands
 from service import db
 from cogs.steam.friend_requests import queue_friend_request
 from cogs.steam.steam_master import SteamTaskClient
+from cogs.steam import SchnellLinkButton
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +33,23 @@ _ALLOWED_UPDATE_FIELDS = {
     "last_notified_at",
     "account_id",
 }
+
+
+def _lookup_primary_steam_id(discord_id: int) -> Optional[str]:
+    row = db.connect().execute(
+        """
+        SELECT steam_id
+        FROM steam_links
+        WHERE user_id = ? AND steam_id != ''
+        ORDER BY primary_account DESC, verified DESC, updated_at DESC
+        LIMIT 1
+        """,
+        (int(discord_id),),
+    ).fetchone()
+    if not row:
+        return None
+    steam_id = str(row["steam_id"] or "").strip()
+    return steam_id or None
 
 
 @dataclass(slots=True)
@@ -144,22 +160,6 @@ def _update_invite(record_id: int, **fields) -> Optional[BetaInviteRecord]:
     return _row_to_record(row)
 
 
-def _ensure_steam_link(discord_id: int, steam_id64: str) -> None:
-    try:
-        with db._LOCK:  # type: ignore[attr-defined]
-            db.connect().execute(
-                """
-                INSERT INTO steam_links(user_id, steam_id, name, verified)
-                VALUES(?, ?, '', 0)
-                ON CONFLICT(user_id, steam_id) DO UPDATE SET
-                  updated_at = CURRENT_TIMESTAMP
-                """,
-                (int(discord_id), str(steam_id64)),
-            )
-    except Exception:  # pragma: no cover - best-effort
-        log.exception("Konnte steam_links-Eintrag nicht aktualisieren")
-
-
 def steam64_to_account_id(steam_id64: str) -> int:
     try:
         value = int(str(steam_id64))
@@ -194,41 +194,44 @@ class BetaInviteFlow(commands.Cog):
         self.bot = bot
         self.tasks = SteamTaskClient(poll_interval=0.5, default_timeout=30.0)
 
-    async def _resolve_steam_id(self, raw: str) -> Optional[str]:
-        candidate = (raw or "").strip()
-        if not candidate:
-            return None
-
-        steam_cog = None
+    def _build_link_prompt_view(self, user: discord.abc.User) -> discord.ui.View:
+        login_url: Optional[str] = None
         try:
             steam_cog = self.bot.get_cog("SteamLink")
         except Exception:  # pragma: no cover - defensive
             steam_cog = None
 
-        if steam_cog and hasattr(steam_cog, "_resolve_steam_input"):
+        if steam_cog and hasattr(steam_cog, "discord_start_url_for"):
             try:
-                resolved = await steam_cog._resolve_steam_input(candidate)  # type: ignore[attr-defined]
-                if resolved:
-                    return str(resolved)
-            except asyncio.CancelledError:
-                raise
+                candidate = steam_cog.discord_start_url_for(int(user.id))  # type: ignore[attr-defined]
+                login_url = str(candidate) or None
             except Exception:
-                log.debug("SteamLink-Resolver schlug fehl", exc_info=True)
+                log.debug("Konnte Discord-Link für BetaInvite nicht bauen", exc_info=True)
 
-        if re.fullmatch(r"\d{17}", candidate):
-            return candidate
+        view = discord.ui.View(timeout=180)
+        if login_url:
+            view.add_item(
+                discord.ui.Button(
+                    label="Via Discord bei Steam anmelden",
+                    style=discord.ButtonStyle.link,
+                    url=login_url,
+                    emoji="🔗",
+                    row=0,
+                )
+            )
+        else:
+            view.add_item(
+                discord.ui.Button(
+                    label="Via Discord bei Steam anmelden",
+                    style=discord.ButtonStyle.secondary,
+                    disabled=True,
+                    emoji="🔗",
+                    row=0,
+                )
+            )
 
-        try:
-            parsed = urlparse(candidate)
-        except Exception:
-            parsed = None
-        if parsed and parsed.scheme in {"http", "https"}:
-            host = (parsed.hostname or "").lower().rstrip(".")
-            path = (parsed.path or "").rstrip("/")
-            match = re.fullmatch(r"/profiles/(\d{17})", path)
-            if host.endswith("steamcommunity.com") and match:
-                return match.group(1)
-        return None
+        view.add_item(SchnellLinkButton(row=1, source="beta_invite_prompt"))
+        return view
 
     async def handle_confirmation(self, interaction: discord.Interaction, record_id: int) -> None:
         record = _fetch_invite_by_id(record_id)
@@ -337,14 +340,19 @@ class BetaInviteFlow(commands.Cog):
             log.debug("Konnte Bestätigungs-DM nicht senden", exc_info=True)
 
     @app_commands.command(name="betainvite", description="Automatisiert eine Deadlock-Playtest-Einladung anfordern.")
-    @app_commands.describe(steam_id="SteamID64 oder steamcommunity.com/profiles/<id>-Link")
-    async def betainvite(self, interaction: discord.Interaction, steam_id: str) -> None:
+    async def betainvite(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        resolved = await self._resolve_steam_id(steam_id)
+        existing = _fetch_invite_by_discord(interaction.user.id)
+        primary_link = _lookup_primary_steam_id(interaction.user.id)
+        resolved = primary_link or (existing.steam_id64 if existing else None)
+
         if not resolved:
+            view = self._build_link_prompt_view(interaction.user)
             await interaction.followup.send(
-                "❌ Konnte deine SteamID nicht bestimmen. Bitte nutze die 17-stellige SteamID64 oder einen `/profiles/<id>`-Link.",
+                "ℹ️ Es ist noch kein Steam-Account mit deinem Discord verknüpft.\n"
+                "Melde dich über „Via Discord bei Steam anmelden“ an oder nutze den Schnell-Link und versuche es danach erneut.",
+                view=view,
                 ephemeral=True,
             )
             return
@@ -352,10 +360,13 @@ class BetaInviteFlow(commands.Cog):
         try:
             account_id = steam64_to_account_id(resolved)
         except ValueError as exc:
-            await interaction.followup.send(f"❌ Ungültige SteamID: {exc}", ephemeral=True)
+            log.warning("Gespeicherte SteamID ungültig", exc_info=True)
+            await interaction.followup.send(
+                f"❌ Gespeicherte SteamID ist ungültig: {exc}. Bitte verknüpfe deinen Account erneut.",
+                ephemeral=True,
+            )
             return
 
-        existing = _fetch_invite_by_discord(interaction.user.id)
         if existing and existing.status == STATUS_INVITE_SENT and existing.steam_id64 == resolved:
             await interaction.followup.send(
                 "✅ Du bist bereits eingeladen. Prüfe unter https://store.steampowered.com/account/playtestinvites .",
@@ -363,8 +374,19 @@ class BetaInviteFlow(commands.Cog):
             )
             return
 
-        record = _create_or_reset_invite(interaction.user.id, resolved, account_id)
-        _ensure_steam_link(interaction.user.id, resolved)
+        if not existing or existing.steam_id64 != resolved:
+            record = _create_or_reset_invite(interaction.user.id, resolved, account_id)
+        else:
+            record = existing
+            if record.account_id != account_id:
+                record = _update_invite(record.id, account_id=account_id) or record
+
+        if record.status == STATUS_INVITE_SENT and record.steam_id64 == resolved:
+            await interaction.followup.send(
+                "✅ Du bist bereits eingeladen. Prüfe unter https://store.steampowered.com/account/playtestinvites .",
+                ephemeral=True,
+            )
+            return
 
         try:
             queue_friend_request(resolved)
