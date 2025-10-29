@@ -552,9 +552,18 @@ class BanButton(discord.ui.Button):
         super().__init__(label="🚫 Ban", style=discord.ButtonStyle.danger, row=1, custom_id="tv_ban")
         self.util = util
     async def callback(self, itx: discord.Interaction):
+        m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
             await itx.response.send_message("Du musst in einer Lane sein.", ephemeral=True)
+            return
+        owner_id = itx.client.get_cog("TempVoiceCore").lane_owner.get(lane.id)  # type: ignore
+        if owner_id is None:
+            await itx.response.send_message("Aktuell ist kein Owner gesetzt.", ephemeral=True)
+            return
+        perms = lane.permissions_for(m)
+        if owner_id != m.id and not perms.administrator:
+            await itx.response.send_message("Nur der Owner darf bannen.", ephemeral=True)
             return
         await itx.response.send_modal(BanModal(self.util, lane, action="ban"))
 
@@ -563,9 +572,18 @@ class UnbanButton(discord.ui.Button):
         super().__init__(label="♻️ Unban", style=discord.ButtonStyle.primary, row=1, custom_id="tv_unban")
         self.util = util
     async def callback(self, itx: discord.Interaction):
+        m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
             await itx.response.send_message("Du musst in einer Lane sein.", ephemeral=True)
+            return
+        owner_id = itx.client.get_cog("TempVoiceCore").lane_owner.get(lane.id)  # type: ignore
+        if owner_id is None:
+            await itx.response.send_message("Aktuell ist kein Owner gesetzt.", ephemeral=True)
+            return
+        perms = lane.permissions_for(m)
+        if owner_id != m.id and not perms.administrator:
+            await itx.response.send_message("Nur der Owner darf entbannen.", ephemeral=True)
             return
         await itx.response.send_modal(BanModal(self.util, lane, action="unban"))
 
@@ -578,10 +596,13 @@ class BanModal(discord.ui.Modal, title="User (Un)Ban"):
         self.action = action
     async def on_submit(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
-        owner_id = itx.client.get_cog("TempVoiceCore").lane_owner.get(self.lane.id, m.id)  # type: ignore
+        owner_id = itx.client.get_cog("TempVoiceCore").lane_owner.get(self.lane.id)  # type: ignore
+        if owner_id is None:
+            await itx.response.send_message("Aktuell ist kein Owner gesetzt.", ephemeral=True)
+            return
         perms = self.lane.permissions_for(m)
-        if not (owner_id == m.id or perms.manage_channels or perms.administrator):
-            await itx.response.send_message("Nur Owner/Mods dürfen (un)bannen.", ephemeral=True)
+        if owner_id != m.id and not perms.administrator:
+            await itx.response.send_message("Nur der Owner darf (un)bannen.", ephemeral=True)
             return
         raw = str(self.target.value).strip()
         try:
