@@ -211,7 +211,7 @@ class WelcomeDM(commands.Cog):
                     closing_lines.append(
                         "🎟️ **Beta-Invite benötigt?** Schau hier vorbei:\n"
                         "https://discord.com/channels/1289721245281292288/1410754840706945034\n"
-                        "Poste dort deine **Steam-Freundschafts-ID** (Steam → Freunde → Freund hinzufügen). "
+                        "Nutze dort den Befehl **/betainvite** und folge den Buttons (Schnell-Link oder Discord-Login). "
                         "Zum Akzeptieren: <https://store.steampowered.com/account/playtestinvites> "
                         "— das kann ein paar Stunden dauern."
                     )
@@ -331,7 +331,7 @@ class WelcomeDM(commands.Cog):
                 closing_lines.append(
                     "🎟️ **Beta-Invite benötigt?** → "
                     "https://discord.com/channels/1289721245281292288/1410754840706945034\n"
-                    "Poste deine **Steam-Freundschafts-ID** (Steam → Freunde → Freund hinzufügen). "
+                    "Nutze dort den Befehl **/betainvite** und folge den Buttons (Schnell-Link oder Discord-Login). "
                     "Einlösen: <https://store.steampowered.com/account/playtestinvites>."
                 )
             if status_choice == STATUS_RETURNING:
