@@ -265,15 +265,15 @@ class _CloseButton(discord.ui.Button):
 class _OptionsView(discord.ui.View):
     """Nicht-persistente Instanz mit den aktuellen Verknüpfungsoptionen."""
 
-    def __init__(self, *, login_url: Optional[str]):
+    def __init__(self, *, discord_url: Optional[str], steam_url: Optional[str]):
         super().__init__(timeout=None)
 
-        if login_url:
+        if discord_url:
             self.add_item(
                 discord.ui.Button(
                     label="Via Discord bei Steam anmelden",
                     style=discord.ButtonStyle.link,
-                    url=login_url,
+                    url=discord_url,
                     emoji="🔗",
                     row=0,
                 )
@@ -285,6 +285,27 @@ class _OptionsView(discord.ui.View):
                     style=discord.ButtonStyle.secondary,
                     disabled=True,
                     emoji="🔗",
+                    row=0,
+                )
+            )
+
+        if steam_url:
+            self.add_item(
+                discord.ui.Button(
+                    label="Direkt bei Steam anmelden",
+                    style=discord.ButtonStyle.link,
+                    url=steam_url,
+                    emoji="🎮",
+                    row=0,
+                )
+            )
+        else:
+            self.add_item(
+                discord.ui.Button(
+                    label="Direkt bei Steam anmelden",
+                    style=discord.ButtonStyle.secondary,
+                    disabled=True,
+                    emoji="🎮",
                     row=0,
                 )
             )
@@ -416,7 +437,7 @@ class SteamLinkVoiceNudge(commands.Cog):
         desc = steam_link_detailed_description()
         if browser_fallback and (primary_discord or "").startswith("discord://"):
             desc += f"\n\n_Falls sich nichts öffnet:_ [Browser-Variante]({browser_fallback})"
-        if not primary_discord:
+        if not primary_discord and not steam_url:
             desc += "\n\n_Heads-up:_ Der Link-Dienst ist gerade nicht verfügbar. Nutze vorerst **/link**."
 
         embed = discord.Embed(
@@ -426,7 +447,7 @@ class SteamLinkVoiceNudge(commands.Cog):
         )
         embed.set_footer(text="Kurzbefehle: /link · /link_steam · /addsteam · /unlink · /setprimary")
 
-        view = _OptionsView(login_url=primary_discord)
+        view = _OptionsView(discord_url=primary_discord, steam_url=steam_url)
         return embed, view
 
     async def _fetch_nudge_message(

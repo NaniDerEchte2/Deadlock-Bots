@@ -47,7 +47,7 @@ STATE_TTL_SEC = 600  # 10 min
 LINK_COVER_IMAGE = (os.getenv("LINK_COVER_IMAGE") or "").strip()
 LINK_COVER_LABEL = (os.getenv("LINK_COVER_LABEL") or "link.earlysalty.com").strip()
 LINK_BUTTON_LABEL = (os.getenv("LINK_BUTTON_LABEL") or "Via Discord verknüpfen").strip()
-STEAM_BUTTON_LABEL = (os.getenv("STEAM_BUTTON_LABEL") or "Steam Profil suchen").strip()  # ehem. "Mit Steam anmelden"
+STEAM_BUTTON_LABEL = (os.getenv("STEAM_BUTTON_LABEL") or "Direkt bei Steam anmelden").strip()
 
 # ---------------------------------------------------------------------------
 # Öffentliche Schnittstelle für andere Cogs (Welcome-DM, Rules-Panel, etc.)

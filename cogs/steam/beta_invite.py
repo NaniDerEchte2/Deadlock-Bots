@@ -196,6 +196,7 @@ class BetaInviteFlow(commands.Cog):
 
     def _build_link_prompt_view(self, user: discord.abc.User) -> discord.ui.View:
         login_url: Optional[str] = None
+        steam_url: Optional[str] = None
         try:
             steam_cog = self.bot.get_cog("SteamLink")
         except Exception:  # pragma: no cover - defensive
@@ -207,6 +208,13 @@ class BetaInviteFlow(commands.Cog):
                 login_url = str(candidate) or None
             except Exception:
                 log.debug("Konnte Discord-Link für BetaInvite nicht bauen", exc_info=True)
+
+        if steam_cog and hasattr(steam_cog, "steam_start_url_for"):
+            try:
+                candidate = steam_cog.steam_start_url_for(int(user.id))  # type: ignore[attr-defined]
+                steam_url = str(candidate) or None
+            except Exception:
+                log.debug("Konnte Steam-Link für BetaInvite nicht bauen", exc_info=True)
 
         view = discord.ui.View(timeout=180)
         if login_url:
@@ -226,6 +234,27 @@ class BetaInviteFlow(commands.Cog):
                     style=discord.ButtonStyle.secondary,
                     disabled=True,
                     emoji="🔗",
+                    row=0,
+                )
+            )
+
+        if steam_url:
+            view.add_item(
+                discord.ui.Button(
+                    label="Direkt bei Steam anmelden",
+                    style=discord.ButtonStyle.link,
+                    url=steam_url,
+                    emoji="🎮",
+                    row=0,
+                )
+            )
+        else:
+            view.add_item(
+                discord.ui.Button(
+                    label="Direkt bei Steam anmelden",
+                    style=discord.ButtonStyle.secondary,
+                    disabled=True,
+                    emoji="🎮",
                     row=0,
                 )
             )
@@ -351,7 +380,8 @@ class BetaInviteFlow(commands.Cog):
             view = self._build_link_prompt_view(interaction.user)
             await interaction.followup.send(
                 "ℹ️ Es ist noch kein Steam-Account mit deinem Discord verknüpft.\n"
-                "Melde dich über „Via Discord bei Steam anmelden“ an oder nutze den Schnell-Link und versuche es danach erneut.",
+                "Melde dich über „Via Discord bei Steam anmelden“, „Direkt bei Steam anmelden“ oder nutze den Schnell-Link "
+                "und versuche es danach erneut.",
                 view=view,
                 ephemeral=True,
             )

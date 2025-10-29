@@ -78,6 +78,7 @@ _STEAM_LINK_DETAILED_DESC = dedent(
 
     **Ablauf & Optionen:**
     • **Via Discord bei Steam anmelden** – Offizieller Login über unser Portal (kein Passwort, wir lesen nur die **SteamID64**).
+    • **Direkt bei Steam anmelden** – Öffnet Steam, damit du deinen Account bestätigst (wir speichern nur die **SteamID64**).
     • **Schnell-Link anfordern** – Wir schicken dir einen persönlichen Freundschaftslink zum Steam-Bot.
 
 
@@ -109,9 +110,9 @@ def build_steam_intro_embed() -> discord.Embed:
 
 
 class _LinkSheet(discord.ui.View):
-    """Ephemere Mini-View mit dem aktuellen Discord-gestützten Login-Link."""
+    """Ephemere Mini-View mit den aktuellen Login-Optionen."""
 
-    def __init__(self, *, discord_url: str):
+    def __init__(self, *, discord_url: str, steam_url: str):
         super().__init__(timeout=120)
         self.add_item(
             discord.ui.Button(
@@ -119,6 +120,14 @@ class _LinkSheet(discord.ui.View):
                 style=discord.ButtonStyle.link,
                 url=discord_url,
                 emoji="🔗",
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Direkt bei Steam anmelden",
+                style=discord.ButtonStyle.link,
+                url=steam_url,
+                emoji="🎮",
             )
         )
 
@@ -193,7 +202,10 @@ class SteamLinkStepView(discord.ui.View):
         primary, browser_fallback = _prefer_discord_deeplink(urls["discord_start"])
         discord_link = primary or urls["discord_start"]
 
-        sheet = _LinkSheet(discord_url=discord_link)
+        sheet = _LinkSheet(
+            discord_url=discord_link,
+            steam_url=urls["steam_openid_start"],
+        )
 
         msg = "🔐 Wähle den Link:"
         if browser_fallback and discord_link.startswith("discord://"):
@@ -203,6 +215,16 @@ class SteamLinkStepView(discord.ui.View):
             await interaction.followup.send(msg, view=sheet, ephemeral=True)
         else:
             await interaction.response.send_message(msg, view=sheet, ephemeral=True)
+
+    @discord.ui.button(
+        label="Direkt bei Steam anmelden",
+        style=discord.ButtonStyle.primary,
+        custom_id="steam:openid",
+        row=0,
+        emoji="🎮",
+    )
+    async def _start_openid(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        await self._present_link_sheet(interaction)
 
     @discord.ui.button(
         label="Schnelle Anfrage senden",
