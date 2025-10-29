@@ -1,10 +1,12 @@
 import discord
 from discord.ext import commands, tasks
 import sqlite3
+import json
 import asyncio
 from datetime import datetime, timedelta
 import os
 import logging
+import time
 from pathlib import Path
 import sys
 import atexit
@@ -70,6 +72,11 @@ RANK_SELECTION_CHANNEL_ID = 1398021105339334666  # Channel für automatische Vie
 
 # Test-User System - für normalen Betrieb leer lassen
 test_users: List[discord.Member] = []
+
+COMMAND_BOT_KEY = "rank"
+COMMAND_POLL_LIMIT = 5
+COMMAND_POLL_INTERVAL = 5  # seconds
+STATE_PUBLISH_INTERVAL = 30  # seconds
 
 # Deutsche Uhrzeiten (8-22 Uhr)
 NOTIFICATION_START_HOUR = 8
@@ -233,6 +240,307 @@ def cleanup_old_views(guild_id: str, view_type: str):
         deleted_count = cursor.rowcount
         conn.commit()
         return deleted_count
+
+
+# ---------- Standalone Dashboard Integration ----------
+
+def fetch_pending_commands(limit: int = COMMAND_POLL_LIMIT) -> List[sqlite3.Row]:
+    with open_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, command, payload
+              FROM standalone_commands
+             WHERE bot = ?
+               AND status = 'pending'
+          ORDER BY id ASC
+             LIMIT ?
+            """,
+            (COMMAND_BOT_KEY, limit),
+        )
+        rows = cursor.fetchall()
+    return rows
+
+def mark_command_running(command_id: int) -> bool:
+    with open_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE standalone_commands
+               SET status = 'running',
+                   started_at = CURRENT_TIMESTAMP
+             WHERE id = ?
+               AND status = 'pending'
+            """,
+            (command_id,),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+
+def _truncate_error(message: Optional[str], limit: int = 1500) -> Optional[str]:
+    if not message:
+        return None
+    text = str(message)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+def finalize_command(command_id: int, status: str, *, result: Optional[Dict[str, Any]] = None, error: Optional[str] = None) -> None:
+    result_json = json.dumps(result, ensure_ascii=False) if result is not None else None
+    error_text = _truncate_error(error)
+    with open_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE standalone_commands
+               SET status = ?,
+                   result = ?,
+                   error = ?,
+                   finished_at = CURRENT_TIMESTAMP
+             WHERE id = ?
+            """,
+            (status, result_json, error_text, command_id),
+        )
+        conn.commit()
+
+def _loop_running(loop_obj: Any) -> bool:
+    try:
+        return bool(loop_obj and loop_obj.is_running())
+    except Exception:
+        return False
+
+def collect_rank_bot_snapshot() -> Dict[str, Any]:
+    now = datetime.utcnow()
+    today = now.strftime('%Y-%m-%d')
+    snapshot: Dict[str, Any] = {
+        "timestamp": now.isoformat(),
+        "guild_count": len(bot.guilds),
+        "test_user_count": len(test_users),
+        "loops": {
+            "daily_notification": _loop_running(globals().get("daily_notification_check")),
+            "daily_cleanup": _loop_running(globals().get("daily_cleanup_check")),
+            "command_poller": _loop_running(globals().get("standalone_command_poller")),
+            "state_publisher": _loop_running(globals().get("standalone_state_publisher")),
+        },
+    }
+
+    try:
+        with open_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT COUNT(*) FROM notification_queue WHERE processed = 0")
+            queue_pending_total = cursor.fetchone()[0] or 0
+
+            cursor.execute("SELECT COUNT(*) FROM notification_queue")
+            queue_total_entries = cursor.fetchone()[0] or 0
+
+            cursor.execute(
+                "SELECT COUNT(*) FROM notification_queue WHERE queue_date = ?",
+                (today,),
+            )
+            queue_today_total = cursor.fetchone()[0] or 0
+
+            cursor.execute(
+                "SELECT COUNT(*) FROM notification_queue WHERE queue_date = ? AND processed = 0",
+                (today,),
+            )
+            queue_today_pending = cursor.fetchone()[0] or 0
+
+            cursor.execute(
+                """
+                SELECT queue_date,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN processed = 0 THEN 1 ELSE 0 END) AS pending
+                  FROM notification_queue
+              GROUP BY queue_date
+              ORDER BY queue_date DESC
+                 LIMIT 5
+                """
+            )
+            queue_by_date = [
+                {"date": row[0], "total": row[1], "pending": row[2] or 0}
+                for row in cursor.fetchall()
+                if row[0]
+            ]
+
+            cursor.execute(
+                "SELECT notification_time FROM notification_log ORDER BY notification_time DESC LIMIT 1"
+            )
+            row = cursor.fetchone()
+            last_notification = row[0] if row else None
+
+            cursor.execute(
+                "SELECT COUNT(*) FROM notification_log WHERE DATE(notification_time) = ?",
+                (today,),
+            )
+            notifications_today = cursor.fetchone()[0] or 0
+
+            cursor.execute("SELECT COUNT(*) FROM dm_response_tracking WHERE status = 'pending'")
+            dm_pending = cursor.fetchone()[0] or 0
+
+            cursor.execute("SELECT COUNT(*) FROM persistent_views WHERE view_type = 'dm_rank_select'")
+            dm_open_views = cursor.fetchone()[0] or 0
+
+            cursor.execute("SELECT status, COUNT(*) FROM dm_response_tracking GROUP BY status")
+            dm_status = {row[0] or "unknown": row[1] for row in cursor.fetchall()}
+
+            cursor.execute(
+                "SELECT COUNT(*) FROM user_data WHERE paused_until IS NOT NULL AND paused_until > ?",
+                (datetime.now().isoformat(),),
+            )
+            paused_users = cursor.fetchone()[0] or 0
+
+            cursor.execute(
+                """
+                SELECT id, command, status, finished_at
+                  FROM standalone_commands
+                 WHERE bot = ?
+              ORDER BY id DESC
+                 LIMIT 5
+                """,
+                (COMMAND_BOT_KEY,),
+            )
+            recent_commands = [
+                {
+                    "id": row[0],
+                    "command": row[1],
+                    "status": row[2],
+                    "finished_at": row[3],
+                }
+                for row in cursor.fetchall()
+            ]
+
+        snapshot["queue"] = {
+            "pending_total": queue_pending_total,
+            "total_entries": queue_total_entries,
+            "today": {
+                "total": queue_today_total,
+                "pending": queue_today_pending,
+            },
+            "by_date": queue_by_date,
+        }
+        snapshot["notifications"] = {
+            "today": notifications_today,
+            "last_sent": last_notification,
+        }
+        snapshot["dm"] = {
+            "pending": dm_pending,
+            "open_views": dm_open_views,
+            "statuses": dm_status,
+        }
+        snapshot["opt_out"] = {"paused_users": paused_users}
+        snapshot["recent_commands"] = recent_commands
+    except sqlite3.Error as exc:
+        logger.error("Snapshot collection failed: %s", exc)
+
+    return snapshot
+
+def update_standalone_state(snapshot: Dict[str, Any]) -> None:
+    heartbeat = int(time.time())
+    payload = json.dumps(snapshot, ensure_ascii=False)
+    with open_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO standalone_bot_state(bot, heartbeat, payload, updated_at)
+            VALUES(?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(bot) DO UPDATE SET
+                heartbeat = excluded.heartbeat,
+                payload = excluded.payload,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (COMMAND_BOT_KEY, heartbeat, payload),
+        )
+        conn.commit()
+
+def _compute_and_store_state() -> Dict[str, Any]:
+    snapshot = collect_rank_bot_snapshot()
+    update_standalone_state(snapshot)
+    return snapshot
+
+async def push_rank_bot_state() -> Dict[str, Any]:
+    return await asyncio.to_thread(_compute_and_store_state)
+
+def ensure_notification_tasks_running(mode: str = "normal", interval: int = 30) -> Dict[str, Any]:
+    started_flags = {}
+    if not daily_notification_check.is_running():
+        daily_notification_check.start()
+        started_flags["daily_notification"] = True
+    else:
+        started_flags["daily_notification"] = False
+
+    if not daily_cleanup_check.is_running():
+        daily_cleanup_check.start()
+        started_flags["daily_cleanup"] = True
+    else:
+        started_flags["daily_cleanup"] = False
+
+    return {
+        "mode": mode,
+        "interval": interval,
+        "started": started_flags,
+        "loops": {
+            "daily_notification": daily_notification_check.is_running(),
+            "daily_cleanup": daily_cleanup_check.is_running(),
+        },
+    }
+
+def stop_notification_tasks() -> Dict[str, Any]:
+    stopped_flags = {}
+    if daily_notification_check.is_running():
+        daily_notification_check.stop()
+        stopped_flags["daily_notification"] = True
+    else:
+        stopped_flags["daily_notification"] = False
+
+    if daily_cleanup_check.is_running():
+        daily_cleanup_check.stop()
+        stopped_flags["daily_cleanup"] = True
+    else:
+        stopped_flags["daily_cleanup"] = False
+
+    return {
+        "stopped": stopped_flags,
+        "loops": {
+            "daily_notification": daily_notification_check.is_running(),
+            "daily_cleanup": daily_cleanup_check.is_running(),
+        },
+    }
+
+async def execute_control_command(command: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = payload or {}
+    normalized = command.strip().lower().lstrip('!')
+    result: Dict[str, Any] = {"command": normalized}
+
+    if normalized in {"queue.daily", "queue.create", "rqueue"}:
+        await create_daily_queue()
+        result["message"] = "Daily queue created"
+    elif normalized in {"system.start", "rstart"}:
+        mode = str(payload.get("mode", "normal"))
+        interval = int(payload.get("interval", 30))
+        result.update(ensure_notification_tasks_running(mode=mode, interval=interval))
+        result["message"] = "Notification system running"
+    elif normalized in {"system.stop", "rstop"}:
+        result.update(stop_notification_tasks())
+        result["message"] = "Notification system stopped"
+    elif normalized in {"dm.cleanup", "cleanup.dm"}:
+        removed = await cleanup_old_dm_views_auto()
+        result["removed_views"] = removed
+        result["message"] = "DM cleanup executed"
+    elif normalized in {"state.refresh", "state"}:
+        state = await push_rank_bot_state()
+        result["state"] = state
+        result["message"] = "State refreshed"
+        return result
+    else:
+        raise ValueError(f"Unknown control command '{command}'")
+
+    state = await push_rank_bot_state()
+    result["state"] = state
+    return result
+
 
 # ---------- Utils ----------
 def get_user_current_rank(user: discord.Member):
@@ -1070,38 +1378,55 @@ async def check_never_contacted(ctx: commands.Context):
     embed.set_footer(text="🎮 Deadlock Rank Bot")
     await ctx.send(embed=embed)
 
+
 @bot.command(name='rstart')
 @commands.has_permissions(administrator=True)
 async def start_notification_system(ctx: commands.Context, mode: str = "normal", interval: int = 30):
-    if not daily_notification_check.is_running():
-        daily_notification_check.start()
-    if not daily_cleanup_check.is_running():
-        daily_cleanup_check.start()
+    info = ensure_notification_tasks_running(mode=mode, interval=interval)
 
     embed = discord.Embed(
         title="✅ Rank Bot gestartet!",
         description=f"**Modus:** {mode}\n**Intervall:** {interval}",
         color=0x00ff00
     )
-    embed.add_field(name="📋 Queue erstellen", value="Verwende `!rqueue` um Queue manuell zu erstellen", inline=True)
-    embed.add_field(name="⏰ Aktive Zeiten", value="8-22 Uhr deutsche Zeit", inline=True)
+    embed.add_field(name="🔁 Queue erstellen", value="Verwende `!rqueue` um Queue manuell zu erstellen", inline=True)
+    embed.add_field(name="🕒 Aktive Zeiten", value="8-22 Uhr deutsche Zeit", inline=True)
     embed.add_field(name="🧹 Auto-Cleanup", value="Alte DM Views (7+ Tage) werden täglich entfernt", inline=True)
-    embed.set_footer(text="🎮 Deadlock Rank Bot")
+
+    loop_status = "\n".join(
+        f"{'✅' if active else '⚠️'} {name.replace('_', ' ').title()}"
+        for name, active in info["loops"].items()
+    )
+    embed.add_field(name="Loop Status", value=loop_status, inline=False)
+    embed.set_footer(text="✅ Deadlock Rank Bot")
     await ctx.send(embed=embed)
 
+    try:
+        await push_rank_bot_state()
+    except Exception as exc:
+        logger.debug("State push after !rstart failed: %s", exc)
 @bot.command(name='rstop')
 @commands.has_permissions(administrator=True)
 async def stop_notification_system(ctx: commands.Context):
-    if daily_notification_check.is_running():
-        daily_notification_check.stop()
+    info = stop_notification_tasks()
+
     embed = discord.Embed(
         title="🛑 Rank Bot gestoppt!",
         description="Automatische Benachrichtigungen wurden gestoppt.",
         color=0xff6600
     )
-    embed.set_footer(text="🎮 Deadlock Rank Bot")
+    loop_status = "\n".join(
+        f"{'✅' if active else '⏸️'} {name.replace('_', ' ').title()}"
+        for name, active in info["loops"].items()
+    )
+    embed.add_field(name="Loop Status", value=loop_status, inline=False)
+    embed.set_footer(text="✅ Deadlock Rank Bot")
     await ctx.send(embed=embed)
 
+    try:
+        await push_rank_bot_state()
+    except Exception as exc:
+        logger.debug("State push after !rstop failed: %s", exc)
 @bot.command(name='radd')
 @commands.has_permissions(administrator=True)
 async def add_user_to_queue(ctx: commands.Context, user: discord.Member):
@@ -1324,6 +1649,51 @@ def mark_queue_item_processed(user_id: str, guild_id: str, date: str):
         ''', (user_id, guild_id, date))
         conn.commit()
 
+
+@tasks.loop(seconds=COMMAND_POLL_INTERVAL)
+async def standalone_command_poller():
+    try:
+        pending = fetch_pending_commands()
+        if not pending:
+            return
+        for row in pending:
+            command_id = row["id"]
+            if not mark_command_running(command_id):
+                continue
+
+            payload_data: Dict[str, Any] = {}
+            raw_payload = row["payload"]
+            if raw_payload:
+                try:
+                    payload_data = json.loads(raw_payload)
+                except Exception as exc:
+                    logger.warning("Invalid payload for command %s: %s", command_id, exc)
+
+            try:
+                result = await execute_control_command(row["command"], payload_data)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Command %s failed: %s", row["command"], exc)
+                finalize_command(command_id, "error", error=str(exc))
+            else:
+                finalize_command(command_id, "success", result=result)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error("Standalone command poller error: %s", exc)
+
+
+@tasks.loop(seconds=STATE_PUBLISH_INTERVAL)
+async def standalone_state_publisher():
+    try:
+        await push_rank_bot_state()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error("Standalone state publisher error: %s", exc)
+
+
 @tasks.loop(minutes=1)
 async def daily_notification_check():
     if is_notification_time():
@@ -1446,6 +1816,15 @@ async def on_ready():
     logger.info("   !rtest_users @user1 @user2 - Test-User setzen")
     logger.info("   !rstart - System starten")
     logger.info("   !rdb - Datenbank anzeigen")
+
+    if not standalone_command_poller.is_running():
+        standalone_command_poller.start()
+    if not standalone_state_publisher.is_running():
+        standalone_state_publisher.start()
+    try:
+        await push_rank_bot_state()
+    except Exception as exc:
+        logger.warning(f'Initial state push failed: {exc}')
 
     await restore_persistent_views()
     await auto_restore_rank_channel_view()

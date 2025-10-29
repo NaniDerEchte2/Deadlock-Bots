@@ -17,6 +17,10 @@ try:
     from . import faq_logs
 except Exception:
     faq_logs = None
+try:
+    from . import standalone_manager
+except Exception:
+    standalone_manager = None
 
 __all__ = [
     "db",
@@ -24,4 +28,5 @@ __all__ = [
     "worker_client",
     "dashboard",
     "faq_logs",
+    "standalone_manager",
 ]

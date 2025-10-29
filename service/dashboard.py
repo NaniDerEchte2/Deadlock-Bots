@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import errno
+import json
 import logging
 import os
 from pathlib import Path
@@ -11,6 +12,17 @@ from urllib.parse import urlparse, urlunparse
 
 from aiohttp import web
 
+from service import db
+
+try:
+    from service.standalone_manager import (
+        StandaloneAlreadyRunning,
+        StandaloneConfigNotFound,
+        StandaloneManagerError,
+        StandaloneNotRunning,
+    )
+except Exception:
+    StandaloneAlreadyRunning = StandaloneConfigNotFound = StandaloneManagerError = StandaloneNotRunning = None  # type: ignore
 
 _HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang=\"en\">
@@ -95,6 +107,82 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             border-radius: 8px;
             padding: 1rem;
             border: 1px solid rgba(255,255,255,0.05);
+        }
+        .standalone-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1rem;
+        }
+        .standalone-card {
+            background: #161616;
+            border-radius: 8px;
+            padding: 1rem;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+        .standalone-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+        }
+        .standalone-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            font-weight: 600;
+        }
+        .standalone-meta {
+            font-size: 0.85rem;
+            color: #adb5bd;
+            margin-bottom: 0.75rem;
+        }
+        .standalone-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+            margin-bottom: 0.75rem;
+        }
+        .standalone-actions button {
+            padding: 0.35rem 0.7rem;
+        }
+        .standalone-metrics {
+            display: grid;
+            gap: 0.4rem;
+            font-size: 0.85rem;
+        }
+        .standalone-metrics strong {
+            font-weight: 600;
+        }
+        .standalone-commands {
+            margin-top: 0.75rem;
+            border-top: 1px solid rgba(255,255,255,0.06);
+            padding-top: 0.75rem;
+        }
+        .standalone-commands form {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .standalone-commands select {
+            background: #1f1f1f;
+            color: inherit;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 6px;
+            padding: 0.35rem 0.6rem;
+        }
+        .standalone-list {
+            list-style: none;
+            margin: 0.5rem 0 0;
+            padding: 0;
+            font-size: 0.8rem;
+        }
+        .standalone-list li {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.5rem;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            padding: 0.25rem 0;
         }
         button {
             border: none;
@@ -288,6 +376,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     </section>
 
     <section>
+        <h2>Standalone Dienste</h2>
+        <div id="standalone-container" class="standalone-grid"></div>
+    </section>
+
+    <section>
         <h2>Cog Management</h2>
         <div class=\"card cog-management\">
             <h3>Management Tools</h3>
@@ -315,6 +408,16 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const selectionTitle = document.getElementById('selection-title');
     const selectionDescription = document.getElementById('selection-description');
     const resetSelectionBtn = document.getElementById('reset-selection');
+    const standaloneContainer = document.getElementById('standalone-container');
+    const STANDALONE_COMMANDS = {
+        rank: [
+            { value: 'queue.daily', label: 'Daily Queue erstellen' },
+            { value: 'system.start', label: 'Benachrichtigungen starten' },
+            { value: 'system.stop', label: 'Benachrichtigungen stoppen' },
+            { value: 'dm.cleanup', label: 'DM Cleanup durchführen' },
+            { value: 'state.refresh', label: 'Status aktualisieren' },
+        ],
+    };
     let authToken = localStorage.getItem('master-dashboard-token') || '';
     let selectedNode = null;
     tokenInput.value = authToken;
@@ -436,6 +539,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('bot-guilds').textContent = 'Guilds: ' + data.bot.guilds;
             document.getElementById('bot-latency').textContent = 'Latency: ' + data.bot.latency_ms + ' ms';
 
+            const standalone = data.standalone || [];
+            renderStandalone(standalone);
             const cogs = data.cogs || {};
             const tree = cogs.tree || null;
             renderTree(tree);
@@ -472,6 +577,242 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             clearSelection();
         }
     }
+
+function safeNumber(value, fallback = 0) {
+    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function formatSeconds(seconds) {
+    const value = safeNumber(seconds);
+    if (!value) {
+        return '0s';
+    }
+    const parts = [];
+    const hours = Math.floor(value / 3600);
+    const minutes = Math.floor((value % 3600) / 60);
+    const secs = Math.floor(value % 60);
+    if (hours) {
+        parts.push(`${hours}h`);
+    }
+    if (minutes) {
+        parts.push(`${minutes}m`);
+    }
+    if (secs || parts.length === 0) {
+        parts.push(`${secs}s`);
+    }
+    return parts.join(' ');
+}
+
+function formatTimestamp(value) {
+    if (!value) {
+        return '–';
+    }
+    try {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) {
+            return value;
+        }
+        return date.toLocaleString();
+    } catch (err) {
+        return value;
+    }
+}
+
+function renderStandalone(bots) {
+    if (!standaloneContainer) {
+        return;
+    }
+    standaloneContainer.innerHTML = '';
+    if (!Array.isArray(bots) || bots.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'standalone-meta';
+        empty.textContent = 'Keine Standalone-Bots registriert.';
+        standaloneContainer.appendChild(empty);
+        return;
+    }
+
+    bots.forEach((info) => {
+        const card = document.createElement('div');
+        card.className = 'standalone-card';
+
+        const header = document.createElement('div');
+        header.className = 'standalone-header';
+
+        const title = document.createElement('h3');
+        title.textContent = (info.config && info.config.name) ? info.config.name : info.key;
+        header.appendChild(title);
+
+        const statusSpan = document.createElement('span');
+        statusSpan.className = 'standalone-status';
+        const dot = document.createElement('span');
+        dot.className = 'status-dot ' + (info.running ? 'status-loaded' : 'status-error');
+        statusSpan.appendChild(dot);
+        statusSpan.appendChild(document.createTextNode(info.running ? 'Online' : 'Offline'));
+        header.appendChild(statusSpan);
+        card.appendChild(header);
+
+        const meta = document.createElement('div');
+        meta.className = 'standalone-meta';
+        const metaParts = [];
+        metaParts.push(`PID: ${info.pid || '–'}`);
+        metaParts.push(`Uptime: ${formatSeconds(info.uptime_seconds)}`);
+        metaParts.push(`Autostart: ${info.autostart ? 'Ja' : 'Nein'}`);
+        meta.innerHTML = metaParts.join(' • ');
+        const metrics = info.metrics || {};
+        if (metrics.updated_at) {
+            meta.innerHTML += `<br>Heartbeat: ${formatTimestamp(metrics.updated_at)}`;
+        } else if (metrics.state && metrics.state.timestamp) {
+            meta.innerHTML += `<br>Heartbeat: ${formatTimestamp(metrics.state.timestamp)}`;
+        }
+        card.appendChild(meta);
+
+        const actions = document.createElement('div');
+        actions.className = 'standalone-actions';
+
+        const startBtn = document.createElement('button');
+        startBtn.className = 'load';
+        startBtn.textContent = 'Start';
+        startBtn.disabled = !!info.running;
+        startBtn.addEventListener('click', () => controlStandalone(info.key, 'start'));
+        actions.appendChild(startBtn);
+
+        const stopBtn = document.createElement('button');
+        stopBtn.className = 'unload';
+        stopBtn.textContent = 'Stop';
+        stopBtn.disabled = !info.running;
+        stopBtn.addEventListener('click', () => controlStandalone(info.key, 'stop'));
+        actions.appendChild(stopBtn);
+
+        const restartBtn = document.createElement('button');
+        restartBtn.className = 'reload';
+        restartBtn.textContent = 'Neustart';
+        restartBtn.addEventListener('click', () => controlStandalone(info.key, 'restart'));
+        actions.appendChild(restartBtn);
+
+        card.appendChild(actions);
+
+        const metricsContainer = document.createElement('div');
+        metricsContainer.className = 'standalone-metrics';
+        const state = metrics.state || {};
+        const queue = state.queue || {};
+        const queueToday = queue.today || {};
+        const dmInfo = state.dm || {};
+        metricsContainer.innerHTML = '';
+        metricsContainer.appendChild(document.createElement('div')).innerHTML = `<strong>Queue heute:</strong> ${safeNumber(queueToday.pending)} offen / ${safeNumber(queueToday.total)} gesamt`;
+        metricsContainer.appendChild(document.createElement('div')).innerHTML = `<strong>Queue gesamt:</strong> ${safeNumber(queue.pending_total)} offen (${safeNumber(queue.total_entries)} Einträge)`;
+        metricsContainer.appendChild(document.createElement('div')).innerHTML = `<strong>DM offen:</strong> ${safeNumber(dmInfo.pending)}`;
+
+        if (state.loops) {
+            const loopLine = Object.entries(state.loops)
+                .map(([name, active]) => `${active ? '✅' : '⚠️'} ${name.replace(/_/g, ' ')}`)
+                .join(' • ');
+            const loopDiv = document.createElement('div');
+            loopDiv.innerHTML = `<strong>Loops:</strong> ${loopLine || 'Keine Daten'}`;
+            metricsContainer.appendChild(loopDiv);
+        }
+
+        card.appendChild(metricsContainer);
+
+        const commandSection = document.createElement('div');
+        commandSection.className = 'standalone-commands';
+
+        const form = document.createElement('form');
+        const select = document.createElement('select');
+        const defaultOption = document.createElement('option');
+        defaultOption.value = '';
+        defaultOption.textContent = 'Aktion auswählen…';
+        select.appendChild(defaultOption);
+        const namespace = (info.config && info.config.command_namespace) ? info.config.command_namespace : info.key;
+        const commandOptions = STANDALONE_COMMANDS[namespace] || [];
+        commandOptions.forEach((cmd) => {
+            const option = document.createElement('option');
+            option.value = cmd.value;
+            option.textContent = cmd.label;
+            select.appendChild(option);
+        });
+        form.appendChild(select);
+
+        const submitBtn = document.createElement('button');
+        submitBtn.type = 'submit';
+        submitBtn.textContent = 'Ausführen';
+        submitBtn.className = 'reload';
+        form.appendChild(submitBtn);
+
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const value = select.value;
+            if (!value) {
+                return;
+            }
+            submitBtn.disabled = true;
+            try {
+                await sendStandaloneCommand(info.key, value);
+                log(`Standalone ${info.key}: '${value}' gesendet`, 'success');
+                select.value = '';
+            } catch (err) {
+                log(`Standalone ${info.key}: ${err.message}`, 'error');
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+
+        commandSection.appendChild(form);
+
+        const pendingCommands = metrics.pending_commands || [];
+        if (pendingCommands.length) {
+            const title = document.createElement('strong');
+            title.textContent = 'Wartende Befehle';
+            commandSection.appendChild(title);
+            const list = document.createElement('ul');
+            list.className = 'standalone-list';
+            pendingCommands.slice(0, 5).forEach((cmd) => {
+                const li = document.createElement('li');
+                li.innerHTML = `<span>${cmd.command}</span><span>${formatTimestamp(cmd.created_at)}</span>`;
+                list.appendChild(li);
+            });
+            commandSection.appendChild(list);
+        }
+
+        const recentCommands = metrics.recent_commands || [];
+        if (recentCommands.length) {
+            const title = document.createElement('strong');
+            title.textContent = 'Letzte Befehle';
+            commandSection.appendChild(title);
+            const list = document.createElement('ul');
+            list.className = 'standalone-list';
+            recentCommands.slice(0, 5).forEach((cmd) => {
+                const li = document.createElement('li');
+                const statusText = cmd.status ? cmd.status.toUpperCase() : 'UNBEKANNT';
+                li.innerHTML = `<span>${cmd.command} (${statusText})</span><span>${formatTimestamp(cmd.finished_at || cmd.created_at)}</span>`;
+                list.appendChild(li);
+            });
+            commandSection.appendChild(list);
+        }
+
+        card.appendChild(commandSection);
+
+        standaloneContainer.appendChild(card);
+    });
+}
+
+async function controlStandalone(key, action) {
+    const endpoint = `/api/standalone/${key}/${action}`;
+    try {
+        await fetchJSON(endpoint, { method: 'POST', body: JSON.stringify({}) });
+        log(`Standalone ${key}: ${action} ausgeführt`, 'success');
+        loadStatus();
+    } catch (err) {
+        log(`Standalone ${key}: ${action} fehlgeschlagen (${err.message})`, 'error');
+    }
+}
+
+async function sendStandaloneCommand(key, command) {
+    await fetchJSON(`/api/standalone/${key}/command`, {
+        method: 'POST',
+        body: JSON.stringify({ command }),
+    });
+    loadStatus();
+}
 
     function buildTreeNode(node, depth = 0) {
         const nodePath = getNodePath(node);
@@ -884,6 +1225,12 @@ class DashboardServer:
                     web.post("/api/cogs/block", self._handle_block),
                     web.post("/api/cogs/unblock", self._handle_unblock),
                     web.post("/api/cogs/discover", self._handle_discover),
+                    web.get("/api/standalone", self._handle_standalone_list),
+                    web.get("/api/standalone/{key}/logs", self._handle_standalone_logs),
+                    web.post("/api/standalone/{key}/start", self._handle_standalone_start),
+                    web.post("/api/standalone/{key}/stop", self._handle_standalone_stop),
+                    web.post("/api/standalone/{key}/restart", self._handle_standalone_restart),
+                    web.post("/api/standalone/{key}/command", self._handle_standalone_command),
                 ]
             )
 
@@ -1158,8 +1505,26 @@ class DashboardServer:
             "settings": {
                 "per_cog_unload_timeout": bot.per_cog_unload_timeout,
             },
+            "standalone": await self._collect_standalone_snapshot(),
         }
         return web.json_response(payload)
+
+
+    async def _collect_standalone_snapshot(self) -> List[Dict[str, Any]]:
+        manager = getattr(self.bot, "standalone_manager", None)
+        if not manager:
+            return []
+        try:
+            return await manager.snapshot()
+        except Exception as exc:
+            logging.getLogger(__name__).error("Standalone snapshot failed: %s", exc)
+            return []
+
+    def _require_standalone_manager(self):
+        manager = getattr(self.bot, "standalone_manager", None)
+        if not manager:
+            raise web.HTTPNotFound(text="Standalone manager unavailable")
+        return manager
 
     def _namespace_for(self, module: str) -> str:
         parts = module.split(".")
@@ -1470,6 +1835,125 @@ class DashboardServer:
                 "changed": changed,
                 "message": message,
             }
+        )
+
+
+    async def _handle_standalone_list(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        data = await self._collect_standalone_snapshot()
+        return web.json_response({"bots": data})
+
+    async def _handle_standalone_logs(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        manager = self._require_standalone_manager()
+        key = request.match_info.get("key", "").strip()
+        limit_raw = request.query.get("limit")
+        try:
+            limit = int(limit_raw) if limit_raw else 200
+            if limit <= 0:
+                raise ValueError
+            limit = min(limit, 1000)
+        except ValueError:
+            raise web.HTTPBadRequest(text="limit must be a positive integer <= 1000")
+        try:
+            logs = await manager.logs(key, limit=limit)
+        except Exception as exc:
+            if StandaloneConfigNotFound and isinstance(exc, StandaloneConfigNotFound):
+                raise web.HTTPNotFound(text="Standalone bot not found")
+            raise
+        return web.json_response({"logs": logs})
+
+    async def _handle_standalone_start(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        manager = self._require_standalone_manager()
+        key = request.match_info.get("key", "").strip()
+        try:
+            status = await manager.start(key)
+        except Exception as exc:
+            if StandaloneAlreadyRunning and isinstance(exc, StandaloneAlreadyRunning):
+                status = await manager.status(key)
+            elif StandaloneConfigNotFound and isinstance(exc, StandaloneConfigNotFound):
+                raise web.HTTPNotFound(text="Standalone bot not found")
+            elif StandaloneManagerError and isinstance(exc, StandaloneManagerError):
+                raise web.HTTPInternalServerError(text=str(exc))
+            else:
+                raise
+        return web.json_response({"standalone": status})
+
+    async def _handle_standalone_stop(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        manager = self._require_standalone_manager()
+        key = request.match_info.get("key", "").strip()
+        try:
+            status = await manager.stop(key)
+        except Exception as exc:
+            if StandaloneNotRunning and isinstance(exc, StandaloneNotRunning):
+                status = await manager.status(key)
+            elif StandaloneConfigNotFound and isinstance(exc, StandaloneConfigNotFound):
+                raise web.HTTPNotFound(text="Standalone bot not found")
+            elif StandaloneManagerError and isinstance(exc, StandaloneManagerError):
+                raise web.HTTPInternalServerError(text=str(exc))
+            else:
+                raise
+        return web.json_response({"standalone": status})
+
+    async def _handle_standalone_restart(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        manager = self._require_standalone_manager()
+        key = request.match_info.get("key", "").strip()
+        try:
+            status = await manager.restart(key)
+        except Exception as exc:
+            if StandaloneConfigNotFound and isinstance(exc, StandaloneConfigNotFound):
+                raise web.HTTPNotFound(text="Standalone bot not found")
+            if StandaloneManagerError and isinstance(exc, StandaloneManagerError):
+                raise web.HTTPInternalServerError(text=str(exc))
+            raise
+        return web.json_response({"standalone": status})
+
+    async def _handle_standalone_command(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        manager = self._require_standalone_manager()
+        key = request.match_info.get("key", "").strip()
+        try:
+            manager.config(key)
+        except Exception as exc:
+            if StandaloneConfigNotFound and isinstance(exc, StandaloneConfigNotFound):
+                raise web.HTTPNotFound(text="Standalone bot not found")
+            raise
+
+        payload = await request.json()
+        command = str(payload.get("command") or "").strip()
+        if not command:
+            raise web.HTTPBadRequest(text="'command' is required")
+        command_payload = payload.get("payload")
+        try:
+            payload_json = json.dumps(command_payload, ensure_ascii=False) if command_payload is not None else None
+        except (TypeError, ValueError):
+            raise web.HTTPBadRequest(text="payload must be JSON-serializable")
+
+        db.execute(
+            "INSERT INTO standalone_commands(bot, command, payload, status, created_at) "
+            "VALUES(?, ?, ?, 'pending', CURRENT_TIMESTAMP)",
+            (key, command, payload_json),
+        )
+        row = db.query_one("SELECT last_insert_rowid()")
+        command_id = row[0] if row else None
+
+        try:
+            await manager.ensure_running(key)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Could not ensure %s running after command enqueue: %s", key, exc
+            )
+
+        status = await manager.status(key)
+        return web.json_response(
+            {
+                "queued": command_id,
+                "standalone": status,
+            },
+            status=201,
         )
 
 if TYPE_CHECKING:  # pragma: no cover - avoid runtime dependency cycle

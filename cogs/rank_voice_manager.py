@@ -64,19 +64,10 @@ class RolePermissionVoiceManager(commands.Cog):
             "Eternus": 11,
         }
 
-        # Balancing-Regeln (Rang -> (minus, plus))
+        # Balancing-Regeln (Rang -> (minus, plus)); Ranked-Lanes dürfen nur +/-1 Spielstärke abweichen.
         self.balancing_rules = {
-            "Initiate": (-3, 3),
-            "Seeker": (-3, 3),
-            "Alchemist": (-3, 3),
-            "Arcanist": (-3, 3),
-            "Ritualist": (-3, 2),
-            "Emissary": (-3, 2),
-            "Archon": (-2, 2),
-            "Oracle": (-2, 2),
-            "Phantom": (-2, 2),
-            "Ascendant": (-1, 1),
-            "Eternus": (-1, 1),
+            rank_name: (-1, 1)
+            for rank_name in self.deadlock_ranks.keys()
         }
 
         # Cache
@@ -446,29 +437,20 @@ class RolePermissionVoiceManager(commands.Cog):
     async def set_channel_anchor(
         self, channel: discord.VoiceChannel, user: discord.Member, rank_name: str, rank_value: int
     ):
-        minus = plus = 0
         mode = self.get_channel_mode(channel)
+        initiate_value = self.deadlock_ranks["Initiate"]
+        eternus_value = self.deadlock_ranks["Eternus"]
+
         if mode == "grind":
             minus, plus = -2, 2
         else:
             minus, plus = self.balancing_rules.get(rank_name, (-1, 1))
 
-        initiate_value = self.deadlock_ranks["Initiate"]
-        emissary_value = self.deadlock_ranks["Emissary"]
-        archon_value = self.deadlock_ranks["Archon"]
-        phantom_value = self.deadlock_ranks["Phantom"]
-        eternus_value = self.deadlock_ranks["Eternus"]
-
-        allowed_min = max(0, rank_value + minus)
+        allowed_min = max(initiate_value, rank_value + minus)
         allowed_max = min(eternus_value, rank_value + plus)
 
-        if mode != "grind":
-            if rank_value <= emissary_value:
-                allowed_min = initiate_value
-                allowed_max = emissary_value
-            elif archon_value <= rank_value <= phantom_value:
-                allowed_min = max(self.deadlock_ranks["Ritualist"], allowed_min)
-                allowed_max = min(phantom_value, allowed_max)
+        if allowed_min > allowed_max:
+            allowed_min, allowed_max = allowed_max, allowed_min
 
         self.channel_anchors[channel.id] = (
             user.id,

@@ -163,6 +163,9 @@ class SteamLinkStepView(discord.ui.View):
         emoji="🔗",
     )
     async def _start_discord(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        await self._present_link_sheet(interaction)
+
+    async def _present_link_sheet(self, interaction: discord.Interaction) -> None:
         if not _LINKS_ENABLED or _oauth is None:
             message = (
                 "ℹ️ Die automatische Steam-Verknüpfung ist derzeit deaktiviert. "
@@ -209,7 +212,7 @@ class SteamLinkStepView(discord.ui.View):
     )
     async def _start_openid(self, interaction: discord.Interaction, _button: discord.ui.Button):
         # identisch: wir zeigen dieselbe ephemere Link-Sheet (mit beiden Links)
-        await self._start_discord(interaction, _button)
+        await self._present_link_sheet(interaction)
 
     @discord.ui.button(
         label="Schnelle Anfrage senden",

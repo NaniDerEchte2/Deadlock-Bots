@@ -249,13 +249,13 @@ class VoiceActivityTrackerCog(commands.Cog):
             'start_time': datetime.utcnow(),
         }
         self.session_stats['total_grace_periods'] += 1
-        logger.info(f"Grace period started for {member.display_name} ({member.id})")
+        #logger.info(f"Grace period started for {member.display_name} ({member.id})")
 
     async def end_grace_period(self, member_id: int, guild_id: int, reason: str = "timeout"):
         grace_key = f"{member_id}:{guild_id}"
         if grace_key in self.grace_period_users:
             del self.grace_period_users[grace_key]
-            logger.info(f"Grace period ended for {member_id} ({reason})")
+            #logger.info(f"Grace period ended for {member_id} ({reason})")
 
     async def _resolve_display_name(self, guild: discord.Guild, user_id: int) -> str:
         """Resolve a stable display name for leaderboard rows."""
@@ -303,7 +303,7 @@ class VoiceActivityTrackerCog(commands.Cog):
                 'user_counts': [],
             }
             self.session_stats['total_sessions_created'] += 1
-            logger.info(f"Started voice session: {member.display_name} in {channel.name}")
+            #logger.info(f"Started voice session: {member.display_name} in {channel.name}")
 
     async def end_voice_session(self, member: discord.Member, guild_id: int):
         key = f"{member.id}:{guild_id}"
@@ -315,10 +315,10 @@ class VoiceActivityTrackerCog(commands.Cog):
         # finalisieren & persistieren
         end_time = datetime.utcnow()
         seconds, points = self._finalize_session(session, end_time)
-        if seconds > 0:
-            logger.info(
-                f"Ended voice session: {member.display_name}, {seconds}s, {points}pts"
-            )
+        #if seconds > 0:
+            #logger.info(
+           #     f"Ended voice session: {member.display_name}, {seconds}s, {points}pts"
+         #   )
 
         await self.end_grace_period(member.id, guild_id, "voice_leave")
 

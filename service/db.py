@@ -246,6 +246,27 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               model TEXT,
               metadata TEXT
             );
+            -- Standalone Bot Steuerung & Monitoring
+            CREATE TABLE IF NOT EXISTS standalone_commands(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              bot TEXT NOT NULL,
+              command TEXT NOT NULL,
+              payload TEXT,
+              status TEXT NOT NULL DEFAULT 'pending',
+              result TEXT,
+              error TEXT,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              started_at DATETIME,
+              finished_at DATETIME
+            );
+
+            CREATE TABLE IF NOT EXISTS standalone_bot_state(
+              bot TEXT PRIMARY KEY,
+              heartbeat INTEGER NOT NULL,
+              payload TEXT,
+              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
 
             """
         )
@@ -269,6 +290,9 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             )
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_status ON steam_tasks(status, id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_updated ON steam_tasks(updated_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_standalone_commands_status ON standalone_commands(bot, status, id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_standalone_commands_created ON standalone_commands(created_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_standalone_state_updated ON standalone_bot_state(updated_at)")
         except sqlite3.Error as e:
             logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)
 

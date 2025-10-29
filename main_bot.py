@@ -35,6 +35,15 @@ except Exception as _dashboard_import_error:
         "Dashboard module unavailable: %s", _dashboard_import_error
     )
 
+try:
+    from service.standalone_manager import StandaloneBotConfig, StandaloneBotManager
+except Exception as _standalone_import_error:
+    StandaloneBotConfig = None  # type: ignore[assignment]
+    StandaloneBotManager = None  # type: ignore[assignment]
+    logging.getLogger(__name__).warning(
+        "Standalone manager unavailable: %s", _standalone_import_error
+    )
+
 def _log_src(modname: str):
     try:
         m = importlib.import_module(modname)
@@ -254,6 +263,47 @@ class MasterBot(commands.Bot):
                     logging.error("Konnte Dashboard nicht initialisieren: %s", e)
         else:
             logging.info("Master Dashboard deaktiviert (MASTER_DASHBOARD_ENABLED=0)")
+
+
+        self.standalone_manager: Optional[StandaloneBotManager] = None
+        if StandaloneBotManager is not None and StandaloneBotConfig is not None:
+            try:
+                repo_root = Path(__file__).resolve().parent
+                standalone_dir = repo_root / "standalone"
+                rank_script = standalone_dir / "rank_bot.py"
+                custom_env: Dict[str, str] = {}
+                pythonpath_entries: List[str] = []
+                existing_pythonpath = os.environ.get("PYTHONPATH")
+                if existing_pythonpath:
+                    pythonpath_entries.append(existing_pythonpath)
+                pythonpath_entries.append(str(repo_root))
+                custom_env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+                custom_env["PYTHONUNBUFFERED"] = "1"
+
+                self.standalone_manager = StandaloneBotManager()
+                self.standalone_manager.register(
+                    StandaloneBotConfig(
+                        key="rank",
+                        name="Rank Bot",
+                        script=rank_script,
+                        workdir=repo_root,
+                        description="Standalone Deadlock Rank Bot (eigener Discord-Token).",
+                        autostart=True,
+                        env=custom_env,
+                        tags=["discord", "ranks", "dm"],
+                        command_namespace="rank",
+                        max_log_lines=400,
+                        metrics_provider=self._collect_rank_bot_metrics,
+                    )
+                )
+                logging.info("Standalone manager initialisiert (Rank Bot registriert)")
+            except Exception as exc:
+                logging.getLogger(__name__).error(
+                    "Standalone manager konnte nicht initialisiert werden: %s", exc, exc_info=True
+                )
+                self.standalone_manager = None
+        else:
+            logging.getLogger(__name__).info("Standalone manager Modul nicht verfügbar - überspringe")
 
         # Hinweis: Der frühere SteamPresenceServiceManager wurde entfernt.
         # Die neue Deadlock-Presence-Integration läuft vollständig im Cog selbst.
@@ -588,6 +638,8 @@ class MasterBot(commands.Bot):
             logging.getLogger().debug("TempVoice Ready-Log fehlgeschlagen (ignoriert): %r", e)
 
         asyncio.create_task(self.hourly_health_check())
+        if self.standalone_manager:
+            asyncio.create_task(self._bootstrap_standalone_autostart())
 
     async def load_all_cogs(self):
         logging.info("Loading all cogs in parallel...")
@@ -718,6 +770,12 @@ class MasterBot(commands.Bot):
                 await asyncio.sleep(300)
                 current = asyncio.get_running_loop().time()
 
+                if self.standalone_manager:
+                    try:
+                        await self.standalone_manager.ensure_autostart()
+                    except Exception as exc:
+                        logging.warning("Standalone Manager Autostart-Pruefung fehlgeschlagen: %s", exc)
+
                 if current - last_critical_check >= critical_check_interval:
                     issues = []
 
@@ -737,6 +795,93 @@ class MasterBot(commands.Bot):
 
             except Exception as e:
                 logging.error(f"Health check error: {e}")
+
+
+    async def _bootstrap_standalone_autostart(self) -> None:
+        if not self.standalone_manager:
+            return
+        try:
+            await self.standalone_manager.ensure_autostart()
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "Standalone Manager Autostart fehlgeschlagen: %s", exc
+            )
+
+    async def _collect_rank_bot_metrics(self) -> Dict[str, Any]:
+        try:
+            from service import db
+        except Exception as exc:  # pragma: no cover - defensive import
+            logging.getLogger(__name__).warning(
+                "DB module unavailable for rank metrics: %s", exc
+            )
+            return {}
+
+        def _query() -> Dict[str, Any]:
+            meta_row = db.query_one(
+                "SELECT heartbeat, payload, updated_at FROM standalone_bot_state WHERE bot=?",
+                ("rank",),
+            )
+            payload: Dict[str, Any] = {}
+            if meta_row and meta_row["payload"]:
+                try:
+                    payload = json.loads(meta_row["payload"])
+                except Exception as decode_exc:
+                    logging.getLogger(__name__).warning(
+                        "Rank state payload decode failed: %s", decode_exc
+                    )
+                    payload = {}
+
+            pending_rows = db.query_all(
+                """
+                SELECT id, command, status, created_at
+                  FROM standalone_commands
+                 WHERE bot=? AND status='pending'
+              ORDER BY id ASC
+                 LIMIT 20
+                """,
+                ("rank",),
+            )
+            recent_rows = db.query_all(
+                """
+                SELECT id, command, status, created_at, finished_at, error
+                  FROM standalone_commands
+                 WHERE bot=?
+              ORDER BY id DESC
+                 LIMIT 20
+                """,
+                ("rank",),
+            )
+
+            pending = [
+                {
+                    "id": int(row["id"]),
+                    "command": row["command"],
+                    "status": row["status"],
+                    "created_at": row["created_at"],
+                }
+                for row in pending_rows
+            ]
+            recent = [
+                {
+                    "id": int(row["id"]),
+                    "command": row["command"],
+                    "status": row["status"],
+                    "created_at": row["created_at"],
+                    "finished_at": row["finished_at"],
+                    "error": row["error"],
+                }
+                for row in recent_rows
+            ]
+
+            return {
+                "state": payload,
+                "pending_commands": pending,
+                "recent_commands": recent,
+                "heartbeat": meta_row["heartbeat"] if meta_row else None,
+                "updated_at": meta_row["updated_at"] if meta_row else None,
+            }
+
+        return await asyncio.to_thread(_query)
 
     # --------- Reload für den Ordner cogs/steam ----------
     async def reload_namespace(self, namespace: str) -> Dict[str, str]:
@@ -822,6 +967,12 @@ class MasterBot(commands.Bot):
                 await self.dashboard.stop()
             except Exception as e:
                 logging.error(f"Fehler beim Stoppen des Dashboards: {e}")
+
+        if self.standalone_manager:
+            try:
+                await self.standalone_manager.shutdown()
+            except Exception as exc:
+                logging.error(f"Fehler beim Stoppen des Standalone-Managers: {exc}")
 
         # 1) Alle Cogs entladen (parallel/sequenziell mit Timeout pro Cog)
         to_unload = [ext for ext in list(self.extensions.keys()) if ext.startswith("cogs.")]
