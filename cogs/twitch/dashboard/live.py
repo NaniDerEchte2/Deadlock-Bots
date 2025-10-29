@@ -325,9 +325,9 @@ class DashboardLiveMixin:
         try:
             message = await self._discord_profile(
                 login,
-                discord_user_id or None,
-                discord_display_name or None,
-                mark_member,
+                discord_user_id=discord_user_id or None,
+                discord_display_name=discord_display_name or None,
+                mark_member=mark_member,
             )
             location = self._redirect_location(request, ok=message)
         except ValueError as exc:
