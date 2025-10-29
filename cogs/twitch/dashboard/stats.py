@@ -70,10 +70,24 @@ class DashboardStatsMixin:
         if partner_filter not in {"only", "exclude", "any"}:
             partner_filter = "any"
 
+        discord_filter = (request.query.get("discord") or "any").lower()
+        if discord_filter not in {"any", "yes", "no"}:
+            discord_filter = "any"
+
         base_path = request.rel_url.path
 
         preserved_params = {}
-        for key in ("view", "display", "min_samples", "min_avg", "partner", "hour", "hour_from", "hour_to"):
+        for key in (
+            "view",
+            "display",
+            "min_samples",
+            "min_avg",
+            "partner",
+            "discord",
+            "hour",
+            "hour_from",
+            "hour_to",
+        ):
             if key in request.query:
                 preserved_params[key] = request.query[key]
 
@@ -92,6 +106,7 @@ class DashboardStatsMixin:
             samples = int(item.get("samples") or 0)
             avg_viewers = float(item.get("avg_viewers") or 0.0)
             is_partner_flag = bool(item.get("is_partner"))
+            is_on_discord = bool(item.get("is_on_discord"))
             if min_samples is not None and samples < min_samples:
                 return False
             if min_avg is not None and avg_viewers < min_avg:
@@ -99,6 +114,10 @@ class DashboardStatsMixin:
             if partner_filter == "only" and not is_partner_flag:
                 return False
             if partner_filter == "exclude" and is_partner_flag:
+                return False
+            if discord_filter == "yes" and not is_on_discord:
+                return False
+            if discord_filter == "no" and is_on_discord:
                 return False
             return True
 
@@ -111,16 +130,56 @@ class DashboardStatsMixin:
 
         def render_table(items: List[dict]) -> str:
             if not items:
-                return "<tr><td colspan=5><i>Keine Daten für die aktuellen Filter.</i></td></tr>"
+                return "<tr><td colspan=6><i>Keine Daten für die aktuellen Filter.</i></td></tr>"
             rows = []
             for item in items:
                 streamer = html.escape(str(item.get("streamer", "")))
+                streamer_raw = str(item.get("streamer", ""))
+                escaped_login = html.escape(streamer_raw, quote=True)
                 samples = int(item.get("samples") or 0)
                 avg_viewers = float(item.get("avg_viewers") or 0.0)
                 max_viewers = int(item.get("max_viewers") or 0)
                 is_partner = bool(item.get("is_partner"))
                 partner_text = "Ja" if is_partner else "Nein"
                 partner_value = "1" if is_partner else "0"
+                discord_member = bool(item.get("is_on_discord"))
+                discord_value = "1" if discord_member else "0"
+                discord_text = "Ja" if discord_member else "Nein"
+                discord_user_id = str(item.get("discord_user_id") or "").strip()
+                discord_display_name = str(item.get("discord_display_name") or "").strip()
+                discord_meta_parts: List[str] = []
+                if discord_display_name:
+                    discord_meta_parts.append(html.escape(discord_display_name))
+                if discord_user_id:
+                    discord_meta_parts.append(f"ID: {html.escape(discord_user_id)}")
+                discord_meta_html = (
+                    f"<div class='status-meta'>{' • '.join(discord_meta_parts)}</div>"
+                    if discord_meta_parts
+                    else ""
+                )
+                inline_link_html = ""
+                if (not is_partner) and not discord_member:
+                    inline_link_html = (
+                        "<details class='discord-inline'>"
+                        "  <summary title='Discord verknüpfen'>＋</summary>"
+                        "  <div class='discord-inline-body'>"
+                        "    <form method='post' action='/twitch/discord_link'>"
+                        f"      <input type='hidden' name='login' value='{escaped_login}'>"
+                        "      <label>Discord User ID<input type='text' name='discord_user_id' placeholder='123456789012345678'></label>"
+                        "      <label>Discord Anzeigename<input type='text' name='discord_display_name' placeholder='Discord-Name'></label>"
+                        "      <input type='hidden' name='member_flag' value='1'>"
+                        "      <div class='form-actions'><button class='btn btn-small'>Speichern</button></div>"
+                        "    </form>"
+                        "  </div>"
+                        "</details>"
+                    )
+                discord_cell = (
+                    "<div class='discord-cell'>"
+                    f"  <span class='discord-flag'>{discord_text}</span>"
+                    f"  {discord_meta_html}"
+                    f"  {inline_link_html}"
+                    "</div>"
+                )
                 rows.append(
                     "<tr>"
                     f"<td>{streamer}</td>"
@@ -128,6 +187,7 @@ class DashboardStatsMixin:
                     f"<td data-value=\"{avg_viewers:.4f}\">{avg_viewers:.1f}</td>"
                     f"<td data-value=\"{max_viewers}\">{max_viewers}</td>"
                     f"<td data-value=\"{partner_value}\">{partner_text}</td>"
+                    f"<td data-value=\"{discord_value}\">{discord_cell}</td>"
                     "</tr>"
                 )
             return "".join(rows)
@@ -659,6 +719,10 @@ class DashboardStatsMixin:
             filter_descriptions.append("Nur Partner")
         elif partner_filter == "exclude":
             filter_descriptions.append("Ohne Partner")
+        if discord_filter == "yes":
+            filter_descriptions.append("Nur Discord-Mitglieder")
+        elif discord_filter == "no":
+            filter_descriptions.append("Ohne Discord")
         if hour_from is not None or hour_to is not None:
             start = hour_from if hour_from is not None else hour_to
             end = hour_to if hour_to is not None else hour_from
@@ -689,9 +753,21 @@ class DashboardStatsMixin:
             min_samples=None,
             min_avg=None,
             partner="any",
+            discord="any",
             hour=None,
             hour_from=None,
             hour_to=None,
+        )
+
+        discord_filter_options = [
+            ("any", "Alle"),
+            ("yes", "Nur Discord-Mitglieder"),
+            ("no", "Ohne Discord"),
+        ]
+
+        discord_filter_html = "".join(
+            f"<option value='{html.escape(value, quote=True)}'{' selected' if discord_filter == value else ''}>{html.escape(label)}</option>"
+            for value, label in discord_filter_options
         )
 
         body = f"""
@@ -719,6 +795,12 @@ class DashboardStatsMixin:
           <option value="only"{' selected' if partner_filter == 'only' else ''}>Nur Partner</option>
           <option value="exclude"{' selected' if partner_filter == 'exclude' else ''}>Ohne Partner</option>
         </select>
+      </label>
+    </div>
+    <div>
+      <label class="filter-label">
+        Discord Filter
+        <select name="discord">{discord_filter_html}</select>
       </label>
     </div>
     <div>
@@ -774,6 +856,7 @@ class DashboardStatsMixin:
         <th data-sort-type="number">Ø Viewer</th>
         <th data-sort-type="number">Peak Viewer</th>
         <th data-sort-type="number">Partner</th>
+        <th data-sort-type="number">Auf Discord?</th>
       </tr>
     </thead>
     <tbody>{render_table(tracked_items)}</tbody>
@@ -793,6 +876,7 @@ class DashboardStatsMixin:
         <th data-sort-type="number">Ø Viewer</th>
         <th data-sort-type="number">Peak Viewer</th>
         <th data-sort-type="number">Partner</th>
+        <th data-sort-type="number">Auf Discord?</th>
       </tr>
     </thead>
     <tbody>{render_table(category_items)}</tbody>

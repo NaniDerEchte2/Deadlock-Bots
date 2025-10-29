@@ -448,19 +448,41 @@ class TwitchLeaderboardMixin:
         out: Dict[str, Any] = {"tracked": {}, "category": {}}
 
         tracked_logins: set[str] = set()
+        discord_lookup: Dict[str, Dict[str, Any]] = {}
         try:
             with storage.get_conn() as c:
                 rows = c.execute(
-                    "SELECT twitch_login FROM twitch_streamers"
+                    """
+                    SELECT twitch_login,
+                           is_on_discord,
+                           discord_user_id,
+                           discord_display_name
+                      FROM twitch_streamers
+                    """
                 ).fetchall()
             for row in rows:
-                login_raw = row[0] if isinstance(row, tuple) else row["twitch_login"]
+                if isinstance(row, tuple):
+                    login_raw = row[0]
+                    is_on_discord_raw = row[1] if len(row) > 1 else 0
+                    discord_id_raw = row[2] if len(row) > 2 else None
+                    discord_name_raw = row[3] if len(row) > 3 else None
+                else:
+                    login_raw = row["twitch_login"]
+                    is_on_discord_raw = row.get("is_on_discord", 0)
+                    discord_id_raw = row.get("discord_user_id")
+                    discord_name_raw = row.get("discord_display_name")
                 login = str(login_raw or "").strip().lower()
                 if login:
                     tracked_logins.add(login)
+                    discord_lookup[login] = {
+                        "is_on_discord": int(is_on_discord_raw or 0),
+                        "discord_user_id": discord_id_raw,
+                        "discord_display_name": discord_name_raw,
+                    }
         except Exception:
             log.exception("Konnte gespeicherte Twitch-Logins nicht laden")
             tracked_logins = set()
+            discord_lookup = {}
 
         def _normalize_hour(value: Optional[int]) -> Optional[int]:
             if value is None:
@@ -542,8 +564,31 @@ class TwitchLeaderboardMixin:
                     item["is_partner"] = 1
             return items
 
-        out["tracked"]["top"] = _apply_partner_flag(_aggregate(tracked_sql, hour_params))
-        out["category"]["top"] = _apply_partner_flag(_aggregate(category_sql, hour_params))
+        def _apply_discord_info(items: List[dict], *, default_member: bool) -> List[dict]:
+            for item in items:
+                login = str(item.get("streamer") or "").strip().lower()
+                info = discord_lookup.get(login, {})
+                discord_user_id = info.get("discord_user_id") if info else None
+                discord_display_name = info.get("discord_display_name") if info else None
+                has_profile = bool(
+                    (discord_user_id and str(discord_user_id).strip())
+                    or (discord_display_name and str(discord_display_name).strip())
+                )
+                is_member = default_member or bool(info.get("is_on_discord")) or has_profile
+                item["is_on_discord"] = 1 if is_member else 0
+                item["discord_user_id"] = discord_user_id
+                item["discord_display_name"] = discord_display_name
+                item["has_discord_profile"] = 1 if has_profile else 0
+            return items
+
+        out["tracked"]["top"] = _apply_discord_info(
+            _apply_partner_flag(_aggregate(tracked_sql, hour_params)),
+            default_member=True,
+        )
+        out["category"]["top"] = _apply_discord_info(
+            _apply_partner_flag(_aggregate(category_sql, hour_params)),
+            default_member=False,
+        )
 
         tracked_hourly_sql = (
             """

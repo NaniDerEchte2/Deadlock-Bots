@@ -105,6 +105,52 @@ class DashboardTemplateMixin:
   .discord-status {{ display:flex; flex-direction:column; gap:.3rem; }}
   .discord-icon {{ font-weight:600; }}
   .discord-warning {{ color:var(--err-fg); font-size:.8rem; font-weight:600; }}
+  .discord-cell {{ display:flex; flex-direction:column; gap:.3rem; align-items:flex-start; }}
+  .discord-cell .discord-flag {{ font-weight:600; }}
+  details.discord-inline {{ display:inline-block; }}
+  details.discord-inline > summary {{
+    cursor:pointer;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    width:1.6rem;
+    height:1.6rem;
+    border-radius:999px;
+    border:1px solid var(--bd);
+    background:#1a1f2e;
+    color:var(--accent-2);
+    font-weight:600;
+    margin-top:.2rem;
+  }}
+  details.discord-inline[open] > summary {{
+    background:var(--accent);
+    color:#fff;
+    border-color:var(--accent);
+  }}
+  .discord-inline-body {{
+    margin-top:.4rem;
+    background:#10162a;
+    border:1px solid var(--bd);
+    border-radius:.4rem;
+    padding:.6rem;
+    display:flex;
+    flex-direction:column;
+    gap:.5rem;
+  }}
+  .discord-inline-body label {{
+    display:flex;
+    flex-direction:column;
+    gap:.3rem;
+    font-size:.8rem;
+    color:var(--muted);
+  }}
+  .discord-inline-body input[type="text"] {{
+    min-width:14rem;
+  }}
+  .discord-inline-body .form-actions {{
+    display:flex;
+    gap:.4rem;
+  }}
   details.advanced-details {{ margin-top:.4rem; width:100%; }}
   details.advanced-details > summary {{ cursor:pointer; font-size:.85rem; color:var(--accent-2); }}
   details.advanced-details[open] > summary {{ color:#fff; }}
