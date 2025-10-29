@@ -512,6 +512,9 @@ class TempVoiceCore(commands.Cog):
             log.debug("apply_region failed for lane %s: %r", lane.id, e)
 
     async def claim_owner(self, lane: discord.VoiceChannel, member: discord.Member):
+        previous_owner = self.lane_owner.get(lane.id)
+        if previous_owner == member.id:
+            return
         self.lane_owner[lane.id] = member.id
         try:
             await self._tvdb.exec(
@@ -520,6 +523,19 @@ class TempVoiceCore(commands.Cog):
             )
         except Exception as e:
             log.debug("claim_owner: db update failed for lane %s: %r", lane.id, e)
+        if previous_owner and previous_owner != member.id:
+            try:
+                await self._clear_owner_bans(lane, previous_owner)
+            except Exception as e:
+                log.debug("claim_owner: clear_owner_bans failed for lane %s: %r", lane.id, e)
+        try:
+            await self._apply_owner_settings(lane, member.id)
+        except Exception as e:
+            log.debug("claim_owner: apply_owner_settings failed for lane %s: %r", lane.id, e)
+        try:
+            self.bot.dispatch("tempvoice_lane_owner_changed", lane, int(member.id))
+        except Exception as e:
+            log.debug("claim_owner: dispatch lane_owner_changed failed for lane %s: %r", lane.id, e)
 
 # ===== Öffentliche Fassade für das Interface =====
     @property
@@ -651,6 +667,26 @@ class TempVoiceCore(commands.Cog):
             except Exception as e:
                 log.debug("apply_owner_bans: failed for %s in lane %s: %r", uid, lane.id, e)
 
+    async def _clear_owner_bans(self, lane: discord.VoiceChannel, owner_id: Optional[int]):
+        if not owner_id:
+            return
+        try:
+            banned = await self.bans.list_bans(owner_id)
+        except Exception as e:
+            log.debug("clear_owner_bans: list_bans failed for owner %s: %r", owner_id, e)
+            return
+        for uid in banned:
+            obj = lane.guild.get_member(int(uid)) or discord.Object(id=int(uid))
+            try:
+                await lane.set_permissions(
+                    obj,
+                    overwrite=None,
+                    reason="TempVoice: Ownerwechsel Ban-Reset"
+                )
+            except Exception as e:
+                log.debug("clear_owner_bans: reset failed for target %s in lane %s: %r", uid, lane.id, e)
+            await asyncio.sleep(0.02)
+
     async def _apply_owner_settings(self, lane: discord.VoiceChannel, owner_id: int):
         region = await self.get_region_pref(owner_id)
         await self.apply_region(lane, region)
@@ -774,6 +810,10 @@ class TempVoiceCore(commands.Cog):
                             )
                         except Exception as e:
                             log.debug("owner transfer db update failed for lane %s: %r", ch.id, e)
+                        try:
+                            await self._clear_owner_bans(ch, member.id)
+                        except Exception as e:
+                            log.debug("owner transfer clear_owner_bans failed for lane %s: %r", ch.id, e)
                         try:
                             await self._apply_owner_settings(ch, new_owner_member.id)
                         except Exception as e:
