@@ -45,7 +45,7 @@ class DashboardTemplateMixin:
     --err-bg:#3a1a1a; --err-bd:#792e2e; --err-fg:#ffd2d2;
   }}
   * {{ box-sizing: border-box; }}
-  body {{ font-family: system-ui, Arial, sans-serif; max-width: 1000px; margin: 2rem auto; color:var(--text); background:var(--bg); }}
+  body {{ font-family: system-ui, Arial, sans-serif; max-width: 1250px; margin: 2rem auto; color:var(--text); background:var(--bg); }}
   .tabs {{ display:flex; gap:.5rem; margin-bottom:1rem; }}
   .tab {{ padding:.5rem .8rem; border-radius:.5rem; text-decoration:none; color:#ddd; background:#1a1f2e; border:1px solid var(--bd); }}
   .tab.active {{ background:var(--accent); color:#fff; }}
