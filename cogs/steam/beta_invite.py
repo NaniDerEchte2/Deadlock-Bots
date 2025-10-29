@@ -13,6 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from service import db
+from cogs.steam.friend_requests import queue_friend_request
 from cogs.steam.steam_master import SteamTaskClient
 
 log = logging.getLogger(__name__)
@@ -365,32 +366,26 @@ class BetaInviteFlow(commands.Cog):
         record = _create_or_reset_invite(interaction.user.id, resolved, account_id)
         _ensure_steam_link(interaction.user.id, resolved)
 
-        friend_outcome = await self.tasks.run(
-            "AUTH_SEND_FRIEND_REQUEST",
-            {"steam_id": resolved},
-            timeout=25.0,
-        )
-
-        if not friend_outcome.ok:
-            error_text = friend_outcome.error or "Steam hat die Freundschaftsanfrage abgelehnt."
-            _update_invite(record.id, status=STATUS_ERROR, last_error=str(error_text))
+        try:
+            queue_friend_request(resolved)
+        except Exception as exc:
+            log.exception("Konnte Steam-Freundschaftsanfrage nicht einreihen")
+            _update_invite(
+                record.id,
+                status=STATUS_ERROR,
+                last_error=f"Konnte Freundschaftsanfrage nicht vormerken: {exc}",
+            )
             await interaction.followup.send(
-                f"❌ Freundschaftsanfrage fehlgeschlagen: {error_text}",
+                "❌ Konnte die Freundschaftsanfrage nicht vormerken. Bitte versuche es später erneut.",
                 ephemeral=True,
             )
             return
-
-        account_id_from_task = None
-        if friend_outcome.result and isinstance(friend_outcome.result, dict):
-            data = friend_outcome.result.get("data")
-            if isinstance(data, dict) and data.get("account_id") is not None:
-                account_id_from_task = int(data["account_id"])
 
         now_ts = int(time.time())
         record = _update_invite(
             record.id,
             status=STATUS_WAITING,
-            account_id=account_id_from_task or account_id,
+            account_id=account_id,
             friend_requested_at=now_ts,
             last_error=None,
         ) or record
