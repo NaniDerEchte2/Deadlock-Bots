@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import discord
@@ -448,7 +449,24 @@ class TwitchLeaderboardMixin:
         out: Dict[str, Any] = {"tracked": {}, "category": {}}
 
         tracked_logins: set[str] = set()
+        verified_logins: set[str] = set()
         discord_lookup: Dict[str, Dict[str, Any]] = {}
+
+        def _parse_db_datetime(value: Any) -> Optional[datetime]:
+            if not value:
+                return None
+            if isinstance(value, datetime):
+                dt = value
+            else:
+                try:
+                    dt = datetime.fromisoformat(str(value))
+                except ValueError:
+                    return None
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+
+        now_utc = datetime.now(timezone.utc)
         try:
             with storage.get_conn() as c:
                 rows = c.execute(
@@ -456,38 +474,63 @@ class TwitchLeaderboardMixin:
                     SELECT twitch_login,
                            is_on_discord,
                            discord_user_id,
-                           discord_display_name
+                           discord_display_name,
+                           manual_verified_permanent,
+                           manual_verified_until
                       FROM twitch_streamers
                     """
                 ).fetchall()
             for row in rows:
                 if isinstance(row, tuple):
-                    login_raw = row[0]
-                    is_on_discord_raw = row[1] if len(row) > 1 else 0
-                    discord_id_raw = row[2] if len(row) > 2 else None
-                    discord_name_raw = row[3] if len(row) > 3 else None
-                else:
-                    login_raw = row["twitch_login"]
-                    row_keys = set(row.keys()) if hasattr(row, "keys") else set()
-                    if "is_on_discord" in row_keys:
-                        is_on_discord_raw = row["is_on_discord"]
-                    else:
-                        is_on_discord_raw = 0
-                    discord_id_raw = row["discord_user_id"] if "discord_user_id" in row_keys else None
-                    discord_name_raw = (
-                        row["discord_display_name"] if "discord_display_name" in row_keys else None
+                    columns = (
+                        "twitch_login",
+                        "is_on_discord",
+                        "discord_user_id",
+                        "discord_display_name",
+                        "manual_verified_permanent",
+                        "manual_verified_until",
                     )
-                login = str(login_raw or "").strip().lower()
-                if login:
-                    tracked_logins.add(login)
-                    discord_lookup[login] = {
-                        "is_on_discord": int(is_on_discord_raw or 0),
-                        "discord_user_id": discord_id_raw,
-                        "discord_display_name": discord_name_raw,
+                    row_data = {
+                        key: row[idx] if idx < len(row) else None for idx, key in enumerate(columns)
                     }
+                elif hasattr(row, "keys"):
+                    row_data = {key: row[key] for key in row.keys()}
+                else:
+                    row_data = dict(row)
+
+                login = str(row_data.get("twitch_login") or "").strip().lower()
+                if not login:
+                    continue
+
+                tracked_logins.add(login)
+
+                is_on_discord_raw = row_data.get("is_on_discord", 0)
+                discord_id_raw = row_data.get("discord_user_id")
+                discord_name_raw = row_data.get("discord_display_name")
+
+                is_verified = False
+                try:
+                    if row_data.get("manual_verified_permanent"):
+                        is_verified = True
+                    else:
+                        until_dt = _parse_db_datetime(row_data.get("manual_verified_until"))
+                        if until_dt and until_dt >= now_utc:
+                            is_verified = True
+                except Exception:
+                    log.debug("Konnte Verifizierungsstatus für %s nicht lesen", login, exc_info=True)
+
+                if is_verified:
+                    verified_logins.add(login)
+
+                discord_lookup[login] = {
+                    "is_on_discord": int(is_on_discord_raw or 0),
+                    "discord_user_id": discord_id_raw,
+                    "discord_display_name": discord_name_raw,
+                }
         except Exception:
             log.exception("Konnte gespeicherte Twitch-Logins nicht laden")
             tracked_logins = set()
+            verified_logins = set()
             discord_lookup = {}
 
         def _normalize_hour(value: Optional[int]) -> Optional[int]:
@@ -566,11 +609,16 @@ class TwitchLeaderboardMixin:
                 return items
             for item in items:
                 login = str(item.get("streamer") or "").strip().lower()
-                if login and login in tracked_logins:
-                    item["is_partner"] = 1
+                if not login:
+                    continue
+                if login in tracked_logins:
+                    item["is_partner"] = 1 if login in verified_logins else 0
             return items
 
-        def _apply_discord_info(items: List[dict], *, default_member: bool) -> List[dict]:
+        def _apply_discord_info(
+            items: List[dict], *, assume_members: Optional[set[str]] = None
+        ) -> List[dict]:
+            assumed_members = assume_members or set()
             for item in items:
                 login = str(item.get("streamer") or "").strip().lower()
                 info = discord_lookup.get(login, {})
@@ -580,6 +628,7 @@ class TwitchLeaderboardMixin:
                     (discord_user_id and str(discord_user_id).strip())
                     or (discord_display_name and str(discord_display_name).strip())
                 )
+                default_member = login in assumed_members
                 is_member = default_member or bool(info.get("is_on_discord")) or has_profile
                 item["is_on_discord"] = 1 if is_member else 0
                 item["discord_user_id"] = discord_user_id
@@ -589,11 +638,11 @@ class TwitchLeaderboardMixin:
 
         out["tracked"]["top"] = _apply_discord_info(
             _apply_partner_flag(_aggregate(tracked_sql, hour_params)),
-            default_member=True,
+            assume_members=verified_logins,
         )
         out["category"]["top"] = _apply_discord_info(
             _apply_partner_flag(_aggregate(category_sql, hour_params)),
-            default_member=False,
+            assume_members=verified_logins,
         )
 
         tracked_hourly_sql = (
