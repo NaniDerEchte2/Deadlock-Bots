@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import asyncio
 import logging
-import re
 import sqlite3
 from typing import Optional, Dict, Union, Tuple, Iterable
 from urllib.parse import urlparse, urlunparse
@@ -30,7 +29,7 @@ MIN_VOICE_MINUTES = 30          # Mindest-Verweildauer im Voice (einmalig)
 POLL_INTERVAL = 15              # Sekunden – Voice-Alive-Check
 DEFAULT_TEST_TARGET_ID = int(os.getenv("NUDGE_TEST_DEFAULT_ID", "0"))
 LOG_CHANNEL_ID = 1374364800817303632  # Meldungen in diesen Kanal posten
-NUDGE_VIEW_VERSION = 1          # Version der persistierten DM-View
+NUDGE_VIEW_VERSION = 2          # Version der persistierten DM-View
 
 # Rollen mit Opt-Out (werden NICHT kontaktiert)
 # Standard enthält die gewünschte English-only Rolle: 1309741866098491479
@@ -243,108 +242,6 @@ async def _fetch_oauth_urls(bot: commands.Bot, user: Union[discord.User, discord
     return None, None
 
 # ---------- View/Modal ----------
-class _ManualModal(discord.ui.Modal, title="Steam manuell verknüpfen"):
-    steam_input = discord.ui.TextInput(
-        label="Profil-Link, Vanity oder SteamID64",
-        placeholder="z. B. https://steamcommunity.com/id/DeinName oder 7656119…",
-        required=True,
-        max_length=120,
-        custom_id="nudge_manual_input",
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        raw = str(self.steam_input.value).strip()
-        steam_id: Optional[str] = None
-        persona: Optional[str] = None
-
-        # Try resolve via SteamLink cog (handles vanity + links)
-        try:
-            steam_cog = interaction.client.get_cog("SteamLink")
-        except Exception:
-            steam_cog = None
-
-        if steam_cog:
-            try:
-                steam_id = await steam_cog._resolve_steam_input(raw)  # type: ignore[attr-defined]
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                log.debug("[nudge] resolve via SteamLink cog failed: %r", e)
-                steam_id = None
-            if steam_id:
-                try:
-                    persona = await steam_cog._fetch_persona(steam_id)  # type: ignore[attr-defined]
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    log.debug("[nudge] persona fetch failed: %r", e)
-                    persona = None
-
-        # Fallback: accept 17-digit or /profiles/<id> links only (no vanity here)
-        if not steam_id:
-            s = raw
-            if re.fullmatch(r"\d{17}", s):
-                steam_id = s
-            else:
-                try:
-                    u = urlparse(s)
-                except Exception:
-                    u = None
-                if u and (u.scheme in ("http", "https")):
-                    host = (u.hostname or "").lower().rstrip(".")
-                    path = (u.path or "").rstrip("/")
-                    if host == "steamcommunity.com" or host.endswith(".steamcommunity.com"):
-                        m2 = re.fullmatch(r"/profiles/(\d{17})", path)
-                        if m2:
-                            steam_id = m2.group(1)
-
-        if not steam_id:
-            try:
-                await interaction.response.send_message(
-                    "❌ Konnte keine gültige SteamID bestimmen.\n"
-                    "Nutze bitte die **17-stellige SteamID64** oder einen **steamcommunity.com/profiles/<id>**-Link.\n"
-                    "Für **Vanity**-URLs verwende „Via Discord verknüpfen“ oder „Mit Steam anmelden“.",
-                    ephemeral=True,
-                )
-            except Exception as exc:
-                log.warning(
-                    "[nudge] Konnte Fehlerhinweis an %s nicht senden: %s",
-                    interaction.user.id,
-                    exc,
-                )
-            return
-
-        try:
-            _save_steam_link_row(interaction.user.id, steam_id, persona or "", verified=0)
-            await interaction.response.send_message(
-                f"✅ Hinzugefügt: `{steam_id}` (manuell). Prüfe **/links**, setze **/setprimary**.",
-                ephemeral=True,
-            )
-            try:
-                await interaction.user.send(f"✅ Verknüpft (manuell): **{steam_id}**")
-            except Exception as e:
-                log.debug("[nudge] DM notify failed: %r", e)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            log.exception("[nudge] Manual Steam link failed: %r", e)
-            try:
-                await interaction.response.send_message("❌ Unerwarteter Fehler beim manuellen Verknüpfen.", ephemeral=True)
-            except Exception as exc:
-                log.warning(
-                    "[nudge] Konnte Fehler-DM beim manuellen Verknüpfen nicht senden (User %s): %s",
-                    interaction.user.id,
-                    exc,
-                )
-
-class _ManualButton(discord.ui.Button):
-    def __init__(self, row: int = 0):
-        super().__init__(label="SteamID manuell eingeben", style=discord.ButtonStyle.primary,
-                         emoji="🔢", custom_id="nudge_manual", row=row)
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(_ManualModal())
-
 class _CloseButton(discord.ui.Button):
     def __init__(self, row: int = 1):
         super().__init__(label="Schließen", style=discord.ButtonStyle.secondary,
@@ -366,49 +263,39 @@ class _CloseButton(discord.ui.Button):
             log.debug("close-button delete failed: %r", e)
 
 class _OptionsView(discord.ui.View):
-    """
-    Nicht-persistente Instanz (enthält benutzerspezifische Link-URLs),
-    aber die custom_id-Buttons registrieren wir zusätzlich in _PersistentRegistryView,
-    damit Interaktionen auch nach Reboot klappen.
-    """
-    def __init__(self, *, discord_oauth_url: Optional[str], steam_openid_url: Optional[str]):
+    """Nicht-persistente Instanz mit den aktuellen Verknüpfungsoptionen."""
+
+    def __init__(self, *, login_url: Optional[str]):
         super().__init__(timeout=None)
 
-        if discord_oauth_url:
-            self.add_item(discord.ui.Button(
-                label="Via Discord verknüpfen", style=discord.ButtonStyle.link,
-                url=discord_oauth_url, emoji="🔗", row=0
-            ))
+        if login_url:
+            self.add_item(
+                discord.ui.Button(
+                    label="Via Discord bei Steam anmelden",
+                    style=discord.ButtonStyle.link,
+                    url=login_url,
+                    emoji="🔗",
+                    row=0,
+                )
+            )
         else:
-            self.add_item(discord.ui.Button(
-                label="Via Discord verknüpfen (/link)", style=discord.ButtonStyle.secondary,
-                disabled=True, emoji="🔗", row=0
-            ))
-
-        if steam_openid_url:
-            self.add_item(discord.ui.Button(
-                label="Mit Steam anmelden", style=discord.ButtonStyle.link,
-                url=steam_openid_url, emoji="🎮", row=0
-            ))
-        else:
-            self.add_item(discord.ui.Button(
-                label="Mit Steam anmelden (/link_steam)", style=discord.ButtonStyle.secondary,
-                disabled=True, emoji="🎮", row=0
-            ))
+            self.add_item(
+                discord.ui.Button(
+                    label="Via Discord bei Steam anmelden",
+                    style=discord.ButtonStyle.secondary,
+                    disabled=True,
+                    emoji="🔗",
+                    row=0,
+                )
+            )
 
         self.add_item(SchnellLinkButton(row=1, source="voice_nudge_view"))
-        self.add_item(_ManualButton(row=1))
         self.add_item(_CloseButton(row=1))
 
 # Persistente Registry-View (falls weitere Buttons mit custom_id notwendig)
 class _PersistentRegistryView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
-    @discord.ui.button(label="SteamID manuell eingeben", style=discord.ButtonStyle.primary,
-                       emoji="🔢", custom_id="nudge_manual")
-    async def _open_manual(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(_ManualModal())
 
     @discord.ui.button(
         label="Schnelle Anfrage senden",
@@ -523,14 +410,14 @@ class SteamLinkVoiceNudge(commands.Cog):
     async def _build_dm_payload(
         self, user: Union[discord.User, discord.Member]
     ) -> Tuple[discord.Embed, _OptionsView]:
-        discord_url, steam_url = await _fetch_oauth_urls(self.bot, user)
+        discord_url, _ = await _fetch_oauth_urls(self.bot, user)
         primary_discord, browser_fallback = _prefer_discord_deeplink(discord_url)
 
         desc = steam_link_detailed_description()
         if browser_fallback and (primary_discord or "").startswith("discord://"):
             desc += f"\n\n_Falls sich nichts öffnet:_ [Browser-Variante]({browser_fallback})"
-        if not primary_discord or not steam_url:
-            desc += "\n\n_Heads-up:_ Der Link-Dienst ist gerade nicht verfügbar. Nutze vorerst **/link** oder **/link_steam**."
+        if not primary_discord:
+            desc += "\n\n_Heads-up:_ Der Link-Dienst ist gerade nicht verfügbar. Nutze vorerst **/link**."
 
         embed = discord.Embed(
             title="Kleiner Tipp für besseres Voice-Erlebnis 🎧",
@@ -539,7 +426,7 @@ class SteamLinkVoiceNudge(commands.Cog):
         )
         embed.set_footer(text="Kurzbefehle: /link · /link_steam · /addsteam · /unlink · /setprimary")
 
-        view = _OptionsView(discord_oauth_url=primary_discord, steam_openid_url=steam_url)
+        view = _OptionsView(login_url=primary_discord)
         return embed, view
 
     async def _fetch_nudge_message(

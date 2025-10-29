@@ -77,13 +77,11 @@ _STEAM_LINK_DETAILED_DESC = dedent(
 
 
     **Ablauf & Optionen:**
-    • **Via Discord verknüpfen** – Schnellster Weg (falls verfügbar).
-    • **Steam Profil suchen** – Offizieller Steam OpenID-Flow (kein Passwort, nur die **SteamID64** wird gelesen).
+    • **Via Discord bei Steam anmelden** – Offizieller Login über unser Portal (kein Passwort, wir lesen nur die **SteamID64**).
     • **Schnell-Link anfordern** – Wir schicken dir einen persönlichen Freundschaftslink zum Steam-Bot.
 
 
     • Sobald du dich authentifizierst, kann dir unser Bot automatisch eine Freundschaftsanfrage schicken.
-      Falls der Schnell-Link nicht klappt, nutze die Freundschafts-ID **820142646** und schicke sie uns bei Bedarf.
 
 
     **Hinweis:** Automatische Status-Anzeigen über Steam sind aktuell deaktiviert – die Verknüpfung ist freiwillig.
@@ -111,21 +109,18 @@ def build_steam_intro_embed() -> discord.Embed:
 
 
 class _LinkSheet(discord.ui.View):
-    """Ephemere Mini-View mit den tatsächlichen Link-Buttons (mit ?uid=...)."""
-    def __init__(self, *, discord_url: str, steam_url: str):
+    """Ephemere Mini-View mit dem aktuellen Discord-gestützten Login-Link."""
+
+    def __init__(self, *, discord_url: str):
         super().__init__(timeout=120)
-        self.add_item(discord.ui.Button(
-            label="Via Discord verknüpfen",
-            style=discord.ButtonStyle.link,
-            url=discord_url,
-            emoji="🔗",
-        ))
-        self.add_item(discord.ui.Button(
-            label="Steam Profil suchen",
-            style=discord.ButtonStyle.link,
-            url=steam_url,
-            emoji="🎮",
-        ))
+        self.add_item(
+            discord.ui.Button(
+                label="Via Discord bei Steam anmelden",
+                style=discord.ButtonStyle.link,
+                url=discord_url,
+                emoji="🔗",
+            )
+        )
 
 
 class SteamLinkStepView(discord.ui.View):
@@ -149,14 +144,14 @@ class SteamLinkStepView(discord.ui.View):
 
         if not _LINKS_ENABLED:
             for child in self.children:
-                if isinstance(child, discord.ui.Button) and child.custom_id in {"steam:discord", "steam:openid"}:
+                if isinstance(child, discord.ui.Button) and child.custom_id == "steam:discord":
                     child.disabled = True
                     child.label = "Verknüpfung deaktiviert"
 
     # --- Buttons (nur custom_id, keine URLs – dadurch persistent-fähig) ---
 
     @discord.ui.button(
-        label="Via Discord verknüpfen",
+        label="Via Discord bei Steam anmelden",
         style=discord.ButtonStyle.success,
         custom_id="steam:discord",
         row=0,
@@ -169,7 +164,7 @@ class SteamLinkStepView(discord.ui.View):
         if not _LINKS_ENABLED or _oauth is None:
             message = (
                 "ℹ️ Die automatische Steam-Verknüpfung ist derzeit deaktiviert. "
-                "Nutze bitte die Freundschafts-Optionen oder sende dem Bot direkt eine Anfrage."
+                "Nutze bitte die Schnell-Link-Option oder sende dem Bot direkt eine Anfrage."
             )
             if interaction.response.is_done():
                 await interaction.followup.send(message, ephemeral=True)
@@ -181,18 +176,24 @@ class SteamLinkStepView(discord.ui.View):
             urls = _oauth.start_urls_for(uid)
         except Exception:
             urls = {}
-        if not urls.get("discord_start") or not urls.get("steam_openid_start"):
+        if not urls.get("discord_start"):
             if interaction.response.is_done():
-                await interaction.followup.send("❌ Start-Links nicht konfiguriert. Bitte später erneut versuchen.", ephemeral=True)
+                await interaction.followup.send(
+                    "❌ Start-Link nicht konfiguriert. Bitte später erneut versuchen.",
+                    ephemeral=True,
+                )
             else:
-                await interaction.response.send_message("❌ Start-Links nicht konfiguriert. Bitte später erneut versuchen.", ephemeral=True)
+                await interaction.response.send_message(
+                    "❌ Start-Link nicht konfiguriert. Bitte später erneut versuchen.",
+                    ephemeral=True,
+                )
             return
 
         # Deep-Link bevorzugen (falls aktiviert) + Browser-Fallback anfügen
         primary, browser_fallback = _prefer_discord_deeplink(urls["discord_start"])
         discord_link = primary or urls["discord_start"]
 
-        sheet = _LinkSheet(discord_url=discord_link, steam_url=urls["steam_openid_start"])
+        sheet = _LinkSheet(discord_url=discord_link)
 
         msg = "🔐 Wähle den Link:"
         if browser_fallback and discord_link.startswith("discord://"):
@@ -202,17 +203,6 @@ class SteamLinkStepView(discord.ui.View):
             await interaction.followup.send(msg, view=sheet, ephemeral=True)
         else:
             await interaction.response.send_message(msg, view=sheet, ephemeral=True)
-
-    @discord.ui.button(
-        label="Steam Profil suchen",
-        style=discord.ButtonStyle.primary,
-        custom_id="steam:openid",
-        row=0,
-        emoji="🎮",
-    )
-    async def _start_openid(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        # identisch: wir zeigen dieselbe ephemere Link-Sheet (mit beiden Links)
-        await self._present_link_sheet(interaction)
 
     @discord.ui.button(
         label="Schnelle Anfrage senden",
@@ -226,10 +216,6 @@ class SteamLinkStepView(discord.ui.View):
             await respond_with_schnelllink(
                 interaction,
                 source="welcome_dm_friend_options",
-                extra_note=(
-                    "🔢 Falls der Schnell-Link nicht funktioniert: **820142646** ist unsere Freundschafts-ID.\n"
-                    "Sende sie uns – dann fügen wir dich manuell hinzu."
-                ),
                 suppress_embeds=True,
             )
         except Exception:

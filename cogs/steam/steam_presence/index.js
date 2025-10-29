@@ -28,6 +28,15 @@ const Database = require('better-sqlite3');
 const { QuickInvites } = require('./quick_invites');
 const { DeadlockPresenceLogger } = require('./deadlock_presence_logger');
 
+const SteamID = SteamUser.SteamID;
+
+const DEADLOCK_APP_ID = Number.parseInt(process.env.DEADLOCK_APPID || '1422450', 10);
+const PROTO_MASK = SteamUser.GCMsgProtoBuf || 0x80000000;
+const GC_MSG_CLIENT_HELLO = 4004;
+const GC_MSG_CLIENT_WELCOME = 4005;
+const GC_MSG_SUBMIT_PLAYTEST_USER = 9189;
+const GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE = 9190;
+
 // ---------- Logging ----------
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
@@ -165,6 +174,13 @@ let pendingGuard = null;
 let reconnectTimer = null;
 let manualLogout = false;
 
+let deadlockAppActive = false;
+let deadlockGameRequestedAt = 0;
+let deadlockGcReady = false;
+let lastGcHelloAttemptAt = 0;
+const deadlockGcWaiters = [];
+const pendingPlaytestInviteResponses = [];
+
 // ---------- Steam Client ----------
 const client = new SteamUser();
 client.setOption('autoRelogin', false);
@@ -181,7 +197,7 @@ const quickInvites = new QuickInvites(db, client, log, {
 });
 
 const presenceLogger = new DeadlockPresenceLogger(client, log, {
-  appId: Number.parseInt(process.env.DEADLOCK_APPID || '1422450', 10),
+  appId: DEADLOCK_APP_ID,
   language: process.env.STEAM_PRESENCE_LANGUAGE || 'german',
   csvPath: path.join(DATA_DIR, 'deadlock_presence_log.csv'),
 });
@@ -200,6 +216,318 @@ function scheduleReconnect(reason, delayMs = RECONNECT_DELAY_MS){
     try { const result = initiateLogin('auto-reconnect', {}); log('info', 'Auto reconnect attempt', { reason, result }); }
     catch (err) { log('warn', 'Auto reconnect failed to start', { error: err.message, reason }); }
   }, delay);
+}
+
+function ensureDeadlockGamePlaying(force = false) {
+  const now = Date.now();
+  if (!force && now - deadlockGameRequestedAt < 15000) return;
+  try {
+    client.gamesPlayed([DEADLOCK_APP_ID]);
+    deadlockGameRequestedAt = now;
+    log('debug', 'Requested Deadlock GC session via gamesPlayed()', { appId: DEADLOCK_APP_ID });
+  } catch (err) {
+    log('warn', 'Failed to call gamesPlayed for Deadlock', { error: err.message });
+  }
+}
+
+function sendDeadlockGcHello(force = false) {
+  if (!deadlockAppActive) return false;
+  const now = Date.now();
+  if (!force && now - lastGcHelloAttemptAt < 2000) return false;
+  try {
+    client.sendToGC(DEADLOCK_APP_ID, PROTO_MASK + GC_MSG_CLIENT_HELLO, {}, Buffer.alloc(0));
+    lastGcHelloAttemptAt = now;
+    log('debug', 'Sent Deadlock GC hello');
+    return true;
+  } catch (err) {
+    log('warn', 'Failed to send Deadlock GC hello', { error: err.message });
+    return false;
+  }
+}
+
+function removeGcWaiter(entry) {
+  const idx = deadlockGcWaiters.indexOf(entry);
+  if (idx >= 0) deadlockGcWaiters.splice(idx, 1);
+}
+
+function flushDeadlockGcWaiters(error) {
+  while (deadlockGcWaiters.length) {
+    const waiter = deadlockGcWaiters.shift();
+    try {
+      if (waiter) waiter.reject(error || new Error('Deadlock GC session reset'));
+    } catch (_) {}
+  }
+}
+
+function notifyDeadlockGcReady() {
+  deadlockGcReady = true;
+  while (deadlockGcWaiters.length) {
+    const waiter = deadlockGcWaiters.shift();
+    try {
+      if (waiter) waiter.resolve(true);
+    } catch (_) {}
+  }
+}
+
+function waitForDeadlockGcReady(timeoutMs = 10000) {
+  ensureDeadlockGamePlaying();
+  if (deadlockGcReady) return Promise.resolve(true);
+
+  const timeout = Math.max(1000, Number.isFinite(timeoutMs) ? Number(timeoutMs) : 10000);
+
+  return new Promise((resolve, reject) => {
+    const entry = {
+      resolve: null,
+      reject: null,
+      timer: null,
+      interval: null,
+      done: false,
+    };
+
+    entry.resolve = (value) => {
+      if (entry.done) return;
+      entry.done = true;
+      if (entry.timer) clearTimeout(entry.timer);
+      if (entry.interval) clearInterval(entry.interval);
+      removeGcWaiter(entry);
+      resolve(value);
+    };
+
+    entry.reject = (err) => {
+      if (entry.done) return;
+      entry.done = true;
+      if (entry.timer) clearTimeout(entry.timer);
+      if (entry.interval) clearInterval(entry.interval);
+      removeGcWaiter(entry);
+      reject(err || new Error('Deadlock GC not ready'));
+    };
+
+    entry.timer = setTimeout(() => entry.reject(new Error('Timeout waiting for Deadlock GC')), timeout);
+    entry.interval = setInterval(() => {
+      ensureDeadlockGamePlaying();
+      sendDeadlockGcHello(false);
+    }, 2000);
+
+    deadlockGcWaiters.push(entry);
+    sendDeadlockGcHello(true);
+  });
+}
+
+const PLAYTEST_RESPONSE_MAP = {
+  0: { key: 'eResponse_Success', message: 'Einladung erfolgreich übermittelt.' },
+  1: { key: 'eResponse_InternalError', message: 'Interner Fehler beim Game Coordinator.' },
+  3: { key: 'eResponse_InvalidFriend', message: 'Zielkonto ist kein bestätigter Steam-Freund.' },
+  4: { key: 'eResponse_NotFriendsLongEnough', message: 'Freundschaft besteht noch keine 30 Tage.' },
+  5: { key: 'eResponse_AlreadyHasGame', message: 'Account besitzt Deadlock bereits.' },
+  6: { key: 'eResponse_LimitedUser', message: 'Zielkonto ist eingeschränkt (Limited User).' },
+  7: { key: 'eResponse_InviteLimitReached', message: 'Invite-Limit erreicht – bitte später erneut versuchen.' },
+};
+
+function encodeVarint(value) {
+  let v = Number(value >>> 0);
+  const bytes = [];
+  while (v >= 0x80) {
+    bytes.push((v & 0x7f) | 0x80);
+    v >>>= 7;
+  }
+  bytes.push(v);
+  return Buffer.from(bytes);
+}
+
+function decodeVarint(buffer, offset = 0) {
+  let result = 0;
+  let shift = 0;
+  let position = offset;
+  while (position < buffer.length) {
+    const byte = buffer[position++];
+    result |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) {
+      return { value: result >>> 0, nextOffset: position };
+    }
+    shift += 7;
+    if (shift > 35) break;
+  }
+  throw new Error('Truncated varint');
+}
+
+function skipField(buffer, offset, wireType) {
+  switch (wireType) {
+    case 0: {
+      const { nextOffset } = decodeVarint(buffer, offset);
+      return nextOffset;
+    }
+    case 1:
+      return offset + 8;
+    case 2: {
+      const { value: length, nextOffset } = decodeVarint(buffer, offset);
+      return nextOffset + length;
+    }
+    case 5:
+      return offset + 4;
+    default:
+      return -1;
+  }
+}
+
+function encodeSubmitPlaytestUserPayload(accountId, location) {
+  const parts = [];
+  if (location) {
+    const locStr = Buffer.from(String(location), 'utf8');
+    parts.push(encodeVarint((3 << 3) | 2));
+    parts.push(encodeVarint(locStr.length));
+    parts.push(locStr);
+  }
+  if (Number.isFinite(accountId)) {
+    parts.push(encodeVarint((4 << 3) | 0));
+    parts.push(encodeVarint(Number(accountId) >>> 0));
+  }
+  return parts.length ? Buffer.concat(parts) : Buffer.alloc(0);
+}
+
+function decodeSubmitPlaytestUserResponse(buffer) {
+  if (!buffer || !buffer.length) return null;
+  let offset = 0;
+  while (offset < buffer.length) {
+    let tag;
+    try {
+      ({ value: tag, nextOffset: offset } = decodeVarint(buffer, offset));
+    } catch (err) {
+      log('warn', 'Failed to decode playtest response varint', { error: err.message });
+      return null;
+    }
+    const fieldNumber = tag >>> 3;
+    const wireType = tag & 0x07;
+
+    if (fieldNumber === 1 && wireType === 0) {
+      try {
+        const { value } = decodeVarint(buffer, offset);
+        return value >>> 0;
+      } catch (err) {
+        log('warn', 'Failed to decode playtest response code', { error: err.message });
+        return null;
+      }
+    }
+
+    const next = skipField(buffer, offset, wireType);
+    if (next < 0 || next > buffer.length) break;
+    offset = next;
+  }
+  return null;
+}
+
+function parseSteamID(input) {
+  if (!input) throw new Error('SteamID erforderlich');
+  try {
+    const sid = new SteamID(String(input));
+    if (!sid.isValid()) throw new Error('Ungültige SteamID');
+    return sid;
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    throw new Error(`Ungültige SteamID: ${message}`);
+  }
+}
+
+function relationshipName(code) {
+  if (code === undefined || code === null) return 'unknown';
+  for (const [name, value] of Object.entries(SteamUser.EFriendRelationship || {})) {
+    if (Number(value) === Number(code)) return name;
+  }
+  return String(code);
+}
+
+function removePendingPlaytestInvite(entry) {
+  const idx = pendingPlaytestInviteResponses.indexOf(entry);
+  if (idx >= 0) pendingPlaytestInviteResponses.splice(idx, 1);
+}
+
+function flushPendingPlaytestInvites(error) {
+  while (pendingPlaytestInviteResponses.length) {
+    const entry = pendingPlaytestInviteResponses.shift();
+    if (!entry) continue;
+    if (entry.timer) clearTimeout(entry.timer);
+    try {
+      entry.reject(error || new Error('GC-Verbindung getrennt'));
+    } catch (_) {}
+  }
+}
+
+function sendFriendRequest(steamId) {
+  return new Promise((resolve, reject) => {
+    try {
+      client.addFriend(steamId, (err) => {
+        if (err) return reject(err);
+        resolve(true);
+      });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function sendPlaytestInvite(accountId, location, timeoutMs = 10000) {
+  await waitForDeadlockGcReady(timeoutMs);
+
+  return new Promise((resolve, reject) => {
+    const payload = encodeSubmitPlaytestUserPayload(accountId, location);
+    const entry = {
+      resolve: null,
+      reject: null,
+      timer: null,
+    };
+
+    entry.resolve = (value) => {
+      if (entry.timer) clearTimeout(entry.timer);
+      removePendingPlaytestInvite(entry);
+      resolve(value);
+    };
+
+    entry.reject = (err) => {
+      if (entry.timer) clearTimeout(entry.timer);
+      removePendingPlaytestInvite(entry);
+      reject(err);
+    };
+
+    entry.timer = setTimeout(() => entry.reject(new Error('Timeout beim Warten auf GC-Antwort')), Math.max(3000, Number(timeoutMs) || 10000));
+
+    pendingPlaytestInviteResponses.push(entry);
+
+    try {
+      client.sendToGC(DEADLOCK_APP_ID, PROTO_MASK + GC_MSG_SUBMIT_PLAYTEST_USER, {}, payload);
+      log('info', 'Deadlock playtest invite requested', { accountId, location });
+    } catch (err) {
+      entry.reject(err);
+    }
+  });
+}
+
+function handlePlaytestInviteResponse(buffer) {
+  if (!pendingPlaytestInviteResponses.length) {
+    log('warn', 'Received unexpected playtest invite response');
+    return;
+  }
+
+  const entry = pendingPlaytestInviteResponses.shift();
+  if (entry && entry.timer) clearTimeout(entry.timer);
+
+  const code = decodeSubmitPlaytestUserResponse(buffer);
+  const mapping = Object.prototype.hasOwnProperty.call(PLAYTEST_RESPONSE_MAP, code || 0)
+    ? PLAYTEST_RESPONSE_MAP[code || 0]
+    : { key: 'unknown', message: 'Unbekannte Antwort des Game Coordinators.' };
+
+  const response = {
+    success: code === 0,
+    code: code === null ? null : Number(code),
+    key: mapping.key,
+    message: mapping.message,
+  };
+
+  if (entry && entry.resolve) {
+    try {
+      entry.resolve(response);
+    } catch (err) {
+      log('warn', 'Failed to resolve playtest invite promise', { error: err.message });
+    }
+  }
 }
 
 function guardTypeFromDomain(domain) {
@@ -405,6 +733,74 @@ function processNextTask() {
         break;
       }
 
+      case 'AUTH_SEND_FRIEND_REQUEST': {
+        const promise = (async () => {
+          if (!runtimeState.logged_on) throw new Error('Not logged in');
+          const raw = payload?.steam_id ?? payload?.steam_id64;
+          const sid = parseSteamID(raw);
+          await sendFriendRequest(sid);
+          const sid64 = typeof sid.getSteamID64 === 'function' ? sid.getSteamID64() : String(sid);
+          return {
+            ok: true,
+            data: {
+              steam_id64: sid64,
+              account_id: sid.accountid ?? null,
+            },
+          };
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
+
+      case 'AUTH_CHECK_FRIENDSHIP': {
+        const promise = (async () => {
+          if (!runtimeState.logged_on) throw new Error('Not logged in');
+          const raw = payload?.steam_id ?? payload?.steam_id64;
+          const sid = parseSteamID(raw);
+          const sid64 = typeof sid.getSteamID64 === 'function' ? sid.getSteamID64() : String(sid);
+          const relationshipRaw = client.myFriends ? client.myFriends[sid64] : undefined;
+          const isFriend = Number(relationshipRaw) === Number((SteamUser.EFriendRelationship || {}).Friend);
+          return {
+            ok: true,
+            data: {
+              steam_id64: sid64,
+              account_id: sid.accountid ?? null,
+              friend: isFriend,
+              relationship: relationshipRaw ?? null,
+              relationship_name: relationshipName(relationshipRaw),
+            },
+          };
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
+
+      case 'AUTH_SEND_PLAYTEST_INVITE': {
+        const promise = (async () => {
+          if (!runtimeState.logged_on) throw new Error('Not logged in');
+          const raw = payload?.steam_id ?? payload?.steam_id64;
+          const timeoutMs = payload?.timeout_ms ?? payload?.response_timeout_ms;
+          const sid = raw ? parseSteamID(raw) : null;
+          const accountId = payload?.account_id != null ? Number(payload.account_id) : (sid ? sid.accountid : null);
+          if (!Number.isFinite(accountId) || accountId <= 0) throw new Error('account_id missing or invalid');
+          const locationRaw = typeof payload?.location === 'string' ? payload.location.trim() : '';
+          const location = locationRaw || 'discord-betainvite';
+          const response = await sendPlaytestInvite(Number(accountId), location, Number(timeoutMs) || 10000);
+          const sid64 = sid && typeof sid.getSteamID64 === 'function' ? sid.getSteamID64() : (sid ? String(sid) : null);
+          return {
+            ok: Boolean(response && response.success),
+            data: {
+              steam_id64: sid64,
+              account_id: Number(accountId),
+              location,
+              response,
+            },
+          };
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
+
       default:
         throw new Error(`Unsupported task type: ${task.type}`);
     }
@@ -429,6 +825,10 @@ function markLoggedOn(details) {
   pendingGuard = null;
   runtimeState.last_logged_on_at = nowSeconds();
   runtimeState.last_error = null;
+  deadlockAppActive = false;
+  deadlockGcReady = false;
+  deadlockGameRequestedAt = 0;
+  lastGcHelloAttemptAt = 0;
 
   if (client.steamID && typeof client.steamID.getSteamID64 === 'function') {
     runtimeState.steam_id64 = client.steamID.getSteamID64();
@@ -437,6 +837,13 @@ function markLoggedOn(details) {
   } else {
     runtimeState.steam_id64 = null;
   }
+
+  try {
+    client.setPersona(SteamUser.EPersonaState.Online);
+  } catch (err) {
+    log('warn', 'Failed to set persona online', { error: err.message });
+  }
+  ensureDeadlockGamePlaying(true);
 
   log('info', 'Steam login successful', {
     country: details ? details.publicIPCountry : undefined,
@@ -468,7 +875,49 @@ client.on('steamGuard', (domain, callback, lastCodeWrong) => {
 });
 client.on('refreshToken', (token) => { updateRefreshToken(token); writeToken(REFRESH_TOKEN_PATH, refreshToken); log('info', 'Stored refresh token', { path: REFRESH_TOKEN_PATH }); });
 client.on('machineAuthToken', (token) => { updateMachineToken(token); writeToken(MACHINE_TOKEN_PATH, machineAuthToken); log('info', 'Stored machine auth token', { path: MACHINE_TOKEN_PATH }); });
-client.on('disconnected', (eresult, msg) => { runtimeState.logged_on = false; runtimeState.logging_in = false; loginInProgress = false; runtimeState.last_disconnect_at = nowSeconds(); runtimeState.last_disconnect_eresult = eresult; log('warn', 'Steam disconnected', { eresult, msg }); scheduleReconnect('disconnect'); });
+client.on('appLaunched', (appId) => {
+  if (Number(appId) !== Number(DEADLOCK_APP_ID)) return;
+  deadlockAppActive = true;
+  deadlockGcReady = false;
+  lastGcHelloAttemptAt = 0;
+  log('info', 'Deadlock app launched – GC session starting');
+  sendDeadlockGcHello(true);
+});
+client.on('appQuit', (appId) => {
+  if (Number(appId) !== Number(DEADLOCK_APP_ID)) return;
+  deadlockAppActive = false;
+  deadlockGcReady = false;
+  flushDeadlockGcWaiters(new Error('Deadlock app quit'));
+  flushPendingPlaytestInvites(new Error('Deadlock app quit'));
+  log('info', 'Deadlock app quit – GC session ended');
+});
+client.on('receivedFromGC', (appid, msgType, payload) => {
+  if (Number(appid) !== Number(DEADLOCK_APP_ID)) return;
+  const baseMsg = msgType & ~PROTO_MASK;
+  if (baseMsg === GC_MSG_CLIENT_WELCOME) {
+    log('info', 'Received Deadlock GC welcome');
+    notifyDeadlockGcReady();
+    return;
+  }
+  if (baseMsg === GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE) {
+    handlePlaytestInviteResponse(payload);
+    return;
+  }
+  log('debug', 'Received GC message', { msgType, baseMsg });
+});
+client.on('disconnected', (eresult, msg) => {
+  runtimeState.logged_on = false;
+  runtimeState.logging_in = false;
+  loginInProgress = false;
+  runtimeState.last_disconnect_at = nowSeconds();
+  runtimeState.last_disconnect_eresult = eresult;
+  deadlockAppActive = false;
+  deadlockGcReady = false;
+  flushDeadlockGcWaiters(new Error('Steam disconnected'));
+  flushPendingPlaytestInvites(new Error('Steam disconnected'));
+  log('warn', 'Steam disconnected', { eresult, msg });
+  scheduleReconnect('disconnect');
+});
 client.on('error', (err) => {
   runtimeState.last_error = { message: err && err.message ? err.message : String(err), eresult: err && typeof err.eresult === 'number' ? err.eresult : undefined };
   runtimeState.logging_in = false; loginInProgress = false;
@@ -504,6 +953,8 @@ function shutdown(code = 0) {
     log('info', 'Shutting down Steam bridge');
     if (typeof quickInvites.stopAutoEnsure === 'function') quickInvites.stopAutoEnsure();
     presenceLogger.stop();
+    flushPendingPlaytestInvites(new Error('Service shutting down'));
+    flushDeadlockGcWaiters(new Error('Service shutting down'));
     client.logOff();
   } catch {}
   try { db.close(); } catch {}

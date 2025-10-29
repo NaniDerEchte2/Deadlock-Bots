@@ -220,6 +220,24 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               last_seen INTEGER
             );
 
+            -- Deadlock-Beta-Einladungs-Workflow (Discord ↔ Steam)
+            CREATE TABLE IF NOT EXISTS steam_beta_invites(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              discord_id INTEGER NOT NULL,
+              steam_id64 TEXT NOT NULL,
+              account_id INTEGER,
+              status TEXT NOT NULL,
+              last_error TEXT,
+              friend_requested_at INTEGER,
+              friend_confirmed_at INTEGER,
+              invite_sent_at INTEGER,
+              last_notified_at INTEGER,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              UNIQUE(discord_id),
+              UNIQUE(steam_id64)
+            );
+
             -- Steuer-Tabelle für den Steam-Task-Consumer
             CREATE TABLE IF NOT EXISTS steam_tasks(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -287,6 +305,12 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_quick_invites_reserved ON steam_quick_invites(reserved_by)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_beta_invites_status ON steam_beta_invites(status)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_beta_invites_account ON steam_beta_invites(account_id)"
             )
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_status ON steam_tasks(status, id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_updated ON steam_tasks(updated_at)")
