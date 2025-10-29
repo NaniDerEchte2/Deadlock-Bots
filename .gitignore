@@ -36,3 +36,4 @@ standalone/csv_to_deadlock.py
 standalone/build_changelog_sqlite.py
 standalone/import_changelogs.py
 standalone/deadlock_changelogs.csv
+standalone/check.py
