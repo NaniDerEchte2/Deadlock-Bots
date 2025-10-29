@@ -153,7 +153,7 @@ class SteamLinkStepView(discord.ui.View):
 
         if not _LINKS_ENABLED:
             for child in self.children:
-                if isinstance(child, discord.ui.Button) and child.custom_id in {"steam:discord", "steam:openid"}:
+                if isinstance(child, discord.ui.Button) and child.custom_id == "steam:discord":
                     child.disabled = True
                     child.label = "Verknüpfung deaktiviert"
 
@@ -185,7 +185,7 @@ class SteamLinkStepView(discord.ui.View):
             urls = _oauth.start_urls_for(uid)
         except Exception:
             urls = {}
-        if not urls.get("discord_start") or not urls.get("steam_openid_start"):
+        if not urls.get("discord_start"):
             if interaction.response.is_done():
                 await interaction.followup.send(
                     "❌ Start-Link nicht konfiguriert. Bitte später erneut versuchen.",

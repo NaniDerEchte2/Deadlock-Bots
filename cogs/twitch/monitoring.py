@@ -118,7 +118,7 @@ class TwitchMonitoringMixin:
                     }
                 )
                 login_lower = login.lower()
-                if login_lower:
+                if login_lower and is_verified:
                     partner_logins.add(login_lower)
         except Exception:
             log.exception("Konnte tracked Streamer nicht aus DB lesen")
