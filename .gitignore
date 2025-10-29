@@ -37,3 +37,4 @@ standalone/build_changelog_sqlite.py
 standalone/import_changelogs.py
 standalone/deadlock_changelogs.csv
 standalone/check.py
+cogs/audit.py
