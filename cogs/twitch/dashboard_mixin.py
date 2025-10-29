@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import List, Optional
 
 import discord
@@ -36,12 +37,82 @@ class TwitchDashboardMixin:
                 SELECT twitch_login,
                        manual_verified_permanent,
                        manual_verified_until,
-                       manual_verified_at
+                       manual_verified_at,
+                       is_on_discord,
+                       discord_user_id,
+                       discord_display_name
                   FROM twitch_streamers
                  ORDER BY twitch_login
                 """
             ).fetchall()
         return [dict(row) for row in rows]
+
+    async def _dashboard_set_discord_flag(self, login: str, is_on_discord: bool) -> str:
+        normalized = self._normalize_login(login)
+        if not normalized:
+            raise ValueError("Ungültiger Login")
+
+        with storage.get_conn() as conn:
+            row = conn.execute(
+                "SELECT twitch_login FROM twitch_streamers WHERE twitch_login=?",
+                (normalized,),
+            ).fetchone()
+            if not row:
+                raise ValueError(f"{normalized} ist nicht gespeichert")
+
+            conn.execute(
+                "UPDATE twitch_streamers SET is_on_discord=? WHERE twitch_login=?",
+                (1 if is_on_discord else 0, normalized),
+            )
+
+        if is_on_discord:
+            return f"{normalized} als Discord-Mitglied markiert"
+        return f"Discord-Markierung für {normalized} entfernt"
+
+    async def _dashboard_save_discord_profile(
+        self,
+        login: str,
+        *,
+        discord_user_id: Optional[str],
+        discord_display_name: Optional[str],
+        mark_member: bool,
+    ) -> str:
+        normalized = self._normalize_login(login)
+        if not normalized:
+            raise ValueError("Ungültiger Login")
+
+        discord_id_clean = (discord_user_id or "").strip()
+        if discord_id_clean and not discord_id_clean.isdigit():
+            raise ValueError("Discord-ID muss eine Zahl sein")
+
+        display_name_clean = (discord_display_name or "").strip()
+        if len(display_name_clean) > 120:
+            display_name_clean = display_name_clean[:120]
+
+        try:
+            with storage.get_conn() as conn:
+                row = conn.execute(
+                    "SELECT twitch_login FROM twitch_streamers WHERE twitch_login=?",
+                    (normalized,),
+                ).fetchone()
+                if not row:
+                    raise ValueError(f"{normalized} ist nicht gespeichert")
+
+                conn.execute(
+                    "UPDATE twitch_streamers "
+                    "SET discord_user_id=?, discord_display_name=?, is_on_discord=? "
+                    "WHERE twitch_login=?",
+                    (
+                        discord_id_clean or None,
+                        display_name_clean or None,
+                        1 if mark_member else 0,
+                        normalized,
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            raise ValueError("Discord-ID wird bereits verwendet")
+
+        return f"Discord-Daten für {normalized} aktualisiert"
 
     async def _dashboard_stats(
         self,
@@ -248,6 +319,8 @@ class TwitchDashboardMixin:
                 list_cb=self._dashboard_list,
                 stats_cb=self._dashboard_stats,
                 verify_cb=self._dashboard_verify,
+                discord_flag_cb=self._dashboard_set_discord_flag,
+                discord_profile_cb=self._dashboard_save_discord_profile,
             )
             runner = web.AppRunner(app)
             await runner.setup()
