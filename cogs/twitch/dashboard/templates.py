@@ -98,6 +98,7 @@ class DashboardTemplateMixin:
   .btn-active {{ background:var(--accent); color:#fff; border:1px solid var(--accent); }}
   .discord-status {{ display:flex; flex-direction:column; gap:.3rem; }}
   .discord-icon {{ font-weight:600; }}
+  .discord-warning {{ color:var(--err-fg); font-size:.8rem; font-weight:600; }}
   details.advanced-details {{ margin-top:.4rem; width:100%; }}
   details.advanced-details > summary {{ cursor:pointer; font-size:.85rem; color:var(--accent-2); }}
   details.advanced-details[open] > summary {{ color:#fff; }}

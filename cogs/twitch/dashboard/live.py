@@ -94,7 +94,14 @@ class DashboardLiveMixin:
             if countdown_classes:
                 countdown_html = f"<span class='{' '.join(countdown_classes)}'>{countdown_html}</span>"
 
-            if is_on_discord:
+            missing_discord_id = not discord_user_id
+            discord_warning = ""
+
+            if missing_discord_id and (is_on_discord or has_discord_data):
+                discord_icon = "⚠️"
+                discord_label = "Discord nicht verknüpft"
+                discord_warning = "Discord-ID fehlt – bitte verknüpfen."
+            elif is_on_discord:
                 discord_icon = "✅"
                 discord_label = "Auf Discord"
             elif has_discord_data:
@@ -117,6 +124,10 @@ class DashboardLiveMixin:
             if discord_meta_parts:
                 discord_html_parts.append(
                     f"  <div class='status-meta'>{' • '.join(discord_meta_parts)}</div>"
+                )
+            if discord_warning:
+                discord_html_parts.append(
+                    f"  <div class='discord-warning'>{html.escape(discord_warning)}</div>"
                 )
             discord_html_parts.append("</div>")
             discord_html = "".join(discord_html_parts)

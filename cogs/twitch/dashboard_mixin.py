@@ -32,6 +32,19 @@ class TwitchDashboardMixin:
 
     async def _dashboard_list(self):
         with storage.get_conn() as c:
+            c.execute(
+                """
+                UPDATE twitch_streamers
+                   SET is_on_discord=1
+                 WHERE is_on_discord=0
+                   AND (
+                        manual_verified_permanent=1
+                     OR manual_verified_until IS NOT NULL
+                     OR manual_verified_at IS NOT NULL
+                     OR discord_user_id IS NOT NULL
+                   )
+                """
+            )
             rows = c.execute(
                 """
                 SELECT twitch_login,
@@ -214,7 +227,8 @@ class TwitchDashboardMixin:
                 if mode == "permanent":
                     c.execute(
                         "UPDATE twitch_streamers "
-                        "SET manual_verified_permanent=1, manual_verified_until=NULL, manual_verified_at=datetime('now') "
+                        "SET manual_verified_permanent=1, manual_verified_until=NULL, manual_verified_at=datetime('now'), "
+                        "    is_on_discord=1 "
                         "WHERE twitch_login=?",
                         (login,),
                     )
@@ -223,7 +237,7 @@ class TwitchDashboardMixin:
                     c.execute(
                         "UPDATE twitch_streamers "
                         "SET manual_verified_permanent=0, manual_verified_until=datetime('now','+30 days'), "
-                        "    manual_verified_at=datetime('now') "
+                        "    manual_verified_at=datetime('now'), is_on_discord=1 "
                         "WHERE twitch_login=?",
                         (login,),
                     )
