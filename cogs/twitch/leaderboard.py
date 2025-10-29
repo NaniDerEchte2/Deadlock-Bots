@@ -468,9 +468,15 @@ class TwitchLeaderboardMixin:
                     discord_name_raw = row[3] if len(row) > 3 else None
                 else:
                     login_raw = row["twitch_login"]
-                    is_on_discord_raw = row.get("is_on_discord", 0)
-                    discord_id_raw = row.get("discord_user_id")
-                    discord_name_raw = row.get("discord_display_name")
+                    row_keys = set(row.keys()) if hasattr(row, "keys") else set()
+                    if "is_on_discord" in row_keys:
+                        is_on_discord_raw = row["is_on_discord"]
+                    else:
+                        is_on_discord_raw = 0
+                    discord_id_raw = row["discord_user_id"] if "discord_user_id" in row_keys else None
+                    discord_name_raw = (
+                        row["discord_display_name"] if "discord_display_name" in row_keys else None
+                    )
                 login = str(login_raw or "").strip().lower()
                 if login:
                     tracked_logins.add(login)
