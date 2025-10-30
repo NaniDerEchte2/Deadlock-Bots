@@ -2,26 +2,34 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+
 import discord
 from discord.ext import commands
 
 from . import base as base_module
-from .base import (
-    BETA_INVITE_CHANNEL_URL,
-    BETA_INVITE_SUPPORT_CONTACT,
-    build_step_embed,
-    logger,
-    STATUS_NEED_BETA,
-    STATUS_NEW_PLAYER,
-    STATUS_PLAYING,
-    STATUS_RETURNING,
-)
 from .step_intro import IntroView
     # Intro info/weiter Button (nicht persistent registrieren)
 from .step_status import PlayerStatusView
 from .step_steam_link import SteamLinkStepView, steam_link_dm_description
 from .step_rules import RulesView
 from .step_streamer import StreamerIntroView  # Optionaler Schritt
+
+
+def _fallback_build_step_embed(title, desc, step, total, color=0x5865F2):
+    footer = "Einführung • Deadlock DACH" if step is None else f"Frage {step} von {total} • Deadlock DACH"
+    emb = discord.Embed(title=title, description=desc, color=color)
+    emb.set_footer(text=footer)
+    return emb
+
+
+build_step_embed = getattr(base_module, "build_step_embed", _fallback_build_step_embed)
+logger = getattr(base_module, "logger", logging.getLogger(__name__))
+
+STATUS_NEED_BETA = getattr(base_module, "STATUS_NEED_BETA", "need_beta")
+STATUS_NEW_PLAYER = getattr(base_module, "STATUS_NEW_PLAYER", "new_player")
+STATUS_PLAYING = getattr(base_module, "STATUS_PLAYING", "already_playing")
+STATUS_RETURNING = getattr(base_module, "STATUS_RETURNING", "returning")
 
 DEFAULT_BETA_INVITE_CHANNEL_URL = "https://discord.com/channels/1289721245281292288/1428745737323155679"
 DEFAULT_BETA_INVITE_SUPPORT_CONTACT = "@earlysalty"
