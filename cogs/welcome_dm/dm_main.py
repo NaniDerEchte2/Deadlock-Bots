@@ -358,14 +358,28 @@ class WelcomeDM(commands.Cog):
         await asyncio.sleep(2)
         await self.send_welcome_messages(member)
 
-    @commands.command(name="testwelcome")
+    @commands.command(name="tw")
     @commands.has_permissions(administrator=True)
     async def test_welcome(self, ctx: commands.Context, user: discord.Member = None):
-        if not user:
-            await ctx.send("❌ Bitte gib einen User an: `!testwelcome @user`")
-            return
-        await ctx.send(f"📤 Sende Welcome-DM an {user.mention} …")
-        ok = await self.send_welcome_messages(user)
+        target = user
+        if target is None:
+            default_user_id = 662995601738170389
+            guild = ctx.guild
+            target = guild.get_member(default_user_id) if guild else None
+            if target is None and guild is not None:
+                try:
+                    target = await guild.fetch_member(default_user_id)
+                except discord.HTTPException:
+                    target = None
+
+            if target is None:
+                await ctx.send(
+                    "❌ Konnte den Standard-User nicht finden. Bitte gib `!tw @user` an."
+                )
+                return
+
+        await ctx.send(f"📤 Sende Welcome-DM an {target.mention} …")
+        ok = await self.send_welcome_messages(target)
         await ctx.send("✅ Erfolgreich gesendet!" if ok else "⚠️ Senden fehlgeschlagen.")
 
 
