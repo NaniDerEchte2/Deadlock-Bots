@@ -24,6 +24,7 @@ class Dashboard(
             web.get("/twitch/add_any", self.add_any),
             web.get("/twitch/add_url", self.add_url),
             web.get("/twitch/add_login/{login}", self.add_login),
+            web.post("/twitch/add_streamer", self.add_streamer),
             web.post("/twitch/remove", self.remove),
             web.post("/twitch/verify", self.verify),
             web.post("/twitch/discord_flag", self.discord_flag),

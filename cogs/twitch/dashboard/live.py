@@ -40,6 +40,7 @@ class DashboardLiveMixin:
             return dt.astimezone(timezone.utc)
 
         rows: List[str] = []
+        non_partner_entries: List[dict] = []
         filtered_count = 0
         for st in items:
             login = st.get("twitch_login", "")
@@ -64,21 +65,25 @@ class DashboardLiveMixin:
             filtered_count += 1
 
             status_badge = "<span class='badge badge-neutral'>Nicht verifiziert</span>"
+            status_text = "Nicht verifiziert"
             meta_parts: List[str] = []
             countdown_label = "—"
             countdown_classes: List[str] = []
 
             if permanent:
                 status_badge = "<span class='badge badge-ok'>Dauerhaft verifiziert</span>"
+                status_text = "Dauerhaft verifiziert"
             elif until_dt:
                 day_diff = (until_dt.date() - now.date()).days
                 if day_diff >= 0:
                     status_badge = "<span class='badge badge-ok'>Verifiziert (30 Tage)</span>"
+                    status_text = "Verifiziert (30 Tage)"
                     countdown_label = f"{day_diff} Tage"
                     countdown_classes.append("countdown-ok")
                     meta_parts.append(f"Bis {until_dt.date().isoformat()}")
                 else:
                     status_badge = "<span class='badge badge-warn'>Verifizierung überfällig</span>"
+                    status_text = "Verifizierung überfällig"
                     countdown_label = f"Überfällig {abs(day_diff)} Tage"
                     countdown_classes.append("countdown-warn")
                     meta_parts.append(f"Abgelaufen am {until_dt.date().isoformat()}")
@@ -140,9 +145,25 @@ class DashboardLiveMixin:
             toggle_label = (
                 "Als Discord-Mitglied markieren"
                 if not is_on_discord
-                else "Markierung entfernen"
+                else "Discord-Markierung entfernen"
             )
             toggle_classes = "btn btn-small" if not is_on_discord else "btn btn-small btn-secondary"
+
+            is_current_partner = bool(permanent)
+            if not is_current_partner and until_dt:
+                is_current_partner = until_dt >= now
+            if (not is_current_partner) and has_discord_data:
+                non_partner_entries.append(
+                    {
+                        "login": login,
+                        "status": status_text,
+                        "meta": list(meta_parts),
+                        "discord_label": discord_label,
+                        "discord_display_name": discord_display_name,
+                        "discord_user_id": discord_user_id,
+                        "warning": discord_warning,
+                    }
+                )
 
             advanced_html = (
                 "  <details class='advanced-details'>"
@@ -180,10 +201,11 @@ class DashboardLiveMixin:
                 f"        <input type='hidden' name='login' value='{escaped_login}'>"
                 "        <select name='mode'>"
                 "          <option value='permanent'>Permanent</option>"
-                "          <option value='30d'>30 Tage</option>"
-                "          <option value='reset'>Reset</option>"
+                "          <option value='temp'>30 Tage</option>"
+                "          <option value='failed'>Verifizierung fehlgeschlagen</option>"
+                "          <option value='clear'>Kein Partner</option>"
                 "        </select>"
-                "        <button class='btn btn-small'>Set</button>"
+                "        <button class='btn btn-small'>Anwenden</button>"
                 "      </form>"
                 "      <form method='post' action='/twitch/discord_flag' class='inline'>"
                 f"        <input type='hidden' name='login' value='{escaped_login}'>"
@@ -216,14 +238,14 @@ class DashboardLiveMixin:
             for value, label in filter_options
         )
 
-        discord_link_card_html = (
-            "<div class='card discord-link-card'>"
-            "  <h2>Discord-Verknüpfung hinzufügen</h2>"
-            "  <form method='post' action='/twitch/discord_link' class='discord-link-form'>"
-            "    <div class='row'>"
+        add_streamer_card_html = (
+            "<div class='card add-streamer-card'>"
+            "  <h2>Twitch Streamer hinzufügen</h2>"
+            "  <form method='post' action='/twitch/add_streamer'>"
+            "    <div class='form-grid'>"
             "      <label>"
-            "        Twitch Login"
-            "        <input type='text' name='login' placeholder='twitch_login' required>"
+            "        Twitch Login oder URL"
+            "        <input type='text' name='login' placeholder='earlysalty  |  https://twitch.tv/earlysalty' required>"
             "      </label>"
             "      <label>"
             "        Discord User ID"
@@ -233,6 +255,8 @@ class DashboardLiveMixin:
             "        Discord Anzeigename"
             "        <input type='text' name='discord_display_name' placeholder='Discord-Name'>"
             "      </label>"
+            "    </div>"
+            "    <div class='form-actions'>"
             "      <label class='checkbox-label'>"
             "        <input type='checkbox' name='member_flag' value='1'>"
             "        <span>Als Discord-Mitglied markieren</span>"
@@ -240,9 +264,60 @@ class DashboardLiveMixin:
             "      <button class='btn'>Speichern</button>"
             "    </div>"
             "    <div class='hint'>"
+            "      Akzeptiert: @login, login, twitch.tv/login, auch URL-encoded. Discord-Angaben sind optional, können aber direkt mitgespeichert werden."
+            "    </div>"
+            "    <div class='hint'>"
             "      Ohne Haken bleibt der Streamer ohne Partner-Markierung im Live-Panel, die Discord-Daten werden dennoch gespeichert."
             "    </div>"
             "  </form>"
+            "</div>"
+        )
+
+        if non_partner_entries:
+            non_partner_list_html = "".join(
+                (
+                    "<li class='non-partner-item'>"
+                    f"  <strong>{html.escape(entry['login'])}</strong>"
+                    f"  <span class='non-partner-meta'>"
+                    f"    <span>Status: {html.escape(entry['status'])}</span>"
+                    + (
+                        f"    <span>Discord: {html.escape(entry['discord_label'])}</span>"
+                        if entry.get("discord_label")
+                        else ""
+                    )
+                    + (
+                        f"    <span>Name: {html.escape(entry['discord_display_name'])}</span>"
+                        if entry.get("discord_display_name")
+                        else ""
+                    )
+                    + (
+                        f"    <span>ID: {html.escape(entry['discord_user_id'])}</span>"
+                        if entry.get("discord_user_id")
+                        else ""
+                    )
+                    + "".join(
+                        f"    <span>{html.escape(meta)}</span>" for meta in entry.get("meta") or []
+                    )
+                    + (
+                        f"    <span>{html.escape(entry['warning'])}</span>"
+                        if entry.get("warning")
+                        else ""
+                    )
+                    + "  </span>"
+                    "</li>"
+                )
+                for entry in non_partner_entries
+            )
+        else:
+            non_partner_list_html = (
+                "<li class='non-partner-item'><span class='non-partner-meta'>Keine zusätzlichen Streamer ohne Partner-Status vorhanden.</span></li>"
+            )
+
+        non_partner_card_html = (
+            "<div class='card non-partner-card'>"
+            "  <h2>Keine Partner</h2>"
+            "  <p>Streamer, die wir tracken, aber die aktuell keinen Partner-Status besitzen.</p>"
+            f"  <ul class='non-partner-list'>{non_partner_list_html}</ul>"
             "</div>"
         )
 
@@ -262,19 +337,7 @@ class DashboardLiveMixin:
         body = f"""
 <h1 style="margin:.2rem 0 1rem 0;">Deadlock Twitch Posting – Admin</h1>
 
-<div class="card">
-  <form method="get" action="/twitch/add_any" class="row">
-    <div>
-      <div>Twitch Login <i>oder</i> URL:</div>
-      <input name="q" placeholder="earlysalty  |  https://twitch.tv/earlysalty" required>
-      <div><small>Akzeptiert: @login, login, twitch.tv/login, auch URL-encoded.</small></div>
-    </div>
-    <div><button class="btn">Add</button></div>
-  </form>
-
-</div>
-
-{discord_link_card_html}
+{add_streamer_card_html}
 
 {filter_card_html}
 
@@ -286,6 +349,8 @@ class DashboardLiveMixin:
     {table_rows}
   </tbody>
 </table>
+
+{non_partner_card_html}
 """
 
         return web.Response(text=self._html(body, active="live", msg=msg, err=err), content_type="text/html")
@@ -328,6 +393,57 @@ class DashboardLiveMixin:
         except Exception as e:
             log.exception("dashboard add_login failed: %s", e)
             raise web.HTTPFound(location="/twitch?err=" + quote_plus("could not add (twitch api)"))
+
+    async def add_streamer(self, request: web.Request):
+        self._require_token(request)
+        data = await request.post()
+        raw_login = (data.get("login") or "").strip()
+        discord_user_id = (data.get("discord_user_id") or "").strip()
+        discord_display_name = (data.get("discord_display_name") or "").strip()
+        member_raw = (data.get("member_flag") or "").strip().lower()
+        mark_member = member_raw in {"1", "true", "on", "yes"}
+
+        if not raw_login:
+            location = self._redirect_location(request, err="Bitte einen Twitch-Login angeben")
+            raise web.HTTPFound(location=location)
+
+        try:
+            add_message = await self._do_add(raw_login)
+        except web.HTTPBadRequest as exc:
+            err_text = exc.text or "Ungültiger Twitch-Login"
+            location = self._redirect_location(request, err=err_text)
+            raise web.HTTPFound(location=location)
+        except Exception as exc:
+            log.exception("dashboard add_streamer failed: %s", exc)
+            location = self._redirect_location(
+                request, err="Twitch-Streamer konnte nicht hinzugefügt werden"
+            )
+            raise web.HTTPFound(location=location)
+
+        profile_message = ""
+        should_update_discord = bool(discord_user_id or discord_display_name or mark_member)
+        if should_update_discord:
+            try:
+                profile_message = await self._discord_profile(
+                    raw_login,
+                    discord_user_id=discord_user_id or None,
+                    discord_display_name=discord_display_name or None,
+                    mark_member=mark_member,
+                )
+            except ValueError as exc:
+                location = self._redirect_location(request, err=str(exc))
+                raise web.HTTPFound(location=location)
+            except Exception as exc:
+                log.exception("dashboard add_streamer discord save failed: %s", exc)
+                location = self._redirect_location(
+                    request, err="Discord-Daten konnten nicht gespeichert werden"
+                )
+                raise web.HTTPFound(location=location)
+
+        messages = [m for m in (add_message, profile_message) if m]
+        ok_message = " – ".join(dict.fromkeys(messages)) if messages else "Gespeichert"
+        location = self._redirect_location(request, ok=ok_message)
+        raise web.HTTPFound(location=location)
 
     async def discord_flag(self, request: web.Request):
         self._require_token(request)

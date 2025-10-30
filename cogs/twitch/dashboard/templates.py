@@ -89,12 +89,21 @@ class DashboardTemplateMixin:
   .filter-row {{ align-items:flex-end; gap:1rem; flex-wrap:wrap; }}
   .filter-row .filter-label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
   .filter-row select {{ background:#0f1422; border:1px solid var(--bd); color:var(--text); padding:.4rem .6rem; border-radius:.4rem; min-width:12rem; }}
-  .discord-link-card {{ margin-top:1rem; }}
-  .discord-link-card h2 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-2); }}
-  .discord-link-card form .row {{ align-items:flex-end; gap:.8rem; flex-wrap:wrap; }}
-  .discord-link-card label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
-  .discord-link-card input[type="text"] {{ min-width:14rem; }}
-  .discord-link-card .hint {{ margin-top:.6rem; font-size:.8rem; color:var(--muted); }}
+  .add-streamer-card {{ margin-top:1rem; }}
+  .add-streamer-card h2 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-2); }}
+  .add-streamer-card form {{ display:flex; flex-direction:column; gap:.8rem; }}
+  .add-streamer-card .form-grid {{ display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-end; }}
+  .add-streamer-card label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
+  .add-streamer-card input[type="text"] {{ min-width:14rem; }}
+  .add-streamer-card .form-actions {{ display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }}
+  .add-streamer-card .hint {{ margin-top:.2rem; font-size:.8rem; color:var(--muted); max-width:38rem; }}
+  .non-partner-card {{ margin-top:1.5rem; }}
+  .non-partner-card h2 {{ margin:0 0 .6rem 0; font-size:1.05rem; color:var(--accent-2); }}
+  .non-partner-card p {{ margin:0 0 .8rem 0; font-size:.85rem; color:var(--muted); }}
+  .non-partner-list {{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.6rem; }}
+  .non-partner-item {{ display:flex; flex-wrap:wrap; gap:.4rem .8rem; align-items:flex-start; padding:.4rem .6rem; background:#10162a; border:1px solid var(--bd); border-radius:.4rem; }}
+  .non-partner-item strong {{ font-size:.95rem; color:#fff; }}
+  .non-partner-meta {{ font-size:.8rem; color:var(--muted); display:flex; flex-wrap:wrap; gap:.6rem; }}
   .chart-panel {{ background:#10162a; border:1px solid var(--bd); border-radius:.7rem; padding:1rem; margin-top:1rem; }}
   .chart-panel h3 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-2); }}
   .chart-panel canvas {{ width:100%; height:320px; max-height:360px; }}
