@@ -37,4 +37,4 @@ Diese README fasst alle Features zusammen, die auf dem Server für Community-Mit
 ## Twitch-Statistiken
 - `!twl` funktioniert als Proxy-Befehl für das Twitch-Cog: Im vorgesehenen Statistik-Channel erhältst du ein interaktives Leaderboard mit Filtern wie `samples=`, `avg=`, `partner=`, `limit=`, `sort=` und `order=`. Eine `help`-Abfrage erklärt alle Optionen.【F:cogs/twitch/__init__.py†L16-L61】【F:cogs/twitch/leaderboard.py†L323-L417】
 
-Viel Spaß beim Nutzen der Bots und Features – und danke fürs Mitgestalten der Deadlock DACH Community!
+Viel Spaß beim Nutzen der Bots und Features – und danke fürs Mitgestalten der Deutschen Deadlock Community!

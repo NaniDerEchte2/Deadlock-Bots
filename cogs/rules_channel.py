@@ -122,7 +122,7 @@ class RulesPanel(commands.Cog):
             return
 
         emb = discord.Embed(
-            title="📜 Regelwerk • Deadlock DACH",
+            title="📜 Regelwerk • Deutsche Deadlock Community",
             description="Klick auf **Weiter ➜**, um dein Onboarding im eigenen Thread zu starten.",
             color=0x00AEEF,
         )

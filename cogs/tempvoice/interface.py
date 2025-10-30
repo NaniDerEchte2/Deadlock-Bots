@@ -99,7 +99,7 @@ class TempVoiceInterface(commands.Cog):
             ),
             color=0x2ecc71
         )
-        embed.set_footer(text="Deadlock DACH • TempVoice")
+        embed.set_footer(text="Deutsche Deadlock Community • TempVoice")
 
         row = None
         try:
@@ -186,7 +186,7 @@ class TempVoiceInterface(commands.Cog):
             ),
             color=0x2ecc71,
         )
-        embed.set_footer(text="Deadlock DACH • TempVoice")
+        embed.set_footer(text="Deutsche Deadlock Community • TempVoice")
         return embed
 
     async def ensure_lane_interface(self, lane: discord.VoiceChannel, owner_id: Optional[int] = None):
