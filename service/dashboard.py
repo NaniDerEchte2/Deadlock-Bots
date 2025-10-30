@@ -1907,7 +1907,8 @@ class DashboardServer:
             if StandaloneConfigNotFound and isinstance(exc, StandaloneConfigNotFound):
                 raise web.HTTPNotFound(text="Standalone bot not found")
             if StandaloneManagerError and isinstance(exc, StandaloneManagerError):
-                raise web.HTTPInternalServerError(text=str(exc))
+                logging.exception("Error when restarting standalone bot (key=%r): %s", key, exc)
+                raise web.HTTPInternalServerError(text="An internal error has occurred.")
             raise
         return web.json_response({"standalone": status})
 
