@@ -11,9 +11,9 @@ from discord import app_commands
 from discord.ext import commands
 
 from service import db
+from cogs.steam import SCHNELL_LINK_AVAILABLE, SchnellLinkButton
 from cogs.steam.friend_requests import queue_friend_request
 from cogs.steam.steam_master import SteamTaskClient
-from cogs.steam import SchnellLinkButton
 
 log = logging.getLogger(__name__)
 
@@ -378,10 +378,18 @@ class BetaInviteFlow(commands.Cog):
 
         if not resolved:
             view = self._build_link_prompt_view(interaction.user)
-            await interaction.followup.send(
+            prompt = (
                 "ℹ️ Es ist noch kein Steam-Account mit deinem Discord verknüpft.\n"
-                "Melde dich über „Via Discord bei Steam anmelden“, „Direkt bei Steam anmelden“ oder nutze den Schnell-Link "
-                "und versuche es danach erneut.",
+                "Melde dich über „Via Discord bei Steam anmelden“ oder „Direkt bei Steam anmelden“"
+            )
+            if SCHNELL_LINK_AVAILABLE:
+                prompt += " oder nutze den Schnell-Link"
+            else:
+                prompt += ". Der Schnell-Link ist derzeit nicht verfügbar"
+            prompt += " und versuche es danach erneut."
+
+            await interaction.followup.send(
+                prompt,
                 view=view,
                 ephemeral=True,
             )
