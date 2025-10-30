@@ -17,7 +17,7 @@ from .step_streamer import StreamerIntroView  # Optionaler Schritt
 
 
 def _fallback_build_step_embed(title, desc, step, total, color=0x5865F2):
-    footer = "Einführung • Deadlock DACH" if step is None else f"Frage {step} von {total} • Deadlock DACH"
+    footer = "Einführung • Deutsche Deadlock Community" if step is None else f"Frage {step} von {total} • Deutsche Deadlock Community"
     emb = discord.Embed(title=title, description=desc, color=color)
     emb.set_footer(text=footer)
     return emb

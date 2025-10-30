@@ -27,7 +27,7 @@ BETA_INVITE_SUPPORT_CONTACT = "@earlysalty"
 
 def build_step_embed(title: str, desc: str, step: Optional[int], total: int, color: int = 0x5865F2) -> discord.Embed:
     emb = discord.Embed(title=title, description=desc, color=color, timestamp=datetime.now())
-    footer = "Einführung • Deadlock DACH" if step is None else f"Frage {step} von {total} • Deadlock DACH"
+    footer = "Einführung • Deutsche Deadlock Community" if step is None else f"Frage {step} von {total} • Deutsche Deadlock Community"
     emb.set_footer(text=footer)
     return emb
 
