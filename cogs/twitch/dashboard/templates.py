@@ -122,6 +122,19 @@ class DashboardTemplateMixin:
   .chart-panel canvas {{ width:100%; height:320px; max-height:360px; }}
   .chart-note {{ margin-top:.6rem; font-size:.85rem; color:var(--muted); }}
   .chart-empty {{ margin-top:1rem; font-size:.9rem; color:var(--muted); font-style:italic; }}
+  .analysis-controls {{ margin-top:.8rem; }}
+  .user-form {{ margin-top:.8rem; }}
+  .user-hint {{ margin-top:.4rem; font-size:.8rem; color:var(--muted); }}
+  .user-warning {{ margin-top:.6rem; color:var(--err-fg); font-weight:600; }}
+  .user-summary {{ display:flex; flex-wrap:wrap; gap:.8rem; margin-top:1rem; }}
+  .user-summary-item {{ background:#10162a; border:1px solid var(--bd); border-radius:.6rem; padding:.6rem .9rem; min-width:140px; }}
+  .user-summary-item .label {{ display:block; color:var(--muted); font-size:.8rem; }}
+  .user-summary-item .value {{ display:block; color:#fff; font-size:1.05rem; font-weight:600; }}
+  .user-meta {{ margin-top:.6rem; font-size:.85rem; color:var(--muted); }}
+  .user-meta strong {{ color:#fff; font-weight:600; }}
+  .user-chart-grid {{ display:flex; flex-wrap:wrap; gap:1rem; margin-top:1rem; }}
+  .user-chart-panel {{ flex:1 1 280px; }}
+  .user-section-empty {{ margin-top:1rem; font-size:.9rem; color:var(--muted); font-style:italic; }}
   .toggle-group {{ display:flex; gap:.4rem; flex-wrap:wrap; }}
   .btn-active {{ background:var(--accent); color:#fff; border:1px solid var(--accent); }}
   .discord-status {{ display:flex; flex-direction:column; gap:.3rem; }}

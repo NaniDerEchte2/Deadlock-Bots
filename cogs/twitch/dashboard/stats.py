@@ -17,6 +17,22 @@ class DashboardStatsMixin:
         if display_mode not in {"charts", "raw"}:
             display_mode = "charts"
 
+        focus_mode = (request.query.get("focus") or "time").lower()
+        if focus_mode not in {"time", "weekday", "user"}:
+            focus_mode = "time"
+
+        streamer_query = request.query.get("streamer") or ""
+        normalized_streamer: Optional[str] = None
+        streamer_warning = ""
+        if focus_mode == "user":
+            query_clean = streamer_query.strip()
+            if query_clean:
+                normalized_streamer = self._normalize_login(streamer_query)
+                if normalized_streamer is None:
+                    streamer_warning = "Ungültiger Twitch-Login."
+            else:
+                normalized_streamer = None
+
         def _parse_int(*names: str) -> Optional[int]:
             for name in names:
                 raw = request.query.get(name)
@@ -60,7 +76,11 @@ class DashboardStatsMixin:
             if hour_to is None:
                 hour_to = stats_hour
 
-        stats = await self._stats(hour_from=hour_from, hour_to=hour_to)
+        stats = await self._stats(
+            hour_from=hour_from,
+            hour_to=hour_to,
+            streamer=normalized_streamer if focus_mode == "user" else None,
+        )
         tracked = stats.get("tracked", {}) or {}
         category = stats.get("category", {}) or {}
 
@@ -87,6 +107,8 @@ class DashboardStatsMixin:
             "hour",
             "hour_from",
             "hour_to",
+            "focus",
+            "streamer",
         ):
             if key in request.query:
                 preserved_params[key] = request.query[key]
@@ -517,12 +539,286 @@ class DashboardStatsMixin:
             '</div>'
         )
 
+        streamer_stats = stats.get("streamer")
+        if not isinstance(streamer_stats, dict):
+            streamer_stats = {}
+        streamer_summary = streamer_stats.get("summary")
+        if not isinstance(streamer_summary, dict):
+            streamer_summary = {}
+        streamer_has_data = bool(streamer_stats.get("had_results"))
+        selected_streamer_login = (
+            str(
+                streamer_stats.get("display_login")
+                or streamer_stats.get("login")
+                or (normalized_streamer or streamer_query.strip())
+                or ""
+            ).strip()
+        )
+        user_hour_data = streamer_stats.get("hourly")
+        if not isinstance(user_hour_data, list):
+            user_hour_data = []
+        user_weekday_data = streamer_stats.get("weekday")
+        if not isinstance(user_weekday_data, list):
+            user_weekday_data = []
+
+        user_hour_map = {
+            int(item.get("hour") or 0): item for item in user_hour_data if isinstance(item, dict)
+        }
+        user_weekday_map = {
+            int(item.get("weekday") or 0): item for item in user_weekday_data if isinstance(item, dict)
+        }
+
+        user_hour_avg = [
+            _float_or_none((user_hour_map.get(hour) or {}).get("avg_viewers")) for hour in range(24)
+        ]
+        user_hour_peak = [
+            _int_or_none((user_hour_map.get(hour) or {}).get("max_viewers")) for hour in range(24)
+        ]
+        user_hour_datasets = []
+        if streamer_has_data:
+            label_prefix = selected_streamer_login or "Streamer"
+            user_hour_datasets = [
+                ds
+                for ds in (
+                    _build_dataset(
+                        user_hour_avg,
+                        label=f"{label_prefix} Ø Viewer",
+                        color="#9bb0ff",
+                        background="rgba(155, 176, 255, 0.25)",
+                    ),
+                    _build_dataset(
+                        user_hour_peak,
+                        label=f"{label_prefix} Peak Viewer",
+                        color="#ff6f91",
+                        background="rgba(255, 111, 145, 0.1)",
+                        axis="yPeak",
+                        fill=False,
+                        dash=[4, 4],
+                        tension=0.25,
+                    ),
+                )
+                if ds
+            ]
+        user_hour_chart_payload = None
+        if user_hour_datasets:
+            user_hour_chart_payload = {
+                "labels": hour_labels,
+                "datasets": user_hour_datasets,
+                "xTitle": "Stunde (UTC)",
+            }
+
+        user_weekday_avg = [
+            _float_or_none((user_weekday_map.get(idx) or {}).get("avg_viewers"))
+            for idx in weekday_order
+        ]
+        user_weekday_peak = [
+            _int_or_none((user_weekday_map.get(idx) or {}).get("max_viewers"))
+            for idx in weekday_order
+        ]
+        user_weekday_datasets = []
+        if streamer_has_data:
+            label_prefix = selected_streamer_login or "Streamer"
+            user_weekday_datasets = [
+                ds
+                for ds in (
+                    _build_dataset(
+                        user_weekday_avg,
+                        label=f"{label_prefix} Ø Viewer",
+                        color="#9bb0ff",
+                        background="rgba(155, 176, 255, 0.25)",
+                    ),
+                    _build_dataset(
+                        user_weekday_peak,
+                        label=f"{label_prefix} Peak Viewer",
+                        color="#ff6f91",
+                        background="rgba(255, 111, 145, 0.1)",
+                        axis="yPeak",
+                        fill=False,
+                        dash=[4, 4],
+                        tension=0.25,
+                    ),
+                )
+                if ds
+            ]
+        user_weekday_chart_payload = None
+        if user_weekday_datasets:
+            user_weekday_chart_payload = {
+                "labels": weekday_labels_list,
+                "datasets": user_weekday_datasets,
+                "xTitle": "Wochentag",
+            }
+
+        streamer_is_tracked = bool(streamer_stats.get("is_tracked"))
+        streamer_is_on_discord = bool(streamer_stats.get("is_on_discord"))
+        streamer_discord_name = str(streamer_stats.get("discord_display_name") or "").strip()
+        streamer_discord_id = str(streamer_stats.get("discord_user_id") or "").strip()
+        streamer_source = streamer_stats.get("source")
+
         if display_mode == "charts":
             hour_section = hour_chart_block
             weekday_section = weekday_chart_block
         else:
             hour_section = hour_tables_block
             weekday_section = weekday_tables_block
+
+        display_toggle_html = ""
+        analysis_controls_html = ""
+        if focus_mode in {"time", "weekday"}:
+            analysis_controls_html = f"<div class='analysis-controls'>{display_toggle_html}</div>"
+
+        hidden_inputs = []
+        for key, value in request.query.items():
+            if key in {"focus", "streamer"}:
+                continue
+            hidden_inputs.append(
+                f"<input type='hidden' name='{html.escape(key, quote=True)}' value='{html.escape(value, quote=True)}'>"
+            )
+        hidden_inputs_html = "".join(hidden_inputs)
+
+        suggestions_map: dict[str, str] = {}
+        if focus_mode == "user":
+            try:
+                stored_streamers = await self._list()
+            except Exception:
+                stored_streamers = []
+            for row in stored_streamers:
+                login = str(row.get("twitch_login") or "").strip()
+                if not login:
+                    continue
+                lower = login.lower()
+                suggestions_map.setdefault(lower, login)
+        if focus_mode == "user":
+            for entry in list(tracked_items) + list(category_items):
+                login = str(entry.get("streamer") or "").strip()
+                if not login:
+                    continue
+                lower = login.lower()
+                suggestions_map.setdefault(lower, login)
+        if selected_streamer_login:
+            lower = selected_streamer_login.lower()
+            suggestions_map.setdefault(lower, selected_streamer_login)
+        if streamer_query.strip():
+            lower = streamer_query.strip().lower()
+            suggestions_map.setdefault(lower, streamer_query.strip())
+
+        sorted_suggestions = [suggestions_map[key] for key in sorted(suggestions_map)]
+        streamer_options = "".join(
+            f"<option value='{html.escape(value, quote=True)}'></option>" for value in sorted_suggestions
+        )
+        datalist_html = f"<datalist id='twitch-streamers'>{streamer_options}</datalist>"
+
+        reset_href = _build_url(focus="user", streamer=None)
+        user_form_html = f"""
+  <form method=\"get\" class=\"user-form\">
+    <input type=\"hidden\" name=\"focus\" value=\"user\">
+    {hidden_inputs_html}
+    <div class=\"row\" style=\"gap:1rem; align-items:flex-end; flex-wrap:wrap;\">
+      <label class=\"filter-label\">
+        Streamer
+        <input type=\"text\" name=\"streamer\" list=\"twitch-streamers\" placeholder=\"z. B. streamername\" value=\"{html.escape(streamer_query, quote=True)}\">
+      </label>
+      <div style=\"display:flex; gap:.6rem; align-items:center; flex-wrap:wrap;\">
+        <button class=\"btn\">Anzeigen</button>
+        <a class=\"btn btn-secondary\" href=\"{html.escape(reset_href)}\">Reset</a>
+      </div>
+    </div>
+  </form>
+  {datalist_html}
+"""
+
+        user_hint_html = ""
+        if focus_mode == "user":
+            user_hint_html = "<div class='user-hint'>Suche nach einem Twitch-Login (z. B. streamername).</div>"
+
+        user_notice_html = ""
+        if streamer_warning:
+            user_notice_html = f"<div class='user-warning'>{html.escape(streamer_warning)}</div>"
+
+        user_summary_html = ""
+        if streamer_has_data:
+            samples = int(streamer_summary.get("samples") or 0)
+            avg_viewers = float(streamer_summary.get("avg_viewers") or 0.0)
+            max_viewers = int(streamer_summary.get("max_viewers") or 0)
+            partner_text = "Ja" if bool(streamer_summary.get("is_partner")) else "Nein"
+            discord_text = "Ja" if streamer_is_on_discord else "Nein"
+            summary_items = [
+                ("Samples", f"{samples}"),
+                ("Ø Viewer", f"{avg_viewers:.1f}"),
+                ("Peak Viewer", f"{max_viewers}"),
+                ("Partner", partner_text),
+                ("Auf Discord?", discord_text),
+            ]
+            summary_cells = "".join(
+                f"<div class='user-summary-item'><span class='label'>{html.escape(label)}</span><span class='value'>{html.escape(value)}</span></div>"
+                for label, value in summary_items
+            )
+            user_summary_html = f"<div class='user-summary'>{summary_cells}</div>"
+
+        user_meta_html = ""
+        if streamer_has_data or streamer_is_tracked or streamer_discord_name or streamer_discord_id:
+            meta_parts = []
+            if streamer_source:
+                source_label = "Tracked" if streamer_source == "tracked" else "Kategorie"
+                meta_parts.append(
+                    f"<strong>Datenbasis:</strong> {html.escape(source_label)}"
+                )
+            tracked_text = "Ja" if streamer_is_tracked else "Nein"
+            meta_parts.append(f"<strong>Partnerliste:</strong> {tracked_text}")
+            if streamer_discord_name or streamer_discord_id:
+                discord_bits = []
+                if streamer_discord_name:
+                    discord_bits.append(html.escape(streamer_discord_name))
+                if streamer_discord_id:
+                    discord_bits.append(f"ID: {html.escape(streamer_discord_id)}")
+                meta_parts.append(
+                    "<strong>Discord:</strong> " + " • ".join(discord_bits)
+                )
+            if meta_parts:
+                user_meta_html = "<div class='user-meta'>" + "<br>".join(meta_parts) + "</div>"
+
+        user_charts_html = ""
+        if streamer_has_data:
+            user_hour_chart_block = (
+                '<div class="chart-panel user-chart-panel">'
+                '  <h3>Ø Viewer nach Stunde</h3>'
+                '  <canvas id="user-hourly-chart"></canvas>'
+                '  <div class="chart-note">Zeiten in UTC. Datenpunkte ohne Werte werden ausgeblendet.</div>'
+                '</div>'
+            )
+            user_weekday_chart_block = (
+                '<div class="chart-panel user-chart-panel">'
+                '  <h3>Ø Viewer nach Wochentag</h3>'
+                '  <canvas id="user-weekday-chart"></canvas>'
+                '  <div class="chart-note">Zeiten in UTC. Datenpunkte ohne Werte werden ausgeblendet.</div>'
+                '</div>'
+            )
+            user_charts_html = (
+                '<div class="user-chart-grid">'
+                f"{user_hour_chart_block}{user_weekday_chart_block}"
+                '</div>'
+            )
+
+        user_empty_html = ""
+        if focus_mode == "user" and not streamer_warning:
+            if not streamer_query.strip():
+                user_empty_html = "<div class='user-section-empty'>Bitte oben einen Streamer auswählen.</div>"
+            elif normalized_streamer and not streamer_has_data:
+                user_empty_html = "<div class='user-section-empty'>Keine Daten für diesen Streamer in den letzten 30 Tagen.</div>"
+
+        user_section_parts = [user_form_html]
+        if user_hint_html:
+            user_section_parts.append(user_hint_html)
+        if user_notice_html:
+            user_section_parts.append(user_notice_html)
+        if user_summary_html:
+            user_section_parts.append(user_summary_html)
+        if user_meta_html:
+            user_section_parts.append(user_meta_html)
+        if user_charts_html:
+            user_section_parts.append(user_charts_html)
+        if user_empty_html:
+            user_section_parts.append(user_empty_html)
+        user_section = "".join(user_section_parts)
 
         chart_payload = {
             "hour": {
@@ -536,6 +832,11 @@ class DashboardStatsMixin:
                 "xTitle": "Wochentag",
             },
         }
+
+        if user_hour_chart_payload:
+            chart_payload["userHour"] = user_hour_chart_payload
+        if user_weekday_chart_payload:
+            chart_payload["userWeekday"] = user_weekday_chart_payload
 
         chart_payload_json = json.dumps(chart_payload, ensure_ascii=False)
 
@@ -670,6 +971,22 @@ class DashboardStatsMixin:
     renderLineChart({ id: "weekday-viewers-chart", data: chartData.weekday });
   }
 
+  if (
+    chartData.userHour &&
+    Array.isArray(chartData.userHour.datasets) &&
+    chartData.userHour.datasets.length
+  ) {
+    renderLineChart({ id: "user-hourly-chart", data: chartData.userHour });
+  }
+
+  if (
+    chartData.userWeekday &&
+    Array.isArray(chartData.userWeekday.datasets) &&
+    chartData.userWeekday.datasets.length
+  ) {
+    renderLineChart({ id: "user-weekday-chart", data: chartData.userWeekday });
+  }
+
   const tables = document.querySelectorAll("table.sortable-table");
   tables.forEach((table) => {
     const headers = table.querySelectorAll("th[data-sort-type]");
@@ -750,6 +1067,20 @@ class DashboardStatsMixin:
             '</div>'
         )
 
+        def _focus_href(mode: str) -> str:
+            updates = {"focus": mode}
+            if mode != "user":
+                updates["streamer"] = None
+            return _build_url(**updates)
+
+        focus_toggle_html = (
+            '<div class="toggle-group">'
+            f'  <a class="btn btn-small{" btn-active" if focus_mode == "time" else " btn-secondary"}" href="{_focus_href("time")}">Zeit</a>'
+            f'  <a class="btn btn-small{" btn-active" if focus_mode == "weekday" else " btn-secondary"}" href="{_focus_href("weekday")}">Tag</a>'
+            f'  <a class="btn btn-small{" btn-active" if focus_mode == "user" else " btn-secondary"}" href="{_focus_href("user")}">User</a>'
+            '</div>'
+        )
+
         current_view_label = "Alle Streamer" if show_all else "Top 10"
         toggle_label = "Alle Streamer zeigen" if not show_all else "Nur Top 10 anzeigen"
         toggle_href = _build_url(view="all" if not show_all else "top")
@@ -774,6 +1105,13 @@ class DashboardStatsMixin:
             f"<option value='{html.escape(value, quote=True)}'{' selected' if discord_filter == value else ''}>{html.escape(label)}</option>"
             for value, label in discord_filter_options
         )
+
+        if focus_mode == "time":
+            analysis_content = f"{analysis_controls_html}{hour_section}"
+        elif focus_mode == "weekday":
+            analysis_content = f"{analysis_controls_html}{weekday_section}"
+        else:
+            analysis_content = user_section
 
         body = f"""
 <h1 style="margin:.2rem 0 1rem 0;">Twitch Stats</h1>
@@ -834,15 +1172,10 @@ class DashboardStatsMixin:
 
 <div class="card" style="margin-top:1.2rem;">
   <div class="card-header">
-    <h2>Zeitliche Trends (UTC)</h2>
-    {display_toggle_html}
+    <h2>Analyse</h2>
+    {focus_toggle_html}
   </div>
-  {hour_section}
-</div>
-
-<div class="card" style="margin-top:1.2rem;">
-  <h2>Tagestrends</h2>
-  {weekday_section}
+  {analysis_content}
 </div>
 
 <div class="card" style="margin-top:1.2rem;">
