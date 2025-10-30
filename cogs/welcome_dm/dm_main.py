@@ -20,6 +20,9 @@ from .step_steam_link import SteamLinkStepView, steam_link_dm_description
 from .step_rules import RulesView
 from .step_streamer import StreamerIntroView  # Optionaler Schritt
 
+REQUIRED_WELCOME_ROLE_ID = 1304216250649415771
+
+
 class WelcomeDM(commands.Cog):
     """Welcome-DM: Intro → Status → Steam → (optional Streamer) → Regeln.
        WICHTIG: keine persistente Registrierung der Step-Views (enthalten Link-Buttons)."""
@@ -353,10 +356,48 @@ class WelcomeDM(commands.Cog):
 
     # ---------------- Events & Commands ----------------
 
+    def _member_has_required_role(self, member: discord.Member) -> bool:
+        return discord.utils.get(member.roles, id=REQUIRED_WELCOME_ROLE_ID) is not None
+
+    async def _wait_for_required_role(
+        self,
+        member: discord.Member,
+        *,
+        poll_interval: float = 2.0,
+    ) -> discord.Member | None:
+        """Wartet, bis der Member die benötigte Rolle erhalten hat."""
+        current_member = member
+        while True:
+            if self._member_has_required_role(current_member):
+                return current_member
+
+            await asyncio.sleep(poll_interval)
+
+            try:
+                current_member = await member.guild.fetch_member(member.id)
+            except discord.NotFound:
+                logger.info(
+                    "WelcomeDM: Mitglied %s (%s) hat den Server verlassen, bevor die Rolle vergeben wurde.",
+                    member,
+                    member.id,
+                )
+                return None
+            except discord.HTTPException as exc:
+                logger.debug(
+                    "WelcomeDM: Fehler beim Aktualisieren des Members %s (%s): %s",
+                    member,
+                    member.id,
+                    exc,
+                )
+                continue
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        await asyncio.sleep(2)
-        await self.send_welcome_messages(member)
+        awaited_member = await self._wait_for_required_role(member)
+        if not awaited_member:
+            return
+
+        await self.send_welcome_messages(awaited_member)
 
     @commands.command(name="testwelcome")
     @commands.has_permissions(administrator=True)
