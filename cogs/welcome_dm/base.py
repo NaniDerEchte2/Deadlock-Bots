@@ -21,6 +21,10 @@ STATUS_PLAYING     = "already_playing"
 STATUS_RETURNING   = "returning"
 STATUS_NEW_PLAYER  = "new_player"
 
+# Beta-Invite Infos
+BETA_INVITE_CHANNEL_URL = "https://discord.com/channels/1289721245281292288/1428745737323155679"
+BETA_INVITE_SUPPORT_CONTACT = "@earlysalty"
+
 def build_step_embed(title: str, desc: str, step: Optional[int], total: int, color: int = 0x5865F2) -> discord.Embed:
     emb = discord.Embed(title=title, description=desc, color=color, timestamp=datetime.now())
     footer = "Einführung • Deadlock DACH" if step is None else f"Frage {step} von {total} • Deadlock DACH"

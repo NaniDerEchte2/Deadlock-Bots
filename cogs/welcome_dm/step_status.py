@@ -24,7 +24,7 @@ class PlayerStatusView(StepView):
         placeholder="Bitte Status wählen …",
         min_values=1, max_values=1,
         options=[
-            discord.SelectOption(label="Ich will spielen – brauche Beta-Invite", value=STATUS_NEED_BETA, emoji="🎟️"),
+            discord.SelectOption(label="Ich brauche einen Beta Invite", value=STATUS_NEED_BETA, emoji="🎟️"),
             discord.SelectOption(label="Ich spiele bereits", value=STATUS_PLAYING, emoji="✅"),
             discord.SelectOption(label="Ich fange gerade wieder an", value=STATUS_RETURNING, emoji="🔁"),
             discord.SelectOption(label="Neu im Game", value=STATUS_NEW_PLAYER, emoji="✨"),
