@@ -14,6 +14,7 @@ from service import db
 from cogs.steam import SCHNELL_LINK_AVAILABLE, SchnellLinkButton
 from cogs.steam.friend_requests import queue_friend_request
 from cogs.steam.steam_master import SteamTaskClient
+from cogs.welcome_dm.base import BETA_INVITE_CHANNEL_URL, BETA_INVITE_SUPPORT_CONTACT
 
 log = logging.getLogger(__name__)
 
@@ -359,7 +360,8 @@ class BetaInviteFlow(commands.Cog):
         message = (
             "✅ Einladung verschickt!\n"
             "Bitte schaue in 1-2 Stunden unter https://store.steampowered.com/account/playtestinvites "
-            "und nimm die Einladung dort an. Danach erscheint Deadlock automatisch in deiner Bibliothek."
+            "und nimm die Einladung dort an. Danach erscheint Deadlock automatisch in deiner Bibliothek.\n"
+            f"Alle weiteren Infos findest du in <{BETA_INVITE_CHANNEL_URL}> – bei Problemen ping bitte {BETA_INVITE_SUPPORT_CONTACT}."
         )
         await interaction.followup.send(message, ephemeral=True)
 
