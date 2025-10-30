@@ -431,7 +431,7 @@ class SteamLinkVoiceNudge(commands.Cog):
     async def _build_dm_payload(
         self, user: Union[discord.User, discord.Member]
     ) -> Tuple[discord.Embed, _OptionsView]:
-        discord_url, _ = await _fetch_oauth_urls(self.bot, user)
+        discord_url, steam_url = await _fetch_oauth_urls(self.bot, user)
         primary_discord, browser_fallback = _prefer_discord_deeplink(discord_url)
 
         desc = steam_link_detailed_description()
