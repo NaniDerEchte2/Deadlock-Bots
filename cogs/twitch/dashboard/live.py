@@ -24,7 +24,7 @@ class DashboardLiveMixin:
         if discord_filter not in {"any", "yes", "no", "linked"}:
             discord_filter = "any"
 
-        total_count = len(items)
+        total_count = sum(1 for st in items if not bool(st.get("manual_partner_opt_out")))
 
         now = datetime.now(timezone.utc)
 
@@ -49,6 +49,7 @@ class DashboardLiveMixin:
             until_raw = st.get("manual_verified_until")
             until_dt = _parse_dt(until_raw)
             verified_at_dt = _parse_dt(st.get("manual_verified_at"))
+            partner_opt_out = bool(st.get("manual_partner_opt_out"))
 
             is_on_discord = bool(st.get("is_on_discord"))
             discord_user_id = str(st.get("discord_user_id") or "").strip()
@@ -68,7 +69,11 @@ class DashboardLiveMixin:
             countdown_label = "—"
             countdown_classes: List[str] = []
 
-            if permanent:
+            if partner_opt_out:
+                status_badge = "<span class='badge badge-neutral'>Kein Partner</span>"
+                status_text = "Kein Partner"
+                meta_parts.append("Nicht als Partner gelistet")
+            elif permanent:
                 status_badge = "<span class='badge badge-ok'>Dauerhaft verifiziert</span>"
                 status_text = "Dauerhaft verifiziert"
             elif until_dt:
@@ -137,10 +142,13 @@ class DashboardLiveMixin:
             )
             toggle_classes = "btn btn-small" if not is_on_discord else "btn btn-small btn-secondary"
 
-            is_current_partner = bool(permanent)
-            if not is_current_partner and until_dt:
-                is_current_partner = until_dt >= now
-            should_list_as_non_partner = (not is_current_partner) and has_discord_data
+            is_current_partner = False
+            if not partner_opt_out:
+                is_current_partner = bool(permanent)
+                if not is_current_partner and until_dt:
+                    is_current_partner = until_dt >= now
+
+            should_list_as_non_partner = partner_opt_out
             if should_list_as_non_partner:
                 non_partner_entries.append(
                     {
@@ -417,7 +425,7 @@ class DashboardLiveMixin:
         non_partner_card_html = (
             "<div class='card non-partner-card'>"
             "  <h2>Keine Partner</h2>"
-            "  <p>Streamer ohne aktuellen Partner-Status mit Discord-Verknüpfung – sie erscheinen nicht in der Hauptliste und können hier verwaltet werden.</p>"
+            "  <p>Streamer, die ausdrücklich als „Kein Partner“ markiert wurden. Sie tauchen nicht in der Hauptliste auf, können aber hier samt Discord-Verknüpfung weiterverwaltet werden.</p>"
             f"  <ul class='non-partner-list'>{non_partner_list_html}</ul>"
             "</div>"
         )

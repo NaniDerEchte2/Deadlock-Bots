@@ -50,6 +50,7 @@ class TwitchDashboardMixin:
                        manual_verified_permanent,
                        manual_verified_until,
                        manual_verified_at,
+                       manual_partner_opt_out,
                        is_on_discord,
                        discord_user_id,
                        discord_display_name
@@ -238,6 +239,7 @@ class TwitchDashboardMixin:
                     c.execute(
                         "UPDATE twitch_streamers "
                         "SET manual_verified_permanent=1, manual_verified_until=NULL, manual_verified_at=datetime('now'), "
+                        "    manual_partner_opt_out=0, "
                         "    is_on_discord=1 "
                         "WHERE twitch_login=?",
                         (login,),
@@ -247,7 +249,7 @@ class TwitchDashboardMixin:
                     c.execute(
                         "UPDATE twitch_streamers "
                         "SET manual_verified_permanent=0, manual_verified_until=datetime('now','+30 days'), "
-                        "    manual_verified_at=datetime('now'), is_on_discord=1 "
+                        "    manual_verified_at=datetime('now'), manual_partner_opt_out=0, is_on_discord=1 "
                         "WHERE twitch_login=?",
                         (login,),
                     )
@@ -262,7 +264,8 @@ class TwitchDashboardMixin:
             with storage.get_conn() as c:
                 c.execute(
                     "UPDATE twitch_streamers "
-                    "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL "
+                    "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL, "
+                    "    manual_partner_opt_out=1 "
                     "WHERE twitch_login=?",
                     (login,),
                 )
@@ -283,7 +286,8 @@ class TwitchDashboardMixin:
                     row_data = dict(row)
                     c.execute(
                         "UPDATE twitch_streamers "
-                        "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL "
+                        "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL, "
+                        "    manual_partner_opt_out=0 "
                         "WHERE twitch_login=?",
                         (login,),
                     )
