@@ -143,8 +143,13 @@ class TwitchDashboardMixin:
         *,
         hour_from: Optional[int] = None,
         hour_to: Optional[int] = None,
+        streamer: Optional[str] = None,
     ) -> dict:
-        stats = await self._compute_stats(hour_from=hour_from, hour_to=hour_to)
+        stats = await self._compute_stats(
+            hour_from=hour_from,
+            hour_to=hour_to,
+            streamer=streamer,
+        )
         tracked_top = stats.get("tracked", {}).get("top", []) or []
         category_top = stats.get("category", {}).get("top", []) or []
 

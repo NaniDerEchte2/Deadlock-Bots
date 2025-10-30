@@ -445,6 +445,7 @@ class TwitchLeaderboardMixin:
         *,
         hour_from: Optional[int] = None,
         hour_to: Optional[int] = None,
+        streamer: Optional[str] = None,
     ) -> Dict[str, Any]:
         out: Dict[str, Any] = {"tracked": {}, "category": {}}
 
@@ -564,7 +565,7 @@ class TwitchLeaderboardMixin:
                 )
                 hour_params = [start_hour, end_hour]
 
-        def _aggregate(sql: str, params: Sequence[int]) -> List[dict]:
+        def _aggregate(sql: str, params: Sequence[object]) -> List[dict]:
             try:
                 with storage.get_conn() as c:
                     rows = c.execute(sql, tuple(params)).fetchall()
@@ -703,6 +704,115 @@ class TwitchLeaderboardMixin:
         out["category"]["hourly"] = _aggregate(category_hourly_sql, hour_params)
         out["tracked"]["weekday"] = _aggregate(tracked_weekday_sql, hour_params)
         out["category"]["weekday"] = _aggregate(category_weekday_sql, hour_params)
+
+        if streamer is not None:
+            normalized_login = self._normalize_login(streamer)
+            if not normalized_login:
+                normalized_login = (streamer or "").strip().lower()
+            normalized_login = normalized_login.strip()
+
+            user_entry: Dict[str, Any] = {
+                "login": normalized_login,
+                "display_login": normalized_login,
+                "summary": {},
+                "hourly": [],
+                "weekday": [],
+                "source": None,
+                "had_results": False,
+                "is_tracked": normalized_login in tracked_logins if normalized_login else False,
+                "discord_user_id": None,
+                "discord_display_name": None,
+                "is_on_discord": 0,
+            }
+
+            if normalized_login:
+                discord_info = discord_lookup.get(normalized_login, {})
+                discord_user_id = discord_info.get("discord_user_id")
+                discord_display_name = discord_info.get("discord_display_name")
+                has_profile = bool(
+                    (discord_user_id and str(discord_user_id).strip())
+                    or (discord_display_name and str(discord_display_name).strip())
+                )
+                default_member = normalized_login in verified_logins
+                is_member = default_member or bool(discord_info.get("is_on_discord")) or has_profile
+                user_entry["discord_user_id"] = discord_user_id
+                user_entry["discord_display_name"] = discord_display_name
+                user_entry["is_on_discord"] = 1 if is_member else 0
+
+                sources = (
+                    ("tracked", "twitch_stats_tracked"),
+                    ("category", "twitch_stats_category"),
+                )
+                user_payload: Optional[Dict[str, Any]] = None
+                for source_key, table_name in sources:
+                    summary_sql = (
+                        """
+        SELECT streamer,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples,
+               MAX(is_partner)   AS is_partner
+          FROM {table}
+         WHERE ts_utc >= datetime('now', '-30 days')
+           AND streamer = ?
+        {hour_clause}
+         GROUP BY streamer
+                        """
+                    ).format(table=table_name, hour_clause=hour_clause)
+                    params = [normalized_login, *hour_params]
+                    summary_rows = _aggregate(summary_sql, params)
+                    if not summary_rows:
+                        continue
+                    summary_row = dict(summary_rows[0])
+                    samples = int(summary_row.get("samples") or 0)
+                    if samples <= 0:
+                        continue
+                    hourly_sql = (
+                        """
+        SELECT CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM {table}
+         WHERE ts_utc >= datetime('now', '-30 days')
+           AND streamer = ?
+        {hour_clause}
+         GROUP BY hour
+         ORDER BY hour
+                        """
+                    ).format(table=table_name, hour_clause=hour_clause)
+                    weekday_sql = (
+                        """
+        SELECT CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM {table}
+         WHERE ts_utc >= datetime('now', '-30 days')
+           AND streamer = ?
+        {hour_clause}
+         GROUP BY weekday
+         ORDER BY weekday
+                        """
+                    ).format(table=table_name, hour_clause=hour_clause)
+                    user_payload = {
+                        "summary": summary_row,
+                        "hourly": _aggregate(hourly_sql, params),
+                        "weekday": _aggregate(weekday_sql, params),
+                        "source": source_key,
+                    }
+                    break
+
+                if user_payload:
+                    summary = user_payload["summary"]
+                    user_entry["summary"] = summary
+                    user_entry["hourly"] = user_payload["hourly"]
+                    user_entry["weekday"] = user_payload["weekday"]
+                    user_entry["source"] = user_payload["source"]
+                    user_entry["display_login"] = str(summary.get("streamer") or normalized_login)
+                    user_entry["had_results"] = True
+            out["streamer"] = user_entry
+
         return out
 
     @staticmethod
