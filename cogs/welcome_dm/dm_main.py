@@ -2,23 +2,48 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+
 import discord
 from discord.ext import commands
 
-from .base import (
-    build_step_embed,
-    logger,
-    STATUS_NEED_BETA,
-    STATUS_NEW_PLAYER,
-    STATUS_PLAYING,
-    STATUS_RETURNING,
-)
+from . import base as base_module
 from .step_intro import IntroView
     # Intro info/weiter Button (nicht persistent registrieren)
 from .step_status import PlayerStatusView
 from .step_steam_link import SteamLinkStepView, steam_link_dm_description
 from .step_rules import RulesView
 from .step_streamer import StreamerIntroView  # Optionaler Schritt
+
+
+def _fallback_build_step_embed(title, desc, step, total, color=0x5865F2):
+    footer = "Einführung • Deadlock DACH" if step is None else f"Frage {step} von {total} • Deadlock DACH"
+    emb = discord.Embed(title=title, description=desc, color=color)
+    emb.set_footer(text=footer)
+    return emb
+
+
+build_step_embed = getattr(base_module, "build_step_embed", _fallback_build_step_embed)
+logger = getattr(base_module, "logger", logging.getLogger(__name__))
+
+STATUS_NEED_BETA = getattr(base_module, "STATUS_NEED_BETA", "need_beta")
+STATUS_NEW_PLAYER = getattr(base_module, "STATUS_NEW_PLAYER", "new_player")
+STATUS_PLAYING = getattr(base_module, "STATUS_PLAYING", "already_playing")
+STATUS_RETURNING = getattr(base_module, "STATUS_RETURNING", "returning")
+
+DEFAULT_BETA_INVITE_CHANNEL_URL = "https://discord.com/channels/1289721245281292288/1428745737323155679"
+DEFAULT_BETA_INVITE_SUPPORT_CONTACT = "@earlysalty"
+
+BETA_INVITE_CHANNEL_URL = getattr(
+    base_module,
+    "BETA_INVITE_CHANNEL_URL",
+    DEFAULT_BETA_INVITE_CHANNEL_URL,
+)
+BETA_INVITE_SUPPORT_CONTACT = getattr(
+    base_module,
+    "BETA_INVITE_SUPPORT_CONTACT",
+    DEFAULT_BETA_INVITE_SUPPORT_CONTACT,
+)
 
 REQUIRED_WELCOME_ROLE_ID = 1304216250649415771
 
@@ -114,6 +139,14 @@ class WelcomeDM(commands.Cog):
                 logger.debug("_send_step_embed_channel: Nachricht konnte nicht gelöscht werden: %s", exc)
         return bool(getattr(view, "proceed", False))
 
+    @staticmethod
+    def _beta_invite_message() -> str:
+        return (
+            "🎟️ **Beta-Invite benötigt?**\n"
+            f"Schau in <{BETA_INVITE_CHANNEL_URL}> vorbei – dort bekommst du einen Beta-Invite mit `/betainvite`.\n"
+            f"Sollten Probleme auftreten, ping bitte {BETA_INVITE_SUPPORT_CONTACT}."
+        )
+
     # ---------------- Öffentliche Flows ----------------
 
     async def send_welcome_messages(self, member: discord.Member) -> bool:
@@ -157,6 +190,15 @@ class WelcomeDM(commands.Cog):
                 ):
                     return False
                 status_choice = status_view.choice or STATUS_PLAYING
+
+                if status_choice == STATUS_NEED_BETA:
+                    try:
+                        await member.send(self._beta_invite_message())
+                    except discord.Forbidden as e:
+                        logger.warning(f"Beta-Invite DM an {member} ({member.id}) nicht möglich: {e}")
+                    except Exception:
+                        logger.exception("Beta-Invite DM konnte nicht gesendet werden")
+                    return True
 
                 # 2/3 Steam
                 q2_desc = steam_link_dm_description()
@@ -211,13 +253,7 @@ class WelcomeDM(commands.Cog):
                         "Für eine kurze Einführung schreib **@earlysalty** oder poste in **#allgemein**."
                     )
                 if status_choice == STATUS_NEED_BETA:
-                    closing_lines.append(
-                        "🎟️ **Beta-Invite benötigt?** Schau hier vorbei:\n"
-                        "https://discord.com/channels/1289721245281292288/1410754840706945034\n"
-                        "Nutze dort den Befehl **/betainvite** und folge den Buttons (Schnell-Link oder Discord-Login). "
-                        "Zum Akzeptieren: <https://store.steampowered.com/account/playtestinvites> "
-                        "— das kann ein paar Stunden dauern."
-                    )
+                    closing_lines.append(self._beta_invite_message())
                 if status_choice == STATUS_RETURNING:
                     closing_lines.append("🔁 **Willkommen zurück!** Schau für Runden in LFG/Voice vorbei – viel Spaß!")
                 if status_choice == STATUS_PLAYING:
@@ -276,6 +312,13 @@ class WelcomeDM(commands.Cog):
                 return False
             status_choice = status_view.choice or STATUS_PLAYING
 
+            if status_choice == STATUS_NEED_BETA:
+                try:
+                    await channel.send(self._beta_invite_message())
+                except Exception as exc:
+                    logger.debug("Beta-Invite Hinweis im Channel konnte nicht gesendet werden: %s", exc)
+                return True
+
             # 2/3 Steam
             q2_desc = steam_link_dm_description()
             ok = await self._send_step_embed_channel(
@@ -331,12 +374,7 @@ class WelcomeDM(commands.Cog):
                     "Kleine Einführung? Ping **@earlysalty** oder schreibe in **#allgemein**."
                 )
             if status_choice == STATUS_NEED_BETA:
-                closing_lines.append(
-                    "🎟️ **Beta-Invite benötigt?** → "
-                    "https://discord.com/channels/1289721245281292288/1410754840706945034\n"
-                    "Nutze dort den Befehl **/betainvite** und folge den Buttons (Schnell-Link oder Discord-Login). "
-                    "Einlösen: <https://store.steampowered.com/account/playtestinvites>."
-                )
+                closing_lines.append(self._beta_invite_message())
             if status_choice == STATUS_RETURNING:
                 closing_lines.append("🔁 **Willkommen zurück!** Schau für Runden in LFG/Voice vorbei – viel Spaß!")
             if status_choice == STATUS_PLAYING:
