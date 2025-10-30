@@ -266,7 +266,11 @@ class TwitchDashboardMixin:
                     "WHERE twitch_login=?",
                     (login,),
                 )
-            return f"Verifizierung für {login} zurückgesetzt"
+
+            # "Kein Partner" ist eine rein interne Markierung – es sollen hierbei keine DMs
+            # ausgelöst werden. Wir geben daher eine entsprechend klare Rückmeldung aus,
+            # damit Dashboard-Nutzer:innen wissen, dass keine Nachricht verschickt wurde.
+            return f"Verifizierung für {login} zurückgesetzt (keine DM versendet)"
 
         if mode == "failed":
             row_data = None
