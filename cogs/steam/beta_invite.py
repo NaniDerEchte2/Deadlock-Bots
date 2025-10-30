@@ -380,7 +380,7 @@ class BetaInviteFlow(commands.Cog):
             view = self._build_link_prompt_view(interaction.user)
             prompt = (
                 "ℹ️ Es ist noch kein Steam-Account mit deinem Discord verknüpft.\n"
-                "Melde dich über „Via Discord bei Steam anmelden“ oder „Direkt bei Steam anmelden“"
+                "Melde dich mit den unten verfügbaren Optionen bei Steam an, und nachdem du dies getan hast führe /betainvite erneut aus."
             )
             if SCHNELL_LINK_AVAILABLE:
                 prompt += " oder nutze den Schnell-Link"
