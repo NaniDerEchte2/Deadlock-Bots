@@ -7,6 +7,8 @@ from discord.ext import commands
 
 from . import base as base_module
 from .base import (
+    BETA_INVITE_CHANNEL_URL,
+    BETA_INVITE_SUPPORT_CONTACT,
     build_step_embed,
     logger,
     STATUS_NEED_BETA,
