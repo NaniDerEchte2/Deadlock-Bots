@@ -459,4 +459,14 @@ class BetaInviteFlow(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(BetaInviteFlow(bot))
+    beta_invite_cog = BetaInviteFlow(bot)
+    await bot.add_cog(beta_invite_cog)
+
+    try:
+        bot.tree.add_command(beta_invite_cog.betainvite)
+    except app_commands.CommandAlreadyRegistered:
+        bot.tree.remove_command(
+            beta_invite_cog.betainvite.name,
+            type=discord.AppCommandType.chat_input,
+        )
+        bot.tree.add_command(beta_invite_cog.betainvite)
