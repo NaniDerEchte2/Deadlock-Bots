@@ -89,12 +89,34 @@ class DashboardTemplateMixin:
   .filter-row {{ align-items:flex-end; gap:1rem; flex-wrap:wrap; }}
   .filter-row .filter-label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
   .filter-row select {{ background:#0f1422; border:1px solid var(--bd); color:var(--text); padding:.4rem .6rem; border-radius:.4rem; min-width:12rem; }}
-  .discord-link-card {{ margin-top:1rem; }}
-  .discord-link-card h2 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-2); }}
-  .discord-link-card form .row {{ align-items:flex-end; gap:.8rem; flex-wrap:wrap; }}
-  .discord-link-card label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
-  .discord-link-card input[type="text"] {{ min-width:14rem; }}
-  .discord-link-card .hint {{ margin-top:.6rem; font-size:.8rem; color:var(--muted); }}
+  .add-streamer-card {{ margin-top:1rem; }}
+  .add-streamer-card h2 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-2); }}
+  .add-streamer-card form {{ display:flex; flex-direction:column; gap:.8rem; }}
+  .add-streamer-card .form-grid {{ display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-end; }}
+  .add-streamer-card label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
+  .add-streamer-card input[type="text"] {{ min-width:14rem; }}
+  .add-streamer-card .form-actions {{ display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }}
+  .add-streamer-card .hint {{ margin-top:.2rem; font-size:.8rem; color:var(--muted); max-width:38rem; }}
+  .non-partner-card {{ margin-top:1.8rem; padding:1.2rem; background:linear-gradient(145deg, rgba(36,41,68,.7), rgba(16,24,46,.9)); border-radius:.9rem; border:1px solid rgba(109,74,255,.35); box-shadow:0 12px 24px rgba(12,16,32,.45); }}
+  .non-partner-card h2 {{ margin:0 0 .4rem 0; font-size:1.1rem; color:#fff; letter-spacing:.01em; }}
+  .non-partner-card p {{ margin:0 0 1rem 0; font-size:.85rem; color:var(--accent-2); opacity:.85; }}
+  .non-partner-list {{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.9rem; }}
+  .non-partner-item {{ display:flex; flex-direction:column; gap:.6rem; padding:.9rem 1rem; background:rgba(10,14,32,.85); border:1px solid rgba(155,176,255,.2); border-radius:.7rem; position:relative; overflow:hidden; }}
+  .non-partner-item::before {{ content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; border:1px solid rgba(109,74,255,.25); opacity:0; transition:opacity .2s ease; }}
+  .non-partner-item:hover::before {{ opacity:1; }}
+  .non-partner-header {{ display:flex; justify-content:space-between; align-items:center; gap:.6rem; flex-wrap:wrap; }}
+  .non-partner-header strong {{ font-size:1rem; color:#fff; letter-spacing:.01em; }}
+  .non-partner-badges {{ display:flex; gap:.4rem; flex-wrap:wrap; }}
+  .non-partner-meta {{ display:flex; flex-direction:column; gap:.25rem; font-size:.8rem; color:var(--muted); padding-left:.2rem; }}
+  .non-partner-meta span {{ display:flex; align-items:center; gap:.45rem; flex-wrap:wrap; }}
+  .non-partner-meta .meta-label {{ color:var(--accent-2); font-weight:600; min-width:5.4rem; text-transform:uppercase; letter-spacing:.06em; font-size:.7rem; }}
+  .non-partner-warning {{ color:var(--err-fg); font-weight:600; font-size:.75rem; }}
+  .non-partner-manage {{ background:#0f1422; border:1px solid rgba(109,74,255,.25); border-radius:.6rem; padding:.6rem; }}
+  .non-partner-manage > summary {{ cursor:pointer; font-size:.8rem; color:var(--accent-2); font-weight:600; list-style:none; }}
+  .non-partner-manage[open] > summary {{ color:#fff; }}
+  .non-partner-manage .manage-body {{ margin-top:.5rem; display:flex; flex-direction:column; gap:.6rem; }}
+  .non-partner-actions {{ display:flex; flex-wrap:wrap; gap:.4rem; }}
+  .non-partner-note {{ font-size:.75rem; color:var(--muted); }}
   .chart-panel {{ background:#10162a; border:1px solid var(--bd); border-radius:.7rem; padding:1rem; margin-top:1rem; }}
   .chart-panel h3 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-2); }}
   .chart-panel canvas {{ width:100%; height:320px; max-height:360px; }}
@@ -155,10 +177,14 @@ class DashboardTemplateMixin:
   details.advanced-details {{ margin-top:.4rem; width:100%; }}
   details.advanced-details > summary {{ cursor:pointer; font-size:.85rem; color:var(--accent-2); }}
   details.advanced-details[open] > summary {{ color:#fff; }}
-  .advanced-content {{ margin-top:.6rem; display:flex; flex-direction:column; gap:.6rem; background:#10162a; padding:.6rem; border:1px solid var(--bd); border-radius:.5rem; }}
+  .advanced-content {{ margin-top:.6rem; display:flex; flex-direction:column; gap:.7rem; background:#10162a; padding:.6rem .7rem; border:1px solid var(--bd); border-radius:.5rem; }}
   .advanced-content .form-row {{ display:flex; flex-wrap:wrap; gap:.8rem; align-items:flex-end; }}
   .advanced-content label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
   .advanced-content input[type="text"] {{ background:#0f1422; border:1px solid var(--bd); color:var(--text); padding:.4rem .6rem; border-radius:.4rem; min-width:14rem; }}
+  .discord-preview {{ display:flex; flex-direction:column; gap:.35rem; padding:.5rem .6rem; background:#0f1422; border:1px solid var(--bd); border-radius:.4rem; font-size:.8rem; color:var(--muted); }}
+  .discord-preview-row {{ display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }}
+  .discord-preview-row .preview-label {{ color:var(--accent-2); font-weight:600; min-width:4.5rem; }}
+  .discord-preview-row .preview-empty {{ color:var(--muted); font-style:italic; }}
   .checkbox-label {{ display:flex; align-items:center; gap:.4rem; font-size:.85rem; color:var(--muted); }}
   .checkbox-label input[type="checkbox"] {{ width:1rem; height:1rem; }}
   .advanced-content .hint {{ font-size:.75rem; color:var(--muted); }}
