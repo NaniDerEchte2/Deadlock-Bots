@@ -271,7 +271,7 @@ class _OptionsView(discord.ui.View):
         if discord_url:
             self.add_item(
                 discord.ui.Button(
-                    label="Via Discord bei Steam anmelden",
+                    label="Via Discord verknüpfen",
                     style=discord.ButtonStyle.link,
                     url=discord_url,
                     emoji="🔗",
@@ -281,7 +281,7 @@ class _OptionsView(discord.ui.View):
         else:
             self.add_item(
                 discord.ui.Button(
-                    label="Via Discord bei Steam anmelden",
+                    label="ia Discord verknüpfen",
                     style=discord.ButtonStyle.secondary,
                     disabled=True,
                     emoji="🔗",
@@ -292,7 +292,7 @@ class _OptionsView(discord.ui.View):
         if steam_url:
             self.add_item(
                 discord.ui.Button(
-                    label="Direkt bei Steam anmelden",
+                    label="Mit Steam anmelden",
                     style=discord.ButtonStyle.link,
                     url=steam_url,
                     emoji="🎮",
@@ -302,7 +302,7 @@ class _OptionsView(discord.ui.View):
         else:
             self.add_item(
                 discord.ui.Button(
-                    label="Direkt bei Steam anmelden",
+                    label="Mit Steam anmelden",
                     style=discord.ButtonStyle.secondary,
                     disabled=True,
                     emoji="🎮",
