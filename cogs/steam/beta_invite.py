@@ -14,7 +14,18 @@ from service import db
 from cogs.steam import SCHNELL_LINK_AVAILABLE, SchnellLinkButton
 from cogs.steam.friend_requests import queue_friend_request
 from cogs.steam.steam_master import SteamTaskClient
-from cogs.welcome_dm.base import BETA_INVITE_CHANNEL_URL, BETA_INVITE_SUPPORT_CONTACT
+from cogs.welcome_dm import base as welcome_base
+
+BETA_INVITE_CHANNEL_URL = getattr(
+    welcome_base,
+    "BETA_INVITE_CHANNEL_URL",
+    "https://discord.com/channels/1289721245281292288/1428745737323155679",
+)
+BETA_INVITE_SUPPORT_CONTACT = getattr(
+    welcome_base,
+    "BETA_INVITE_SUPPORT_CONTACT",
+    "@earlysalty",
+)
 
 log = logging.getLogger(__name__)
 

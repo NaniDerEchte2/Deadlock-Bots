@@ -5,6 +5,7 @@ import asyncio
 import discord
 from discord.ext import commands
 
+from . import base as base_module
 from .base import (
     BETA_INVITE_CHANNEL_URL,
     BETA_INVITE_SUPPORT_CONTACT,
@@ -21,6 +22,20 @@ from .step_status import PlayerStatusView
 from .step_steam_link import SteamLinkStepView, steam_link_dm_description
 from .step_rules import RulesView
 from .step_streamer import StreamerIntroView  # Optionaler Schritt
+
+DEFAULT_BETA_INVITE_CHANNEL_URL = "https://discord.com/channels/1289721245281292288/1428745737323155679"
+DEFAULT_BETA_INVITE_SUPPORT_CONTACT = "@earlysalty"
+
+BETA_INVITE_CHANNEL_URL = getattr(
+    base_module,
+    "BETA_INVITE_CHANNEL_URL",
+    DEFAULT_BETA_INVITE_CHANNEL_URL,
+)
+BETA_INVITE_SUPPORT_CONTACT = getattr(
+    base_module,
+    "BETA_INVITE_SUPPORT_CONTACT",
+    DEFAULT_BETA_INVITE_SUPPORT_CONTACT,
+)
 
 REQUIRED_WELCOME_ROLE_ID = 1304216250649415771
 
