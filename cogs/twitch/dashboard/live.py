@@ -62,8 +62,6 @@ class DashboardLiveMixin:
             if discord_filter == "linked" and not has_discord_data:
                 continue
 
-            filtered_count += 1
-
             status_badge = "<span class='badge badge-neutral'>Nicht verifiziert</span>"
             status_text = "Nicht verifiziert"
             meta_parts: List[str] = []
@@ -116,20 +114,10 @@ class DashboardLiveMixin:
                 discord_icon = "❌"
                 discord_label = "Nicht verknüpft"
 
-            discord_meta_parts: List[str] = []
-            if discord_display_name:
-                discord_meta_parts.append(html.escape(discord_display_name))
-            if discord_user_id:
-                discord_meta_parts.append(f"ID: {html.escape(discord_user_id)}")
-
             discord_html_parts = [
                 "<div class='discord-status'>",
                 f"  <div class='discord-icon'>{discord_icon} {html.escape(discord_label)}</div>",
             ]
-            if discord_meta_parts:
-                discord_html_parts.append(
-                    f"  <div class='status-meta'>{' • '.join(discord_meta_parts)}</div>"
-                )
             if discord_warning:
                 discord_html_parts.append(
                     f"  <div class='discord-warning'>{html.escape(discord_warning)}</div>"
@@ -152,23 +140,54 @@ class DashboardLiveMixin:
             is_current_partner = bool(permanent)
             if not is_current_partner and until_dt:
                 is_current_partner = until_dt >= now
-            if (not is_current_partner) and has_discord_data:
+            should_list_as_non_partner = (not is_current_partner) and has_discord_data
+            if should_list_as_non_partner:
                 non_partner_entries.append(
                     {
                         "login": login,
                         "status": status_text,
+                        "status_badge": status_badge,
+                        "countdown": countdown_label,
                         "meta": list(meta_parts),
                         "discord_label": discord_label,
                         "discord_display_name": discord_display_name,
                         "discord_user_id": discord_user_id,
                         "warning": discord_warning,
+                        "is_on_discord": is_on_discord,
+                        "escaped_login": escaped_login,
+                        "escaped_user_id": escaped_user_id,
+                        "escaped_display": escaped_display,
+                        "member_checked": member_checked,
+                        "toggle_mode": toggle_mode,
+                        "toggle_label": toggle_label,
+                        "toggle_classes": toggle_classes,
                     }
                 )
+                continue
+
+            discord_preview_rows: List[str] = []
+            if discord_display_name:
+                discord_preview_rows.append(
+                    f"<span class='preview-label'>Name</span><span>{html.escape(discord_display_name)}</span>"
+                )
+            if discord_user_id:
+                discord_preview_rows.append(
+                    f"<span class='preview-label'>ID</span><span>{html.escape(discord_user_id)}</span>"
+                )
+            if not discord_preview_rows:
+                discord_preview_rows.append(
+                    "<span class='preview-empty'>Keine zusätzlichen Discord-Angaben hinterlegt.</span>"
+                )
+
+            discord_preview_html = "".join(
+                f"<div class='discord-preview-row'>{row}</div>" for row in discord_preview_rows
+            )
 
             advanced_html = (
                 "  <details class='advanced-details'>"
-                "    <summary>Erweitert</summary>"
+                "    <summary>Discord verwalten</summary>"
                 "    <div class='advanced-content'>"
+                f"      <div class='discord-preview'>{discord_preview_html}</div>"
                 "      <form method='post' action='/twitch/discord_link'>"
                 f"        <input type='hidden' name='login' value='{escaped_login}' />"
                 "        <div class='form-row'>"
@@ -214,12 +233,13 @@ class DashboardLiveMixin:
                 "      </form>"
                 "      <form method='post' action='/twitch/remove' class='inline'>"
                 f"        <input type='hidden' name='login' value='{escaped_login}'>"
-                "        <button class='btn btn-small btn-danger'>Remove</button>"
+                "        <button class='btn btn-small btn-danger'>Streamer entfernen</button>"
                 "      </form>"
                 "    </div>"
                 "  </td>"
                 "</tr>"
             )
+            filtered_count += 1
 
         if not rows:
             rows.append("<tr><td colspan=5><i>Keine Streamer gefunden.</i></td></tr>")
@@ -274,40 +294,121 @@ class DashboardLiveMixin:
         )
 
         if non_partner_entries:
-            non_partner_list_html = "".join(
-                (
+            non_partner_rows: List[str] = []
+            for entry in non_partner_entries:
+                countdown_badge = ""
+                countdown_label = entry.get("countdown") or ""
+                if countdown_label and countdown_label != "—":
+                    countdown_badge = (
+                        f"<span class='badge badge-neutral'>{html.escape(countdown_label)}</span>"
+                    )
+
+                discord_details: List[str] = []
+                if entry.get("discord_label"):
+                    discord_details.append(entry["discord_label"])
+                if entry.get("discord_display_name"):
+                    discord_details.append(entry["discord_display_name"])
+                if entry.get("discord_user_id"):
+                    discord_details.append(f"ID: {entry['discord_user_id']}")
+
+                discord_line = ""
+                if discord_details:
+                    discord_line = (
+                        "    <span><span class='meta-label'>Discord</span><span>"
+                        + " • ".join(html.escape(part) for part in discord_details)
+                        + "</span></span>"
+                    )
+
+                info_lines = "".join(
+                    f"    <span><span class='meta-label'>Info</span><span>{html.escape(meta)}</span></span>"
+                    for meta in entry.get("meta") or []
+                )
+
+                warning_line = ""
+                if entry.get("warning"):
+                    warning_line = (
+                        f"    <span class='non-partner-warning'>{html.escape(entry['warning'])}</span>"
+                    )
+
+                preview_rows: List[str] = []
+                if entry.get("discord_display_name"):
+                    preview_rows.append(
+                        f"<span class='preview-label'>Name</span><span>{html.escape(entry['discord_display_name'])}</span>"
+                    )
+                if entry.get("discord_user_id"):
+                    preview_rows.append(
+                        f"<span class='preview-label'>ID</span><span>{html.escape(entry['discord_user_id'])}</span>"
+                    )
+                if not preview_rows:
+                    preview_rows.append(
+                        "<span class='preview-empty'>Keine zusätzlichen Discord-Angaben hinterlegt.</span>"
+                    )
+                preview_html = "".join(
+                    f"<div class='discord-preview-row'>{row}</div>" for row in preview_rows
+                )
+
+                non_partner_rows.append(
                     "<li class='non-partner-item'>"
-                    f"  <strong>{html.escape(entry['login'])}</strong>"
-                    f"  <span class='non-partner-meta'>"
-                    f"    <span>Status: {html.escape(entry['status'])}</span>"
-                    + (
-                        f"    <span>Discord: {html.escape(entry['discord_label'])}</span>"
-                        if entry.get("discord_label")
-                        else ""
-                    )
-                    + (
-                        f"    <span>Name: {html.escape(entry['discord_display_name'])}</span>"
-                        if entry.get("discord_display_name")
-                        else ""
-                    )
-                    + (
-                        f"    <span>ID: {html.escape(entry['discord_user_id'])}</span>"
-                        if entry.get("discord_user_id")
-                        else ""
-                    )
-                    + "".join(
-                        f"    <span>{html.escape(meta)}</span>" for meta in entry.get("meta") or []
-                    )
-                    + (
-                        f"    <span>{html.escape(entry['warning'])}</span>"
-                        if entry.get("warning")
-                        else ""
-                    )
-                    + "  </span>"
+                    "  <div class='non-partner-header'>"
+                    f"    <strong>{html.escape(entry['login'])}</strong>"
+                    "    <div class='non-partner-badges'>"
+                    f"      {entry.get('status_badge', '')}"
+                    f"      {countdown_badge}"
+                    "    </div>"
+                    "  </div>"
+                    "  <div class='non-partner-meta'>"
+                    f"    <span><span class='meta-label'>Status</span><span>{html.escape(entry['status'])}</span></span>"
+                    f"{discord_line}"
+                    f"{info_lines}"
+                    f"{warning_line}"
+                    "  </div>"
+                    "  <details class='non-partner-manage'>"
+                    "    <summary>Verwaltung</summary>"
+                    "    <div class='manage-body'>"
+                    f"      <div class='discord-preview'>{preview_html}</div>"
+                    "      <form method='post' action='/twitch/verify' class='inline'>"
+                    f"        <input type='hidden' name='login' value='{entry['escaped_login']}'>"
+                    "        <select name='mode'>"
+                    "          <option value='permanent'>Permanent</option>"
+                    "          <option value='temp'>30 Tage</option>"
+                    "          <option value='failed'>Verifizierung fehlgeschlagen</option>"
+                    "          <option value='clear'>Kein Partner</option>"
+                    "        </select>"
+                    "        <button class='btn btn-small'>Anwenden</button>"
+                    "      </form>"
+                    "      <form method='post' action='/twitch/discord_link'>"
+                    f"        <input type='hidden' name='login' value='{entry['escaped_login']}' />"
+                    "        <div class='form-row'>"
+                    f"          <label>Discord User ID<input type='text' name='discord_user_id' value='{entry['escaped_user_id']}' placeholder='123456789012345678'></label>"
+                    f"          <label>Discord Anzeigename<input type='text' name='discord_display_name' value='{entry['escaped_display']}' placeholder='Discord-Name'></label>"
+                    "        </div>"
+                    "        <div class='checkbox-label'>"
+                    f"          <input type='checkbox' name='member_flag' value='1'{entry['member_checked']}>"
+                    "          <span>Als Discord-Mitglied markieren</span>"
+                    "        </div>"
+                    "        <div class='hint'>Speichern aktualisiert die Discord-Angaben.</div>"
+                    "        <div class='non-partner-actions'>"
+                    "          <button class='btn btn-small'>Speichern</button>"
+                    "          <a class='btn btn-small btn-secondary' href='/twitch?discord=linked'>Nur verknüpfte anzeigen</a>"
+                    "        </div>"
+                    "      </form>"
+                    "      <div class='non-partner-actions'>"
+                    "        <form method='post' action='/twitch/discord_flag' class='inline'>"
+                    f"          <input type='hidden' name='login' value='{entry['escaped_login']}'>"
+                    f"          <input type='hidden' name='mode' value='{entry['toggle_mode']}'>"
+                    f"          <button class='{entry['toggle_classes']}'>{html.escape(entry['toggle_label'])}</button>"
+                    "        </form>"
+                    "        <form method='post' action='/twitch/remove' class='inline'>"
+                    f"          <input type='hidden' name='login' value='{entry['escaped_login']}'>"
+                    "          <button class='btn btn-small btn-danger'>Streamer entfernen</button>"
+                    "        </form>"
+                    "      </div>"
+                    "      <p class='non-partner-note'>Aktionen verschieben den Streamer bei Bedarf zurück in die Hauptliste.</p>"
+                    "    </div>"
+                    "  </details>"
                     "</li>"
                 )
-                for entry in non_partner_entries
-            )
+            non_partner_list_html = "".join(non_partner_rows)
         else:
             non_partner_list_html = (
                 "<li class='non-partner-item'><span class='non-partner-meta'>Keine zusätzlichen Streamer ohne Partner-Status vorhanden.</span></li>"
@@ -316,7 +417,7 @@ class DashboardLiveMixin:
         non_partner_card_html = (
             "<div class='card non-partner-card'>"
             "  <h2>Keine Partner</h2>"
-            "  <p>Streamer, die wir tracken, aber die aktuell keinen Partner-Status besitzen.</p>"
+            "  <p>Streamer ohne aktuellen Partner-Status mit Discord-Verknüpfung – sie erscheinen nicht in der Hauptliste und können hier verwaltet werden.</p>"
             f"  <ul class='non-partner-list'>{non_partner_list_html}</ul>"
             "</div>"
         )
