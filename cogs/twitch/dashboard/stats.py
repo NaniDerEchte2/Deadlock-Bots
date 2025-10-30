@@ -661,6 +661,7 @@ class DashboardStatsMixin:
             hour_section = hour_tables_block
             weekday_section = weekday_tables_block
 
+        display_toggle_html = ""
         analysis_controls_html = ""
         if focus_mode in {"time", "weekday"}:
             analysis_controls_html = f"<div class='analysis-controls'>{display_toggle_html}</div>"
