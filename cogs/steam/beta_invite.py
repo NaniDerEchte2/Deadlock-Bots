@@ -383,10 +383,10 @@ class BetaInviteFlow(commands.Cog):
                 "Melde dich mit den unten verfügbaren Optionen bei Steam an, und nachdem du dies getan hast führe /betainvite erneut aus."
             )
             if SCHNELL_LINK_AVAILABLE:
-                prompt += " oder nutze den Schnell-Link"
+                prompt += ""
             else:
-                prompt += ". Der Schnell-Link ist derzeit nicht verfügbar"
-            prompt += " und versuche es danach erneut."
+                prompt += "Der Schnell-Link ist derzeit nicht verfügbar"
+            prompt += ""
 
             await interaction.followup.send(
                 prompt,
