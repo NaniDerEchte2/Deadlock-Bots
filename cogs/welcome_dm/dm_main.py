@@ -10,6 +10,7 @@ from discord.ext import commands
 from . import base as base_module
 from .step_intro import IntroView
     # Intro info/weiter Button (nicht persistent registrieren)
+from .step_master_overview import MasterBotIntroView, ServerTourView
 from .step_status import PlayerStatusView
 from .step_steam_link import SteamLinkStepView, steam_link_dm_description
 from .step_rules import RulesView
@@ -45,11 +46,8 @@ BETA_INVITE_SUPPORT_CONTACT = getattr(
     DEFAULT_BETA_INVITE_SUPPORT_CONTACT,
 )
 
-REQUIRED_WELCOME_ROLE_ID = 1304216250649415771
-
-
 class WelcomeDM(commands.Cog):
-    """Welcome-DM: Intro → Status → Steam → (optional Streamer) → Regeln.
+    """Welcome-Onboarding: Intro → Master-Bot → Server-Überblick → Status → Steam → (optional Streamer) → Regeln.
        WICHTIG: keine persistente Registrierung der Step-Views (enthalten Link-Buttons)."""
 
     def __init__(self, bot: commands.Bot):
@@ -150,7 +148,7 @@ class WelcomeDM(commands.Cog):
     # ---------------- Öffentliche Flows ----------------
 
     async def send_welcome_messages(self, member: discord.Member) -> bool:
-        """Kompletter DM-Flow (Intro zählt nicht als Step; danach 1/3-3/3)."""
+        """Kompletter DM-Flow (Intro zählt nicht als Step; danach 1/5-5/5)."""
         lock = self._get_lock(member.id)
         async with lock:
             try:
@@ -166,25 +164,69 @@ class WelcomeDM(commands.Cog):
                     "Ich halte es kurz und sorge dafür, dass du **genau die richtigen** "
                     "Channels & Features siehst."
                 )
+                total_steps = 5
                 if not await self._send_step_embed_dm(
                     member,
                     title="Willkommen 💙",
                     desc=intro_desc,
                     step=None,
-                    total=3,  # gezählte Steps: Status, Steam, Regeln
+                    total=total_steps,
                     view=IntroView(),
                     color=0x00AEEF,
                 ):
                     return False
 
-                # 1/3 Status
+                master_intro_desc = (
+                    "🤖 **Ich bin der Master Bot.**\n"
+                    "Ich kümmere mich um diesen Server und halte dir den Rücken frei."
+                    " Schön, dass du hier bist!\n\n"
+                    "Wenn du Fragen hast, probiere gern `/serverfaq` aus oder schreib dem "
+                    "Moderatorenteam – wir schauen immer nach dir."
+                )
+                if not await self._send_step_embed_dm(
+                    member,
+                    title="Schritt 1/5 · Lerne den Master Bot kennen",
+                    desc=master_intro_desc,
+                    step=1,
+                    total=total_steps,
+                    view=MasterBotIntroView(),
+                    color=0x5865F2,
+                ):
+                    return False
+
+                tour_desc = (
+                    "🧭 **Server-Rundgang**\n"
+                    "• **#ankündigungen** – Hier landen alle wichtigen News, damit du nichts verpasst.\n"
+                    "• **#live-auf-twitch** – Zeigt dir sofort, wer gerade aus unserer Community streamt.\n"
+                    "• **#clip-submission** – Teil deine Highlights und lass alle mitfiebern.\n"
+                    "• **#coaching** – Hol dir persönliches Coaching, um noch stärker zu werden.\n"
+                    "• **Die 3 Lanes** – So findest du deine perfekte Lobby:\n"
+                    "   • **Entspannte Lanes** – Gemütliche Sessions ohne Voraussetzungen.\n"
+                    "   • **Grind Lanes** – Fokussierte Matches mit Mindest-Rang und Tools zum Verwalten deiner Lobby.\n"
+                    "   • **Ranked Lanes** – Strikte +/-1-Rang-Lobbys für kompetitives Play.\n"
+                    "   Mit den Buttons im Panel kannst du deine Lane verwalten, einer Lobby beitreten oder eine neue starten.\n"
+                    "• **#rang-auswahl** – Wähle deinen aktuellen Rang aus, damit dich alle direkt einordnen können.\n\n"
+                    "Mach es dir gemütlich und hab ganz viel Spaß beim Entdecken! 💙"
+                )
+                if not await self._send_step_embed_dm(
+                    member,
+                    title="Schritt 2/5 · Dein Überblick",
+                    desc=tour_desc,
+                    step=2,
+                    total=total_steps,
+                    view=ServerTourView(),
+                    color=0x3498DB,
+                ):
+                    return False
+
+                # 3/5 Status
                 status_view = PlayerStatusView()
                 if not await self._send_step_embed_dm(
                     member,
-                    title="Frage 1/3 · Dein Status",
+                    title="Schritt 3/5 · Dein Status",
                     desc="Sag mir kurz, wo du stehst – dann passe ich alles besser für dich an.",
-                    step=1,
-                    total=3,
+                    step=3,
+                    total=total_steps,
                     view=status_view,
                     color=0x95A5A6,
                 ):
@@ -200,14 +242,14 @@ class WelcomeDM(commands.Cog):
                         logger.exception("Beta-Invite DM konnte nicht gesendet werden")
                     return True
 
-                # 2/3 Steam
+                # 4/5 Steam
                 q2_desc = steam_link_dm_description()
                 if not await self._send_step_embed_dm(
                     member,
-                    title="Frage 2/3 · Verknüpfe deinen Steam Account",
+                    title="Schritt 4/5 · Verknüpfe deinen Steam Account",
                     desc=q2_desc,
-                    step=2,
-                    total=3,
+                    step=4,
+                    total=total_steps,
                     view=SteamLinkStepView(),
                     color=0x5865F2,
                 ):
@@ -226,7 +268,7 @@ class WelcomeDM(commands.Cog):
                 except Exception:
                     logger.debug("StreamerIntro Schritt übersprungen (kein Modul/Fehler).", exc_info=True)
 
-                # 3/3 Regeln
+                # 5/5 Regeln
                 q3_desc = (
                     "📜 **Regelwerk – kurz & klar**\n"
                     "✔ Respektvoller Umgang, keine Beleidigungen/Hassrede\n"
@@ -236,10 +278,10 @@ class WelcomeDM(commands.Cog):
                 )
                 if not await self._send_step_embed_dm(
                     member,
-                    title="Frage 3/3 · Regeln bestätigen",
+                    title="Schritt 5/5 · Regeln bestätigen",
                     desc=q3_desc,
-                    step=3,
-                    total=3,
+                    step=5,
+                    total=total_steps,
                     view=RulesView(),
                     color=0xE67E22,
                 ):
@@ -278,33 +320,79 @@ class WelcomeDM(commands.Cog):
                 return False
 
     async def run_flow_in_channel(self, channel: discord.abc.Messageable, member: discord.Member) -> bool:
-        """Gleicher Flow im (privaten) Thread/Channel. Zählung 1/3–3/3; Intro ohne Zählung."""
+        """Gleicher Flow im (privaten) Thread/Channel. Zählung 1/5–5/5; Intro ohne Zählung."""
         try:
             # Intro (ohne Zählung)
             intro_desc = (
                 "👋 **Willkommen!** Ich helfe dir, dein Erlebnis hier optimal einzustellen. "
                 "Die nächsten 2–3 Minuten genügen."
             )
+            total_steps = 5
             ok = await self._send_step_embed_channel(
                 channel,
                 title="Willkommen 💙",
                 desc=intro_desc,
                 step=None,
-                total=3,
+                total=total_steps,
                 view=IntroView(),
                 color=0x00AEEF,
             )
             if not ok:
                 return False
 
-            # 1/3 Status
+            master_intro_desc = (
+                "🤖 **Ich bin der Master Bot.**\n"
+                "Ich halte hier alles am Laufen und freue mich, dich zu begleiten."
+                " Schön, dass du da bist!\n\n"
+                "Wenn etwas unklar ist, probiere `/serverfaq` oder schreib dem Moderatorenteam –"
+                " wir kümmern uns gern."
+            )
+            ok = await self._send_step_embed_channel(
+                channel,
+                title="Schritt 1/5 · Master Bot",
+                desc=master_intro_desc,
+                step=1,
+                total=total_steps,
+                view=MasterBotIntroView(),
+                color=0x5865F2,
+            )
+            if not ok:
+                return False
+
+            tour_desc = (
+                "🧭 **Server-Rundgang**\n"
+                "• **#ankündigungen** – Hier landen alle wichtigen News, damit du nichts verpasst.\n"
+                "• **#live-auf-twitch** – Zeigt dir sofort, wer gerade aus unserer Community streamt.\n"
+                "• **#clip-submission** – Teil deine Highlights und lass alle mitfiebern.\n"
+                "• **#coaching** – Hol dir persönliches Coaching, um noch stärker zu werden.\n"
+                "• **Die 3 Lanes** – So findest du deine perfekte Lobby:\n"
+                "   • **Entspannte Lanes** – Gemütliche Sessions ohne Voraussetzungen.\n"
+                "   • **Grind Lanes** – Fokussierte Matches mit Mindest-Rang und Tools zum Verwalten deiner Lobby.\n"
+                "   • **Ranked Lanes** – Strikte +/-1-Rang-Lobbys für kompetitives Play.\n"
+                "   Mit den Buttons im Panel kannst du deine Lane verwalten, einer Lobby beitreten oder eine neue starten.\n"
+                "• **#rang-auswahl** – Wähle deinen aktuellen Rang aus, damit dich alle direkt einordnen können.\n\n"
+                "Mach es dir gemütlich und hab ganz viel Spaß beim Entdecken! 💙"
+            )
+            ok = await self._send_step_embed_channel(
+                channel,
+                title="Schritt 2/5 · Dein Überblick",
+                desc=tour_desc,
+                step=2,
+                total=total_steps,
+                view=ServerTourView(),
+                color=0x3498DB,
+            )
+            if not ok:
+                return False
+
+            # 3/5 Status
             status_view = PlayerStatusView()
             ok = await self._send_step_embed_channel(
                 channel,
-                title="Frage 1/3 · Dein Status",
+                title="Schritt 3/5 · Dein Status",
                 desc="Sag kurz, wo du stehst – dann passen wir alles besser an.",
-                step=1,
-                total=3,
+                step=3,
+                total=total_steps,
                 view=status_view,
                 color=0x95A5A6,
             )
@@ -319,14 +407,14 @@ class WelcomeDM(commands.Cog):
                     logger.debug("Beta-Invite Hinweis im Channel konnte nicht gesendet werden: %s", exc)
                 return True
 
-            # 2/3 Steam
+            # 4/5 Steam
             q2_desc = steam_link_dm_description()
             ok = await self._send_step_embed_channel(
                 channel,
-                title="Frage 2/3 · Steam verknüpfen (skippbar)",
+                title="Schritt 4/5 · Steam verknüpfen (skippbar)",
                 desc=q2_desc,
-                step=2,
-                total=3,
+                step=4,
+                total=total_steps,
                 view=SteamLinkStepView(),
                 color=0x5865F2,
             )
@@ -346,7 +434,7 @@ class WelcomeDM(commands.Cog):
             except Exception:
                 logger.debug("StreamerIntro Schritt (Thread) übersprungen.", exc_info=True)
 
-            # 3/3 Regeln
+            # 5/5 Regeln
             q3_desc = (
                 "📜 **Regelwerk**\n"
                 "✔ Respektvoller Umgang, keine Beleidigungen/Hassrede\n"
@@ -356,10 +444,10 @@ class WelcomeDM(commands.Cog):
             )
             ok = await self._send_step_embed_channel(
                 channel,
-                title="Frage 3/3 · Regeln bestätigen",
+                title="Schritt 5/5 · Regeln bestätigen",
                 desc=q3_desc,
-                step=3,
-                total=3,
+                step=5,
+                total=total_steps,
                 view=RulesView(),
                 color=0xE67E22,
             )
@@ -394,48 +482,12 @@ class WelcomeDM(commands.Cog):
 
     # ---------------- Events & Commands ----------------
 
-    def _member_has_required_role(self, member: discord.Member) -> bool:
-        return discord.utils.get(member.roles, id=REQUIRED_WELCOME_ROLE_ID) is not None
-
-    async def _wait_for_required_role(
-        self,
-        member: discord.Member,
-        *,
-        poll_interval: float = 2.0,
-    ) -> discord.Member | None:
-        """Wartet, bis der Member die benötigte Rolle erhalten hat."""
-        current_member = member
-        while True:
-            if self._member_has_required_role(current_member):
-                return current_member
-
-            await asyncio.sleep(poll_interval)
-
-            try:
-                current_member = await member.guild.fetch_member(member.id)
-            except discord.NotFound:
-                logger.info(
-                    "WelcomeDM: Mitglied %s (%s) hat den Server verlassen, bevor die Rolle vergeben wurde.",
-                    member,
-                    member.id,
-                )
-                return None
-            except discord.HTTPException as exc:
-                logger.debug(
-                    "WelcomeDM: Fehler beim Aktualisieren des Members %s (%s): %s",
-                    member,
-                    member.id,
-                    exc,
-                )
-                continue
-
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        awaited_member = await self._wait_for_required_role(member)
-        if not awaited_member:
-            return
-
-        await self.send_welcome_messages(awaited_member)
+        logger.info(
+            "WelcomeDM: Automatische Willkommens-DMs sind deaktiviert. Onboarding läuft über den Regelkanal. (%s)",
+            member.id,
+        )
 
     @commands.command(name="tw")
     @commands.has_permissions(administrator=True)
