@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from datetime import datetime
+from typing import Any, Dict, Optional
 
 import discord
 from discord.ext import commands
 
+from service import db as service_db
+
 from . import base as base_module
-from .step_intro import IntroView
-    # Intro info/weiter Button (nicht persistent registrieren)
-from .step_master_overview import MasterBotIntroView, ServerTourView
+from .step_intro import IntroView  # Intro info/weiter Button (persistente Steuerung)
 from .step_status import PlayerStatusView
 from .step_steam_link import SteamLinkStepView, steam_link_dm_description
 from .step_rules import RulesView
@@ -68,10 +71,19 @@ async def _can_run_test_welcome(ctx: commands.Context) -> bool:
 
     return any(role.id in WELCOME_DM_TEST_ROLE_IDS for role in ctx.author.roles)
 
+PERSISTENCE_NAMESPACE = "welcome_dm:persistent_views"
+
+_VIEW_REGISTRY: Dict[str, Any] = {
+    "intro": IntroView,
+    "status": PlayerStatusView,
+    "steam": SteamLinkStepView,
+    "rules": RulesView,
+}
+
 
 class WelcomeDM(commands.Cog):
-    """Welcome-Onboarding: Intro → Master-Bot → Server-Überblick → Status → Steam → (optional Streamer) → Regeln.
-       WICHTIG: keine persistente Registrierung der Step-Views (enthalten Link-Buttons)."""
+    """Welcome-DM: Intro → Status → Steam → (optional Streamer) → Regeln.
+       Re-registriert laufende Views nach Neustarts automatisch."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -86,9 +98,146 @@ class WelcomeDM(commands.Cog):
             self._session_locks[user_id] = lock
         return lock
 
+    def _view_key_for(self, view: discord.ui.View) -> Optional[str]:
+        for key, cls in _VIEW_REGISTRY.items():
+            try:
+                if isinstance(view, cls):
+                    return key
+            except Exception:
+                continue
+        return None
+
+    def _bind_view_persistence(
+        self,
+        message: discord.Message,
+        view: discord.ui.View,
+        *,
+        target_user_id: Optional[int],
+    ) -> None:
+        key = self._view_key_for(view)
+        if key is None:
+            return
+
+        payload: Dict[str, Any] = {
+            "view": key,
+            "user_id": int(target_user_id) if target_user_id is not None else None,
+            "created_at": getattr(view, "created_at", datetime.now()).isoformat(),
+        }
+
+        if key == "steam":
+            payload["show_next"] = bool(getattr(view, "show_next", True))
+
+        try:
+            encoded = json.dumps(payload)
+        except Exception:
+            logger.exception("Konnte Persistenz-Payload für View %s nicht serialisieren", key)
+            return
+
+        try:
+            with service_db.get_conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO kv_store (ns, k, v) VALUES (?, ?, ?)",
+                    (PERSISTENCE_NAMESPACE, str(message.id), encoded),
+                )
+        except Exception:
+            logger.exception("Persistente View konnte nicht gespeichert werden (message_id=%s)", message.id)
+        else:
+            binder = getattr(view, "bind_persistence", None)
+            if callable(binder):
+                try:
+                    binder(self, message.id)
+                except Exception:
+                    logger.exception("Konnte Persistenz-Bindung für View %s nicht setzen", key)
+
+    def _unpersist_view(self, message_id: int) -> None:
+        try:
+            with service_db.get_conn() as conn:
+                conn.execute(
+                    "DELETE FROM kv_store WHERE ns = ? AND k = ?",
+                    (PERSISTENCE_NAMESPACE, str(message_id)),
+                )
+        except Exception:
+            logger.exception("Persistenz-Eintrag konnte nicht entfernt werden (message_id=%s)", message_id)
+
+    def _restore_persistent_views(self) -> None:
+        try:
+            with service_db.get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT k, v FROM kv_store WHERE ns = ?",
+                    (PERSISTENCE_NAMESPACE,),
+                ).fetchall()
+        except Exception:
+            logger.exception("Persistente Welcome-Views konnten nicht geladen werden")
+            return
+
+        restored = 0
+        for row in rows:
+            try:
+                message_id = int(row["k"] if isinstance(row, dict) else row[0])
+            except Exception:
+                continue
+            data_raw = row["v"] if isinstance(row, dict) else row[1]
+            try:
+                data = json.loads(data_raw)
+            except Exception:
+                logger.debug("Persistente View konnte nicht geparst werden (message_id=%s)", message_id, exc_info=True)
+                self._unpersist_view(message_id)
+                continue
+
+            key = data.get("view")
+            factory = _VIEW_REGISTRY.get(key)
+            if not factory:
+                logger.debug("Unbekannter View-Typ %s für message_id=%s", key, message_id)
+                self._unpersist_view(message_id)
+                continue
+
+            kwargs: Dict[str, Any] = {}
+            user_id = data.get("user_id")
+            if user_id is not None:
+                try:
+                    kwargs["allowed_user_id"] = int(user_id)
+                except Exception:
+                    logger.debug("Konnte user_id %r nicht verarbeiten (message_id=%s)", user_id, message_id)
+            created_at_raw = data.get("created_at")
+            if created_at_raw:
+                try:
+                    kwargs["created_at"] = datetime.fromisoformat(created_at_raw)
+                except Exception:
+                    logger.debug("Konnte created_at %r nicht parsen (message_id=%s)", created_at_raw, message_id)
+            if key == "steam" and "show_next" in data:
+                kwargs["show_next"] = bool(data.get("show_next", True))
+
+            try:
+                view = factory(**kwargs)
+            except Exception:
+                logger.exception("Konnte View %s nicht instanziieren (message_id=%s)", key, message_id)
+                self._unpersist_view(message_id)
+                continue
+
+            binder = getattr(view, "bind_persistence", None)
+            if callable(binder):
+                try:
+                    binder(self, message_id)
+                except Exception:
+                    logger.debug("Bindung für persistente View %s fehlgeschlagen (message_id=%s)", key, message_id, exc_info=True)
+
+            try:
+                self.bot.add_view(view, message_id=message_id)
+            except Exception:
+                logger.exception("Persistente View konnte nicht registriert werden (message_id=%s)", message_id)
+                self._unpersist_view(message_id)
+                continue
+
+            restored += 1
+
+        if restored:
+            logger.info("%s WelcomeDM-Views nach Neustart reaktiviert", restored)
+        else:
+            logger.debug("Keine WelcomeDM-Views zur Reaktivierung gefunden")
+
     async def cog_load(self):
-        # KEINE persistente Registrierung der Step-Views; nur Logging.
-        logger.info("WelcomeDM geladen (ohne persistente Step-Views).")
+        self._restore_persistent_views()
+        logger.info("WelcomeDM geladen (persistente Step-Views aktiv).")
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -124,9 +273,11 @@ class WelcomeDM(commands.Cog):
         msg = await member.send(embed=emb, view=view)
         if hasattr(view, "bound_message"):
             view.bound_message = msg
+        self._bind_view_persistence(msg, view, target_user_id=member.id)
         try:
             await view.wait()
         finally:
+            self._unpersist_view(msg.id)
             try:
                 await msg.delete()
             except discord.HTTPException as e:
@@ -151,9 +302,12 @@ class WelcomeDM(commands.Cog):
         msg = await channel.send(embed=emb, view=view)
         if hasattr(view, "bound_message"):
             view.bound_message = msg
+        allowed_user = getattr(view, "allowed_user_id", None)
+        self._bind_view_persistence(msg, view, target_user_id=allowed_user)
         try:
             await view.wait()
         finally:
+            self._unpersist_view(msg.id)
             try:
                 await msg.delete()
             except Exception as exc:
@@ -193,57 +347,14 @@ class WelcomeDM(commands.Cog):
                     title="Willkommen 💙",
                     desc=intro_desc,
                     step=None,
-                    total=total_steps,
-                    view=IntroView(),
+                    total=3,  # gezählte Steps: Status, Steam, Regeln
+                    view=IntroView(allowed_user_id=member.id),
                     color=0x00AEEF,
                 ):
                     return False
 
-                master_intro_desc = (
-                    "🤖 **Ich bin der Master Bot.**\n"
-                    "Ich kümmere mich um diesen Server und halte dir den Rücken frei."
-                    " Schön, dass du hier bist!\n\n"
-                    "Wenn du Fragen hast, probiere gern `/serverfaq` aus oder schreib dem "
-                    "Moderatorenteam – wir schauen immer nach dir."
-                )
-                if not await self._send_step_embed_dm(
-                    member,
-                    title="Schritt 1/5 · Lerne den Master Bot kennen",
-                    desc=master_intro_desc,
-                    step=1,
-                    total=total_steps,
-                    view=MasterBotIntroView(),
-                    color=0x5865F2,
-                ):
-                    return False
-
-                tour_desc = (
-                    "🧭 **Server-Rundgang**\n"
-                    "• **#ankündigungen** – Hier landen alle wichtigen News, damit du nichts verpasst.\n"
-                    "• **#live-auf-twitch** – Zeigt dir sofort, wer gerade aus unserer Community streamt.\n"
-                    "• **#clip-submission** – Teil deine Highlights und lass alle mitfiebern.\n"
-                    "• **#coaching** – Hol dir persönliches Coaching, um noch stärker zu werden.\n"
-                    "• **Die 3 Lanes** – So findest du deine perfekte Lobby:\n"
-                    "   • **Entspannte Lanes** – Gemütliche Sessions ohne Voraussetzungen.\n"
-                    "   • **Grind Lanes** – Fokussierte Matches mit Mindest-Rang und Tools zum Verwalten deiner Lobby.\n"
-                    "   • **Ranked Lanes** – Strikte +/-1-Rang-Lobbys für kompetitives Play.\n"
-                    "   Mit den Buttons im Panel kannst du deine Lane verwalten, einer Lobby beitreten oder eine neue starten.\n"
-                    "• **#rang-auswahl** – Wähle deinen aktuellen Rang aus, damit dich alle direkt einordnen können.\n\n"
-                    "Mach es dir gemütlich und hab ganz viel Spaß beim Entdecken! 💙"
-                )
-                if not await self._send_step_embed_dm(
-                    member,
-                    title="Schritt 2/5 · Dein Überblick",
-                    desc=tour_desc,
-                    step=2,
-                    total=total_steps,
-                    view=ServerTourView(),
-                    color=0x3498DB,
-                ):
-                    return False
-
-                # 3/5 Status
-                status_view = PlayerStatusView()
+                # 1/3 Status
+                status_view = PlayerStatusView(allowed_user_id=member.id)
                 if not await self._send_step_embed_dm(
                     member,
                     title="Schritt 3/5 · Dein Status",
@@ -271,9 +382,9 @@ class WelcomeDM(commands.Cog):
                     member,
                     title="Schritt 4/5 · Verknüpfe deinen Steam Account",
                     desc=q2_desc,
-                    step=4,
-                    total=total_steps,
-                    view=SteamLinkStepView(),
+                    step=2,
+                    total=3,
+                    view=SteamLinkStepView(allowed_user_id=member.id),
                     color=0x5865F2,
                 ):
                     return False
@@ -303,9 +414,9 @@ class WelcomeDM(commands.Cog):
                     member,
                     title="Schritt 5/5 · Regeln bestätigen",
                     desc=q3_desc,
-                    step=5,
-                    total=total_steps,
-                    view=RulesView(),
+                    step=3,
+                    total=3,
+                    view=RulesView(allowed_user_id=member.id),
                     color=0xE67E22,
                 ):
                     return False
@@ -356,60 +467,15 @@ class WelcomeDM(commands.Cog):
                 title="Willkommen 💙",
                 desc=intro_desc,
                 step=None,
-                total=total_steps,
-                view=IntroView(),
+                total=3,
+                view=IntroView(allowed_user_id=member.id),
                 color=0x00AEEF,
             )
             if not ok:
                 return False
 
-            master_intro_desc = (
-                "🤖 **Ich bin der Master Bot.**\n"
-                "Ich halte hier alles am Laufen und freue mich, dich zu begleiten."
-                " Schön, dass du da bist!\n\n"
-                "Wenn etwas unklar ist, probiere `/serverfaq` oder schreib dem Moderatorenteam –"
-                " wir kümmern uns gern."
-            )
-            ok = await self._send_step_embed_channel(
-                channel,
-                title="Schritt 1/5 · Master Bot",
-                desc=master_intro_desc,
-                step=1,
-                total=total_steps,
-                view=MasterBotIntroView(),
-                color=0x5865F2,
-            )
-            if not ok:
-                return False
-
-            tour_desc = (
-                "🧭 **Server-Rundgang**\n"
-                "• **#ankündigungen** – Hier landen alle wichtigen News, damit du nichts verpasst.\n"
-                "• **#live-auf-twitch** – Zeigt dir sofort, wer gerade aus unserer Community streamt.\n"
-                "• **#clip-submission** – Teil deine Highlights und lass alle mitfiebern.\n"
-                "• **#coaching** – Hol dir persönliches Coaching, um noch stärker zu werden.\n"
-                "• **Die 3 Lanes** – So findest du deine perfekte Lobby:\n"
-                "   • **Entspannte Lanes** – Gemütliche Sessions ohne Voraussetzungen.\n"
-                "   • **Grind Lanes** – Fokussierte Matches mit Mindest-Rang und Tools zum Verwalten deiner Lobby.\n"
-                "   • **Ranked Lanes** – Strikte +/-1-Rang-Lobbys für kompetitives Play.\n"
-                "   Mit den Buttons im Panel kannst du deine Lane verwalten, einer Lobby beitreten oder eine neue starten.\n"
-                "• **#rang-auswahl** – Wähle deinen aktuellen Rang aus, damit dich alle direkt einordnen können.\n\n"
-                "Mach es dir gemütlich und hab ganz viel Spaß beim Entdecken! 💙"
-            )
-            ok = await self._send_step_embed_channel(
-                channel,
-                title="Schritt 2/5 · Dein Überblick",
-                desc=tour_desc,
-                step=2,
-                total=total_steps,
-                view=ServerTourView(),
-                color=0x3498DB,
-            )
-            if not ok:
-                return False
-
-            # 3/5 Status
-            status_view = PlayerStatusView()
+            # 1/3 Status
+            status_view = PlayerStatusView(allowed_user_id=member.id)
             ok = await self._send_step_embed_channel(
                 channel,
                 title="Schritt 3/5 · Dein Status",
@@ -436,9 +502,9 @@ class WelcomeDM(commands.Cog):
                 channel,
                 title="Schritt 4/5 · Steam verknüpfen (skippbar)",
                 desc=q2_desc,
-                step=4,
-                total=total_steps,
-                view=SteamLinkStepView(),
+                step=2,
+                total=3,
+                view=SteamLinkStepView(allowed_user_id=member.id),
                 color=0x5865F2,
             )
             if not ok:
@@ -469,9 +535,9 @@ class WelcomeDM(commands.Cog):
                 channel,
                 title="Schritt 5/5 · Regeln bestätigen",
                 desc=q3_desc,
-                step=5,
-                total=total_steps,
-                view=RulesView(),
+                step=3,
+                total=3,
+                view=RulesView(allowed_user_id=member.id),
                 color=0xE67E22,
             )
             if not ok:

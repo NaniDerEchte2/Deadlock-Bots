@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime
 from textwrap import dedent
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
 import discord
 
 from cogs.steam import respond_with_schnelllink
+from .base import MIN_NEXT_SECONDS
 
 __all__ = [
     "SteamLinkStepView",
@@ -145,11 +147,16 @@ class SteamLinkStepView(discord.ui.View):
         on_next=None,                 # async def (interaction) -> None
         timeout: float | None = None, # persistent-fähig
         show_next: bool = True,
+        allowed_user_id: Optional[int] = None,
+        created_at: Optional[datetime] = None,
     ):
         super().__init__(timeout=timeout)
         self.on_next = on_next
         self.show_next = show_next
         self.proceed: bool = False
+        self.allowed_user_id: Optional[int] = allowed_user_id
+        self.created_at: datetime = created_at or datetime.now()
+        self._persistence_info: Optional[dict[str, Any]] = None
 
         if not _LINKS_ENABLED:
             for child in self.children:
@@ -251,6 +258,9 @@ class SteamLinkStepView(discord.ui.View):
         emoji="⏭️",
     )
     async def _next(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        if not await self._enforce_min_wait(interaction):
+            return
+        self._notify_persistence_finished()
         self.proceed = True
         self.stop()
         if callable(self.on_next):
@@ -259,6 +269,68 @@ class SteamLinkStepView(discord.ui.View):
                 return
             except Exception:
                 pass
+
+    def bind_persistence(self, manager: Any, message_id: int) -> None:
+        self._persistence_info = {"manager": manager, "message_id": message_id}
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if self.allowed_user_id is not None and interaction.user.id != self.allowed_user_id:
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "Nur der eingeladene Nutzer kann diesen Schritt abschließen.",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.followup.send(
+                        "Nur der eingeladene Nutzer kann diesen Schritt abschließen.",
+                        ephemeral=True,
+                    )
+            except Exception:
+                _LOGGER.debug(
+                    "SteamLinkStepView interaction rejected (user=%s)",
+                    getattr(interaction.user, "id", "?"),
+                    exc_info=True,
+                )
+            return False
+        return True
+
+    def _notify_persistence_finished(self) -> None:
+        info = self._persistence_info
+        if not info:
+            return
+        self._persistence_info = None
+        manager = info.get("manager")
+        message_id = info.get("message_id")
+        if manager is None or message_id is None:
+            return
+        try:
+            manager._unpersist_view(int(message_id))  # type: ignore[attr-defined]
+        except Exception:
+            _LOGGER.debug(
+                "SteamLinkStepView Persistenz-Abmeldung fehlgeschlagen (message_id=%s)",
+                message_id,
+                exc_info=True,
+            )
+
+    async def _enforce_min_wait(self, interaction: discord.Interaction) -> bool:
+        elapsed = (datetime.now() - self.created_at).total_seconds()
+        remain = int(MIN_NEXT_SECONDS - elapsed)
+        if remain <= 0:
+            return True
+        message = "⏳ Kurzer Moment… bitte noch kurz lesen. Du schaffst das. 💙"
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(message, ephemeral=True)
+            else:
+                await interaction.followup.send(message, ephemeral=True)
+        except Exception:
+            _LOGGER.debug(
+                "SteamLinkStepView Min-Wait Hinweis konnte nicht gesendet werden (user=%s)",
+                getattr(interaction.user, "id", "?"),
+                exc_info=True,
+            )
+        return False
 
 
 # --- Aliase für ältere Imports ---

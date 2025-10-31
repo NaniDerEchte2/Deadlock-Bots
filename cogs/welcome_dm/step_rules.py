@@ -1,11 +1,23 @@
 # cogs/welcome_dm/step_rules.py
-import discord
 import asyncio
+from datetime import datetime
+from typing import Optional
+
+import discord
 from contextlib import suppress  # ⬅️ neu
+
 from .base import StepView, ONBOARD_COMPLETE_ROLE_ID, THANK_YOU_DELETE_AFTER_SECONDS, logger
 
 class RulesView(StepView):
     """Frage 6: Regeln bestätigen + Rolle setzen"""
+
+    def __init__(
+        self,
+        *,
+        allowed_user_id: Optional[int] = None,
+        created_at: Optional[datetime] = None,
+    ):
+        super().__init__(allowed_user_id=allowed_user_id, created_at=created_at)
     @staticmethod
     async def _delete_later(msg: discord.Message, seconds: int):
         await asyncio.sleep(seconds)

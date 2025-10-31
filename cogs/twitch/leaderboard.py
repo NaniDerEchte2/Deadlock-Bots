@@ -156,7 +156,7 @@ class TwitchLeaderboardView(discord.ui.View):
         category_items: Sequence[dict],
         options: LeaderboardOptions,
     ):
-        super().__init__(timeout=180)
+        super().__init__(timeout=None)
         self._cog = cog
         self._ctx = ctx
         self._author_id = ctx.author.id
@@ -249,62 +249,107 @@ class TwitchLeaderboardView(discord.ui.View):
             except Exception as exc:
                 log.debug("Konnte Leaderboard-Timeout-Nachricht nicht aktualisieren: %s", exc)
 
-    @discord.ui.button(label="Sortierung", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(
+        label="Sortierung",
+        style=discord.ButtonStyle.primary,
+        row=0,
+        custom_id="twl:sort",
+    )
     async def sort_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         self._options.cycle_sort_key()
         await self.update(interaction)
 
-    @discord.ui.button(label="Reihenfolge", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(
+        label="Reihenfolge",
+        style=discord.ButtonStyle.secondary,
+        row=0,
+        custom_id="twl:order",
+    )
     async def order_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         self._options.toggle_sort_order()
         await self.update(interaction)
 
-    @discord.ui.button(label="Partner", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(
+        label="Partner",
+        style=discord.ButtonStyle.secondary,
+        row=0,
+        custom_id="twl:partner",
+    )
     async def partner_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         self._options.cycle_partner_filter()
         await self.update(interaction)
 
-    @discord.ui.button(label="Samples", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(
+        label="Samples",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+        custom_id="twl:samples",
+    )
     async def samples_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         self._options.cycle_min_samples()
         await self.update(interaction)
 
-    @discord.ui.button(label="Ø Viewer", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(
+        label="Ø Viewer",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+        custom_id="twl:avg",
+    )
     async def avg_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         self._options.cycle_min_avg()
         await self.update(interaction)
 
-    @discord.ui.button(label="Limit", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(
+        label="Limit",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+        custom_id="twl:limit",
+    )
     async def limit_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         self._options.cycle_limit()
         await self.update(interaction)
 
-    @discord.ui.button(label="Neu laden", style=discord.ButtonStyle.success, row=2)
+    @discord.ui.button(
+        label="Neu laden",
+        style=discord.ButtonStyle.success,
+        row=2,
+        custom_id="twl:refresh",
+    )
     async def refresh_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         await self.update(interaction, refresh_stats=True)
 
-    @discord.ui.button(label="Zurücksetzen", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(
+        label="Zurücksetzen",
+        style=discord.ButtonStyle.secondary,
+        row=2,
+        custom_id="twl:reset",
+    )
     async def reset_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         self._options.reset()
         await self.update(interaction)
 
-    @discord.ui.button(label="Schließen", style=discord.ButtonStyle.danger, row=2)
+    @discord.ui.button(
+        label="Schließen",
+        style=discord.ButtonStyle.danger,
+        row=2,
+        custom_id="twl:close",
+    )
     async def close_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
