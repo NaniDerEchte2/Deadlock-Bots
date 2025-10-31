@@ -8,7 +8,12 @@ logger = logging.getLogger(__name__)
 
 # ---------- IDs (prüfen/anpassen) ----------
 MAIN_GUILD_ID                   = 1289721245281292288  # Haupt-Guild (für Member/Rollen in DMs)
-ONBOARD_COMPLETE_ROLE_ID        = 1433634189651214527  # Rolle nach Regelbestätigung
+ONBOARD_COMPLETE_ROLE_ID        = 1304216250649415771  # Rolle nach Regelbestätigung
+# Rolle(n), die den Test-Welcome-Befehl ausführen dürfen (neben Server-Admins)
+WELCOME_DM_TEST_ROLE_IDS: tuple[int, ...] = (
+    1304169657124782100,  # Staff Team
+    1337518124647579661,  # Staff Leads
+)
 THANK_YOU_DELETE_AFTER_SECONDS  = 300  # 5 Minuten
 # -------------------------------------------
 
