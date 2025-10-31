@@ -1,15 +1,24 @@
 # cogs/welcome_dm/step_status.py
 import logging
-import discord
+from datetime import datetime
 from typing import Optional
+
+import discord
+
 from .base import StepView, STATUS_NEED_BETA, STATUS_PLAYING, STATUS_RETURNING, STATUS_NEW_PLAYER
 
 logger = logging.getLogger(__name__)
 
 class PlayerStatusView(StepView):
     """Frage 1: Status"""
-    def __init__(self):
-        super().__init__()
+
+    def __init__(
+        self,
+        *,
+        allowed_user_id: Optional[int] = None,
+        created_at: Optional[datetime] = None,
+    ):
+        super().__init__(allowed_user_id=allowed_user_id, created_at=created_at)
         self.choice: Optional[str] = None
         self._set_next_enabled(False)
 

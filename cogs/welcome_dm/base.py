@@ -2,7 +2,7 @@
 import discord
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +39,19 @@ def _is_thread(ch: Optional[discord.abc.Messageable]) -> bool:
 
 class StepView(discord.ui.View):
     """Basis-View mit Persistenz + Mindestwartezeit. Funktioniert in DM und Threads."""
-    def __init__(self):
+
+    def __init__(
+        self,
+        *,
+        allowed_user_id: Optional[int] = None,
+        created_at: Optional[datetime] = None,
+    ):
         super().__init__(timeout=None)
         self.proceed: bool = False
-        self.created_at: datetime = datetime.now()
+        self.created_at: datetime = created_at or datetime.now()
         self.bound_message: Optional[discord.Message] = None
+        self.allowed_user_id: Optional[int] = allowed_user_id
+        self._persistence_info: Optional[Dict[str, Any]] = None
 
     @staticmethod
     def _get_guild_and_member(inter: discord.Interaction) -> tuple[Optional[discord.Guild], Optional[discord.Member]]:
@@ -79,6 +87,7 @@ class StepView(discord.ui.View):
     def force_finish(self):
         self.proceed = True
         self.stop()
+        self._notify_persistence_finished()
 
     async def _finish(self, interaction: discord.Interaction):
         """Buttons deaktivieren; in DMs löschen wir die Nachricht, in Threads/Guild-Chats bleibt sie bestehen."""
@@ -102,3 +111,49 @@ class StepView(discord.ui.View):
                 logger.debug("Konnte Abschluss-Nachricht nicht löschen.", exc_info=True)
 
         self.force_finish()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if self.allowed_user_id is not None and interaction.user.id != self.allowed_user_id:
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "Nur der eingeladene Nutzer kann diesen Schritt abschließen.",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.followup.send(
+                        "Nur der eingeladene Nutzer kann diesen Schritt abschließen.",
+                        ephemeral=True,
+                    )
+            except Exception:
+                logger.debug(
+                    "Interaktion von fremdem Nutzer ignoriert (view=%s, user=%s)",
+                    self.__class__.__name__,
+                    getattr(interaction.user, "id", "?"),
+                    exc_info=True,
+                )
+            return False
+        return True
+
+    def bind_persistence(self, manager: Any, message_id: int) -> None:
+        """Merkt sich Persistenz-Metadaten, um beim Abschluss aufzuräumen."""
+        self._persistence_info = {"manager": manager, "message_id": message_id}
+
+    def _notify_persistence_finished(self) -> None:
+        info = self._persistence_info
+        if not info:
+            return
+        self._persistence_info = None
+        manager = info.get("manager")
+        message_id = info.get("message_id")
+        if manager is None or message_id is None:
+            return
+        try:
+            manager._unpersist_view(int(message_id))  # type: ignore[attr-defined]
+        except Exception:
+            logger.debug(
+                "Persistenz-Abmeldung für View %s fehlgeschlagen (message_id=%s)",
+                self.__class__.__name__,
+                message_id,
+                exc_info=True,
+            )

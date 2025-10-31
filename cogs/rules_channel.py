@@ -162,7 +162,7 @@ class RulesPanel(commands.Cog):
             desc="Ich helfe dir, dein Erlebnis hier optimal einzustellen. 2–3 Minuten genügen.",
             step=None, total=total, color=0x5865F2,
         )
-        ok = await _send_step(thread, emb, IntroView())
+        ok = await _send_step(thread, emb, IntroView(allowed_user_id=interaction.user.id))
         if not ok:
             return
 
@@ -172,7 +172,7 @@ class RulesPanel(commands.Cog):
             desc="Sag kurz, wo du stehst – dann passen wir alles besser an.",
             step=1, total=total, color=0x95A5A6,
         )
-        status = PlayerStatusView()
+        status = PlayerStatusView(allowed_user_id=interaction.user.id)
         ok = await _send_step(thread, emb, status)
         if not ok:
             return
@@ -185,7 +185,7 @@ class RulesPanel(commands.Cog):
             total=total,
             color=0x2ECC71,
         )
-        ok = await _send_step(thread, emb, SteamLinkStepView())
+        ok = await _send_step(thread, emb, SteamLinkStepView(allowed_user_id=interaction.user.id))
         if not ok:
             return
 
@@ -195,7 +195,7 @@ class RulesPanel(commands.Cog):
             desc="Kurz bestätigen, dass du die Regeln gelesen hast.",
             step=3, total=total, color=0xE67E22,
         )
-        await _send_step(thread, emb, RulesView())
+        await _send_step(thread, emb, RulesView(allowed_user_id=interaction.user.id))
 
 
 async def setup(bot: commands.Bot):
