@@ -46,6 +46,26 @@ BETA_INVITE_SUPPORT_CONTACT = getattr(
 )
 
 REQUIRED_WELCOME_ROLE_ID = 1304216250649415771
+WELCOME_DM_TEST_ROLE_IDS: tuple[int, ...] = tuple(
+    getattr(base_module, "WELCOME_DM_TEST_ROLE_IDS", ())
+)
+
+
+async def _can_run_test_welcome(ctx: commands.Context) -> bool:
+    if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+        return False
+
+    if await ctx.bot.is_owner(ctx.author):  # type: ignore[arg-type]
+        return True
+
+    perms = ctx.author.guild_permissions
+    if perms.administrator or perms.manage_guild or perms.manage_roles:
+        return True
+
+    if not WELCOME_DM_TEST_ROLE_IDS:
+        return False
+
+    return any(role.id in WELCOME_DM_TEST_ROLE_IDS for role in ctx.author.roles)
 
 
 class WelcomeDM(commands.Cog):
@@ -438,7 +458,8 @@ class WelcomeDM(commands.Cog):
         await self.send_welcome_messages(awaited_member)
 
     @commands.command(name="tw")
-    @commands.has_permissions(administrator=True)
+    @commands.guild_only()
+    @commands.check(_can_run_test_welcome)
     async def test_welcome(self, ctx: commands.Context, user: discord.Member = None):
         target = user
         if target is None:
@@ -460,6 +481,14 @@ class WelcomeDM(commands.Cog):
         await ctx.send(f"📤 Sende Welcome-DM an {target.mention} …")
         ok = await self.send_welcome_messages(target)
         await ctx.send("✅ Erfolgreich gesendet!" if ok else "⚠️ Senden fehlgeschlagen.")
+
+    @test_welcome.error
+    async def test_welcome_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, commands.CheckFailure):
+            await ctx.send(
+                "❌ Dir fehlen die benötigten Rechte für diesen Befehl. "
+                "Er erfordert Administrator, Serververwaltung, Rollenverwaltung oder eine freigeschaltete Rolle."
+            )
 
 
 async def setup(bot: commands.Bot):
