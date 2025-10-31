@@ -24,6 +24,7 @@ log = logging.getLogger("RulesPanel")
 # ========== Imports aus welcome_dm ==========
 from cogs.welcome_dm.base import build_step_embed
 from cogs.welcome_dm.step_intro import IntroView
+from cogs.welcome_dm.step_master_overview import MasterBotIntroView, ServerTourView
 from cogs.welcome_dm.step_status import PlayerStatusView
 from cogs.welcome_dm.step_steam_link import SteamLinkStepView, steam_link_detailed_description
 from cogs.welcome_dm.step_rules import RulesView
@@ -153,8 +154,8 @@ class RulesPanel(commands.Cog):
             except Exception as e:
                 log.warning("WelcomeDM.run_flow_in_channel failed, fallback local: %r", e)
 
-        # Fallback: denselben Flow lokal starten (Intro ungezählt; danach 1/3–3/3)
-        total = 3
+        # Fallback: denselben Flow lokal starten (Intro ungezählt; danach 1/5–5/5)
+        total = 5
 
         # Intro (ohne Zählung)
         emb = build_step_embed(
@@ -166,22 +167,65 @@ class RulesPanel(commands.Cog):
         if not ok:
             return
 
-        # 1/3 Status
+        # 1/5 Master Bot
         emb = build_step_embed(
-            title="Frage 1/3 · Wie ist dein Status?",
+            title="Schritt 1/5 · Master Bot",
+            desc=(
+                "🤖 **Ich bin der Master Bot.**\n"
+                "Ich halte hier alles am Laufen und freue mich, dich zu begleiten."
+                " Schön, dass du da bist!\n\n"
+                "Wenn etwas unklar ist, probiere `/serverfaq` oder schreib dem Moderatorenteam –"
+                " wir kümmern uns gern."
+            ),
+            step=1,
+            total=total,
+            color=0x5865F2,
+        )
+        ok = await _send_step(thread, emb, MasterBotIntroView())
+        if not ok:
+            return
+
+        # 2/5 Server Tour
+        emb = build_step_embed(
+            title="Schritt 2/5 · Dein Überblick",
+            desc=(
+                "🧭 **Server-Rundgang**\n"
+                "• **#ankündigungen** – Alle wichtigen News für dich auf einen Blick.\n"
+                "• **#live-auf-twitch** – Hier siehst du, wer aus der Community gerade streamt.\n"
+                "• **#clip-submission** – Teil deine Highlights und bring Stimmung rein.\n"
+                "• **#coaching** – Fordere Coaching an, damit du noch stärker zurückkommst.\n"
+                "• **Die 3 Lanes** – Dein Weg zur passenden Lobby:\n"
+                "   • **Entspannte Lanes** – Lockeres Gameplay ohne Voraussetzungen.\n"
+                "   • **Grind Lanes** – Strukturierte Matches mit Mindest-Rang und Tools zum Verwalten deiner Lobby.\n"
+                "   • **Ranked Lanes** – Strenge +/-1-Rang-Lobbys für den Wettkampfmodus.\n"
+                "   Nutze die Buttons im Panel, um deine Lane zu verwalten, einer Lobby beizutreten oder eine neue zu starten.\n"
+                "• **#rang-auswahl** – Wähle deinen aktuellen Rang aus, damit dich alle direkt einschätzen können.\n\n"
+                "Mach es dir gemütlich und hab ganz viel Spaß beim Entdecken! 💙"
+            ),
+            step=2,
+            total=total,
+            color=0x3498DB,
+        )
+        ok = await _send_step(thread, emb, ServerTourView())
+        if not ok:
+            return
+
+        # 3/5 Status
+        emb = build_step_embed(
+            title="Schritt 3/5 · Wie ist dein Status?",
             desc="Sag kurz, wo du stehst – dann passen wir alles besser an.",
-            step=1, total=total, color=0x95A5A6,
+            step=3, total=total, color=0x95A5A6,
         )
         status = PlayerStatusView(allowed_user_id=interaction.user.id)
         ok = await _send_step(thread, emb, status)
         if not ok:
             return
 
-        # 2/3 Steam
+        # 4/5 Steam
         emb = build_step_embed(
-            title="Frage 2/3 · Steam verknüpfen (empfohlen)",
+            title="Schritt 4/5 · Steam verknüpfen (empfohlen)",
             desc=steam_link_detailed_description(),
-            step=2,
+            step=4,
             total=total,
             color=0x2ECC71,
         )
@@ -189,11 +233,11 @@ class RulesPanel(commands.Cog):
         if not ok:
             return
 
-        # 3/3 Regeln
+        # 5/5 Regeln
         emb = build_step_embed(
-            title="Frage 3/3 · Regelwerk bestätigen",
+            title="Schritt 5/5 · Regelwerk bestätigen",
             desc="Kurz bestätigen, dass du die Regeln gelesen hast.",
-            step=3, total=total, color=0xE67E22,
+            step=5, total=total, color=0xE67E22,
         )
         await _send_step(thread, emb, RulesView(allowed_user_id=interaction.user.id))
 

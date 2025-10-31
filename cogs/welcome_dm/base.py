@@ -9,6 +9,11 @@ logger = logging.getLogger(__name__)
 # ---------- IDs (prüfen/anpassen) ----------
 MAIN_GUILD_ID                   = 1289721245281292288  # Haupt-Guild (für Member/Rollen in DMs)
 ONBOARD_COMPLETE_ROLE_ID        = 1304216250649415771  # Rolle nach Regelbestätigung
+# Rolle(n), die den Test-Welcome-Befehl ausführen dürfen (neben Server-Admins)
+WELCOME_DM_TEST_ROLE_IDS: tuple[int, ...] = (
+    1304169657124782100,  # Staff Team
+    1337518124647579661,  # Staff Leads
+)
 THANK_YOU_DELETE_AFTER_SECONDS  = 300  # 5 Minuten
 # -------------------------------------------
 
@@ -27,7 +32,11 @@ BETA_INVITE_SUPPORT_CONTACT = "@earlysalty"
 
 def build_step_embed(title: str, desc: str, step: Optional[int], total: int, color: int = 0x5865F2) -> discord.Embed:
     emb = discord.Embed(title=title, description=desc, color=color, timestamp=datetime.now())
-    footer = "Einführung • Deutsche Deadlock Community" if step is None else f"Frage {step} von {total} • Deutsche Deadlock Community"
+    footer = (
+        "Einführung • Deutsche Deadlock Community"
+        if step is None
+        else f"Schritt {step} von {total} • Deutsche Deadlock Community"
+    )
     emb.set_footer(text=footer)
     return emb
 

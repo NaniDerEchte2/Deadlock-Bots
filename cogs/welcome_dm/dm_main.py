@@ -50,6 +50,26 @@ BETA_INVITE_SUPPORT_CONTACT = getattr(
 )
 
 REQUIRED_WELCOME_ROLE_ID = 1304216250649415771
+WELCOME_DM_TEST_ROLE_IDS: tuple[int, ...] = tuple(
+    getattr(base_module, "WELCOME_DM_TEST_ROLE_IDS", ())
+)
+
+
+async def _can_run_test_welcome(ctx: commands.Context) -> bool:
+    if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+        return False
+
+    if await ctx.bot.is_owner(ctx.author):  # type: ignore[arg-type]
+        return True
+
+    perms = ctx.author.guild_permissions
+    if perms.administrator or perms.manage_guild or perms.manage_roles:
+        return True
+
+    if not WELCOME_DM_TEST_ROLE_IDS:
+        return False
+
+    return any(role.id in WELCOME_DM_TEST_ROLE_IDS for role in ctx.author.roles)
 
 PERSISTENCE_NAMESPACE = "welcome_dm:persistent_views"
 
@@ -305,7 +325,7 @@ class WelcomeDM(commands.Cog):
     # ---------------- Öffentliche Flows ----------------
 
     async def send_welcome_messages(self, member: discord.Member) -> bool:
-        """Kompletter DM-Flow (Intro zählt nicht als Step; danach 1/3-3/3)."""
+        """Kompletter DM-Flow (Intro zählt nicht als Step; danach 1/5-5/5)."""
         lock = self._get_lock(member.id)
         async with lock:
             try:
@@ -321,6 +341,7 @@ class WelcomeDM(commands.Cog):
                     "Ich halte es kurz und sorge dafür, dass du **genau die richtigen** "
                     "Channels & Features siehst."
                 )
+                total_steps = 5
                 if not await self._send_step_embed_dm(
                     member,
                     title="Willkommen 💙",
@@ -336,10 +357,10 @@ class WelcomeDM(commands.Cog):
                 status_view = PlayerStatusView(allowed_user_id=member.id)
                 if not await self._send_step_embed_dm(
                     member,
-                    title="Frage 1/3 · Dein Status",
+                    title="Schritt 3/5 · Dein Status",
                     desc="Sag mir kurz, wo du stehst – dann passe ich alles besser für dich an.",
-                    step=1,
-                    total=3,
+                    step=3,
+                    total=total_steps,
                     view=status_view,
                     color=0x95A5A6,
                 ):
@@ -355,11 +376,11 @@ class WelcomeDM(commands.Cog):
                         logger.exception("Beta-Invite DM konnte nicht gesendet werden")
                     return True
 
-                # 2/3 Steam
+                # 4/5 Steam
                 q2_desc = steam_link_dm_description()
                 if not await self._send_step_embed_dm(
                     member,
-                    title="Frage 2/3 · Verknüpfe deinen Steam Account",
+                    title="Schritt 4/5 · Verknüpfe deinen Steam Account",
                     desc=q2_desc,
                     step=2,
                     total=3,
@@ -381,7 +402,7 @@ class WelcomeDM(commands.Cog):
                 except Exception:
                     logger.debug("StreamerIntro Schritt übersprungen (kein Modul/Fehler).", exc_info=True)
 
-                # 3/3 Regeln
+                # 5/5 Regeln
                 q3_desc = (
                     "📜 **Regelwerk – kurz & klar**\n"
                     "✔ Respektvoller Umgang, keine Beleidigungen/Hassrede\n"
@@ -391,7 +412,7 @@ class WelcomeDM(commands.Cog):
                 )
                 if not await self._send_step_embed_dm(
                     member,
-                    title="Frage 3/3 · Regeln bestätigen",
+                    title="Schritt 5/5 · Regeln bestätigen",
                     desc=q3_desc,
                     step=3,
                     total=3,
@@ -433,13 +454,14 @@ class WelcomeDM(commands.Cog):
                 return False
 
     async def run_flow_in_channel(self, channel: discord.abc.Messageable, member: discord.Member) -> bool:
-        """Gleicher Flow im (privaten) Thread/Channel. Zählung 1/3–3/3; Intro ohne Zählung."""
+        """Gleicher Flow im (privaten) Thread/Channel. Zählung 1/5–5/5; Intro ohne Zählung."""
         try:
             # Intro (ohne Zählung)
             intro_desc = (
                 "👋 **Willkommen!** Ich helfe dir, dein Erlebnis hier optimal einzustellen. "
                 "Die nächsten 2–3 Minuten genügen."
             )
+            total_steps = 5
             ok = await self._send_step_embed_channel(
                 channel,
                 title="Willkommen 💙",
@@ -456,10 +478,10 @@ class WelcomeDM(commands.Cog):
             status_view = PlayerStatusView(allowed_user_id=member.id)
             ok = await self._send_step_embed_channel(
                 channel,
-                title="Frage 1/3 · Dein Status",
+                title="Schritt 3/5 · Dein Status",
                 desc="Sag kurz, wo du stehst – dann passen wir alles besser an.",
-                step=1,
-                total=3,
+                step=3,
+                total=total_steps,
                 view=status_view,
                 color=0x95A5A6,
             )
@@ -474,11 +496,11 @@ class WelcomeDM(commands.Cog):
                     logger.debug("Beta-Invite Hinweis im Channel konnte nicht gesendet werden: %s", exc)
                 return True
 
-            # 2/3 Steam
+            # 4/5 Steam
             q2_desc = steam_link_dm_description()
             ok = await self._send_step_embed_channel(
                 channel,
-                title="Frage 2/3 · Steam verknüpfen (skippbar)",
+                title="Schritt 4/5 · Steam verknüpfen (skippbar)",
                 desc=q2_desc,
                 step=2,
                 total=3,
@@ -501,7 +523,7 @@ class WelcomeDM(commands.Cog):
             except Exception:
                 logger.debug("StreamerIntro Schritt (Thread) übersprungen.", exc_info=True)
 
-            # 3/3 Regeln
+            # 5/5 Regeln
             q3_desc = (
                 "📜 **Regelwerk**\n"
                 "✔ Respektvoller Umgang, keine Beleidigungen/Hassrede\n"
@@ -511,7 +533,7 @@ class WelcomeDM(commands.Cog):
             )
             ok = await self._send_step_embed_channel(
                 channel,
-                title="Frage 3/3 · Regeln bestätigen",
+                title="Schritt 5/5 · Regeln bestätigen",
                 desc=q3_desc,
                 step=3,
                 total=3,
@@ -549,51 +571,16 @@ class WelcomeDM(commands.Cog):
 
     # ---------------- Events & Commands ----------------
 
-    def _member_has_required_role(self, member: discord.Member) -> bool:
-        return discord.utils.get(member.roles, id=REQUIRED_WELCOME_ROLE_ID) is not None
-
-    async def _wait_for_required_role(
-        self,
-        member: discord.Member,
-        *,
-        poll_interval: float = 2.0,
-    ) -> discord.Member | None:
-        """Wartet, bis der Member die benötigte Rolle erhalten hat."""
-        current_member = member
-        while True:
-            if self._member_has_required_role(current_member):
-                return current_member
-
-            await asyncio.sleep(poll_interval)
-
-            try:
-                current_member = await member.guild.fetch_member(member.id)
-            except discord.NotFound:
-                logger.info(
-                    "WelcomeDM: Mitglied %s (%s) hat den Server verlassen, bevor die Rolle vergeben wurde.",
-                    member,
-                    member.id,
-                )
-                return None
-            except discord.HTTPException as exc:
-                logger.debug(
-                    "WelcomeDM: Fehler beim Aktualisieren des Members %s (%s): %s",
-                    member,
-                    member.id,
-                    exc,
-                )
-                continue
-
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        awaited_member = await self._wait_for_required_role(member)
-        if not awaited_member:
-            return
-
-        await self.send_welcome_messages(awaited_member)
+        logger.info(
+            "WelcomeDM: Automatische Willkommens-DMs sind deaktiviert. Onboarding läuft über den Regelkanal. (%s)",
+            member.id,
+        )
 
     @commands.command(name="tw")
-    @commands.has_permissions(administrator=True)
+    @commands.guild_only()
+    @commands.check(_can_run_test_welcome)
     async def test_welcome(self, ctx: commands.Context, user: discord.Member = None):
         target = user
         if target is None:
@@ -615,6 +602,14 @@ class WelcomeDM(commands.Cog):
         await ctx.send(f"📤 Sende Welcome-DM an {target.mention} …")
         ok = await self.send_welcome_messages(target)
         await ctx.send("✅ Erfolgreich gesendet!" if ok else "⚠️ Senden fehlgeschlagen.")
+
+    @test_welcome.error
+    async def test_welcome_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, commands.CheckFailure):
+            await ctx.send(
+                "❌ Dir fehlen die benötigten Rechte für diesen Befehl. "
+                "Er erfordert Administrator, Serververwaltung, Rollenverwaltung oder eine freigeschaltete Rolle."
+            )
 
 
 async def setup(bot: commands.Bot):
