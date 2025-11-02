@@ -84,8 +84,30 @@ function writeToken(filePath, value) {
   } catch (err) { log('warn', 'Failed to persist token', { path: filePath, error: err.message }); }
 }
 
-function safeJsonStringify(value) { try { return JSON.stringify(value); } catch (err) { log('warn', 'Failed to stringify JSON', { error: err.message }); return null; } }
-function safeJsonParse(value) { if (!value) return {}; try { return JSON.parse(value); } catch (err) { throw new Error(`Invalid JSON payload: ${err.message}`); } }
+function safeJsonStringify(value) {
+  try { return JSON.stringify(value); }
+  catch (err) { log('warn', 'Failed to stringify JSON', { error: err.message }); return null; }
+}
+function safeJsonParse(value) {
+  if (!value) return {};
+  try { return JSON.parse(value); }
+  catch (err) { throw new Error(`Invalid JSON payload: ${err.message}`); }
+}
+function truncateError(message, limit = 1500) {
+  if (!message) return null;
+  const text = String(message);
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit - 3)}...`;
+}
+function wrapOk(result) {
+  if (result && typeof result === 'object' && Object.prototype.hasOwnProperty.call(result, 'ok')) {
+    return result;
+  }
+  if (result === undefined) {
+    return { ok: true };
+  }
+  return { ok: true, data: result };
+}
 
 const DATA_DIR = path.resolve(process.env.STEAM_PRESENCE_DATA_DIR || path.join(__dirname, '.steam-data'));
 ensureDir(DATA_DIR);
@@ -97,6 +119,9 @@ const ACCOUNT_PASSWORD = process.env.STEAM_BOT_PASSWORD || process.env.STEAM_PAS
 
 const TASK_POLL_INTERVAL_MS = parseInt(process.env.STEAM_TASK_POLL_MS || '2000', 10);
 const RECONNECT_DELAY_MS = parseInt(process.env.STEAM_RECONNECT_DELAY_MS || '5000', 10);
+const COMMAND_BOT_KEY = 'steam';
+const COMMAND_POLL_INTERVAL_MS = parseInt(process.env.STEAM_COMMAND_POLL_MS || '2000', 10);
+const STATE_PUBLISH_INTERVAL_MS = parseInt(process.env.STEAM_STATE_PUBLISH_MS || '15000', 10);
 
 const dbPath = resolveDbPath();
 ensureDir(path.dirname(dbPath));
@@ -146,6 +171,97 @@ const finishTaskStmt = db.prepare(`
          finished_at = ?,
          updated_at = ?
    WHERE id = ?
+`);
+
+// ---------- Standalone Dashboard Tables ----------
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS standalone_commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot TEXT NOT NULL,
+    command TEXT NOT NULL,
+    payload TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    result TEXT,
+    error TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    started_at DATETIME,
+    finished_at DATETIME
+  )
+`).run();
+
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS standalone_bot_state (
+    bot TEXT PRIMARY KEY,
+    heartbeat INTEGER NOT NULL,
+    payload TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`).run();
+
+db.prepare(`CREATE INDEX IF NOT EXISTS idx_standalone_commands_status ON standalone_commands(bot, status, id)`).run();
+db.prepare(`CREATE INDEX IF NOT EXISTS idx_standalone_commands_created ON standalone_commands(created_at)`).run();
+db.prepare(`CREATE INDEX IF NOT EXISTS idx_standalone_state_updated ON standalone_bot_state(updated_at)`).run();
+
+const selectPendingCommandStmt = db.prepare(`
+  SELECT id, command, payload
+    FROM standalone_commands
+   WHERE bot = ?
+     AND status = 'pending'
+ORDER BY id ASC
+   LIMIT 1
+`);
+const markCommandRunningStmt = db.prepare(`
+  UPDATE standalone_commands
+     SET status = 'running',
+         started_at = CURRENT_TIMESTAMP
+   WHERE id = ?
+     AND status = 'pending'
+`);
+const finalizeCommandStmt = db.prepare(`
+  UPDATE standalone_commands
+     SET status = ?,
+         result = ?,
+         error = ?,
+         finished_at = CURRENT_TIMESTAMP
+   WHERE id = ?
+`);
+
+const upsertStandaloneStateStmt = db.prepare(`
+  INSERT INTO standalone_bot_state(bot, heartbeat, payload, updated_at)
+  VALUES (@bot, @heartbeat, @payload, CURRENT_TIMESTAMP)
+  ON CONFLICT(bot) DO UPDATE SET
+    heartbeat = excluded.heartbeat,
+    payload = excluded.payload,
+    updated_at = CURRENT_TIMESTAMP
+`);
+
+const quickInviteCountsStmt = db.prepare(`
+  SELECT status, COUNT(*) AS count
+    FROM steam_quick_invites
+GROUP BY status
+`);
+const quickInviteRecentStmt = db.prepare(`
+  SELECT invite_link, status, created_at
+    FROM steam_quick_invites
+ORDER BY created_at DESC
+   LIMIT 5
+`);
+const quickInviteAvailableStmt = db.prepare(`
+  SELECT COUNT(*) AS count
+    FROM steam_quick_invites
+   WHERE status = 'available'
+     AND (expires_at IS NULL OR expires_at > strftime('%s','now'))
+`);
+const steamTaskCountsStmt = db.prepare(`
+  SELECT status, COUNT(*) AS count
+    FROM steam_tasks
+GROUP BY status
+`);
+const steamTaskRecentStmt = db.prepare(`
+  SELECT id, type, status, updated_at, finished_at
+    FROM steam_tasks
+ORDER BY updated_at DESC
+   LIMIT 10
 `);
 
 // ---------- Steam State ----------
@@ -205,8 +321,16 @@ log('info', 'Presence logger configured', { csvPath: presenceLogger.csvPath });
 presenceLogger.start();
 
 // ---------- Helpers ----------
-function updateRefreshToken(token) { refreshToken = token ? String(token).trim() : ''; runtimeState.refresh_token_present = Boolean(refreshToken); }
-function updateMachineToken(token) { machineAuthToken = token ? String(token).trim() : ''; runtimeState.machine_token_present = Boolean(machineAuthToken); }
+function updateRefreshToken(token) {
+  refreshToken = token ? String(token).trim() : '';
+  runtimeState.refresh_token_present = Boolean(refreshToken);
+  scheduleStatePublish({ reason: 'refresh_token' });
+}
+function updateMachineToken(token) {
+  machineAuthToken = token ? String(token).trim() : '';
+  runtimeState.machine_token_present = Boolean(machineAuthToken);
+  scheduleStatePublish({ reason: 'machine_token' });
+}
 function clearReconnectTimer(){ if (reconnectTimer){ clearTimeout(reconnectTimer); reconnectTimer = null; } }
 function scheduleReconnect(reason, delayMs = RECONNECT_DELAY_MS){
   if (!refreshToken || manualLogout || runtimeState.logged_on || loginInProgress || reconnectTimer) return;
@@ -593,9 +717,11 @@ function initiateLogin(source, payload) {
   try { client.logOn(options); }
   catch (err) {
     loginInProgress = false; runtimeState.logging_in = false; runtimeState.last_error = { message: err.message };
+    scheduleStatePublish({ reason: 'login_error', source, message: err.message });
     throw err;
   }
 
+  scheduleStatePublish({ reason: 'login_start', source });
   return { started: true, using_refresh_token: Boolean(options.refreshToken), source };
 }
 
@@ -613,6 +739,7 @@ function handleGuardCodeTask(payload) {
   try { callback(code); log('info', 'Submitted Steam Guard code', { domain: domain || null }); }
   catch (err) { throw new Error(`Failed to submit guard code: ${err.message}`); }
 
+  scheduleStatePublish({ reason: 'guard_submit', domain: domain || null });
   return { accepted: true, domain: domain || null, type: guardTypeFromDomain(domain) };
 }
 
@@ -625,6 +752,7 @@ function handleLogoutTask() {
   runtimeState.guard_required = null;
   runtimeState.last_error = null;
   try { client.logOff(); } catch (err) { log('warn', 'logOff failed', { error: err.message }); }
+  scheduleStatePublish({ reason: 'logout_command' });
   return { logged_off: true };
 }
 
@@ -647,11 +775,105 @@ function getStatusPayload() {
   };
 }
 
+function buildStandaloneSnapshot() {
+  const snapshot = {
+    timestamp: new Date().toISOString(),
+    runtime: getStatusPayload(),
+    quick_invites: { counts: {}, total: 0, available: 0, recent: [] },
+    tasks: { counts: {}, recent: [] },
+  };
+
+  try {
+    const rows = quickInviteCountsStmt.all();
+    const counts = {};
+    let total = 0;
+    for (const row of rows) {
+      const status = row && row.status ? String(row.status) : 'unknown';
+      const count = Number(row && row.count ? row.count : 0) || 0;
+      counts[status] = count;
+      total += count;
+    }
+    snapshot.quick_invites.counts = counts;
+    snapshot.quick_invites.total = total;
+  } catch (err) {
+    log('warn', 'Failed to collect quick invite counts', { error: err.message });
+  }
+
+  try {
+    const row = quickInviteAvailableStmt.get();
+    snapshot.quick_invites.available = Number(row && row.count ? row.count : 0) || 0;
+  } catch (err) {
+    log('warn', 'Failed to determine available quick invites', { error: err.message });
+  }
+
+  try {
+    const rows = quickInviteRecentStmt.all();
+    snapshot.quick_invites.recent = rows.map((row) => ({
+      invite_link: row.invite_link,
+      status: row.status,
+      created_at: row.created_at,
+    }));
+  } catch (err) {
+    log('warn', 'Failed to collect recent quick invites', { error: err.message });
+  }
+
+  try {
+    const rows = steamTaskCountsStmt.all();
+    const counts = {};
+    for (const row of rows) {
+      const status = row && row.status ? String(row.status).toUpperCase() : 'UNKNOWN';
+      const count = Number(row && row.count ? row.count : 0) || 0;
+      counts[status] = count;
+    }
+    snapshot.tasks.counts = counts;
+  } catch (err) {
+    log('warn', 'Failed to collect steam task counts', { error: err.message });
+  }
+
+  try {
+    const rows = steamTaskRecentStmt.all();
+    snapshot.tasks.recent = rows.map((row) => ({
+      id: Number(row.id),
+      type: row.type,
+      status: row.status,
+      updated_at: row.updated_at,
+      finished_at: row.finished_at,
+    }));
+  } catch (err) {
+    log('warn', 'Failed to collect recent steam tasks', { error: err.message });
+  }
+
+  return snapshot;
+}
+
+function publishStandaloneState(context) {
+  try {
+    const snapshot = buildStandaloneSnapshot();
+    if (context) {
+      snapshot.context = context;
+    }
+    const payloadJson = safeJsonStringify(snapshot) || '{}';
+    upsertStandaloneStateStmt.run({
+      bot: COMMAND_BOT_KEY,
+      heartbeat: nowSeconds(),
+      payload: payloadJson,
+    });
+  } catch (err) {
+    log('warn', 'Failed to publish standalone state', { error: err.message });
+  }
+}
+
+function scheduleStatePublish(context) {
+  try { publishStandaloneState(context); }
+  catch (err) { log('warn', 'State publish failed', { error: err.message }); }
+}
+
 function completeTask(id, status, result = undefined, error = undefined) {
   const finishedAt = nowSeconds();
   const resultJson = result === undefined ? null : safeJsonStringify(result);
   const errorText = error ? String(error) : null;
   finishTaskStmt.run(status, resultJson, errorText, finishedAt, finishedAt, id);
+  scheduleStatePublish({ reason: 'task', status, task_id: id });
 }
 
 // ---------- Task Dispatcher (Promise-fähig) ----------
@@ -816,6 +1038,148 @@ setInterval(() => {
   try { processNextTask(); } catch (err) { log('error', 'Task polling loop failed', { error: err.message }); }
 }, Math.max(500, TASK_POLL_INTERVAL_MS));
 
+// ---------- Standalone Command Handling ----------
+let commandInProgress = false;
+
+const COMMAND_HANDLERS = {
+  status: () => ({ ok: true, data: getStatusPayload() }),
+  login: (payload) => {
+    const result = initiateLogin('command', payload || {});
+    scheduleStatePublish({ reason: 'command-login' });
+    return { ok: true, data: result };
+  },
+  logout: () => ({ ok: true, data: handleLogoutTask() }),
+  'quick.ensure': (payload = {}) => {
+    if (!runtimeState.logged_on) throw new Error('Not logged in');
+    const opts = {};
+    const targetValue = payload.target ?? payload.pool_target;
+    if (targetValue != null) opts.target = Number(targetValue);
+    const limitValue = payload.invite_limit ?? payload.inviteLimit;
+    if (limitValue != null) opts.inviteLimit = Number(limitValue);
+    if (Object.prototype.hasOwnProperty.call(payload, 'invite_duration')) {
+      opts.inviteDuration = payload.invite_duration;
+    } else if (Object.prototype.hasOwnProperty.call(payload, 'inviteDuration')) {
+      opts.inviteDuration = payload.inviteDuration;
+    }
+    return quickInvites.ensurePool(opts).then((summary) => {
+      scheduleStatePublish({ reason: 'quick.ensure' });
+      return { ok: true, data: summary };
+    });
+  },
+  'quick.create': (payload = {}) => {
+    if (!runtimeState.logged_on) throw new Error('Not logged in');
+    const opts = {};
+    const limitValue = payload.invite_limit ?? payload.inviteLimit;
+    if (limitValue != null) opts.inviteLimit = Number(limitValue);
+    if (Object.prototype.hasOwnProperty.call(payload, 'invite_duration')) {
+      opts.inviteDuration = payload.invite_duration;
+    } else if (Object.prototype.hasOwnProperty.call(payload, 'inviteDuration')) {
+      opts.inviteDuration = payload.inviteDuration;
+    }
+    return quickInvites.createOne(opts).then((record) => {
+      scheduleStatePublish({ reason: 'quick.create' });
+      return { ok: true, data: record };
+    });
+  },
+  'guard.submit': (payload) => ({ ok: true, data: handleGuardCodeTask(payload || {}) }),
+};
+
+function finalizeStandaloneCommand(commandId, status, resultObj, errorMessage) {
+  const resultJson = resultObj === undefined ? null : safeJsonStringify(resultObj);
+  const errorText = truncateError(errorMessage);
+  try {
+    finalizeCommandStmt.run(status, resultJson, errorText, commandId);
+  } catch (err) {
+    log('error', 'Failed to finalize standalone command', { error: err.message, command_id: commandId, status });
+  }
+}
+
+function processNextCommand() {
+  if (commandInProgress) return;
+
+  let row;
+  try {
+    row = selectPendingCommandStmt.get(COMMAND_BOT_KEY);
+  } catch (err) {
+    log('error', 'Failed to fetch standalone command', { error: err.message });
+    return;
+  }
+
+  if (!row) {
+    return;
+  }
+
+  try {
+    const claimed = markCommandRunningStmt.run(row.id);
+    if (!claimed.changes) {
+      setTimeout(processNextCommand, 0);
+      return;
+    }
+  } catch (err) {
+    log('error', 'Failed to mark standalone command running', { error: err.message, id: row.id });
+    return;
+  }
+
+  commandInProgress = true;
+
+  let payloadData = {};
+  if (row.payload) {
+    try {
+      payloadData = safeJsonParse(row.payload);
+    } catch (err) {
+      log('warn', 'Invalid standalone command payload', { error: err.message, id: row.id });
+      payloadData = {};
+    }
+  }
+
+  const handler = COMMAND_HANDLERS[row.command];
+
+  const finalize = (status, resultObj, errorMessage) => {
+    finalizeStandaloneCommand(row.id, status, resultObj, errorMessage);
+    try { publishStandaloneState({ reason: 'command', command: row.command, status }); }
+    catch (err) { log('warn', 'Failed to publish state after command', { error: err.message, command: row.command }); }
+    commandInProgress = false;
+    setTimeout(processNextCommand, 0);
+  };
+
+  if (!handler) {
+    finalize('error', { ok: false, error: 'unknown_command' }, `Unsupported command: ${row.command}`);
+    return;
+  }
+
+  let outcome;
+  try {
+    outcome = handler(payloadData || {}, row);
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    finalize('error', { ok: false, error: message }, message);
+    return;
+  }
+
+  if (outcome && typeof outcome.then === 'function') {
+    outcome.then(
+      (res) => finalize('success', wrapOk(res), null),
+      (err) => {
+        const message = err && err.message ? err.message : String(err);
+        finalize('error', { ok: false, error: message }, message);
+      },
+    );
+  } else {
+    finalize('success', wrapOk(outcome), null);
+  }
+}
+
+setInterval(() => {
+  try { processNextCommand(); } catch (err) { log('error', 'Standalone command loop failed', { error: err.message }); }
+}, Math.max(500, COMMAND_POLL_INTERVAL_MS));
+
+processNextCommand();
+
+setInterval(() => {
+  try { publishStandaloneState({ reason: 'heartbeat' }); }
+  catch (err) { log('warn', 'Standalone state heartbeat failed', { error: err.message }); }
+}, Math.max(5000, STATE_PUBLISH_INTERVAL_MS));
+
 // ---------- Steam Events ----------
 function markLoggedOn(details) {
   runtimeState.logged_on = true;
@@ -857,6 +1221,8 @@ function markLoggedOn(details) {
   } else if (typeof quickInvites.ensurePool === 'function') {
     quickInvites.ensurePool({ target: 1 }).catch((e) => log('warn', 'ensurePool-after-login failed', { error: e.message }));
   }
+
+  scheduleStatePublish({ reason: 'logged_on' });
 }
 
 client.on('loggedOn', (details) => { markLoggedOn(details); });
@@ -872,6 +1238,7 @@ client.on('steamGuard', (domain, callback, lastCodeWrong) => {
   };
   runtimeState.logging_in = true;
   log('info', 'Steam Guard challenge received', { domain: domain || null, lastCodeWrong: Boolean(lastCodeWrong) });
+  scheduleStatePublish({ reason: 'steam_guard', domain: domain || null, last_code_wrong: Boolean(lastCodeWrong) });
 });
 client.on('refreshToken', (token) => { updateRefreshToken(token); writeToken(REFRESH_TOKEN_PATH, refreshToken); log('info', 'Stored refresh token', { path: REFRESH_TOKEN_PATH }); });
 client.on('machineAuthToken', (token) => { updateMachineToken(token); writeToken(MACHINE_TOKEN_PATH, machineAuthToken); log('info', 'Stored machine auth token', { path: MACHINE_TOKEN_PATH }); });
@@ -917,6 +1284,7 @@ client.on('disconnected', (eresult, msg) => {
   flushPendingPlaytestInvites(new Error('Steam disconnected'));
   log('warn', 'Steam disconnected', { eresult, msg });
   scheduleReconnect('disconnect');
+  scheduleStatePublish({ reason: 'disconnected', eresult });
 });
 client.on('error', (err) => {
   runtimeState.last_error = { message: err && err.message ? err.message : String(err), eresult: err && typeof err.eresult === 'number' ? err.eresult : undefined };
@@ -932,16 +1300,24 @@ client.on('error', (err) => {
     return;
   }
   scheduleReconnect('error');
+  scheduleStatePublish({ reason: 'error', message: runtimeState.last_error ? runtimeState.last_error.message : null });
 });
-client.on('sessionExpired', () => { log('warn', 'Steam session expired'); runtimeState.logged_on = false; scheduleReconnect('session-expired'); });
+client.on('sessionExpired', () => {
+  log('warn', 'Steam session expired');
+  runtimeState.logged_on = false;
+  scheduleReconnect('session-expired');
+  scheduleStatePublish({ reason: 'session_expired' });
+});
 
 // ---------- Startup ----------
 function autoLoginIfPossible() {
-  if (!refreshToken) { log('info', 'Auto-login disabled (no refresh token). Waiting for tasks.'); return; }
+  if (!refreshToken) { log('info', 'Auto-login disabled (no refresh token). Waiting for tasks.'); scheduleStatePublish({ reason: 'auto_login_skipped' }); return; }
   const result = initiateLogin('auto-start', {});
   log('info', 'Auto-login kick-off', result);
+  scheduleStatePublish({ reason: 'auto_login', started: result && result.started });
 }
 autoLoginIfPossible();
+publishStandaloneState({ reason: 'startup' });
 
 // QuickInvites: Auto-Ensure-Loop starten (hält >=1 available), sofern Modul die Methode anbietet
 if (typeof quickInvites.startAutoEnsure === 'function') {

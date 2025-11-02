@@ -49,6 +49,7 @@ class StandaloneBotConfig:
     description: str = ""
     args: List[str] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
+    executable: Optional[str] = None
     python: Optional[str] = None
     autostart: bool = False
     restart_on_crash: bool = True
@@ -58,7 +59,7 @@ class StandaloneBotConfig:
     command_namespace: Optional[str] = None
 
     def resolved_command(self) -> List[str]:
-        interpreter = self.python or sys.executable
+        interpreter = self.executable or self.python or sys.executable
         return [interpreter, str(self.script), *self.args]
 
 
@@ -219,6 +220,16 @@ class StandaloneBotManager:
                 await self.ensure_running(config.key)
             except StandaloneManagerError as exc:
                 log.error("Failed to autostart %s: %s", config.key, exc)
+
+    async def set_autostart(self, key: str, enabled: bool) -> Dict[str, Any]:
+        async with self._lock:
+            state = self._states.get(key)
+            if state is None:
+                raise StandaloneConfigNotFound(key)
+            state.config.autostart = bool(enabled)
+            log.info("Standalone bot %s autostart -> %s", key, state.config.autostart)
+            status = self._status_for_state(state)
+        return status
 
     async def shutdown(self, *, kill_after: float = 10.0) -> None:
         self._shutting_down = True

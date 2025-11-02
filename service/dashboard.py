@@ -171,6 +171,22 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             border-radius: 6px;
             padding: 0.35rem 0.6rem;
         }
+        .standalone-logs {
+            margin-top: 0.75rem;
+        }
+        .standalone-log-view {
+            margin-top: 0.5rem;
+            background: #0f0f0f;
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 6px;
+            padding: 0.6rem;
+            max-height: 220px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.78rem;
+            line-height: 1.35;
+        }
         .standalone-list {
             list-style: none;
             margin: 0.5rem 0 0;
@@ -198,6 +214,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         button.load { background: #37b24d; color: #fff; }
         button.namespace { background: #7048e8; color: #fff; }
         button.block { background: #c92a2a; color: #fff; }
+        button.autostart-toggle { background: #495057; color: #fff; }
         button.unblock { background: #66d9e8; color: #111; }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
         .status-dot {
@@ -417,6 +434,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             { value: 'dm.cleanup', label: 'DM Cleanup durchführen' },
             { value: 'state.refresh', label: 'Status aktualisieren' },
         ],
+        steam: [
+            { value: 'status', label: 'Status aktualisieren' },
+            { value: 'login', label: 'Login starten' },
+            { value: 'logout', label: 'Logout durchführen' },
+            { value: 'quick.ensure', label: 'Quick Invites auffüllen' },
+            { value: 'quick.create', label: 'Quick Invite erstellen' },
+        ],
     };
     let authToken = localStorage.getItem('master-dashboard-token') || '';
     let selectedNode = null;
@@ -618,6 +642,107 @@ function formatTimestamp(value) {
     }
 }
 
+function renderRankMetrics(container, metrics) {
+    const state = metrics.state || {};
+    const queue = state.queue || {};
+    const queueToday = queue.today || {};
+    const dmInfo = state.dm || {};
+    container.innerHTML = '';
+    container.appendChild(document.createElement('div')).innerHTML = `<strong>Queue heute:</strong> ${safeNumber(queueToday.pending)} offen / ${safeNumber(queueToday.total)} gesamt`;
+    container.appendChild(document.createElement('div')).innerHTML = `<strong>Queue gesamt:</strong> ${safeNumber(queue.pending_total)} offen (${safeNumber(queue.total_entries)} Einträge)`;
+    container.appendChild(document.createElement('div')).innerHTML = `<strong>DM offen:</strong> ${safeNumber(dmInfo.pending)}`;
+
+    if (state.loops) {
+        const loopLine = Object.entries(state.loops)
+            .map(([name, active]) => `${active ? '✅' : '⚠️'} ${name.replace(/_/g, ' ')}`)
+            .join(' • ');
+        const loopDiv = document.createElement('div');
+        loopDiv.innerHTML = `<strong>Loops:</strong> ${loopLine || 'Keine Daten'}`;
+        container.appendChild(loopDiv);
+    }
+}
+
+function renderSteamMetrics(container, metrics) {
+    container.innerHTML = '';
+    const runtime = metrics.runtime || {};
+    const quick = metrics.quick_invites || {};
+    const quickCounts = quick.counts || {};
+    const tasks = metrics.tasks || {};
+    const taskCounts = tasks.counts || {};
+
+    const statusParts = [];
+    if (runtime.logged_on) {
+        statusParts.push('✅ Eingeloggt');
+    } else if (runtime.logging_in) {
+        statusParts.push('⏳ Login läuft');
+    } else {
+        statusParts.push('❌ Abgemeldet');
+    }
+    if (runtime.guard_required) {
+        const guard = runtime.guard_required;
+        const guardLabel = guard.type || guard.domain || 'unbekannt';
+        statusParts.push(`Guard: ${guardLabel}`);
+    }
+    const statusDiv = document.createElement('div');
+    statusDiv.innerHTML = `<strong>Status:</strong> ${statusParts.join(' • ')}`;
+    container.appendChild(statusDiv);
+
+    if (runtime.account_name || runtime.steam_id64) {
+        const accountDiv = document.createElement('div');
+        accountDiv.innerHTML = `<strong>Konto:</strong> ${runtime.account_name || '–'} (${runtime.steam_id64 || '–'})`;
+        container.appendChild(accountDiv);
+    }
+
+    if (runtime.last_error && runtime.last_error.message) {
+        const errorDiv = document.createElement('div');
+        errorDiv.innerHTML = `<strong>Fehler:</strong> ${runtime.last_error.message}`;
+        container.appendChild(errorDiv);
+    }
+
+    const quickDiv = document.createElement('div');
+    quickDiv.innerHTML = `<strong>Quick Invites:</strong> ${safeNumber(quick.available)} verfügbar (gesamt ${safeNumber(quick.total)})`;
+    container.appendChild(quickDiv);
+
+    if (Object.keys(quickCounts).length) {
+        const countsLine = Object.entries(quickCounts)
+            .map(([label, count]) => `${label}: ${safeNumber(count)}`)
+            .join(' • ');
+        const countsDiv = document.createElement('div');
+        countsDiv.innerHTML = `<strong>Invite-Status:</strong> ${countsLine}`;
+        container.appendChild(countsDiv);
+    }
+
+    const pendingTasks = safeNumber(taskCounts.PENDING ?? taskCounts.pending);
+    const runningTasks = safeNumber(taskCounts.RUNNING ?? taskCounts.running);
+    const failedTasks = safeNumber(taskCounts.FAILED ?? taskCounts.failed);
+    const doneTasks = safeNumber(taskCounts.DONE ?? taskCounts.done);
+    const taskDiv = document.createElement('div');
+    taskDiv.innerHTML = `<strong>Tasks:</strong> ${pendingTasks} pending • ${runningTasks} running • ${failedTasks} failed • ${doneTasks} done`;
+    container.appendChild(taskDiv);
+
+    if (Array.isArray(tasks.recent) && tasks.recent.length) {
+        const latest = tasks.recent[0];
+        const updatedAt = Number(latest.updated_at);
+        const updatedText = Number.isFinite(updatedAt) ? formatTimestamp(updatedAt * 1000) : '–';
+        const recentDiv = document.createElement('div');
+        recentDiv.innerHTML = `<strong>Letzter Task:</strong> #${safeNumber(latest.id)} ${latest.type || '-'} (${latest.status || 'unbekannt'}) – ${updatedText}`;
+        container.appendChild(recentDiv);
+    }
+}
+
+function renderGenericMetrics(container, metrics) {
+    container.innerHTML = '';
+    if (!metrics || Object.keys(metrics).length === 0) {
+        const empty = document.createElement('div');
+        empty.textContent = 'Keine Metriken verfügbar.';
+        container.appendChild(empty);
+        return;
+    }
+    const pre = document.createElement('pre');
+    pre.textContent = JSON.stringify(metrics, null, 2);
+    container.appendChild(pre);
+}
+
 function renderStandalone(bots) {
     if (!standaloneContainer) {
         return;
@@ -634,6 +759,8 @@ function renderStandalone(bots) {
     bots.forEach((info) => {
         const card = document.createElement('div');
         card.className = 'standalone-card';
+
+        const namespace = (info.config && info.config.command_namespace) ? info.config.command_namespace : info.key;
 
         const header = document.createElement('div');
         header.className = 'standalone-header';
@@ -661,6 +788,8 @@ function renderStandalone(bots) {
         const metrics = info.metrics || {};
         if (metrics.updated_at) {
             meta.innerHTML += `<br>Heartbeat: ${formatTimestamp(metrics.updated_at)}`;
+        } else if (Number.isFinite(metrics.heartbeat)) {
+            meta.innerHTML += `<br>Heartbeat: ${formatTimestamp(metrics.heartbeat * 1000)}`;
         } else if (metrics.state && metrics.state.timestamp) {
             meta.innerHTML += `<br>Heartbeat: ${formatTimestamp(metrics.state.timestamp)}`;
         }
@@ -689,26 +818,34 @@ function renderStandalone(bots) {
         restartBtn.addEventListener('click', () => controlStandalone(info.key, 'restart'));
         actions.appendChild(restartBtn);
 
+        const autostartBtn = document.createElement('button');
+        autostartBtn.className = 'autostart-toggle';
+        autostartBtn.textContent = info.autostart ? 'Autostart deaktivieren' : 'Autostart aktivieren';
+        autostartBtn.addEventListener('click', async () => {
+            autostartBtn.disabled = true;
+            const targetState = !info.autostart;
+            try {
+                await setStandaloneAutostart(info.key, targetState);
+                log(`Standalone ${info.key}: Autostart ${targetState ? 'aktiviert' : 'deaktiviert'}`, 'success');
+                loadStatus();
+            } catch (err) {
+                log(`Standalone ${info.key}: Autostart konnte nicht aktualisiert werden (${err.message})`, 'error');
+            } finally {
+                autostartBtn.disabled = false;
+            }
+        });
+        actions.appendChild(autostartBtn);
+
         card.appendChild(actions);
 
         const metricsContainer = document.createElement('div');
         metricsContainer.className = 'standalone-metrics';
-        const state = metrics.state || {};
-        const queue = state.queue || {};
-        const queueToday = queue.today || {};
-        const dmInfo = state.dm || {};
-        metricsContainer.innerHTML = '';
-        metricsContainer.appendChild(document.createElement('div')).innerHTML = `<strong>Queue heute:</strong> ${safeNumber(queueToday.pending)} offen / ${safeNumber(queueToday.total)} gesamt`;
-        metricsContainer.appendChild(document.createElement('div')).innerHTML = `<strong>Queue gesamt:</strong> ${safeNumber(queue.pending_total)} offen (${safeNumber(queue.total_entries)} Einträge)`;
-        metricsContainer.appendChild(document.createElement('div')).innerHTML = `<strong>DM offen:</strong> ${safeNumber(dmInfo.pending)}`;
-
-        if (state.loops) {
-            const loopLine = Object.entries(state.loops)
-                .map(([name, active]) => `${active ? '✅' : '⚠️'} ${name.replace(/_/g, ' ')}`)
-                .join(' • ');
-            const loopDiv = document.createElement('div');
-            loopDiv.innerHTML = `<strong>Loops:</strong> ${loopLine || 'Keine Daten'}`;
-            metricsContainer.appendChild(loopDiv);
+        if (namespace === 'rank') {
+            renderRankMetrics(metricsContainer, metrics);
+        } else if (namespace === 'steam') {
+            renderSteamMetrics(metricsContainer, metrics);
+        } else {
+            renderGenericMetrics(metricsContainer, metrics);
         }
 
         card.appendChild(metricsContainer);
@@ -722,7 +859,6 @@ function renderStandalone(bots) {
         defaultOption.value = '';
         defaultOption.textContent = 'Aktion auswählen…';
         select.appendChild(defaultOption);
-        const namespace = (info.config && info.config.command_namespace) ? info.config.command_namespace : info.key;
         const commandOptions = STANDALONE_COMMANDS[namespace] || [];
         commandOptions.forEach((cmd) => {
             const option = document.createElement('option');
@@ -791,6 +927,46 @@ function renderStandalone(bots) {
 
         card.appendChild(commandSection);
 
+        const logsSection = document.createElement('details');
+        logsSection.className = 'standalone-logs';
+        const logsSummary = document.createElement('summary');
+        logsSummary.textContent = 'Logs anzeigen';
+        logsSection.appendChild(logsSummary);
+        const logsBody = document.createElement('pre');
+        logsBody.className = 'standalone-log-view';
+        logsBody.textContent = 'Öffnen zum Laden…';
+        logsSection.appendChild(logsBody);
+
+        let logsLoading = false;
+        logsSection.addEventListener('toggle', async () => {
+            if (!logsSection.open || logsLoading) {
+                return;
+            }
+            logsLoading = true;
+            logsBody.textContent = 'Lade Logs…';
+            try {
+                const data = await fetchStandaloneLogs(info.key, 200);
+                const entries = Array.isArray(data.logs) ? data.logs : [];
+                if (!entries.length) {
+                    logsBody.textContent = 'Keine Logeinträge verfügbar.';
+                } else {
+                    const lines = entries.map((entry) => {
+                        const ts = entry.ts ? formatTimestamp(entry.ts) : '–';
+                        const stream = entry.stream ? `[${entry.stream}]` : '';
+                        const line = entry.line || '';
+                        return `${ts} ${stream} ${line}`.trim();
+                    });
+                    logsBody.textContent = lines.join('\n');
+                }
+            } catch (err) {
+                logsBody.textContent = `Fehler beim Laden: ${err.message}`;
+            } finally {
+                logsLoading = false;
+            }
+        });
+
+        card.appendChild(logsSection);
+
         standaloneContainer.appendChild(card);
     });
 }
@@ -812,6 +988,18 @@ async function sendStandaloneCommand(key, command) {
         body: JSON.stringify({ command }),
     });
     loadStatus();
+}
+
+async function setStandaloneAutostart(key, enabled) {
+    return fetchJSON(`/api/standalone/${key}/autostart`, {
+        method: 'POST',
+        body: JSON.stringify({ enabled: Boolean(enabled) }),
+    });
+}
+
+async function fetchStandaloneLogs(key, limit = 200) {
+    const params = new URLSearchParams({ limit: String(limit) });
+    return fetchJSON(`/api/standalone/${key}/logs?${params.toString()}`);
 }
 
     function buildTreeNode(node, depth = 0) {
@@ -1230,6 +1418,7 @@ class DashboardServer:
                     web.post("/api/standalone/{key}/start", self._handle_standalone_start),
                     web.post("/api/standalone/{key}/stop", self._handle_standalone_stop),
                     web.post("/api/standalone/{key}/restart", self._handle_standalone_restart),
+                    web.post("/api/standalone/{key}/autostart", self._handle_standalone_autostart),
                     web.post("/api/standalone/{key}/command", self._handle_standalone_command),
                 ]
             )
@@ -1910,6 +2099,56 @@ class DashboardServer:
                 logging.exception("Error when restarting standalone bot (key=%r): %s", key, exc)
                 raise web.HTTPInternalServerError(text="An internal error has occurred.")
             raise
+        return web.json_response({"standalone": status})
+
+    async def _handle_standalone_autostart(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        manager = self._require_standalone_manager()
+        key = request.match_info.get("key", "").strip()
+        try:
+            manager.config(key)
+        except Exception as exc:
+            if StandaloneConfigNotFound and isinstance(exc, StandaloneConfigNotFound):
+                raise web.HTTPNotFound(text="Standalone bot not found")
+            raise
+
+        try:
+            payload = await request.json()
+        except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, web.HTTPException):
+                raise
+            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+
+        if not isinstance(payload, dict):
+            raise web.HTTPBadRequest(text="Payload must be a JSON object")
+
+        enabled_raw = payload.get("enabled")
+        enabled: Optional[bool]
+        if isinstance(enabled_raw, bool):
+            enabled = enabled_raw
+        elif isinstance(enabled_raw, (int, float)):
+            enabled = bool(enabled_raw)
+        elif isinstance(enabled_raw, str):
+            lowered = enabled_raw.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                enabled = True
+            elif lowered in {"0", "false", "no", "off"}:
+                enabled = False
+            else:
+                enabled = None
+        else:
+            enabled = None
+
+        if enabled is None:
+            raise web.HTTPBadRequest(text="'enabled' must be a boolean")
+
+        try:
+            status = await manager.set_autostart(key, enabled)
+        except Exception as exc:
+            if StandaloneConfigNotFound and isinstance(exc, StandaloneConfigNotFound):
+                raise web.HTTPNotFound(text="Standalone bot not found")
+            raise
+
         return web.json_response({"standalone": status})
 
     async def _handle_standalone_command(self, request: web.Request) -> web.Response:
