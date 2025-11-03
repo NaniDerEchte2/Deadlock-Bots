@@ -4,6 +4,7 @@ import asyncio
 import datetime as _dt
 import errno
 import json
+import math
 import logging
 import os
 from pathlib import Path
@@ -956,7 +957,7 @@ function renderStandalone(bots) {
                         const line = entry.line || '';
                         return `${ts} ${stream} ${line}`.trim();
                     });
-                    logsBody.textContent = lines.join('\n');
+                    logsBody.textContent = lines.join();
                 }
             } catch (err) {
                 logsBody.textContent = `Fehler beim Laden: ${err.message}`;
@@ -1385,6 +1386,22 @@ class DashboardServer:
 
         self._twitch_dashboard_href = self._resolve_twitch_dashboard_href()
 
+    @staticmethod
+    def _sanitize(value: Any) -> Any:
+        """Recursively normalise values so the JSON payload never emits NaN/Infinity."""
+        if isinstance(value, dict):
+            return {key: DashboardServer._sanitize(val) for key, val in value.items()}
+        if isinstance(value, list):
+            return [DashboardServer._sanitize(item) for item in value]
+        if isinstance(value, tuple):
+            return [DashboardServer._sanitize(item) for item in value]
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        return value
+
+    def _json(self, payload: Any, **kwargs: Any) -> web.Response:
+        return web.json_response(self._sanitize(payload), **kwargs)
+
     async def _cleanup(self) -> None:
         if self._site:
             await self._site.stop()
@@ -1671,13 +1688,19 @@ class DashboardServer:
 
         namespaces = self._namespace_summary(discovered)
 
+        latency = getattr(bot, "latency", None)
+        if latency is not None and math.isfinite(latency):
+            latency_ms = round(latency * 1000, 2)
+        else:
+            latency_ms = None
+
         payload = {
             "bot": {
                 "user": str(bot.user) if bot.user else None,
                 "id": getattr(bot.user, "id", None),
                 "uptime": uptime,
                 "guilds": len(bot.guilds),
-                "latency_ms": round(bot.latency * 1000, 2) if bot.latency is not None else None,
+                "latency_ms": latency_ms,
             },
             "cogs": {
                 "items": items,
@@ -1696,7 +1719,7 @@ class DashboardServer:
             },
             "standalone": await self._collect_standalone_snapshot(),
         }
-        return web.json_response(payload)
+        return self._json(payload)
 
 
     async def _collect_standalone_snapshot(self) -> List[Dict[str, Any]]:
@@ -1881,7 +1904,7 @@ class DashboardServer:
                     continue
                 ok, message = await self.bot.reload_cog(name)
                 results[name] = {"ok": ok, "message": message}
-        return web.json_response({"results": results})
+        return self._json({"results": results})
 
     async def _handle_load(self, request: web.Request) -> web.Response:
         self._check_auth(request)
@@ -1903,7 +1926,7 @@ class DashboardServer:
                     continue
                 ok, message = await self.bot.reload_cog(name)
                 results[name] = {"ok": ok, "message": message}
-        return web.json_response({"results": results})
+        return self._json({"results": results})
 
     async def _handle_unload(self, request: web.Request) -> web.Response:
         self._check_auth(request)
@@ -1926,14 +1949,14 @@ class DashboardServer:
                     results[name] = {"ok": False, "message": status}
                 else:
                     results[name] = {"ok": False, "message": status}
-        return web.json_response({"results": results})
+        return self._json({"results": results})
 
     async def _handle_reload_all(self, request: web.Request) -> web.Response:
         self._check_auth(request)
         async with self._lock:
             ok, summary = await self.bot.reload_all_cogs_with_discovery()
         if ok:
-            return web.json_response({"ok": True, "summary": summary})
+            return self._json({"ok": True, "summary": summary})
         raise web.HTTPInternalServerError(text=str(summary))
 
     async def _handle_reload_namespace(self, request: web.Request) -> web.Response:
@@ -1949,7 +1972,7 @@ class DashboardServer:
             raise web.HTTPBadRequest(text="Invalid namespace")
 
         if self.bot.is_namespace_blocked(normalized, assume_normalized=True):
-            return web.json_response(
+            return self._json(
                 {
                     "ok": False,
                     "results": {},
@@ -1964,7 +1987,7 @@ class DashboardServer:
             message = f"Keine Cogs unter {normalized} gefunden"
         else:
             message = f"Reloaded {len(results)} cogs under {normalized}"
-        return web.json_response({"ok": ok, "results": results, "message": message})
+        return self._json({"ok": ok, "results": results, "message": message})
 
     async def _handle_discover(self, request: web.Request) -> web.Response:
         self._check_auth(request)
@@ -1972,7 +1995,7 @@ class DashboardServer:
         self.bot.auto_discover_cogs()
         after = set(self.bot.cogs_list)
         new = sorted(after - before)
-        return web.json_response({"ok": True, "new": new, "count": len(after)})
+        return self._json({"ok": True, "new": new, "count": len(after)})
 
     async def _handle_block(self, request: web.Request) -> web.Response:
         self._check_auth(request)
@@ -1991,7 +2014,7 @@ class DashboardServer:
         message = (
             f"🚫 {namespace} blockiert" if changed else f"{namespace} war bereits blockiert"
         )
-        return web.json_response(
+        return self._json(
             {
                 "ok": True,
                 "namespace": namespace,
@@ -2017,7 +2040,7 @@ class DashboardServer:
         message = (
             f"✅ {namespace} freigegeben" if changed else f"{namespace} war nicht blockiert"
         )
-        return web.json_response(
+        return self._json(
             {
                 "ok": True,
                 "namespace": namespace,
@@ -2030,7 +2053,7 @@ class DashboardServer:
     async def _handle_standalone_list(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
         data = await self._collect_standalone_snapshot()
-        return web.json_response({"bots": data})
+        return self._json({"bots": data})
 
     async def _handle_standalone_logs(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
@@ -2050,7 +2073,7 @@ class DashboardServer:
             if StandaloneConfigNotFound and isinstance(exc, StandaloneConfigNotFound):
                 raise web.HTTPNotFound(text="Standalone bot not found")
             raise
-        return web.json_response({"logs": logs})
+        return self._json({"logs": logs})
 
     async def _handle_standalone_start(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
@@ -2067,7 +2090,7 @@ class DashboardServer:
                 raise web.HTTPInternalServerError(text=str(exc))
             else:
                 raise
-        return web.json_response({"standalone": status})
+        return self._json({"standalone": status})
 
     async def _handle_standalone_stop(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
@@ -2084,7 +2107,7 @@ class DashboardServer:
                 raise web.HTTPInternalServerError(text=str(exc))
             else:
                 raise
-        return web.json_response({"standalone": status})
+        return self._json({"standalone": status})
 
     async def _handle_standalone_restart(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
@@ -2099,7 +2122,7 @@ class DashboardServer:
                 logging.exception("Error when restarting standalone bot (key=%r): %s", key, exc)
                 raise web.HTTPInternalServerError(text="An internal error has occurred.")
             raise
-        return web.json_response({"standalone": status})
+        return self._json({"standalone": status})
 
     async def _handle_standalone_autostart(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
@@ -2149,7 +2172,7 @@ class DashboardServer:
                 raise web.HTTPNotFound(text="Standalone bot not found")
             raise
 
-        return web.json_response({"standalone": status})
+        return self._json({"standalone": status})
 
     async def _handle_standalone_command(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
@@ -2188,7 +2211,7 @@ class DashboardServer:
             )
 
         status = await manager.status(key)
-        return web.json_response(
+        return self._json(
             {
                 "queued": command_id,
                 "standalone": status,
