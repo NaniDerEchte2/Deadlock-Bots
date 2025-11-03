@@ -24,6 +24,7 @@ cogs/steam/steam_presence/*
 !cogs/steam/steam_presence/index.js
 !cogs/steam/steam_presence/README.md
 !cogs/steam/steam_presence/deadlock_presence_logger.js
+!cogs/steam/steam_presence/statusanzeige.js
 
 *.db-shm
 *.db-wal
