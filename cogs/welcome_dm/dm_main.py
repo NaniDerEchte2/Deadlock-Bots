@@ -1,7 +1,6 @@
 # cogs/welcome_dm/dm_main.py
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from datetime import datetime
@@ -50,26 +49,7 @@ BETA_INVITE_SUPPORT_CONTACT = getattr(
 )
 
 REQUIRED_WELCOME_ROLE_ID = 1304216250649415771
-WELCOME_DM_TEST_ROLE_IDS: tuple[int, ...] = tuple(
-    getattr(base_module, "WELCOME_DM_TEST_ROLE_IDS", ())
-)
 
-
-async def _can_run_test_welcome(ctx: commands.Context) -> bool:
-    if ctx.guild is None or not isinstance(ctx.author, discord.Member):
-        return False
-
-    if await ctx.bot.is_owner(ctx.author):  # type: ignore[arg-type]
-        return True
-
-    perms = ctx.author.guild_permissions
-    if perms.administrator or perms.manage_guild or perms.manage_roles:
-        return True
-
-    if not WELCOME_DM_TEST_ROLE_IDS:
-        return False
-
-    return any(role.id in WELCOME_DM_TEST_ROLE_IDS for role in ctx.author.roles)
 
 PERSISTENCE_NAMESPACE = "welcome_dm:persistent_views"
 
@@ -82,21 +62,13 @@ _VIEW_REGISTRY: Dict[str, Any] = {
 
 
 class WelcomeDM(commands.Cog):
-    """Welcome-DM: Intro → Status → Steam → (optional Streamer) → Regeln.
+    """Welcome-Onboarding: verwaltet persistente Step-Views für den Kanal-Flow.
        Re-registriert laufende Views nach Neustarts automatisch."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._session_locks: dict[int, asyncio.Lock] = {}
 
     # ---------------- Intern ----------------
-
-    def _get_lock(self, user_id: int) -> asyncio.Lock:
-        lock = self._session_locks.get(user_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._session_locks[user_id] = lock
-        return lock
 
     def _view_key_for(self, view: discord.ui.View) -> Optional[str]:
         for key, cls in _VIEW_REGISTRY.items():
@@ -243,49 +215,6 @@ class WelcomeDM(commands.Cog):
     async def on_ready(self):
         print("✅ Welcome DM System bereit")
 
-    async def _cleanup_old_bot_dms(self, member: discord.Member, limit: int = 50):
-        try:
-            dm = member.dm_channel or await member.create_dm()
-            async for msg in dm.history(limit=limit):
-                if msg.author.id == self.bot.user.id:
-                    try:
-                        await msg.delete()
-                    except discord.HTTPException as e:
-                        logger.debug(f"DM-Cleanup: Bot-Nachricht {msg.id} nicht gelöscht: {e}")
-                    except Exception:
-                        logger.exception("DM-Cleanup: Unerwarteter Fehler beim Löschen")
-        except Exception as e:
-            logger.debug(f"DM-Cleanup für {member.id} übersprungen: {e}")
-
-    async def _send_step_embed_dm(
-        self,
-        member: discord.Member,
-        *,
-        title: str,
-        desc: str,
-        step: int | None,
-        total: int,
-        view: discord.ui.View,
-        color: int = 0x5865F2,
-    ) -> bool:
-        """Sendet einen Step als DM, wartet auf Abschluss und räumt auf."""
-        emb = build_step_embed(title, desc, step, total, color=color)
-        msg = await member.send(embed=emb, view=view)
-        if hasattr(view, "bound_message"):
-            view.bound_message = msg
-        self._bind_view_persistence(msg, view, target_user_id=member.id)
-        try:
-            await view.wait()
-        finally:
-            self._unpersist_view(msg.id)
-            try:
-                await msg.delete()
-            except discord.HTTPException as e:
-                logger.debug(f"_send_step_embed_dm: Message {msg.id} nicht gelöscht: {e}")
-            except Exception:
-                logger.exception("_send_step_embed_dm: Unerwarteter Fehler beim Löschen")
-        return bool(getattr(view, "proceed", False))
-
     async def _send_step_embed_channel(
         self,
         channel: discord.abc.Messageable,
@@ -321,137 +250,6 @@ class WelcomeDM(commands.Cog):
             f"Schau in <{BETA_INVITE_CHANNEL_URL}> vorbei – dort bekommst du einen Beta-Invite mit `/betainvite`.\n"
             f"Sollten Probleme auftreten, ping bitte {BETA_INVITE_SUPPORT_CONTACT}."
         )
-
-    # ---------------- Öffentliche Flows ----------------
-
-    async def send_welcome_messages(self, member: discord.Member) -> bool:
-        """Kompletter DM-Flow (Intro zählt nicht als Step; danach 1/5-5/5)."""
-        lock = self._get_lock(member.id)
-        async with lock:
-            try:
-                await self._cleanup_old_bot_dms(member, limit=50)
-
-                # Intro (ohne Step-Zählung)
-                intro_desc = (
-                    "👋 **Willkommen in der Deutschen Deadlock Community!**\n\n"
-                    "Ich helfe dir jetzt, dein Erlebnis hier **optimal** einzustellen. "
-                    "Nimm dir kurz **2–3 Minuten** Zeit. 💙\n\n"
-                    "**Ohne diese Schritte hast du keinen vollen Zugriff.**\n\n"
-                    "Bitte lies die nächsten Schritte **in Ruhe**. "
-                    "Ich halte es kurz und sorge dafür, dass du **genau die richtigen** "
-                    "Channels & Features siehst."
-                )
-                total_steps = 5
-                if not await self._send_step_embed_dm(
-                    member,
-                    title="Willkommen 💙",
-                    desc=intro_desc,
-                    step=None,
-                    total=3,  # gezählte Steps: Status, Steam, Regeln
-                    view=IntroView(allowed_user_id=member.id),
-                    color=0x00AEEF,
-                ):
-                    return False
-
-                # 1/3 Status
-                status_view = PlayerStatusView(allowed_user_id=member.id)
-                if not await self._send_step_embed_dm(
-                    member,
-                    title="Schritt 3/5 · Dein Status",
-                    desc="Sag mir kurz, wo du stehst – dann passe ich alles besser für dich an.",
-                    step=3,
-                    total=total_steps,
-                    view=status_view,
-                    color=0x95A5A6,
-                ):
-                    return False
-                status_choice = status_view.choice or STATUS_PLAYING
-
-                if status_choice == STATUS_NEED_BETA:
-                    try:
-                        await member.send(self._beta_invite_message())
-                    except discord.Forbidden as e:
-                        logger.warning(f"Beta-Invite DM an {member} ({member.id}) nicht möglich: {e}")
-                    except Exception:
-                        logger.exception("Beta-Invite DM konnte nicht gesendet werden")
-                    return True
-
-                # 4/5 Steam
-                q2_desc = steam_link_dm_description()
-                if not await self._send_step_embed_dm(
-                    member,
-                    title="Schritt 4/5 · Verknüpfe deinen Steam Account",
-                    desc=q2_desc,
-                    step=2,
-                    total=3,
-                    view=SteamLinkStepView(allowed_user_id=member.id),
-                    color=0x5865F2,
-                ):
-                    return False
-
-                # Streamer (optional)
-                try:
-                    embed = StreamerIntroView.build_embed(member)
-                    view = StreamerIntroView()
-                    msg = await member.send(embed=embed, view=view)
-                    await view.wait()
-                    try:
-                        await msg.delete()
-                    except Exception as exc:
-                        logger.debug("StreamerIntro DM-Message nicht gelöscht: %s", exc)
-                except Exception:
-                    logger.debug("StreamerIntro Schritt übersprungen (kein Modul/Fehler).", exc_info=True)
-
-                # 5/5 Regeln
-                q3_desc = (
-                    "📜 **Regelwerk – kurz & klar**\n"
-                    "✔ Respektvoller Umgang, keine Beleidigungen/Hassrede\n"
-                    "✔ Keine NSFW/Explizites, keine Leaks fremder Daten\n"
-                    "✔ Kein Spam/unnötige Pings, keine Fremdwerbung/Schadsoftware\n"
-                    "👉 Universalregel: **Sei kein Arschloch.**"
-                )
-                if not await self._send_step_embed_dm(
-                    member,
-                    title="Schritt 5/5 · Regeln bestätigen",
-                    desc=q3_desc,
-                    step=3,
-                    total=3,
-                    view=RulesView(allowed_user_id=member.id),
-                    color=0xE67E22,
-                ):
-                    return False
-
-                # Abschluss
-                closing_lines: list[str] = []
-                if status_choice == STATUS_NEW_PLAYER:
-                    closing_lines.append(
-                        "✨ **Neu dabei?** Frag die Community – wir helfen gern. "
-                        "Für eine kurze Einführung schreib **@earlysalty** oder poste in **#allgemein**."
-                    )
-                if status_choice == STATUS_NEED_BETA:
-                    closing_lines.append(self._beta_invite_message())
-                if status_choice == STATUS_RETURNING:
-                    closing_lines.append("🔁 **Willkommen zurück!** Schau für Runden in LFG/Voice vorbei – viel Spaß!")
-                if status_choice == STATUS_PLAYING:
-                    closing_lines.append("✅ **Viel Spaß!** Check **Guides** & **Ankündigungen** – und ping uns, wenn du was brauchst.")
-
-                if closing_lines:
-                    try:
-                        await member.send("\n\n".join(closing_lines))
-                    except discord.Forbidden as e:
-                        logger.warning(f"Abschluss-DM an {member} ({member.id}) nicht möglich: {e}")
-                    except Exception:
-                        logger.exception("Abschluss-DM: Unerwarteter Fehler beim Senden")
-
-                logger.info(f"Welcome-DM abgeschlossen für {member} ({member.id})")
-                return True
-
-            except discord.Forbidden:
-                logger.warning(f"DM an {member} ({member.id}) nicht möglich (DMs aus / blockiert)")
-                return False
-            except Exception as e:
-                logger.error(f"Fehler beim Welcome-DM an {member} ({member.id}): {e}")
-                return False
 
     async def run_flow_in_channel(self, channel: discord.abc.Messageable, member: discord.Member) -> bool:
         """Gleicher Flow im (privaten) Thread/Channel. Zählung 1/5–5/5; Intro ohne Zählung."""
@@ -569,7 +367,7 @@ class WelcomeDM(commands.Cog):
             logger.error(f"run_flow_in_channel Fehler: {e}", exc_info=True)
             return False
 
-    # ---------------- Events & Commands ----------------
+    # ---------------- Events ----------------
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -577,40 +375,6 @@ class WelcomeDM(commands.Cog):
             "WelcomeDM: Automatische Willkommens-DMs sind deaktiviert. Onboarding läuft über den Regelkanal. (%s)",
             member.id,
         )
-
-    @commands.command(name="tw")
-    @commands.guild_only()
-    @commands.check(_can_run_test_welcome)
-    async def test_welcome(self, ctx: commands.Context, user: discord.Member = None):
-        target = user
-        if target is None:
-            default_user_id = 662995601738170389
-            guild = ctx.guild
-            target = guild.get_member(default_user_id) if guild else None
-            if target is None and guild is not None:
-                try:
-                    target = await guild.fetch_member(default_user_id)
-                except discord.HTTPException:
-                    target = None
-
-            if target is None:
-                await ctx.send(
-                    "❌ Konnte den Standard-User nicht finden. Bitte gib `!tw @user` an."
-                )
-                return
-
-        await ctx.send(f"📤 Sende Welcome-DM an {target.mention} …")
-        ok = await self.send_welcome_messages(target)
-        await ctx.send("✅ Erfolgreich gesendet!" if ok else "⚠️ Senden fehlgeschlagen.")
-
-    @test_welcome.error
-    async def test_welcome_error(self, ctx: commands.Context, error: commands.CommandError):
-        if isinstance(error, commands.CheckFailure):
-            await ctx.send(
-                "❌ Dir fehlen die benötigten Rechte für diesen Befehl. "
-                "Er erfordert Administrator, Serververwaltung, Rollenverwaltung oder eine freigeschaltete Rolle."
-            )
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(WelcomeDM(bot))
