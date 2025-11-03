@@ -180,13 +180,55 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             background: #0f0f0f;
             border: 1px solid rgba(255,255,255,0.05);
             border-radius: 6px;
-            padding: 0.6rem;
-            max-height: 220px;
+            padding: 0.75rem;
+            max-height: 320px;
+            min-height: 150px;
             overflow-y: auto;
             white-space: pre-wrap;
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-            font-size: 0.78rem;
-            line-height: 1.35;
+            font-size: 0.84rem;
+            line-height: 1.4;
+        }
+        .standalone-log-view.expanded {
+            max-height: 640px;
+        }
+        .logs-controls {
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.5rem;
+            margin-top: 0.4rem;
+        }
+        .log-expand {
+            background: #343a40;
+            color: #f5f5f5;
+            padding: 0.25rem;
+            margin-right: 0;
+            margin-bottom: 0;
+            width: 34px;
+            height: 34px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .log-expand .expand-icon {
+            position: relative;
+            width: 14px;
+            height: 14px;
+            border: 2px solid currentColor;
+            border-radius: 3px;
+        }
+        .log-expand .expand-icon::after {
+            content: '';
+            position: absolute;
+            inset: -4px;
+            border: 2px solid currentColor;
+            border-radius: 3px;
+            opacity: 0.45;
+            transform: translate(4px, -4px);
+        }
+        .log-expand.expanded .expand-icon::after {
+            opacity: 0.9;
+            transform: translate(-2px, 2px);
         }
         .standalone-list {
             list-style: none;
@@ -197,10 +239,45 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         .standalone-list li {
             display: flex;
             justify-content: space-between;
+            align-items: center;
             gap: 0.5rem;
             border-bottom: 1px solid rgba(255,255,255,0.05);
-            padding: 0.25rem 0;
+            padding: 0.35rem 0;
         }
+        .standalone-list-main {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .standalone-list-title {
+            font-weight: 600;
+        }
+        .standalone-list-time {
+            color: #adb5bd;
+            font-size: 0.75rem;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            padding: 0.15rem 0.55rem;
+            font-size: 0.7rem;
+            font-weight: 600;
+            background: rgba(255,255,255,0.08);
+            color: #f5f5f5;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+        }
+        .status-pill.status-success { background: rgba(55, 178, 77, 0.22); color: #8ce99a; }
+        .status-pill.status-error,
+        .status-pill.status-failed { background: rgba(201, 42, 42, 0.22); color: #ff8787; }
+        .status-pill.status-pending { background: rgba(250, 176, 5, 0.25); color: #ffd43b; }
+        .status-pill.status-running { background: rgba(51, 154, 240, 0.22); color: #74c0fc; }
+        .status-pill.status-task { background: rgba(112, 72, 232, 0.22); color: #d0bfff; }
         button {
             border: none;
             border-radius: 6px;
@@ -443,6 +520,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             { value: 'quick.create', label: 'Quick Invite erstellen' },
         ],
     };
+    const logOpenState = new Map();
+    let isRefreshingStandalone = false;
     let authToken = localStorage.getItem('master-dashboard-token') || '';
     let selectedNode = null;
     tokenInput.value = authToken;
@@ -721,14 +800,6 @@ function renderSteamMetrics(container, metrics) {
     taskDiv.innerHTML = `<strong>Tasks:</strong> ${pendingTasks} pending • ${runningTasks} running • ${failedTasks} failed • ${doneTasks} done`;
     container.appendChild(taskDiv);
 
-    if (Array.isArray(tasks.recent) && tasks.recent.length) {
-        const latest = tasks.recent[0];
-        const updatedAt = Number(latest.updated_at);
-        const updatedText = Number.isFinite(updatedAt) ? formatTimestamp(updatedAt * 1000) : '–';
-        const recentDiv = document.createElement('div');
-        recentDiv.innerHTML = `<strong>Letzter Task:</strong> #${safeNumber(latest.id)} ${latest.type || '-'} (${latest.status || 'unbekannt'}) – ${updatedText}`;
-        container.appendChild(recentDiv);
-    }
 }
 
 function renderGenericMetrics(container, metrics) {
@@ -748,18 +819,40 @@ function renderStandalone(bots) {
     if (!standaloneContainer) {
         return;
     }
-    standaloneContainer.innerHTML = '';
-    if (!Array.isArray(bots) || bots.length === 0) {
-        const empty = document.createElement('p');
-        empty.className = 'standalone-meta';
-        empty.textContent = 'Keine Standalone-Bots registriert.';
-        standaloneContainer.appendChild(empty);
-        return;
-    }
+    isRefreshingStandalone = true;
+    try {
+        const existingCards = Array.from(standaloneContainer.querySelectorAll('.standalone-card'));
+        existingCards.forEach((card) => {
+            const cardKey = card.dataset.key;
+            if (!cardKey) {
+                return;
+            }
+            const details = card.querySelector('details.standalone-logs');
+            const pre = details ? details.querySelector('pre.standalone-log-view') : null;
+            const state = logOpenState.get(cardKey) || {};
+            if (details) {
+                state.open = details.open;
+            }
+            if (pre) {
+                state.expanded = pre.classList.contains('expanded');
+                state.scrollTop = pre.scrollTop;
+            }
+            logOpenState.set(cardKey, state);
+        });
 
-    bots.forEach((info) => {
-        const card = document.createElement('div');
-        card.className = 'standalone-card';
+        standaloneContainer.innerHTML = '';
+        if (!Array.isArray(bots) || bots.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'standalone-meta';
+            empty.textContent = 'Keine Standalone-Bots registriert.';
+            standaloneContainer.appendChild(empty);
+            return;
+        }
+
+        bots.forEach((info) => {
+            const card = document.createElement('div');
+            card.className = 'standalone-card';
+            card.dataset.key = info.key;
 
         const namespace = (info.config && info.config.command_namespace) ? info.config.command_namespace : info.key;
 
@@ -910,21 +1003,101 @@ function renderStandalone(bots) {
             commandSection.appendChild(list);
         }
 
-        const recentCommands = metrics.recent_commands || [];
-        if (recentCommands.length) {
-            const title = document.createElement('strong');
-            title.textContent = 'Letzte Befehle';
-            commandSection.appendChild(title);
-            const list = document.createElement('ul');
-            list.className = 'standalone-list';
-            recentCommands.slice(0, 5).forEach((cmd) => {
-                const li = document.createElement('li');
-                const statusText = cmd.status ? cmd.status.toUpperCase() : 'UNBEKANNT';
-                li.innerHTML = `<span>${cmd.command} (${statusText})</span><span>${formatTimestamp(cmd.finished_at || cmd.created_at)}</span>`;
-                list.appendChild(li);
-            });
-            commandSection.appendChild(list);
+    const recentCommands = metrics.recent_commands || [];
+    const recentTasks = Array.isArray(tasks.recent) ? tasks.recent : [];
+
+    const toMilliseconds = (value) => {
+        if (!value && value !== 0) {
+            return null;
         }
+        if (typeof value === 'number') {
+            if (!Number.isFinite(value)) {
+                return null;
+            }
+            return value < 1e12 ? value * 1000 : value;
+        }
+        const numeric = Number(value);
+        if (Number.isFinite(numeric)) {
+            return numeric < 1e12 ? numeric * 1000 : numeric;
+        }
+        const parsed = Date.parse(value);
+        return Number.isNaN(parsed) ? null : parsed;
+    };
+
+    const recentEntries = [];
+
+    recentCommands.slice(0, 10).forEach((cmd, index) => {
+        const statusText = (cmd.status || 'unbekannt').toString();
+        const timeValue = cmd.finished_at || cmd.created_at || Date.now();
+        const timestamp = toMilliseconds(timeValue) ?? Date.now();
+        recentEntries.push({
+            type: 'command',
+            label: cmd.command || `(unbekannt-${index})`,
+            status: statusText,
+            displayTime: toMilliseconds(timeValue) ?? timeValue,
+            sortValue: timestamp,
+        });
+    });
+
+    recentTasks.slice(0, 10).forEach((task) => {
+        const statusText = (task.status || task.state || 'unbekannt').toString();
+        const updatedValue = task.updated_at ?? task.finished_at ?? task.created_at ?? Date.now();
+        const timestamp = toMilliseconds(updatedValue) ?? Date.now();
+        recentEntries.push({
+            type: 'task',
+            label: `Task #${safeNumber(task.id)} ${task.type || '-'}`,
+            status: statusText,
+            displayTime: toMilliseconds(updatedValue) ?? updatedValue,
+            sortValue: timestamp,
+        });
+    });
+
+    if (recentEntries.length) {
+        recentEntries.sort((a, b) => b.sortValue - a.sortValue);
+        const title = document.createElement('strong');
+        title.textContent = 'Letzte Befehle';
+        commandSection.appendChild(title);
+        const list = document.createElement('ul');
+        list.className = 'standalone-list command-history';
+        recentEntries.slice(0, 8).forEach((entry) => {
+            const li = document.createElement('li');
+            const main = document.createElement('div');
+            main.className = 'standalone-list-main';
+
+            const titleSpan = document.createElement('span');
+            titleSpan.className = 'standalone-list-title';
+            titleSpan.textContent = entry.label;
+            main.appendChild(titleSpan);
+
+            const statusPill = document.createElement('span');
+            const normalized = entry.status.trim().toLowerCase();
+            statusPill.className = 'status-pill';
+            if (normalized) {
+                const classSafe = normalized.replace(/[^a-z0-9]+/g, '-');
+                statusPill.dataset.status = normalized;
+                statusPill.classList.add(`status-${classSafe}`);
+            }
+            statusPill.textContent = entry.status ? entry.status.toUpperCase() : 'UNBEKANNT';
+            main.appendChild(statusPill);
+
+            if (entry.type === 'task') {
+                const typePill = document.createElement('span');
+                typePill.className = 'status-pill status-task';
+                typePill.textContent = 'TASK';
+                main.appendChild(typePill);
+            }
+
+            li.appendChild(main);
+
+            const timeSpan = document.createElement('span');
+            timeSpan.className = 'standalone-list-time';
+            const displayValue = entry.displayTime ?? entry.sortValue;
+            timeSpan.textContent = formatTimestamp(displayValue);
+            li.appendChild(timeSpan);
+            list.appendChild(li);
+        });
+        commandSection.appendChild(list);
+    }
 
         card.appendChild(commandSection);
 
@@ -933,43 +1106,115 @@ function renderStandalone(bots) {
         const logsSummary = document.createElement('summary');
         logsSummary.textContent = 'Logs anzeigen';
         logsSection.appendChild(logsSummary);
+        const logsControls = document.createElement('div');
+        logsControls.className = 'logs-controls';
+        logsControls.hidden = true;
+        logsSection.appendChild(logsControls);
+        const expandBtn = document.createElement('button');
+        expandBtn.type = 'button';
+        expandBtn.className = 'log-expand';
+        expandBtn.setAttribute('aria-label', 'Log vergroessern');
+        expandBtn.setAttribute('title', 'Log vergroessern');
+        expandBtn.innerHTML = '<span class="expand-icon" aria-hidden="true"></span>';
+        logsControls.appendChild(expandBtn);
         const logsBody = document.createElement('pre');
         logsBody.className = 'standalone-log-view';
-        logsBody.textContent = 'Öffnen zum Laden…';
+        logsBody.textContent = 'Oeffnen zum Laden.';
         logsSection.appendChild(logsBody);
 
+        const storedLogState = logOpenState.get(info.key) || {};
+        const syncExpandLabels = (expanded) => {
+            expandBtn.setAttribute('title', expanded ? 'Log verkleinern' : 'Log vergroessern');
+            expandBtn.setAttribute('aria-label', expanded ? 'Log verkleinern' : 'Log vergroessern');
+        };
+
+        if (storedLogState.expanded) {
+            logsBody.classList.add('expanded');
+            expandBtn.classList.add('expanded');
+        }
+        syncExpandLabels(Boolean(storedLogState.expanded));
+
+        expandBtn.addEventListener('click', () => {
+            const expanded = !logsBody.classList.contains('expanded');
+            logsBody.classList.toggle('expanded', expanded);
+            expandBtn.classList.toggle('expanded', expanded);
+            syncExpandLabels(expanded);
+            const state = logOpenState.get(info.key) || {};
+            state.expanded = expanded;
+            state.scrollTop = logsBody.scrollTop;
+            logOpenState.set(info.key, state);
+        });
+
         let logsLoading = false;
-        logsSection.addEventListener('toggle', async () => {
-            if (!logsSection.open || logsLoading) {
+        const loadLogs = async () => {
+            if (logsLoading) {
                 return;
             }
             logsLoading = true;
-            logsBody.textContent = 'Lade Logs…';
+            logsBody.textContent = 'Lade Logs...';
             try {
                 const data = await fetchStandaloneLogs(info.key, 200);
                 const entries = Array.isArray(data.logs) ? data.logs : [];
                 if (!entries.length) {
-                    logsBody.textContent = 'Keine Logeinträge verfügbar.';
+                    logsBody.textContent = 'Keine Logeintraege verfuegbar.';
                 } else {
                     const lines = entries.map((entry) => {
-                        const ts = entry.ts ? formatTimestamp(entry.ts) : '–';
+                        const ts = entry.ts ? formatTimestamp(entry.ts) : '-';
                         const stream = entry.stream ? `[${entry.stream}]` : '';
                         const line = entry.line || '';
                         return `${ts} ${stream} ${line}`.trim();
                     });
-                    logsBody.textContent = lines.join();
+                    logsBody.textContent = lines.join('\n');
+                }
+                const state = logOpenState.get(info.key) || {};
+                if (typeof state.scrollTop === 'number') {
+                    logsBody.scrollTop = state.scrollTop;
                 }
             } catch (err) {
                 logsBody.textContent = `Fehler beim Laden: ${err.message}`;
             } finally {
                 logsLoading = false;
             }
+        };
+
+        logsSection.addEventListener('toggle', () => {
+            if (!logsSection.open && isRefreshingStandalone) {
+                return;
+            }
+            logsControls.hidden = !logsSection.open;
+            const state = logOpenState.get(info.key) || {};
+            state.open = logsSection.open;
+            state.scrollTop = logsBody.scrollTop;
+            state.expanded = logsBody.classList.contains('expanded');
+            logOpenState.set(info.key, state);
+            if (!logsSection.open) {
+                return;
+            }
+            loadLogs();
         });
+
+        logsBody.addEventListener('scroll', () => {
+            if (!logsSection.open) {
+                return;
+            }
+            const state = logOpenState.get(info.key) || {};
+            state.scrollTop = logsBody.scrollTop;
+            logOpenState.set(info.key, state);
+        });
+
+        if (storedLogState.open) {
+            logsSection.open = true;
+            logsControls.hidden = false;
+            loadLogs();
+        }
 
         card.appendChild(logsSection);
 
-        standaloneContainer.appendChild(card);
-    });
+            standaloneContainer.appendChild(card);
+        });
+    } finally {
+        isRefreshingStandalone = false;
+    }
 }
 
 async function controlStandalone(key, action) {
