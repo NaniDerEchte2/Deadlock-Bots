@@ -120,6 +120,13 @@ def _create_or_reset_invite(discord_id: int, steam_id64: str, account_id: Option
         conn = db.connect()
         conn.execute(
             """
+            DELETE FROM steam_beta_invites
+            WHERE steam_id64 = ? AND discord_id != ?
+            """,
+            (str(steam_id64), int(discord_id)),
+        )
+        conn.execute(
+            """
             INSERT INTO steam_beta_invites(discord_id, steam_id64, account_id, status)
             VALUES(?, ?, ?, ?)
             ON CONFLICT(discord_id) DO UPDATE SET
