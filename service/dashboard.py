@@ -880,6 +880,7 @@ function renderStandalone(bots) {
         metaParts.push(`Autostart: ${info.autostart ? 'Ja' : 'Nein'}`);
         meta.innerHTML = metaParts.join(' • ');
         const metrics = info.metrics || {};
+        const tasks = metrics.tasks || {};
         if (metrics.updated_at) {
             meta.innerHTML += `<br>Heartbeat: ${formatTimestamp(metrics.updated_at)}`;
         } else if (Number.isFinite(metrics.heartbeat)) {
@@ -1164,7 +1165,7 @@ function renderStandalone(bots) {
                         const line = entry.line || '';
                         return `${ts} ${stream} ${line}`.trim();
                     });
-                    logsBody.textContent = lines.join('\n');
+                    logsBody.textContent = lines.join('\\n');
                 }
                 const state = logOpenState.get(info.key) || {};
                 if (typeof state.scrollTop === 'number') {
