@@ -26,7 +26,7 @@ const path = require('path');
 const SteamUser = require('steam-user');
 const Database = require('better-sqlite3');
 const { QuickInvites } = require('./quick_invites');
-const { DeadlockPresenceLogger } = require('./deadlock_presence_logger');
+const { StatusAnzeige } = require('./statusanzeige');
 
 const SteamID = SteamUser.SteamID;
 
@@ -312,13 +312,13 @@ const quickInvites = new QuickInvites(db, client, log, {
   autoEnsureIntervalMs: Number(process.env.STEAM_INVITE_AUTO_ENSURE_MS ?? 30000) // alle 30s prüfen
 });
 
-const presenceLogger = new DeadlockPresenceLogger(client, log, {
+const statusAnzeige = new StatusAnzeige(client, log, {
   appId: DEADLOCK_APP_ID,
   language: process.env.STEAM_PRESENCE_LANGUAGE || 'german',
   csvPath: path.join(DATA_DIR, 'deadlock_presence_log.csv'),
 });
-log('info', 'Presence logger configured', { csvPath: presenceLogger.csvPath });
-presenceLogger.start();
+log('info', 'Statusanzeige initialisiert', { csvPath: statusAnzeige.csvPath });
+statusAnzeige.start();
 
 // ---------- Helpers ----------
 function updateRefreshToken(token) {
@@ -1328,7 +1328,7 @@ function shutdown(code = 0) {
   try {
     log('info', 'Shutting down Steam bridge');
     if (typeof quickInvites.stopAutoEnsure === 'function') quickInvites.stopAutoEnsure();
-    presenceLogger.stop();
+    statusAnzeige.stop();
     flushPendingPlaytestInvites(new Error('Service shutting down'));
     flushDeadlockGcWaiters(new Error('Service shutting down'));
     client.logOff();
