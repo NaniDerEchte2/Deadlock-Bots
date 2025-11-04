@@ -202,6 +202,13 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               deadlock_updated_at INTEGER
             );
 
+            CREATE TABLE IF NOT EXISTS deadlock_voice_watch(
+              steam_id TEXT PRIMARY KEY,
+              guild_id INTEGER,
+              channel_id INTEGER,
+              updated_at INTEGER NOT NULL
+            );
+
             -- Steam Rich Presence Cache (gefüllt vom node-steam-user Service)
             CREATE TABLE IF NOT EXISTS steam_rich_presence(
               steam_id TEXT PRIMARY KEY,
