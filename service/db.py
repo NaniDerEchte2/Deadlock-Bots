@@ -193,7 +193,13 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               last_server_id TEXT,
               last_seen_ts INTEGER,
               in_deadlock_now INTEGER DEFAULT 0,
-              in_match_now_strict INTEGER DEFAULT 0
+              in_match_now_strict INTEGER DEFAULT 0,
+              deadlock_stage TEXT,
+              deadlock_minutes INTEGER,
+              deadlock_localized TEXT,
+              deadlock_hero TEXT,
+              deadlock_party_hint TEXT,
+              deadlock_updated_at INTEGER
             );
 
             -- Ausgehende Freundschaftsanfragen des Steam-Bots
@@ -296,6 +302,20 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
+        # Live player state extensions
+        for alter_sql in (
+            "ALTER TABLE live_player_state ADD COLUMN deadlock_stage TEXT",
+            "ALTER TABLE live_player_state ADD COLUMN deadlock_minutes INTEGER",
+            "ALTER TABLE live_player_state ADD COLUMN deadlock_localized TEXT",
+            "ALTER TABLE live_player_state ADD COLUMN deadlock_hero TEXT",
+            "ALTER TABLE live_player_state ADD COLUMN deadlock_party_hint TEXT",
+            "ALTER TABLE live_player_state ADD COLUMN deadlock_updated_at INTEGER",
+        ):
+            try:
+                c.execute(alter_sql)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
         # Indizes ergänzen (idempotent)
         try:
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_user  ON steam_links(user_id)")
