@@ -1227,9 +1227,9 @@ function markLoggedOn(details) {
   }
 
   try {
-    client.setPersona(SteamUser.EPersonaState.Online);
+    client.setPersona(SteamUser.EPersonaState.Away);
   } catch (err) {
-    log('warn', 'Failed to set persona online', { error: err.message });
+    log('warn', 'Failed to set persona away', { error: err.message });
   }
   ensureDeadlockGamePlaying(true);
 
