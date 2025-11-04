@@ -28,7 +28,16 @@ const Database = require('better-sqlite3');
 const { QuickInvites } = require('./quick_invites');
 const { StatusAnzeige } = require('./statusanzeige');
 
-const SteamID = SteamUser.SteamID;
+let SteamID = null;
+if (SteamUser && SteamUser.SteamID) {
+  SteamID = SteamUser.SteamID;
+} else {
+  try {
+    SteamID = require('steamid');
+  } catch (err) {
+    throw new Error(`SteamID helper unavailable: ${err && err.message ? err.message : String(err)}`);
+  }
+}
 
 const DEADLOCK_APP_ID = Number.parseInt(process.env.DEADLOCK_APPID || '1422450', 10);
 const PROTO_MASK = SteamUser.GCMsgProtoBuf || 0x80000000;
@@ -346,9 +355,21 @@ function ensureDeadlockGamePlaying(force = false) {
   const now = Date.now();
   if (!force && now - deadlockGameRequestedAt < 15000) return;
   try {
+    const previouslyActive = deadlockAppActive;
     client.gamesPlayed([DEADLOCK_APP_ID]);
     deadlockGameRequestedAt = now;
-    log('debug', 'Requested Deadlock GC session via gamesPlayed()', { appId: DEADLOCK_APP_ID });
+    deadlockAppActive = true;
+    if (!previouslyActive) {
+      deadlockGcReady = false;
+      // kick off a GC hello immediately on first activation so we do not rely
+      // on appLaunched events (steam-user >=5 stopped emitting them for gamesPlayed)
+      sendDeadlockGcHello(true);
+    }
+    log('debug', 'Requested Deadlock GC session via gamesPlayed()', {
+      appId: DEADLOCK_APP_ID,
+      force,
+      previouslyActive,
+    });
   } catch (err) {
     log('warn', 'Failed to call gamesPlayed for Deadlock', { error: err.message });
   }
