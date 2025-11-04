@@ -7,6 +7,7 @@ const DEFAULT_INTERVAL_MS = 60000;
 const MIN_INTERVAL_MS = 10000;
 const PERSIST_ERROR_LOG_INTERVAL_MS = 60000;
 const MAX_MATCH_MINUTES = 24 * 60;
+const VOICE_WATCH_MAX_AGE_SEC = 180;
 
 class StatusAnzeige extends DeadlockPresenceLogger {
   constructor(client, log, options = {}) {
@@ -21,6 +22,24 @@ class StatusAnzeige extends DeadlockPresenceLogger {
     this.upsertPresenceStmt = null;
     this.lastPersistErrorAt = 0;
     this.latestPresence = new Map();
+    this.voiceWatchStmt = null;
+
+    if (this.db && typeof this.db.exec === 'function') {
+      try {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS deadlock_voice_watch(
+            steam_id TEXT PRIMARY KEY,
+            guild_id INTEGER,
+            channel_id INTEGER,
+            updated_at INTEGER NOT NULL
+          )
+        `);
+      } catch (err) {
+        this.log('warn', 'Failed to ensure deadlock_voice_watch table exists', {
+          error: err && err.message ? err.message : String(err),
+        });
+      }
+    }
 
     if (this.persistenceEnabled) {
       try {
@@ -35,6 +54,19 @@ class StatusAnzeige extends DeadlockPresenceLogger {
       }
     } else {
       this.log('debug', 'Statusanzeige running without persistence database reference');
+    }
+
+    if (this.db && typeof this.db.prepare === 'function') {
+      try {
+        this.voiceWatchStmt = this.db.prepare(
+          'SELECT steam_id FROM deadlock_voice_watch WHERE updated_at >= ?'
+        );
+      } catch (err) {
+        this.voiceWatchStmt = null;
+        this.log('warn', 'Failed to prepare voice watch lookup statement', {
+          error: err && err.message ? err.message : String(err),
+        });
+      }
     }
 
     this.boundHandleDisconnected = this.handleDisconnected.bind(this);
@@ -118,17 +150,17 @@ class StatusAnzeige extends DeadlockPresenceLogger {
 
   performSnapshot() {
     if (!this.running) return;
-    const friendIds = this.collectFriendIds();
-    if (!friendIds.length) {
-      this.log('debug', 'Statusanzeige snapshot skipped (no known friends)');
+    const targetSteamIds = this.collectVoiceWatchSteamIds();
+    if (!targetSteamIds.length) {
+      this.log('debug', 'Statusanzeige snapshot skipped (no active voice members)');
       return;
     }
 
     this.log('debug', 'Statusanzeige snapshot started', {
-      friendCount: friendIds.length,
+      voiceCount: targetSteamIds.length,
       intervalMs: this.pollIntervalMs,
     });
-    this.fetchPersonasAndRichPresence(friendIds);
+    this.fetchPersonasAndRichPresence(targetSteamIds);
   }
 
   handleSnapshot(entry) {
@@ -185,6 +217,29 @@ class StatusAnzeige extends DeadlockPresenceLogger {
       });
     }
     return Array.from(ids);
+  }
+
+  collectVoiceWatchSteamIds() {
+    if (!this.voiceWatchStmt) {
+      return [];
+    }
+    try {
+      const cutoff = Math.floor(Date.now() / 1000) - VOICE_WATCH_MAX_AGE_SEC;
+      const rows = this.voiceWatchStmt.all(cutoff);
+      if (!rows || !rows.length) return [];
+      const ids = new Set();
+      rows.forEach((row) => {
+        if (row && row.steam_id) {
+          ids.add(String(row.steam_id));
+        }
+      });
+      return Array.from(ids);
+    } catch (err) {
+      this.log('warn', 'Failed to load voice watch steam ids', {
+        error: err && err.message ? err.message : String(err),
+      });
+      return [];
+    }
   }
 
   preparePersistence() {
@@ -268,19 +323,15 @@ class StatusAnzeige extends DeadlockPresenceLogger {
     const localized = entry.localizedString ? String(entry.localizedString).toLowerCase() : '';
     const minutes = Number.isFinite(entry.minutes) ? entry.minutes : null;
 
-    if (localized.includes('lobby')) {
-      return { stage: 'lobby', minutes: minutes !== null ? minutes : 0 };
+    const hero = entry.heroGuess ? String(entry.heroGuess).trim() : '';
+    const hasDeadlockToken = localized.includes('{deadlock:}');
+    const normalizedMinutes = minutes !== null ? minutes : 0;
+
+    if (hasDeadlockToken && hero.length > 0) {
+      return { stage: 'match', minutes: normalizedMinutes };
     }
 
-    if (localized.includes('min')) {
-      return { stage: 'match', minutes: minutes !== null ? minutes : 0 };
-    }
-
-    if (minutes !== null && minutes > 0) {
-      return { stage: 'match', minutes };
-    }
-
-    return { stage: 'unknown', minutes };
+    return { stage: 'lobby', minutes: normalizedMinutes };
   }
 
   normalizeLocalizedString(value) {
