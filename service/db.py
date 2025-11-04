@@ -202,6 +202,31 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               deadlock_updated_at INTEGER
             );
 
+            -- Steam Rich Presence Cache (gefüllt vom node-steam-user Service)
+            CREATE TABLE IF NOT EXISTS steam_rich_presence(
+              steam_id TEXT PRIMARY KEY,
+              app_id INTEGER,
+              status TEXT,
+              status_text TEXT,
+              display TEXT,
+              player_group TEXT,
+              player_group_size INTEGER,
+              connect TEXT,
+              mode TEXT,
+              map TEXT,
+              party_size INTEGER,
+              raw_json TEXT,
+              last_update INTEGER,
+              updated_at INTEGER
+            );
+
+            -- Optionale zusätzliche Watchlist für den Presence-Service
+            CREATE TABLE IF NOT EXISTS steam_presence_watchlist(
+              steam_id TEXT PRIMARY KEY,
+              note TEXT,
+              added_at INTEGER DEFAULT (strftime('%s','now'))
+            );
+
             -- Ausgehende Freundschaftsanfragen des Steam-Bots
             CREATE TABLE IF NOT EXISTS steam_friend_requests(
               steam_id TEXT PRIMARY KEY,

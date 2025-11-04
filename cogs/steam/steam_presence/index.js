@@ -324,9 +324,12 @@ const quickInvites = new QuickInvites(db, client, log, {
 const statusAnzeige = new StatusAnzeige(client, log, {
   appId: DEADLOCK_APP_ID,
   language: process.env.STEAM_PRESENCE_LANGUAGE || 'german',
-  csvPath: path.join(DATA_DIR, 'deadlock_presence_log.csv'),
+  db,
 });
-log('info', 'Statusanzeige initialisiert', { csvPath: statusAnzeige.csvPath });
+log('info', 'Statusanzeige initialisiert', {
+  persistence: statusAnzeige.persistenceEnabled,
+  pollIntervalMs: statusAnzeige.pollIntervalMs,
+});
 statusAnzeige.start();
 
 // ---------- Helpers ----------

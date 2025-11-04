@@ -5,6 +5,8 @@ const { DeadlockPresenceLogger } = require('./deadlock_presence_logger');
 
 const DEFAULT_INTERVAL_MS = 60000;
 const MIN_INTERVAL_MS = 10000;
+const PERSIST_ERROR_LOG_INTERVAL_MS = 60000;
+const MAX_MATCH_MINUTES = 24 * 60;
 
 class StatusAnzeige extends DeadlockPresenceLogger {
   constructor(client, log, options = {}) {
@@ -13,6 +15,27 @@ class StatusAnzeige extends DeadlockPresenceLogger {
     this.running = false;
     this.pollTimer = null;
     this.nextPollDueAt = null;
+
+    this.db = options.db || null;
+    this.persistenceEnabled = Boolean(this.db);
+    this.upsertPresenceStmt = null;
+    this.lastPersistErrorAt = 0;
+    this.latestPresence = new Map();
+
+    if (this.persistenceEnabled) {
+      try {
+        this.preparePersistence();
+        this.persistenceEnabled = Boolean(this.upsertPresenceStmt);
+      } catch (err) {
+        this.persistenceEnabled = false;
+        this.upsertPresenceStmt = null;
+        this.log('warn', 'Statusanzeige persistence initialisation failed', {
+          error: err && err.message ? err.message : String(err),
+        });
+      }
+    } else {
+      this.log('debug', 'Statusanzeige running without persistence database reference');
+    }
 
     this.boundHandleDisconnected = this.handleDisconnected.bind(this);
   }
@@ -108,6 +131,47 @@ class StatusAnzeige extends DeadlockPresenceLogger {
     this.fetchPersonasAndRichPresence(friendIds);
   }
 
+  handleSnapshot(entry) {
+    if (!entry || !entry.steamId) return;
+    const steamId = String(entry.steamId);
+    const stageInfo = this.deriveStage(entry);
+
+    const record = {
+      steamId,
+      capturedAtMs: entry.capturedAtMs,
+      inDeadlock: Boolean(entry.inDeadlock),
+      playingAppID:
+        typeof entry.playingAppID === 'number' && Number.isFinite(entry.playingAppID)
+          ? entry.playingAppID
+          : null,
+      stage: stageInfo.stage,
+      minutes: stageInfo.minutes,
+      localized: this.normalizeLocalizedString(entry.localizedString),
+      hero: this.normalizeHeroGuess(entry.heroGuess),
+      partyHint: this.normalizePartyHint(entry.partyHint),
+    };
+
+    this.latestPresence.set(steamId, record);
+
+    if (!this.persistenceEnabled || !this.upsertPresenceStmt) {
+      return;
+    }
+
+    try {
+      const payload = this.buildDbPayload(record);
+      this.upsertPresenceStmt.run(payload);
+    } catch (err) {
+      const now = Date.now();
+      if (!this.lastPersistErrorAt || now - this.lastPersistErrorAt >= PERSIST_ERROR_LOG_INTERVAL_MS) {
+        this.lastPersistErrorAt = now;
+        this.log('warn', 'Statusanzeige failed to persist presence snapshot', {
+          steamId,
+          error: err && err.message ? err.message : String(err),
+        });
+      }
+    }
+  }
+
   collectFriendIds() {
     const ids = new Set();
     if (this.friendIds && this.friendIds.size) {
@@ -122,6 +186,125 @@ class StatusAnzeige extends DeadlockPresenceLogger {
     }
     return Array.from(ids);
   }
+
+  preparePersistence() {
+    if (!this.db || typeof this.db.prepare !== 'function') {
+      throw new Error('Statusanzeige persistence requires a valid better-sqlite3 connection');
+    }
+    this.upsertPresenceStmt = this.db.prepare(`
+      INSERT INTO live_player_state (
+        steam_id,
+        last_gameid,
+        last_server_id,
+        last_seen_ts,
+        in_deadlock_now,
+        in_match_now_strict,
+        deadlock_stage,
+        deadlock_minutes,
+        deadlock_localized,
+        deadlock_hero,
+        deadlock_party_hint,
+        deadlock_updated_at
+      ) VALUES (
+        @steamId,
+        @lastGameId,
+        @lastServerId,
+        @lastSeenTs,
+        @inDeadlockNow,
+        @inMatchNowStrict,
+        @deadlockStage,
+        @deadlockMinutes,
+        @deadlockLocalized,
+        @deadlockHero,
+        @deadlockPartyHint,
+        @deadlockUpdatedAt
+      )
+      ON CONFLICT(steam_id) DO UPDATE SET
+        last_gameid = excluded.last_gameid,
+        last_server_id = excluded.last_server_id,
+        last_seen_ts = excluded.last_seen_ts,
+        in_deadlock_now = excluded.in_deadlock_now,
+        in_match_now_strict = excluded.in_match_now_strict,
+        deadlock_stage = excluded.deadlock_stage,
+        deadlock_minutes = excluded.deadlock_minutes,
+        deadlock_localized = excluded.deadlock_localized,
+        deadlock_hero = excluded.deadlock_hero,
+        deadlock_party_hint = excluded.deadlock_party_hint,
+        deadlock_updated_at = excluded.deadlock_updated_at
+    `);
+  }
+
+  buildDbPayload(record) {
+    const unixSeconds = Math.floor(record.capturedAtMs / 1000);
+    let minutesValue = null;
+    if (Number.isFinite(record.minutes)) {
+      const bounded = Math.max(0, Math.min(MAX_MATCH_MINUTES, Math.round(record.minutes)));
+      minutesValue = bounded;
+    }
+
+    return {
+      steamId: record.steamId,
+      lastGameId:
+        record.playingAppID !== null && record.playingAppID !== undefined
+          ? String(record.playingAppID)
+          : null,
+      lastServerId: record.partyHint,
+      lastSeenTs: unixSeconds,
+      inDeadlockNow: record.inDeadlock ? 1 : 0,
+      inMatchNowStrict: record.stage === 'match' ? 1 : 0,
+      deadlockStage: record.stage,
+      deadlockMinutes: minutesValue,
+      deadlockLocalized: record.localized,
+      deadlockHero: record.hero,
+      deadlockPartyHint: record.partyHint,
+      deadlockUpdatedAt: unixSeconds,
+    };
+  }
+
+  deriveStage(entry) {
+    if (!entry || !entry.inDeadlock) {
+      return { stage: 'offline', minutes: null };
+    }
+    const localized = entry.localizedString ? String(entry.localizedString).toLowerCase() : '';
+    const minutes = Number.isFinite(entry.minutes) ? entry.minutes : null;
+
+    if (localized.includes('lobby')) {
+      return { stage: 'lobby', minutes: minutes !== null ? minutes : 0 };
+    }
+
+    if (localized.includes('min')) {
+      return { stage: 'match', minutes: minutes !== null ? minutes : 0 };
+    }
+
+    if (minutes !== null && minutes > 0) {
+      return { stage: 'match', minutes };
+    }
+
+    return { stage: 'unknown', minutes };
+  }
+
+  normalizeLocalizedString(value) {
+    if (!value) return null;
+    const str = String(value).replace(/\s+/g, ' ').trim();
+    return str.length ? str : null;
+  }
+
+  normalizeHeroGuess(value) {
+    if (!value) return null;
+    const str = String(value).trim();
+    return str.length ? str : null;
+  }
+
+  normalizePartyHint(value) {
+    if (!value) return null;
+    const str = String(value).trim();
+    return str.length ? str : null;
+  }
+
+  getPresenceSummary(steamId) {
+    if (!steamId) return null;
+    return this.latestPresence.get(String(steamId)) || null;
+  }
 }
 
 function optionsToNumber(value) {
@@ -135,4 +318,3 @@ function optionsToNumber(value) {
 }
 
 module.exports = { StatusAnzeige };
-

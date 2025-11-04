@@ -1,8 +1,5 @@
 'use strict';
 
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
 const SteamUser = require('steam-user');
 
 class DeadlockPresenceLogger {
@@ -24,25 +21,9 @@ class DeadlockPresenceLogger {
       }
     }
 
-    const outputDir = options.outputDir
-      ? path.resolve(options.outputDir)
-      : path.resolve(process.env.STEAM_PRESENCE_LOG_DIR || path.join(os.homedir(), 'Documents', 'Deadlock', 'logs'));
-    const fileName = options.fileName || 'deadlock_presence_log.csv';
-    this.csvPath = options.csvPath ? path.resolve(options.csvPath) : path.join(outputDir, fileName);
-    this.ensureDir(path.dirname(this.csvPath));
-
     this.sessionStart = new Map();
     this.friendIds = new Set();
     this.started = false;
-    this.headerWritten = false;
-    this.batchRows = [];
-    this.batchTimer = null;
-
-    try {
-      this.ensureCsvHeader();
-    } catch (err) {
-      this.log('warn', 'Failed to initialize Deadlock presence CSV', { error: err.message || String(err) });
-    }
 
     this.handlers = {
       loggedOn: this.handleLoggedOn.bind(this),
@@ -71,7 +52,6 @@ class DeadlockPresenceLogger {
     this.client.removeListener('user', this.handlers.user);
     this.client.removeListener('friendRelationship', this.handlers.friendRelationship);
     this.client.removeListener('richPresence', this.handlers.richPresence);
-    this.flushBatch(true);
   }
 
   handleLoggedOn() {
@@ -130,8 +110,7 @@ class DeadlockPresenceLogger {
     }
 
     try {
-      const personaLogLevel = steamIds.length > 1 ? 'info' : 'debug';
-      this.log(personaLogLevel, 'Requesting personas for presence snapshot', { count: steamIds.length });
+      this.log('info', 'Requesting personas for presence snapshot', { count: steamIds.length });
       this.client.getPersonas(steamIds, (err) => {
         if (err) {
           this.log('warn', 'getPersonas failed', { error: err.message || String(err) });
@@ -147,8 +126,7 @@ class DeadlockPresenceLogger {
   fetchAndWriteRichPresence(ids) {
     if (!ids.length) return;
     try {
-      const presenceLogLevel = ids.length > 1 ? 'info' : 'debug';
-      this.log(presenceLogLevel, 'Fetching Deadlock rich presence', { count: ids.length });
+      this.log('info', 'Fetching Deadlock rich presence', { count: ids.length });
       const args = [this.appId, ids];
       if (this.language) {
         args.push(this.language);
@@ -205,28 +183,30 @@ class DeadlockPresenceLogger {
     const minutes = this.computeMinutes(richPresence, steamId, capturedAtMs);
     const partyHint = this.extractPartyHint(richPresence);
 
-    const row = [
+    const entry = {
+      capturedAtMs,
       capturedIso,
       steamId,
-      this.toCsvSafe(name),
-      Number.isFinite(playingAppID) ? playingAppID : '',
-      inDeadlock ? 'true' : 'false',
-      this.toCsvSafe(localizedString),
-      this.toCsvSafe(heroGuess),
-      Number.isFinite(minutes) ? minutes : '',
-      this.toCsvSafe(partyHint),
-      this.toCsvSafe(richPresence),
-    ];
+      name: name || null,
+      playingAppID: Number.isFinite(playingAppID) ? playingAppID : null,
+      inDeadlock,
+      localizedString: localizedString || null,
+      heroGuess: heroGuess || null,
+      minutes: Number.isFinite(minutes) ? minutes : null,
+      partyHint: partyHint || null,
+      richPresence,
+    };
 
-    this.pushCsvRow(row);
-
-    if (inDeadlock) {
-      this.log('info', 'Queued Deadlock presence row', {
+    try {
+      this.handleSnapshot(entry);
+    } catch (err) {
+      this.log('warn', 'Deadlock snapshot handler threw', {
         steamId,
-        localized: localizedString || null,
-        minutes,
+        error: err && err.message ? err.message : String(err),
       });
     }
+
+    return entry;
   }
 
   computeMinutes(rp, steamId, capturedAtMs) {
@@ -285,91 +265,8 @@ class DeadlockPresenceLogger {
     }
   }
 
-  ensureDir(dirPath) {
-    try {
-      fs.mkdirSync(dirPath, { recursive: true });
-    } catch (err) {
-      if (!err || err.code !== 'EEXIST') {
-        throw err;
-      }
-    }
-  }
-
-  ensureCsvHeader() {
-    if (this.headerWritten) {
-      return;
-    }
-
-    const header = [
-      'timestamp_iso',
-      'steamid64',
-      'name',
-      'playing_appid',
-      'deadlock',
-      'localized_string',
-      'hero_guess',
-      'minutes',
-      'party_hint',
-      'raw_rich_presence_json',
-    ].join(',');
-
-    try {
-      const fd = fs.openSync(this.csvPath, 'a+');
-      try {
-        const stats = fs.fstatSync(fd);
-        if (stats.size === 0) {
-          fs.writeFileSync(fd, `${header}\n`, { encoding: 'utf8' });
-        }
-      } finally {
-        fs.closeSync(fd);
-      }
-    } catch (err) {
-      throw err;
-    }
-
-    this.headerWritten = true;
-  }
-
-  flushBatch(immediate = false) {
-    if (this.batchRows.length === 0) {
-      if (immediate && this.batchTimer) {
-        clearTimeout(this.batchTimer);
-        this.batchTimer = null;
-      }
-      return;
-    }
-    try {
-      this.ensureCsvHeader();
-      fs.appendFileSync(this.csvPath, `${this.batchRows.join('\n')}\n`, 'utf8');
-    } catch (err) {
-      this.log('warn', 'Failed to append presence rows to CSV', { error: err.message || String(err) });
-    } finally {
-      this.batchRows = [];
-      if (this.batchTimer) {
-        clearTimeout(this.batchTimer);
-        this.batchTimer = null;
-      }
-    }
-  }
-
-  flushBatchSoon() {
-    if (this.batchTimer) return;
-    this.batchTimer = setTimeout(() => this.flushBatch(), 1500);
-  }
-
-  pushCsvRow(row) {
-    this.ensureCsvHeader();
-    this.batchRows.push(row.join(','));
-    this.flushBatchSoon();
-  }
-
-  toCsvSafe(value) {
-    if (value === null || value === undefined || value === '') {
-      return '""';
-    }
-    const str = typeof value === 'string' ? value : JSON.stringify(value);
-    const escaped = str.replace(/"/g, '""');
-    return `"${escaped}"`;
+  handleSnapshot(/* entry */) {
+    // Intentionally empty – subclasses can persist or forward snapshots.
   }
 }
 
