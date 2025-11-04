@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from typing import List, Optional
 
@@ -12,6 +13,22 @@ from aiohttp import web
 from . import storage
 from .dashboard import Dashboard
 from .logger import log
+
+
+def _parse_env_int(var_name: str, default: int = 0) -> int:
+    raw = os.getenv(var_name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        log.warning("Invalid integer for %s=%r – falling back to %s", var_name, raw, default)
+        return default
+
+
+STREAMER_ROLE_ID = _parse_env_int("STREAMER_ROLE_ID", 1313624729466441769)
+STREAMER_GUILD_ID = _parse_env_int("STREAMER_GUILD_ID", 0)
+FALLBACK_MAIN_GUILD_ID = _parse_env_int("MAIN_GUILD_ID", 0)
 
 
 VERIFICATION_SUCCESS_DM_MESSAGE = (
@@ -172,6 +189,90 @@ class TwitchDashboardMixin:
         stats["avg_viewers_tracked"] = tr_avg
         return stats
 
+    async def _ensure_streamer_role(self, row_data: Optional[dict]) -> str:
+        """Assign the streamer role when available; return a short status hint."""
+        if STREAMER_ROLE_ID <= 0:
+            return ""
+        if not row_data:
+            return ""
+
+        user_id_raw = row_data.get("discord_user_id")
+        if not user_id_raw:
+            log.info("Streamer verification: no Discord ID stored for %s", row_data.get("discord_display_name"))
+            return ""
+
+        try:
+            user_id = int(str(user_id_raw))
+        except (TypeError, ValueError):
+            log.warning("Streamer verification: invalid Discord ID %r", user_id_raw)
+            return "(Streamer-Rolle konnte nicht vergeben werden – ungültige Discord-ID)"
+
+        guild_candidates: List[discord.Guild] = []
+        seen: set[int] = set()
+
+        for guild_id in (STREAMER_GUILD_ID, FALLBACK_MAIN_GUILD_ID):
+            if guild_id and guild_id not in seen:
+                seen.add(guild_id)
+                guild = self.bot.get_guild(guild_id)
+                if guild:
+                    guild_candidates.append(guild)
+
+        if not guild_candidates:
+            guild_candidates.extend(self.bot.guilds)
+
+        for guild in guild_candidates:
+            role = guild.get_role(STREAMER_ROLE_ID)
+            if role is None:
+                continue
+
+            member = guild.get_member(user_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except discord.NotFound:
+                    member = None
+                except discord.HTTPException as exc:
+                    log.warning("Streamer verification: fetch_member failed in guild %s: %s", guild.id, exc)
+                    member = None
+
+            if member is None:
+                continue
+
+            if role in member.roles:
+                return ""
+
+            try:
+                await member.add_roles(role, reason="Streamer-Verifizierung über Dashboard bestätigt")
+                log.info(
+                    "Streamer verification: assigned role %s to %s in guild %s",
+                    STREAMER_ROLE_ID,
+                    user_id,
+                    guild.id,
+                )
+                return "(Streamer-Rolle vergeben)"
+            except discord.Forbidden:
+                log.warning(
+                    "Streamer verification: missing permissions to add role %s in guild %s",
+                    STREAMER_ROLE_ID,
+                    guild.id,
+                )
+                return "(Streamer-Rolle konnte nicht vergeben werden – fehlende Berechtigung)"
+            except discord.HTTPException as exc:
+                log.warning(
+                    "Streamer verification: failed to add role %s in guild %s: %s",
+                    STREAMER_ROLE_ID,
+                    guild.id,
+                    exc,
+                )
+                return "(Streamer-Rolle konnte nicht vergeben werden)"
+
+        log.info(
+            "Streamer verification: role %s or member %s not found in available guilds",
+            STREAMER_ROLE_ID,
+            user_id,
+        )
+        return "(Streamer-Rolle konnte nicht vergeben werden – Mitglied/Rolle nicht gefunden)"
+
     async def _notify_verification_success(self, login: str, row_data: Optional[dict]) -> str:
         if not row_data:
             log.info("Keine Discord-Daten für %s zum Versenden der Erfolgsnachricht gefunden", login)
@@ -260,10 +361,16 @@ class TwitchDashboardMixin:
                     )
                     base_msg = f"{login} für 30 Tage verifiziert"
 
-            note = ""
+            notes: List[str] = []
             if should_notify:
-                note = await self._notify_verification_success(login, row_data)
-            return f"{base_msg} {note}".strip()
+                dm_note = await self._notify_verification_success(login, row_data)
+                if dm_note:
+                    notes.append(dm_note)
+            role_note = await self._ensure_streamer_role(row_data)
+            if role_note:
+                notes.append(role_note)
+            merged = " ".join(notes).strip()
+            return f"{base_msg} {merged}".strip()
 
         if mode == "clear":
             with storage.get_conn() as c:
