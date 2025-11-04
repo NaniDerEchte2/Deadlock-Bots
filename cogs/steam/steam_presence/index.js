@@ -45,6 +45,12 @@ const GC_MSG_CLIENT_HELLO = 4004;
 const GC_MSG_CLIENT_WELCOME = 4005;
 const GC_MSG_SUBMIT_PLAYTEST_USER = 9189;
 const GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE = 9190;
+const GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW = Number.parseInt(process.env.DEADLOCK_GC_PROTOCOL_VERSION || '1', 10);
+const GC_CLIENT_HELLO_PROTOCOL_VERSION = Number.isFinite(GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW) && GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW > 0
+  ? GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW
+  : 1;
+
+let cachedDeadlockGcHelloPayload = null;
 
 // ---------- Logging ----------
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
@@ -383,7 +389,8 @@ function sendDeadlockGcHello(force = false) {
   const now = Date.now();
   if (!force && now - lastGcHelloAttemptAt < 2000) return false;
   try {
-    client.sendToGC(DEADLOCK_APP_ID, PROTO_MASK + GC_MSG_CLIENT_HELLO, {}, Buffer.alloc(0));
+    const payload = getDeadlockGcHelloPayload();
+    client.sendToGC(DEADLOCK_APP_ID, PROTO_MASK + GC_MSG_CLIENT_HELLO, {}, payload);
     lastGcHelloAttemptAt = now;
     log('debug', 'Sent Deadlock GC hello');
     return true;
@@ -415,6 +422,14 @@ function notifyDeadlockGcReady() {
       if (waiter) waiter.resolve(true);
     } catch (_) {}
   }
+}
+
+function getDeadlockGcHelloPayload() {
+  if (cachedDeadlockGcHelloPayload) return cachedDeadlockGcHelloPayload;
+  const tag = encodeVarint((1 << 3) | 0);
+  const version = encodeVarint(GC_CLIENT_HELLO_PROTOCOL_VERSION);
+  cachedDeadlockGcHelloPayload = Buffer.concat([tag, version]);
+  return cachedDeadlockGcHelloPayload;
 }
 
 function waitForDeadlockGcReady(timeoutMs = 10000) {
