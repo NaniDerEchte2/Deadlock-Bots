@@ -24,8 +24,9 @@ TARGET_CATEGORY_IDS: Set[int] = {
 
 POLL_INTERVAL_SECONDS = 60
 PRESENCE_STALE_SECONDS = 180
-RENAME_COOLDOWN_SECONDS = 300
+RENAME_COOLDOWN_SECONDS = 620
 RENAME_REASON = "Deadlock Voice Status Update"
+MIN_ACTIVE_PLAYERS = 1
 
 _SUFFIX_REGEX = re.compile(
     r"\s*-\s*\d+/\d+\s+(?:in der Lobby|im Match Min (?:\d+|\d+\+))$",
@@ -89,9 +90,22 @@ class DeadlockVoiceStatus(commands.Cog):
         presence_map = await self._fetch_presence_rows(steam_ids)
         now = int(time.time())
 
+        voice_watch_entries: Dict[str, Tuple[str, int, int]] = {}
+
         for channel in channels:
             members = members_per_channel.get(channel.id, [])
+            if members:
+                for member in members:
+                    steam_id = steam_map.get(member.id)
+                    if steam_id:
+                        voice_watch_entries[steam_id] = (
+                            str(steam_id),
+                            channel.guild.id,
+                            channel.id,
+                        )
             await self._process_channel(channel, members, steam_map, presence_map, now)
+
+        await self._persist_voice_watch_entries(list(voice_watch_entries.values()))
 
     def _collect_monitored_channels(self) -> List[discord.VoiceChannel]:
         result: List[discord.VoiceChannel] = []
@@ -141,6 +155,38 @@ class DeadlockVoiceStatus(commands.Cog):
 
         return {str(row["steam_id"]): row for row in rows}
 
+    async def _persist_voice_watch_entries(self, entries: List[Tuple[str, int, int]]) -> None:
+        await self._ensure_db()
+        if not self.db:
+            return
+        now_ts = int(time.time())
+        if not entries:
+            await self.db.execute("DELETE FROM deadlock_voice_watch")
+            await self.db.commit()
+            return
+
+        try:
+            rows = [(steam_id, guild_id, channel_id, now_ts) for (steam_id, guild_id, channel_id) in entries]
+            await self.db.executemany(
+                """
+                INSERT INTO deadlock_voice_watch(steam_id, guild_id, channel_id, updated_at)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(steam_id) DO UPDATE SET
+                  guild_id=excluded.guild_id,
+                  channel_id=excluded.channel_id,
+                  updated_at=excluded.updated_at
+                """,
+                rows,
+            )
+            placeholders = ",".join("?" for _ in entries)
+            await self.db.execute(
+                f"DELETE FROM deadlock_voice_watch WHERE steam_id NOT IN ({placeholders})",
+                [steam_id for (steam_id, _, _) in entries],
+            )
+            await self.db.commit()
+        except Exception as exc:
+            log.warning("Failed to persist voice watch entries: %s", exc)
+
     async def _process_channel(
         self,
         channel: discord.VoiceChannel,
@@ -175,14 +221,30 @@ class DeadlockVoiceStatus(commands.Cog):
 
         candidate_stage: Optional[str] = None
         candidate_minutes: List[int] = []
-        for stage in ("match", "lobby"):
-            values = stage_minutes.get(stage, [])
-            if len(values) >= 4:
+        candidate_count = 0
+
+        for stage, values in stage_minutes.items():
+            size = len(values)
+            if size < MIN_ACTIVE_PLAYERS:
+                continue
+            prefer = False
+            if size > candidate_count:
+                prefer = True
+            elif size == candidate_count:
+                if candidate_stage != "match" and stage == "match":
+                    prefer = True
+            if prefer:
                 candidate_stage = stage
                 candidate_minutes = values
-                break
+                candidate_count = size
 
-        if not candidate_stage:
+        if not candidate_stage and stage_minutes:
+            stage, values = max(stage_minutes.items(), key=lambda item: len(item[1]))
+            candidate_stage = stage
+            candidate_minutes = values
+            candidate_count = len(values)
+
+        if not candidate_stage or candidate_count < MIN_ACTIVE_PLAYERS:
             await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None)
             return
 
