@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 'use strict';
 
 /**
@@ -492,7 +492,7 @@ class SteamBridge {
 
   loadRefreshToken() {
     try {
-      const tokenPath = // Try multiple token file formats for flexibility
+      // Try multiple token file formats for flexibility
       const tokenPaths = [
         path.join(CONFIG.dataDirectory, 'refresh.token'),      // Original format
         path.join(CONFIG.dataDirectory, 'refresh_token.txt')   // Alternative format
@@ -510,8 +510,8 @@ class SteamBridge {
       
       // Fallback: original single file check
       const fallbackPath = path.join(CONFIG.dataDirectory, 'refresh_token.txt');
-      if (fs.existsSync(tokenPath)) {
-        return fs.readFileSync(tokenPath, 'utf8').trim();
+      if (fs.existsSync(fallbackPath)) {
+        return fs.readFileSync(fallbackPath, 'utf8').trim();
       }
     } catch (error) {
       this.logger.debug('Could not load refresh token', { error: error.message });
