@@ -246,38 +246,74 @@ function renderRankMetrics(container, metrics) {
 function renderSteamMetrics(container, metrics) {
     container.innerHTML = '';
     const runtime = metrics.runtime || {};
+    const steamState = metrics.steam || {};
     const quick = metrics.quick_invites || {};
     const quickCounts = quick.counts || {};
     const tasks = metrics.tasks || {};
     const taskCounts = tasks.counts || {};
+    const taskProcessor = metrics.task_processor || {};
+    const components = metrics.components || {};
+    const presence = metrics.presence || {};
 
     const statusParts = [];
-    if (runtime.logged_on) {
+    if (steamState.logged_on) {
         statusParts.push('✅ Eingeloggt');
-    } else if (runtime.logging_in) {
+    } else if (steamState.logging_in) {
         statusParts.push('⏳ Login läuft');
     } else {
         statusParts.push('❌ Abgemeldet');
     }
-    if (runtime.guard_required) {
-        const guard = runtime.guard_required;
+    if (steamState.has_pending_guard || (steamState.guard_required && (steamState.guard_required.type || steamState.guard_required.domain))) {
+        const guard = steamState.guard_required || {};
         const guardLabel = guard.type || guard.domain || 'unbekannt';
         statusParts.push(`Guard: ${guardLabel}`);
+    }
+    if (runtime.is_running === false) {
+        statusParts.push('⏸️ Gestoppt');
+    }
+    if (runtime.uptime_human) {
+        statusParts.push(`Uptime ${runtime.uptime_human}`);
     }
     const statusDiv = document.createElement('div');
     statusDiv.innerHTML = `<strong>Status:</strong> ${statusParts.join(' • ')}`;
     container.appendChild(statusDiv);
 
-    if (runtime.account_name || runtime.steam_id64) {
+    const steamId = steamState.steam_id64 || runtime.steam_id64;
+    const accountName = steamState.account_name || runtime.account_name;
+    if (steamId || accountName) {
         const accountDiv = document.createElement('div');
-        accountDiv.innerHTML = `<strong>Konto:</strong> ${runtime.account_name || '–'} (${runtime.steam_id64 || '–'})`;
+        accountDiv.innerHTML = `<strong>Konto:</strong> ${accountName || '–'} (${steamId || '–'})`;
         container.appendChild(accountDiv);
     }
 
-    if (runtime.last_error && runtime.last_error.message) {
+    if (runtime.memory_usage_mb) {
+        const memoryDiv = document.createElement('div');
+        memoryDiv.innerHTML = `<strong>Speicher:</strong> ${safeNumber(runtime.memory_usage_mb)} MB`;
+        container.appendChild(memoryDiv);
+    }
+
+    const errorMessage = (steamState.last_error && steamState.last_error.message)
+        || (typeof runtime.last_error === 'string' ? runtime.last_error : runtime.last_error && runtime.last_error.message)
+        || (components.steam_client && components.steam_client.last_error && components.steam_client.last_error.message)
+        || (components.quick_invites && components.quick_invites.last_auto_ensure_error && components.quick_invites.last_auto_ensure_error.message)
+        || null;
+    if (errorMessage) {
         const errorDiv = document.createElement('div');
-        errorDiv.innerHTML = `<strong>Fehler:</strong> ${runtime.last_error.message}`;
+        errorDiv.innerHTML = `<strong>Fehler:</strong> ${errorMessage}`;
         container.appendChild(errorDiv);
+    }
+
+    const presenceLine = [];
+    if (Number.isFinite(Number(presence.active_users))) {
+        presenceLine.push(`aktive Spieler ${safeNumber(presence.active_users)}`);
+    }
+    if (Number.isFinite(Number(presence.pending_requests))) {
+        presenceLine.push(`pending ${safeNumber(presence.pending_requests)}`);
+    }
+    if (presenceLine.length) {
+        const presenceDiv = document.createElement('div');
+        presenceDiv.innerHTML = `<strong>Presence:</strong> ${presenceLine.join(' • ')}`;
+        container.appendChild(presenceDiv);
     }
 
     const quickDiv = document.createElement('div');
@@ -301,6 +337,142 @@ function renderSteamMetrics(container, metrics) {
     taskDiv.innerHTML = `<strong>Tasks:</strong> ${pendingTasks} pending • ${runningTasks} running • ${failedTasks} failed • ${doneTasks} done`;
     container.appendChild(taskDiv);
 
+    const componentSection = document.createElement('div');
+    componentSection.className = 'steam-component-section';
+    const componentTitle = document.createElement('strong');
+    componentTitle.textContent = 'Komponenten-Status';
+    componentSection.appendChild(componentTitle);
+
+    const appendComponent = (label, statusText, details = []) => {
+        const row = document.createElement('div');
+        row.className = 'steam-component-entry';
+        const header = document.createElement('div');
+        header.innerHTML = `<span class="steam-component-name">${label}:</span> <span class="steam-component-status-text">${statusText}</span>`;
+        row.appendChild(header);
+        if (details.length) {
+            const detail = document.createElement('div');
+            detail.className = 'steam-component-details';
+            detail.textContent = details.join(' • ');
+            row.appendChild(detail);
+        }
+        componentSection.appendChild(row);
+    };
+
+    if (components.steam_client) {
+        const sc = components.steam_client;
+        let statusText = sc.logged_on ? '✅ Online' : (sc.logging_in ? '⏳ Login läuft' : '❌ Offline');
+        if (sc.has_pending_guard || sc.guard_required) {
+            statusText += ' • Guard offen';
+        }
+        const details = [];
+        if (sc.steam_id64) {
+            details.push(`ID: ${sc.steam_id64}`);
+        }
+        if (typeof sc.login_attempts === 'number') {
+            details.push(`Versuche: ${sc.login_attempts}`);
+        }
+        if (sc.last_error && sc.last_error.message) {
+            details.push(`Fehler: ${sc.last_error.message}`);
+        }
+        appendComponent('Steam Client', statusText, details);
+    }
+
+    if (taskProcessor && Object.keys(taskProcessor).length) {
+        const lastProcessed = taskProcessor.lastProcessedAt ?? taskProcessor.last_processed_at;
+        let statusText = taskProcessor.is_processing ? '✅ Aktiv' : '⏸️ Angehalten';
+        if (taskProcessor.circuit_breaker_open) {
+            statusText += ' • ⚠️ Circuit-Breaker';
+        }
+        const details = [];
+        if (taskProcessor.poll_interval_ms) {
+            details.push(`Polling: ${safeNumber(taskProcessor.poll_interval_ms)} ms`);
+        }
+        if (lastProcessed) {
+            details.push(`Letzter Durchlauf: ${formatTimestamp(lastProcessed)}`);
+        }
+        if (typeof taskProcessor.processed === 'number') {
+            details.push(`Verarbeitet: ${safeNumber(taskProcessor.processed)}`);
+        }
+        if (typeof taskProcessor.failed === 'number') {
+            details.push(`Fehler: ${safeNumber(taskProcessor.failed)}`);
+        }
+        appendComponent('Task Prozessor', statusText, details);
+    }
+
+    if (components.quick_invites) {
+        const qi = components.quick_invites;
+        let statusText = '⚙️ Auto-Ensure deaktiviert';
+        if (qi.auto_ensure_enabled) {
+            statusText = qi.auto_ensure_active ? '✅ Auto-Ensure aktiv' : '⏳ Auto-Ensure bereit';
+        }
+        if (qi.ensure_in_flight) {
+            statusText += ' • Läuft';
+        }
+        const details = [];
+        if (qi.pool) {
+            details.push(`Pool: Ziel ${safeNumber(qi.pool.target)} / Minimum ${safeNumber(qi.pool.min_available)}`);
+        }
+        if (qi.last_auto_ensure_at) {
+            details.push(`Letzter Lauf: ${formatTimestamp(qi.last_auto_ensure_at)}`);
+        }
+        if (qi.last_sync_at) {
+            details.push(`Letzter Sync: ${formatTimestamp(qi.last_sync_at)}`);
+        }
+        if (qi.last_auto_ensure_error && qi.last_auto_ensure_error.message) {
+            details.push(`Fehler: ${qi.last_auto_ensure_error.message}`);
+        } else if (qi.last_sync_error && qi.last_sync_error.message) {
+            details.push(`Sync-Fehler: ${qi.last_sync_error.message}`);
+        }
+        appendComponent('Quick Invites', statusText, details);
+    }
+
+    if (components.statusanzeige) {
+        const sa = components.statusanzeige;
+        let statusText = sa.running ? '✅ Läuft' : '⏸️ Angehalten';
+        if (sa.last_snapshot_pending) {
+            statusText += ' • Snapshot ausstehend';
+        }
+        const details = [];
+        if (sa.poll_interval_ms) {
+            details.push(`Intervall: ${safeNumber(sa.poll_interval_ms)} ms`);
+        }
+        if (sa.last_snapshot_requested_at) {
+            details.push(`Letzte Anfrage: ${formatTimestamp(sa.last_snapshot_requested_at)}`);
+        }
+        if (sa.last_snapshot_completed_at) {
+            details.push(`Letzte Antwort: ${formatTimestamp(sa.last_snapshot_completed_at)}`);
+        }
+        if (typeof sa.last_snapshot_count === 'number') {
+            details.push(`Letzte Nutzer: ${safeNumber(sa.last_snapshot_count)}`);
+        }
+        if (typeof sa.tracked_users === 'number') {
+            details.push(`Gespeichert: ${safeNumber(sa.tracked_users)}`);
+        }
+        appendComponent('Statusanzeige', statusText, details);
+    }
+
+    if (components.presence_tracker) {
+        const pt = components.presence_tracker;
+        const statusText = pt.timer_active ? '✅ Timer aktiv' : '⏸️ Timer aus';
+        const details = [];
+        if (typeof pt.active_users === 'number') {
+            details.push(`Aktive Nutzer: ${safeNumber(pt.active_users)}`);
+        }
+        if (typeof pt.pending_requests === 'number') {
+            details.push(`Pending Requests: ${safeNumber(pt.pending_requests)}`);
+        }
+        if (pt.last_check_at) {
+            details.push(`Letzter Check: ${formatTimestamp(pt.last_check_at)}`);
+        }
+        if (pt.interval_ms) {
+            details.push(`Intervall: ${safeNumber(pt.interval_ms)} ms`);
+        }
+        appendComponent('Presence-Tracker', statusText, details);
+    }
+
+    if (componentSection.children.length > 1) {
+        container.appendChild(componentSection);
+    }
 }
 
 function renderGenericMetrics(container, metrics) {
