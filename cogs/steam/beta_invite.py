@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from logging.handlers import RotatingFileHandler
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
 import discord
@@ -28,6 +31,23 @@ BETA_INVITE_SUPPORT_CONTACT = getattr(
 )
 
 log = logging.getLogger(__name__)
+
+_failure_log = logging.getLogger(f"{__name__}.failures")
+if not _failure_log.handlers:
+    logs_dir = Path(__file__).resolve().parents[2] / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    handler = RotatingFileHandler(
+        logs_dir / "beta_invite_failures.log",
+        maxBytes=512 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    )
+    _failure_log.addHandler(handler)
+    _failure_log.setLevel(logging.INFO)
+    _failure_log.propagate = False
 
 STEAM64_BASE = 76561197960265728
 
@@ -391,13 +411,30 @@ class BetaInviteFlow(commands.Cog):
                         formatted = _format_gc_response_error(response)
                         if formatted:
                             error_text = formatted
+
+            details = {
+                "discord_id": record.discord_id,
+                "steam_id64": record.steam_id64,
+                "account_id": account_id,
+                "task_status": invite_outcome.status,
+                "timed_out": invite_outcome.timed_out,
+                "task_error": invite_outcome.error,
+                "task_result": invite_outcome.result,
+                "record_id": record.id,
+                "error_text": error_text,
+            }
+            try:
+                serialized_details = json.dumps(details, ensure_ascii=False, default=str)
+            except TypeError:
+                serialized_details = str(details)
+            _failure_log.error("Invite task failed: %s", serialized_details)
             _update_invite(
                 record.id,
                 status=STATUS_ERROR,
                 last_error=str(error_text),
             )
             await interaction.followup.send(
-                f"❌ Einladung konnte nicht versendet werden: {error_text}",
+                f"❌ Ein Problem ist aufgetreten – der Invite hat nicht geklappt. Bitte wende dich an {BETA_INVITE_SUPPORT_CONTACT}.",
                 ephemeral=True,
             )
             return
