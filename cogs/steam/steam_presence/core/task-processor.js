@@ -44,6 +44,9 @@ class TaskProcessor {
     this.taskHandlers.set('AUTH_LOGIN', this.handleAuthLogin.bind(this));
     this.taskHandlers.set('AUTH_LOGOUT', this.handleAuthLogout.bind(this));
     this.taskHandlers.set('AUTH_GUARD_CODE', this.handleAuthGuardCode.bind(this));
+    
+    // NOTE: Custom task handlers (AUTH_SEND_PLAYTEST_INVITE, etc.) will be 
+    // registered by the main SteamBridge class via addTaskHandler()
   }
 
   start() {
@@ -242,6 +245,7 @@ class TaskProcessor {
       success: result.success
     };
   }
+
 
   // Database operations
   markTaskRunning(taskId) {
