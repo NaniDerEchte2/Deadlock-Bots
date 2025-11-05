@@ -22,6 +22,38 @@
 const fs = require('fs');
 const path = require('path');
 
+function parseBoolean(value, fallback = null) {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+const DATA_DIRECTORY = process.env.STEAM_PRESENCE_DATA_DIR || path.join(__dirname, '.steam-data');
+
+const TOKEN_PATHS = {
+  refresh: path.join(DATA_DIRECTORY, 'refresh.token'),
+  refreshLegacy: path.join(DATA_DIRECTORY, 'refresh_token.txt'),
+  machine: path.join(DATA_DIRECTORY, 'machine_auth_token.txt')
+};
+
+const DEFAULT_CREDENTIALS = {
+  accountName: process.env.STEAM_BOT_USERNAME || process.env.STEAM_LOGIN || process.env.STEAM_ACCOUNT || '',
+  password: process.env.STEAM_BOT_PASSWORD || process.env.STEAM_PASSWORD || '',
+  rememberPassword: parseBoolean(process.env.STEAM_REMEMBER_PASSWORD || process.env.STEAM_REMEMBER, null)
+};
+
 // Core modules
 const { SmartLogger } = require('./core/logger');
 const { SteamClientManager } = require('./core/steam-client');
@@ -39,7 +71,7 @@ const CONFIG = {
   
   // Steam
   deadlockAppId: parseInt(process.env.DEADLOCK_APPID || '1422450', 10),
-  dataDirectory: process.env.STEAM_PRESENCE_DATA_DIR || path.join(__dirname, '.steam-data'),
+  dataDirectory: DATA_DIRECTORY,
   
   // Presence tracking
   presenceCheckInterval: parseInt(process.env.PRESENCE_CHECK_INTERVAL || '60000', 10), // 1 minute default
@@ -51,7 +83,10 @@ const CONFIG = {
   
   // Performance
   batchSize: parseInt(process.env.BATCH_SIZE || '10', 10),
-  maxRetries: parseInt(process.env.MAX_RETRIES || '3', 10)
+  maxRetries: parseInt(process.env.MAX_RETRIES || '3', 10),
+
+  tokenPaths: TOKEN_PATHS,
+  defaultCredentials: DEFAULT_CREDENTIALS
 };
 
 class SteamBridge {
@@ -60,7 +95,20 @@ class SteamBridge {
       defaultRateLimit: 30000, // 30s rate limit
       batchTimeout: 5000 // 5s batch window
     });
-    
+
+    this.defaultCredentials = {
+      accountName: CONFIG.defaultCredentials.accountName,
+      password: CONFIG.defaultCredentials.password,
+      rememberPassword: CONFIG.defaultCredentials.rememberPassword
+    };
+
+    this.refreshToken = null;
+    this.machineAuthToken = null;
+
+    this.ensureDataDirectory();
+    this.refreshToken = this.loadRefreshToken();
+    this.machineAuthToken = this.loadMachineAuthToken();
+
     // Initialize components
     this.database = null;
     this.steamClient = null;
@@ -159,7 +207,10 @@ class SteamBridge {
     
     this.taskProcessor = new TaskProcessor(
       this.database.getRawDatabase(),
-      this.steamClient
+      this.steamClient,
+      {
+        buildLoginOptions: this.buildLoginOptions.bind(this)
+      }
     );
     
     // Add custom task handlers
@@ -218,6 +269,16 @@ class SteamBridge {
     // Rich presence events (optimized)
     client.on('user', (sid, user) => {
       this.handleUserUpdate(sid, user);
+    });
+
+    client.on('refreshToken', (token) => {
+      this.logger.info('Received Steam refresh token update');
+      this.saveRefreshToken(token);
+    });
+
+    client.on('machineAuthToken', (token) => {
+      this.logger.info('Received Steam machine auth token update');
+      this.saveMachineAuthToken(token);
     });
   }
 
@@ -863,56 +924,239 @@ class SteamBridge {
   }
 
   async attemptAutoLogin() {
-    const refreshToken = this.loadRefreshToken();
-    
+    const refreshToken = this.refreshToken || this.loadRefreshToken();
+
     if (!refreshToken) {
       this.logger.info('No refresh token available - waiting for manual login');
       return;
     }
-    
+
     try {
-      const result = await this.steamClient.login({
+      const loginOptions = {
         refreshToken,
         source: 'auto-start'
-      });
-      
+      };
+
+      const machineAuthToken = this.getMachineAuthToken();
+      if (machineAuthToken) {
+        loginOptions.machineAuthToken = machineAuthToken;
+      }
+
+      const result = await this.steamClient.login(loginOptions);
+
       this.logger.info('Auto-login initiated', {
         started: result.started,
         using_refresh_token: true
       });
-      
+
     } catch (error) {
       this.logger.warn('Auto-login failed', { error: error.message });
     }
   }
 
-  loadRefreshToken() {
+  ensureDataDirectory() {
     try {
-      // Try multiple token file formats for flexibility
-      const tokenPaths = [
-        path.join(CONFIG.dataDirectory, 'refresh.token'),      // Original format
-        path.join(CONFIG.dataDirectory, 'refresh_token.txt')   // Alternative format
-      ];
-      
-      for (const tokenPath of tokenPaths) {
+      fs.mkdirSync(CONFIG.dataDirectory, { recursive: true });
+    } catch (error) {
+      this.logger.warn('Failed to ensure data directory', { error: error.message });
+    }
+  }
+
+  loadRefreshToken() {
+    let token = null;
+
+    try {
+      for (const tokenPath of [CONFIG.tokenPaths.refresh, CONFIG.tokenPaths.refreshLegacy]) {
+        if (!tokenPath) continue;
         if (fs.existsSync(tokenPath)) {
-          const token = fs.readFileSync(tokenPath, 'utf8').trim();
-          if (token) {
+          const candidate = fs.readFileSync(tokenPath, 'utf8').trim();
+          if (candidate) {
+            token = candidate;
             this.logger.info('Loaded refresh token', { path: path.basename(tokenPath) });
-            return token;
+            break;
           }
         }
-      }
-      
-      // Fallback: original single file check
-      const fallbackPath = path.join(CONFIG.dataDirectory, 'refresh_token.txt');
-      if (fs.existsSync(fallbackPath)) {
-        return fs.readFileSync(fallbackPath, 'utf8').trim();
       }
     } catch (error) {
       this.logger.debug('Could not load refresh token', { error: error.message });
     }
-    return null;
+
+    this.refreshToken = token || null;
+    return this.refreshToken;
+  }
+
+  saveRefreshToken(token) {
+    const normalized = typeof token === 'string' ? token.trim() : '';
+    this.refreshToken = normalized || null;
+
+    let persisted = false;
+
+    for (const tokenPath of [CONFIG.tokenPaths.refresh, CONFIG.tokenPaths.refreshLegacy]) {
+      if (!tokenPath) continue;
+
+      try {
+        if (!this.refreshToken) {
+          fs.rmSync(tokenPath, { force: true });
+        } else {
+          fs.writeFileSync(tokenPath, `${this.refreshToken}\n`, 'utf8');
+        }
+        persisted = true;
+      } catch (error) {
+        this.logger.warn('Failed to persist refresh token', {
+          path: path.basename(tokenPath),
+          error: error.message
+        });
+      }
+    }
+
+    if (!persisted) {
+      return;
+    }
+
+    if (this.refreshToken) {
+      this.logger.info('Stored refresh token', { path: path.basename(CONFIG.tokenPaths.refresh) });
+    } else {
+      this.logger.info('Cleared stored refresh token');
+    }
+  }
+
+  loadMachineAuthToken() {
+    let token = null;
+
+    try {
+      const machinePath = CONFIG.tokenPaths.machine;
+      if (machinePath && fs.existsSync(machinePath)) {
+        const candidate = fs.readFileSync(machinePath, 'utf8').trim();
+        if (candidate) {
+          token = candidate;
+          this.logger.info('Loaded machine auth token', { path: path.basename(machinePath) });
+        }
+      }
+    } catch (error) {
+      this.logger.debug('Could not load machine auth token', { error: error.message });
+    }
+
+    this.machineAuthToken = token || null;
+    return this.machineAuthToken;
+  }
+
+  saveMachineAuthToken(token) {
+    const normalized = typeof token === 'string' ? token.trim() : '';
+    this.machineAuthToken = normalized || null;
+
+    const machinePath = CONFIG.tokenPaths.machine;
+    if (!machinePath) {
+      return;
+    }
+
+    let persisted = false;
+
+    try {
+      if (!this.machineAuthToken) {
+        fs.rmSync(machinePath, { force: true });
+      } else {
+        fs.writeFileSync(machinePath, `${this.machineAuthToken}\n`, 'utf8');
+      }
+      persisted = true;
+    } catch (error) {
+      this.logger.warn('Failed to persist machine auth token', {
+        path: path.basename(machinePath),
+        error: error.message
+      });
+    }
+
+    if (!persisted) {
+      return;
+    }
+
+    if (this.machineAuthToken) {
+      this.logger.info('Stored machine auth token', { path: path.basename(machinePath) });
+    } else {
+      this.logger.info('Cleared stored machine auth token');
+    }
+  }
+
+  getMachineAuthToken() {
+    if (this.machineAuthToken) {
+      return this.machineAuthToken;
+    }
+
+    return this.loadMachineAuthToken();
+  }
+
+  buildLoginOptions(payload = {}) {
+    const loginPayload = payload || {};
+
+    const providedRefreshToken = loginPayload.refresh_token || loginPayload.refreshToken;
+    const forceCredentials = Boolean(
+      loginPayload.force_credentials ||
+      loginPayload.forceCredentials ||
+      (Object.prototype.hasOwnProperty.call(loginPayload, 'use_refresh_token') && !loginPayload.use_refresh_token)
+    );
+
+    if (providedRefreshToken && !forceCredentials) {
+      const normalized = typeof providedRefreshToken === 'string'
+        ? providedRefreshToken.trim()
+        : providedRefreshToken;
+
+      if (normalized) {
+        this.refreshToken = normalized;
+        return { refreshToken: normalized };
+      }
+    }
+
+    const accountName = loginPayload.account_name ||
+      loginPayload.accountName ||
+      this.defaultCredentials.accountName;
+    const password = loginPayload.password ||
+      loginPayload.account_password ||
+      this.defaultCredentials.password;
+
+    if (!accountName || !password) {
+      throw new Error('Missing Steam account credentials');
+    }
+
+    const options = {
+      accountName,
+      password
+    };
+
+    const twoFactor = loginPayload.two_factor_code || loginPayload.twoFactorCode;
+    if (twoFactor) {
+      options.twoFactorCode = String(twoFactor).trim();
+    }
+
+    const authCode = loginPayload.auth_code || loginPayload.authCode;
+    if (authCode) {
+      options.authCode = String(authCode).trim();
+    }
+
+    if (Object.prototype.hasOwnProperty.call(loginPayload, 'remember_password')) {
+      options.rememberPassword = Boolean(loginPayload.remember_password);
+    } else if (this.defaultCredentials.rememberPassword !== null) {
+      options.rememberPassword = this.defaultCredentials.rememberPassword;
+    }
+
+    const providedMachineToken = loginPayload.machine_auth_token || loginPayload.machineAuthToken;
+    if (providedMachineToken) {
+      options.machineAuthToken = String(providedMachineToken).trim();
+      this.machineAuthToken = options.machineAuthToken;
+    } else {
+      const storedMachineToken = this.getMachineAuthToken();
+      if (storedMachineToken) {
+        options.machineAuthToken = storedMachineToken;
+      }
+    }
+
+    if (loginPayload.account_name) {
+      this.defaultCredentials.accountName = loginPayload.account_name;
+    }
+
+    if (loginPayload.password) {
+      this.defaultCredentials.password = loginPayload.password;
+    }
+
+    return options;
   }
 
   // Monitoring
