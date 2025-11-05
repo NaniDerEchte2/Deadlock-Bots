@@ -8,7 +8,6 @@ node_modules/
 
 tempvoice_interface.json
 *.json
-install_windows_service.py
 *.db
 *__pycache__
 *pyc
@@ -38,8 +37,7 @@ cogs\steam\steam_presence\.steam-data*
 *.db-shm
 *.db-wal
 *.db
-cogs/faq_menu.py
-clip_submission*
+
 # Quick invites regel entfernt - jetzt in steam_presence section
 service/changelogs.py
 standalone/csv_to_deadlock.py
