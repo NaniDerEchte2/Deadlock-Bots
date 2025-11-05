@@ -1776,7 +1776,7 @@ client.on('appLaunched', (appId) => {
     log('debug', 'Sending GC hello after app launch');
     sendDeadlockGcHello(true);
   }, 4000); // Increased delay
-}););
+});
 client.on('appQuit', (appId) => {
   log('info', 'Steam app quit', { appId });
   if (Number(appId) !== Number(DEADLOCK_APP_ID)) return;
@@ -1786,7 +1786,7 @@ client.on('appQuit', (appId) => {
   deadlockGcReady = false;
   flushDeadlockGcWaiters(new Error('Deadlock app quit'));
   flushPendingPlaytestInvites(new Error('Deadlock app quit'));
-}););
+});
 
 client.on('receivedFromGC', (appId, msgType, payload) => {
   if (Number(appId) !== Number(DEADLOCK_APP_ID)) return;
@@ -1814,7 +1814,6 @@ client.on('receivedFromGC', (appId, msgType, payload) => {
       expectedPlaytestResponse: GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE
     });
   }
-});
 });
 client.on('disconnected', (eresult, msg) => {
   runtimeState.logged_on = false;
