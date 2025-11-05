@@ -231,6 +231,13 @@ class SteamBridge {
     
     this.taskProcessor.addTaskHandler('AUTH_SEND_PLAYTEST_INVITE',
       this.handlePlaytestInvite.bind(this));
+    
+    this.taskProcessor.addTaskHandler('AUTH_CHECK_FRIENDSHIP',
+      this.handleCheckFriendship.bind(this));
+    
+    this.logger.info('✅ Custom task handlers registered', {
+      handlers: ['AUTH_QUICK_INVITE_CREATE', 'AUTH_QUICK_INVITE_ENSURE_POOL', 'AUTH_SEND_PLAYTEST_INVITE', 'AUTH_CHECK_FRIENDSHIP']
+    });
   }
 
   // Custom task handlers
@@ -239,8 +246,22 @@ class SteamBridge {
       throw new Error('QuickInvites module not available');
     }
     
-    const result = await this.quickInvites.createInvite(payload);
-    return { success: true, invite: result };
+    // Check if logged in
+    const steamStatus = this.steamClient.getStatus();
+    if (!steamStatus.logged_on) {
+      throw new Error('Not logged in to Steam');
+    }
+    
+    const options = {
+      inviteLimit: payload?.invite_limit ?? payload?.inviteLimit ?? 1,
+      inviteDuration: payload?.invite_duration ?? payload?.inviteDuration ?? null
+    };
+    
+    const result = await this.quickInvites.createOne(options);
+    return { 
+      ok: true, 
+      data: result
+    };
   }
 
   async handleQuickInviteEnsurePool(payload, task) {
@@ -248,9 +269,23 @@ class SteamBridge {
       throw new Error('QuickInvites module not available');
     }
     
-    const target = payload.target || 2;
-    const result = await this.quickInvites.ensurePool({ target });
-    return { success: true, ensured: result };
+    // Check if logged in
+    const steamStatus = this.steamClient.getStatus();
+    if (!steamStatus.logged_on) {
+      throw new Error('Not logged in to Steam');
+    }
+    
+    const options = {
+      target: payload?.target ?? 2,
+      inviteLimit: payload?.invite_limit ?? payload?.inviteLimit ?? 1,
+      inviteDuration: payload?.invite_duration ?? payload?.inviteDuration ?? null
+    };
+    
+    const result = await this.quickInvites.ensurePool(options);
+    return { 
+      ok: true, 
+      data: result
+    };
   }
 
   async handlePlaytestInvite(payload, task) {
@@ -268,15 +303,24 @@ class SteamBridge {
       throw new Error('Steam ID required for playtest invite');
     }
     
-    // Convert Steam ID to account ID
+    // Convert Steam ID to account ID using proper Steam ID parsing
     let accountId;
     if (payload?.account_id != null) {
       accountId = Number(payload.account_id);
     } else {
-      // Simple conversion: Steam64 ID to account ID
-      // Steam64 format: 76561198000000000 + accountId
-      const steamId64 = typeof raw === 'string' ? BigInt(raw) : BigInt(String(raw));
-      accountId = Number(steamId64 - BigInt('76561197960265728'));
+      try {
+        // Use Steam ID library for proper conversion
+        const SteamID = require('steamid');
+        const sid = new SteamID(String(raw));
+        if (!sid.isValid()) {
+          throw new Error('Invalid Steam ID format');
+        }
+        accountId = sid.accountid;
+      } catch (e) {
+        // Fallback to simple conversion
+        const steamId64 = typeof raw === 'string' ? BigInt(raw) : BigInt(String(raw));
+        accountId = Number(steamId64 - BigInt('76561197960265728'));
+      }
     }
     
     if (!Number.isFinite(accountId) || accountId <= 0) {
@@ -284,32 +328,22 @@ class SteamBridge {
     }
     
     const location = (typeof payload?.location === 'string' ? payload.location.trim() : '') || 'discord-betainvite';
-    const inviteTimeout = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : 30000; // 30s default
+    const inviteTimeout = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : 15000; // 15s default
     
     try {
-      // Use the Steam client to send playtest invite
-      const client = this.steamClient.getClient();
+      // Ensure Deadlock game is active and GC is ready
+      await this.ensureDeadlockGameActive();
+      await this.waitForDeadlockGC(inviteTimeout);
       
-      if (!client.gc || !client.gc.Deadlock) {
-        throw new Error('Deadlock Game Coordinator not available');
-      }
+      // Send the actual playtest invite
+      const response = await this.sendPlaytestInviteToGC(accountId, location, inviteTimeout);
       
-      // Send the invite using the game coordinator
-      const response = await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          reject(new Error('Playtest invite timed out'));
-        }, inviteTimeout);
-        
-        // This is a simplified version - the actual implementation would use
-        // the proper game coordinator methods for Deadlock
-        try {
-          // Placeholder for actual GC communication
-          clearTimeout(timer);
-          resolve({ success: true, invited: true });
-        } catch (error) {
-          clearTimeout(timer);
-          reject(error);
-        }
+      this.logger.info('Playtest invite completed', {
+        steam_id: raw,
+        account_id: accountId,
+        location,
+        success: response.success,
+        response_code: response.code
       });
       
       return {
@@ -340,6 +374,288 @@ class SteamBridge {
           location,
         }
       };
+    }
+  }
+
+  async handleCheckFriendship(payload, task) {
+    // Check if logged in
+    const steamStatus = this.steamClient.getStatus();
+    if (!steamStatus.logged_on) {
+      throw new Error('Not logged in to Steam');
+    }
+    
+    const steamId = payload?.steam_id ?? payload?.steam_id64;
+    if (!steamId) {
+      throw new Error('Steam ID required for friendship check');
+    }
+    
+    try {
+      const client = this.steamClient.getClient();
+      
+      // Check if user is in friends list
+      const friends = client.myFriends || {};
+      const isFriend = Object.prototype.hasOwnProperty.call(friends, steamId);
+      
+      this.logger.debug('Friendship check completed', {
+        steam_id: steamId,
+        is_friend: isFriend
+      });
+      
+      return {
+        ok: true,
+        data: {
+          steam_id64: String(steamId),
+          is_friend: isFriend,
+          checked_at: Date.now()
+        }
+      };
+      
+    } catch (error) {
+      this.logger.error('Friendship check failed', {
+        steam_id: steamId,
+        error: error.message
+      });
+      
+      return {
+        ok: false,
+        error: error.message,
+        data: {
+          steam_id64: String(steamId)
+        }
+      };
+    }
+  }
+
+  // Deadlock Game Coordinator helpers
+  async ensureDeadlockGameActive() {
+    const client = this.steamClient.getClient();
+    if (!client) {
+      throw new Error('Steam client not available');
+    }
+    
+    try {
+      // Request Deadlock game session
+      client.gamesPlayed([CONFIG.deadlockAppId]);
+      this.logger.debug('Requested Deadlock game session', { 
+        app_id: CONFIG.deadlockAppId 
+      });
+    } catch (error) {
+      throw new Error(`Failed to start Deadlock game session: ${error.message}`);
+    }
+  }
+
+  async waitForDeadlockGC(timeoutMs = 20000) {
+    const client = this.steamClient.getClient();
+    
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error('Timeout waiting for Deadlock Game Coordinator'));
+      }, timeoutMs);
+      
+      // Check if GC is already ready
+      if (client.gc && client.gc.Deadlock) {
+        clearTimeout(timer);
+        resolve(true);
+        return;
+      }
+      
+      // Send GC hello message
+      const hello = this.createGCHelloMessage();
+      try {
+        client.sendToGC(CONFIG.deadlockAppId, 0x80000000 + 4004, {}, hello);
+        
+        // Wait for GC welcome response
+        const welcomeHandler = () => {
+          clearTimeout(timer);
+          client.removeListener('receivedFromGC', welcomeHandler);
+          resolve(true);
+        };
+        
+        client.on('receivedFromGC', (appid, msgType, payload) => {
+          if (appid === CONFIG.deadlockAppId && msgType === (0x80000000 + 4005)) {
+            welcomeHandler();
+          }
+        });
+        
+      } catch (error) {
+        clearTimeout(timer);
+        reject(new Error(`Failed to communicate with Deadlock GC: ${error.message}`));
+      }
+    });
+  }
+
+  createGCHelloMessage() {
+    // Create protobuf message for GC hello
+    // Field 1 (protocol version): varint
+    const protocolVersion = 1;
+    const tag = this.encodeVarint((1 << 3) | 0); // Field 1, wire type 0 (varint)
+    const version = this.encodeVarint(protocolVersion);
+    return Buffer.concat([tag, version]);
+  }
+
+  async sendPlaytestInviteToGC(accountId, location, timeoutMs) {
+    const client = this.steamClient.getClient();
+    
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error('Timeout waiting for playtest invite response'));
+      }, timeoutMs);
+      
+      // Create the playtest invite message
+      const payload = this.encodePlaytestInviteMessage(accountId, location);
+      
+      // Set up response handler
+      const responseHandler = (appid, msgType, responsePayload) => {
+        if (appid === CONFIG.deadlockAppId && msgType === (0x80000000 + 9190)) {
+          clearTimeout(timer);
+          client.removeListener('receivedFromGC', responseHandler);
+          
+          try {
+            const response = this.decodePlaytestInviteResponse(responsePayload);
+            resolve(response);
+          } catch (error) {
+            reject(new Error(`Failed to decode playtest response: ${error.message}`));
+          }
+        }
+      };
+      
+      client.on('receivedFromGC', responseHandler);
+      
+      try {
+        // Send the playtest invite message (GC_MSG_SUBMIT_PLAYTEST_USER = 9189)
+        client.sendToGC(CONFIG.deadlockAppId, 0x80000000 + 9189, {}, payload);
+        this.logger.debug('Sent playtest invite to GC', { 
+          account_id: accountId, 
+          location 
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        client.removeListener('receivedFromGC', responseHandler);
+        reject(error);
+      }
+    });
+  }
+
+  encodePlaytestInviteMessage(accountId, location) {
+    const parts = [];
+    
+    // Add location if provided (field 3, string)
+    if (location) {
+      const locStr = Buffer.from(String(location), 'utf8');
+      parts.push(this.encodeVarint((3 << 3) | 2)); // Field 3, wire type 2 (length-delimited)
+      parts.push(this.encodeVarint(locStr.length));
+      parts.push(locStr);
+    }
+    
+    // Add account ID (field 4, varint)
+    if (Number.isFinite(accountId)) {
+      parts.push(this.encodeVarint((4 << 3) | 0)); // Field 4, wire type 0 (varint)
+      parts.push(this.encodeVarint(Number(accountId) >>> 0));
+    }
+    
+    return parts.length ? Buffer.concat(parts) : Buffer.alloc(0);
+  }
+
+  decodePlaytestInviteResponse(buffer) {
+    if (!buffer || !buffer.length) {
+      return { success: false, code: null, message: 'Empty response' };
+    }
+    
+    let offset = 0;
+    let responseCode = null;
+    
+    while (offset < buffer.length) {
+      try {
+        const { value: tag, nextOffset } = this.decodeVarint(buffer, offset);
+        offset = nextOffset;
+        
+        const fieldNumber = tag >>> 3;
+        const wireType = tag & 0x07;
+        
+        if (fieldNumber === 1 && wireType === 0) {
+          // Response code field
+          const { value } = this.decodeVarint(buffer, offset);
+          responseCode = value >>> 0;
+          break;
+        }
+        
+        // Skip unknown fields
+        offset = this.skipField(buffer, offset, wireType);
+        if (offset < 0) break;
+        
+      } catch (error) {
+        this.logger.warn('Failed to decode playtest response', { error: error.message });
+        break;
+      }
+    }
+    
+    // Map response codes to messages
+    const responseMap = {
+      0: { success: true, message: 'Invite sent successfully' },
+      1: { success: false, message: 'Internal error' },
+      3: { success: false, message: 'Target is not a confirmed Steam friend' },
+      4: { success: false, message: 'Friendship exists less than 30 days' },
+      5: { success: false, message: 'Account already owns Deadlock' },
+      6: { success: false, message: 'Target account is limited' },
+      7: { success: false, message: 'Invite limit reached' }
+    };
+    
+    const result = responseMap[responseCode] || { 
+      success: false, 
+      message: 'Unknown response from Game Coordinator' 
+    };
+    
+    return {
+      ...result,
+      code: responseCode
+    };
+  }
+
+  encodeVarint(value) {
+    let v = Number(value >>> 0);
+    const bytes = [];
+    while (v >= 0x80) {
+      bytes.push((v & 0x7f) | 0x80);
+      v >>>= 7;
+    }
+    bytes.push(v);
+    return Buffer.from(bytes);
+  }
+
+  decodeVarint(buffer, offset = 0) {
+    let result = 0;
+    let shift = 0;
+    let position = offset;
+    
+    while (position < buffer.length) {
+      const byte = buffer[position++];
+      result |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) {
+        return { value: result >>> 0, nextOffset: position };
+      }
+      shift += 7;
+      if (shift > 35) break;
+    }
+    
+    throw new Error('Truncated varint');
+  }
+
+  skipField(buffer, offset, wireType) {
+    switch (wireType) {
+      case 0: {
+        const { nextOffset } = this.decodeVarint(buffer, offset);
+        return nextOffset;
+      }
+      case 1:
+        return offset + 8;
+      case 2: {
+        const { value: length, nextOffset } = this.decodeVarint(buffer, offset);
+        return nextOffset + length;
+      }
+      case 5:
+        return offset + 4;
+      default:
+        return -1;
     }
   }
 
