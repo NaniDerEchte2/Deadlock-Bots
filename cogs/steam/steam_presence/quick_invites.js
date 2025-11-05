@@ -193,8 +193,27 @@ class QuickInvites {
       }
     }
     this._syncPromise = (async () => {
+      const startedAt = Date.now();
       try {
-        return await this._syncFromSteamImpl(opts);
+        const summary = await this._syncFromSteamImpl(opts);
+        const completedAt = Date.now();
+        this._lastSyncAt = completedAt;
+        this._lastSyncSummary = { ...summary, started_at: startedAt };
+        if (summary && summary.error) {
+          this._lastSyncError = {
+            at: completedAt,
+            message: summary.error
+          };
+        } else {
+          this._lastSyncError = null;
+        }
+        return summary;
+      } catch (error) {
+        this._lastSyncError = {
+          at: Date.now(),
+          message: error && error.message ? error.message : String(error)
+        };
+        throw error;
       } finally {
         this._syncPromise = null;
       }
@@ -368,6 +387,12 @@ class QuickInvites {
     this._autoTimer = null;
     this._ensureInFlight = false;
     this._syncPromise = null;
+    this._lastAutoEnsureAt = null;
+    this._lastAutoEnsureResult = null;
+    this._lastAutoEnsureError = null;
+    this._lastSyncAt = null;
+    this._lastSyncSummary = null;
+    this._lastSyncError = null;
 
     this._prepareSchema();
     this._prepareStatements();
@@ -681,13 +706,47 @@ class QuickInvites {
     if (!this.client || !this.client.steamID) return; // erst loslegen, wenn eingeloggt
 
     this._ensureInFlight = true;
+    const startedAt = Date.now();
+    this._lastAutoEnsureAt = startedAt;
     try {
-      await this.ensurePool({ target: this.poolTarget });
+      const result = await this.ensurePool({ target: this.poolTarget });
+      this._lastAutoEnsureResult = {
+        at: startedAt,
+        summary: result
+      };
+      this._lastAutoEnsureError = null;
     } catch (e) {
+      this._lastAutoEnsureError = {
+        at: Date.now(),
+        message: e && e.message ? e.message : String(e)
+      };
       this.log('warn', 'autoEnsure iteration failed', { error: e.message });
     } finally {
       this._ensureInFlight = false;
     }
+  }
+
+  getStatus() {
+    return {
+      auto_ensure_enabled: this.autoEnsure,
+      auto_ensure_active: Boolean(this._autoTimer),
+      ensure_in_flight: this._ensureInFlight,
+      sync_in_flight: Boolean(this._syncPromise),
+      last_auto_ensure_at: this._lastAutoEnsureAt,
+      last_auto_ensure_result: this._lastAutoEnsureResult,
+      last_auto_ensure_error: this._lastAutoEnsureError,
+      last_sync_at: this._lastSyncAt,
+      last_sync_summary: this._lastSyncSummary,
+      last_sync_error: this._lastSyncError,
+      pool: {
+        target: this.poolTarget,
+        min_available: this.poolMinAvailable,
+        refill_target: this.poolRefillTarget,
+        refill_count: this.poolRefillCount
+      },
+      invite_limit: this.inviteLimit,
+      invite_duration: this.inviteDuration
+    };
   }
 }
 

@@ -155,6 +155,36 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         .standalone-metrics strong {
             font-weight: 600;
         }
+        .steam-component-section {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid rgba(255,255,255,0.08);
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .steam-component-entry {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+            font-size: 0.85rem;
+        }
+        .steam-component-entry > div:first-child {
+            display: flex;
+            align-items: baseline;
+            gap: 0.35rem;
+        }
+        .steam-component-name {
+            font-weight: 600;
+        }
+        .steam-component-status-text {
+            font-weight: 500;
+        }
+        .steam-component-details {
+            color: #adb5bd;
+            font-size: 0.78rem;
+            padding-left: 1.5rem;
+        }
         .standalone-commands {
             margin-top: 0.75rem;
             border-top: 1px solid rgba(255,255,255,0.06);

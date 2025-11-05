@@ -1089,9 +1089,19 @@ class MasterBot(commands.Bot):
             task_counts = _format_task_counts(task_counts_rows)
             quick_counts = _format_quick_counts(quick_counts_rows)
 
+            runtime_payload = payload.get("runtime", {}) if isinstance(payload, dict) else {}
+            steam_payload = payload.get("steam", {}) if isinstance(payload, dict) else {}
+            presence_payload = payload.get("presence", {}) if isinstance(payload, dict) else {}
+            component_payload = payload.get("components", {}) if isinstance(payload, dict) else {}
+            task_snapshot = payload.get("tasks", {}) if isinstance(payload, dict) else {}
+
             return {
                 "state": payload,
-                "runtime": payload.get("runtime", {}),
+                "runtime": runtime_payload,
+                "steam": steam_payload,
+                "presence": presence_payload,
+                "components": component_payload,
+                "task_processor": task_snapshot,
                 "pending_commands": _format_command_rows(pending_rows, include_finished=False),
                 "recent_commands": _format_command_rows(recent_rows, include_finished=True),
                 "tasks": {
