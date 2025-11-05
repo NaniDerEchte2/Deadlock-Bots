@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 'use strict';
 
 /**
@@ -100,7 +100,7 @@ class SteamBridge {
 
   async initialize() {
     try {
-      this.logger.info('🚀 Initializing Steam Bridge', {
+      this.logger.info('ðŸš€ Initializing Steam Bridge', {
         version: '2.0.0-optimized',
         config: {
           db_path: CONFIG.dbPath,
@@ -121,28 +121,28 @@ class SteamBridge {
       // Initialize legacy modules (to be refactored)
       await this.initializeLegacyModules();
       
-      this.logger.info('✅ Steam Bridge initialization complete');
+      this.logger.info('âœ… Steam Bridge initialization complete');
       return true;
       
     } catch (error) {
-      this.logger.error('❌ Initialization failed', { error: error.message });
+      this.logger.error('âŒ Initialization failed', { error: error.message });
       throw error;
     }
   }
 
   async initializeDatabase() {
-    this.logger.info('📊 Initializing database connection');
+    this.logger.info('ðŸ“Š Initializing database connection');
     
     this.database = new DatabaseManager(CONFIG.dbPath);
     await this.database.connect();
     
-    this.logger.info('✅ Database initialized', {
+    this.logger.info('âœ… Database initialized', {
       path: CONFIG.dbPath
     });
   }
 
   async initializeSteamClient() {
-    this.logger.info('🎮 Initializing Steam client');
+    this.logger.info('ðŸŽ® Initializing Steam client');
     
     this.steamClient = new SteamClientManager({
       dataDirectory: CONFIG.dataDirectory
@@ -151,11 +151,11 @@ class SteamBridge {
     // Setup Steam client event handlers
     this.setupSteamEventHandlers();
     
-    this.logger.info('✅ Steam client initialized');
+    this.logger.info('âœ… Steam client initialized');
   }
 
   async initializeTaskProcessor() {
-    this.logger.info('⚙️ Initializing task processor');
+    this.logger.info('âš™ï¸ Initializing task processor');
     
     this.taskProcessor = new TaskProcessor(
       this.database.getRawDatabase(),
@@ -165,11 +165,11 @@ class SteamBridge {
     // Add custom task handlers
     this.setupCustomTaskHandlers();
     
-    this.logger.info('✅ Task processor initialized');
+    this.logger.info('âœ… Task processor initialized');
   }
 
   async initializeLegacyModules() {
-    this.logger.info('🔧 Initializing legacy modules');
+    this.logger.info('ðŸ”§ Initializing legacy modules');
     
     try {
       // Initialize QuickInvites
@@ -183,10 +183,10 @@ class SteamBridge {
         database: this.database.getRawDatabase()
       });
       
-      this.logger.info('✅ Legacy modules initialized');
+      this.logger.info('âœ… Legacy modules initialized');
       
     } catch (error) {
-      this.logger.warn('⚠️ Some legacy modules failed to initialize', {
+      this.logger.warn('âš ï¸ Some legacy modules failed to initialize', {
         error: error.message
       });
     }
@@ -198,14 +198,14 @@ class SteamBridge {
     // Game-specific events
     client.on('appLaunched', (appId) => {
       if (Number(appId) === CONFIG.deadlockAppId) {
-        this.logger.info('🎯 Deadlock app launched - starting presence tracking');
+        this.logger.info('ðŸŽ¯ Deadlock app launched - starting presence tracking');
         this.startPresenceTracking();
       }
     });
     
     client.on('appQuit', (appId) => {
       if (Number(appId) === CONFIG.deadlockAppId) {
-        this.logger.info('🎯 Deadlock app quit - stopping presence tracking');
+        this.logger.info('ðŸŽ¯ Deadlock app quit - stopping presence tracking');
         this.stopPresenceTracking();
       }
     });
@@ -275,7 +275,7 @@ class SteamBridge {
       });
     }, CONFIG.presenceCheckInterval);
     
-    this.logger.info('▶️ Presence tracking started', {
+    this.logger.info('â–¶ï¸ Presence tracking started', {
       interval_ms: CONFIG.presenceCheckInterval
     });
   }
@@ -286,7 +286,7 @@ class SteamBridge {
       this.presenceTimer = null;
     }
     
-    this.logger.info('⏹️ Presence tracking stopped');
+    this.logger.info('â¹ï¸ Presence tracking stopped');
   }
 
   async checkPresence() {
@@ -392,7 +392,7 @@ class SteamBridge {
       return;
     }
     
-    this.logger.info('🚀 Starting Steam Bridge');
+    this.logger.info('ðŸš€ Starting Steam Bridge');
     
     try {
       // Start task processor
@@ -416,10 +416,10 @@ class SteamBridge {
       await this.attemptAutoLogin();
       
       this.isRunning = true;
-      this.logger.info('✅ Steam Bridge started successfully');
+      this.logger.info('âœ… Steam Bridge started successfully');
       
     } catch (error) {
-      this.logger.error('❌ Failed to start Steam Bridge', { error: error.message });
+      this.logger.error('âŒ Failed to start Steam Bridge', { error: error.message });
       throw error;
     }
   }
@@ -427,7 +427,7 @@ class SteamBridge {
   async stop() {
     if (!this.isRunning) return;
     
-    this.logger.info('🛑 Stopping Steam Bridge');
+    this.logger.info('ðŸ›‘ Stopping Steam Bridge');
     
     try {
       // Stop all intervals
@@ -459,7 +459,7 @@ class SteamBridge {
       }
       
       this.isRunning = false;
-      this.logger.info('✅ Steam Bridge stopped');
+      this.logger.info('âœ… Steam Bridge stopped');
       
     } catch (error) {
       this.logger.error('Error during shutdown', { error: error.message });
@@ -492,7 +492,24 @@ class SteamBridge {
 
   loadRefreshToken() {
     try {
-      const tokenPath = path.join(CONFIG.dataDirectory, 'refresh_token.txt');
+      const tokenPath = // Try multiple token file formats for flexibility
+      const tokenPaths = [
+        path.join(CONFIG.dataDirectory, 'refresh.token'),      // Original format
+        path.join(CONFIG.dataDirectory, 'refresh_token.txt')   // Alternative format
+      ];
+      
+      for (const tokenPath of tokenPaths) {
+        if (fs.existsSync(tokenPath)) {
+          const token = fs.readFileSync(tokenPath, 'utf8').trim();
+          if (token) {
+            this.logger.info('Loaded refresh token', { path: path.basename(tokenPath) });
+            return token;
+          }
+        }
+      }
+      
+      // Fallback: original single file check
+      const fallbackPath = path.join(CONFIG.dataDirectory, 'refresh_token.txt');
       if (fs.existsSync(tokenPath)) {
         return fs.readFileSync(tokenPath, 'utf8').trim();
       }
@@ -623,7 +640,7 @@ class SteamBridge {
   }
 
   async gracefulShutdown(code = 0) {
-    this.logger.info('🔄 Graceful shutdown initiated');
+    this.logger.info('ðŸ”„ Graceful shutdown initiated');
     
     try {
       await this.stop();
@@ -654,3 +671,4 @@ if (require.main === module) {
 }
 
 module.exports = { SteamBridge };
+
