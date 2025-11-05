@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 import discord
 from discord import app_commands
@@ -113,6 +113,34 @@ def _fetch_invite_by_id(record_id: int) -> Optional[BetaInviteRecord]:
         (int(record_id),),
     ).fetchone()
     return _row_to_record(row)
+
+
+def _format_gc_response_error(response: Mapping[str, Any]) -> Optional[str]:
+    message = str(response.get("message") or "").strip()
+
+    code_text: Optional[str] = None
+    if "code" in response:
+        raw_code = response.get("code")
+        try:
+            code_value = int(str(raw_code))
+        except (TypeError, ValueError):
+            code_candidate = str(raw_code or "").strip()
+            code_text = f"Code {code_candidate}" if code_candidate else None
+        else:
+            code_text = f"Code {code_value}"
+
+    key_text = str(response.get("key") or "").strip()
+
+    parts: list[str] = []
+    if message:
+        parts.append(message)
+
+    meta_parts = [part for part in [code_text, key_text if key_text else None] if part]
+    if meta_parts:
+        parts.append(f"({' / '.join(meta_parts)})")
+
+    formatted = " ".join(parts).strip()
+    return formatted or None
 
 
 def _create_or_reset_invite(discord_id: int, steam_id64: str, account_id: Optional[int]) -> BetaInviteRecord:
@@ -351,11 +379,18 @@ class BetaInviteFlow(commands.Cog):
         if not invite_outcome.ok:
             error_text = invite_outcome.error or "Game Coordinator hat die Einladung abgelehnt."
             if invite_outcome.result and isinstance(invite_outcome.result, dict):
+                result_error = invite_outcome.result.get("error")
+                if result_error:
+                    candidate = str(result_error).strip()
+                    if candidate:
+                        error_text = candidate
                 data = invite_outcome.result.get("data")
                 if isinstance(data, dict):
                     response = data.get("response")
-                    if isinstance(response, dict) and response.get("message"):
-                        error_text = str(response["message"])
+                    if isinstance(response, Mapping):
+                        formatted = _format_gc_response_error(response)
+                        if formatted:
+                            error_text = formatted
             _update_invite(
                 record.id,
                 status=STATUS_ERROR,

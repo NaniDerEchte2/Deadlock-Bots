@@ -602,6 +602,31 @@ const PLAYTEST_RESPONSE_MAP = {
   7: { key: 'eResponse_InviteLimitReached', message: 'Invite-Limit erreicht – bitte später erneut versuchen.' },
 };
 
+function formatPlaytestError(response) {
+  if (!response || typeof response !== 'object') return null;
+
+  const message = response.message ? String(response.message).trim() : '';
+  const codeRaw = Object.prototype.hasOwnProperty.call(response, 'code') ? response.code : null;
+  let codeDisplay = null;
+  if (codeRaw !== null && codeRaw !== undefined) {
+    const maybeNumber = Number(codeRaw);
+    if (Number.isFinite(maybeNumber)) codeDisplay = `Code ${maybeNumber}`;
+    else if (typeof codeRaw === 'string' && codeRaw.trim()) codeDisplay = `Code ${codeRaw.trim()}`;
+  }
+  const key = response.key ? String(response.key).trim() : '';
+
+  const meta = [];
+  if (codeDisplay) meta.push(codeDisplay);
+  if (key) meta.push(key);
+
+  const parts = [];
+  if (message) parts.push(message);
+  if (meta.length) parts.push(`(${meta.join(' / ')})`);
+
+  const formatted = parts.join(' ').trim();
+  return formatted || null;
+}
+
 function encodeVarint(value) {
   let v = Number(value >>> 0);
   const bytes = [];
@@ -1217,15 +1242,19 @@ function processNextTask() {
             Number.isFinite(inviteTimeout) ? inviteTimeout : undefined
           );
           const sid64 = sid && typeof sid.getSteamID64 === 'function' ? sid.getSteamID64() : (sid ? String(sid) : null);
-          return {
-            ok: Boolean(response && response.success),
-            data: {
-              steam_id64: sid64,
-              account_id: Number(accountId),
-              location,
-              response,
-            },
+          const success = Boolean(response && response.success);
+          const errorText = success
+            ? null
+            : formatPlaytestError(response) || 'Game Coordinator hat die Einladung abgelehnt.';
+          const data = {
+            steam_id64: sid64,
+            account_id: Number(accountId),
+            location,
+            response,
           };
+          return success
+            ? { ok: true, data }
+            : { ok: false, data, error: errorText };
         })();
         finalizeTaskRun(task, promise);
         break;
