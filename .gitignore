@@ -39,3 +39,4 @@ standalone/import_changelogs.py
 standalone/deadlock_changelogs.csv
 standalone/check.py
 cogs/audit.py
+alice.ps1
