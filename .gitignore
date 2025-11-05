@@ -18,7 +18,8 @@ install_windows_service.py
 *env*
 *.env*
 *.json
-cogs/steam/steam_presence/*
+cogs/steam/steam_presence/node_modules*
+cogs/steam/steam_presence/steam-data*
 !cogs/steam/steam_presence/package.json
 !cogs/steam/steam_presence/package-lock.json
 !cogs/steam/steam_presence/index.js
