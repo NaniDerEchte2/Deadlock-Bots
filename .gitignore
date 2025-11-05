@@ -19,7 +19,7 @@ install_windows_service.py
 *.env*
 *.json
 cogs/steam/steam_presence/node_modules*
-cogs/steam/steam_presence/steam-data*
+cogs\steam\steam_presence\.steam-data*
 !cogs/steam/steam_presence/package.json
 !cogs/steam/steam_presence/package-lock.json
 !cogs/steam/steam_presence/index.js
@@ -48,3 +48,4 @@ standalone/import_changelogs.py
 standalone/deadlock_changelogs.csv
 standalone/check.py
 cogs/audit.py
+/cogs/steam/steam_presence/.steam-data
