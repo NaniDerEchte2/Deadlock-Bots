@@ -170,28 +170,34 @@ class SteamClientManager {
     // This just provides the interface
   }
 
-  async login(credentials) {
+  async login(credentials = {}) {
     if (this.state.loggingIn) {
       throw new Error('Login already in progress');
     }
-    
+
     if (this.state.loggedOn) {
       this.logger.debug('Already logged in');
       return { success: true, alreadyLoggedIn: true };
     }
-    
+
     this.state.loggingIn = true;
     this.state.lastError = null;
-    
+
     try {
+      const { source, ...loginOptions } = credentials;
+
+      if (!loginOptions.refreshToken && !loginOptions.accountName) {
+        throw new Error('No login credentials provided');
+      }
+
       this.logger.info('Initiating Steam login', {
-        using_refresh_token: Boolean(credentials.refreshToken),
-        source: credentials.source || 'manual'
+        using_refresh_token: Boolean(loginOptions.refreshToken),
+        source: source || 'manual'
       });
-      
-      await this.client.logOn(credentials);
+
+      await this.client.logOn(loginOptions);
       return { success: true, started: true };
-      
+
     } catch (error) {
       this.state.loggingIn = false;
       this.logger.error('Login failed', { error: error.message });

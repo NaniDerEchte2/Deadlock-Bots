@@ -10,10 +10,11 @@
 const { SmartLogger } = require('./logger');
 
 class TaskProcessor {
-  constructor(database, steamClient) {
+  constructor(database, steamClient, options = {}) {
     this.db = database;
     this.steamClient = steamClient;
     this.logger = new SmartLogger();
+    this.options = options || {};
     
     // Task processing state
     this.processing = false;
@@ -211,18 +212,51 @@ class TaskProcessor {
   }
 
   async handleAuthLogin(payload, task) {
-    const credentials = {
-      refreshToken: payload.refresh_token,
+    const loginPayload = payload || {};
+    const builder = this.getLoginBuilder();
+
+    let loginOptions;
+    try {
+      loginOptions = builder(loginPayload);
+    } catch (error) {
+      throw new Error(`Failed to build login options: ${error.message}`);
+    }
+
+    if (!loginOptions || typeof loginOptions !== 'object') {
+      throw new Error('Invalid login options generated for AUTH_LOGIN task');
+    }
+
+    const result = await this.steamClient.login({
+      ...loginOptions,
       source: 'task'
-    };
-    
-    const result = await this.steamClient.login(credentials);
-    
+    });
+
     return {
       success: result.success,
       started: result.started,
       already_logged_in: result.alreadyLoggedIn
     };
+  }
+
+  getLoginBuilder() {
+    if (typeof this.options.buildLoginOptions === 'function') {
+      return this.options.buildLoginOptions;
+    }
+
+    return this.buildDefaultLoginOptions.bind(this);
+  }
+
+  buildDefaultLoginOptions(payload) {
+    if (!payload) {
+      return {};
+    }
+
+    const refreshToken = payload.refresh_token || payload.refreshToken;
+    if (refreshToken) {
+      return { refreshToken };
+    }
+
+    return {};
   }
 
   async handleAuthLogout(payload, task) {
