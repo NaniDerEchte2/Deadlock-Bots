@@ -49,3 +49,4 @@ standalone/deadlock_changelogs.csv
 standalone/check.py
 cogs/audit.py
 /cogs/steam/steam_presence/.steam-data
+alice.ps1
