@@ -26,7 +26,8 @@ class SteamClientManager {
       steamId64: null,
       lastError: null,
       loginAttempts: 0,
-      maxLoginAttempts: 3
+      maxLoginAttempts: 3,
+      guardRequired: null
     };
     
     this.reconnectTimeout = null;
@@ -41,6 +42,8 @@ class SteamClientManager {
       this.state.loggedOn = true;
       this.state.loggingIn = false;
       this.state.loginAttempts = 0;
+      this.state.guardRequired = null;
+      this.pendingGuardCallback = null;
       this.reconnectDelay = 5000; // Reset delay on successful login
       
       if (this.client.steamID && typeof this.client.steamID.getSteamID64 === 'function') {
@@ -99,13 +102,17 @@ class SteamClientManager {
     });
 
     this.client.on('steamGuard', (domain, callback) => {
-      this.logger.info('Steam Guard challenge required', { 
+      this.logger.info('Steam Guard challenge required', {
         domain: domain || 'unknown',
         type: this.getGuardType(domain)
       });
-      
+
       // Store guard callback for external handling
       this.pendingGuardCallback = callback;
+      this.state.guardRequired = {
+        domain: domain || null,
+        type: this.getGuardType(domain)
+      };
     });
 
     this.client.on('refreshToken', (token) => {
@@ -216,7 +223,9 @@ class SteamClientManager {
       this.client.logOff();
       this.state.loggedOn = false;
       this.state.steamId64 = null;
-      
+      this.state.guardRequired = null;
+      this.pendingGuardCallback = null;
+
       // Clear reconnect timer
       if (this.reconnectTimeout) {
         clearTimeout(this.reconnectTimeout);
@@ -234,12 +243,13 @@ class SteamClientManager {
     if (!this.pendingGuardCallback) {
       throw new Error('No pending Steam Guard challenge');
     }
-    
+
     this.logger.info('Submitting Steam Guard code');
-    
+
     try {
       this.pendingGuardCallback(code);
       this.pendingGuardCallback = null;
+      this.state.guardRequired = null;
       return { success: true };
     } catch (error) {
       this.logger.error('Failed to submit guard code', { error: error.message });
@@ -254,7 +264,8 @@ class SteamClientManager {
       steam_id64: this.state.steamId64,
       last_error: this.state.lastError,
       login_attempts: this.state.loginAttempts,
-      has_pending_guard: Boolean(this.pendingGuardCallback)
+      has_pending_guard: Boolean(this.pendingGuardCallback),
+      guard_required: this.state.guardRequired
     };
   }
 

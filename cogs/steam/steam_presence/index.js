@@ -1199,7 +1199,8 @@ class SteamBridge {
         presence: {
           active_users: this.presenceState.activeUsers.size,
           pending_requests: this.presenceState.pendingRequests
-        }
+        },
+        components: this.getComponentStatuses()
       };
       
       this.database.update('standalone_bot_state', 
@@ -1254,6 +1255,33 @@ class SteamBridge {
       last_error: this.stats.lastError,
       memory_usage_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
       is_running: this.isRunning
+    };
+  }
+
+  getComponentStatuses() {
+    const steamStatus = this.steamClient ? { ...this.steamClient.getStatus() } : null;
+    const taskStatus = this.taskProcessor ? { ...this.taskProcessor.getStatistics() } : null;
+    const quickInvitesStatus =
+      this.quickInvites && typeof this.quickInvites.getStatus === 'function'
+        ? this.quickInvites.getStatus()
+        : null;
+    const statusAnzeigeStatus =
+      this.statusAnzeige && typeof this.statusAnzeige.getStatus === 'function'
+        ? this.statusAnzeige.getStatus()
+        : null;
+
+    return {
+      steam_client: steamStatus,
+      task_processor: taskStatus,
+      quick_invites: quickInvitesStatus,
+      statusanzeige: statusAnzeigeStatus,
+      presence_tracker: {
+        timer_active: Boolean(this.presenceTimer),
+        pending_requests: this.presenceState.pendingRequests,
+        active_users: this.presenceState.activeUsers.size,
+        last_check_at: this.presenceState.lastCheck || null,
+        interval_ms: CONFIG.presenceCheckInterval
+      }
     };
   }
 
