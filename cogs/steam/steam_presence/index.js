@@ -74,6 +74,79 @@ function log(level, message, extra = undefined) {
 
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 
+const sleep = (ms) =>
+  new Promise((resolve) => setTimeout(resolve, Math.max(0, Number.isFinite(ms) ? ms : 0)));
+
+function toPositiveInt(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return null;
+    return Math.floor(value);
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return parsed;
+  }
+  return null;
+}
+
+function normalizeTimeoutMs(value, fallback, minimum) {
+  const parsed = toPositiveInt(value);
+  const base = parsed !== null ? parsed : fallback;
+  const min = toPositiveInt(minimum);
+  return Math.max(min !== null ? min : 0, Number.isFinite(base) ? base : fallback);
+}
+
+function normalizeAttempts(value, fallback, maximum = 4) {
+  const parsed = toPositiveInt(value);
+  const base = parsed !== null ? parsed : fallback;
+  const max = toPositiveInt(maximum);
+  const clampedMax = max !== null ? max : Math.max(1, base);
+  return Math.max(1, Math.min(clampedMax, Number.isFinite(base) ? base : 1));
+}
+
+function isTimeoutError(err) {
+  if (!err) return false;
+  const message = err && err.message ? err.message : String(err);
+  return typeof message === 'string' && message.toLowerCase().includes('timeout');
+}
+
+const MIN_GC_READY_TIMEOUT_MS = 5000;
+const DEFAULT_GC_READY_TIMEOUT_MS = normalizeTimeoutMs(
+  process.env.DEADLOCK_GC_READY_TIMEOUT_MS,
+  20000,
+  MIN_GC_READY_TIMEOUT_MS
+);
+const DEFAULT_GC_READY_ATTEMPTS = normalizeAttempts(
+  process.env.DEADLOCK_GC_READY_ATTEMPTS,
+  2,
+  5
+);
+const GC_READY_RETRY_DELAY_MS = normalizeTimeoutMs(
+  process.env.DEADLOCK_GC_READY_RETRY_DELAY_MS,
+  1500,
+  250
+);
+
+const MIN_PLAYTEST_INVITE_TIMEOUT_MS = 5000;
+const DEFAULT_PLAYTEST_INVITE_TIMEOUT_MS = normalizeTimeoutMs(
+  process.env.DEADLOCK_PLAYTEST_TIMEOUT_MS,
+  15000,
+  MIN_PLAYTEST_INVITE_TIMEOUT_MS
+);
+const DEFAULT_PLAYTEST_INVITE_ATTEMPTS = normalizeAttempts(
+  process.env.DEADLOCK_PLAYTEST_RETRY_ATTEMPTS,
+  2,
+  5
+);
+const PLAYTEST_RETRY_DELAY_MS = normalizeTimeoutMs(
+  process.env.DEADLOCK_PLAYTEST_RETRY_DELAY_MS,
+  2000,
+  250
+);
+const INVITE_RESPONSE_MIN_TIMEOUT_MS = MIN_PLAYTEST_INVITE_TIMEOUT_MS;
+
 // ---------- Paths/Config ----------
 function resolveDbPath() {
   if (process.env.DEADLOCK_DB_PATH) return path.resolve(process.env.DEADLOCK_DB_PATH);
@@ -432,11 +505,14 @@ function getDeadlockGcHelloPayload() {
   return cachedDeadlockGcHelloPayload;
 }
 
-function waitForDeadlockGcReady(timeoutMs = 10000) {
+function createDeadlockGcReadyPromise(timeout) {
   ensureDeadlockGamePlaying();
   if (deadlockGcReady) return Promise.resolve(true);
 
-  const timeout = Math.max(1000, Number.isFinite(timeoutMs) ? Number(timeoutMs) : 10000);
+  const effectiveTimeout = Math.max(
+    MIN_GC_READY_TIMEOUT_MS,
+    Number.isFinite(timeout) ? Number(timeout) : DEFAULT_GC_READY_TIMEOUT_MS
+  );
 
   return new Promise((resolve, reject) => {
     const entry = {
@@ -465,7 +541,10 @@ function waitForDeadlockGcReady(timeoutMs = 10000) {
       reject(err || new Error('Deadlock GC not ready'));
     };
 
-    entry.timer = setTimeout(() => entry.reject(new Error('Timeout waiting for Deadlock GC')), timeout);
+    entry.timer = setTimeout(
+      () => entry.reject(new Error('Timeout waiting for Deadlock GC')),
+      effectiveTimeout
+    );
     entry.interval = setInterval(() => {
       ensureDeadlockGamePlaying();
       sendDeadlockGcHello(false);
@@ -474,6 +553,43 @@ function waitForDeadlockGcReady(timeoutMs = 10000) {
     deadlockGcWaiters.push(entry);
     sendDeadlockGcHello(true);
   });
+}
+
+async function waitForDeadlockGcReady(timeoutMs = DEFAULT_GC_READY_TIMEOUT_MS, options = {}) {
+  const timeout = normalizeTimeoutMs(timeoutMs, DEFAULT_GC_READY_TIMEOUT_MS, MIN_GC_READY_TIMEOUT_MS);
+  const attempts = normalizeAttempts(
+    Object.prototype.hasOwnProperty.call(options, 'retryAttempts') ? options.retryAttempts : undefined,
+    DEFAULT_GC_READY_ATTEMPTS,
+    5
+  );
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt < attempts) {
+    attempt += 1;
+    try {
+      await createDeadlockGcReadyPromise(timeout);
+      return true;
+    } catch (err) {
+      lastError = err || new Error('Deadlock GC not ready');
+      deadlockGcReady = false;
+      if (attempt >= attempts || !isTimeoutError(err)) {
+        break;
+      }
+      log('warn', 'Deadlock GC handshake timed out - retrying', {
+        attempt,
+        attempts,
+        timeoutMs: timeout,
+      });
+      await sleep(GC_READY_RETRY_DELAY_MS);
+    }
+  }
+
+  if (lastError && typeof lastError === 'object') {
+    lastError.timeoutMs = timeout;
+    lastError.attempts = attempt;
+  }
+  throw lastError;
 }
 
 const PLAYTEST_RESPONSE_MAP = {
@@ -627,8 +743,53 @@ function sendFriendRequest(steamId) {
   });
 }
 
-async function sendPlaytestInvite(accountId, location, timeoutMs = 10000) {
-  await waitForDeadlockGcReady(timeoutMs);
+async function sendPlaytestInvite(accountId, location, timeoutMs = DEFAULT_PLAYTEST_INVITE_TIMEOUT_MS, options = {}) {
+  const inviteTimeout = normalizeTimeoutMs(timeoutMs, DEFAULT_PLAYTEST_INVITE_TIMEOUT_MS, MIN_PLAYTEST_INVITE_TIMEOUT_MS);
+  const attempts = normalizeAttempts(
+    Object.prototype.hasOwnProperty.call(options, 'retryAttempts') ? options.retryAttempts : undefined,
+    DEFAULT_PLAYTEST_INVITE_ATTEMPTS,
+    5
+  );
+  const gcAttempts = normalizeAttempts(
+    Object.prototype.hasOwnProperty.call(options, 'gcRetryAttempts') ? options.gcRetryAttempts : undefined,
+    DEFAULT_GC_READY_ATTEMPTS,
+    5
+  );
+  const gcTimeout = Math.max(inviteTimeout, DEFAULT_GC_READY_TIMEOUT_MS);
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt < attempts) {
+    attempt += 1;
+    try {
+      await waitForDeadlockGcReady(gcTimeout, { retryAttempts: gcAttempts });
+      return await sendPlaytestInviteOnce(accountId, location, inviteTimeout);
+    } catch (err) {
+      lastError = err;
+      if (attempt >= attempts || !isTimeoutError(err)) {
+        break;
+      }
+      log('warn', 'Deadlock playtest invite timed out - retrying', {
+        attempt,
+        attempts,
+        timeoutMs: inviteTimeout,
+      });
+      await sleep(PLAYTEST_RETRY_DELAY_MS);
+    }
+  }
+
+  if (lastError && typeof lastError === 'object') {
+    lastError.timeoutMs = inviteTimeout;
+    lastError.attempts = attempt;
+  }
+  throw lastError || new Error('Playtest invite failed');
+}
+
+function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
+  const effectiveTimeout = Math.max(
+    INVITE_RESPONSE_MIN_TIMEOUT_MS,
+    Number.isFinite(timeoutMs) ? Number(timeoutMs) : DEFAULT_PLAYTEST_INVITE_TIMEOUT_MS
+  );
 
   return new Promise((resolve, reject) => {
     const payload = encodeSubmitPlaytestUserPayload(accountId, location);
@@ -650,7 +811,10 @@ async function sendPlaytestInvite(accountId, location, timeoutMs = 10000) {
       reject(err);
     };
 
-    entry.timer = setTimeout(() => entry.reject(new Error('Timeout beim Warten auf GC-Antwort')), Math.max(3000, Number(timeoutMs) || 10000));
+    entry.timer = setTimeout(
+      () => entry.reject(new Error('Timeout beim Warten auf GC-Antwort')),
+      effectiveTimeout
+    );
 
     pendingPlaytestInviteResponses.push(entry);
 
@@ -1046,7 +1210,12 @@ function processNextTask() {
           if (!Number.isFinite(accountId) || accountId <= 0) throw new Error('account_id missing or invalid');
           const locationRaw = typeof payload?.location === 'string' ? payload.location.trim() : '';
           const location = locationRaw || 'discord-betainvite';
-          const response = await sendPlaytestInvite(Number(accountId), location, Number(timeoutMs) || 10000);
+          const inviteTimeout = Number(timeoutMs);
+          const response = await sendPlaytestInvite(
+            Number(accountId),
+            location,
+            Number.isFinite(inviteTimeout) ? inviteTimeout : undefined
+          );
           const sid64 = sid && typeof sid.getSteamID64 === 'function' ? sid.getSteamID64() : (sid ? String(sid) : null);
           return {
             ok: Boolean(response && response.success),
