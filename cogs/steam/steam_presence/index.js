@@ -180,10 +180,22 @@ class SteamBridge {
 
   async initializeDatabase() {
     this.logger.info('ðŸ“Š Initializing database connection');
-    
+
     this.database = new DatabaseManager(CONFIG.dbPath);
     await this.database.connect();
-    
+
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      this.database.executeQuery(
+        `INSERT INTO standalone_bot_state (bot, heartbeat, payload, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(bot) DO NOTHING`,
+        ['steam', now, JSON.stringify({}), now]
+      );
+    } catch (error) {
+      this.logger.warn('Failed to ensure standalone_bot_state row', { error: error.message });
+    }
+
     this.logger.info('âœ… Database initialized', {
       path: CONFIG.dbPath
     });
@@ -1202,17 +1214,20 @@ class SteamBridge {
         },
         components: this.getComponentStatuses()
       };
-      
-      this.database.update('standalone_bot_state', 
-        {
-          heartbeat: Math.floor(this.lastHeartbeat / 1000),
-          payload: JSON.stringify(payload),
-          updated_at: Math.floor(this.lastHeartbeat / 1000)
-        },
-        'bot = ?',
-        ['steam']
+
+      const heartbeat = Math.floor(this.lastHeartbeat / 1000);
+      const payloadJson = JSON.stringify(payload);
+
+      this.database.executeQuery(
+        `INSERT INTO standalone_bot_state (bot, heartbeat, payload, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(bot) DO UPDATE SET
+           heartbeat = excluded.heartbeat,
+           payload = excluded.payload,
+           updated_at = excluded.updated_at`,
+        ['steam', heartbeat, payloadJson, heartbeat]
       );
-      
+
     } catch (error) {
       this.logger.error('Failed to publish heartbeat', { error: error.message });
     }
