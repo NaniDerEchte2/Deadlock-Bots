@@ -228,13 +228,34 @@ def _update_invite(record_id: int, **fields) -> Optional[BetaInviteRecord]:
 
 
 def steam64_to_account_id(steam_id64: str) -> int:
+    """
+    Konvertiert Steam ID64 zu Account ID für Steam API Calls.
+    
+    Args:
+        steam_id64: Steam ID64 als String (z.B. "76561199678060816")
+        
+    Returns:
+        Account ID als Integer (z.B. 1717795088)
+        
+    Raises:
+        ValueError: Bei ungültiger Steam ID64
+    """
     try:
         value = int(str(steam_id64))
     except (TypeError, ValueError) as exc:
-        raise ValueError("SteamID64 muss numerisch sein") from exc
+        raise ValueError(f"SteamID64 muss numerisch sein: {steam_id64}") from exc
+    
     if value < STEAM64_BASE:
-        raise ValueError("SteamID64 liegt unterhalb des gültigen Bereichs")
-    return value - STEAM64_BASE
+        raise ValueError(f"SteamID64 {value} liegt unterhalb des gültigen Bereichs (min: {STEAM64_BASE})")
+    
+    # Zusätzliche Validierung für vernünftige Obergrenze
+    max_reasonable = STEAM64_BASE + 2**32  # Ungefähr bis 2038
+    if value > max_reasonable:
+        raise ValueError(f"SteamID64 {value} liegt oberhalb des erwarteten Bereichs (max: {max_reasonable})")
+    
+    account_id = value - STEAM64_BASE
+    log.debug("Steam ID conversion: %s -> %s", steam_id64, account_id)
+    return account_id
 
 
 class BetaInviteConfirmView(discord.ui.View):
@@ -367,8 +388,24 @@ class BetaInviteFlow(commands.Cog):
             if isinstance(data, dict):
                 friend_ok = bool(data.get("friend"))
                 relationship_name = str(data.get("relationship_name") or relationship_name)
+                
+                # Debug-Logging für Freundschaftsstatus
+                log.info(
+                    "Friendship check: discord_id=%s, steam_id64=%s, friend_ok=%s, relationship=%s",
+                    record.discord_id, record.steam_id64, friend_ok, relationship_name
+                )
+                
                 if data.get("account_id") is not None and data.get("account_id") != record.account_id:
+                    log.info(
+                        "Account ID updated: old=%s, new=%s",
+                        record.account_id, data.get("account_id")
+                    )
                     record = _update_invite(record.id, account_id=int(data["account_id"])) or record
+        else:
+            log.warning(
+                "Friendship check failed: discord_id=%s, steam_id64=%s, ok=%s, error=%s",
+                record.discord_id, record.steam_id64, friend_outcome.ok, friend_outcome.error
+            )
         if not friend_ok:
             await interaction.followup.send(
                 "ℹ️ Wir sind noch keine bestätigten Steam-Freunde. Bitte nimm die Freundschaftsanfrage an und probiere es erneut.",
@@ -385,6 +422,13 @@ class BetaInviteFlow(commands.Cog):
         ) or record
 
         account_id = record.account_id or steam64_to_account_id(record.steam_id64)
+        
+        # Debug-Logging für bessere Nachverfolgung
+        log.info(
+            "Sending Steam invite: discord_id=%s, steam_id64=%s, account_id=%s",
+            record.discord_id, record.steam_id64, account_id
+        )
+        
         invite_outcome = await self.tasks.run(
             "AUTH_SEND_PLAYTEST_INVITE",
             {
@@ -395,15 +439,24 @@ class BetaInviteFlow(commands.Cog):
             },
             timeout=25.0,
         )
+        
+        # Log das Ergebnis für bessere Diagnose
+        log.info(
+            "Steam invite result: ok=%s, status=%s, timed_out=%s",
+            invite_outcome.ok, invite_outcome.status, invite_outcome.timed_out
+        )
 
         if not invite_outcome.ok:
             error_text = invite_outcome.error or "Game Coordinator hat die Einladung abgelehnt."
+            
+            # Verbesserte Fehlerbehandlung für spezifische Steam GC Errors
             if invite_outcome.result and isinstance(invite_outcome.result, dict):
                 result_error = invite_outcome.result.get("error")
                 if result_error:
                     candidate = str(result_error).strip()
                     if candidate:
                         error_text = candidate
+                        
                 data = invite_outcome.result.get("data")
                 if isinstance(data, dict):
                     response = data.get("response")
@@ -411,6 +464,19 @@ class BetaInviteFlow(commands.Cog):
                         formatted = _format_gc_response_error(response)
                         if formatted:
                             error_text = formatted
+                    
+                    # Spezielle Behandlung für bekannte Deadlock GC Probleme
+                    error_lower = str(result_error).lower()
+                    if "timeout" in error_lower and "deadlock" in error_lower:
+                        error_text = "Deadlock Game Coordinator Timeout - Steam Service temporär nicht verfügbar. Bitte in 10-15 Minuten erneut versuchen."
+                    elif "already has game" in error_lower or "already has access" in error_lower:
+                        error_text = "Account besitzt bereits Deadlock-Zugang"
+                    elif "invite limit" in error_lower or "limit reached" in error_lower:
+                        error_text = "Tägliches Invite-Limit erreicht. Bitte morgen erneut versuchen."
+                    elif "not friends long enough" in error_lower:
+                        error_text = "Steam-Freundschaft muss mindestens 30 Tage bestehen"
+                    elif "limited user" in error_lower or "restricted account" in error_lower:
+                        error_text = "Steam-Account ist eingeschränkt (Limited User). Aktiviere deinen Account in Steam."
 
             details = {
                 "discord_id": record.discord_id,
