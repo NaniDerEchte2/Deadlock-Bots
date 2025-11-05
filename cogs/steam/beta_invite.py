@@ -429,15 +429,16 @@ class BetaInviteFlow(commands.Cog):
             record.discord_id, record.steam_id64, account_id
         )
         
+        # Use longer timeouts to handle Game Coordinator delays
         invite_outcome = await self.tasks.run(
             "AUTH_SEND_PLAYTEST_INVITE",
             {
                 "steam_id": record.steam_id64,
                 "account_id": account_id,
                 "location": "discord-betainvite",
-                "timeout_ms": 15000,
+                "timeout_ms": 45000,  # Increased from 15s to 45s
             },
-            timeout=25.0,
+            timeout=60.0,  # Increased from 25s to 60s
         )
         
         # Log das Ergebnis für bessere Diagnose
@@ -448,6 +449,7 @@ class BetaInviteFlow(commands.Cog):
 
         if not invite_outcome.ok:
             error_text = invite_outcome.error or "Game Coordinator hat die Einladung abgelehnt."
+            is_timeout = invite_outcome.timed_out
             
             # Verbesserte Fehlerbehandlung für spezifische Steam GC Errors
             if invite_outcome.result and isinstance(invite_outcome.result, dict):
@@ -466,17 +468,26 @@ class BetaInviteFlow(commands.Cog):
                             error_text = formatted
                     
                     # Spezielle Behandlung für bekannte Deadlock GC Probleme
-                    error_lower = str(result_error).lower()
-                    if "timeout" in error_lower and "deadlock" in error_lower:
-                        error_text = "Deadlock Game Coordinator Timeout - Steam Service temporär nicht verfügbar. Bitte in 10-15 Minuten erneut versuchen."
+                    error_lower = str(result_error or error_text).lower()
+                    if "timeout" in error_lower or is_timeout:
+                        if "deadlock" in error_lower or "gc" in error_lower:
+                            error_text = "⏱️ Deadlock Game Coordinator ist überlastet. Bitte versuche es in 10-15 Minuten erneut."
+                        else:
+                            error_text = "⏱️ Timeout beim Warten auf Steam-Antwort. Bitte versuche es erneut."
                     elif "already has game" in error_lower or "already has access" in error_lower:
-                        error_text = "Account besitzt bereits Deadlock-Zugang"
+                        error_text = "✅ Account besitzt bereits Deadlock-Zugang"
                     elif "invite limit" in error_lower or "limit reached" in error_lower:
-                        error_text = "Tägliches Invite-Limit erreicht. Bitte morgen erneut versuchen."
+                        error_text = "📊 Tägliches Invite-Limit erreicht. Bitte morgen erneut versuchen."
                     elif "not friends long enough" in error_lower:
-                        error_text = "Steam-Freundschaft muss mindestens 30 Tage bestehen"
+                        error_text = "⏰ Steam-Freundschaft muss mindestens 30 Tage bestehen"
                     elif "limited user" in error_lower or "restricted account" in error_lower:
-                        error_text = "Steam-Account ist eingeschränkt (Limited User). Aktiviere deinen Account in Steam."
+                        error_text = "🔒 Steam-Account ist eingeschränkt (Limited User). Aktiviere deinen Account in Steam."
+                    elif "invalid friend" in error_lower:
+                        error_text = "👥 Accounts sind nicht als Steam-Freunde verknüpft"
+            
+            # Spezielle Behandlung für Timeout-Fälle
+            if is_timeout and "timeout" not in error_text.lower():
+                error_text = f"⏱️ Timeout: {error_text}"
 
             details = {
                 "discord_id": record.discord_id,
