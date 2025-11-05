@@ -21,6 +21,9 @@ class DeadlockPresenceLogger {
       }
     }
 
+    this.maxPersonaBatchSize = this.resolveMaxPersonaBatchSize(options);
+    this.personaBatchDelayMs = this.resolvePersonaBatchDelay(options);
+
     this.sessionStart = new Map();
     this.friendIds = new Set();
     this.started = false;
@@ -109,18 +112,92 @@ class DeadlockPresenceLogger {
       return;
     }
 
-    try {
-      this.log('info', 'Requesting personas for presence snapshot', { count: steamIds.length });
-      this.client.getPersonas(steamIds, (err) => {
-        if (err) {
-          this.log('warn', 'getPersonas failed', { error: err.message || String(err) });
-          return;
-        }
-        this.fetchAndWriteRichPresence(steamIds);
-      });
-    } catch (err) {
-      this.log('warn', 'getPersonas threw', { error: err.message || String(err) });
+    const batches = this.chunkSteamIds(steamIds, this.maxPersonaBatchSize);
+    if (!batches.length) return;
+
+    const processBatch = (index = 0) => {
+      if (index >= batches.length) {
+        return;
+      }
+
+      const batch = batches[index];
+      const context = {
+        count: batch.length,
+        batch: index + 1,
+        totalBatches: batches.length,
+      };
+
+      try {
+        this.log('info', 'Requesting personas for presence snapshot', context);
+        this.client.getPersonas(batch, (err) => {
+          if (err) {
+            this.log('warn', 'getPersonas failed', { ...context, error: err.message || String(err) });
+          } else {
+            this.fetchAndWriteRichPresence(batch);
+          }
+
+          if (index + 1 < batches.length) {
+            if (this.personaBatchDelayMs > 0) {
+              setTimeout(() => processBatch(index + 1), this.personaBatchDelayMs);
+            } else {
+              processBatch(index + 1);
+            }
+          }
+        });
+      } catch (err) {
+        this.log('warn', 'getPersonas threw', { ...context, error: err.message || String(err) });
+      }
+    };
+
+    processBatch(0);
+  }
+
+  resolveMaxPersonaBatchSize(options) {
+    const candidates = [
+      options.maxPersonasPerRequest,
+      options.maxPersonaBatchSize,
+      process.env.STEAM_PRESENCE_MAX_PERSONAS,
+      process.env.MAX_PRESENCE_REQUESTS,
+    ];
+
+    const fallback = 50;
+    for (const candidate of candidates) {
+      const value = Number(candidate);
+      if (Number.isFinite(value) && value >= 1) {
+        return Math.floor(value);
+      }
     }
+    return fallback;
+  }
+
+  resolvePersonaBatchDelay(options) {
+    const candidates = [
+      options.personaBatchDelayMs,
+      process.env.STEAM_PRESENCE_BATCH_DELAY_MS,
+      process.env.PERSONA_BATCH_DELAY_MS,
+    ];
+
+    for (const candidate of candidates) {
+      const value = Number(candidate);
+      if (Number.isFinite(value) && value >= 0) {
+        return Math.floor(value);
+      }
+    }
+
+    return 0;
+  }
+
+  chunkSteamIds(ids, maxSize) {
+    const chunkSize = Number.isFinite(maxSize) && maxSize >= 1 ? Math.floor(maxSize) : ids.length;
+    if (chunkSize <= 0) {
+      return [];
+    }
+
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += chunkSize) {
+      chunks.push(ids.slice(i, i + chunkSize));
+    }
+    return chunks;
   }
 
   fetchAndWriteRichPresence(ids) {

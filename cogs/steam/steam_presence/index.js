@@ -180,10 +180,24 @@ class SteamBridge {
 
   async initializeDatabase() {
     this.logger.info('ðŸ“Š Initializing database connection');
-    
+
     this.database = new DatabaseManager(CONFIG.dbPath);
     await this.database.connect();
-    
+
+    try {
+      const now = Date.now();
+      const nowSeconds = Math.floor(now / 1000);
+      const nowIso = new Date(now).toISOString();
+      this.database.executeQuery(
+        `INSERT INTO standalone_bot_state (bot, heartbeat, payload, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(bot) DO NOTHING`,
+        ['steam', nowSeconds, JSON.stringify({ generated_at: nowIso }), nowIso]
+      );
+    } catch (error) {
+      this.logger.warn('Failed to ensure standalone_bot_state row', { error: error.message });
+    }
+
     this.logger.info('âœ… Database initialized', {
       path: CONFIG.dbPath
     });
@@ -1192,26 +1206,35 @@ class SteamBridge {
     
     // Update database with heartbeat (simplified)
     try {
+      const heartbeatIso = new Date(this.lastHeartbeat).toISOString();
+      const systemStats = this.getSystemStats();
+
       const payload = {
-        runtime: this.getSystemStats(),
+        generated_at: heartbeatIso,
+        runtime: { ...systemStats, generated_at: heartbeatIso },
         steam: this.steamClient.getStatus(),
         tasks: this.taskProcessor.getStatistics(),
         presence: {
           active_users: this.presenceState.activeUsers.size,
           pending_requests: this.presenceState.pendingRequests
-        }
-      };
-      
-      this.database.update('standalone_bot_state', 
-        {
-          heartbeat: Math.floor(this.lastHeartbeat / 1000),
-          payload: JSON.stringify(payload),
-          updated_at: Math.floor(this.lastHeartbeat / 1000)
         },
-        'bot = ?',
-        ['steam']
+        components: this.getComponentStatuses()
+      };
+
+      const heartbeat = Math.floor(this.lastHeartbeat / 1000);
+      const payloadJson = JSON.stringify(payload);
+      const updatedAtIso = heartbeatIso;
+
+      this.database.executeQuery(
+        `INSERT INTO standalone_bot_state (bot, heartbeat, payload, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(bot) DO UPDATE SET
+           heartbeat = excluded.heartbeat,
+           payload = excluded.payload,
+           updated_at = excluded.updated_at`,
+        ['steam', heartbeat, payloadJson, updatedAtIso]
       );
-      
+
     } catch (error) {
       this.logger.error('Failed to publish heartbeat', { error: error.message });
     }
@@ -1254,6 +1277,33 @@ class SteamBridge {
       last_error: this.stats.lastError,
       memory_usage_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
       is_running: this.isRunning
+    };
+  }
+
+  getComponentStatuses() {
+    const steamStatus = this.steamClient ? { ...this.steamClient.getStatus() } : null;
+    const taskStatus = this.taskProcessor ? { ...this.taskProcessor.getStatistics() } : null;
+    const quickInvitesStatus =
+      this.quickInvites && typeof this.quickInvites.getStatus === 'function'
+        ? this.quickInvites.getStatus()
+        : null;
+    const statusAnzeigeStatus =
+      this.statusAnzeige && typeof this.statusAnzeige.getStatus === 'function'
+        ? this.statusAnzeige.getStatus()
+        : null;
+
+    return {
+      steam_client: steamStatus,
+      task_processor: taskStatus,
+      quick_invites: quickInvitesStatus,
+      statusanzeige: statusAnzeigeStatus,
+      presence_tracker: {
+        timer_active: Boolean(this.presenceTimer),
+        pending_requests: this.presenceState.pendingRequests,
+        active_users: this.presenceState.activeUsers.size,
+        last_check_at: this.presenceState.lastCheck || null,
+        interval_ms: CONFIG.presenceCheckInterval
+      }
     };
   }
 

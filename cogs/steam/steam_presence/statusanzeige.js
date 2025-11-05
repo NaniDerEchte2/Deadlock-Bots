@@ -23,6 +23,10 @@ class StatusAnzeige extends DeadlockPresenceLogger {
     this.lastPersistErrorAt = 0;
     this.latestPresence = new Map();
     this.voiceWatchStmt = null;
+    this.lastSnapshotRequestedAt = null;
+    this.lastSnapshotCompletedAt = null;
+    this.lastSnapshotCount = 0;
+    this.lastSnapshotPending = false;
 
     if (this.db && typeof this.db.exec === 'function') {
       try {
@@ -156,6 +160,10 @@ class StatusAnzeige extends DeadlockPresenceLogger {
       return;
     }
 
+    this.lastSnapshotRequestedAt = Date.now();
+    this.lastSnapshotCount = targetSteamIds.length;
+    this.lastSnapshotPending = true;
+
     this.log('debug', 'Statusanzeige snapshot started', {
       voiceCount: targetSteamIds.length,
       intervalMs: this.pollIntervalMs,
@@ -167,6 +175,9 @@ class StatusAnzeige extends DeadlockPresenceLogger {
     if (!entry || !entry.steamId) return;
     const steamId = String(entry.steamId);
     const stageInfo = this.deriveStage(entry);
+
+    this.lastSnapshotCompletedAt = Date.now();
+    this.lastSnapshotPending = false;
 
     const record = {
       steamId,
@@ -355,6 +366,21 @@ class StatusAnzeige extends DeadlockPresenceLogger {
   getPresenceSummary(steamId) {
     if (!steamId) return null;
     return this.latestPresence.get(String(steamId)) || null;
+  }
+
+  getStatus() {
+    return {
+      running: this.running,
+      poll_interval_ms: this.pollIntervalMs,
+      next_poll_due_at: this.nextPollDueAt,
+      last_snapshot_requested_at: this.lastSnapshotRequestedAt,
+      last_snapshot_completed_at: this.lastSnapshotCompletedAt,
+      last_snapshot_count: this.lastSnapshotCount,
+      last_snapshot_pending: this.lastSnapshotPending,
+      tracked_users: this.latestPresence.size,
+      persistence_enabled: this.persistenceEnabled,
+      voice_watch_enabled: Boolean(this.voiceWatchStmt)
+    };
   }
 }
 
