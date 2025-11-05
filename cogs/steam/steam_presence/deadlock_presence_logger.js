@@ -139,7 +139,16 @@ class DeadlockPresenceLogger {
         const users = (resp && resp.users) ? resp.users : {};
         const received = Object.keys(users).length;
         if (!received) {
-          this.log('info', 'No Deadlock rich presence returned', { requested: ids.length });
+          const inDeadlockCount = ids.reduce((count, sid) => {
+            const persona = (this.client.users && this.client.users[sid]) ? this.client.users[sid] : null;
+            const playingAppId = this.toInt(persona && (persona.gameid || persona.game_id));
+            return playingAppId === this.appId ? count + 1 : count;
+          }, 0);
+          const level = inDeadlockCount > 0 ? 'info' : 'debug';
+          this.log(level, 'No Deadlock rich presence returned', {
+            requested: ids.length,
+            in_deadlock: inDeadlockCount,
+          });
         }
         ids.forEach((sid) => {
           const persona = (this.client.users && this.client.users[sid]) ? this.client.users[sid] : null;
