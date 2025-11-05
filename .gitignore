@@ -22,16 +22,24 @@ cogs/steam/steam_presence/*
 !cogs/steam/steam_presence/package.json
 !cogs/steam/steam_presence/package-lock.json
 !cogs/steam/steam_presence/index.js
+!cogs/steam/steam_presence/index_legacy.js
 !cogs/steam/steam_presence/README.md
+!cogs/steam/steam_presence/README_REFACTOR.md
 !cogs/steam/steam_presence/deadlock_presence_logger.js
 !cogs/steam/steam_presence/statusanzeige.js
+!cogs/steam/steam_presence/quick_invites.js
+!cogs/steam/steam_presence/core/
+!cogs/steam/steam_presence/core/**
+!cogs/steam/steam_presence/utils/
+!cogs/steam/steam_presence/utils/**
+!cogs/steam/steam_presence/.env.optimized
 
 *.db-shm
 *.db-wal
 *.db
 cogs/faq_menu.py
 clip_submission*
-!quick_invites.js
+# Quick invites regel entfernt - jetzt in steam_presence section
 service/changelogs.py
 standalone/csv_to_deadlock.py
 standalone/build_changelog_sqlite.py

@@ -9,7 +9,6 @@ import os
 import sys
 import signal
 import types
-import builtins
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -24,49 +23,51 @@ import hashlib
 
 import discord
 from discord.ext import commands
-# --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
+# --- STARTUP OPTIMIZATION: Reduziere Debug-Overhead ---
 import re
 
+# Lazy imports für bessere Startup-Performance
 try:
     from service.dashboard import DashboardServer
 except Exception as _dashboard_import_error:
     DashboardServer = None  # type: ignore[assignment]
-    logging.getLogger(__name__).warning(
-        "Dashboard module unavailable: %s", _dashboard_import_error
-    )
+    # Reduziere Log-Level für weniger Startup-Overhead
+    if os.getenv("DEBUG_IMPORTS"):
+        logging.getLogger(__name__).debug("Dashboard module unavailable: %s", _dashboard_import_error)
 
 try:
     from service.standalone_manager import StandaloneBotConfig, StandaloneBotManager
 except Exception as _standalone_import_error:
     StandaloneBotConfig = None  # type: ignore[assignment]
     StandaloneBotManager = None  # type: ignore[assignment]
-    logging.getLogger(__name__).warning(
-        "Standalone manager unavailable: %s", _standalone_import_error
-    )
+    if os.getenv("DEBUG_IMPORTS"):
+        logging.getLogger(__name__).debug("Standalone manager unavailable: %s", _standalone_import_error)
 
-def _log_src(modname: str):
-    try:
-        m = importlib.import_module(modname)
-        path = inspect.getfile(m)
-        with open(path, 'rb') as fh:
-            sha = hashlib.sha1(fh.read()).hexdigest()[:12]
-        logging.getLogger().info("SRC %s -> %s [sha1:%s]", modname, path, sha)
-    except Exception as e:
-        logging.getLogger().error("SRC %s -> %r", modname, e)
+# Entferne langsame Debug-SRC Logs - nur bei DEBUG_SRC=1 aktivieren
+if os.getenv("DEBUG_SRC") == "1":
+    def _log_src(modname: str):
+        try:
+            m = importlib.import_module(modname)
+            path = inspect.getfile(m)
+            with open(path, 'rb') as fh:
+                sha = hashlib.sha1(fh.read()).hexdigest()[:12]
+            logging.getLogger().info("SRC %s -> %s [sha1:%s]", modname, path, sha)
+        except Exception as e:
+            logging.getLogger().error("SRC %s -> %r", modname, e)
 
-logging.getLogger().info("PYTHON exe=%s", sys.executable)
-logging.getLogger().info("CWD=%s", os.getcwd())
-logging.getLogger().info("sys.path[0]=%s", sys.path[0] if sys.path else None)
+    logging.getLogger().info("PYTHON exe=%s", sys.executable)
+    logging.getLogger().info("CWD=%s", os.getcwd())
+    logging.getLogger().info("sys.path[0]=%s", sys.path[0] if sys.path else None)
 
-# prüfe gezielt die „verdächtigen“
-for name in [
-    "cogs.rules_channel",
-    "cogs.welcome_dm.dm_main",
-    "cogs.welcome_dm.step_streamer",
-    "cogs.welcome_dm.step_steam_link",
-]:
-    _log_src(name)
-# --- /DEBUG ---
+    # prüfe gezielt die „verdächtigen"
+    for name in [
+        "cogs.rules_channel",
+        "cogs.welcome_dm.dm_main",
+        "cogs.welcome_dm.step_streamer",
+        "cogs.welcome_dm.step_steam_link",
+    ]:
+        _log_src(name)
+# --- /STARTUP OPTIMIZATION ---
 
 # =========================
 # .env robust laden
@@ -144,36 +145,7 @@ class _RedactSecretsFilter(logging.Filter):
 logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout)])
 _load_env_robust()
 
-# =========================
-# WorkerProxy Shim (fallback-sicher)
-# =========================
-def _install_workerproxy_shim():
-    try:
-        from shared.worker_client import WorkerProxy  # type: ignore
-        setattr(builtins, "WorkerProxy", WorkerProxy)
-        return
-    except Exception as e:
-        logging.getLogger().info("WorkerProxy nicht verfügbar – verwende Stub: %r", e)
-
-    class _WorkerProxyStub:
-        def __init__(self, *a, **kw): pass
-        def request(self, *a, **kw): return {"ok": False, "error": "worker_stub"}
-        def edit_channel(self, *a, **kw): return {"ok": False, "error": "worker_stub"}
-        def set_permissions(self, *a, **kw): return {"ok": False, "error": "worker_stub"}
-        def rename_match_suffix(self, *a, **kw): return {"ok": False, "error": "worker_stub"}
-        def clear_match_suffix(self, *a, **kw): return {"ok": False, "error": "worker_stub"}
-        def bulk(self, *a, **kw): return {"ok": False, "error": "worker_stub"}
-
-    setattr(builtins, "WorkerProxy", _WorkerProxyStub)
-
-    if "shared" not in sys.modules:
-        sys.modules["shared"] = types.ModuleType("shared")
-    if "shared.worker_client" not in sys.modules:
-        wc_mod = types.ModuleType("shared.worker_client")
-        setattr(wc_mod, "WorkerProxy", _WorkerProxyStub)
-        sys.modules["shared.worker_client"] = wc_mod
-
-_install_workerproxy_shim()
+# WorkerProxy wurde entfernt - nicht mehr benötigt
 
 # =========================
 # Zentrale DB Init (quiet)
@@ -505,7 +477,9 @@ class MasterBot(commands.Bot):
                     continue
                 discovered.append(module_path)
                 pkg_dirs_with_setup.append(init_file.parent)
-                logging.info(f"🔍 Auto-discovered package cog: {module_path}")
+                # Nur bei Debug-Modus einzelne Cogs loggen
+                if os.getenv("DEBUG_COG_DISCOVERY"):
+                    logging.debug(f"🔍 Auto-discovered package cog: {module_path}")
 
             # Pass 2: Einzelne .py
             for cog_file in self.cogs_dir.rglob("*.py"):
@@ -522,7 +496,9 @@ class MasterBot(commands.Bot):
                     continue
                 has_setup = ("async def setup(" in content) or ("def setup(" in content)
                 if not has_setup:
-                    logging.info(f"⏭️ Skipped {cog_file}: no setup() found")
+                    # Stille übersprungen - nur bei Debug-Modus loggen
+                    if os.getenv("DEBUG_COG_DISCOVERY"):
+                        logging.debug(f"⏭️ Skipped {cog_file}: no setup() found")
                     continue
                 rel = cog_file.relative_to(self.cogs_dir.parent)
                 module_path = ".".join(rel.with_suffix("").parts)
@@ -530,7 +506,9 @@ class MasterBot(commands.Bot):
                     logging.info(f"🚫 Excluded cog: {module_path}")
                     continue
                 discovered.append(module_path)
-                logging.info(f"🔍 Auto-discovered cog: {module_path}")
+                # Nur bei Debug-Modus einzelne Cogs loggen
+                if os.getenv("DEBUG_COG_DISCOVERY"):
+                    logging.debug(f"🔍 Auto-discovered cog: {module_path}")
 
             self.cogs_list = sorted(set(discovered))
             logging.info(f"✅ Auto-discovery complete: {len(self.cogs_list)} cogs found")
@@ -578,11 +556,16 @@ class MasterBot(commands.Bot):
 
         level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
 
+        # Optimiertes Log-Format für bessere Performance
+        log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        if os.getenv("FAST_LOGS") == "1":
+            log_format = "%(asctime)s - %(levelname)s - %(message)s"  # Kürzer für Speed
+
         root_handlers: List[logging.Handler] = [
             logging.handlers.RotatingFileHandler(
                 log_dir / "master_bot.log",
-                maxBytes=5 * 1024 * 1024,
-                backupCount=5,
+                maxBytes=3 * 1024 * 1024,  # Kleinere Dateien für bessere Performance
+                backupCount=3,  # Weniger Backups
                 encoding="utf-8",
             ),
             logging.StreamHandler(sys.stdout),
@@ -592,16 +575,21 @@ class MasterBot(commands.Bot):
         logging.basicConfig(
             level=level,
             handlers=root_handlers,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            format=log_format,
         )
 
-        logging.getLogger("discord").setLevel(logging.WARNING)
-        logging.getLogger("discord.http").setLevel(logging.WARNING)
+        # Aggressivere Discord-Log-Reduzierung für bessere Performance
+        discord_log_level = logging.ERROR if os.getenv("QUIET_DISCORD") == "1" else logging.WARNING
+        logging.getLogger("discord").setLevel(discord_log_level)
+        logging.getLogger("discord.http").setLevel(discord_log_level)
+        logging.getLogger("discord.gateway").setLevel(discord_log_level)
+        logging.getLogger("discord.client").setLevel(discord_log_level)
 
+        # Secret-Redaction nur wenn explizit aktiviert
         if (os.getenv("REDACT_SECRETS") or "0") in ("1", "true", "TRUE", "yes", "YES"):
             redact_keys = [
                 "DISCORD_TOKEN",
-                "BOT_TOKEN",
+                "BOT_TOKEN", 
                 "RANK_BOT_TOKEN",
                 "STEAM_API_KEY",
                 "STEAM_WEB_API_KEY",
@@ -611,7 +599,8 @@ class MasterBot(commands.Bot):
             for h in logging.getLogger().handlers:
                 h.addFilter(flt)
 
-        logging.info("Master Bot logging initialized")
+        if not os.getenv("QUIET_STARTUP"):
+            logging.info("🚀 Master Bot logging optimiert initialisiert")
 
     # --------------------- Runtime-Status & Presence -------------------
     def active_cogs(self) -> List[str]:
@@ -688,31 +677,46 @@ class MasterBot(commands.Bot):
             asyncio.create_task(self._bootstrap_standalone_autostart())
 
     async def load_all_cogs(self):
-        logging.info("Loading all cogs in parallel...")
+        if not os.getenv("QUIET_STARTUP"):
+            logging.info("⚡ Loading all cogs in optimized parallel mode...")
+
+        # Begrenzte Concurrency für Stabilität
+        semaphore = asyncio.Semaphore(int(os.getenv("COG_LOAD_CONCURRENCY", "8")))
 
         async def load_single_cog(cog_name: str):
-            try:
-                self._purge_namespace_modules(cog_name)
-                await self.load_extension(cog_name)
-                self.cog_status[cog_name] = "loaded"
-                logging.info(f"✅ Loaded cog: {cog_name}")
-                return True, cog_name, None
-            except Exception as e:
-                self.cog_status[cog_name] = f"error: {str(e)[:100]}"
-                logging.error(f"❌ Failed to load cog {cog_name}: {e}")
-                return False, cog_name, e
+            async with semaphore:
+                try:
+                    self._purge_namespace_modules(cog_name)
+                    await self.load_extension(cog_name)
+                    self.cog_status[cog_name] = "loaded"
+                    
+                    if not os.getenv("QUIET_COG_LOADS"):
+                        logging.info(f"✅ Loaded cog: {cog_name}")
+                    return True, cog_name, None
+                except Exception as e:
+                    self.cog_status[cog_name] = f"error: {str(e)[:100]}"
+                    logging.error(f"❌ Failed to load cog {cog_name}: {e}")
+                    return False, cog_name, e
 
         tasks = [load_single_cog(c) for c in self.cogs_list]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         ok = 0
+        failed_cogs = []
         for r in results:
             if isinstance(r, tuple) and r[0]:
                 ok += 1
+            elif isinstance(r, tuple):
+                failed_cogs.append(r[1])
             elif isinstance(r, Exception):
                 logging.error(f"❌ Unexpected error during cog loading: {r}")
 
-        logging.info(f"Parallel cog loading completed: {ok}/{len(self.cogs_list)} successful")
+        if not os.getenv("QUIET_STARTUP"):
+            logging.info(f"⚡ Parallel cog loading completed: {ok}/{len(self.cogs_list)} successful")
+            if failed_cogs and not os.getenv("QUIET_ERRORS"):
+                logging.warning(f"❌ Failed cogs: {', '.join(failed_cogs[:5])}" + 
+                              (f" (+{len(failed_cogs)-5} more)" if len(failed_cogs) > 5 else ""))
+        
         await self.update_presence()
 
     async def reload_all_cogs_with_discovery(self):
@@ -808,34 +812,43 @@ class MasterBot(commands.Bot):
             return False, err
 
     async def hourly_health_check(self):
-        critical_check_interval = 3600  # 1h
+        # Konfigurierbare Intervalle für bessere Performance
+        health_interval = int(os.getenv("HEALTH_CHECK_INTERVAL", "600"))  # 10min default statt 5min
+        critical_check_interval = int(os.getenv("CRITICAL_CHECK_INTERVAL", "3600"))  # 1h
         last_critical_check = 0.0
 
         while not self.is_closed():
             try:
-                await asyncio.sleep(300)
+                await asyncio.sleep(health_interval)
                 current = asyncio.get_running_loop().time()
 
-                if self.standalone_manager:
+                # Standalone Manager Check nur alle 15 Minuten
+                if self.standalone_manager and current % 900 < health_interval:
                     try:
                         await self.standalone_manager.ensure_autostart()
                     except Exception as exc:
-                        logging.warning("Standalone Manager Autostart-Pruefung fehlgeschlagen: %s", exc)
+                        if not os.getenv("QUIET_HEALTH_CHECKS"):
+                            logging.warning("Standalone Manager Autostart-Pruefung fehlgeschlagen: %s", exc)
 
+                # Kritische Checks nur jede Stunde
                 if current - last_critical_check >= critical_check_interval:
                     issues = []
 
-                    if not self.get_cog("TempVoiceCore"):
-                        issues.append("TempVoiceCore not loaded")
-                    if not self.get_cog("TempVoiceInterface"):
-                        issues.append("TempVoiceInterface not loaded")
+                    # Nur essenzielle Cogs prüfen
+                    critical_cogs = ["TempVoiceCore", "TempVoiceInterface"]
+                    for cog_name in critical_cogs:
+                        if not self.get_cog(cog_name):
+                            issues.append(f"{cog_name} not loaded")
+                    
+                    # Prüfe wichtige Extensions
                     if "cogs.steam.steam_link_oauth" not in self.extensions:
                         issues.append("SteamLinkOAuth (module) not loaded")
 
                     if issues:
-                        logging.warning(f"Critical Health Check: Issues found: {issues}")
+                        logging.warning(f"❗ Critical Health Check: Issues found: {issues}")
                     else:
-                        logging.info("Critical Health Check: Core cogs operational")
+                        if not os.getenv("QUIET_HEALTH_CHECKS"):
+                            logging.info("✅ Critical Health Check: Core cogs operational")
 
                     last_critical_check = current
 
