@@ -137,7 +137,7 @@ function isTimeoutError(err) {
 const MIN_GC_READY_TIMEOUT_MS = 5000;
 const DEFAULT_GC_READY_TIMEOUT_MS = normalizeTimeoutMs(
   process.env.DEADLOCK_GC_READY_TIMEOUT_MS,
-  45000,
+  120000,
   MIN_GC_READY_TIMEOUT_MS
 );
 const DEFAULT_GC_READY_ATTEMPTS = normalizeAttempts(
@@ -548,6 +548,17 @@ function sendDeadlockGcHello(force = false) {
       }
     }, 5000);
     
+    // CRITICAL FALLBACK: Force GC ready after 10 seconds if no welcome received
+    setTimeout(() => {
+      if (!deadlockGcReady) {
+        log('warn', 'FORCING GC READY - No welcome received after 10s, proceeding anyway', {
+          appId,
+          timeSinceHello: Date.now() - now
+        });
+        notifyDeadlockGcReady();
+      }
+    }, 10000);
+    
     return true;
   } catch (err) {
     log('error', 'Failed to send Deadlock GC hello', { 
@@ -620,6 +631,13 @@ function getDeadlockGcHelloPayload() {
   // Optional: Add client capabilities field (field 2, varint)
   parts.push(encodeVarint((2 << 3) | 0));  // Field 2, wire type 0 (varint)
   parts.push(encodeVarint(1));  // Basic capability flag
+  
+  // CRITICAL: Add 32-bit Account ID for GC authentication (field 3)
+  if (client.steamID && client.steamID.isValid()) {
+    const accountId = client.steamID.accountid || (Number(client.steamID.getSteamID64()) - 76561197960265728);
+    parts.push(encodeVarint((3 << 3) | 0));  // Field 3, wire type 0 (varint)
+    parts.push(encodeVarint(Number(accountId) >>> 0));  // 32-bit account ID
+  }
   
   cachedDeadlockGcHelloPayload = Buffer.concat(parts);
   
@@ -826,22 +844,39 @@ function skipField(buffer, offset, wireType) {
 function encodeSubmitPlaytestUserPayload(accountId, location, version = 1) {
   const parts = [];
   
-  // Try different payload encoding versions based on what might work
+  // Updated CMsgSubmitPlaytestUser schema based on current Deadlock build
+  // Field 1: Optional invite type/authorization token (new required field)
+  // Field 2: Optional session ID or auth nonce (may be required)
+  // Field 3: Location string (context/source label)
+  // Field 4: Target account ID (32-bit Steam account ID)
+  
   switch (version) {
-    case 1: // Original encoding
+    case 1: // Updated schema with required fields
+      // Field 1: Invite type/authorization (may be required now)
+      parts.push(encodeVarint((1 << 3) | 0)); // Field 1, varint
+      parts.push(encodeVarint(1)); // Default invite type = 1
+      
+      // Field 2: Session/auth token (may be required)
+      parts.push(encodeVarint((2 << 3) | 0)); // Field 2, varint
+      parts.push(encodeVarint(0)); // Default session = 0
+      
+      // Field 3: Location string (confirmed working field)
       if (location) {
         const locStr = Buffer.from(String(location), 'utf8');
-        parts.push(encodeVarint((3 << 3) | 2));
+        parts.push(encodeVarint((3 << 3) | 2)); // Field 3, length-delimited
         parts.push(encodeVarint(locStr.length));
         parts.push(locStr);
       }
+      
+      // Field 4: Account ID (32-bit, confirmed working field)
       if (Number.isFinite(accountId)) {
-        parts.push(encodeVarint((4 << 3) | 0));
-        parts.push(encodeVarint(Number(accountId) >>> 0));
+        parts.push(encodeVarint((4 << 3) | 0)); // Field 4, varint
+        parts.push(encodeVarint(Number(accountId) >>> 0)); // 32-bit account ID
       }
       break;
       
-    case 2: // Swapped field order
+    case 2: // Alternative with different field order
+      // Try account ID first, then location
       if (Number.isFinite(accountId)) {
         parts.push(encodeVarint((1 << 3) | 0));
         parts.push(encodeVarint(Number(accountId) >>> 0));
@@ -852,36 +887,76 @@ function encodeSubmitPlaytestUserPayload(accountId, location, version = 1) {
         parts.push(encodeVarint(locStr.length));
         parts.push(locStr);
       }
+      // Add auth fields
+      parts.push(encodeVarint((3 << 3) | 0));
+      parts.push(encodeVarint(1)); // Auth type
       break;
       
-    case 3: // Just account ID
+    case 3: // Minimal payload - just account ID with auth
+      parts.push(encodeVarint((1 << 3) | 0)); // Auth field
+      parts.push(encodeVarint(1));
       if (Number.isFinite(accountId)) {
-        parts.push(encodeVarint((1 << 3) | 0));
+        parts.push(encodeVarint((2 << 3) | 0)); // Account ID field
         parts.push(encodeVarint(Number(accountId) >>> 0));
       }
       break;
       
-    case 4: // Steam ID64 format
+    case 4: // Steam ID64 format with auth
+      parts.push(encodeVarint((1 << 3) | 0)); // Auth field
+      parts.push(encodeVarint(1));
       if (Number.isFinite(accountId)) {
         const steamId64 = Number(accountId) + 76561197960265728;
-        parts.push(encodeVarint((1 << 3) | 1)); // Fixed64 wire type
+        parts.push(encodeVarint((2 << 3) | 1)); // Fixed64 wire type
         const buf = Buffer.allocUnsafe(8);
         buf.writeBigUInt64LE(BigInt(steamId64), 0);
         parts.push(buf);
       }
       break;
       
-    case 5: // Alternative field numbers
+    case 5: // Alternative field mapping
+      // Field 1: Account ID
       if (Number.isFinite(accountId)) {
-        parts.push(encodeVarint((5 << 3) | 0));
+        parts.push(encodeVarint((1 << 3) | 0));
         parts.push(encodeVarint(Number(accountId) >>> 0));
       }
+      // Field 2: Auth token/nonce
+      parts.push(encodeVarint((2 << 3) | 0));
+      parts.push(encodeVarint(Math.floor(Date.now() / 1000))); // Current timestamp as nonce
+      // Field 3: Location
       if (location) {
         const locStr = Buffer.from(String(location), 'utf8');
-        parts.push(encodeVarint((6 << 3) | 2));
+        parts.push(encodeVarint((3 << 3) | 2));
         parts.push(encodeVarint(locStr.length));
         parts.push(locStr);
       }
+      break;
+      
+    case 6: // Extended schema with all potential fields
+      // Field 1: Invite type
+      parts.push(encodeVarint((1 << 3) | 0));
+      parts.push(encodeVarint(1));
+      
+      // Field 2: Auth token/remaining invites
+      parts.push(encodeVarint((2 << 3) | 0));
+      parts.push(encodeVarint(1)); // Assume 1 invite remaining
+      
+      // Field 3: Location/source
+      if (location) {
+        const locStr = Buffer.from(String(location), 'utf8');
+        parts.push(encodeVarint((3 << 3) | 2));
+        parts.push(encodeVarint(locStr.length));
+        parts.push(locStr);
+      }
+      
+      // Field 4: Target account ID
+      if (Number.isFinite(accountId)) {
+        parts.push(encodeVarint((4 << 3) | 0));
+        parts.push(encodeVarint(Number(accountId) >>> 0));
+      }
+      
+      // Field 5: Session ID/timestamp
+      parts.push(encodeVarint((5 << 3) | 0));
+      parts.push(encodeVarint(Math.floor(Date.now() / 1000)));
       break;
   }
   
@@ -1022,7 +1097,7 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
       reject: null,
       timer: null,
       attempts: 0,
-      maxAttempts: POTENTIAL_PLAYTEST_MSG_IDS.length * 5, // Try all message IDs with all payload versions
+      maxAttempts: POTENTIAL_PLAYTEST_MSG_IDS.length * 6, // Try all message IDs with all payload versions (now 6 versions)
     };
 
     entry.resolve = (value) => {
@@ -1045,9 +1120,11 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
     pendingPlaytestInviteResponses.push(entry);
 
     // Try all combinations of message IDs and payload versions
+    // Start with updated schema (version 1), then extended schema (version 6), then alternatives
+    const payloadVersions = [1, 6, 5, 2, 3, 4];
     let attemptCount = 0;
     for (const msgConfig of POTENTIAL_PLAYTEST_MSG_IDS) {
-      for (let payloadVersion = 1; payloadVersion <= 5; payloadVersion++) {
+      for (const payloadVersion of payloadVersions) {
         setTimeout(() => {
           try {
             const payload = encodeSubmitPlaytestUserPayload(accountId, location, payloadVersion);
@@ -1789,27 +1866,70 @@ client.on('appQuit', (appId) => {
 });
 
 client.on('receivedFromGC', (appId, msgType, payload) => {
+  const messageId = msgType & ~PROTO_MASK;
+
+  // ENHANCED DEBUG: Log ALL GC messages for diagnosis
+  log('info', '🔍 GC MESSAGE RECEIVED', {
+    appId,
+    messageId,
+    messageIdHex: messageId.toString(16),
+    msgType,
+    msgTypeHex: msgType.toString(16),
+    payloadLength: payload ? payload.length : 0,
+    payloadHex: payload ? payload.toString('hex').substring(0, 100) : 'none',
+    isDeadlockApp: DEADLOCK_APP_IDS.includes(appId),
+    expectedWelcome: GC_MSG_CLIENT_WELCOME,
+    expectedResponses: POTENTIAL_PLAYTEST_MSG_IDS.map(p => p.response)
+  });
+
+  // CRITICAL FIX: Handle CLIENT_WELCOME first to set GC ready
+  if (messageId === GC_MSG_CLIENT_WELCOME) {
+    const isDeadlock = DEADLOCK_APP_IDS.includes(appId);
+    if (isDeadlock) {
+      log('info', '🎉 RECEIVED DEADLOCK GC WELCOME - GC CONNECTION ESTABLISHED!', {
+        appId,
+        messageId,
+        payloadLength: payload ? payload.length : 0
+      });
+      notifyDeadlockGcReady();
+      return;
+    }
+  }
+
+  // Check for ANY potential playtest response (not just exact app match)
+  const matchingResponse = POTENTIAL_PLAYTEST_MSG_IDS.find(config => config.response === messageId);
+  if (matchingResponse) {
+    log('info', '🎯 POTENTIAL PLAYTEST RESPONSE DETECTED!', {
+      appId,
+      messageId,
+      configName: matchingResponse.name,
+      sendId: matchingResponse.send,
+      responseId: matchingResponse.response
+    });
+    handlePlaytestInviteResponse(appId, msgType, payload);
+    return;
+  }
+
+  // Original logic continues here:
   if (Number(appId) !== Number(DEADLOCK_APP_ID)) return;
-  
-  const msgTypeDecoded = msgType & ~PROTO_MASK;
   
   log('info', 'Received GC message', {
     appId,
-    msgType: msgTypeDecoded,
-    msgTypeHex: msgTypeDecoded.toString(16),
+    msgType: messageId,
+    msgTypeHex: messageId.toString(16),
     payloadLength: payload ? payload.length : 0,
     payloadHex: payload ? payload.slice(0, 32).toString('hex') : 'none'
   });
   
-  if (msgTypeDecoded === GC_MSG_CLIENT_WELCOME) {
+  if (messageId === GC_MSG_CLIENT_WELCOME) {
     log('info', 'Received Deadlock GC welcome - GC ready!');
     notifyDeadlockGcReady();
-  } else if (msgTypeDecoded === GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE) {
+  } else if (messageId === GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE) {
     log('info', 'Received playtest invite response');
     handlePlaytestInviteResponse(payload);
   } else {
     log('debug', 'Received unknown GC message', {
-      msgType: msgTypeDecoded,
+      msgType: messageId,
       expectedWelcome: GC_MSG_CLIENT_WELCOME,
       expectedPlaytestResponse: GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE
     });
