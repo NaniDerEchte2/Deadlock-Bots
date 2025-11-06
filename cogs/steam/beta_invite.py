@@ -68,16 +68,17 @@ _ALLOWED_UPDATE_FIELDS = {
 
 
 def _lookup_primary_steam_id(discord_id: int) -> Optional[str]:
-    row = db.connect().execute(
-        """
-        SELECT steam_id
-        FROM steam_links
-        WHERE user_id = ? AND steam_id != ''
-        ORDER BY primary_account DESC, verified DESC, updated_at DESC
-        LIMIT 1
-        """,
-        (int(discord_id),),
-    ).fetchone()
+    with db.get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT steam_id
+            FROM steam_links
+            WHERE user_id = ? AND steam_id != ''
+            ORDER BY primary_account DESC, verified DESC, updated_at DESC
+            LIMIT 1
+            """,
+            (int(discord_id),),
+        ).fetchone()
     if not row:
         return None
     steam_id = str(row["steam_id"] or "").strip()
@@ -120,18 +121,20 @@ def _row_to_record(row: Optional[db.sqlite3.Row]) -> Optional[BetaInviteRecord]:
 
 
 def _fetch_invite_by_discord(discord_id: int) -> Optional[BetaInviteRecord]:
-    row = db.connect().execute(
-        "SELECT * FROM steam_beta_invites WHERE discord_id = ?",
-        (int(discord_id),),
-    ).fetchone()
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM steam_beta_invites WHERE discord_id = ?",
+            (int(discord_id),),
+        ).fetchone()
     return _row_to_record(row)
 
 
 def _fetch_invite_by_id(record_id: int) -> Optional[BetaInviteRecord]:
-    row = db.connect().execute(
-        "SELECT * FROM steam_beta_invites WHERE id = ?",
-        (int(record_id),),
-    ).fetchone()
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM steam_beta_invites WHERE id = ?",
+            (int(record_id),),
+        ).fetchone()
     return _row_to_record(row)
 
 
@@ -164,8 +167,7 @@ def _format_gc_response_error(response: Mapping[str, Any]) -> Optional[str]:
 
 
 def _create_or_reset_invite(discord_id: int, steam_id64: str, account_id: Optional[int]) -> BetaInviteRecord:
-    with db._LOCK:  # type: ignore[attr-defined]
-        conn = db.connect()
+    with db.get_conn() as conn:
         conn.execute(
             """
             DELETE FROM steam_beta_invites
@@ -214,8 +216,7 @@ def _update_invite(record_id: int, **fields) -> Optional[BetaInviteRecord]:
     assignments.append("updated_at = strftime('%s','now')")
     params.append(int(record_id))
 
-    with db._LOCK:  # type: ignore[attr-defined]
-        conn = db.connect()
+    with db.get_conn() as conn:
         conn.execute(
             f"UPDATE steam_beta_invites SET {', '.join(assignments)} WHERE id = ?",
             params,
@@ -373,7 +374,18 @@ class BetaInviteFlow(commands.Cog):
             )
             return
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.errors.NotFound:
+            log.warning("Confirmation interaction expired before defer")
+            await interaction.followup.send(
+                "⏱️ Die Bestätigung hat zu lange gedauert. Bitte versuche es erneut.",
+                ephemeral=True
+            )
+            return
+        except Exception as e:
+            log.error(f"Failed to defer confirmation interaction: {e}")
+            return
 
         friend_outcome = await self.tasks.run(
             "AUTH_CHECK_FRIENDSHIP",
@@ -539,11 +551,32 @@ class BetaInviteFlow(commands.Cog):
 
     @app_commands.command(name="betainvite", description="Automatisiert eine Deadlock-Playtest-Einladung anfordern.")
     async def betainvite(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # Quick initial response to prevent timeout
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.errors.NotFound:
+            # Interaction already expired, try to respond with followup
+            log.warning("Interaction expired before defer, using followup")
+            await interaction.followup.send(
+                "⏱️ Die Anfrage hat zu lange gedauert. Bitte versuche `/betainvite` erneut.",
+                ephemeral=True
+            )
+            return
+        except Exception as e:
+            log.error(f"Failed to defer interaction: {e}")
+            return
 
-        existing = _fetch_invite_by_discord(interaction.user.id)
-        primary_link = _lookup_primary_steam_id(interaction.user.id)
-        resolved = primary_link or (existing.steam_id64 if existing else None)
+        try:
+            existing = _fetch_invite_by_discord(interaction.user.id)
+            primary_link = _lookup_primary_steam_id(interaction.user.id)
+            resolved = primary_link or (existing.steam_id64 if existing else None)
+        except Exception as e:
+            log.error(f"Database lookup failed: {e}")
+            await interaction.followup.send(
+                "❌ Datenbankfehler beim Abrufen der Steam-Verknüpfung. Bitte versuche es erneut.",
+                ephemeral=True
+            )
+            return
 
         if not resolved:
             view = self._build_link_prompt_view(interaction.user)
