@@ -49,7 +49,7 @@ except Exception:
 def _conn():
     if not central_db:
         raise RuntimeError("Zentrale DB 'service.db' nicht importierbar.")
-    return central_db.connect()
+    return central_db.get_conn()
 
 def _exec(sql: str, params: tuple = ()) -> None:
     with _conn() as c:
