@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -180,6 +181,8 @@ class TwitchMonitoringMixin:
             notify_ch = self.bot.get_channel(self._notify_channel_id) or None  # type: ignore[assignment]
 
         now_utc = datetime.now(tz=timezone.utc)
+        now_iso = now_utc.isoformat(timespec="seconds")
+        pending_state_rows: List[tuple[str, str, int, str, Optional[str], Optional[str], int, Optional[str]]] = []
 
         with storage.get_conn() as c:
             live_state_rows = c.execute("SELECT * FROM twitch_live_state").fetchall()
@@ -295,26 +298,55 @@ class TwitchMonitoringMixin:
             db_message_id = str(message_id_to_store) if message_id_to_store else None
             db_streamer_login = login_lower
 
-            with storage.get_conn() as c:
-                c.execute(
-                    "INSERT OR REPLACE INTO twitch_live_state "
-                    "(twitch_user_id, streamer_login, is_live, last_seen_at, last_title, last_game, last_viewer_count, last_discord_message_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        db_user_id,
-                        db_streamer_login,
-                        int(is_live),
-                        now_utc.isoformat(timespec="seconds"),
-                        (stream.get("title") if stream else None),
-                        (stream.get("game_name") if stream else None),
-                        int(stream.get("viewer_count") or 0) if stream else 0,
-                        db_message_id,
-                    ),
+            pending_state_rows.append(
+                (
+                    db_user_id,
+                    db_streamer_login,
+                    int(is_live),
+                    now_iso,
+                    (stream.get("title") if stream else None),
+                    (stream.get("game_name") if stream else None),
+                    int(stream.get("viewer_count") or 0) if stream else 0,
+                    db_message_id,
                 )
+            )
 
             if need_link and self._alert_channel_id and (now_utc.minute % 10 == 0) and is_live:
                 # Platzhalter für deinen Profil-/Panel-Check
                 pass
+
+        await self._persist_live_state_rows(pending_state_rows)
+
+    async def _persist_live_state_rows(
+        self,
+        rows: List[
+            tuple[str, str, int, str, Optional[str], Optional[str], int, Optional[str]]
+        ],
+    ) -> None:
+        if not rows:
+            return
+
+        retry_delay = 0.5
+        for attempt in range(3):
+            try:
+                with storage.get_conn() as c:
+                    c.executemany(
+                        "INSERT OR REPLACE INTO twitch_live_state "
+                        "(twitch_user_id, streamer_login, is_live, last_seen_at, last_title, last_game, last_viewer_count, last_discord_message_id) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        rows,
+                    )
+                return
+            except sqlite3.OperationalError as exc:
+                locked = "locked" in str(exc).lower()
+                if not locked or attempt == 2:
+                    log.exception(
+                        "Konnte Live-State-Updates nicht speichern (%s Eintraege)",
+                        len(rows),
+                    )
+                    return
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
 
     async def _log_stats(self, streams_by_login: Dict[str, dict], category_streams: List[dict]):
         now_utc = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
