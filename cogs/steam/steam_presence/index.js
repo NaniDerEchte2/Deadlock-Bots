@@ -27,6 +27,12 @@ const SteamUser = require('steam-user');
 const Database = require('better-sqlite3');
 const { QuickInvites } = require('./quick_invites');
 const { StatusAnzeige } = require('./statusanzeige');
+const {
+  DEADLOCK_GC_PROTOCOL_OVERRIDE_PATH,
+  getHelloPayloadOverride,
+  getPlaytestOverrides,
+  getOverrideInfo: getGcOverrideInfo,
+} = require('./deadlock_gc_protocol');
 
 let SteamID = null;
 if (SteamUser && SteamUser.SteamID) {
@@ -56,7 +62,7 @@ const GC_MSG_CLIENT_HELLO = 4004;
 const GC_MSG_CLIENT_WELCOME = 4005;
 
 // Multiple potential message IDs to try (Deadlock's actual IDs may have changed)
-const POTENTIAL_PLAYTEST_MSG_IDS = [
+const DEFAULT_PLAYTEST_MSG_IDS = [
   { send: 9189, response: 9190, name: 'original' },
   { send: 9000, response: 9001, name: 'alternative_1' },
   { send: 8000, response: 8001, name: 'alternative_2' },
@@ -64,9 +70,40 @@ const POTENTIAL_PLAYTEST_MSG_IDS = [
   { send: 10000, response: 10001, name: 'alternative_4' },
 ];
 
+let playtestMsgConfigs = [...DEFAULT_PLAYTEST_MSG_IDS];
+const playtestOverrideConfig = getPlaytestOverrides() || null;
+let buildPlaytestPayloadOverrideFn = null;
+
+if (playtestOverrideConfig) {
+  if (
+    playtestOverrideConfig.messageIds &&
+    Number.isFinite(playtestOverrideConfig.messageIds.send) &&
+    Number.isFinite(playtestOverrideConfig.messageIds.response)
+  ) {
+    const overrideEntry = {
+      send: Number(playtestOverrideConfig.messageIds.send),
+      response: Number(playtestOverrideConfig.messageIds.response),
+      name: playtestOverrideConfig.name || 'config_override',
+      appId: playtestOverrideConfig.appId,
+    };
+    if (playtestOverrideConfig.exclusive) {
+      playtestMsgConfigs = [overrideEntry];
+    } else {
+      playtestMsgConfigs.unshift(overrideEntry);
+    }
+  }
+  if (typeof playtestOverrideConfig.buildPayload === 'function') {
+    buildPlaytestPayloadOverrideFn = playtestOverrideConfig.buildPayload;
+  }
+}
+
+if (!playtestMsgConfigs.length) {
+  playtestMsgConfigs = [...DEFAULT_PLAYTEST_MSG_IDS];
+}
+
 // Current message IDs (will be updated when working ones are found)
-let GC_MSG_SUBMIT_PLAYTEST_USER = POTENTIAL_PLAYTEST_MSG_IDS[0].send;
-let GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE = POTENTIAL_PLAYTEST_MSG_IDS[0].response;
+let GC_MSG_SUBMIT_PLAYTEST_USER = playtestMsgConfigs[0].send;
+let GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE = playtestMsgConfigs[0].response;
 const GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW = Number.parseInt(process.env.DEADLOCK_GC_PROTOCOL_VERSION || '1', 10);
 const GC_CLIENT_HELLO_PROTOCOL_VERSION = Number.isFinite(GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW) && GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW > 0
   ? GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW
@@ -92,6 +129,77 @@ function log(level, message, extra = undefined) {
     }
   }
   console.log(JSON.stringify(payload));
+}
+
+const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
+const GC_TRACE_LOG_PATH = path.join(PROJECT_ROOT, 'logs', 'deadlock_gc_messages.log');
+let gcTraceStream = null;
+
+function writeDeadlockGcTrace(event, details = {}) {
+  try {
+    if (!gcTraceStream) {
+      fs.mkdirSync(path.dirname(GC_TRACE_LOG_PATH), { recursive: true });
+      gcTraceStream = fs.createWriteStream(GC_TRACE_LOG_PATH, { flags: 'a' });
+    }
+    const entry = {
+      time: new Date().toISOString(),
+      event,
+      ...details,
+    };
+    gcTraceStream.write(`${JSON.stringify(entry)}${os.EOL}`);
+  } catch (err) {
+    // Avoid recursive logging loops.
+    console.error('Failed to write Deadlock GC trace', err && err.message ? err.message : err);
+  }
+}
+
+function closeDeadlockGcTrace() {
+  if (!gcTraceStream) return;
+  try {
+    gcTraceStream.end();
+  } catch (_) {
+    // ignore
+  } finally {
+    gcTraceStream = null;
+  }
+}
+
+process.on('exit', closeDeadlockGcTrace);
+process.on('SIGINT', closeDeadlockGcTrace);
+process.on('SIGTERM', closeDeadlockGcTrace);
+
+function normalizeToBuffer(value) {
+  if (!value && value !== 0) return null;
+  if (Buffer.isBuffer(value)) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    const hexCandidate = trimmed.startsWith('0x') ? trimmed.slice(2) : trimmed;
+    if (/^[0-9a-fA-F]+$/.test(hexCandidate) && hexCandidate.length % 2 === 0) {
+      return Buffer.from(hexCandidate, 'hex');
+    }
+    return Buffer.from(trimmed, 'utf8');
+  }
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (value && typeof value === 'object' && value.type === 'Buffer' && Array.isArray(value.data)) {
+    return Buffer.from(value.data);
+  }
+  return null;
+}
+
+const gcOverrideInfo = getGcOverrideInfo();
+if (playtestOverrideConfig) {
+  log('info', 'Deadlock GC override module active', {
+    path: gcOverrideInfo.path,
+    messageIdSend: playtestOverrideConfig.messageIds?.send,
+    messageIdResponse: playtestOverrideConfig.messageIds?.response,
+    exclusive: Boolean(playtestOverrideConfig.exclusive),
+  });
+} else {
+  log('debug', 'No Deadlock GC override module detected', {
+    path: gcOverrideInfo.path,
+  });
 }
 
 const nowSeconds = () => Math.floor(Date.now() / 1000);
@@ -533,6 +641,11 @@ function sendDeadlockGcHello(force = false) {
     });
     
     client.sendToGC(appId, PROTO_MASK + GC_MSG_CLIENT_HELLO, {}, payload);
+    writeDeadlockGcTrace('send_gc_hello', {
+      appId,
+      payloadHex: payload.toString('hex').substring(0, 200),
+      force,
+    });
     lastGcHelloAttemptAt = now;
     
     // Schedule a verification check
@@ -547,17 +660,6 @@ function sendDeadlockGcHello(force = false) {
         tryAlternativeGcHandshake();
       }
     }, 5000);
-    
-    // CRITICAL FALLBACK: Force GC ready after 10 seconds if no welcome received
-    setTimeout(() => {
-      if (!deadlockGcReady) {
-        log('warn', 'FORCING GC READY - No welcome received after 10s, proceeding anyway', {
-          appId,
-          timeSinceHello: Date.now() - now
-        });
-        notifyDeadlockGcReady();
-      }
-    }, 10000);
     
     return true;
   } catch (err) {
@@ -603,6 +705,7 @@ function flushDeadlockGcWaiters(error) {
 
 function notifyDeadlockGcReady() {
   deadlockGcReady = true;
+  writeDeadlockGcTrace('gc_ready', { waiters: deadlockGcWaiters.length });
   while (deadlockGcWaiters.length) {
     const waiter = deadlockGcWaiters.shift();
     try {
@@ -614,6 +717,20 @@ function notifyDeadlockGcReady() {
 
 function getDeadlockGcHelloPayload() {
   if (cachedDeadlockGcHelloPayload) return cachedDeadlockGcHelloPayload;
+
+  const overridePayload = getHelloPayloadOverride({ client, SteamUser });
+  const normalizedOverride = normalizeToBuffer(overridePayload);
+  if (normalizedOverride && normalizedOverride.length) {
+    cachedDeadlockGcHelloPayload = Buffer.from(normalizedOverride);
+    log('info', 'Using override Deadlock GC hello payload', {
+      length: cachedDeadlockGcHelloPayload.length,
+    });
+    return cachedDeadlockGcHelloPayload;
+  } else if (overridePayload) {
+    log('warn', 'Deadlock GC override hello payload invalid – falling back to default', {
+      path: DEADLOCK_GC_PROTOCOL_OVERRIDE_PATH,
+    });
+  }
   
   // Try multiple protocol versions
   const protocolVersions = [
@@ -1090,6 +1207,7 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
     INVITE_RESPONSE_MIN_TIMEOUT_MS,
     Number.isFinite(timeoutMs) ? Number(timeoutMs) : DEFAULT_PLAYTEST_INVITE_TIMEOUT_MS
   );
+  const estimatedPayloadVariants = buildPlaytestPayloadOverrideFn ? 1 : 6;
 
   return new Promise((resolve, reject) => {
     const entry = {
@@ -1097,7 +1215,7 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
       reject: null,
       timer: null,
       attempts: 0,
-      maxAttempts: POTENTIAL_PLAYTEST_MSG_IDS.length * 6, // Try all message IDs with all payload versions (now 6 versions)
+      maxAttempts: Math.max(1, (playtestMsgConfigs.length || DEFAULT_PLAYTEST_MSG_IDS.length)) * estimatedPayloadVariants, // Try all message IDs with all payload versions (now 6 versions)
     };
 
     entry.resolve = (value) => {
@@ -1119,28 +1237,55 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
 
     pendingPlaytestInviteResponses.push(entry);
 
-    // Try all combinations of message IDs and payload versions
-    // Start with updated schema (version 1), then extended schema (version 6), then alternatives
-    const payloadVersions = [1, 6, 5, 2, 3, 4];
+    const payloadVersions = buildPlaytestPayloadOverrideFn ? ['override'] : [1, 6, 5, 2, 3, 4];
     let attemptCount = 0;
-    for (const msgConfig of POTENTIAL_PLAYTEST_MSG_IDS) {
+    const messageConfigs = playtestMsgConfigs.length ? playtestMsgConfigs : [...DEFAULT_PLAYTEST_MSG_IDS];
+
+    for (const msgConfig of messageConfigs) {
       for (const payloadVersion of payloadVersions) {
         setTimeout(() => {
           try {
-            const payload = encodeSubmitPlaytestUserPayload(accountId, location, payloadVersion);
-            const appId = getWorkingAppId();
-            
-            client.sendToGC(appId, PROTO_MASK + msgConfig.send, {}, payload);
-            
+            const context = {
+              accountId,
+              location,
+              payloadVersion,
+              attempt: attemptCount,
+              message: msgConfig,
+            };
+            const payloadRaw = buildPlaytestPayloadOverrideFn
+              ? buildPlaytestPayloadOverrideFn(context)
+              : encodeSubmitPlaytestUserPayload(accountId, location, payloadVersion);
+            const payload = buildPlaytestPayloadOverrideFn ? normalizeToBuffer(payloadRaw) : payloadRaw;
+
+            if (!payload || !payload.length) {
+              throw new Error('Playtest payload is empty');
+            }
+
+            const targetAppId = Number.isFinite(msgConfig.appId)
+              ? Number(msgConfig.appId)
+              : getWorkingAppId();
+
+            client.sendToGC(targetAppId, PROTO_MASK + msgConfig.send, {}, payload);
+            writeDeadlockGcTrace('send_playtest_invite', {
+              accountId,
+              location,
+              appId: targetAppId,
+              messageId: msgConfig.send,
+              payloadVersion,
+              overridePayload: Boolean(buildPlaytestPayloadOverrideFn),
+              payloadHex: payload.toString('hex').substring(0, 200),
+            });
+
             log('info', 'Deadlock playtest invite requested', { 
               accountId, 
               location, 
               messageId: msgConfig.send, 
               messageName: msgConfig.name,
               payloadVersion,
-              appId,
+              appId: targetAppId,
               payloadLength: payload.length,
-              payloadHex: payload.toString('hex').substring(0, 50)
+              payloadHex: payload.toString('hex').substring(0, 50),
+              overridePayload: Boolean(buildPlaytestPayloadOverrideFn),
             });
             
             // Update current message IDs if this is the first attempt
@@ -1153,7 +1298,13 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
             log('warn', 'Failed to send playtest invite attempt', { 
               error: err.message, 
               messageId: msgConfig.send,
-              payloadVersion 
+              payloadVersion,
+              overridePayload: Boolean(buildPlaytestPayloadOverrideFn),
+            });
+            writeDeadlockGcTrace('playtest_send_error', {
+              error: err && err.message ? err.message : err,
+              messageId: msgConfig.send,
+              payloadVersion,
             });
           }
         }, attemptCount * 200); // Stagger attempts by 200ms
@@ -1163,7 +1314,7 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
     }
 
     // Also try with the originally working app (if we're not already using it)
-    if (DEADLOCK_APP_ID !== 1422450) {
+    if (!buildPlaytestPayloadOverrideFn && DEADLOCK_APP_ID !== 1422450) {
       setTimeout(() => {
         try {
           const payload = encodeSubmitPlaytestUserPayload(accountId, location, 1);
@@ -1178,14 +1329,27 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
 }
 
 function handlePlaytestInviteResponse(appid, msgType, buffer) {
-  const messageId = msgType & ~PROTO_MASK;
+  const safeMsgType = Number.isFinite(msgType) ? Number(msgType) : 0;
+  const messageId = safeMsgType & ~PROTO_MASK;
+  const payloadBuffer = Buffer.isBuffer(buffer) ? buffer : normalizeToBuffer(buffer);
   
   log('info', 'Received GC playtest response', {
     appId: appid,
     messageId,
-    bufferLength: buffer.length,
-    bufferHex: buffer.toString('hex').substring(0, 100)
+    bufferLength: payloadBuffer ? payloadBuffer.length : 0,
+    bufferHex: payloadBuffer ? payloadBuffer.toString('hex').substring(0, 100) : 'none'
   });
+
+  writeDeadlockGcTrace('received_playtest_response', {
+    appId: appid,
+    messageId,
+    payloadHex: payloadBuffer ? payloadBuffer.toString('hex').substring(0, 200) : 'none',
+  });
+
+  if (!payloadBuffer || !payloadBuffer.length) {
+    log('warn', 'Received empty playtest response payload', { appId: appid, messageId });
+    return;
+  }
 
   if (!pendingPlaytestInviteResponses.length) {
     log('warn', 'Received unexpected playtest invite response', { appId: appid, messageId });
@@ -1193,7 +1357,7 @@ function handlePlaytestInviteResponse(appid, msgType, buffer) {
   }
 
   // Check if this message ID matches any of our expected response IDs
-  const matchingConfig = POTENTIAL_PLAYTEST_MSG_IDS.find(config => config.response === messageId);
+  const matchingConfig = playtestMsgConfigs.find(config => config.response === messageId);
   if (matchingConfig) {
     log('info', 'SUCCESS: Found working message ID pair!', {
       sendId: matchingConfig.send,
@@ -1210,7 +1374,7 @@ function handlePlaytestInviteResponse(appid, msgType, buffer) {
   const entry = pendingPlaytestInviteResponses.shift();
   if (entry && entry.timer) clearTimeout(entry.timer);
 
-  const code = decodeSubmitPlaytestUserResponse(buffer);
+  const code = decodeSubmitPlaytestUserResponse(payloadBuffer);
   const mapping = Object.prototype.hasOwnProperty.call(PLAYTEST_RESPONSE_MAP, code || 0)
     ? PLAYTEST_RESPONSE_MAP[code || 0]
     : { key: 'unknown', message: 'Unbekannte Antwort des Game Coordinators.' };
@@ -1235,12 +1399,16 @@ function handlePlaytestInviteResponse(appid, msgType, buffer) {
 
   if (entry && entry.resolve) {
     try {
-      entry.resolve(response);
+      entry.resolve({ success: response.success, response });
+      return;
     } catch (err) {
       log('warn', 'Failed to resolve playtest invite promise', { error: err.message });
     }
   }
+
+  log('warn', 'No pending playtest promise to resolve');
 }
+
 
 function guardTypeFromDomain(domain) {
   const norm = String(domain || '').toLowerCase();
@@ -1867,73 +2035,61 @@ client.on('appQuit', (appId) => {
 
 client.on('receivedFromGC', (appId, msgType, payload) => {
   const messageId = msgType & ~PROTO_MASK;
+  const payloadHex = payload ? payload.toString('hex').substring(0, 100) : 'none';
+  const isDeadlockApp = DEADLOCK_APP_IDS.includes(Number(appId));
+
+  writeDeadlockGcTrace('gc_message', {
+    appId,
+    msgType,
+    messageId,
+    payloadHex,
+    isDeadlockApp,
+  });
 
   // ENHANCED DEBUG: Log ALL GC messages for diagnosis
-  log('info', '🔍 GC MESSAGE RECEIVED', {
+  log('info', '?? GC MESSAGE RECEIVED', {
     appId,
     messageId,
     messageIdHex: messageId.toString(16),
     msgType,
     msgTypeHex: msgType.toString(16),
     payloadLength: payload ? payload.length : 0,
-    payloadHex: payload ? payload.toString('hex').substring(0, 100) : 'none',
-    isDeadlockApp: DEADLOCK_APP_IDS.includes(appId),
+    payloadHex,
+    isDeadlockApp,
     expectedWelcome: GC_MSG_CLIENT_WELCOME,
-    expectedResponses: POTENTIAL_PLAYTEST_MSG_IDS.map(p => p.response)
+    expectedResponses: playtestMsgConfigs.map(p => p.response)
   });
 
-  // CRITICAL FIX: Handle CLIENT_WELCOME first to set GC ready
-  if (messageId === GC_MSG_CLIENT_WELCOME) {
-    const isDeadlock = DEADLOCK_APP_IDS.includes(appId);
-    if (isDeadlock) {
-      log('info', '🎉 RECEIVED DEADLOCK GC WELCOME - GC CONNECTION ESTABLISHED!', {
-        appId,
-        messageId,
-        payloadLength: payload ? payload.length : 0
-      });
-      notifyDeadlockGcReady();
-      return;
-    }
-  }
-
-  // Check for ANY potential playtest response (not just exact app match)
-  const matchingResponse = POTENTIAL_PLAYTEST_MSG_IDS.find(config => config.response === messageId);
-  if (matchingResponse) {
-    log('info', '🎯 POTENTIAL PLAYTEST RESPONSE DETECTED!', {
+  if (messageId === GC_MSG_CLIENT_WELCOME && isDeadlockApp) {
+    log('info', '?? RECEIVED DEADLOCK GC WELCOME - GC CONNECTION ESTABLISHED!', {
       appId,
       messageId,
-      configName: matchingResponse.name,
-      sendId: matchingResponse.send,
-      responseId: matchingResponse.response
+      payloadLength: payload ? payload.length : 0
+    });
+    notifyDeadlockGcReady();
+    return;
+  }
+
+  const matchingResponse = playtestMsgConfigs.find(config => config.response === messageId);
+  if (matchingResponse || messageId === GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE) {
+    log('info', '?? POTENTIAL PLAYTEST RESPONSE DETECTED!', {
+      appId,
+      messageId,
+      configName: matchingResponse?.name || 'direct_match',
+      sendId: matchingResponse?.send ?? GC_MSG_SUBMIT_PLAYTEST_USER,
+      responseId: matchingResponse?.response ?? GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE
     });
     handlePlaytestInviteResponse(appId, msgType, payload);
     return;
   }
 
-  // Original logic continues here:
-  if (Number(appId) !== Number(DEADLOCK_APP_ID)) return;
-  
-  log('info', 'Received GC message', {
-    appId,
+  if (!isDeadlockApp) return;
+
+  log('debug', 'Received unknown GC message', {
     msgType: messageId,
-    msgTypeHex: messageId.toString(16),
-    payloadLength: payload ? payload.length : 0,
-    payloadHex: payload ? payload.slice(0, 32).toString('hex') : 'none'
+    expectedWelcome: GC_MSG_CLIENT_WELCOME,
+    expectedPlaytestResponse: GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE
   });
-  
-  if (messageId === GC_MSG_CLIENT_WELCOME) {
-    log('info', 'Received Deadlock GC welcome - GC ready!');
-    notifyDeadlockGcReady();
-  } else if (messageId === GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE) {
-    log('info', 'Received playtest invite response');
-    handlePlaytestInviteResponse(payload);
-  } else {
-    log('debug', 'Received unknown GC message', {
-      msgType: messageId,
-      expectedWelcome: GC_MSG_CLIENT_WELCOME,
-      expectedPlaytestResponse: GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE
-    });
-  }
 });
 client.on('disconnected', (eresult, msg) => {
   runtimeState.logged_on = false;
