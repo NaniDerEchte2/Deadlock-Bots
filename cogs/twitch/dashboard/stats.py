@@ -21,6 +21,8 @@ class DashboardStatsMixin:
         if focus_mode not in {"time", "weekday", "user"}:
             focus_mode = "time"
 
+        show_discord_private = self._is_local_request(request)
+
         streamer_query = request.query.get("streamer") or ""
         normalized_streamer: Optional[str] = None
         streamer_warning = ""
@@ -93,6 +95,8 @@ class DashboardStatsMixin:
         discord_filter = (request.query.get("discord") or "any").lower()
         if discord_filter not in {"any", "yes", "no"}:
             discord_filter = "any"
+        if not show_discord_private:
+            discord_filter = "any"
 
         base_path = request.rel_url.path
 
@@ -137,10 +141,11 @@ class DashboardStatsMixin:
                 return False
             if partner_filter == "exclude" and is_partner_flag:
                 return False
-            if discord_filter == "yes" and not is_on_discord:
-                return False
-            if discord_filter == "no" and is_on_discord:
-                return False
+            if show_discord_private:
+                if discord_filter == "yes" and not is_on_discord:
+                    return False
+                if discord_filter == "no" and is_on_discord:
+                    return False
             return True
 
         tracked_items = [item for item in tracked_items if _passes_filters(item)]
@@ -151,8 +156,9 @@ class DashboardStatsMixin:
             category_items = category_items[:10]
 
         def render_table(items: List[dict]) -> str:
+            column_count = 6 if show_discord_private else 5
             if not items:
-                return "<tr><td colspan=6><i>Keine Daten für die aktuellen Filter.</i></td></tr>"
+                return f"<tr><td colspan={column_count}><i>Keine Daten für die aktuellen Filter.</i></td></tr>"
             rows = []
             for item in items:
                 streamer = html.escape(str(item.get("streamer", "")))
@@ -169,21 +175,24 @@ class DashboardStatsMixin:
                 discord_text = "Ja" if discord_member else "Nein"
                 discord_user_id = str(item.get("discord_user_id") or "").strip()
                 discord_display_name = str(item.get("discord_display_name") or "").strip()
+                if not show_discord_private:
+                    discord_user_id = ""
+                    discord_display_name = ""
                 discord_meta_parts: List[str] = []
-                if discord_display_name:
+                if show_discord_private and discord_display_name:
                     discord_meta_parts.append(html.escape(discord_display_name))
-                if discord_user_id:
+                if show_discord_private and discord_user_id:
                     discord_meta_parts.append(f"ID: {html.escape(discord_user_id)}")
                 discord_meta_html = (
-                    f"<div class='status-meta'>{' • '.join(discord_meta_parts)}</div>"
+                    f"<div class='status-meta'>{' \a '.join(discord_meta_parts)}</div>"
                     if discord_meta_parts
                     else ""
                 )
                 inline_link_html = ""
-                if (not is_partner) and not discord_member:
+                if show_discord_private and (not is_partner) and not discord_member:
                     inline_link_html = (
                         "<details class='discord-inline'>"
-                        "  <summary title='Discord verknüpfen'>＋</summary>"
+                        "  <summary title='Discord verknüpfen'>+</summary>"
                         "  <div class='discord-inline-body'>"
                         "    <form method='post' action='/twitch/discord_link'>"
                         f"      <input type='hidden' name='login' value='{escaped_login}'>"
@@ -195,30 +204,31 @@ class DashboardStatsMixin:
                         "  </div>"
                         "</details>"
                     )
-                discord_main = (
-                    "<div class='discord-main'>"
-                    f"  <span class='discord-flag'>{discord_text}</span>"
-                    f"  {inline_link_html}"
-                    "</div>"
-                )
-                discord_cell = (
-                    "<div class='discord-cell'>"
-                    f"  {discord_main}"
-                    f"  {discord_meta_html}"
-                    "</div>"
-                )
-                rows.append(
-                    "<tr>"
-                    f"<td>{streamer}</td>"
-                    f"<td data-value=\"{samples}\">{samples}</td>"
-                    f"<td data-value=\"{avg_viewers:.4f}\">{avg_viewers:.1f}</td>"
-                    f"<td data-value=\"{max_viewers}\">{max_viewers}</td>"
-                    f"<td data-value=\"{partner_value}\">{partner_text}</td>"
-                    f"<td data-value=\"{discord_value}\">{discord_cell}</td>"
-                    "</tr>"
-                )
+                row_parts = [
+                    "<tr>",
+                    f"<td>{streamer}</td>",
+                    f"<td data-value=\"{samples}\">{samples}</td>",
+                    f"<td data-value=\"{avg_viewers:.4f}\">{avg_viewers:.1f}</td>",
+                    f"<td data-value=\"{max_viewers}\">{max_viewers}</td>",
+                    f"<td data-value=\"{partner_value}\">{partner_text}</td>",
+                ]
+                if show_discord_private:
+                    discord_main = (
+                        "<div class='discord-main'>"
+                        f"  <span class='discord-flag'>{discord_text}</span>"
+                        f"  {inline_link_html}"
+                        "</div>"
+                    )
+                    discord_cell = (
+                        "<div class='discord-cell'>"
+                        f"  {discord_main}"
+                        f"  {discord_meta_html}"
+                        "</div>"
+                    )
+                    row_parts.append(f"<td data-value=\"{discord_value}\">{discord_cell}</td>")
+                row_parts.append("</tr>")
+                rows.append("".join(row_parts))
             return "".join(rows)
-
         tracked_hourly = tracked.get("hourly", []) or []
         category_hourly = category.get("hourly", []) or []
         tracked_weekday = tracked.get("weekday", []) or []
@@ -481,7 +491,7 @@ class DashboardStatsMixin:
             '      <thead>'
             '        <tr>'
             '          <th data-sort-type="number">Stunde</th>'
-            '          <th data-sort-type="number">Samples</th>'
+            '          <th data-sort-type="number">Stichproben</th>'
             '          <th data-sort-type="number">Ø Viewer</th>'
             '          <th data-sort-type="number">Peak Viewer</th>'
             '        </tr>'
@@ -495,7 +505,7 @@ class DashboardStatsMixin:
             '      <thead>'
             '        <tr>'
             '          <th data-sort-type="number">Stunde</th>'
-            '          <th data-sort-type="number">Samples</th>'
+            '          <th data-sort-type="number">Stichproben</th>'
             '          <th data-sort-type="number">Ø Viewer</th>'
             '          <th data-sort-type="number">Peak Viewer</th>'
             '        </tr>'
@@ -514,7 +524,7 @@ class DashboardStatsMixin:
             '      <thead>'
             '        <tr>'
             '          <th data-sort-type="number">Tag</th>'
-            '          <th data-sort-type="number">Samples</th>'
+            '          <th data-sort-type="number">Stichproben</th>'
             '          <th data-sort-type="number">Ø Viewer</th>'
             '          <th data-sort-type="number">Peak Viewer</th>'
             '        </tr>'
@@ -528,7 +538,7 @@ class DashboardStatsMixin:
             '      <thead>'
             '        <tr>'
             '          <th data-sort-type="number">Tag</th>'
-            '          <th data-sort-type="number">Samples</th>'
+            '          <th data-sort-type="number">Stichproben</th>'
             '          <th data-sort-type="number">Ø Viewer</th>'
             '          <th data-sort-type="number">Peak Viewer</th>'
             '        </tr>'
@@ -652,6 +662,9 @@ class DashboardStatsMixin:
         streamer_is_on_discord = bool(streamer_stats.get("is_on_discord"))
         streamer_discord_name = str(streamer_stats.get("discord_display_name") or "").strip()
         streamer_discord_id = str(streamer_stats.get("discord_user_id") or "").strip()
+        if not show_discord_private:
+            streamer_discord_name = ""
+            streamer_discord_id = ""
         streamer_source = streamer_stats.get("source")
 
         if display_mode == "charts":
@@ -742,12 +755,13 @@ class DashboardStatsMixin:
             partner_text = "Ja" if bool(streamer_summary.get("is_partner")) else "Nein"
             discord_text = "Ja" if streamer_is_on_discord else "Nein"
             summary_items = [
-                ("Samples", f"{samples}"),
+                ("Stichproben", f"{samples}"),
                 ("Ø Viewer", f"{avg_viewers:.1f}"),
                 ("Peak Viewer", f"{max_viewers}"),
                 ("Partner", partner_text),
-                ("Auf Discord?", discord_text),
             ]
+            if show_discord_private:
+                summary_items.append(("Auf Discord?", discord_text))
             summary_cells = "".join(
                 f"<div class='user-summary-item'><span class='label'>{html.escape(label)}</span><span class='value'>{html.escape(value)}</span></div>"
                 for label, value in summary_items
@@ -764,7 +778,7 @@ class DashboardStatsMixin:
                 )
             tracked_text = "Ja" if streamer_is_tracked else "Nein"
             meta_parts.append(f"<strong>Partnerliste:</strong> {tracked_text}")
-            if streamer_discord_name or streamer_discord_id:
+            if show_discord_private and (streamer_discord_name or streamer_discord_id):
                 discord_bits = []
                 if streamer_discord_name:
                     discord_bits.append(html.escape(streamer_discord_name))
@@ -1034,17 +1048,18 @@ class DashboardStatsMixin:
 
         filter_descriptions = []
         if min_samples is not None:
-            filter_descriptions.append(f"Samples ≥ {min_samples}")
+            filter_descriptions.append(f"Stichproben ≥ {min_samples}")
         if min_avg is not None:
             filter_descriptions.append(f"Ø Viewer ≥ {min_avg:.1f}")
         if partner_filter == "only":
             filter_descriptions.append("Nur Partner")
         elif partner_filter == "exclude":
             filter_descriptions.append("Ohne Partner")
-        if discord_filter == "yes":
-            filter_descriptions.append("Nur Discord-Mitglieder")
-        elif discord_filter == "no":
-            filter_descriptions.append("Ohne Discord")
+        if show_discord_private:
+            if discord_filter == "yes":
+                filter_descriptions.append("Nur Discord-Mitglieder")
+            elif discord_filter == "no":
+                filter_descriptions.append("Ohne Discord")
         if hour_from is not None or hour_to is not None:
             start = hour_from if hour_from is not None else hour_to
             end = hour_to if hour_to is not None else hour_from
@@ -1095,16 +1110,25 @@ class DashboardStatsMixin:
             hour_to=None,
         )
 
-        discord_filter_options = [
-            ("any", "Alle"),
-            ("yes", "Nur Discord-Mitglieder"),
-            ("no", "Ohne Discord"),
-        ]
-
-        discord_filter_html = "".join(
-            f"<option value='{html.escape(value, quote=True)}'{' selected' if discord_filter == value else ''}>{html.escape(label)}</option>"
-            for value, label in discord_filter_options
-        )
+        discord_filter_field_html = ""
+        if show_discord_private:
+            discord_filter_options = [
+                ("any", "Alle"),
+                ("yes", "Nur Discord-Mitglieder"),
+                ("no", "Ohne Discord"),
+            ]
+            discord_filter_html = "".join(
+                f"<option value='{html.escape(value, quote=True)}'{' selected' if discord_filter == value else ''}>{html.escape(label)}</option>"
+                for value, label in discord_filter_options
+            )
+            discord_filter_field_html = f"""
+    <div>
+      <label class="filter-label">
+        Discord Filter
+        <select name="discord">{discord_filter_html}</select>
+      </label>
+    </div>
+"""
 
         if focus_mode == "time":
             analysis_content = f"{analysis_controls_html}{hour_section}"
@@ -1113,6 +1137,8 @@ class DashboardStatsMixin:
         else:
             analysis_content = user_section
 
+        discord_header_html = '<th data-sort-type="number">Auf Discord?</th>' if show_discord_private else ""
+
         body = f"""
 <h1 style="margin:.2rem 0 1rem 0;">Twitch Stats</h1>
 
@@ -1120,7 +1146,7 @@ class DashboardStatsMixin:
   <form method="get" class="row" style="gap:1rem; flex-wrap:wrap; align-items:flex-end;">
     <div>
       <label class="filter-label">
-        Min. Samples
+        Min. Stichproben
         <input type="number" name="min_samples" min="0" value="{html.escape(str(min_samples) if min_samples is not None else '', quote=True)}">
       </label>
     </div>
@@ -1140,12 +1166,7 @@ class DashboardStatsMixin:
         </select>
       </label>
     </div>
-    <div>
-      <label class="filter-label">
-        Discord Filter
-        <select name="discord">{discord_filter_html}</select>
-      </label>
-    </div>
+    {discord_filter_field_html}
     <div>
       <label class="filter-label">
         Einzelne Stunde (UTC)
@@ -1190,11 +1211,11 @@ class DashboardStatsMixin:
     <thead>
       <tr>
         <th data-sort-type="string">Streamer</th>
-        <th data-sort-type="number">Samples</th>
+        <th data-sort-type="number">Stichproben</th>
         <th data-sort-type="number">Ø Viewer</th>
         <th data-sort-type="number">Peak Viewer</th>
         <th data-sort-type="number">Partner</th>
-        <th data-sort-type="number">Auf Discord?</th>
+        {discord_header_html}
       </tr>
     </thead>
     <tbody>{render_table(tracked_items)}</tbody>
@@ -1210,11 +1231,11 @@ class DashboardStatsMixin:
     <thead>
       <tr>
         <th data-sort-type="string">Streamer</th>
-        <th data-sort-type="number">Samples</th>
+        <th data-sort-type="number">Stichproben</th>
         <th data-sort-type="number">Ø Viewer</th>
         <th data-sort-type="number">Peak Viewer</th>
         <th data-sort-type="number">Partner</th>
-        <th data-sort-type="number">Auf Discord?</th>
+        {discord_header_html}
       </tr>
     </thead>
     <tbody>{render_table(category_items)}</tbody>
@@ -1223,9 +1244,11 @@ class DashboardStatsMixin:
 {script}
 """
 
-        nav_html = None
+        nav_html: Optional[str] = None
+        if not show_discord_private:
+            nav_html = '<nav class="tabs"><span class="tab active">Stats</span></nav>'
         if partner_view:
-            nav_html = "<nav class=\"tabs\"><span class=\"tab active\">Stats</span></nav>"
+            nav_html = '<nav class="tabs"><span class="tab active">Stats</span></nav>'
 
         return web.Response(text=self._html(body, active="stats", nav=nav_html), content_type="text/html")
 

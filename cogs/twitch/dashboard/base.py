@@ -79,6 +79,49 @@ class DashboardBase:
         normalized_path = path if path.startswith("/") else f"/{path}"
         return urlunsplit(("http", netloc, normalized_path, "", ""))
 
+    @staticmethod
+    def _host_without_port(raw: Optional[str]) -> str:
+        if not raw:
+            return ""
+        host = raw.split(",")[0].strip()
+        if not host:
+            return ""
+        if host.startswith("["):
+            # IPv6 literal
+            end = host.find("]")
+            if end != -1:
+                host = host[1:end]
+        elif ":" in host:
+            host = host.split(":", 1)[0]
+        return host.lower()
+
+    def _is_local_request(self, request: web.Request) -> bool:
+        context_header = request.headers.get("X-Dashboard-Context")
+        if context_header:
+            lowered = context_header.strip().lower()
+            if lowered == "local":
+                return True
+            if lowered == "public":
+                return False
+
+        host_header = (
+            request.headers.get("X-Forwarded-Host")
+            or request.headers.get("Host")
+            or request.host
+            or ""
+        )
+        host = self._host_without_port(host_header)
+        if host in {"127.0.0.1", "localhost", "::1"}:
+            return True
+        transport = getattr(request, "transport", None)
+        if transport is not None:
+            peer = transport.get_extra_info("peername")
+            if isinstance(peer, tuple) and peer:
+                peer_host = self._host_without_port(str(peer[0]))
+                if peer_host in {"127.0.0.1", "localhost", "::1"}:
+                    return True
+        return False
+
     def _resolve_master_dashboard_url(self) -> str:
         host = os.getenv("MASTER_DASHBOARD_HOST") or "127.0.0.1"
         port = self._parse_port(os.getenv("MASTER_DASHBOARD_PORT"), 8766)
