@@ -23,6 +23,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const https = require('https');
+const { URL } = require('url');
 const SteamUser = require('steam-user');
 const Database = require('better-sqlite3');
 const { QuickInvites } = require('./quick_invites');
@@ -109,6 +111,19 @@ const GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW = Number.parseInt(process.env.DEADLOC
 const GC_CLIENT_HELLO_PROTOCOL_VERSION = Number.isFinite(GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW) && GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW > 0
   ? GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW
   : 1;
+const STEAM_WEB_API_KEY = ((process.env.STEAM_API_KEY || process.env.STEAM_WEB_API_KEY || '') + '').trim() || null;
+const WEB_API_FRIEND_CACHE_TTL_MS = Math.max(
+  15000,
+  Number.isFinite(Number(process.env.STEAM_WEBAPI_FRIEND_CACHE_MS))
+    ? Number(process.env.STEAM_WEBAPI_FRIEND_CACHE_MS)
+    : 60000
+);
+const WEB_API_HTTP_TIMEOUT_MS = Math.max(
+  5000,
+  Number.isFinite(Number(process.env.STEAM_WEBAPI_TIMEOUT_MS))
+    ? Number(process.env.STEAM_WEBAPI_TIMEOUT_MS)
+    : 12000
+);
 
 // ---------- Logging ----------
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
@@ -187,6 +202,67 @@ function normalizeToBuffer(value) {
   return null;
 }
 
+function getDeadlockGcTokenCount() {
+  if (!client) return 0;
+  const tokens = client._gcTokens;
+  if (Array.isArray(tokens)) return tokens.length;
+  if (tokens && typeof tokens.length === 'number') return tokens.length;
+  return 0;
+}
+
+async function requestDeadlockGcTokens(reason = 'unspecified') {
+  if (!client || typeof client._sendAuthList !== 'function') {
+    log('warn', 'Cannot request Deadlock GC tokens - steam-user _sendAuthList unavailable', { reason });
+    return false;
+  }
+  if (!client.steamID) {
+    log('debug', 'Skipping GC token request - SteamID missing', { reason });
+    return false;
+  }
+  if (gcTokenRequestInFlight) {
+    log('debug', 'GC token request already in flight', { reason });
+    return false;
+  }
+  gcTokenRequestInFlight = true;
+  const haveTokens = getDeadlockGcTokenCount();
+  try {
+    log('info', 'Requesting Deadlock GC tokens', {
+      reason,
+      haveTokens,
+      appId: DEADLOCK_APP_ID,
+    });
+    writeDeadlockGcTrace('request_gc_tokens', {
+      reason,
+      haveTokens,
+    });
+    await client._sendAuthList(DEADLOCK_APP_ID);
+    const current = getDeadlockGcTokenCount();
+    log('debug', 'GC token request finished', {
+      reason,
+      before: haveTokens,
+      after: current,
+    });
+    writeDeadlockGcTrace('request_gc_tokens_complete', {
+      reason,
+      before: haveTokens,
+      after: current,
+    });
+    return true;
+  } catch (err) {
+    log('error', 'Failed to request Deadlock GC tokens', {
+      reason,
+      error: err && err.message ? err.message : String(err),
+    });
+    writeDeadlockGcTrace('request_gc_tokens_failed', {
+      reason,
+      error: err && err.message ? err.message : String(err),
+    });
+    return false;
+  } finally {
+    gcTokenRequestInFlight = false;
+  }
+}
+
 const gcOverrideInfo = getGcOverrideInfo();
 if (playtestOverrideConfig) {
   log('info', 'Deadlock GC override module active', {
@@ -218,6 +294,129 @@ function toPositiveInt(value) {
     return parsed;
   }
   return null;
+}
+
+function httpGetJson(url, timeoutMs = WEB_API_HTTP_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    try {
+      const req = https.request(
+        url,
+        {
+          method: 'GET',
+          headers: {
+            'User-Agent': 'DeadlockSteamBridge/1.0 (+steam_presence)',
+            Accept: 'application/json',
+          },
+        },
+        (res) => {
+          const chunks = [];
+          res.on('data', (chunk) => chunks.push(chunk));
+          res.on('end', () => {
+            const body = Buffer.concat(chunks);
+            const text = body.toString('utf8');
+            if (res.statusCode < 200 || res.statusCode >= 300) {
+              const err = new Error(`HTTP ${res.statusCode}`);
+              err.statusCode = res.statusCode;
+              err.body = text;
+              return reject(err);
+            }
+            if (!text) {
+              resolve(null);
+              return;
+            }
+            try {
+              resolve(JSON.parse(text));
+            } catch (err) {
+              err.body = text;
+              reject(err);
+            }
+          });
+        }
+      );
+      req.on('error', reject);
+      req.setTimeout(Math.max(1000, timeoutMs || WEB_API_HTTP_TIMEOUT_MS), () => {
+        req.destroy(new Error('Request timed out'));
+      });
+      req.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function loadWebApiFriendIds(force = false) {
+  if (!STEAM_WEB_API_KEY) {
+    if (!webApiFriendCacheWarned) {
+      webApiFriendCacheWarned = true;
+      log('debug', 'Steam Web API key not configured - friendship fallback disabled');
+    }
+    return null;
+  }
+  if (!client || !client.steamID) return null;
+
+  const now = Date.now();
+  if (!force && webApiFriendCacheIds && now - webApiFriendCacheLastLoadedAt < WEB_API_FRIEND_CACHE_TTL_MS) {
+    return webApiFriendCacheIds;
+  }
+  if (webApiFriendCachePromise) return webApiFriendCachePromise;
+
+  const url = new URL('https://api.steampowered.com/ISteamUser/GetFriendList/v1/');
+  url.searchParams.set('key', STEAM_WEB_API_KEY);
+  url.searchParams.set('steamid', client.steamID.getSteamID64());
+  url.searchParams.set('relationship', 'friend');
+
+  webApiFriendCachePromise = httpGetJson(url.toString(), WEB_API_HTTP_TIMEOUT_MS)
+    .then((body) => {
+      const entries = body && body.friendslist && Array.isArray(body.friendslist.friends)
+        ? body.friendslist.friends
+        : [];
+      const set = new Set();
+      for (const entry of entries) {
+        const sid = entry && entry.steamid ? String(entry.steamid).trim() : '';
+        if (sid) set.add(sid);
+      }
+      webApiFriendCacheIds = set;
+      webApiFriendCacheLastLoadedAt = Date.now();
+      log('debug', 'Refreshed Steam Web API friend cache', {
+        count: set.size,
+        ttlMs: WEB_API_FRIEND_CACHE_TTL_MS,
+      });
+      return set;
+    })
+    .catch((err) => {
+      log('warn', 'Steam Web API friend list request failed', {
+        error: err && err.message ? err.message : String(err),
+        statusCode: err && err.statusCode ? err.statusCode : undefined,
+      });
+      return null;
+    })
+    .finally(() => {
+      webApiFriendCachePromise = null;
+    });
+
+  return webApiFriendCachePromise;
+}
+
+async function isFriendViaWebApi(steamId64) {
+  const normalized = String(steamId64 || '').trim();
+  if (!normalized) return { friend: false, source: 'webapi', refreshed: false };
+
+  let ids = await loadWebApiFriendIds(false);
+  if (ids && ids.has(normalized)) {
+    return { friend: true, source: 'webapi-cache', refreshed: false };
+  }
+
+  ids = await loadWebApiFriendIds(true);
+  if (ids && ids.has(normalized)) {
+    return { friend: true, source: 'webapi-refresh', refreshed: true };
+  }
+
+  return { friend: false, source: 'webapi', refreshed: true };
+}
+
+function getWebApiFriendCacheAgeMs() {
+  if (!webApiFriendCacheLastLoadedAt) return null;
+  return Math.max(0, Date.now() - webApiFriendCacheLastLoadedAt);
 }
 
 function normalizeTimeoutMs(value, fallback, minimum) {
@@ -513,6 +712,10 @@ let deadlockGcReady = false;
 let lastGcHelloAttemptAt = 0;
 const deadlockGcWaiters = [];
 const pendingPlaytestInviteResponses = [];
+let webApiFriendCacheIds = null;
+let webApiFriendCacheLastLoadedAt = 0;
+let webApiFriendCachePromise = null;
+let webApiFriendCacheWarned = false;
 
 // ---------- Steam Client ----------
 const client = new SteamUser();
@@ -520,7 +723,11 @@ const deadlockGcBot = new DeadlockGcBot({
   client,
   log: (level, msg, extra) => log(level, msg, extra),
   trace: writeDeadlockGcTrace,
+  requestTokens: (reason) => requestDeadlockGcTokens(reason || 'deadlock_gc_bot'),
+  getTokenCount: () => getDeadlockGcTokenCount(),
 });
+let gcTokenRequestInFlight = false;
+let lastLoggedGcTokenCount = 0;
 client.setOption('autoRelogin', false);
 client.setOption('machineName', process.env.STEAM_MACHINE_NAME || 'DeadlockBridge');
 
@@ -603,6 +810,7 @@ function ensureDeadlockGamePlaying(force = false) {
       previouslyActive,
       steamId: client.steamID ? String(client.steamID) : 'not_logged_in'
     });
+    requestDeadlockGcTokens('games_played');
     
     if (!previouslyActive) {
       deadlockGcReady = false;
@@ -632,6 +840,16 @@ function sendDeadlockGcHello(force = false) {
     log('debug', 'Skipping GC hello - too recent');
     return false;
   }
+
+  const tokenCount = getDeadlockGcTokenCount();
+  if (tokenCount <= 0) {
+    log('warn', 'Sending GC hello without GC tokens', {
+      tokenCount,
+    });
+    requestDeadlockGcTokens('hello_no_tokens');
+  } else if (tokenCount < 2) {
+    requestDeadlockGcTokens('hello_low_tokens');
+  }
   
   try {
     const payload = getDeadlockGcHelloPayload(force);
@@ -649,6 +867,7 @@ function sendDeadlockGcHello(force = false) {
       appId,
       payloadHex: payload.toString('hex').substring(0, 200),
       force,
+      tokenCount,
     });
     lastGcHelloAttemptAt = now;
     
@@ -745,6 +964,7 @@ function getDeadlockGcHelloPayload(force = false) {
 
 function createDeadlockGcReadyPromise(timeout) {
   ensureDeadlockGamePlaying();
+  requestDeadlockGcTokens('wait_gc_ready');
   if (deadlockGcReady) return Promise.resolve(true);
 
   const effectiveTimeout = Math.max(
@@ -1518,8 +1738,25 @@ function processNextTask() {
           const raw = payload?.steam_id ?? payload?.steam_id64;
           const sid = parseSteamID(raw);
           const sid64 = typeof sid.getSteamID64 === 'function' ? sid.getSteamID64() : String(sid);
-          const relationshipRaw = client.myFriends ? client.myFriends[sid64] : undefined;
-          const isFriend = Number(relationshipRaw) === Number((SteamUser.EFriendRelationship || {}).Friend);
+          let relationshipRaw = client.myFriends ? client.myFriends[sid64] : undefined;
+          let friendSource = 'client';
+          let isFriend = Number(relationshipRaw) === Number((SteamUser.EFriendRelationship || {}).Friend);
+
+          if (!isFriend) {
+            const viaWeb = await isFriendViaWebApi(sid64);
+            if (viaWeb && viaWeb.friend) {
+              isFriend = true;
+              friendSource = viaWeb.source || 'webapi';
+              if (relationshipRaw === undefined) {
+                if (SteamUser.EFriendRelationship && Object.prototype.hasOwnProperty.call(SteamUser.EFriendRelationship, 'Friend')) {
+                  relationshipRaw = SteamUser.EFriendRelationship.Friend;
+                } else {
+                  relationshipRaw = 'Friend';
+                }
+              }
+            }
+          }
+
           return {
             ok: true,
             data: {
@@ -1528,6 +1765,8 @@ function processNextTask() {
               friend: isFriend,
               relationship: relationshipRaw ?? null,
               relationship_name: relationshipName(relationshipRaw),
+              friend_source: friendSource,
+              webapi_cache_age_ms: getWebApiFriendCacheAgeMs(),
             },
           };
         })();
@@ -1755,6 +1994,7 @@ function markLoggedOn(details) {
     log('warn', 'Failed to set persona away', { error: err.message });
   }
   ensureDeadlockGamePlaying(true);
+  requestDeadlockGcTokens('post-login');
 
   log('info', 'Steam login successful', {
     country: details ? details.publicIPCountry : undefined,
@@ -1789,14 +2029,34 @@ client.on('steamGuard', (domain, callback, lastCodeWrong) => {
 });
 client.on('refreshToken', (token) => { updateRefreshToken(token); writeToken(REFRESH_TOKEN_PATH, refreshToken); log('info', 'Stored refresh token', { path: REFRESH_TOKEN_PATH }); });
 client.on('machineAuthToken', (token) => { updateMachineToken(token); writeToken(MACHINE_TOKEN_PATH, machineAuthToken); log('info', 'Stored machine auth token', { path: MACHINE_TOKEN_PATH }); });
+client.on('_gcTokens', () => {
+  const count = getDeadlockGcTokenCount();
+  const delta = count - lastLoggedGcTokenCount;
+  lastLoggedGcTokenCount = count;
+  log('info', 'Received GC tokens update', {
+    count,
+    delta,
+  });
+  writeDeadlockGcTrace('gc_tokens_update', {
+    count,
+    delta,
+  });
+  deadlockGcBot.cachedHello = null;
+  deadlockGcBot.cachedLegacyHello = null;
+  if (deadlockAppActive && !deadlockGcReady) {
+    log('debug', 'Retrying GC hello after token update');
+    sendDeadlockGcHello(true);
+  }
+});
 
 client.on('appLaunched', (appId) => {
   log('info', 'Steam app launched', { appId });
   if (Number(appId) !== Number(DEADLOCK_APP_ID)) return;
   
-  log('info', 'Deadlock app launched – GC session starting');
+  log('info', 'Deadlock app launched - GC session starting');
   deadlockAppActive = true;
   deadlockGcReady = false;
+  requestDeadlockGcTokens('app_launch');
   
   // Wait a bit longer for GC to initialize
   setTimeout(() => {
@@ -1881,6 +2141,7 @@ client.on('disconnected', (eresult, msg) => {
   runtimeState.last_disconnect_eresult = eresult;
   deadlockAppActive = false;
   deadlockGcReady = false;
+  lastLoggedGcTokenCount = 0;
   flushDeadlockGcWaiters(new Error('Steam disconnected'));
   flushPendingPlaytestInvites(new Error('Steam disconnected'));
   log('warn', 'Steam disconnected', { eresult, msg });

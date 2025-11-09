@@ -12,6 +12,8 @@ TWITCH_LANGUAGE = "de"
 TWITCH_TARGET_GAME_NAME = "Deadlock"
 TWITCH_BRAND_COLOR_HEX = 0x9146FF                     # offizielles Twitch-Lila für Embeds
 TWITCH_REQUIRED_DISCORD_MARKER = ""                # optionaler Marker im Profiltext (zusätzl. zur Discord-URL)
+TWITCH_DISCORD_REF_CODE = "DE-Deadlock-Discord"    # Referral-Parameter für Buttons/Links
+TWITCH_BUTTON_LABEL = "Auf Twitch ansehen"         # Standardtext für den Go-Live-Button
 
 # Benachrichtigungskanäle
 TWITCH_NOTIFY_CHANNEL_ID = 1304169815505637458     # Live-Postings (optional global)

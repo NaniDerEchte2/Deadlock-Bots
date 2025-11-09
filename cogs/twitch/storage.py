@@ -152,6 +152,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "twitch_live_state", "last_seen_at", "TEXT")
     _add_column_if_missing(conn, "twitch_live_state", "last_game", "TEXT")
     _add_column_if_missing(conn, "twitch_live_state", "last_viewer_count", "INTEGER DEFAULT 0")
+    _add_column_if_missing(conn, "twitch_live_state", "last_tracking_token", "TEXT")
 
     # 3) Stats-Logs
     conn.execute(
@@ -176,4 +177,26 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     )
     _add_column_if_missing(conn, "twitch_stats_tracked", "is_partner", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_stats_category", "is_partner", "INTEGER DEFAULT 0")
+
+    # 4) Link-Klick-Tracking
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_link_clicks (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            clicked_at       TEXT    DEFAULT CURRENT_TIMESTAMP,
+            streamer_login   TEXT    NOT NULL,
+            tracking_token   TEXT,
+            discord_user_id  TEXT,
+            discord_username TEXT,
+            guild_id         TEXT,
+            channel_id       TEXT,
+            message_id       TEXT,
+            ref_code         TEXT,
+            source_hint      TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_link_clicks_streamer ON twitch_link_clicks(streamer_login)"
+    )
 

@@ -400,11 +400,13 @@ class BetaInviteFlow(commands.Cog):
             if isinstance(data, dict):
                 friend_ok = bool(data.get("friend"))
                 relationship_name = str(data.get("relationship_name") or relationship_name)
+                friend_source = str(data.get("friend_source") or "unknown")
+                cache_age = data.get("webapi_cache_age_ms")
                 
                 # Debug-Logging für Freundschaftsstatus
                 log.info(
-                    "Friendship check: discord_id=%s, steam_id64=%s, friend_ok=%s, relationship=%s",
-                    record.discord_id, record.steam_id64, friend_ok, relationship_name
+                    "Friendship check: discord_id=%s, steam_id64=%s, friend_ok=%s, relationship=%s, source=%s, cache_age_ms=%s",
+                    record.discord_id, record.steam_id64, friend_ok, relationship_name, friend_source, cache_age
                 )
                 
                 if data.get("account_id") is not None and data.get("account_id") != record.account_id:

@@ -83,10 +83,12 @@ function parseVarint(buffer, offset) {
 }
 
 class DeadlockGcBot {
-  constructor({ client, log, trace }) {
+  constructor({ client, log, trace, requestTokens, getTokenCount }) {
     this.client = client;
     this.log = typeof log === 'function' ? log : () => {};
     this.trace = typeof trace === 'function' ? trace : () => {};
+    this.requestTokens = typeof requestTokens === 'function' ? requestTokens : null;
+    this.getTokenCount = typeof getTokenCount === 'function' ? getTokenCount : null;
     this.cachedHello = null;
     this.cachedLegacyHello = null;
   }
@@ -122,8 +124,24 @@ class DeadlockGcBot {
     if (!force && this.cachedHello) return this.cachedHello;
 
     const tokens = this.peekGcTokens();
-    if (!tokens.length || !this.steamID64) {
-      this.log('warn', 'Deadlock GC hello fallback: no GC tokens or SteamID available');
+    const steamId64 = this.steamID64;
+    const tokenCount = this.getTokenCount ? this.getTokenCount() : tokens.length;
+    if (!tokens.length && this.requestTokens) {
+      try {
+        this.requestTokens('bot_missing_tokens');
+      } catch (_) {
+        // ignore
+      }
+    }
+    if (!tokens.length || !steamId64) {
+      this.log('warn', 'Deadlock GC hello fallback: no GC tokens or SteamID available', {
+        tokenCount,
+        steamId64: steamId64 ? steamId64.toString() : null,
+      });
+      this.trace('hello_tokens_missing', {
+        tokenCount,
+        steamId64: steamId64 ? steamId64.toString() : null,
+      });
       return null;
     }
 
