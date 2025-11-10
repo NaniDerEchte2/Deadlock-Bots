@@ -10,7 +10,7 @@ import os
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, TYPE_CHECKING
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from aiohttp import ClientSession, ClientTimeout, web
 
@@ -2133,6 +2133,17 @@ class DashboardServer:
         targets: List[Dict[str, Any]] = []
         seen_keys: set[str] = set()
 
+        def _append_query_param(url: str, key: str, value: str) -> str:
+            try:
+                parsed = urlparse(url)
+            except Exception:
+                return url
+            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            if query.get(key) == value:
+                return url
+            query[key] = value
+            return urlunparse(parsed._replace(query=urlencode(query)))
+
         def _add_target(
             label: str,
             url: str,
@@ -2170,7 +2181,8 @@ class DashboardServer:
         if self._twitch_dashboard_href:
             _add_target("Twitch Dashboard", self._twitch_dashboard_href, key="twitch-dashboard")
         if self._steam_return_url:
-            _add_target("Steam OAuth Callback", self._steam_return_url, key="steam-oauth-callback")
+            steam_health_url = _append_query_param(self._steam_return_url, "healthcheck", "1")
+            _add_target("Steam OAuth Callback", steam_health_url, key="steam-oauth-callback")
 
         extra_raw = (
             os.getenv("DASHBOARD_HEALTHCHECKS")
