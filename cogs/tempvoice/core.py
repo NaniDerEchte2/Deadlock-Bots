@@ -430,8 +430,20 @@ class TempVoiceCore(commands.Cog):
         if channel:
             try:
                 await channel.delete(reason=reason)
+            except discord.Forbidden as e:
+                log.warning(
+                    "TempVoice: missing permission to delete lane %s (%s): %s",
+                    lane_id,
+                    getattr(channel, "name", "?"),
+                    e,
+                )
             except Exception as e:
-                log.debug("cleanup: delete lane %s failed: %r", lane_id, e)
+                log.warning(
+                    "TempVoice: unexpected error deleting lane %s (%s): %r",
+                    lane_id,
+                    getattr(channel, "name", "?"),
+                    e,
+                )
         if self._tvdb.connected:
             try:
                 await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
@@ -623,7 +635,12 @@ class TempVoiceCore(commands.Cog):
                 if "name" in kwargs:
                     self._last_name_patch_ts[lane.id] = now
             except discord.HTTPException as e:
-                log.debug("lane.edit failed for %s: %r", lane.id, e)
+                log.warning(
+                    "TempVoice: lane.edit failed for %s (payload=%s): %s",
+                    lane.id,
+                    kwargs,
+                    e,
+                )
 
     def _compose_name(self, lane: discord.VoiceChannel) -> str:
         base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
@@ -792,7 +809,13 @@ class TempVoiceCore(commands.Cog):
                         (int(lane.id), int(guild.id), int(member.id), base, int(cat.id) if cat else 0)
                     )
                 except Exception as e:
-                    log.debug("create_lane: db insert failed for lane %s: %r", lane.id, e)
+                    log.warning(
+                        "TempVoice: DB insert failed for lane %s (owner=%s, category=%s): %r",
+                        lane.id,
+                        member.id,
+                        getattr(cat, "id", None),
+                        e,
+                    )
 
                 await self._apply_owner_settings(lane, member.id)
 
@@ -807,9 +830,47 @@ class TempVoiceCore(commands.Cog):
 
                 try:
                     await member.move_to(lane, reason="TempVoice: Auto-Lane erstellt")
+                except discord.Forbidden as e:
+                    log.warning(
+                        "TempVoice: move_to forbidden (member=%s staging=%s lane=%s): %s",
+                        member.id,
+                        staging.id,
+                        lane.id,
+                        e,
+                    )
+                    await self._cleanup_lane(
+                        int(lane.id),
+                        channel=lane,
+                        reason="TempVoice: Move fehlgeschlagen (forbidden)",
+                    )
+                    return
+                except discord.HTTPException as e:
+                    log.warning(
+                        "TempVoice: move_to HTTP error (member=%s staging=%s lane=%s): %s",
+                        member.id,
+                        staging.id,
+                        lane.id,
+                        e,
+                    )
+                    await self._cleanup_lane(
+                        int(lane.id),
+                        channel=lane,
+                        reason="TempVoice: Move fehlgeschlagen (http)",
+                    )
+                    return
                 except Exception as e:
-                    log.debug("create_lane: move_to failed for %s: %r", member.id, e)
-                    await self._cleanup_lane(int(lane.id), channel=lane, reason="TempVoice: Move fehlgeschlagen")
+                    log.warning(
+                        "TempVoice: move_to failed unexpectedly (member=%s staging=%s lane=%s): %r",
+                        member.id,
+                        staging.id if staging else "?",
+                        lane.id,
+                        e,
+                    )
+                    await self._cleanup_lane(
+                        int(lane.id),
+                        channel=lane,
+                        reason="TempVoice: Move fehlgeschlagen (unexpected)",
+                    )
                     return
 
                 # NUR hier initial den Namen setzen (innerhalb des Create-Fensters)
