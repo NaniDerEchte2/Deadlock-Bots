@@ -243,6 +243,7 @@ class MasterBot(commands.Bot):
         self.startup_time = _dt.datetime.now(tz=tz)
 
         self.dashboard: Optional[DashboardServer] = None
+        self._dashboard_start_task: Optional[asyncio.Task[None]] = None
         dash_env = (os.getenv("MASTER_DASHBOARD_ENABLED", "1") or "1").lower()
         dashboard_enabled = dash_env in {"1", "true", "yes", "on"}
         if dashboard_enabled:
@@ -254,7 +255,7 @@ class MasterBot(commands.Bot):
                 port = 8766
             token = os.getenv("MASTER_DASHBOARD_TOKEN")
             if DashboardServer is None:
-                logging.warning("DashboardServer nicht verfügbar – Dashboard wird deaktiviert")
+                logging.warning("DashboardServer nicht verfügbar - Dashboard wird deaktiviert")
             else:
                 try:
                     self.dashboard = DashboardServer(self, host=host, port=port, token=token)
@@ -644,22 +645,35 @@ class MasterBot(commands.Bot):
         _init_db_if_available()
         await self.load_all_cogs()
 
+        logging.info(
+            "Dashboard available=%s current_start_task=%s",
+            bool(self.dashboard),
+            bool(self._dashboard_start_task),
+        )
+        if self.dashboard and (self._dashboard_start_task is None or self._dashboard_start_task.done()):
+            logging.info("Scheduling dashboard HTTP server startup task...")
+            self._dashboard_start_task = asyncio.create_task(self._start_dashboard_background())
+
         try:
             synced = await self.tree.sync()
             logging.info(f"Synced {len(synced)} slash commands")
         except Exception as e:
             logging.error(f"Failed to sync slash commands: {e}")
 
-        if self.dashboard:
-            try:
-                await self.dashboard.start()
-            except RuntimeError as e:
-                logging.error(f"Dashboard konnte nicht gestartet werden: {e}. Läuft bereits ein anderer Prozess?")
-            except Exception as e:
-                logging.error(f"Dashboard konnte nicht gestartet werden: {e}")
-
         # ⚠️ KEIN Autostart des Steam-Services hier!
         logging.info("Master Bot setup completed")
+
+    async def _start_dashboard_background(self) -> None:
+        if not self.dashboard:
+            return
+        try:
+            logging.info("Dashboard HTTP server startup task running...")
+            await self.dashboard.start()
+            logging.info("Dashboard HTTP server startup completed.")
+        except RuntimeError as e:
+            logging.error(f"Dashboard konnte nicht gestartet werden: {e}. Laeuft bereits ein anderer Prozess?")
+        except Exception as e:
+            logging.error(f"Dashboard konnte nicht gestartet werden: {e}")
 
     async def on_ready(self):
         logging.info(f"Bot logged in as {self.user} (ID: {self.user.id})")

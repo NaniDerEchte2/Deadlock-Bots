@@ -745,6 +745,9 @@ const statusAnzeige = new StatusAnzeige(client, log, {
   appId: DEADLOCK_APP_ID,
   language: process.env.STEAM_PRESENCE_LANGUAGE || 'german',
   db,
+  steamWebApiKey: STEAM_WEB_API_KEY,
+  webApiTimeoutMs: WEB_API_HTTP_TIMEOUT_MS,
+  webSummaryCacheTtlMs: WEB_API_FRIEND_CACHE_TTL_MS,
 });
 log('info', 'Statusanzeige initialisiert', {
   persistence: statusAnzeige.persistenceEnabled,

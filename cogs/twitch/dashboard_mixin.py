@@ -453,6 +453,9 @@ class TwitchDashboardMixin:
         return "Unbekannter Modus"
 
     async def _start_dashboard(self):
+        if not getattr(self, "_dashboard_embedded", True):
+            log.debug("Twitch dashboard embedded server disabled; skipping _start_dashboard")
+            return
         try:
             app = Dashboard.build_app(
                 noauth=self._dashboard_noauth,

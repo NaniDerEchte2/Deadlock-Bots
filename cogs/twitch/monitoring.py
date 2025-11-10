@@ -450,7 +450,11 @@ class TwitchMonitoringMixin:
 
     async def cog_load(self) -> None:
         await super().cog_load()
-        await self._register_persistent_live_views()
+        spawner = getattr(self, "_spawn_bg_task", None)
+        if callable(spawner):
+            spawner(self._register_persistent_live_views(), "twitch.register_live_views")
+        else:
+            asyncio.create_task(self._register_persistent_live_views(), name="twitch.register_live_views")
 
     def _build_live_view(
         self,

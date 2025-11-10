@@ -1,5 +1,7 @@
 'use strict';
 
+const https = require('https');
+const { URLSearchParams } = require('url');
 const SteamUser = require('steam-user');
 const { DeadlockPresenceLogger } = require('./deadlock_presence_logger');
 
@@ -8,6 +10,11 @@ const MIN_INTERVAL_MS = 10000;
 const PERSIST_ERROR_LOG_INTERVAL_MS = 60000;
 const MAX_MATCH_MINUTES = 24 * 60;
 const VOICE_WATCH_MAX_AGE_SEC = 180;
+const PLAYER_SUMMARIES_ENDPOINT = 'https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/';
+const WEB_SUMMARY_CHUNK = 100;
+const WEB_SUMMARY_ERROR_LOG_INTERVAL_MS = 60000;
+const DEFAULT_WEB_SUMMARY_TTL_MS = 60000;
+const DEFAULT_WEB_SUMMARY_GRACE_MS = 15000;
 
 class StatusAnzeige extends DeadlockPresenceLogger {
   constructor(client, log, options = {}) {
@@ -23,6 +30,30 @@ class StatusAnzeige extends DeadlockPresenceLogger {
     this.lastPersistErrorAt = 0;
     this.latestPresence = new Map();
     this.voiceWatchStmt = null;
+    this.steamWebApiKey =
+      (options.steamWebApiKey ||
+        process.env.STEAM_WEB_API_KEY ||
+        process.env.STEAM_API_KEY ||
+        '') +
+      '';
+    this.steamWebApiKey = this.steamWebApiKey.trim() || null;
+    this.webApiTimeoutMs = Math.max(
+      3000,
+      Number.isFinite(Number(options.webApiTimeoutMs))
+        ? Number(options.webApiTimeoutMs)
+        : Number(process.env.STEAM_WEBAPI_TIMEOUT_MS || 12000)
+    );
+    const summaryTtlCandidate =
+      Number.isFinite(Number(options.webSummaryCacheTtlMs))
+        ? Number(options.webSummaryCacheTtlMs)
+        : DEFAULT_WEB_SUMMARY_TTL_MS;
+    this.webSummaryCacheTtlMs = Math.max(this.pollIntervalMs, summaryTtlCandidate);
+    this.webSummaryGraceMs =
+      Number.isFinite(Number(options.webSummaryGraceMs)) && Number(options.webSummaryGraceMs) > 0
+        ? Number(options.webSummaryGraceMs)
+        : DEFAULT_WEB_SUMMARY_GRACE_MS;
+    this.webSummaryCache = new Map();
+    this.lastWebApiErrorAt = 0;
 
     if (this.db && typeof this.db.exec === 'function') {
       try {
@@ -160,13 +191,15 @@ class StatusAnzeige extends DeadlockPresenceLogger {
       voiceCount: targetSteamIds.length,
       intervalMs: this.pollIntervalMs,
     });
+    this.refreshServerSummaries(targetSteamIds);
     this.fetchPersonasAndRichPresence(targetSteamIds);
   }
 
   handleSnapshot(entry) {
     if (!entry || !entry.steamId) return;
     const steamId = String(entry.steamId);
-    const stageInfo = this.deriveStage(entry);
+    const summary = this.getServerSummary(steamId);
+    const stageInfo = this.deriveStage(entry, summary);
 
     const record = {
       steamId,
@@ -181,6 +214,9 @@ class StatusAnzeige extends DeadlockPresenceLogger {
       localized: this.normalizeLocalizedString(entry.localizedString),
       hero: this.normalizeHeroGuess(entry.heroGuess),
       partyHint: this.normalizePartyHint(entry.partyHint),
+      serverId: summary && summary.serverId ? summary.serverId : null,
+      lobbyId: summary && summary.lobbyId ? summary.lobbyId : null,
+      serverIp: summary && summary.serverIp ? summary.serverIp : null,
     };
 
     this.latestPresence.set(steamId, record);
@@ -240,6 +276,116 @@ class StatusAnzeige extends DeadlockPresenceLogger {
       });
       return [];
     }
+  }
+
+  refreshServerSummaries(steamIds) {
+    if (!this.steamWebApiKey || !Array.isArray(steamIds) || !steamIds.length) {
+      return;
+    }
+    const uniqueIds = Array.from(
+      new Set(
+        steamIds
+          .map((sid) => (sid ? String(sid).trim() : ''))
+          .filter((sid) => sid.length > 0)
+      )
+    );
+    if (!uniqueIds.length) {
+      return;
+    }
+    const now = Date.now();
+    const stale = uniqueIds.filter((sid) => {
+      const cached = this.webSummaryCache.get(sid);
+      if (!cached) {
+        return true;
+      }
+      return now - cached.cachedAt > this.webSummaryCacheTtlMs;
+    });
+    if (!stale.length) {
+      return;
+    }
+    for (let idx = 0; idx < stale.length; idx += WEB_SUMMARY_CHUNK) {
+      const chunk = stale.slice(idx, idx + WEB_SUMMARY_CHUNK);
+      this.fetchSummaryChunk(chunk).catch((err) => {
+        const shouldLog =
+          !this.lastWebApiErrorAt ||
+          Date.now() - this.lastWebApiErrorAt >= WEB_SUMMARY_ERROR_LOG_INTERVAL_MS;
+        if (shouldLog) {
+          this.lastWebApiErrorAt = Date.now();
+          this.log('warn', 'Statusanzeige failed to refresh Steam Web summaries', {
+            count: chunk.length,
+            error: err && err.message ? err.message : String(err),
+          });
+        }
+      });
+    }
+  }
+
+  fetchSummaryChunk(ids) {
+    if (!ids || !ids.length) {
+      return Promise.resolve(0);
+    }
+    return new Promise((resolve, reject) => {
+      const params = new URLSearchParams({
+        key: this.steamWebApiKey,
+        steamids: ids.join(','),
+      });
+      const url = `${PLAYER_SUMMARIES_ENDPOINT}?${params.toString()}`;
+      const req = https.get(url, (res) => {
+        let body = '';
+        res.on('data', (chunk) => {
+          body += chunk;
+        });
+        res.on('end', () => {
+          if (res.statusCode !== 200) {
+            reject(new Error(`Steam summaries HTTP ${res.statusCode}`));
+            return;
+          }
+          try {
+            const parsed = JSON.parse(body || '{}');
+            const players =
+              parsed && parsed.response && Array.isArray(parsed.response.players)
+                ? parsed.response.players
+                : [];
+            players.forEach((player) => this.applyWebSummary(player));
+            resolve(players.length);
+          } catch (err) {
+            reject(err);
+          }
+        });
+      });
+      req.on('error', reject);
+      req.setTimeout(this.webApiTimeoutMs, () => {
+        req.destroy(new Error('Steam summaries request timeout'));
+      });
+    });
+  }
+
+  applyWebSummary(row) {
+    if (!row || !row.steamid) return;
+    const steamId = String(row.steamid);
+    this.webSummaryCache.set(steamId, {
+      cachedAt: Date.now(),
+      serverId: row.gameserversteamid ? String(row.gameserversteamid) : null,
+      lobbyId: row.lobbysteamid ? String(row.lobbysteamid) : null,
+      serverIp: row.gameserverip ? String(row.gameserverip) : null,
+    });
+  }
+
+  getServerSummary(steamId) {
+    if (!steamId) {
+      return null;
+    }
+    const sid = String(steamId);
+    const entry = this.webSummaryCache.get(sid);
+    if (!entry) {
+      return null;
+    }
+    const now = Date.now();
+    if (now - entry.cachedAt > this.webSummaryCacheTtlMs + this.webSummaryGraceMs) {
+      this.webSummaryCache.delete(sid);
+      return null;
+    }
+    return entry;
   }
 
   preparePersistence() {
@@ -303,7 +449,7 @@ class StatusAnzeige extends DeadlockPresenceLogger {
         record.playingAppID !== null && record.playingAppID !== undefined
           ? String(record.playingAppID)
           : null,
-      lastServerId: record.partyHint,
+      lastServerId: record.serverId || record.partyHint,
       lastSeenTs: unixSeconds,
       inDeadlockNow: record.inDeadlock ? 1 : 0,
       inMatchNowStrict: record.stage === 'match' ? 1 : 0,
@@ -311,24 +457,34 @@ class StatusAnzeige extends DeadlockPresenceLogger {
       deadlockMinutes: minutesValue,
       deadlockLocalized: record.localized,
       deadlockHero: record.hero,
-      deadlockPartyHint: record.partyHint,
+      deadlockPartyHint: record.partyHint || record.lobbyId || null,
       deadlockUpdatedAt: unixSeconds,
     };
   }
 
-  deriveStage(entry) {
-    if (!entry || !entry.inDeadlock) {
+  deriveStage(entry, summary = null) {
+    if (!entry) {
       return { stage: 'offline', minutes: null };
     }
-    const localized = entry.localizedString ? String(entry.localizedString).toLowerCase() : '';
+    const hasServerId = Boolean(summary && summary.serverId);
+    const inDeadlock = Boolean(entry.inDeadlock || hasServerId);
+    if (!inDeadlock) {
+      return { stage: 'offline', minutes: null };
+    }
+    const localizedRaw = entry.localizedString ? String(entry.localizedString) : '';
+    const localized = localizedRaw.toLowerCase();
     const minutes = Number.isFinite(entry.minutes) ? entry.minutes : null;
+    const normalizedMinutes =
+      minutes !== null ? Math.max(0, Math.min(MAX_MATCH_MINUTES, Math.round(minutes))) : null;
 
     const hero = entry.heroGuess ? String(entry.heroGuess).trim() : '';
-    const hasDeadlockToken = localized.includes('{deadlock:}');
-    const normalizedMinutes = minutes !== null ? minutes : 0;
+    const hasDeadlockToken =
+      localized.includes('{deadlock:}') || /\{deadlock[^}]*\}/i.test(localizedRaw);
+    const hasBraceHero = /\{deadlock[^}]*\}\s*\{[^{}]+\}/i.test(localizedRaw);
+    const matchIndicators = hasServerId || (hasDeadlockToken && (hero.length > 0 || hasBraceHero));
 
-    if (hasDeadlockToken && hero.length > 0) {
-      return { stage: 'match', minutes: normalizedMinutes };
+    if (matchIndicators) {
+      return { stage: 'match', minutes: normalizedMinutes ?? 0 };
     }
 
     return { stage: 'lobby', minutes: normalizedMinutes };
