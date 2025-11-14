@@ -7,11 +7,12 @@ import json
 import math
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, TYPE_CHECKING
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from aiohttp import web
+from aiohttp import ClientSession, ClientTimeout, web
 
 from service import db
 
@@ -259,6 +260,75 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             white-space: nowrap;
             font-variant-numeric: tabular-nums;
         }
+        .health-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 1rem;
+        }
+        .health-card {
+            background: #161616;
+            border-radius: 8px;
+            padding: 1rem;
+            border: 1px solid rgba(255,255,255,0.05);
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .health-status {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+            font-weight: 600;
+        }
+        .health-status-headline {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 999px;
+            display: inline-block;
+        }
+        .status-dot.ok {
+            background: #51cf66;
+            box-shadow: 0 0 8px rgba(81,207,102,0.85);
+        }
+        .status-dot.fail {
+            background: #ff6b6b;
+            box-shadow: 0 0 8px rgba(255,107,107,0.85);
+        }
+        .health-status-code {
+            font-size: 0.8rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.12);
+        }
+        .health-status-code.ok {
+            color: #c0ffc0;
+        }
+        .health-status-code.fail {
+            color: #ffc9c9;
+        }
+        .health-url {
+            font-size: 0.85rem;
+            color: #74c0fc;
+            text-decoration: none;
+            word-break: break-word;
+        }
+        .health-url:hover {
+            text-decoration: underline;
+        }
+        .health-meta {
+            font-size: 0.8rem;
+            color: #adb5bd;
+        }
+        .health-error {
+            font-size: 0.85rem;
+            color: #ff8787;
+        }
         .status-pill {
             display: inline-flex;
             align-items: center;
@@ -471,6 +541,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     </section>
 
     <section>
+        <h2>Site Health</h2>
+        <div id="health-container" class="health-grid"></div>
+    </section>
+
+    <section>
         <h2>Standalone Dienste</h2>
         <div id="standalone-container" class="standalone-grid"></div>
     </section>
@@ -504,6 +579,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const selectionDescription = document.getElementById('selection-description');
     const resetSelectionBtn = document.getElementById('reset-selection');
     const standaloneContainer = document.getElementById('standalone-container');
+    const healthContainer = document.getElementById('health-container');
     const STANDALONE_COMMANDS = {
         rank: [
             { value: 'queue.daily', label: 'Daily Queue erstellen' },
@@ -643,6 +719,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('bot-guilds').textContent = 'Guilds: ' + data.bot.guilds;
             document.getElementById('bot-latency').textContent = 'Latency: ' + data.bot.latency_ms + ' ms';
 
+            const healthChecks = data.health || [];
+            renderHealth(healthChecks);
             const standalone = data.standalone || [];
             renderStandalone(standalone);
             const cogs = data.cogs || {};
@@ -682,6 +760,88 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         }
     }
 
+    function renderHealth(items) {
+        if (!healthContainer) {
+            return;
+        }
+        healthContainer.innerHTML = '';
+        if (!Array.isArray(items) || items.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'health-meta';
+            empty.textContent = 'Keine Health Checks konfiguriert.';
+            healthContainer.appendChild(empty);
+            return;
+        }
+        items.forEach((item) => {
+            const card = document.createElement('div');
+            card.className = 'health-card';
+
+            const statusRow = document.createElement('div');
+            statusRow.className = 'health-status';
+            const head = document.createElement('div');
+            head.className = 'health-status-headline';
+
+            const dot = document.createElement('span');
+            dot.className = 'status-dot ' + (item && item.ok ? 'ok' : 'fail');
+            head.appendChild(dot);
+
+            const label = document.createElement('span');
+            label.textContent = (item && (item.label || item.key || item.url)) || 'Unbekannt';
+            head.appendChild(label);
+
+            statusRow.appendChild(head);
+
+            if (item && item.status !== undefined && item.status !== null) {
+                const code = document.createElement('span');
+                code.className = 'health-status-code ' + (item.ok ? 'ok' : 'fail');
+                const reason = item.reason ? ' ' + item.reason : '';
+                code.textContent = item.status + reason;
+                statusRow.appendChild(code);
+            }
+
+            card.appendChild(statusRow);
+
+            if (item && item.url) {
+                const urlLink = document.createElement('a');
+                urlLink.className = 'health-url';
+                urlLink.href = item.resolved_url || item.url;
+                urlLink.target = '_blank';
+                urlLink.rel = 'noopener';
+                urlLink.textContent = item.url;
+                card.appendChild(urlLink);
+            }
+
+            if (item && item.resolved_url && item.resolved_url !== item.url) {
+                const resolved = document.createElement('div');
+                resolved.className = 'health-meta';
+                resolved.textContent = '-> ' + item.resolved_url;
+                card.appendChild(resolved);
+            }
+
+            const meta = document.createElement('div');
+            meta.className = 'health-meta';
+            const statusLabel = (item && item.status !== null && item.status !== undefined) ? item.status : '-';
+            const latencyLabel = formatLatency(item ? item.latency_ms : undefined);
+            const checkedLabel = formatTimestamp(item ? item.checked_at : undefined);
+            meta.textContent = 'Status: ' + statusLabel + ' | Latenz: ' + latencyLabel + ' | Geprüft: ' + checkedLabel;
+            card.appendChild(meta);
+
+            if (item && !item.ok && item.error) {
+                const error = document.createElement('div');
+                error.className = 'health-error';
+                error.textContent = item.error;
+                card.appendChild(error);
+            } else if (item && !item.ok && item.body_excerpt) {
+                const excerpt = document.createElement('div');
+                excerpt.className = 'health-error';
+                excerpt.textContent = item.body_excerpt;
+                card.appendChild(excerpt);
+            }
+
+            healthContainer.appendChild(card);
+        });
+    }
+
 function safeNumber(value, fallback = 0) {
     return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
@@ -709,7 +869,7 @@ function formatSeconds(seconds) {
 
 function formatTimestamp(value) {
     if (!value) {
-        return '–';
+        return '-';
     }
     try {
         const date = new Date(value);
@@ -720,6 +880,21 @@ function formatTimestamp(value) {
     } catch (err) {
         return value;
     }
+}
+
+function formatLatency(ms) {
+    if (typeof ms !== 'number' || !Number.isFinite(ms)) {
+        return '-';
+    }
+    if (ms >= 1000) {
+        const seconds = ms / 1000;
+        const digits = seconds >= 10 ? 1 : 2;
+        return seconds.toFixed(digits) + ' s';
+    }
+    if (ms >= 1) {
+        return ms.toFixed(0) + ' ms';
+    }
+    return ms.toFixed(2) + ' ms';
 }
 
 function renderRankMetrics(container, metrics) {
@@ -1631,6 +1806,21 @@ class DashboardServer:
             self._public_base_url = self._listen_base_url
 
         self._twitch_dashboard_href = self._resolve_twitch_dashboard_href()
+        self._steam_return_url = self._derive_steam_return_url()
+        self._health_cache: List[Dict[str, Any]] = []
+        self._health_cache_expiry = 0.0
+        self._health_cache_lock = asyncio.Lock()
+        self._health_cache_ttl = self._parse_positive_float(
+            os.getenv("DASHBOARD_HEALTHCHECK_CACHE_SECONDS"),
+            default=30.0,
+            env_name="DASHBOARD_HEALTHCHECK_CACHE_SECONDS",
+        )
+        self._health_timeout = self._parse_positive_float(
+            os.getenv("DASHBOARD_HEALTHCHECK_TIMEOUT_SECONDS"),
+            default=6.0,
+            env_name="DASHBOARD_HEALTHCHECK_TIMEOUT_SECONDS",
+        )
+        self._health_targets = self._build_health_targets()
 
     @staticmethod
     def _sanitize(value: Any) -> Any:
@@ -1868,6 +2058,35 @@ class DashboardServer:
             (fallback.scheme, netloc, path, fallback.params, fallback.query, fallback.fragment)
         )
 
+    @staticmethod
+    def _parse_positive_float(raw: Optional[str], *, default: float, env_name: str) -> float:
+        if raw is None:
+            return default
+        value = raw.strip()
+        if not value:
+            return default
+        try:
+            parsed = float(value)
+        except ValueError:
+            logging.warning("%s '%s' invalid – using default %.1fs", env_name, raw, default)
+            return default
+        if parsed <= 0:
+            logging.warning("%s '%s' must be > 0 – using default %.1fs", env_name, raw, default)
+            return default
+        return parsed
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> Optional[bool]:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+        return None
+
     def _resolve_twitch_dashboard_href(self) -> str:
         explicit = (
             os.getenv("MASTER_TWITCH_DASHBOARD_URL")
@@ -1901,6 +2120,153 @@ class DashboardServer:
 
         base = self._format_base_url(host, port, scheme)
         return f"{base.rstrip('/')}/twitch"
+
+    def _derive_steam_return_url(self) -> Optional[str]:
+        base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+        if not base:
+            return None
+        path = (os.getenv("STEAM_RETURN_PATH") or "/steam/return").strip() or "/steam/return"
+        path = "/" + path.lstrip("/")
+        return f"{base}{path}"
+
+    def _build_health_targets(self) -> List[Dict[str, Any]]:
+        targets: List[Dict[str, Any]] = []
+        seen_keys: set[str] = set()
+
+        def _append_query_param(url: str, key: str, value: str) -> str:
+            try:
+                parsed = urlparse(url)
+            except Exception:
+                return url
+            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            if query.get(key) == value:
+                return url
+            query[key] = value
+            return urlunparse(parsed._replace(query=urlencode(query)))
+
+        def _add_target(
+            label: str,
+            url: str,
+            *,
+            key: Optional[str] = None,
+            method: str = "GET",
+        ) -> None:
+            safe_url = (url or "").strip()
+            if not safe_url:
+                return
+            if safe_url.startswith("http://") or safe_url.startswith("https://"):
+                try:
+                    safe_url = self._normalize_public_url(safe_url, default_scheme=self._scheme)
+                except Exception as exc:
+                    logging.warning("Healthcheck URL '%s' invalid (%s) – skipping entry", url, exc)
+                    return
+            safe_label = (label or safe_url).strip() or safe_url
+            safe_method = (method or "GET").strip().upper() or "GET"
+            key_base = (key or self._slugify_health_key(safe_label)).strip() or "health"
+            unique_key = key_base
+            suffix = 2
+            while unique_key in seen_keys:
+                unique_key = f"{key_base}-{suffix}"
+                suffix += 1
+            seen_keys.add(unique_key)
+
+            entry: Dict[str, Any] = {
+                "key": unique_key,
+                "label": safe_label,
+                "url": safe_url,
+                "method": safe_method,
+            }
+            targets.append(entry)
+
+        if self._twitch_dashboard_href:
+            _add_target("Twitch Dashboard", self._twitch_dashboard_href, key="twitch-dashboard")
+        if self._steam_return_url:
+            steam_health_url = _append_query_param(self._steam_return_url, "healthcheck", "1")
+            _add_target("Steam OAuth Callback", steam_health_url, key="steam-oauth-callback")
+
+        extra_raw = (
+            os.getenv("DASHBOARD_HEALTHCHECKS")
+            or os.getenv("DASHBOARD_HEALTHCHECK_URLS")
+            or os.getenv("MASTER_HEALTHCHECK_URLS")
+            or ""
+        ).strip()
+        if extra_raw:
+            for extra in self._parse_healthcheck_env(extra_raw):
+                _add_target(
+                    extra.get("label") or extra.get("name") or extra.get("title") or extra.get("url", ""),
+                    extra.get("url", ""),
+                    key=extra.get("key"),
+                    method=extra.get("method", "GET"),
+                )
+
+        return targets
+
+    def _parse_healthcheck_env(self, raw: str) -> List[Dict[str, Any]]:
+        trimmed = raw.strip()
+        if not trimmed:
+            return []
+        try:
+            loaded = json.loads(trimmed)
+        except json.JSONDecodeError:
+            entries: List[Dict[str, Any]] = []
+            normalized_raw = trimmed.replace(";", "\n")
+            for line in normalized_raw.splitlines():
+                item = line.strip()
+                if not item:
+                    continue
+                parts = [part.strip() for part in item.split("|")]
+                if len(parts) == 1:
+                    label = parts[0]
+                    url = parts[0]
+                    method = "GET"
+                elif len(parts) == 2:
+                    label, url = parts
+                    method = "GET"
+                else:
+                    label, method, url = parts[0], parts[1], parts[2]
+                    method = method.strip().upper() or "GET"
+                if not url:
+                    continue
+                entries.append({"label": label or url, "url": url, "method": method})
+            return entries
+
+        entries: List[Dict[str, Any]] = []
+        if isinstance(loaded, dict):
+            loaded = [loaded]
+        if not isinstance(loaded, list):
+            logging.warning("DASHBOARD_HEALTHCHECKS JSON must be a list or object.")
+            return entries
+        for idx, item in enumerate(loaded):
+            if not isinstance(item, dict):
+                logging.warning("Healthcheck entry #%s must be an object – skipping", idx)
+                continue
+            url = str(item.get("url") or "").strip()
+            if not url:
+                logging.warning("Healthcheck entry #%s missing 'url' – skipping", idx)
+                continue
+            method = str(item.get("method") or "GET").strip().upper() or "GET"
+            label = str(
+                item.get("label")
+                or item.get("name")
+                or item.get("title")
+                or url
+            ).strip() or url
+            entry: Dict[str, Any] = {
+                "label": label,
+                "url": url,
+                "method": method,
+            }
+            for optional_key in ("key", "timeout", "expect_status", "allow_redirects", "verify_ssl"):
+                if optional_key in item:
+                    entry[optional_key] = item[optional_key]
+            entries.append(entry)
+        return entries
+
+    @staticmethod
+    def _slugify_health_key(value: str) -> str:
+        slug = "".join(char.lower() if char.isalnum() else "-" for char in value)
+        pieces = [part for part in slug.split("-") if part]
+        return "-".join(pieces) or "health"
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
@@ -1963,9 +2329,132 @@ class DashboardServer:
             "settings": {
                 "per_cog_unload_timeout": bot.per_cog_unload_timeout,
             },
+            "health": await self._collect_health_checks(),
             "standalone": await self._collect_standalone_snapshot(),
         }
         return self._json(payload)
+
+    async def _collect_health_checks(self) -> List[Dict[str, Any]]:
+        if not self._health_targets:
+            return []
+        now = asyncio.get_running_loop().time()
+        if self._health_cache and now < self._health_cache_expiry:
+            return self._health_cache
+        async with self._health_cache_lock:
+            if self._health_cache and now < self._health_cache_expiry:
+                return self._health_cache
+            data = await self._refresh_health_checks()
+            self._health_cache = data
+            self._health_cache_expiry = now + self._health_cache_ttl
+            return data
+
+    async def _refresh_health_checks(self) -> List[Dict[str, Any]]:
+        timeout = ClientTimeout(total=self._health_timeout)
+        async with ClientSession(timeout=timeout) as session:
+            tasks = [self._probe_health_target(session, target) for target in self._health_targets]
+            return await asyncio.gather(*tasks)
+
+    async def _probe_health_target(
+        self,
+        session: ClientSession,
+        target: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        url = target.get("url") or ""
+        method = (target.get("method") or "GET").strip().upper() or "GET"
+        allow_redirects_value = target.get("allow_redirects")
+        allow_redirects = True
+        coerced_redirects = self._coerce_bool(allow_redirects_value)
+        if coerced_redirects is not None:
+            allow_redirects = coerced_redirects
+
+        verify_ssl_value = target.get("verify_ssl")
+        ssl_param: Any = None
+        coerced_ssl = self._coerce_bool(verify_ssl_value)
+        if coerced_ssl is False:
+            ssl_param = False
+
+        timeout_value = target.get("timeout")
+        request_timeout = None
+        if timeout_value is not None:
+            try:
+                parsed_timeout = float(timeout_value)
+                if parsed_timeout > 0:
+                    request_timeout = ClientTimeout(total=parsed_timeout)
+            except (TypeError, ValueError):
+                logging.warning(
+                    "Healthcheck target '%s' timeout '%s' invalid – falling back to default",
+                    target.get("label") or target.get("key") or url,
+                    timeout_value,
+                )
+
+        expected_status = target.get("expect_status")
+
+        def _status_ok(status_code: int) -> bool:
+            if expected_status is None:
+                return 200 <= status_code < 400
+            if isinstance(expected_status, int):
+                return status_code == expected_status
+            if isinstance(expected_status, (list, tuple, set)):
+                try:
+                    allowed = {int(item) for item in expected_status}
+                except (TypeError, ValueError):
+                    allowed = set(expected_status)
+                return status_code in allowed
+            if isinstance(expected_status, str):
+                stripped = expected_status.strip()
+                if stripped.isdigit():
+                    return status_code == int(stripped)
+            return 200 <= status_code < 400
+
+        start = time.perf_counter()
+        status: Optional[int] = None
+        reason: Optional[str] = None
+        ok = False
+        error: Optional[str] = None
+        resolved_url = url
+        body_excerpt: Optional[str] = None
+
+        request_kwargs: Dict[str, Any] = {"allow_redirects": allow_redirects}
+        if ssl_param is not None:
+            request_kwargs["ssl"] = ssl_param
+        if request_timeout:
+            request_kwargs["timeout"] = request_timeout
+
+        try:
+            async with session.request(method, url, **request_kwargs) as resp:
+                status = resp.status
+                reason = resp.reason
+                resolved_url = str(resp.url)
+                ok = _status_ok(status)
+                if not ok:
+                    try:
+                        text = await resp.text()
+                    except Exception:
+                        text = ""
+                    if text:
+                        body_excerpt = text[:280]
+        except Exception as exc:
+            error = f"{exc.__class__.__name__}: {exc}"
+
+        duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        result: Dict[str, Any] = {
+            "key": target.get("key"),
+            "label": target.get("label") or target.get("key") or url,
+            "url": url,
+            "method": method,
+            "ok": ok,
+            "status": status,
+            "reason": reason,
+            "latency_ms": duration_ms,
+            "checked_at": _dt.datetime.utcnow().isoformat() + "Z",
+        }
+        if resolved_url and resolved_url != url:
+            result["resolved_url"] = resolved_url
+        if error:
+            result["error"] = error
+        if body_excerpt and not ok:
+            result["body_excerpt"] = body_excerpt
+        return result
 
 
     async def _collect_standalone_snapshot(self) -> List[Dict[str, Any]]:

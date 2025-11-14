@@ -238,7 +238,18 @@ class DeadlockPresenceLogger {
 
   guessHero(localizedString) {
     if (!localizedString) return null;
-    const match = String(localizedString).match(/:\s*([A-Za-zÀ-ÿ0-9 _\-]+)\s*\(/);
+    const str = String(localizedString);
+    const braceMatches = Array.from(str.matchAll(/\{([^{}]+)\}/g))
+      .map((m) => (m[1] ? m[1].trim() : ''))
+      .filter((token) => token.length > 0);
+    if (braceMatches.length >= 2 && /deadlock/i.test(braceMatches[0])) {
+      return braceMatches[1];
+    }
+    const heroColonMatch = str.match(/deadlock[^:]*:\s*([A-Za-z\u00C0-\u024F0-9 _\-]+)\s*\(/i);
+    if (heroColonMatch) {
+      return heroColonMatch[1].trim();
+    }
+    const match = str.match(/:\s*([A-Za-z\u00C0-\u024F0-9 _\-]+)\s*\(/);
     return match ? match[1].trim() : null;
   }
 

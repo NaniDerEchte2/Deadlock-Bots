@@ -25,6 +25,11 @@ STAGING_CHANNEL_IDS: Set[int] = {
     1357422958544420944,  # Ranked Staging
     1412804671432818890,  # Spezial Staging
 }
+MINRANK_CATEGORY_IDS: Set[int] = {
+    1412804540994162789,  # Grind Lanes
+    1289721245281292290,  # Normal Lanes (MinRank freigeschaltet)
+}
+# Legacy-Alias für ältere Imports, zeigt weiterhin auf die ursprüngliche Grind-ID
 MINRANK_CATEGORY_ID: int = 1412804540994162789
 RANKED_CATEGORY_ID: int = 1357422957017698478
 INTERFACE_TEXT_CHANNEL_ID: int = 1371927143537315890  # exportiert (wird vom Interface genutzt)
@@ -34,6 +39,7 @@ DEFAULT_CASUAL_CAP = 8
 DEFAULT_RANKED_CAP = 6
 NAME_EDIT_COOLDOWN_SEC = 120
 STARTUP_PURGE_DELAY_SEC = 3
+PURGE_INTERVAL_SECONDS = 60
 
 # LiveMatch-Suffix (vom Worker) – NICHT von TempVoice anfassen
 LIVE_SUFFIX_RX = re.compile(
@@ -55,6 +61,7 @@ SUFFIX_THRESHOLD_RANK = "emissary"
 __all__ = [
     "STAGING_CHANNEL_IDS",
     "MINRANK_CATEGORY_ID",
+    "MINRANK_CATEGORY_IDS",
     "RANKED_CATEGORY_ID",
     "INTERFACE_TEXT_CHANNEL_ID",
     "ENGLISH_ONLY_ROLE_ID",
@@ -296,6 +303,7 @@ class TempVoiceCore(commands.Cog):
         self.lane_min_rank: Dict[int, str] = {}
         self.join_time: Dict[int, Dict[int, float]] = {}
         self._edit_locks: Dict[int, asyncio.Lock] = {}
+        self._lane_creation_locks: Dict[int, asyncio.Lock] = {}
         self._last_name_desired: Dict[int, str] = {}
         self._last_name_patch_ts: Dict[int, float] = {}
         self._bg_tasks: Set[asyncio.Task] = set()
@@ -330,13 +338,19 @@ class TempVoiceCore(commands.Cog):
     async def _delayed_purge(self, delay: int):
         try:
             await asyncio.sleep(delay)
-            if self._shutting_down or not self._tvdb.connected:
-                return
-            await self._purge_empty_lanes_once()
+            while not self._shutting_down:
+                if not self._tvdb.connected:
+                    await asyncio.sleep(PURGE_INTERVAL_SECONDS)
+                    continue
+                try:
+                    await self._purge_empty_lanes_once()
+                except Exception as inner:
+                    log.exception("TempVoice purge loop failed: %r", inner)
+                await asyncio.sleep(PURGE_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             return
         except Exception as e:
-            log.exception("TempVoice delayed purge failed: %r", e)
+            log.exception("TempVoice purge loop crashed: %r", e)
 
     # --------- Rehydrierung / Purge ---------
     def _first_guild(self) -> Optional[discord.Guild]:
@@ -389,65 +403,77 @@ class TempVoiceCore(commands.Cog):
             log.warning("purge: fetch failed: %r", e)
             return
 
+        processed_lane_ids: Set[int] = set()
         for r in rows:
             lane_id = int(r["channel_id"])
-            lane = guild.get_channel(lane_id)
-            if not isinstance(lane, discord.VoiceChannel):
-                try:
-                    await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
-                except Exception as e:
-                    log.debug("purge: cleanup stale row %s failed: %r", lane_id, e)
-                try:
-                    await self._tvdb.exec("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_id,))
-                except Exception as e:
-                    log.debug("purge: cleanup stale interface row %s failed: %r", lane_id, e)
-                continue
-
+            processed_lane_ids.add(lane_id)
             try:
+                lane = guild.get_channel(lane_id)
+                if not isinstance(lane, discord.VoiceChannel):
+                    await self._cleanup_lane(lane_id, channel=None, reason="TempVoice: Cleanup (missing channel)")
+                    continue
                 if len(lane.members) == 0:
-                    lane_key = int(lane.id)
-                    try:
-                        await lane.delete(reason="TempVoice: Cleanup (leer)")
-                    except Exception as e:
-                        log.debug("purge: delete lane %s failed: %r", lane.id, e)
-                    try:
-                        await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
-                    except Exception as e:
-                        log.debug("purge: delete row %s failed: %r", lane_id, e)
-                    try:
-                        await self._tvdb.exec("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_key,))
-                    except Exception as e:
-                        log.debug("purge: delete interface row %s failed: %r", lane_id, e)
-                    try:
-                        self.bot.dispatch("tempvoice_lane_deleted", lane_key)
-                    except Exception as e:
-                        log.debug("dispatch lane_deleted failed for %s: %r", lane_key, e)
+                    await self._cleanup_lane(lane_id, channel=lane, reason="TempVoice: Cleanup (leer)")
             except Exception as e:
                 log.debug("purge: inspect lane %s failed: %r", lane_id, e)
 
         for ch in list(guild.voice_channels):
-            if _is_managed_lane(ch):
-                try:
-                    if len(ch.members) == 0:
-                        lane_key = int(ch.id)
-                        try:
-                            await ch.delete(reason="TempVoice: Sweep (leer)")
-                        except Exception as e:
-                            log.debug("sweep: delete lane %s failed: %r", ch.id, e)
-                        try:
-                            await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (int(ch.id),))
-                        except Exception as e:
-                            log.debug("sweep: delete row %s failed: %r", ch.id, e)
-                        try:
-                            await self._tvdb.exec("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_key,))
-                        except Exception as e:
-                            log.debug("sweep: delete interface row %s failed: %r", ch.id, e)
-                        try:
-                            self.bot.dispatch("tempvoice_lane_deleted", lane_key)
-                        except Exception as e:
-                            log.debug("dispatch lane_deleted failed for %s: %r", lane_key, e)
-                except Exception as e:
-                    log.debug("sweep: inspect lane %s failed: %r", ch.id, e)
+            if not _is_managed_lane(ch) or ch.id in processed_lane_ids:
+                continue
+            try:
+                if len(ch.members) == 0:
+                    await self._cleanup_lane(int(ch.id), channel=ch, reason="TempVoice: Sweep (leer)")
+            except Exception as e:
+                log.debug("sweep: inspect lane %s failed: %r", ch.id, e)
+
+    async def _cleanup_lane(
+        self,
+        lane_id: int,
+        *,
+        channel: Optional[discord.VoiceChannel],
+        reason: str,
+    ) -> None:
+        if channel:
+            try:
+                await channel.delete(reason=reason)
+            except discord.Forbidden as e:
+                log.warning(
+                    "TempVoice: missing permission to delete lane %s (%s): %s",
+                    lane_id,
+                    getattr(channel, "name", "?"),
+                    e,
+                )
+            except Exception as e:
+                log.warning(
+                    "TempVoice: unexpected error deleting lane %s (%s): %r",
+                    lane_id,
+                    getattr(channel, "name", "?"),
+                    e,
+                )
+        if self._tvdb.connected:
+            try:
+                await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
+            except Exception as e:
+                log.debug("cleanup: delete row %s failed: %r", lane_id, e)
+            try:
+                await self._tvdb.exec("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_id,))
+            except Exception as e:
+                log.debug("cleanup: delete interface row %s failed: %r", lane_id, e)
+        self.created_channels.discard(lane_id)
+        for mapping in (
+            self.lane_owner,
+            self.lane_base,
+            self.lane_min_rank,
+            self.join_time,
+            self._last_name_desired,
+            self._last_name_patch_ts,
+        ):
+            mapping.pop(lane_id, None)
+        self._edit_locks.pop(lane_id, None)
+        try:
+            self.bot.dispatch("tempvoice_lane_deleted", lane_id)
+        except Exception as e:
+            log.debug("dispatch lane_deleted failed for %s: %r", lane_id, e)
 
     # --------- Öffentliche Helfer (von UI aufgerufen) ---------
     async def parse_user_identifier(self, guild: discord.Guild, raw: str) -> Optional[int]:
@@ -615,12 +641,17 @@ class TempVoiceCore(commands.Cog):
                 if "name" in kwargs:
                     self._last_name_patch_ts[lane.id] = now
             except discord.HTTPException as e:
-                log.debug("lane.edit failed for %s: %r", lane.id, e)
+                log.warning(
+                    "TempVoice: lane.edit failed for %s (payload=%s): %s",
+                    lane.id,
+                    kwargs,
+                    e,
+                )
 
     def _compose_name(self, lane: discord.VoiceChannel) -> str:
         base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
         parts = [base]
-        if lane.category_id == MINRANK_CATEGORY_ID:
+        if lane.category_id in MINRANK_CATEGORY_IDS:
             min_rank = self.lane_min_rank.get(lane.id, "unknown")
             if (min_rank and min_rank != "unknown" and
                     _rank_index(min_rank) >= _rank_index(SUFFIX_THRESHOLD_RANK)):
@@ -638,6 +669,15 @@ class TempVoiceCore(commands.Cog):
             desired_name=self._compose_name(lane),
             reason="TempVoice: Name aktualisiert"
         )
+
+    def _current_member_and_channel(
+        self, guild: discord.Guild, member_id: int
+    ) -> Tuple[Optional[discord.Member], Optional[discord.VoiceChannel]]:
+        member = guild.get_member(int(member_id))
+        channel: Optional[discord.VoiceChannel] = None
+        if member and member.voice and isinstance(member.voice.channel, discord.VoiceChannel):
+            channel = member.voice.channel
+        return member, channel
 
     async def _next_name(self, category: Optional[discord.CategoryChannel], prefix: str) -> str:
         if not category:
@@ -693,7 +733,7 @@ class TempVoiceCore(commands.Cog):
         await self._apply_owner_bans(lane, owner_id)
 
     async def _apply_min_rank(self, lane: discord.VoiceChannel, min_rank: str):
-        if lane.category_id != MINRANK_CATEGORY_ID:
+        if lane.category_id not in MINRANK_CATEGORY_IDS:
             return
         guild = lane.guild
         ranks = _rank_roles(guild)
@@ -729,54 +769,126 @@ class TempVoiceCore(commands.Cog):
     # --------- Lane-Erstellung ---------
     async def _create_lane(self, member: discord.Member, staging: discord.VoiceChannel):
         guild = member.guild
-        cat = staging.category
-        base = await self._next_name(cat, "Lane")
-        bitrate = getattr(guild, "bitrate_limit", None) or 256000
-        cap = _default_cap(staging)
-        try:
-            lane = await guild.create_voice_channel(
-                name=base,
-                category=cat,
-                user_limit=cap,
-                bitrate=bitrate,
-                reason=f"Auto-Lane für {member.display_name}",
-                overwrites=cat.overwrites if cat else None
-            )
-        except discord.Forbidden:
-            log.error("Fehlende Rechte: VoiceChannel erstellen.")
-            return
-        except Exception as e:
-            log.error(f"create_lane error: {e}")
+        member_id = int(member.id)
+        lock = self._lane_creation_locks.setdefault(member_id, asyncio.Lock())
+        if lock.locked():
+            log.debug("create_lane: duplicate request for %s ignored (staging=%s)", member_id, staging.id)
             return
 
-        self.created_channels.add(lane.id)
-        self.lane_owner[lane.id] = member.id
-        self.lane_base[lane.id] = base
-        self.lane_min_rank[lane.id] = "unknown"
-        self.join_time.setdefault(lane.id, {})
-
         try:
-            await self._tvdb.exec(
-                "INSERT OR REPLACE INTO tempvoice_lanes(channel_id, guild_id, owner_id, base_name, category_id) "
-                "VALUES(?,?,?,?,?)",
-                (int(lane.id), int(guild.id), int(member.id), base, int(cat.id) if cat else 0)
-            )
-        except Exception as e:
-            log.debug("create_lane: db insert failed for lane %s: %r", lane.id, e)
+            async with lock:
+                fresh_member, current_channel = self._current_member_and_channel(guild, member_id)
+                if not fresh_member or not current_channel or current_channel.id != staging.id:
+                    return
+                member = fresh_member
 
-        await self._apply_owner_settings(lane, member.id)
+                cat = staging.category
+                base = await self._next_name(cat, "Lane")
+                bitrate = getattr(guild, "bitrate_limit", None) or 256000
+                cap = _default_cap(staging)
+                try:
+                    lane = await guild.create_voice_channel(
+                        name=base,
+                        category=cat,
+                        user_limit=cap,
+                        bitrate=bitrate,
+                        reason=f"Auto-Lane für {member.display_name}",
+                        overwrites=cat.overwrites if cat else None
+                    )
+                except discord.Forbidden:
+                    log.error("Fehlende Rechte: VoiceChannel erstellen.")
+                    return
+                except Exception as e:
+                    log.error(f"create_lane error: {e}")
+                    return
 
-        try:
-            await member.move_to(lane, reason="TempVoice: Auto-Lane erstellt")
-        except Exception as e:
-            log.debug("create_lane: move_to failed for %s: %r", member.id, e)
+                self.created_channels.add(lane.id)
+                self.lane_owner[lane.id] = member.id
+                self.lane_base[lane.id] = base
+                self.lane_min_rank[lane.id] = "unknown"
+                self.join_time.setdefault(lane.id, {})
 
-        # NUR hier initial den Namen setzen (innerhalb des Create-Fensters)
-        await self._refresh_name(lane)
-        try:
-            self.bot.dispatch("tempvoice_lane_created", lane, member)
-        except Exception as e:
-            log.debug("dispatch lane_created failed for %s: %r", lane.id, e)
+                try:
+                    await self._tvdb.exec(
+                        "INSERT OR REPLACE INTO tempvoice_lanes(channel_id, guild_id, owner_id, base_name, category_id) "
+                        "VALUES(?,?,?,?,?)",
+                        (int(lane.id), int(guild.id), int(member.id), base, int(cat.id) if cat else 0)
+                    )
+                except Exception as e:
+                    log.warning(
+                        "TempVoice: DB insert failed for lane %s (owner=%s, category=%s): %r",
+                        lane.id,
+                        member.id,
+                        getattr(cat, "id", None),
+                        e,
+                    )
+
+                await self._apply_owner_settings(lane, member.id)
+
+                refreshed_member, refreshed_channel = self._current_member_and_channel(guild, member_id)
+                if not refreshed_member or not refreshed_channel:
+                    await self._cleanup_lane(int(lane.id), channel=lane, reason="TempVoice: Owner nicht auffindbar")
+                    return
+                if refreshed_channel.id != staging.id:
+                    await self._cleanup_lane(int(lane.id), channel=lane, reason="TempVoice: Owner nicht mehr im Staging")
+                    return
+                member = refreshed_member
+
+                try:
+                    await member.move_to(lane, reason="TempVoice: Auto-Lane erstellt")
+                except discord.Forbidden as e:
+                    log.warning(
+                        "TempVoice: move_to forbidden (member=%s staging=%s lane=%s): %s",
+                        member.id,
+                        staging.id,
+                        lane.id,
+                        e,
+                    )
+                    await self._cleanup_lane(
+                        int(lane.id),
+                        channel=lane,
+                        reason="TempVoice: Move fehlgeschlagen (forbidden)",
+                    )
+                    return
+                except discord.HTTPException as e:
+                    log.warning(
+                        "TempVoice: move_to HTTP error (member=%s staging=%s lane=%s): %s",
+                        member.id,
+                        staging.id,
+                        lane.id,
+                        e,
+                    )
+                    await self._cleanup_lane(
+                        int(lane.id),
+                        channel=lane,
+                        reason="TempVoice: Move fehlgeschlagen (http)",
+                    )
+                    return
+                except Exception as e:
+                    log.warning(
+                        "TempVoice: move_to failed unexpectedly (member=%s staging=%s lane=%s): %r",
+                        member.id,
+                        staging.id if staging else "?",
+                        lane.id,
+                        e,
+                    )
+                    await self._cleanup_lane(
+                        int(lane.id),
+                        channel=lane,
+                        reason="TempVoice: Move fehlgeschlagen (unexpected)",
+                    )
+                    return
+
+                # NUR hier initial den Namen setzen (innerhalb des Create-Fensters)
+                await self._refresh_name(lane)
+                try:
+                    self.bot.dispatch("tempvoice_lane_created", lane, member)
+                except Exception as e:
+                    log.debug("dispatch lane_created failed for %s: %r", lane.id, e)
+        finally:
+            lock_ref = self._lane_creation_locks.get(member_id)
+            if lock_ref and not lock_ref.locked():
+                self._lane_creation_locks.pop(member_id, None)
 
     # --------- Events ---------
     @commands.Cog.listener()
@@ -824,26 +936,7 @@ class TempVoiceCore(commands.Cog):
                             log.debug("dispatch lane_owner_changed failed for %s: %r", ch.id, e)
                     else:
                         lane_id = int(ch.id)
-                        try:
-                            await ch.delete(reason="TempVoice: Lane leer")
-                        except Exception as e:
-                            log.debug("delete empty lane %s failed: %r", ch.id, e)
-                        try:
-                            await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (int(ch.id),))
-                        except Exception as e:
-                            log.debug("delete lane row %s failed: %r", ch.id, e)
-                        try:
-                            await self._tvdb.exec("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_id,))
-                        except Exception as e:
-                            log.debug("delete lane interface row %s failed: %r", ch.id, e)
-                        self.created_channels.discard(ch.id)
-                        for d in (self.lane_owner, self.lane_base, self.lane_min_rank, self.join_time,
-                                  self._last_name_desired, self._last_name_patch_ts):
-                            d.pop(ch.id, None)
-                        try:
-                            self.bot.dispatch("tempvoice_lane_deleted", lane_id)
-                        except Exception as e:
-                            log.debug("dispatch lane_deleted failed for %s: %r", lane_id, e)
+                        await self._cleanup_lane(lane_id, channel=ch, reason="TempVoice: Lane leer")
         except Exception as e:
             log.debug("owner/cleanup flow failed: %r", e)
 

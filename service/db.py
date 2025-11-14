@@ -323,6 +323,15 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            -- Persistent Discord UI Views (for bot restarts)
+            CREATE TABLE IF NOT EXISTS persistent_views(
+              message_id TEXT PRIMARY KEY,
+              channel_id TEXT NOT NULL,
+              guild_id TEXT NOT NULL,
+              view_type TEXT NOT NULL,
+              user_id TEXT,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
 
             """
         )

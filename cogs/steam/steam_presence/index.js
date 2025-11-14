@@ -23,10 +23,19 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const https = require('https');
+const { URL } = require('url');
 const SteamUser = require('steam-user');
 const Database = require('better-sqlite3');
 const { QuickInvites } = require('./quick_invites');
 const { StatusAnzeige } = require('./statusanzeige');
+const { DeadlockGcBot } = require('./deadlock_gc_bot');
+const {
+  DEADLOCK_GC_PROTOCOL_OVERRIDE_PATH,
+  getHelloPayloadOverride,
+  getPlaytestOverrides,
+  getOverrideInfo: getGcOverrideInfo,
+} = require('./deadlock_gc_protocol');
 
 let SteamID = null;
 if (SteamUser && SteamUser.SteamID) {
@@ -39,18 +48,82 @@ if (SteamUser && SteamUser.SteamID) {
   }
 }
 
-const DEADLOCK_APP_ID = Number.parseInt(process.env.DEADLOCK_APPID || '1422450', 10);
+// Deadlock App ID - try multiple known IDs if needed
+const DEADLOCK_APP_IDS = [
+  Number.parseInt(process.env.DEADLOCK_APPID || '1422450', 10), // Primary
+  1422450, // Official Deadlock App ID
+  730,     // CS2 fallback for testing GC protocol
+];
+const DEADLOCK_APP_ID = DEADLOCK_APP_IDS[0];
+
+// Function to try different App IDs if the primary fails
+function getWorkingAppId() {
+  return DEADLOCK_APP_IDS.find(id => id > 0) || 1422450;
+}
 const PROTO_MASK = SteamUser.GCMsgProtoBuf || 0x80000000;
-const GC_MSG_CLIENT_HELLO = 4004;
-const GC_MSG_CLIENT_WELCOME = 4005;
-const GC_MSG_SUBMIT_PLAYTEST_USER = 9189;
-const GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE = 9190;
+const GC_MSG_CLIENT_HELLO = 4006;
+const GC_MSG_CLIENT_WELCOME = 4004;
+
+// Multiple potential message IDs to try (Deadlock's actual IDs may have changed)
+const DEFAULT_PLAYTEST_MSG_IDS = [
+  { send: 9189, response: 9190, name: 'original' },
+  { send: 9000, response: 9001, name: 'alternative_1' },
+  { send: 8000, response: 8001, name: 'alternative_2' },
+  { send: 7500, response: 7501, name: 'alternative_3' },
+  { send: 10000, response: 10001, name: 'alternative_4' },
+];
+
+let playtestMsgConfigs = [...DEFAULT_PLAYTEST_MSG_IDS];
+const playtestOverrideConfig = getPlaytestOverrides() || null;
+let buildPlaytestPayloadOverrideFn = null;
+
+if (playtestOverrideConfig) {
+  if (
+    playtestOverrideConfig.messageIds &&
+    Number.isFinite(playtestOverrideConfig.messageIds.send) &&
+    Number.isFinite(playtestOverrideConfig.messageIds.response)
+  ) {
+    const overrideEntry = {
+      send: Number(playtestOverrideConfig.messageIds.send),
+      response: Number(playtestOverrideConfig.messageIds.response),
+      name: playtestOverrideConfig.name || 'config_override',
+      appId: playtestOverrideConfig.appId,
+    };
+    if (playtestOverrideConfig.exclusive) {
+      playtestMsgConfigs = [overrideEntry];
+    } else {
+      playtestMsgConfigs.unshift(overrideEntry);
+    }
+  }
+  if (typeof playtestOverrideConfig.buildPayload === 'function') {
+    buildPlaytestPayloadOverrideFn = playtestOverrideConfig.buildPayload;
+  }
+}
+
+if (!playtestMsgConfigs.length) {
+  playtestMsgConfigs = [...DEFAULT_PLAYTEST_MSG_IDS];
+}
+
+// Current message IDs (will be updated when working ones are found)
+let GC_MSG_SUBMIT_PLAYTEST_USER = playtestMsgConfigs[0].send;
+let GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE = playtestMsgConfigs[0].response;
 const GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW = Number.parseInt(process.env.DEADLOCK_GC_PROTOCOL_VERSION || '1', 10);
 const GC_CLIENT_HELLO_PROTOCOL_VERSION = Number.isFinite(GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW) && GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW > 0
   ? GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW
   : 1;
-
-let cachedDeadlockGcHelloPayload = null;
+const STEAM_WEB_API_KEY = ((process.env.STEAM_API_KEY || process.env.STEAM_WEB_API_KEY || '') + '').trim() || null;
+const WEB_API_FRIEND_CACHE_TTL_MS = Math.max(
+  15000,
+  Number.isFinite(Number(process.env.STEAM_WEBAPI_FRIEND_CACHE_MS))
+    ? Number(process.env.STEAM_WEBAPI_FRIEND_CACHE_MS)
+    : 60000
+);
+const WEB_API_HTTP_TIMEOUT_MS = Math.max(
+  5000,
+  Number.isFinite(Number(process.env.STEAM_WEBAPI_TIMEOUT_MS))
+    ? Number(process.env.STEAM_WEBAPI_TIMEOUT_MS)
+    : 12000
+);
 
 // ---------- Logging ----------
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
@@ -72,6 +145,138 @@ function log(level, message, extra = undefined) {
   console.log(JSON.stringify(payload));
 }
 
+const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
+const GC_TRACE_LOG_PATH = path.join(PROJECT_ROOT, 'logs', 'deadlock_gc_messages.log');
+let gcTraceStream = null;
+
+function writeDeadlockGcTrace(event, details = {}) {
+  try {
+    if (!gcTraceStream) {
+      fs.mkdirSync(path.dirname(GC_TRACE_LOG_PATH), { recursive: true });
+      gcTraceStream = fs.createWriteStream(GC_TRACE_LOG_PATH, { flags: 'a' });
+    }
+    const entry = {
+      time: new Date().toISOString(),
+      event,
+      ...details,
+    };
+    gcTraceStream.write(`${JSON.stringify(entry)}${os.EOL}`);
+  } catch (err) {
+    // Avoid recursive logging loops.
+    console.error('Failed to write Deadlock GC trace', err && err.message ? err.message : err);
+  }
+}
+
+function closeDeadlockGcTrace() {
+  if (!gcTraceStream) return;
+  try {
+    gcTraceStream.end();
+  } catch (_) {
+    // ignore
+  } finally {
+    gcTraceStream = null;
+  }
+}
+
+process.on('exit', closeDeadlockGcTrace);
+process.on('SIGINT', closeDeadlockGcTrace);
+process.on('SIGTERM', closeDeadlockGcTrace);
+
+function normalizeToBuffer(value) {
+  if (!value && value !== 0) return null;
+  if (Buffer.isBuffer(value)) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    const hexCandidate = trimmed.startsWith('0x') ? trimmed.slice(2) : trimmed;
+    if (/^[0-9a-fA-F]+$/.test(hexCandidate) && hexCandidate.length % 2 === 0) {
+      return Buffer.from(hexCandidate, 'hex');
+    }
+    return Buffer.from(trimmed, 'utf8');
+  }
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (value && typeof value === 'object' && value.type === 'Buffer' && Array.isArray(value.data)) {
+    return Buffer.from(value.data);
+  }
+  return null;
+}
+
+function getDeadlockGcTokenCount() {
+  if (!client) return 0;
+  const tokens = client._gcTokens;
+  if (Array.isArray(tokens)) return tokens.length;
+  if (tokens && typeof tokens.length === 'number') return tokens.length;
+  return 0;
+}
+
+async function requestDeadlockGcTokens(reason = 'unspecified') {
+  if (!client || typeof client._sendAuthList !== 'function') {
+    log('warn', 'Cannot request Deadlock GC tokens - steam-user _sendAuthList unavailable', { reason });
+    return false;
+  }
+  if (!client.steamID) {
+    log('debug', 'Skipping GC token request - SteamID missing', { reason });
+    return false;
+  }
+  if (gcTokenRequestInFlight) {
+    log('debug', 'GC token request already in flight', { reason });
+    return false;
+  }
+  gcTokenRequestInFlight = true;
+  const haveTokens = getDeadlockGcTokenCount();
+  try {
+    log('info', 'Requesting Deadlock GC tokens', {
+      reason,
+      haveTokens,
+      appId: DEADLOCK_APP_ID,
+    });
+    writeDeadlockGcTrace('request_gc_tokens', {
+      reason,
+      haveTokens,
+    });
+    await client._sendAuthList(DEADLOCK_APP_ID);
+    const current = getDeadlockGcTokenCount();
+    log('debug', 'GC token request finished', {
+      reason,
+      before: haveTokens,
+      after: current,
+    });
+    writeDeadlockGcTrace('request_gc_tokens_complete', {
+      reason,
+      before: haveTokens,
+      after: current,
+    });
+    return true;
+  } catch (err) {
+    log('error', 'Failed to request Deadlock GC tokens', {
+      reason,
+      error: err && err.message ? err.message : String(err),
+    });
+    writeDeadlockGcTrace('request_gc_tokens_failed', {
+      reason,
+      error: err && err.message ? err.message : String(err),
+    });
+    return false;
+  } finally {
+    gcTokenRequestInFlight = false;
+  }
+}
+
+const gcOverrideInfo = getGcOverrideInfo();
+if (playtestOverrideConfig) {
+  log('info', 'Deadlock GC override module active', {
+    path: gcOverrideInfo.path,
+    messageIdSend: playtestOverrideConfig.messageIds?.send,
+    messageIdResponse: playtestOverrideConfig.messageIds?.response,
+    exclusive: Boolean(playtestOverrideConfig.exclusive),
+  });
+} else {
+  log('debug', 'No Deadlock GC override module detected', {
+    path: gcOverrideInfo.path,
+  });
+}
+
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 
 const sleep = (ms) =>
@@ -89,6 +294,129 @@ function toPositiveInt(value) {
     return parsed;
   }
   return null;
+}
+
+function httpGetJson(url, timeoutMs = WEB_API_HTTP_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    try {
+      const req = https.request(
+        url,
+        {
+          method: 'GET',
+          headers: {
+            'User-Agent': 'DeadlockSteamBridge/1.0 (+steam_presence)',
+            Accept: 'application/json',
+          },
+        },
+        (res) => {
+          const chunks = [];
+          res.on('data', (chunk) => chunks.push(chunk));
+          res.on('end', () => {
+            const body = Buffer.concat(chunks);
+            const text = body.toString('utf8');
+            if (res.statusCode < 200 || res.statusCode >= 300) {
+              const err = new Error(`HTTP ${res.statusCode}`);
+              err.statusCode = res.statusCode;
+              err.body = text;
+              return reject(err);
+            }
+            if (!text) {
+              resolve(null);
+              return;
+            }
+            try {
+              resolve(JSON.parse(text));
+            } catch (err) {
+              err.body = text;
+              reject(err);
+            }
+          });
+        }
+      );
+      req.on('error', reject);
+      req.setTimeout(Math.max(1000, timeoutMs || WEB_API_HTTP_TIMEOUT_MS), () => {
+        req.destroy(new Error('Request timed out'));
+      });
+      req.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function loadWebApiFriendIds(force = false) {
+  if (!STEAM_WEB_API_KEY) {
+    if (!webApiFriendCacheWarned) {
+      webApiFriendCacheWarned = true;
+      log('debug', 'Steam Web API key not configured - friendship fallback disabled');
+    }
+    return null;
+  }
+  if (!client || !client.steamID) return null;
+
+  const now = Date.now();
+  if (!force && webApiFriendCacheIds && now - webApiFriendCacheLastLoadedAt < WEB_API_FRIEND_CACHE_TTL_MS) {
+    return webApiFriendCacheIds;
+  }
+  if (webApiFriendCachePromise) return webApiFriendCachePromise;
+
+  const url = new URL('https://api.steampowered.com/ISteamUser/GetFriendList/v1/');
+  url.searchParams.set('key', STEAM_WEB_API_KEY);
+  url.searchParams.set('steamid', client.steamID.getSteamID64());
+  url.searchParams.set('relationship', 'friend');
+
+  webApiFriendCachePromise = httpGetJson(url.toString(), WEB_API_HTTP_TIMEOUT_MS)
+    .then((body) => {
+      const entries = body && body.friendslist && Array.isArray(body.friendslist.friends)
+        ? body.friendslist.friends
+        : [];
+      const set = new Set();
+      for (const entry of entries) {
+        const sid = entry && entry.steamid ? String(entry.steamid).trim() : '';
+        if (sid) set.add(sid);
+      }
+      webApiFriendCacheIds = set;
+      webApiFriendCacheLastLoadedAt = Date.now();
+      log('debug', 'Refreshed Steam Web API friend cache', {
+        count: set.size,
+        ttlMs: WEB_API_FRIEND_CACHE_TTL_MS,
+      });
+      return set;
+    })
+    .catch((err) => {
+      log('warn', 'Steam Web API friend list request failed', {
+        error: err && err.message ? err.message : String(err),
+        statusCode: err && err.statusCode ? err.statusCode : undefined,
+      });
+      return null;
+    })
+    .finally(() => {
+      webApiFriendCachePromise = null;
+    });
+
+  return webApiFriendCachePromise;
+}
+
+async function isFriendViaWebApi(steamId64) {
+  const normalized = String(steamId64 || '').trim();
+  if (!normalized) return { friend: false, source: 'webapi', refreshed: false };
+
+  let ids = await loadWebApiFriendIds(false);
+  if (ids && ids.has(normalized)) {
+    return { friend: true, source: 'webapi-cache', refreshed: false };
+  }
+
+  ids = await loadWebApiFriendIds(true);
+  if (ids && ids.has(normalized)) {
+    return { friend: true, source: 'webapi-refresh', refreshed: true };
+  }
+
+  return { friend: false, source: 'webapi', refreshed: true };
+}
+
+function getWebApiFriendCacheAgeMs() {
+  if (!webApiFriendCacheLastLoadedAt) return null;
+  return Math.max(0, Date.now() - webApiFriendCacheLastLoadedAt);
 }
 
 function normalizeTimeoutMs(value, fallback, minimum) {
@@ -115,12 +443,12 @@ function isTimeoutError(err) {
 const MIN_GC_READY_TIMEOUT_MS = 5000;
 const DEFAULT_GC_READY_TIMEOUT_MS = normalizeTimeoutMs(
   process.env.DEADLOCK_GC_READY_TIMEOUT_MS,
-  20000,
+  120000,
   MIN_GC_READY_TIMEOUT_MS
 );
 const DEFAULT_GC_READY_ATTEMPTS = normalizeAttempts(
   process.env.DEADLOCK_GC_READY_ATTEMPTS,
-  2,
+  3,
   5
 );
 const GC_READY_RETRY_DELAY_MS = normalizeTimeoutMs(
@@ -132,12 +460,12 @@ const GC_READY_RETRY_DELAY_MS = normalizeTimeoutMs(
 const MIN_PLAYTEST_INVITE_TIMEOUT_MS = 5000;
 const DEFAULT_PLAYTEST_INVITE_TIMEOUT_MS = normalizeTimeoutMs(
   process.env.DEADLOCK_PLAYTEST_TIMEOUT_MS,
-  15000,
+  30000,
   MIN_PLAYTEST_INVITE_TIMEOUT_MS
 );
 const DEFAULT_PLAYTEST_INVITE_ATTEMPTS = normalizeAttempts(
   process.env.DEADLOCK_PLAYTEST_RETRY_ATTEMPTS,
-  2,
+  3,
   5
 );
 const PLAYTEST_RETRY_DELAY_MS = normalizeTimeoutMs(
@@ -384,9 +712,22 @@ let deadlockGcReady = false;
 let lastGcHelloAttemptAt = 0;
 const deadlockGcWaiters = [];
 const pendingPlaytestInviteResponses = [];
+let webApiFriendCacheIds = null;
+let webApiFriendCacheLastLoadedAt = 0;
+let webApiFriendCachePromise = null;
+let webApiFriendCacheWarned = false;
 
 // ---------- Steam Client ----------
 const client = new SteamUser();
+const deadlockGcBot = new DeadlockGcBot({
+  client,
+  log: (level, msg, extra) => log(level, msg, extra),
+  trace: writeDeadlockGcTrace,
+  requestTokens: (reason) => requestDeadlockGcTokens(reason || 'deadlock_gc_bot'),
+  getTokenCount: () => getDeadlockGcTokenCount(),
+});
+let gcTokenRequestInFlight = false;
+let lastLoggedGcTokenCount = 0;
 client.setOption('autoRelogin', false);
 client.setOption('machineName', process.env.STEAM_MACHINE_NAME || 'DeadlockBridge');
 
@@ -404,6 +745,9 @@ const statusAnzeige = new StatusAnzeige(client, log, {
   appId: DEADLOCK_APP_ID,
   language: process.env.STEAM_PRESENCE_LANGUAGE || 'german',
   db,
+  steamWebApiKey: STEAM_WEB_API_KEY,
+  webApiTimeoutMs: WEB_API_HTTP_TIMEOUT_MS,
+  webSummaryCacheTtlMs: WEB_API_FRIEND_CACHE_TTL_MS,
 });
 log('info', 'Statusanzeige initialisiert', {
   persistence: statusAnzeige.persistenceEnabled,
@@ -433,43 +777,137 @@ function scheduleReconnect(reason, delayMs = RECONNECT_DELAY_MS){
   }, delay);
 }
 
+
+
 function ensureDeadlockGamePlaying(force = false) {
   const now = Date.now();
-  if (!force && now - deadlockGameRequestedAt < 15000) return;
+  if (!force && now - deadlockGameRequestedAt < 15000) {
+    log('debug', 'Skipping gamesPlayed request - too recent', { 
+      timeSinceLastRequest: now - deadlockGameRequestedAt 
+    });
+    return;
+  }
+  
   try {
     const previouslyActive = deadlockAppActive;
-    client.gamesPlayed([DEADLOCK_APP_ID]);
+    const appId = getWorkingAppId();
+    
+    // First ensure we're not playing any other games
+    if (!previouslyActive) {
+      client.gamesPlayed([]);
+      setTimeout(() => {
+        // Now play Deadlock
+        client.gamesPlayed([appId]);
+        log('info', 'Started playing Deadlock', { appId });
+      }, 1000);
+    } else {
+      client.gamesPlayed([appId]);
+    }
+    
     deadlockGameRequestedAt = now;
     deadlockAppActive = true;
-    if (!previouslyActive) {
-      deadlockGcReady = false;
-      // kick off a GC hello immediately on first activation so we do not rely
-      // on appLaunched events (steam-user >=5 stopped emitting them for gamesPlayed)
-      sendDeadlockGcHello(true);
-    }
-    log('debug', 'Requested Deadlock GC session via gamesPlayed()', {
-      appId: DEADLOCK_APP_ID,
+    
+    log('info', 'Requested Deadlock GC session via gamesPlayed()', {
+      appId,
       force,
       previouslyActive,
+      steamId: client.steamID ? String(client.steamID) : 'not_logged_in'
     });
+    requestDeadlockGcTokens('games_played');
+    
+    if (!previouslyActive) {
+      deadlockGcReady = false;
+      // Give Steam more time to process the gamesPlayed request
+      setTimeout(() => {
+        log('debug', 'Initiating GC handshake after game start');
+        sendDeadlockGcHello(true);
+      }, 3000); // Increased from 2s to 3s
+    }
   } catch (err) {
-    log('warn', 'Failed to call gamesPlayed for Deadlock', { error: err.message });
+    log('error', 'Failed to call gamesPlayed for Deadlock', { 
+      error: err.message,
+      steamId: client.steamID ? String(client.steamID) : 'not_logged_in'
+    });
   }
 }
 
+
 function sendDeadlockGcHello(force = false) {
-  if (!deadlockAppActive) return false;
+  if (!deadlockAppActive) {
+    log('debug', 'Skipping GC hello - app not active');
+    return false;
+  }
+  
   const now = Date.now();
-  if (!force && now - lastGcHelloAttemptAt < 2000) return false;
+  if (!force && now - lastGcHelloAttemptAt < 2000) {
+    log('debug', 'Skipping GC hello - too recent');
+    return false;
+  }
+
+  const tokenCount = getDeadlockGcTokenCount();
+  if (tokenCount <= 0) {
+    log('warn', 'Sending GC hello without GC tokens', {
+      tokenCount,
+    });
+    requestDeadlockGcTokens('hello_no_tokens');
+  } else if (tokenCount < 2) {
+    requestDeadlockGcTokens('hello_low_tokens');
+  }
+  
   try {
-    const payload = getDeadlockGcHelloPayload();
-    client.sendToGC(DEADLOCK_APP_ID, PROTO_MASK + GC_MSG_CLIENT_HELLO, {}, payload);
+    const payload = getDeadlockGcHelloPayload(force);
+    const appId = getWorkingAppId();
+    
+    log('info', 'Sending Deadlock GC hello', {
+      appId,
+      payloadLength: payload.length,
+      force,
+      steamId: client.steamID ? String(client.steamID) : 'not_logged_in'
+    });
+    
+    client.sendToGC(appId, PROTO_MASK + GC_MSG_CLIENT_HELLO, {}, payload);
+    writeDeadlockGcTrace('send_gc_hello', {
+      appId,
+      payloadHex: payload.toString('hex').substring(0, 200),
+      force,
+      tokenCount,
+    });
     lastGcHelloAttemptAt = now;
-    log('debug', 'Sent Deadlock GC hello');
+    
+    // Schedule a verification check
+    setTimeout(() => {
+      if (!deadlockGcReady) {
+        log('warn', 'GC did not respond to hello within 5 seconds', {
+          appId,
+          timeSinceHello: Date.now() - now
+        });
+        
+        // Try with a different protocol approach
+        tryAlternativeGcHandshake();
+      }
+    }, 5000);
+    
     return true;
   } catch (err) {
-    log('warn', 'Failed to send Deadlock GC hello', { error: err.message });
+    log('error', 'Failed to send Deadlock GC hello', { 
+      error: err.message,
+      stack: err.stack
+    });
     return false;
+  }
+}
+
+// Alternative handshake method
+function tryAlternativeGcHandshake() {
+  try {
+    log('info', 'Attempting alternative GC handshake');
+    deadlockGcBot.cachedHello = null;
+    deadlockGcBot.cachedLegacyHello = null;
+    const payload = getDeadlockGcHelloPayload(true);
+    client.sendToGC(DEADLOCK_APP_ID, PROTO_MASK + GC_MSG_CLIENT_HELLO, {}, payload);
+    log('debug', 'Sent refreshed GC hello payload');
+  } catch (err) {
+    log('error', 'Alternative GC handshake failed', { error: err.message });
   }
 }
 
@@ -489,6 +927,7 @@ function flushDeadlockGcWaiters(error) {
 
 function notifyDeadlockGcReady() {
   deadlockGcReady = true;
+  writeDeadlockGcTrace('gc_ready', { waiters: deadlockGcWaiters.length });
   while (deadlockGcWaiters.length) {
     const waiter = deadlockGcWaiters.shift();
     try {
@@ -497,16 +936,38 @@ function notifyDeadlockGcReady() {
   }
 }
 
-function getDeadlockGcHelloPayload() {
-  if (cachedDeadlockGcHelloPayload) return cachedDeadlockGcHelloPayload;
-  const tag = encodeVarint((1 << 3) | 0);
-  const version = encodeVarint(GC_CLIENT_HELLO_PROTOCOL_VERSION);
-  cachedDeadlockGcHelloPayload = Buffer.concat([tag, version]);
-  return cachedDeadlockGcHelloPayload;
+
+function getDeadlockGcHelloPayload(force = false) {
+  const overridePayload = getHelloPayloadOverride({ client, SteamUser });
+  const normalizedOverride = normalizeToBuffer(overridePayload);
+  if (normalizedOverride && normalizedOverride.length) {
+    log('info', 'Using override Deadlock GC hello payload', {
+      length: normalizedOverride.length,
+    });
+    return Buffer.from(normalizedOverride);
+  }
+  if (overridePayload) {
+    log('warn', 'Deadlock GC override hello payload invalid – falling back to auto builder', {
+      path: DEADLOCK_GC_PROTOCOL_OVERRIDE_PATH,
+    });
+  }
+
+  const payload = deadlockGcBot.getHelloPayload(force);
+  if (!payload || !payload.length) {
+    throw new Error('Unable to build Deadlock GC hello payload');
+  }
+
+  log('debug', 'Generated GC hello payload', {
+    protocolVersion: GC_CLIENT_HELLO_PROTOCOL_VERSION,
+    payloadLength: payload.length,
+    payloadHex: payload.toString('hex'),
+  });
+  return payload;
 }
 
 function createDeadlockGcReadyPromise(timeout) {
   ensureDeadlockGamePlaying();
+  requestDeadlockGcTokens('wait_gc_ready');
   if (deadlockGcReady) return Promise.resolve(true);
 
   const effectiveTimeout = Math.max(
@@ -555,6 +1016,7 @@ function createDeadlockGcReadyPromise(timeout) {
   });
 }
 
+
 async function waitForDeadlockGcReady(timeoutMs = DEFAULT_GC_READY_TIMEOUT_MS, options = {}) {
   const timeout = normalizeTimeoutMs(timeoutMs, DEFAULT_GC_READY_TIMEOUT_MS, MIN_GC_READY_TIMEOUT_MS);
   const attempts = normalizeAttempts(
@@ -568,19 +1030,41 @@ async function waitForDeadlockGcReady(timeoutMs = DEFAULT_GC_READY_TIMEOUT_MS, o
   while (attempt < attempts) {
     attempt += 1;
     try {
+      // Force a fresh GC connection attempt before each try
+      ensureDeadlockGamePlaying(true);
+      await sleep(1000); // Give GC time to initialize
+      
       await createDeadlockGcReadyPromise(timeout);
+      log('info', 'Deadlock GC ready after attempt', { attempt, attempts });
       return true;
     } catch (err) {
       lastError = err || new Error('Deadlock GC not ready');
       deadlockGcReady = false;
-      if (attempt >= attempts || !isTimeoutError(err)) {
-        break;
-      }
-      log('warn', 'Deadlock GC handshake timed out - retrying', {
+      
+      // Log more detailed error information
+      log('warn', 'Deadlock GC attempt failed', {
         attempt,
         attempts,
         timeoutMs: timeout,
+        error: err?.message || String(err),
+        isTimeoutError: isTimeoutError(err)
       });
+      
+      if (attempt >= attempts || !isTimeoutError(err)) {
+        break;
+      }
+      
+      log('info', 'Retrying Deadlock GC handshake after delay', {
+        attempt,
+        attempts,
+        delayMs: GC_READY_RETRY_DELAY_MS
+      });
+      
+      // Force a complete reset before retrying
+      deadlockAppActive = false;
+      deadlockGcReady = false;
+      flushDeadlockGcWaiters(new Error('Retry attempt'));
+      
       await sleep(GC_READY_RETRY_DELAY_MS);
     }
   }
@@ -602,96 +1086,33 @@ const PLAYTEST_RESPONSE_MAP = {
   7: { key: 'eResponse_InviteLimitReached', message: 'Invite-Limit erreicht – bitte später erneut versuchen.' },
 };
 
-function encodeVarint(value) {
-  let v = Number(value >>> 0);
-  const bytes = [];
-  while (v >= 0x80) {
-    bytes.push((v & 0x7f) | 0x80);
-    v >>>= 7;
-  }
-  bytes.push(v);
-  return Buffer.from(bytes);
-}
+function formatPlaytestError(response) {
+  if (!response || typeof response !== 'object') return null;
 
-function decodeVarint(buffer, offset = 0) {
-  let result = 0;
-  let shift = 0;
-  let position = offset;
-  while (position < buffer.length) {
-    const byte = buffer[position++];
-    result |= (byte & 0x7f) << shift;
-    if ((byte & 0x80) === 0) {
-      return { value: result >>> 0, nextOffset: position };
-    }
-    shift += 7;
-    if (shift > 35) break;
+  const message = response.message ? String(response.message).trim() : '';
+  const codeRaw = Object.prototype.hasOwnProperty.call(response, 'code') ? response.code : null;
+  let codeDisplay = null;
+  if (codeRaw !== null && codeRaw !== undefined) {
+    const maybeNumber = Number(codeRaw);
+    if (Number.isFinite(maybeNumber)) codeDisplay = `Code ${maybeNumber}`;
+    else if (typeof codeRaw === 'string' && codeRaw.trim()) codeDisplay = `Code ${codeRaw.trim()}`;
   }
-  throw new Error('Truncated varint');
-}
+  const key = response.key ? String(response.key).trim() : '';
 
-function skipField(buffer, offset, wireType) {
-  switch (wireType) {
-    case 0: {
-      const { nextOffset } = decodeVarint(buffer, offset);
-      return nextOffset;
-    }
-    case 1:
-      return offset + 8;
-    case 2: {
-      const { value: length, nextOffset } = decodeVarint(buffer, offset);
-      return nextOffset + length;
-    }
-    case 5:
-      return offset + 4;
-    default:
-      return -1;
-  }
+  const meta = [];
+  if (codeDisplay) meta.push(codeDisplay);
+  if (key) meta.push(key);
+
+  const parts = [];
+  if (message) parts.push(message);
+  if (meta.length) parts.push(`(${meta.join(' / ')})`);
+
+  const formatted = parts.join(' ').trim();
+  return formatted || null;
 }
 
 function encodeSubmitPlaytestUserPayload(accountId, location) {
-  const parts = [];
-  if (location) {
-    const locStr = Buffer.from(String(location), 'utf8');
-    parts.push(encodeVarint((3 << 3) | 2));
-    parts.push(encodeVarint(locStr.length));
-    parts.push(locStr);
-  }
-  if (Number.isFinite(accountId)) {
-    parts.push(encodeVarint((4 << 3) | 0));
-    parts.push(encodeVarint(Number(accountId) >>> 0));
-  }
-  return parts.length ? Buffer.concat(parts) : Buffer.alloc(0);
-}
-
-function decodeSubmitPlaytestUserResponse(buffer) {
-  if (!buffer || !buffer.length) return null;
-  let offset = 0;
-  while (offset < buffer.length) {
-    let tag;
-    try {
-      ({ value: tag, nextOffset: offset } = decodeVarint(buffer, offset));
-    } catch (err) {
-      log('warn', 'Failed to decode playtest response varint', { error: err.message });
-      return null;
-    }
-    const fieldNumber = tag >>> 3;
-    const wireType = tag & 0x07;
-
-    if (fieldNumber === 1 && wireType === 0) {
-      try {
-        const { value } = decodeVarint(buffer, offset);
-        return value >>> 0;
-      } catch (err) {
-        log('warn', 'Failed to decode playtest response code', { error: err.message });
-        return null;
-      }
-    }
-
-    const next = skipField(buffer, offset, wireType);
-    if (next < 0 || next > buffer.length) break;
-    offset = next;
-  }
-  return null;
+  return deadlockGcBot.encodePlaytestInvitePayload(accountId, location);
 }
 
 function parseSteamID(input) {
@@ -790,13 +1211,15 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
     INVITE_RESPONSE_MIN_TIMEOUT_MS,
     Number.isFinite(timeoutMs) ? Number(timeoutMs) : DEFAULT_PLAYTEST_INVITE_TIMEOUT_MS
   );
+  const estimatedPayloadVariants = buildPlaytestPayloadOverrideFn ? 1 : 6;
 
   return new Promise((resolve, reject) => {
-    const payload = encodeSubmitPlaytestUserPayload(accountId, location);
     const entry = {
       resolve: null,
       reject: null,
       timer: null,
+      attempts: 0,
+      maxAttempts: Math.max(1, (playtestMsgConfigs.length || DEFAULT_PLAYTEST_MSG_IDS.length)) * estimatedPayloadVariants, // Try all message IDs with all payload versions (now 6 versions)
     };
 
     entry.resolve = (value) => {
@@ -818,44 +1241,179 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
 
     pendingPlaytestInviteResponses.push(entry);
 
-    try {
-      client.sendToGC(DEADLOCK_APP_ID, PROTO_MASK + GC_MSG_SUBMIT_PLAYTEST_USER, {}, payload);
-      log('info', 'Deadlock playtest invite requested', { accountId, location });
-    } catch (err) {
-      entry.reject(err);
+    const payloadVersions = buildPlaytestPayloadOverrideFn ? ['override'] : ['native'];
+    let attemptCount = 0;
+    const messageConfigs = playtestMsgConfigs.length ? playtestMsgConfigs : [...DEFAULT_PLAYTEST_MSG_IDS];
+
+    for (const msgConfig of messageConfigs) {
+      for (const payloadVersion of payloadVersions) {
+        setTimeout(() => {
+          try {
+            const context = {
+              accountId,
+              location,
+              payloadVersion,
+              attempt: attemptCount,
+              message: msgConfig,
+            };
+            const payloadRaw = buildPlaytestPayloadOverrideFn
+              ? buildPlaytestPayloadOverrideFn(context)
+              : encodeSubmitPlaytestUserPayload(accountId, location);
+            const payload = buildPlaytestPayloadOverrideFn ? normalizeToBuffer(payloadRaw) : payloadRaw;
+
+            if (!payload || !payload.length) {
+              throw new Error('Playtest payload is empty');
+            }
+
+            const targetAppId = Number.isFinite(msgConfig.appId)
+              ? Number(msgConfig.appId)
+              : getWorkingAppId();
+
+            client.sendToGC(targetAppId, PROTO_MASK + msgConfig.send, {}, payload);
+            writeDeadlockGcTrace('send_playtest_invite', {
+              accountId,
+              location,
+              appId: targetAppId,
+              messageId: msgConfig.send,
+              payloadVersion,
+              overridePayload: Boolean(buildPlaytestPayloadOverrideFn),
+              payloadHex: payload.toString('hex').substring(0, 200),
+            });
+
+            log('info', 'Deadlock playtest invite requested', { 
+              accountId, 
+              location, 
+              messageId: msgConfig.send, 
+              messageName: msgConfig.name,
+              payloadVersion,
+              appId: targetAppId,
+              payloadLength: payload.length,
+              payloadHex: payload.toString('hex').substring(0, 50),
+              overridePayload: Boolean(buildPlaytestPayloadOverrideFn),
+            });
+            
+            // Update current message IDs if this is the first attempt
+            if (attemptCount === 0) {
+              GC_MSG_SUBMIT_PLAYTEST_USER = msgConfig.send;
+              GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE = msgConfig.response;
+            }
+            
+          } catch (err) {
+            log('warn', 'Failed to send playtest invite attempt', { 
+              error: err.message, 
+              messageId: msgConfig.send,
+              payloadVersion,
+              overridePayload: Boolean(buildPlaytestPayloadOverrideFn),
+            });
+            writeDeadlockGcTrace('playtest_send_error', {
+              error: err && err.message ? err.message : err,
+              messageId: msgConfig.send,
+              payloadVersion,
+            });
+          }
+        }, attemptCount * 200); // Stagger attempts by 200ms
+        
+        attemptCount++;
+      }
+    }
+
+    // Also try with the originally working app (if we're not already using it)
+    if (!buildPlaytestPayloadOverrideFn && DEADLOCK_APP_ID !== 1422450) {
+      setTimeout(() => {
+        try {
+          const payload = encodeSubmitPlaytestUserPayload(accountId, location);
+          client.sendToGC(1422450, PROTO_MASK + GC_MSG_SUBMIT_PLAYTEST_USER, {}, payload);
+          log('info', 'Fallback invite attempt to original Deadlock app', { accountId, location });
+        } catch (err) {
+          log('warn', 'Fallback attempt failed', { error: err.message });
+        }
+      }, attemptCount * 200);
     }
   });
 }
 
-function handlePlaytestInviteResponse(buffer) {
-  if (!pendingPlaytestInviteResponses.length) {
-    log('warn', 'Received unexpected playtest invite response');
+function handlePlaytestInviteResponse(appid, msgType, buffer) {
+  const safeMsgType = Number.isFinite(msgType) ? Number(msgType) : 0;
+  const messageId = safeMsgType & ~PROTO_MASK;
+  const payloadBuffer = Buffer.isBuffer(buffer) ? buffer : normalizeToBuffer(buffer);
+  
+  log('info', 'Received GC playtest response', {
+    appId: appid,
+    messageId,
+    bufferLength: payloadBuffer ? payloadBuffer.length : 0,
+    bufferHex: payloadBuffer ? payloadBuffer.toString('hex').substring(0, 100) : 'none'
+  });
+
+  writeDeadlockGcTrace('received_playtest_response', {
+    appId: appid,
+    messageId,
+    payloadHex: payloadBuffer ? payloadBuffer.toString('hex').substring(0, 200) : 'none',
+  });
+
+  if (!payloadBuffer || !payloadBuffer.length) {
+    log('warn', 'Received empty playtest response payload', { appId: appid, messageId });
     return;
+  }
+
+  if (!pendingPlaytestInviteResponses.length) {
+    log('warn', 'Received unexpected playtest invite response', { appId: appid, messageId });
+    return;
+  }
+
+  // Check if this message ID matches any of our expected response IDs
+  const matchingConfig = playtestMsgConfigs.find(config => config.response === messageId);
+  if (matchingConfig) {
+    log('info', 'SUCCESS: Found working message ID pair!', {
+      sendId: matchingConfig.send,
+      responseId: matchingConfig.response,
+      configName: matchingConfig.name,
+      appId: appid
+    });
+    
+    // Update the current message IDs to use the working ones
+    GC_MSG_SUBMIT_PLAYTEST_USER = matchingConfig.send;
+    GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE = matchingConfig.response;
   }
 
   const entry = pendingPlaytestInviteResponses.shift();
   if (entry && entry.timer) clearTimeout(entry.timer);
 
-  const code = decodeSubmitPlaytestUserResponse(buffer);
+  const parsedResponse = deadlockGcBot.decodePlaytestInviteResponse(payloadBuffer);
+  const code = parsedResponse && typeof parsedResponse.code === 'number' ? parsedResponse.code : null;
   const mapping = Object.prototype.hasOwnProperty.call(PLAYTEST_RESPONSE_MAP, code || 0)
     ? PLAYTEST_RESPONSE_MAP[code || 0]
     : { key: 'unknown', message: 'Unbekannte Antwort des Game Coordinators.' };
 
   const response = {
-    success: code === 0,
+    success: parsedResponse ? Boolean(parsedResponse.success) : code === 0,
     code: code === null ? null : Number(code),
     key: mapping.key,
     message: mapping.message,
+    messageId,
+    appId: appid,
+    workingConfig: matchingConfig?.name || 'unknown'
   };
+
+  log('info', 'Playtest invite response decoded', {
+    success: response.success,
+    code: response.code,
+    key: response.key,
+    message: response.message,
+    workingConfig: response.workingConfig
+  });
 
   if (entry && entry.resolve) {
     try {
-      entry.resolve(response);
+      entry.resolve({ success: response.success, response });
+      return;
     } catch (err) {
       log('warn', 'Failed to resolve playtest invite promise', { error: err.message });
     }
   }
+
+  log('warn', 'No pending playtest promise to resolve');
 }
+
 
 function guardTypeFromDomain(domain) {
   const norm = String(domain || '').toLowerCase();
@@ -1183,8 +1741,25 @@ function processNextTask() {
           const raw = payload?.steam_id ?? payload?.steam_id64;
           const sid = parseSteamID(raw);
           const sid64 = typeof sid.getSteamID64 === 'function' ? sid.getSteamID64() : String(sid);
-          const relationshipRaw = client.myFriends ? client.myFriends[sid64] : undefined;
-          const isFriend = Number(relationshipRaw) === Number((SteamUser.EFriendRelationship || {}).Friend);
+          let relationshipRaw = client.myFriends ? client.myFriends[sid64] : undefined;
+          let friendSource = 'client';
+          let isFriend = Number(relationshipRaw) === Number((SteamUser.EFriendRelationship || {}).Friend);
+
+          if (!isFriend) {
+            const viaWeb = await isFriendViaWebApi(sid64);
+            if (viaWeb && viaWeb.friend) {
+              isFriend = true;
+              friendSource = viaWeb.source || 'webapi';
+              if (relationshipRaw === undefined) {
+                if (SteamUser.EFriendRelationship && Object.prototype.hasOwnProperty.call(SteamUser.EFriendRelationship, 'Friend')) {
+                  relationshipRaw = SteamUser.EFriendRelationship.Friend;
+                } else {
+                  relationshipRaw = 'Friend';
+                }
+              }
+            }
+          }
+
           return {
             ok: true,
             data: {
@@ -1193,6 +1768,8 @@ function processNextTask() {
               friend: isFriend,
               relationship: relationshipRaw ?? null,
               relationship_name: relationshipName(relationshipRaw),
+              friend_source: friendSource,
+              webapi_cache_age_ms: getWebApiFriendCacheAgeMs(),
             },
           };
         })();
@@ -1217,15 +1794,19 @@ function processNextTask() {
             Number.isFinite(inviteTimeout) ? inviteTimeout : undefined
           );
           const sid64 = sid && typeof sid.getSteamID64 === 'function' ? sid.getSteamID64() : (sid ? String(sid) : null);
-          return {
-            ok: Boolean(response && response.success),
-            data: {
-              steam_id64: sid64,
-              account_id: Number(accountId),
-              location,
-              response,
-            },
+          const success = Boolean(response && response.success);
+          const errorText = success
+            ? null
+            : formatPlaytestError(response) || 'Game Coordinator hat die Einladung abgelehnt.';
+          const data = {
+            steam_id64: sid64,
+            account_id: Number(accountId),
+            location,
+            response,
           };
+          return success
+            ? { ok: true, data }
+            : { ok: false, data, error: errorText };
         })();
         finalizeTaskRun(task, promise);
         break;
@@ -1416,6 +1997,7 @@ function markLoggedOn(details) {
     log('warn', 'Failed to set persona away', { error: err.message });
   }
   ensureDeadlockGamePlaying(true);
+  requestDeadlockGcTokens('post-login');
 
   log('info', 'Steam login successful', {
     country: details ? details.publicIPCountry : undefined,
@@ -1450,35 +2032,109 @@ client.on('steamGuard', (domain, callback, lastCodeWrong) => {
 });
 client.on('refreshToken', (token) => { updateRefreshToken(token); writeToken(REFRESH_TOKEN_PATH, refreshToken); log('info', 'Stored refresh token', { path: REFRESH_TOKEN_PATH }); });
 client.on('machineAuthToken', (token) => { updateMachineToken(token); writeToken(MACHINE_TOKEN_PATH, machineAuthToken); log('info', 'Stored machine auth token', { path: MACHINE_TOKEN_PATH }); });
+client.on('_gcTokens', () => {
+  const count = getDeadlockGcTokenCount();
+  const delta = count - lastLoggedGcTokenCount;
+  lastLoggedGcTokenCount = count;
+  log('info', 'Received GC tokens update', {
+    count,
+    delta,
+  });
+  writeDeadlockGcTrace('gc_tokens_update', {
+    count,
+    delta,
+  });
+  deadlockGcBot.cachedHello = null;
+  deadlockGcBot.cachedLegacyHello = null;
+  if (deadlockAppActive && !deadlockGcReady) {
+    log('debug', 'Retrying GC hello after token update');
+    sendDeadlockGcHello(true);
+  }
+});
+
 client.on('appLaunched', (appId) => {
+  log('info', 'Steam app launched', { appId });
   if (Number(appId) !== Number(DEADLOCK_APP_ID)) return;
+  
+  log('info', 'Deadlock app launched - GC session starting');
   deadlockAppActive = true;
   deadlockGcReady = false;
-  lastGcHelloAttemptAt = 0;
-  log('info', 'Deadlock app launched – GC session starting');
-  sendDeadlockGcHello(true);
+  requestDeadlockGcTokens('app_launch');
+  
+  // Wait a bit longer for GC to initialize
+  setTimeout(() => {
+    log('debug', 'Sending GC hello after app launch');
+    sendDeadlockGcHello(true);
+  }, 4000); // Increased delay
 });
 client.on('appQuit', (appId) => {
+  log('info', 'Steam app quit', { appId });
   if (Number(appId) !== Number(DEADLOCK_APP_ID)) return;
+  
+  log('info', 'Deadlock app quit – GC session ended');
   deadlockAppActive = false;
   deadlockGcReady = false;
   flushDeadlockGcWaiters(new Error('Deadlock app quit'));
   flushPendingPlaytestInvites(new Error('Deadlock app quit'));
-  log('info', 'Deadlock app quit – GC session ended');
 });
-client.on('receivedFromGC', (appid, msgType, payload) => {
-  if (Number(appid) !== Number(DEADLOCK_APP_ID)) return;
-  const baseMsg = msgType & ~PROTO_MASK;
-  if (baseMsg === GC_MSG_CLIENT_WELCOME) {
-    log('info', 'Received Deadlock GC welcome');
+
+client.on('receivedFromGC', (appId, msgType, payload) => {
+  const messageId = msgType & ~PROTO_MASK;
+  const payloadHex = payload ? payload.toString('hex').substring(0, 100) : 'none';
+  const isDeadlockApp = DEADLOCK_APP_IDS.includes(Number(appId));
+
+  writeDeadlockGcTrace('gc_message', {
+    appId,
+    msgType,
+    messageId,
+    payloadHex,
+    isDeadlockApp,
+  });
+
+  // ENHANCED DEBUG: Log ALL GC messages for diagnosis
+  log('info', '?? GC MESSAGE RECEIVED', {
+    appId,
+    messageId,
+    messageIdHex: messageId.toString(16),
+    msgType,
+    msgTypeHex: msgType.toString(16),
+    payloadLength: payload ? payload.length : 0,
+    payloadHex,
+    isDeadlockApp,
+    expectedWelcome: GC_MSG_CLIENT_WELCOME,
+    expectedResponses: playtestMsgConfigs.map(p => p.response)
+  });
+
+  if (messageId === GC_MSG_CLIENT_WELCOME && isDeadlockApp) {
+    log('info', '?? RECEIVED DEADLOCK GC WELCOME - GC CONNECTION ESTABLISHED!', {
+      appId,
+      messageId,
+      payloadLength: payload ? payload.length : 0
+    });
     notifyDeadlockGcReady();
     return;
   }
-  if (baseMsg === GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE) {
-    handlePlaytestInviteResponse(payload);
+
+  const matchingResponse = playtestMsgConfigs.find(config => config.response === messageId);
+  if (matchingResponse || messageId === GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE) {
+    log('info', '?? POTENTIAL PLAYTEST RESPONSE DETECTED!', {
+      appId,
+      messageId,
+      configName: matchingResponse?.name || 'direct_match',
+      sendId: matchingResponse?.send ?? GC_MSG_SUBMIT_PLAYTEST_USER,
+      responseId: matchingResponse?.response ?? GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE
+    });
+    handlePlaytestInviteResponse(appId, msgType, payload);
     return;
   }
-  log('debug', 'Received GC message', { msgType, baseMsg });
+
+  if (!isDeadlockApp) return;
+
+  log('debug', 'Received unknown GC message', {
+    msgType: messageId,
+    expectedWelcome: GC_MSG_CLIENT_WELCOME,
+    expectedPlaytestResponse: GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE
+  });
 });
 client.on('disconnected', (eresult, msg) => {
   runtimeState.logged_on = false;
@@ -1488,6 +2144,7 @@ client.on('disconnected', (eresult, msg) => {
   runtimeState.last_disconnect_eresult = eresult;
   deadlockAppActive = false;
   deadlockGcReady = false;
+  lastLoggedGcTokenCount = 0;
   flushDeadlockGcWaiters(new Error('Steam disconnected'));
   flushPendingPlaytestInvites(new Error('Steam disconnected'));
   log('warn', 'Steam disconnected', { eresult, msg });

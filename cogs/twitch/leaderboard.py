@@ -25,7 +25,7 @@ class LeaderboardOptions:
 
     _SORT_LABELS = {
         "avg": "Ø Viewer",
-        "samples": "Samples",
+        "samples": "Stichproben",
         "peak": "Peak",
         "name": "Name",
     }
@@ -91,7 +91,7 @@ class LeaderboardOptions:
     def filter_summary(self) -> List[str]:
         parts: List[str] = []
         if self.min_samples is not None:
-            parts.append(f"Samples ≥ {self.min_samples}")
+            parts.append(f"Stichproben ≥ {self.min_samples}")
         if self.min_avg is not None:
             parts.append(f"Ø Viewer ≥ {self.min_avg:.1f}")
         if self.partner_filter == "only":
@@ -233,7 +233,7 @@ class TwitchLeaderboardView(discord.ui.View):
         self.sort_button.label = f"Sortierung: {self._options.sort_label}"
         self.order_button.label = f"Reihenfolge: {arrow}"
         self.partner_button.label = f"Partner: {self._options.partner_label}"
-        self.samples_button.label = f"Samples: {self._options.samples_label}"
+        self.samples_button.label = f"Stichproben: {self._options.samples_label}"
         self.avg_button.label = f"Ø Viewer: {self._options.avg_label}"
         self.limit_button.label = f"Limit: {self._options.limit_label}"
 
@@ -286,7 +286,7 @@ class TwitchLeaderboardView(discord.ui.View):
         await self.update(interaction)
 
     @discord.ui.button(
-        label="Samples",
+        label="Stichproben",
         style=discord.ButtonStyle.secondary,
         row=1,
         custom_id="twl:samples",
@@ -947,7 +947,7 @@ class TwitchLeaderboardMixin:
                 peak = int(item.get("max_viewers") or 0)
                 partner_flag = " (Partner)" if item.get("is_partner") else ""
                 lines.append(
-                    f"{idx}. {streamer} — Ø {avg_viewers:.1f} Viewer (Samples: {samples}, Peak: {peak}){partner_flag}"
+                    f"{idx}. {streamer} — Ø {avg_viewers:.1f} Viewer (Stichproben: {samples}, Peak: {peak}){partner_flag}"
                 )
             text = "\n".join(lines)
             if len(text) > 1024:

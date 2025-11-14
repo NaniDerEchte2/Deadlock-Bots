@@ -640,6 +640,9 @@ class SteamLink(commands.Cog):
 
     async def handle_steam_return(self, request: web.Request) -> web.Response:
         try:
+            if request.method == "HEAD" or request.query.get("healthcheck") == "1":
+                return web.Response(text="steam return ok", status=200)
+
             state = request.query.get("state", "")
             uid = self._pop_state(state)
             if not uid:

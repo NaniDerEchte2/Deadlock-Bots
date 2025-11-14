@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from logging.handlers import RotatingFileHandler
 import time
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from typing import Any, Mapping, Optional
 
 import discord
 from discord import app_commands
@@ -29,6 +32,23 @@ BETA_INVITE_SUPPORT_CONTACT = getattr(
 
 log = logging.getLogger(__name__)
 
+_failure_log = logging.getLogger(f"{__name__}.failures")
+if not _failure_log.handlers:
+    logs_dir = Path(__file__).resolve().parents[2] / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    handler = RotatingFileHandler(
+        logs_dir / "beta_invite_failures.log",
+        maxBytes=512 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    )
+    _failure_log.addHandler(handler)
+    _failure_log.setLevel(logging.INFO)
+    _failure_log.propagate = False
+
 STEAM64_BASE = 76561197960265728
 
 STATUS_PENDING = "pending"
@@ -48,16 +68,17 @@ _ALLOWED_UPDATE_FIELDS = {
 
 
 def _lookup_primary_steam_id(discord_id: int) -> Optional[str]:
-    row = db.connect().execute(
-        """
-        SELECT steam_id
-        FROM steam_links
-        WHERE user_id = ? AND steam_id != ''
-        ORDER BY primary_account DESC, verified DESC, updated_at DESC
-        LIMIT 1
-        """,
-        (int(discord_id),),
-    ).fetchone()
+    with db.get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT steam_id
+            FROM steam_links
+            WHERE user_id = ? AND steam_id != ''
+            ORDER BY primary_account DESC, verified DESC, updated_at DESC
+            LIMIT 1
+            """,
+            (int(discord_id),),
+        ).fetchone()
     if not row:
         return None
     steam_id = str(row["steam_id"] or "").strip()
@@ -100,24 +121,53 @@ def _row_to_record(row: Optional[db.sqlite3.Row]) -> Optional[BetaInviteRecord]:
 
 
 def _fetch_invite_by_discord(discord_id: int) -> Optional[BetaInviteRecord]:
-    row = db.connect().execute(
-        "SELECT * FROM steam_beta_invites WHERE discord_id = ?",
-        (int(discord_id),),
-    ).fetchone()
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM steam_beta_invites WHERE discord_id = ?",
+            (int(discord_id),),
+        ).fetchone()
     return _row_to_record(row)
 
 
 def _fetch_invite_by_id(record_id: int) -> Optional[BetaInviteRecord]:
-    row = db.connect().execute(
-        "SELECT * FROM steam_beta_invites WHERE id = ?",
-        (int(record_id),),
-    ).fetchone()
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM steam_beta_invites WHERE id = ?",
+            (int(record_id),),
+        ).fetchone()
     return _row_to_record(row)
 
 
+def _format_gc_response_error(response: Mapping[str, Any]) -> Optional[str]:
+    message = str(response.get("message") or "").strip()
+
+    code_text: Optional[str] = None
+    if "code" in response:
+        raw_code = response.get("code")
+        try:
+            code_value = int(str(raw_code))
+        except (TypeError, ValueError):
+            code_candidate = str(raw_code or "").strip()
+            code_text = f"Code {code_candidate}" if code_candidate else None
+        else:
+            code_text = f"Code {code_value}"
+
+    key_text = str(response.get("key") or "").strip()
+
+    parts: list[str] = []
+    if message:
+        parts.append(message)
+
+    meta_parts = [part for part in [code_text, key_text if key_text else None] if part]
+    if meta_parts:
+        parts.append(f"({' / '.join(meta_parts)})")
+
+    formatted = " ".join(parts).strip()
+    return formatted or None
+
+
 def _create_or_reset_invite(discord_id: int, steam_id64: str, account_id: Optional[int]) -> BetaInviteRecord:
-    with db._LOCK:  # type: ignore[attr-defined]
-        conn = db.connect()
+    with db.get_conn() as conn:
         conn.execute(
             """
             DELETE FROM steam_beta_invites
@@ -166,8 +216,7 @@ def _update_invite(record_id: int, **fields) -> Optional[BetaInviteRecord]:
     assignments.append("updated_at = strftime('%s','now')")
     params.append(int(record_id))
 
-    with db._LOCK:  # type: ignore[attr-defined]
-        conn = db.connect()
+    with db.get_conn() as conn:
         conn.execute(
             f"UPDATE steam_beta_invites SET {', '.join(assignments)} WHERE id = ?",
             params,
@@ -180,13 +229,34 @@ def _update_invite(record_id: int, **fields) -> Optional[BetaInviteRecord]:
 
 
 def steam64_to_account_id(steam_id64: str) -> int:
+    """
+    Konvertiert Steam ID64 zu Account ID für Steam API Calls.
+    
+    Args:
+        steam_id64: Steam ID64 als String (z.B. "76561199678060816")
+        
+    Returns:
+        Account ID als Integer (z.B. 1717795088)
+        
+    Raises:
+        ValueError: Bei ungültiger Steam ID64
+    """
     try:
         value = int(str(steam_id64))
     except (TypeError, ValueError) as exc:
-        raise ValueError("SteamID64 muss numerisch sein") from exc
+        raise ValueError(f"SteamID64 muss numerisch sein: {steam_id64}") from exc
+    
     if value < STEAM64_BASE:
-        raise ValueError("SteamID64 liegt unterhalb des gültigen Bereichs")
-    return value - STEAM64_BASE
+        raise ValueError(f"SteamID64 {value} liegt unterhalb des gültigen Bereichs (min: {STEAM64_BASE})")
+    
+    # Zusätzliche Validierung für vernünftige Obergrenze
+    max_reasonable = STEAM64_BASE + 2**32  # Ungefähr bis 2038
+    if value > max_reasonable:
+        raise ValueError(f"SteamID64 {value} liegt oberhalb des erwarteten Bereichs (max: {max_reasonable})")
+    
+    account_id = value - STEAM64_BASE
+    log.debug("Steam ID conversion: %s -> %s", steam_id64, account_id)
+    return account_id
 
 
 class BetaInviteConfirmView(discord.ui.View):
@@ -304,7 +374,18 @@ class BetaInviteFlow(commands.Cog):
             )
             return
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.errors.NotFound:
+            log.warning("Confirmation interaction expired before defer")
+            await interaction.followup.send(
+                "⏱️ Die Bestätigung hat zu lange gedauert. Bitte versuche es erneut.",
+                ephemeral=True
+            )
+            return
+        except Exception as e:
+            log.error(f"Failed to defer confirmation interaction: {e}")
+            return
 
         friend_outcome = await self.tasks.run(
             "AUTH_CHECK_FRIENDSHIP",
@@ -319,8 +400,26 @@ class BetaInviteFlow(commands.Cog):
             if isinstance(data, dict):
                 friend_ok = bool(data.get("friend"))
                 relationship_name = str(data.get("relationship_name") or relationship_name)
+                friend_source = str(data.get("friend_source") or "unknown")
+                cache_age = data.get("webapi_cache_age_ms")
+                
+                # Debug-Logging für Freundschaftsstatus
+                log.info(
+                    "Friendship check: discord_id=%s, steam_id64=%s, friend_ok=%s, relationship=%s, source=%s, cache_age_ms=%s",
+                    record.discord_id, record.steam_id64, friend_ok, relationship_name, friend_source, cache_age
+                )
+                
                 if data.get("account_id") is not None and data.get("account_id") != record.account_id:
+                    log.info(
+                        "Account ID updated: old=%s, new=%s",
+                        record.account_id, data.get("account_id")
+                    )
                     record = _update_invite(record.id, account_id=int(data["account_id"])) or record
+        else:
+            log.warning(
+                "Friendship check failed: discord_id=%s, steam_id64=%s, ok=%s, error=%s",
+                record.discord_id, record.steam_id64, friend_outcome.ok, friend_outcome.error
+            )
         if not friend_ok:
             await interaction.followup.send(
                 "ℹ️ Wir sind noch keine bestätigten Steam-Freunde. Bitte nimm die Freundschaftsanfrage an und probiere es erneut.",
@@ -337,32 +436,96 @@ class BetaInviteFlow(commands.Cog):
         ) or record
 
         account_id = record.account_id or steam64_to_account_id(record.steam_id64)
+        
+        # Debug-Logging für bessere Nachverfolgung
+        log.info(
+            "Sending Steam invite: discord_id=%s, steam_id64=%s, account_id=%s",
+            record.discord_id, record.steam_id64, account_id
+        )
+        
+        # Use longer timeouts to handle Game Coordinator delays
         invite_outcome = await self.tasks.run(
             "AUTH_SEND_PLAYTEST_INVITE",
             {
                 "steam_id": record.steam_id64,
                 "account_id": account_id,
                 "location": "discord-betainvite",
-                "timeout_ms": 15000,
+                "timeout_ms": 45000,  # Increased from 15s to 45s
             },
-            timeout=25.0,
+            timeout=60.0,  # Increased from 25s to 60s
+        )
+        
+        # Log das Ergebnis für bessere Diagnose
+        log.info(
+            "Steam invite result: ok=%s, status=%s, timed_out=%s",
+            invite_outcome.ok, invite_outcome.status, invite_outcome.timed_out
         )
 
         if not invite_outcome.ok:
             error_text = invite_outcome.error or "Game Coordinator hat die Einladung abgelehnt."
+            is_timeout = invite_outcome.timed_out
+            
+            # Verbesserte Fehlerbehandlung für spezifische Steam GC Errors
             if invite_outcome.result and isinstance(invite_outcome.result, dict):
+                result_error = invite_outcome.result.get("error")
+                if result_error:
+                    candidate = str(result_error).strip()
+                    if candidate:
+                        error_text = candidate
+                        
                 data = invite_outcome.result.get("data")
                 if isinstance(data, dict):
                     response = data.get("response")
-                    if isinstance(response, dict) and response.get("message"):
-                        error_text = str(response["message"])
+                    if isinstance(response, Mapping):
+                        formatted = _format_gc_response_error(response)
+                        if formatted:
+                            error_text = formatted
+                    
+                    # Spezielle Behandlung für bekannte Deadlock GC Probleme
+                    error_lower = str(result_error or error_text).lower()
+                    if "timeout" in error_lower or is_timeout:
+                        if "deadlock" in error_lower or "gc" in error_lower:
+                            error_text = "⏱️ Deadlock Game Coordinator ist überlastet. Bitte versuche es in 10-15 Minuten erneut."
+                        else:
+                            error_text = "⏱️ Timeout beim Warten auf Steam-Antwort. Bitte versuche es erneut."
+                    elif "already has game" in error_lower or "already has access" in error_lower:
+                        error_text = "✅ Account besitzt bereits Deadlock-Zugang"
+                    elif "invite limit" in error_lower or "limit reached" in error_lower:
+                        error_text = "📊 Tägliches Invite-Limit erreicht. Bitte morgen erneut versuchen."
+                    elif "not friends long enough" in error_lower:
+                        error_text = "⏰ Steam-Freundschaft muss mindestens 30 Tage bestehen"
+                    elif "limited user" in error_lower or "restricted account" in error_lower:
+                        error_text = "🔒 Steam-Account ist eingeschränkt (Limited User). Aktiviere deinen Account in Steam."
+                    elif "invalid friend" in error_lower:
+                        error_text = "👥 Accounts sind nicht als Steam-Freunde verknüpft"
+            
+            # Spezielle Behandlung für Timeout-Fälle
+            if is_timeout and "timeout" not in error_text.lower():
+                error_text = f"⏱️ Timeout: {error_text}"
+
+            details = {
+                "discord_id": record.discord_id,
+                "steam_id64": record.steam_id64,
+                "account_id": account_id,
+                "task_status": invite_outcome.status,
+                "timed_out": invite_outcome.timed_out,
+                "task_error": invite_outcome.error,
+                "task_result": invite_outcome.result,
+                "record_id": record.id,
+                "error_text": error_text,
+            }
+            try:
+                serialized_details = json.dumps(details, ensure_ascii=False, default=str)
+            except TypeError:
+                serialized_details = str(details)
+            _failure_log.error("Invite task failed: %s", serialized_details)
             _update_invite(
                 record.id,
                 status=STATUS_ERROR,
                 last_error=str(error_text),
             )
             await interaction.followup.send(
-                f"❌ Einladung konnte nicht versendet werden: {error_text}",
+                f"❌ Ein Problem ist aufgetreten – der Invite hat nicht geklappt. Bitte wende dich an {BETA_INVITE_SUPPORT_CONTACT}.",
                 ephemeral=True,
             )
             return
@@ -379,7 +542,8 @@ class BetaInviteFlow(commands.Cog):
             "✅ Einladung verschickt!\n"
             "Bitte schaue in 1-2 Stunden unter https://store.steampowered.com/account/playtestinvites "
             "und nimm die Einladung dort an. Danach erscheint Deadlock automatisch in deiner Bibliothek.\n"
-            f"Alle weiteren Infos findest du in <{BETA_INVITE_CHANNEL_URL}> – bei Problemen ping bitte {BETA_INVITE_SUPPORT_CONTACT}."
+            f"Alle weiteren Infos findest du in <{BETA_INVITE_CHANNEL_URL}> - bei Problemen ping bitte {BETA_INVITE_SUPPORT_CONTACT}.\n"
+            "⚠️ Verlässt du den Server wird der Invite ungültig, egal ob dein Invite noch aussteht oder du Deadlock schon hast."
         )
         await interaction.followup.send(message, ephemeral=True)
 
@@ -390,11 +554,32 @@ class BetaInviteFlow(commands.Cog):
 
     @app_commands.command(name="betainvite", description="Automatisiert eine Deadlock-Playtest-Einladung anfordern.")
     async def betainvite(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # Quick initial response to prevent timeout
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.errors.NotFound:
+            # Interaction already expired, try to respond with followup
+            log.warning("Interaction expired before defer, using followup")
+            await interaction.followup.send(
+                "⏱️ Die Anfrage hat zu lange gedauert. Bitte versuche `/betainvite` erneut.",
+                ephemeral=True
+            )
+            return
+        except Exception as e:
+            log.error(f"Failed to defer interaction: {e}")
+            return
 
-        existing = _fetch_invite_by_discord(interaction.user.id)
-        primary_link = _lookup_primary_steam_id(interaction.user.id)
-        resolved = primary_link or (existing.steam_id64 if existing else None)
+        try:
+            existing = _fetch_invite_by_discord(interaction.user.id)
+            primary_link = _lookup_primary_steam_id(interaction.user.id)
+            resolved = primary_link or (existing.steam_id64 if existing else None)
+        except Exception as e:
+            log.error(f"Database lookup failed: {e}")
+            await interaction.followup.send(
+                "❌ Datenbankfehler beim Abrufen der Steam-Verknüpfung. Bitte versuche es erneut.",
+                ephemeral=True
+            )
+            return
 
         if not resolved:
             view = self._build_link_prompt_view(interaction.user)

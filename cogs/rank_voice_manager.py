@@ -6,6 +6,12 @@ import discord
 from discord.ext import commands
 from service.db import db_path
 from pathlib import Path
+
+try:
+    from cogs.tempvoice.core import MINRANK_CATEGORY_IDS
+except Exception:  # Fallback, falls TempVoice nicht geladen ist
+    MINRANK_CATEGORY_IDS: Set[int] = {1412804540994162789}
+
 DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
 
 
@@ -79,9 +85,22 @@ class RolePermissionVoiceManager(commands.Cog):
         self.channel_anchors: Dict[int, Tuple[int, str, int, int, int]] = {}
         # {channel_id: {"enabled": bool}}
         self.channel_settings: Dict[int, Dict[str, bool]] = {}
+        # Nach Initial-Setup dürfen Permissions manuell angepasst werden
+        self.channel_permissions_initialized: Set[int] = set()
 
         # DB
         self.db: Optional[aiosqlite.Connection] = None
+
+    @staticmethod
+    def _is_tempvoice_lane(channel: discord.VoiceChannel) -> bool:
+        try:
+            name = channel.name.lower()
+        except Exception:
+            return False
+        return (
+            channel.category_id in MINRANK_CATEGORY_IDS
+            and name.startswith("lane ")
+        )
 
     # -------------------- DB Layer --------------------
 
@@ -321,12 +340,15 @@ class RolePermissionVoiceManager(commands.Cog):
         except Exception:
             return False
 
-    async def update_channel_permissions_via_roles(self, channel: discord.VoiceChannel):
+    async def update_channel_permissions_via_roles(self, channel: discord.VoiceChannel, force: bool = False):
         try:
             if not await self.channel_exists(channel):
                 return
 
             if not self.is_channel_system_enabled(channel):
+                return
+
+            if not force and channel.id in self.channel_permissions_initialized:
                 return
 
             ok = await self.set_everyone_deny_connect(channel)
@@ -338,6 +360,7 @@ class RolePermissionVoiceManager(commands.Cog):
                 # leer -> Anker entfernen + Rollen-Overwrites entfernen
                 await self.remove_channel_anchor(channel)
                 await self.clear_role_permissions(channel)
+                self.channel_permissions_initialized.discard(channel.id)
                 return
 
             allowed_min, allowed_max = self.calculate_balancing_range_from_anchor(channel)
@@ -362,6 +385,7 @@ class RolePermissionVoiceManager(commands.Cog):
 
             # remove von nicht erlaubten Rollen
             await self.remove_disallowed_role_permissions(channel, allowed_role_ids)
+            self.channel_permissions_initialized.add(channel.id)
 
         except Exception as e:
             logger.error(f"update_channel_permissions_via_roles Fehler: {e}")
@@ -452,6 +476,7 @@ class RolePermissionVoiceManager(commands.Cog):
         if allowed_min > allowed_max:
             allowed_min, allowed_max = allowed_max, allowed_min
 
+        self.channel_permissions_initialized.discard(channel.id)
         self.channel_anchors[channel.id] = (
             user.id,
             rank_name,
@@ -480,6 +505,8 @@ class RolePermissionVoiceManager(commands.Cog):
 
     async def set_channel_system_enabled(self, channel: discord.VoiceChannel, enabled: bool):
         self.channel_settings.setdefault(channel.id, {})["enabled"] = enabled
+        if enabled:
+            self.channel_permissions_initialized.discard(channel.id)
         await self._db_upsert_setting(channel, enabled)
         logger.info(f"🔧 Rang-System für {channel.name} {'aktiviert' if enabled else 'deaktiviert'}")
 
@@ -487,6 +514,8 @@ class RolePermissionVoiceManager(commands.Cog):
 
     def is_monitored_channel(self, channel: discord.VoiceChannel) -> bool:
         if channel.id in self.excluded_channel_ids:
+            return False
+        if self._is_tempvoice_lane(channel):
             return False
         return (
             channel.category_id in self.monitored_categories
@@ -565,9 +594,8 @@ class RolePermissionVoiceManager(commands.Cog):
                 await self.remove_channel_anchor(channel)
             else:
                 anchor = self.get_channel_anchor(channel)
-                if anchor and anchor[0] == member.id:
-                    # Anker übertragen
-                    await self.remove_channel_anchor(channel)
+                if anchor is None:
+                    # Kein Anker (z. B. nach komplett leerem Channel) -> ersten User setzen
                     first_remaining = next(iter(members_ranks.keys()))
                     rn, rv = members_ranks[first_remaining]
                     await self.set_channel_anchor(channel, first_remaining, rn, rv)
@@ -820,7 +848,7 @@ class RolePermissionVoiceManager(commands.Cog):
                 rn, rv = members_ranks[first_member]
                 await self.set_channel_anchor(channel, first_member, rn, rv)
 
-            await self.update_channel_permissions_via_roles(channel)
+            await self.update_channel_permissions_via_roles(channel, force=True)
             await self.update_channel_name(channel)
             await ctx.send(f"✅ Kanal **{channel.name}** aktualisiert.")
         except Exception as e:

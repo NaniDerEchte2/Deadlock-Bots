@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Dict, Optional, Set
+import re
+from typing import Any, Coroutine, Dict, List, Optional, Set
 
 from urllib.parse import urlparse
 
@@ -46,7 +47,7 @@ class TwitchBaseCog(commands.Cog):
         self._web: Optional[web.AppRunner] = None
         self._web_app: Optional[web.Application] = None
         self._category_id: Optional[str] = None
-        self._language_filter = (TWITCH_LANGUAGE or "").strip() or None
+        self._language_filters = self._parse_language_filters(TWITCH_LANGUAGE)
         self._tick_count = 0
         self._log_every_n = max(1, int(TWITCH_LOG_EVERY_N_TICKS or 5))
         self._category_sample_limit = max(50, int(TWITCH_CATEGORY_SAMPLE_LIMIT or 400))
@@ -65,6 +66,12 @@ class TwitchBaseCog(commands.Cog):
             "127.0.0.1" if self._dashboard_noauth else "0.0.0.0"
         )
         self._dashboard_port = int(TWITCH_DASHBOARD_PORT)
+        embedded_env = (os.getenv("TWITCH_DASHBOARD_EMBEDDED", "") or "").strip().lower()
+        self._dashboard_embedded = embedded_env not in {"0", "false", "no", "off"}
+        if not self._dashboard_embedded:
+            log.info(
+                "TWITCH_DASHBOARD_EMBEDDED disabled - assuming external reverse proxy serves the dashboard"
+            )
         self._partner_dashboard_token = os.getenv("TWITCH_PARTNER_TOKEN") or None
         self._required_marker_default = TWITCH_REQUIRED_DISCORD_MARKER or None
 
@@ -78,9 +85,12 @@ class TwitchBaseCog(commands.Cog):
         # Background tasks
         self.poll_streams.start()
         self.invites_refresh.start()
-        self.bot.loop.create_task(self._ensure_category_id())
-        self.bot.loop.create_task(self._start_dashboard())
-        self.bot.loop.create_task(self._refresh_all_invites())
+        self._spawn_bg_task(self._ensure_category_id(), "twitch.ensure_category_id")
+        if self._dashboard_embedded:
+            self._spawn_bg_task(self._start_dashboard(), "twitch.start_dashboard")
+        else:
+            log.info("Skipping internal Twitch dashboard server startup")
+        self._spawn_bg_task(self._refresh_all_invites(), "twitch.refresh_all_invites")
 
     # -------------------------------------------------------
     # Lifecycle
@@ -113,10 +123,7 @@ class TwitchBaseCog(commands.Cog):
                 except Exception:
                     log.exception("TwitchAPI-Session konnte nicht geschlossen werden")
 
-        try:
-            self.bot.loop.create_task(_graceful_shutdown())
-        except Exception:
-            log.exception("Fehler beim Start des Shutdown-Tasks")
+        self._spawn_bg_task(_graceful_shutdown(), "twitch.shutdown")
 
         try:
             if self._twl_command is not None:
@@ -131,6 +138,15 @@ class TwitchBaseCog(commands.Cog):
     def set_prefix_command(self, command: commands.Command) -> None:
         """Speichert die Referenz auf den dynamisch registrierten Prefix-Command."""
         self._twl_command = command
+
+    def _spawn_bg_task(self, coro: Coroutine[Any, Any, Any], name: str) -> None:
+        """Start a background coroutine without relying on Bot.loop (removed in d.py 2.4)."""
+        try:
+            asyncio.create_task(coro, name=name)
+        except RuntimeError as exc:
+            log.error("Cannot start background task %s (no running loop yet): %s", name, exc)
+        except Exception:
+            log.exception("Failed to start background task %s", name)
 
     # -------------------------------------------------------
     # DB-Helpers / Guild-Setup / Invites
@@ -199,4 +215,21 @@ class TwitchBaseCog(commands.Cog):
 
         login = sub(r"[^a-z0-9_]", "", login.lower())
         return login
+
+    @staticmethod
+    def _parse_language_filters(raw: Optional[str]) -> Optional[List[str]]:
+        """Allow TWITCH_LANGUAGE to define multiple comma/whitespace separated codes."""
+        value = (raw or "").strip()
+        if not value:
+            return None
+        tokens = [tok.strip().lower() for tok in re.split(r"[,\s;|]+", value) if tok.strip()]
+        if not tokens:
+            return None
+        if any(tok in {"*", "any", "all"} for tok in tokens):
+            return None
+        seen: List[str] = []
+        for tok in tokens:
+            if tok not in seen:
+                seen.append(tok)
+        return seen or None
 

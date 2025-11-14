@@ -33,6 +33,11 @@ _SUFFIX_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+_MATCH_STATUS_REGEX = re.compile(
+    r"\{deadlock[:}][^}]*\}.*?\((\d{1,3})[.,]?\s*min\.?\)",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 class DeadlockVoiceStatus(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
@@ -146,7 +151,8 @@ class DeadlockVoiceStatus(commands.Cog):
         placeholders = ",".join("?" for _ in ids)
         query = (
             "SELECT steam_id, deadlock_stage, deadlock_minutes, deadlock_localized, "
-            "deadlock_updated_at, last_seen_ts, in_deadlock_now, in_match_now_strict "
+            "deadlock_updated_at, last_seen_ts, in_deadlock_now, in_match_now_strict, "
+            "last_server_id, deadlock_party_hint "
             f"FROM live_player_state WHERE steam_id IN ({placeholders})"
         )
         cursor = await self.db.execute(query, tuple(ids))
@@ -202,47 +208,71 @@ class DeadlockVoiceStatus(commands.Cog):
             await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None)
             return
 
-        stage_minutes: Dict[str, List[int]] = {}
-        presence_detected = False
+        presence_entries: List[Tuple[str, int, Optional[str]]] = []
         for member in members:
             steam_id = steam_map.get(member.id)
             presence = self._evaluate_presence(steam_id, presence_map, now)
             if not presence:
                 continue
-            stage, minutes = presence
+            stage, minutes, server_id = presence
             if stage not in {"lobby", "match"}:
                 continue
-            presence_detected = True
-            stage_minutes.setdefault(stage, []).append(minutes or 0)
+            presence_entries.append((stage, minutes or 0, server_id))
 
-        if not presence_detected:
+        if not presence_entries:
             await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None)
             return
-
         candidate_stage: Optional[str] = None
         candidate_minutes: List[int] = []
         candidate_count = 0
+        chosen_server_id: Optional[str] = None
 
-        for stage, values in stage_minutes.items():
-            size = len(values)
-            if size < MIN_ACTIVE_PLAYERS:
-                continue
-            prefer = False
-            if size > candidate_count:
-                prefer = True
-            elif size == candidate_count:
-                if candidate_stage != "match" and stage == "match":
-                    prefer = True
-            if prefer:
-                candidate_stage = stage
-                candidate_minutes = values
-                candidate_count = size
+        lobby_groups: Dict[str, List[int]] = {}
+        lobby_unknown: List[int] = []
+        match_groups: Dict[str, List[int]] = {}
+        match_unknown: List[int] = []
 
-        if not candidate_stage and stage_minutes:
-            stage, values = max(stage_minutes.items(), key=lambda item: len(item[1]))
-            candidate_stage = stage
-            candidate_minutes = values
-            candidate_count = len(values)
+        for stage, minutes, server_id in presence_entries:
+            if stage == "match":
+                if server_id:
+                    match_groups.setdefault(server_id, []).append(minutes)
+                else:
+                    match_unknown.append(minutes)
+            elif stage == "lobby":
+                if server_id:
+                    lobby_groups.setdefault(server_id, []).append(minutes)
+                else:
+                    lobby_unknown.append(minutes)
+
+        if match_groups:
+            server_id, minute_values = max(match_groups.items(), key=lambda item: len(item[1]))
+            if len(minute_values) >= MIN_ACTIVE_PLAYERS:
+                candidate_stage = "match"
+                candidate_minutes = minute_values
+                candidate_count = len(minute_values)
+                chosen_server_id = server_id
+
+        if candidate_stage != "match" and len(match_unknown) >= MIN_ACTIVE_PLAYERS:
+            candidate_stage = "match"
+            candidate_minutes = match_unknown
+            candidate_count = len(match_unknown)
+            chosen_server_id = None
+
+        if lobby_groups:
+            lobby_server_id, lobby_values = max(lobby_groups.items(), key=lambda item: len(item[1]))
+            if len(lobby_values) >= MIN_ACTIVE_PLAYERS:
+                if candidate_stage != "match" or len(lobby_values) > candidate_count:
+                    candidate_stage = "lobby"
+                    candidate_minutes = lobby_values
+                    candidate_count = len(lobby_values)
+                    chosen_server_id = lobby_server_id
+
+        if candidate_stage != "match" and len(lobby_unknown) >= MIN_ACTIVE_PLAYERS:
+            if len(lobby_unknown) > candidate_count:
+                candidate_stage = "lobby"
+                candidate_minutes = lobby_unknown
+                candidate_count = len(lobby_unknown)
+                chosen_server_id = None
 
         if not candidate_stage or candidate_count < MIN_ACTIVE_PLAYERS:
             await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None)
@@ -256,7 +286,15 @@ class DeadlockVoiceStatus(commands.Cog):
         if candidate_stage == "lobby":
             suffix = f"{player_count}/{voice_slots} in der Lobby"
             await self._apply_channel_name(
-                channel, base_name, suffix, candidate_stage, None, current_suffix, player_count, voice_slots
+                channel,
+                base_name,
+                suffix,
+                candidate_stage,
+                None,
+                current_suffix,
+                player_count,
+                voice_slots,
+                chosen_server_id,
             )
             return
 
@@ -265,7 +303,15 @@ class DeadlockVoiceStatus(commands.Cog):
             bucket = self._bucket_minutes(max_minutes)
             suffix = f"{player_count}/{voice_slots} im Match Min {bucket}"
             await self._apply_channel_name(
-                channel, base_name, suffix, candidate_stage, bucket, current_suffix, player_count, voice_slots
+                channel,
+                base_name,
+                suffix,
+                candidate_stage,
+                bucket,
+                current_suffix,
+                player_count,
+                voice_slots,
+                chosen_server_id,
             )
             return
 
@@ -276,7 +322,7 @@ class DeadlockVoiceStatus(commands.Cog):
         steam_id: Optional[str],
         presence_map: Dict[str, aiosqlite.Row],
         now: int,
-    ) -> Optional[Tuple[str, Optional[int]]]:
+    ) -> Optional[Tuple[str, Optional[int], Optional[str]]]:
         if not steam_id:
             return None
         row = presence_map.get(str(steam_id))
@@ -289,28 +335,39 @@ class DeadlockVoiceStatus(commands.Cog):
         if now - int(updated_at) > PRESENCE_STALE_SECONDS:
             return None
 
-        stage = (row["deadlock_stage"] or "").lower()
-        in_deadlock = bool(row["in_deadlock_now"])
-        in_match = bool(row["in_match_now_strict"])
+        localized_raw = row["deadlock_localized"] or ""
+        localized = localized_raw.strip()
+        match_info = _MATCH_STATUS_REGEX.search(localized)
+        server_id_raw = row["last_server_id"] or row["deadlock_party_hint"]
+        server_id = str(server_id_raw).strip() if server_id_raw else None
 
-        if stage in {"", "offline", "unknown"}:
-            if in_match:
-                stage = "match"
-            elif in_deadlock:
-                stage = "lobby"
+        if match_info:
+            minutes_raw = row["deadlock_minutes"]
+            if minutes_raw is None:
+                try:
+                    minutes_val = int(match_info.group(1))
+                except (ValueError, TypeError):
+                    minutes_val = 0
             else:
-                return None
+                try:
+                    minutes_val = max(0, int(minutes_raw))
+                except (ValueError, TypeError):
+                    minutes_val = 0
+            return "match", minutes_val, server_id
 
-        if stage not in {"lobby", "match"}:
-            return None
+        if server_id:
+            minutes_raw = row["deadlock_minutes"]
+            minutes_val: Optional[int]
+            if minutes_raw is None:
+                minutes_val = None
+            else:
+                try:
+                    minutes_val = max(0, int(minutes_raw))
+                except (ValueError, TypeError):
+                    minutes_val = None
+            return "lobby", minutes_val, server_id
 
-        minutes_raw = row["deadlock_minutes"]
-        minutes: Optional[int]
-        if minutes_raw is None:
-            minutes = 0 if stage == "match" else None
-        else:
-            minutes = max(0, int(minutes_raw))
-        return stage, minutes
+        return None
 
     async def _apply_channel_name(
         self,
@@ -322,6 +379,7 @@ class DeadlockVoiceStatus(commands.Cog):
         current_suffix: Optional[str],
         player_count: Optional[int],
         voice_slots: Optional[int],
+        server_identifier: Optional[str] = None,
     ) -> None:
         base_clean = base_name.rstrip()
         target_name = base_clean if not desired_suffix else f"{base_clean} - {desired_suffix}"
@@ -336,6 +394,7 @@ class DeadlockVoiceStatus(commands.Cog):
                     "suffix": desired_suffix,
                     "players": player_count,
                     "voice_slots": voice_slots,
+                    "server_id": server_identifier,
                 }
             )
             return
@@ -359,6 +418,7 @@ class DeadlockVoiceStatus(commands.Cog):
                     "suffix": desired_suffix,
                     "players": player_count,
                     "voice_slots": voice_slots,
+                    "server_id": server_identifier,
                 }
             )
             return
@@ -392,6 +452,7 @@ class DeadlockVoiceStatus(commands.Cog):
             "suffix": desired_suffix,
             "players": player_count,
             "voice_slots": voice_slots,
+            "server_id": server_identifier,
             "last_rename": time.time(),
         }
 

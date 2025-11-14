@@ -61,7 +61,7 @@ cogs/tempvoice/
   * Setzt/entfernt `connect`-Overwrites für die Rolle **„English Only“** (ID konfiguriert).
 * **MinRank**:
 
-  * **Nur** in der festgelegten Kategorie aktiv (`MINRANK_CATEGORY_ID`).
+* **Nur** in den freigegebenen Kategorien aktiv (`MINRANK_CATEGORY_IDS`).
   * Setzt `connect=False` für zu niedrige Rank-Rollen, löscht Overwrites bei „Kein Limit“.
 * **Kick/Ban/Unban**:
 
@@ -92,7 +92,7 @@ cogs/tempvoice/
 **Konfigurations-Konstanten (oben in `core.py`):**
 
 * `STAGING_CHANNEL_IDS`: Menge aller Staging-Voice-Channel-IDs
-* `MINRANK_CATEGORY_ID`: Kategorie, in der MinRank aktiv ist
+* `MINRANK_CATEGORY_IDS`: Kategorien, in denen MinRank aktiv ist
 * `RANKED_CATEGORY_ID`: (für Defaults pro Kategorie)
 * `INTERFACE_TEXT_CHANNEL_ID`: Textkanal, in den das Interface gepostet wird
 * `ENGLISH_ONLY_ROLE_ID`: Rolle, die für „Deutsch-Only“ gesperrt wird
@@ -115,7 +115,7 @@ cogs/tempvoice/
     Modal zur Eingabe (0–99), setzt `user_limit`.
     → Core: `safe_edit_channel(... desired_limit=...)`
   * **Mindest-Rang (Select)**
-    Nur aktiv, wenn die Lane in `MINRANK_CATEGORY_ID` liegt.
+    Nur aktiv, wenn die Lane in `MINRANK_CATEGORY_IDS` liegt.
     → Core: `_apply_min_rank` (intern über `refresh_name`/private APIs)
   * **👢 Kick**
     Verschiebt gewählten User in den ersten erreichbaren Staging-Channel.
@@ -172,7 +172,7 @@ cogs/tempvoice/
 * **Rolle „English Only“** (ID: `ENGLISH_ONLY_ROLE_ID`) muss existieren.
 * **Konfiguration** der IDs oben in `core.py` prüfen/anpassen:
 
-  * `STAGING_CHANNEL_IDS`, `MINRANK_CATEGORY_ID`, `INTERFACE_TEXT_CHANNEL_ID`, `ENGLISH_ONLY_ROLE_ID`
+  * `STAGING_CHANNEL_IDS`, `MINRANK_CATEGORY_IDS`, `INTERFACE_TEXT_CHANNEL_ID`, `ENGLISH_ONLY_ROLE_ID`
 
 ---
 
