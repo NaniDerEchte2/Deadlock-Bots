@@ -594,9 +594,8 @@ class RolePermissionVoiceManager(commands.Cog):
                 await self.remove_channel_anchor(channel)
             else:
                 anchor = self.get_channel_anchor(channel)
-                if anchor and anchor[0] == member.id:
-                    # Anker übertragen
-                    await self.remove_channel_anchor(channel)
+                if anchor is None:
+                    # Kein Anker (z. B. nach komplett leerem Channel) -> ersten User setzen
                     first_remaining = next(iter(members_ranks.keys()))
                     rn, rv = members_ranks[first_remaining]
                     await self.set_channel_anchor(channel, first_remaining, rn, rv)
