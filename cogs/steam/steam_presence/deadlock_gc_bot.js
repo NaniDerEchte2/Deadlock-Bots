@@ -26,8 +26,12 @@ const DEADLOCK_HELLO_TIMINGS = [
 ];
 
 function encodeVarint(value) {
-  let n = BigInt(value >>> 0);
-  if (typeof value === 'bigint') n = value;
+  let n;
+  if (typeof value === 'bigint') {
+    n = value;
+  } else {
+    n = BigInt(value >>> 0);
+  }
   const chunks = [];
   do {
     let byte = Number(n & 0x7fn);
