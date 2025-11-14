@@ -25,6 +25,11 @@ STAGING_CHANNEL_IDS: Set[int] = {
     1357422958544420944,  # Ranked Staging
     1412804671432818890,  # Spezial Staging
 }
+MINRANK_CATEGORY_IDS: Set[int] = {
+    1412804540994162789,  # Grind Lanes
+    1289721245281292290,  # Normal Lanes (MinRank freigeschaltet)
+}
+# Legacy-Alias für ältere Imports, zeigt weiterhin auf die ursprüngliche Grind-ID
 MINRANK_CATEGORY_ID: int = 1412804540994162789
 RANKED_CATEGORY_ID: int = 1357422957017698478
 INTERFACE_TEXT_CHANNEL_ID: int = 1371927143537315890  # exportiert (wird vom Interface genutzt)
@@ -56,6 +61,7 @@ SUFFIX_THRESHOLD_RANK = "emissary"
 __all__ = [
     "STAGING_CHANNEL_IDS",
     "MINRANK_CATEGORY_ID",
+    "MINRANK_CATEGORY_IDS",
     "RANKED_CATEGORY_ID",
     "INTERFACE_TEXT_CHANNEL_ID",
     "ENGLISH_ONLY_ROLE_ID",
@@ -645,7 +651,7 @@ class TempVoiceCore(commands.Cog):
     def _compose_name(self, lane: discord.VoiceChannel) -> str:
         base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
         parts = [base]
-        if lane.category_id == MINRANK_CATEGORY_ID:
+        if lane.category_id in MINRANK_CATEGORY_IDS:
             min_rank = self.lane_min_rank.get(lane.id, "unknown")
             if (min_rank and min_rank != "unknown" and
                     _rank_index(min_rank) >= _rank_index(SUFFIX_THRESHOLD_RANK)):
@@ -727,7 +733,7 @@ class TempVoiceCore(commands.Cog):
         await self._apply_owner_bans(lane, owner_id)
 
     async def _apply_min_rank(self, lane: discord.VoiceChannel, min_rank: str):
-        if lane.category_id != MINRANK_CATEGORY_ID:
+        if lane.category_id not in MINRANK_CATEGORY_IDS:
             return
         guild = lane.guild
         ranks = _rank_roles(guild)

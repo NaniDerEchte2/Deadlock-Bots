@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any, Coroutine, Dict, Optional, Set
+import re
+from typing import Any, Coroutine, Dict, List, Optional, Set
 
 from urllib.parse import urlparse
 
@@ -46,7 +47,7 @@ class TwitchBaseCog(commands.Cog):
         self._web: Optional[web.AppRunner] = None
         self._web_app: Optional[web.Application] = None
         self._category_id: Optional[str] = None
-        self._language_filter = (TWITCH_LANGUAGE or "").strip() or None
+        self._language_filters = self._parse_language_filters(TWITCH_LANGUAGE)
         self._tick_count = 0
         self._log_every_n = max(1, int(TWITCH_LOG_EVERY_N_TICKS or 5))
         self._category_sample_limit = max(50, int(TWITCH_CATEGORY_SAMPLE_LIMIT or 400))
@@ -214,4 +215,21 @@ class TwitchBaseCog(commands.Cog):
 
         login = sub(r"[^a-z0-9_]", "", login.lower())
         return login
+
+    @staticmethod
+    def _parse_language_filters(raw: Optional[str]) -> Optional[List[str]]:
+        """Allow TWITCH_LANGUAGE to define multiple comma/whitespace separated codes."""
+        value = (raw or "").strip()
+        if not value:
+            return None
+        tokens = [tok.strip().lower() for tok in re.split(r"[,\s;|]+", value) if tok.strip()]
+        if not tokens:
+            return None
+        if any(tok in {"*", "any", "all"} for tok in tokens):
+            return None
+        seen: List[str] = []
+        for tok in tokens:
+            if tok not in seen:
+                seen.append(tok)
+        return seen or None
 

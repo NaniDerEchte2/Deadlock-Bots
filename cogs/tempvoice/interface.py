@@ -5,7 +5,7 @@ import asyncio
 from discord.ext import commands
 from typing import Optional
 from .core import (
-    INTERFACE_TEXT_CHANNEL_ID, ENGLISH_ONLY_ROLE_ID, MINRANK_CATEGORY_ID,
+    INTERFACE_TEXT_CHANNEL_ID, ENGLISH_ONLY_ROLE_ID, MINRANK_CATEGORY_IDS,
     RANK_ORDER, _rank_roles
 )
 
@@ -445,14 +445,14 @@ class MinRankSelect(discord.ui.Select):
         options = [discord.SelectOption(label="Kein Limit (Jeder)", value="unknown", emoji=_find_rank_emoji(guild,"unknown") or "✅")]
         for r in RANK_ORDER[1:]:
             options.append(discord.SelectOption(label=r.capitalize(), value=r, emoji=_find_rank_emoji(guild,r)))
-        super().__init__(placeholder="Mindest-Rang (nur in spezieller Kategorie)", min_values=1, max_values=1, options=options, row=2, custom_id="tv_minrank")
+        super().__init__(placeholder="Mindest-Rang (Lane, falls aktiviert)", min_values=1, max_values=1, options=options, row=2, custom_id="tv_minrank")
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         if not (m.voice and isinstance(m.voice.channel, discord.VoiceChannel)):
             await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
             return
         lane: discord.VoiceChannel = m.voice.channel
-        if lane.category_id != MINRANK_CATEGORY_ID:
+        if lane.category_id not in MINRANK_CATEGORY_IDS:
             await itx.response.send_message("Mindest-Rang ist hier deaktiviert.", ephemeral=True)
             return
         choice = self.values[0]

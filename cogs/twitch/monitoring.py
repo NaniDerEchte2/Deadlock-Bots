@@ -45,6 +45,18 @@ class TwitchMonitoringMixin:
         game_name = (stream.get("game_name") or "").strip().lower()
         return game_name == target_game_lower
 
+    def _language_filter_values(self) -> List[Optional[str]]:
+        filters: Optional[List[str]] = getattr(self, "_language_filters", None)
+        if not filters:
+            return [None]
+        seen: List[str] = []
+        for entry in filters:
+            normalized = (entry or "").strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.append(normalized)
+        return [*seen] or [None]
+
     @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
     async def poll_streams(self):
         if self.api is None:
@@ -131,17 +143,21 @@ class TwitchMonitoringMixin:
             partner_logins = set()
 
         logins = [str(entry.get("login") or "") for entry in tracked if entry.get("login")]
+        language_filters = self._language_filter_values()
         streams_by_login: Dict[str, dict] = {}
 
-        try:
-            if logins:
-                streams = await self.api.get_streams_by_logins(logins, language=self._language_filter)
+        if logins:
+            for language in language_filters:
+                try:
+                    streams = await self.api.get_streams_by_logins(logins, language=language)
+                except Exception:
+                    label = language or "any"
+                    log.exception("Konnte Streams für tracked Logins nicht abrufen (language=%s)", label)
+                    continue
                 for stream in streams:
                     login = (stream.get("user_login") or "").lower()
                     if login:
                         streams_by_login[login] = stream
-        except Exception:
-            log.exception("Konnte Streams für tracked Logins nicht abrufen")
 
         for login, stream in list(streams_by_login.items()):
             if login in partner_logins:
@@ -149,14 +165,26 @@ class TwitchMonitoringMixin:
 
         category_streams: List[dict] = []
         if self._category_id:
-            try:
-                category_streams = await self.api.get_streams_by_category(
-                    self._category_id,
-                    language=self._language_filter,
-                    limit=self._category_sample_limit,
-                )
-            except Exception:
-                log.exception("Konnte Kategorie-Streams nicht abrufen")
+            collected: Dict[str, dict] = {}
+            for language in language_filters:
+                remaining = self._category_sample_limit - len(collected)
+                if remaining <= 0:
+                    break
+                try:
+                    streams = await self.api.get_streams_by_category(
+                        self._category_id,
+                        language=language,
+                        limit=max(1, remaining),
+                    )
+                except Exception:
+                    label = language or "any"
+                    log.exception("Konnte Kategorie-Streams nicht abrufen (language=%s)", label)
+                    continue
+                for stream in streams:
+                    login = (stream.get("user_login") or "").lower()
+                    if login and login not in collected:
+                        collected[login] = stream
+            category_streams = list(collected.values())
 
         for stream in category_streams:
             login = (stream.get("user_login") or "").lower()
