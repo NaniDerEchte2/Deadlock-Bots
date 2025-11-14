@@ -338,6 +338,8 @@ class ClipSubmitView(discord.ui.View):
 
 # -------------------- Cog --------------------
 
+INTERFACE_TITLE = "🎥 Deadlock Gameplay-Clips einsenden"
+
 RULES_TEXT = (
     "• Reiche einen Gameplay-Clip in mind. 1080p ein.\n"
     "• Füge **Link**, **Credit/Username** (Overlay) und **Kontext/Info** hinzu.\n"
@@ -372,6 +374,26 @@ class ClipSubmissionCog(commands.Cog):
         if s <= now <= e:
             return f"🏁 **Teilnahmefenster aktiv**: { _format_ts(s,'f') } – { _format_ts(e,'f') } (endet { _format_ts(e,'R') })"
         return f"🗓️ Nächstes Fenster: { _format_ts(s,'f') } – { _format_ts(e,'f') } (startet { _format_ts(s,'R') })"
+
+    async def _find_existing_interface_message(self, channel: discord.TextChannel) -> Optional[discord.Message]:
+        """Fallback: Suche vorhandene Interface-Nachricht, falls persistent_views leer ist."""
+        bot_user = self.bot.user
+        if bot_user is None:
+            return None
+        try:
+            async for msg in channel.history(limit=50):
+                if msg.author.id != bot_user.id:
+                    continue
+                if not msg.embeds:
+                    continue
+                title = (msg.embeds[0].title or '').strip()
+                if title == INTERFACE_TITLE:
+                    return msg
+        except discord.Forbidden:
+            log.warning('Clip Interface: Keine Berechtigung, Verlauf von %s zu lesen.', channel.id)
+        except discord.HTTPException as exc:
+            log.warning('Clip Interface: HTTP-Fehler beim Durchsuchen von %s: %s', channel.id, exc)
+        return None
 
     async def upsert_interface(self, guild: discord.Guild) -> Optional[int]:
         if GUILD_ID is not None and guild.id != GUILD_ID:
@@ -413,9 +435,20 @@ class ClipSubmissionCog(commands.Cog):
                     guild.id,
                     exc,
                 )
+        if message is None:
+            fallback = await self._find_existing_interface_message(channel)
+            if fallback:
+                message = fallback
+                pv_upsert_single(guild.id, channel.id, message.id, VIEW_TYPE)
+                log.info(
+                    "Clip Interface: vorhandene Nachricht %s in Kanal %s wiederverwendet (Guild %s).",
+                    message.id,
+                    channel.id,
+                    guild.id,
+                )
 
         embed = discord.Embed(
-            title="🎥 Deadlock Gameplay-Clips einsenden",
+            title=INTERFACE_TITLE,
             description=RULES_TEXT + "\n\n" + self._window_line(guild.id),
             color=discord.Color.green(),
         )
@@ -430,6 +463,12 @@ class ClipSubmissionCog(commands.Cog):
         # nicht gefunden → neu posten und persistent speichern
         sent = await channel.send(embed=embed, view=view)
         pv_upsert_single(guild.id, channel.id, sent.id, VIEW_TYPE)
+        log.info(
+            "Clip Interface: neue Nachricht %s in Kanal %s erstellt (Guild %s).",
+            sent.id,
+            channel.id,
+            guild.id,
+        )
         return sent.id
 
     @tasks.loop(minutes=5)

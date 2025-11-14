@@ -329,6 +329,9 @@ class MainView(discord.ui.View):
         self.add_item(UnbanButton(util))
         # Row 2: MinRank (eigene Reihe!)
         self.add_item(MinRankSelect(core))
+        # Row 3: Quick Templates
+        self.add_item(DuoCallButton(core))
+        self.add_item(TrioCallButton(core))
 
     @staticmethod
     def lane_of(itx: discord.Interaction) -> Optional[discord.VoiceChannel]:
@@ -405,7 +408,7 @@ class LimitButton(discord.ui.Button):
         await itx.response.send_modal(LimitModal(self.core, lane))
 
 class LimitModal(discord.ui.Modal, title="Limit setzen"):
-    value = discord.ui.TextInput(label="Limit (0–99)", placeholder="z.B. 6", required=True, max_length=2)
+    value = discord.ui.TextInput(label="Limit (0-99)", placeholder="z.B. 6", required=True, max_length=2)
     def __init__(self, core, lane: discord.VoiceChannel):
         super().__init__(timeout=120)
         self.core = core
@@ -415,10 +418,10 @@ class LimitModal(discord.ui.Modal, title="Limit setzen"):
         try:
             val = int(txt)
         except ValueError:
-            await itx.response.send_message("Bitte Zahl (0–99) eingeben.", ephemeral=True)
+            await itx.response.send_message("Bitte Zahl (0-99) eingeben.", ephemeral=True)
             return
         if val < 0 or val > 99:
-            await itx.response.send_message("Limit muss 0–99 sein.", ephemeral=True)
+            await itx.response.send_message("Limit muss 0-99 sein.", ephemeral=True)
             return
         try:
             await itx.response.defer(ephemeral=True, thinking=False)
@@ -434,6 +437,38 @@ class LimitModal(discord.ui.Modal, title="Limit setzen"):
             logger.debug("LimitModal: followup.send fehlgeschlagen: %r", e)
         except Exception as e:
             logger.debug("LimitModal: unerwarteter followup-Fehler: %r", e)
+
+class QuickTemplateButton(discord.ui.Button):
+    def __init__(self, core, *, label: str, template_name: str, limit: int, custom_id: str):
+        super().__init__(label=label, style=discord.ButtonStyle.primary, row=3, custom_id=custom_id)
+        self.core = core
+        self.template_name = template_name
+        self.limit = limit
+
+    async def callback(self, itx: discord.Interaction):
+        m: discord.Member = itx.user  # type: ignore
+        lane = MainView.lane_of(itx)
+        if not lane:
+            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
+            return
+        owner_id = self.core.lane_owner.get(lane.id, m.id)
+        perms = lane.permissions_for(m)
+        if not (owner_id == m.id or perms.manage_channels or perms.administrator):
+            await itx.response.send_message("Nur Owner/Mods d�rfen Templates benutzen.", ephemeral=True)
+            return
+        await self.core.set_lane_template(lane, base_name=self.template_name, limit=self.limit)
+        await itx.response.send_message(
+            f"Lane auf {self.template_name} gestellt (Limit {self.limit}).",
+            ephemeral=True,
+        )
+
+class DuoCallButton(QuickTemplateButton):
+    def __init__(self, core):
+        super().__init__(core, label="Duo Call (2)", template_name="Duo Call", limit=2, custom_id="tv_tpl_duo")
+
+class TrioCallButton(QuickTemplateButton):
+    def __init__(self, core):
+        super().__init__(core, label="Trio Call (3)", template_name="Trio Call", limit=3, custom_id="tv_tpl_trio")
 
 class MinRankSelect(discord.ui.Select):
     def __init__(self, core):

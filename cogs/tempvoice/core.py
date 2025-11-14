@@ -574,9 +574,15 @@ class TempVoiceCore(commands.Cog):
     async def safe_edit_channel(self, lane: discord.VoiceChannel,
                                 *, desired_name: str | None = None,
                                 desired_limit: int | None = None,
-                                reason: str | None = None):
-        await self._safe_edit_channel(lane, desired_name=desired_name,
-                                      desired_limit=desired_limit, reason=reason)
+                                reason: str | None = None,
+                                force_name: bool = False):
+        await self._safe_edit_channel(
+            lane,
+            desired_name=desired_name,
+            desired_limit=desired_limit,
+            reason=reason,
+            force_name=force_name,
+        )
 
     async def refresh_name(self, lane: discord.VoiceChannel):
         await self._refresh_name(lane)
@@ -604,7 +610,8 @@ class TempVoiceCore(commands.Cog):
     async def _safe_edit_channel(self, lane: discord.VoiceChannel,
                                  *, desired_name: Optional[str] = None,
                                  desired_limit: Optional[int] = None,
-                                 reason: Optional[str] = None):
+                                 reason: Optional[str] = None,
+                                 force_name: bool = False):
         lock = self._lock_for(lane.id)
         async with lock:
             kwargs: Dict[str, Any] = {}
@@ -613,10 +620,10 @@ class TempVoiceCore(commands.Cog):
             # ===== Name bearbeiten? Nur beim Erstellen & wenn KEIN Live-Match-Suffix vorhanden ist =====
             if desired_name is not None and lane.name != desired_name:
                 may_rename = True
-                if ONLY_SET_NAME_ON_CREATE:
+                if not force_name and ONLY_SET_NAME_ON_CREATE:
                     if _age_seconds(lane) > CREATE_RENAME_WINDOW_SEC:
                         may_rename = False
-                if _has_live_suffix(lane.name):
+                if not force_name and _has_live_suffix(lane.name):
                     may_rename = False
 
                 if may_rename:
@@ -633,20 +640,46 @@ class TempVoiceCore(commands.Cog):
             if desired_limit is not None and desired_limit != lane.user_limit:
                 kwargs["user_limit"] = max(0, min(99, desired_limit))
 
-            if not kwargs:
-                return
+                if not kwargs:
+                    return
 
-            try:
-                await lane.edit(**kwargs, reason=reason or "TempVoice: Update")
-                if "name" in kwargs:
-                    self._last_name_patch_ts[lane.id] = now
-            except discord.HTTPException as e:
-                log.warning(
-                    "TempVoice: lane.edit failed for %s (payload=%s): %s",
-                    lane.id,
-                    kwargs,
-                    e,
-                )
+                try:
+                    await lane.edit(**kwargs, reason=reason or "TempVoice: Update")
+                    if "name" in kwargs:
+                        self._last_name_patch_ts[lane.id] = now
+                except discord.HTTPException as e:
+                    log.warning(
+                        "TempVoice: lane.edit failed for %s (payload=%s): %s",
+                        lane.id,
+                        kwargs,
+                        e,
+                    )
+
+    async def set_lane_template(self, lane: discord.VoiceChannel,
+                                *, base_name: str, limit: int) -> None:
+        base = base_name.strip()
+        if not base:
+            return
+        await self._persist_lane_base(lane.id, base)
+        await self.safe_edit_channel(
+            lane,
+            desired_name=base,
+            desired_limit=max(0, min(99, limit)),
+            reason=f"TempVoice: Template {base}",
+            force_name=True,
+        )
+
+    async def _persist_lane_base(self, lane_id: int, base_name: str) -> None:
+        self.lane_base[lane_id] = base_name
+        if not self._tvdb.connected:
+            return
+        try:
+            await self._tvdb.exec(
+                "UPDATE tempvoice_lanes SET base_name=? WHERE channel_id=?",
+                (base_name, int(lane_id)),
+            )
+        except Exception as e:
+            log.debug("TempVoice: update lane base failed (%s): %r", lane_id, e)
 
     def _compose_name(self, lane: discord.VoiceChannel) -> str:
         base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)

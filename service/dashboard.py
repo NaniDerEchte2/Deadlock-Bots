@@ -413,6 +413,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             justify-content: space-between;
             gap: 0.75rem;
         }
+        .tree-header-text {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+        }
         details.directory {
             background: #141414;
             border: 1px solid rgba(255,255,255,0.06);
@@ -555,10 +560,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         <div class=\"card cog-management\">
             <h3>Management Tools</h3>
             <div class=\"management-columns\">
-                <div class=\"tree-panel\">
+                    <div class=\"tree-panel\">
                     <div class=\"tree-header\">
-                        <h4>Namespaces &amp; Cogs</h4>
-                        <span class=\"selection-info\">Explorer mit direkter Steuerung</span>
+                        <div class=\"tree-header-text\">
+                            <h4>Namespaces &amp; Cogs</h4>
+                            <span class=\"selection-info\">Explorer mit direkter Steuerung</span>
+                        </div>
+                        <button class=\"namespace\" id=\"toggle-unmanageable\">Nicht-managebare Cogs einblenden</button>
                     </div>
                     <div id=\"tree-container\" class=\"tree-container\"></div>
                 </div>
@@ -596,10 +604,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             { value: 'quick.create', label: 'Quick Invite erstellen' },
         ],
     };
+    const toggleUnmanageableButton = document.getElementById('toggle-unmanageable');
     const logOpenState = new Map();
     let isRefreshingStandalone = false;
     let authToken = localStorage.getItem('master-dashboard-token') || '';
     let selectedNode = null;
+    let showHiddenCogs = false;
+    let lastTreeData = null;
     tokenInput.value = authToken;
 
     function log(message, type='info') {
@@ -628,6 +639,24 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         }
         return response.json();
     }
+
+    if (toggleUnmanageableButton) {
+        toggleUnmanageableButton.addEventListener('click', () => {
+            showHiddenCogs = !showHiddenCogs;
+            updateHiddenToggleButton();
+            renderTree(lastTreeData);
+        });
+    }
+
+    function updateHiddenToggleButton() {
+        if (!toggleUnmanageableButton) {
+            return;
+        }
+        toggleUnmanageableButton.textContent = showHiddenCogs
+            ? 'Nicht-managebare Cogs ausblenden'
+            : 'Nicht-managebare Cogs einblenden';
+    }
+    updateHiddenToggleButton();
 
     function renderStatus(status) {
         const dot = document.createElement('span');
@@ -660,6 +689,19 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
     function isDirectoryLike(type) {
         return type === 'directory' || type === 'root' || type === 'package' || type === 'namespace';
+    }
+
+    function shouldHideNode(node, nodeType) {
+        if (showHiddenCogs) {
+            return false;
+        }
+        if (!node || isDirectoryLike(nodeType)) {
+            return false;
+        }
+        if (!Object.prototype.hasOwnProperty.call(node, 'manageable')) {
+            return false;
+        }
+        return node.manageable === false;
     }
 
     function applySelection() {
@@ -725,6 +767,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             renderStandalone(standalone);
             const cogs = data.cogs || {};
             const tree = cogs.tree || null;
+            lastTreeData = tree;
             renderTree(tree);
         } catch (err) {
             log('Status konnte nicht geladen werden: ' + err.message, 'error');
@@ -753,6 +796,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         const built = buildTreeNode(root, 0);
         if (built) {
             treeContainer.appendChild(built);
+        } else {
+            const empty = document.createElement('div');
+            empty.className = 'tree-empty';
+            empty.textContent = showHiddenCogs
+                ? 'Keine Daten verfügbar.'
+                : 'Alle nicht-managebaren Cogs sind derzeit ausgeblendet.';
+            treeContainer.appendChild(empty);
         }
         const hasSelection = applySelection();
         if (selectedNode && !hasSelection) {
@@ -1425,8 +1475,14 @@ async function fetchStandaloneLogs(key, limit = 200) {
 }
 
     function buildTreeNode(node, depth = 0) {
+        if (!node) {
+            return null;
+        }
         const nodePath = getNodePath(node);
         const nodeType = node.type || (Array.isArray(node.children) ? 'directory' : 'module');
+        if (shouldHideNode(node, nodeType)) {
+            return null;
+        }
         if (isDirectoryLike(nodeType)) {
             const details = document.createElement('details');
             details.className = 'directory tree-node';
@@ -1533,14 +1589,20 @@ async function fetchStandaloneLogs(key, limit = 200) {
 
             const childrenContainer = document.createElement('div');
             childrenContainer.className = 'tree-children';
+            let appended = false;
             if (node.children && node.children.length) {
                 for (const child of node.children) {
-                    childrenContainer.appendChild(buildTreeNode(child, depth + 1));
+                    const builtChild = buildTreeNode(child, depth + 1);
+                    if (builtChild) {
+                        childrenContainer.appendChild(builtChild);
+                        appended = true;
+                    }
                 }
-            } else {
+            }
+            if (!appended) {
                 const empty = document.createElement('div');
                 empty.className = 'tree-empty';
-                empty.textContent = 'Keine Einträge';
+                empty.textContent = showHiddenCogs ? 'Keine Einträge' : 'Alle Einträge aktuell ausgeblendet';
                 childrenContainer.appendChild(empty);
             }
             details.appendChild(childrenContainer);

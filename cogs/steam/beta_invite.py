@@ -56,6 +56,9 @@ STATUS_WAITING = "waiting_friend"
 STATUS_INVITE_SENT = "invite_sent"
 STATUS_ERROR = "error"
 
+SERVER_LEAVE_BAN_REASON = "Ausschluss aus der Community wegen Leaven des Servers"
+_AUDIT_TABLE_READY = False
+
 _ALLOWED_UPDATE_FIELDS = {
     "status",
     "last_error",
@@ -65,6 +68,77 @@ _ALLOWED_UPDATE_FIELDS = {
     "last_notified_at",
     "account_id",
 }
+
+def _ensure_invite_audit_table() -> None:
+    global _AUDIT_TABLE_READY
+    if _AUDIT_TABLE_READY:
+        return
+    with db.get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS beta_invite_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                discord_id INTEGER NOT NULL,
+                discord_name TEXT,
+                steam_id64 TEXT NOT NULL,
+                steam_profile TEXT NOT NULL,
+                invited_at INTEGER NOT NULL
+            )
+            """
+        )
+    _AUDIT_TABLE_READY = True
+
+
+def _format_discord_name(user: discord.abc.User) -> str:
+    try:
+        if getattr(user, "global_name", None):
+            return str(user.global_name)
+        discrim = getattr(user, "discriminator", None)
+        if discrim and discrim != "0":
+            return f"{user.name}#{discrim}"
+        display = getattr(user, "display_name", None)
+        if display:
+            return str(display)
+        return str(user.name)
+    except Exception:
+        return str(getattr(user, "name", "unknown"))
+
+
+def _log_invite_grant(
+    guild_id: Optional[int],
+    discord_id: int,
+    discord_name: str,
+    steam_id64: str,
+    invited_at: int,
+) -> None:
+    _ensure_invite_audit_table()
+    profile_url = f"https://steamcommunity.com/profiles/{steam_id64}"
+    with db.get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO beta_invite_audit
+            (guild_id, discord_id, discord_name, steam_id64, steam_profile, invited_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(guild_id) if guild_id else None,
+                int(discord_id),
+                discord_name,
+                steam_id64,
+                profile_url,
+                int(invited_at),
+            ),
+        )
+
+
+def _has_successful_invite(discord_id: int) -> bool:
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM steam_beta_invites WHERE discord_id=? AND status=? LIMIT 1",
+            (int(discord_id), STATUS_INVITE_SENT),
+        ).fetchone()
+    return row is not None
 
 
 def _lookup_primary_steam_id(discord_id: int) -> Optional[str]:
@@ -282,6 +356,7 @@ class BetaInviteFlow(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.tasks = SteamTaskClient(poll_interval=0.5, default_timeout=30.0)
+        _ensure_invite_audit_table()
 
     def _build_link_prompt_view(self, user: discord.abc.User) -> discord.ui.View:
         login_url: Optional[str] = None
@@ -350,6 +425,26 @@ class BetaInviteFlow(commands.Cog):
 
         view.add_item(SchnellLinkButton(row=1, source="beta_invite_prompt"))
         return view
+
+    def _record_successful_invite(
+        self,
+        interaction: discord.Interaction,
+        record: BetaInviteRecord,
+        invited_at: int,
+    ) -> None:
+        try:
+            _log_invite_grant(
+                guild_id=int(interaction.guild.id) if interaction.guild else None,
+                discord_id=int(interaction.user.id),
+                discord_name=_format_discord_name(interaction.user),
+                steam_id64=record.steam_id64,
+                invited_at=int(invited_at),
+            )
+        except Exception:
+            log.exception(
+                "BetaInvite: Protokollieren der Einladung für Nutzer %s fehlgeschlagen",
+                getattr(interaction.user, "id", "?"),
+            )
 
     async def handle_confirmation(self, interaction: discord.Interaction, record_id: int) -> None:
         record = _fetch_invite_by_id(record_id)
@@ -537,6 +632,7 @@ class BetaInviteFlow(commands.Cog):
             last_notified_at=now_ts,
             last_error=None,
         ) or record
+        self._record_successful_invite(interaction, record, now_ts)
 
         message = (
             "✅ Einladung verschickt!\n"
@@ -661,6 +757,23 @@ class BetaInviteFlow(commands.Cog):
         )
         view = BetaInviteConfirmView(self, record.id, interaction.user.id, resolved)
         await interaction.followup.send(message, view=view, ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member) -> None:
+        try:
+            invited = _has_successful_invite(member.id)
+        except Exception:
+            log.exception("BetaInvite: Konnte Invite-Status für %s nicht prüfen", member.id)
+            return
+        if not invited or not member.guild:
+            return
+        try:
+            await member.guild.ban(member, reason=SERVER_LEAVE_BAN_REASON, delete_message_seconds=0)
+            log.info("BetaInvite: %s wurde wegen Server-Verlassen nach Invite gebannt.", member.id)
+        except discord.Forbidden:
+            log.warning("BetaInvite: Fehlende Rechte um %s zu bannen.", member.id)
+        except discord.HTTPException as exc:
+            log.warning("BetaInvite: HTTP-Fehler beim Bannen von %s: %s", member.id, exc)
 
 
 async def setup(bot: commands.Bot) -> None:
