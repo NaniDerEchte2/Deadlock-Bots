@@ -542,7 +542,8 @@ class BetaInviteFlow(commands.Cog):
             "✅ Einladung verschickt!\n"
             "Bitte schaue in 1-2 Stunden unter https://store.steampowered.com/account/playtestinvites "
             "und nimm die Einladung dort an. Danach erscheint Deadlock automatisch in deiner Bibliothek.\n"
-            f"Alle weiteren Infos findest du in <{BETA_INVITE_CHANNEL_URL}> – bei Problemen ping bitte {BETA_INVITE_SUPPORT_CONTACT}."
+            f"Alle weiteren Infos findest du in <{BETA_INVITE_CHANNEL_URL}> - bei Problemen ping bitte {BETA_INVITE_SUPPORT_CONTACT}.\n"
+            "⚠️ Verlässt du den Server wird der Invite ungültig, egal ob dein Invite noch aussteht oder du Deadlock schon hast."
         )
         await interaction.followup.send(message, ephemeral=True)
 
