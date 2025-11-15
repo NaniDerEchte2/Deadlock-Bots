@@ -497,6 +497,19 @@ class TempVoiceCore(commands.Cog):
             return matches[0]
         return None
 
+    async def resolve_member(self, guild: discord.Guild, user_id: int) -> Optional[discord.Member]:
+        """Finde ein Member-Objekt für set_permissions (inkl. Fetch-Fallback)."""
+        member = guild.get_member(int(user_id))
+        if member:
+            return member
+        try:
+            return await guild.fetch_member(int(user_id))
+        except discord.NotFound:
+            log.debug("resolve_member: user %s not found in guild %s", user_id, guild.id)
+        except discord.HTTPException as exc:
+            log.debug("resolve_member: fetch_member failed for %s in guild %s: %r", user_id, guild.id, exc)
+        return None
+
     async def set_region_pref(self, owner_id: int, region: str):
         try:
             await self._tvdb.exec(
@@ -733,9 +746,12 @@ class TempVoiceCore(commands.Cog):
         banned = await self.bans.list_bans(owner_id)
         for uid in banned:
             try:
-                obj = lane.guild.get_member(int(uid)) or discord.Object(id=int(uid))
-                ow = lane.overwrites_for(obj); ow.connect = False
-                await lane.set_permissions(obj, overwrite=ow, reason="Owner-Ban (persistent)")
+                member = await self.resolve_member(lane.guild, uid)
+                if not member:
+                    log.debug("apply_owner_bans: member %s not found in guild %s", uid, lane.guild.id)
+                    continue
+                ow = lane.overwrites_for(member); ow.connect = False
+                await lane.set_permissions(member, overwrite=ow, reason="Owner-Ban (persistent)")
                 await asyncio.sleep(0.02)
             except Exception as e:
                 log.debug("apply_owner_bans: failed for %s in lane %s: %r", uid, lane.id, e)
@@ -749,10 +765,13 @@ class TempVoiceCore(commands.Cog):
             log.debug("clear_owner_bans: list_bans failed for owner %s: %r", owner_id, e)
             return
         for uid in banned:
-            obj = lane.guild.get_member(int(uid)) or discord.Object(id=int(uid))
             try:
+                member = await self.resolve_member(lane.guild, uid)
+                if not member:
+                    log.debug("clear_owner_bans: member %s not found in guild %s", uid, lane.guild.id)
+                    continue
                 await lane.set_permissions(
-                    obj,
+                    member,
                     overwrite=None,
                     reason="TempVoice: Ownerwechsel Ban-Reset"
                 )
@@ -1013,20 +1032,6 @@ class TempVoiceCore(commands.Cog):
                         self.bot.dispatch("tempvoice_lane_owner_changed", ch, int(member.id))
                     except Exception as e:
                         log.debug("dispatch lane_owner_changed (backfill) failed for %s: %r", ch.id, e)
-
-                owner_id = self.lane_owner.get(ch.id)
-                if owner_id and await self.bans.is_banned_by_owner(owner_id, member.id):
-                    staging = None
-                    for cid in STAGING_CHANNEL_IDS:
-                        s = ch.guild.get_channel(cid)
-                        if isinstance(s, discord.VoiceChannel):
-                            staging = s
-                            break
-                    if staging:
-                        try:
-                            await member.move_to(staging, reason="Owner-Ban aktiv")
-                        except Exception as e:
-                            log.debug("move_to staging after ban failed for %s: %r", member.id, e)
 
                 # Nur falls sehr frisch und noch ohne Live-Suffix – s. _refresh_name
                 if _is_managed_lane(ch):

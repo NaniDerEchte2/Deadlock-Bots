@@ -51,35 +51,30 @@ class TempVoiceUtil:
         except Exception as e:
             logger.warning("Ban-Persistenz fehlgeschlagen (owner=%s, target=%s): %r", owner_id, uid, e)
 
-        target_member = lane.guild.get_member(int(uid))
-        try:
-            await lane.set_permissions(
-                target_member or discord.Object(id=int(uid)),
-                connect=False, reason="TempVoice: Owner-Ban"
-            )
-        except discord.Forbidden:
-            logger.warning("Owner-Ban set_permissions: fehlende Rechte (owner=%s, target=%s, lane=%s)", owner_id, uid, lane.id)
-            return False, "Konnte Ban nicht setzen (fehlende Rechte)."
-        except discord.HTTPException as e:
-            logger.error("Owner-Ban set_permissions HTTPException (owner=%s, target=%s, lane=%s): %s", owner_id, uid, lane.id, e)
-            return False, "Konnte Ban nicht setzen (HTTP-Fehler)."
-        except Exception:
-            logger.exception("Owner-Ban set_permissions: unerwarteter Fehler (owner=%s, target=%s, lane=%s)", owner_id, uid, lane.id)
-            return False, "Konnte Ban nicht setzen."
+        target_member = await self.core.resolve_member(lane.guild, uid)
+        overwrite_applied = False
+        if target_member:
+            try:
+                await lane.set_permissions(
+                    target_member,
+                    connect=False, reason="TempVoice: Owner-Ban"
+                )
+                overwrite_applied = True
+            except discord.Forbidden:
+                logger.warning("Owner-Ban set_permissions: fehlende Rechte (owner=%s, target=%s, lane=%s)", owner_id, uid, lane.id)
+                return False, "Konnte Ban nicht setzen (fehlende Rechte)."
+            except discord.HTTPException as e:
+                logger.error("Owner-Ban set_permissions HTTPException (owner=%s, target=%s, lane=%s): %s", owner_id, uid, lane.id, e)
+                return False, "Konnte Ban nicht setzen (HTTP-Fehler)."
+            except Exception:
+                logger.exception("Owner-Ban set_permissions: unerwarteter Fehler (owner=%s, target=%s, lane=%s)", owner_id, uid, lane.id)
+                return False, "Konnte Ban nicht setzen."
+        else:
+            logger.debug("Owner-Ban: Member %s nicht in Guild %s - nur Persistenz", uid, lane.guild.id)
 
-        # Falls der User gerade in der Lane ist, in Staging schieben
-        if target_member and target_member.voice and target_member.voice.channel == lane:
-            staging = await self._find_staging(lane.guild)
-            if staging:
-                try:
-                    await target_member.move_to(staging, reason="Owner-Ban aktiv")
-                except discord.Forbidden:
-                    logger.info("Ban-Move: fehlende Rechte beim Verschieben (target=%s, lane=%s)", uid, lane.id)
-                except discord.HTTPException as e:
-                    logger.info("Ban-Move HTTPException (target=%s, lane=%s): %s", uid, lane.id, e)
-                except Exception as e:
-                    logger.debug("Ban-Move unerwarteter Fehler (target=%s, lane=%s): %r", uid, lane.id, e)
-        return True, "Nutzer gebannt (owner-persistent)."
+        if overwrite_applied:
+            return True, "Nutzer gebannt (owner-persistent)."
+        return True, "Nutzer gebannt (owner-persistent). Hinweis: Nutzer ist aktuell nicht auf dem Server; Sperre greift beim nächsten Join."
 
     async def unban(self, lane: discord.VoiceChannel, owner_id: int, raw: str) -> Tuple[bool, str]:
         uid = await self.core.parse_user_identifier(lane.guild, raw)
@@ -91,19 +86,22 @@ class TempVoiceUtil:
         except Exception as e:
             logger.warning("Unban-Persistenz fehlgeschlagen (owner=%s, target=%s): %r", owner_id, uid, e)
 
-        target_member = lane.guild.get_member(int(uid))
-        try:
-            await lane.set_permissions(
-                target_member or discord.Object(id=int(uid)),
-                overwrite=None, reason="TempVoice: Owner-Unban"
-            )
-            return True, "Nutzer entbannt."
-        except discord.Forbidden:
-            logger.warning("Owner-Unban set_permissions: fehlende Rechte (owner=%s, target=%s, lane=%s)", owner_id, uid, lane.id)
-            return False, "Konnte Unban nicht setzen (fehlende Rechte)."
-        except discord.HTTPException as e:
-            logger.error("Owner-Unban set_permissions HTTPException (owner=%s, target=%s, lane=%s): %s", owner_id, uid, lane.id, e)
-            return False, "Konnte Unban nicht setzen (HTTP-Fehler)."
-        except Exception:
-            logger.exception("Owner-Unban set_permissions: unerwarteter Fehler (owner=%s, target=%s, lane=%s)", owner_id, uid, lane.id)
-            return False, "Konnte Unban nicht setzen."
+        target_member = await self.core.resolve_member(lane.guild, uid)
+        if target_member:
+            try:
+                await lane.set_permissions(
+                    target_member,
+                    overwrite=None, reason="TempVoice: Owner-Unban"
+                )
+                return True, "Nutzer entbannt."
+            except discord.Forbidden:
+                logger.warning("Owner-Unban set_permissions: fehlende Rechte (owner=%s, target=%s, lane=%s)", owner_id, uid, lane.id)
+                return False, "Konnte Unban nicht setzen (fehlende Rechte)."
+            except discord.HTTPException as e:
+                logger.error("Owner-Unban set_permissions HTTPException (owner=%s, target=%s, lane=%s): %s", owner_id, uid, lane.id, e)
+                return False, "Konnte Unban nicht setzen (HTTP-Fehler)."
+            except Exception:
+                logger.exception("Owner-Unban set_permissions: unerwarteter Fehler (owner=%s, target=%s, lane=%s)", owner_id, uid, lane.id)
+                return False, "Konnte Unban nicht setzen."
+        logger.debug("Owner-Unban: Member %s nicht in Guild %s - nur Datenbankeintrag entfernt", uid, lane.guild.id)
+        return True, "Nutzer entbannt (es waren keine aktiven Channel-Rechte vorhanden)."
