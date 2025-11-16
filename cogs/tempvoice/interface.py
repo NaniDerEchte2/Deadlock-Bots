@@ -66,25 +66,17 @@ class TempVoiceInterface(commands.Cog):
         await self.ensure_interface_message()
         await self.rehydrate_lane_interfaces()
 
-    async def ensure_interface_message(self):
-        ch = self.bot.get_channel(INTERFACE_TEXT_CHANNEL_ID)
-        guild = ch.guild if isinstance(ch, discord.TextChannel) else (self.bot.guilds[0] if self.bot.guilds else None)
-        if guild is None:
-            return
+    async def ensure_interface_message(self, channel_hint: Optional[discord.TextChannel] = None):
+        """
+        Stellt sicher, dass die Interface-Nachricht existiert – exakt in dem Textkanal,
+        in dem der Command ausgeführt wurde (channel_hint).
+        Fällt nicht auf andere Channels zurück.
+        """
+        ch: Optional[discord.TextChannel] = channel_hint if isinstance(channel_hint, discord.TextChannel) else None
+        guild = ch.guild if ch else None
 
-        if not isinstance(ch, discord.TextChannel):
-            try:
-                overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False)}
-                ch = await guild.create_text_channel(name="tempvoice-panel", overwrites=overwrites, reason="TempVoice: Interface-Channel automatisch angelegt")
-            except discord.Forbidden:
-                logger.warning("TempVoice Interface: Keine Berechtigung, Textkanal %s zu erstellen.", INTERFACE_TEXT_CHANNEL_ID)
-                return
-            except discord.HTTPException as e:
-                logger.warning("TempVoice Interface: HTTP-Fehler beim Erstellen des Interface-Kanals: %r", e)
-                return
-            except Exception as e:
-                logger.warning("TempVoice Interface: Textkanal %s nicht gefunden/erstellbar: %r", INTERFACE_TEXT_CHANNEL_ID, e)
-                return
+        if ch is None or guild is None:
+            return None  # Muss mit einem Textkanal aufgerufen werden
 
         embed = discord.Embed(
             title="TempVoice Interface",
@@ -101,41 +93,48 @@ class TempVoiceInterface(commands.Cog):
         )
         embed.set_footer(text="Deutsche Deadlock Community • TempVoice")
 
-        row = None
-        try:
-            row = await self.core.db.fetchone(
-                """
-                SELECT channel_id, message_id FROM tempvoice_interface
-                WHERE guild_id=? AND lane_id IS NULL AND category_id IS NULL
-                ORDER BY updated_at DESC LIMIT 1
-                """,
-                (int(guild.id),)
-            )
-        except Exception as e:
-            logger.debug("ensure_interface_message: DB-Select fehlgeschlagen: %r", e)
-
-        if row:
-            try:
-                use_ch = self.bot.get_channel(int(row["channel_id"])) or ch
-                if isinstance(use_ch, discord.TextChannel):
-                    msg = await use_ch.fetch_message(int(row["message_id"]))
-                    await msg.edit(embed=embed, view=MainView(self.core, self.util))
-                    await self._record_interface_message(int(guild.id), int(use_ch.id), int(msg.id), None, None)
-                    return
-            except discord.NotFound:
-                logger.debug("ensure_interface_message: Vorherige Interface-Nachricht nicht mehr vorhanden.")
-            except discord.HTTPException as e:
-                logger.debug("ensure_interface_message: HTTP-Fehler beim Editieren der Interface-Nachricht: %r", e)
-            except Exception as e:
-                logger.debug("ensure_interface_message: Fehler beim Laden/Editieren alter Nachricht: %r", e)
-
+        # Immer in diesem Channel senden (kein Fallback/Fetch anderer Messages)
         try:
             msg = await ch.send(embed=embed, view=MainView(self.core, self.util))
             await self._record_interface_message(int(guild.id), int(ch.id), int(msg.id), None, None)
+        except discord.Forbidden:
+            logger.warning("ensure_interface_message: Keine Berechtigung zum Senden in %s (%s)", ch, ch.id)
+            return None
         except discord.HTTPException as e:
             logger.warning("ensure_interface_message: HTTP-Fehler beim Senden/Speichern der Interface-Nachricht: %r", e)
+            return None
         except Exception as e:
             logger.debug("ensure_interface_message: Fehler beim Senden/Speichern der Interface-Nachricht: %r", e)
+            return None
+        return ch
+
+    @commands.guild_only()
+    @commands.has_guild_permissions(manage_guild=True)
+    @commands.command(name="tvpanel", aliases=["tempvoicepanel", "tvinterface"])
+    async def cmd_tvpanel(self, ctx: commands.Context):
+        """
+        Erstellt/aktualisiert das TempVoice Interface und speichert es, damit es nach Neustart erhalten bleibt.
+        """
+        try:
+            async with ctx.typing():
+                ch = await self.ensure_interface_message(
+                    ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None
+                )
+        except discord.Forbidden:
+            await ctx.reply("❌ Keine Berechtigung, um das Interface zu erstellen.", mention_author=False)
+            return
+        except Exception as e:
+            logger.exception("tvpanel command failed: %r", e)
+            await ctx.reply("❌ Konnte das Interface nicht erstellen (Fehler im Log).", mention_author=False)
+            return
+        try:
+            if isinstance(ch, discord.TextChannel):
+                await ctx.reply(f"✅ TempVoice Interface erstellt/aktualisiert in {ch.mention}.", mention_author=False)
+            else:
+                await ctx.reply("⚠️ Konnte das Interface nicht erstellen (kein Textkanal oder keine Rechte).", mention_author=False)
+        except Exception as e:
+            logger.exception("tvpanel command failed: %r", e)
+            await ctx.reply("❌ Konnte das Interface nicht erstellen (Fehler im Log).", mention_author=False)
 
     async def _record_interface_message(self, guild_id: int, channel_id: int, message_id: int,
                                         category_id: Optional[int], lane_id: Optional[int]):
