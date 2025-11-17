@@ -784,6 +784,12 @@ class TempVoiceCore(commands.Cog):
         await self.apply_region(lane, region)
         await self._apply_owner_bans(lane, owner_id)
 
+    async def _apply_owner_settings_background(self, lane: discord.VoiceChannel, owner_id: int):
+        try:
+            await self._apply_owner_settings(lane, owner_id)
+        except Exception as e:
+            log.debug("apply_owner_settings background failed for lane %s: %r", getattr(lane, "id", "?"), e)
+
     async def _apply_min_rank(self, lane: discord.VoiceChannel, min_rank: str):
         if lane.category_id not in MINRANK_CATEGORY_IDS:
             return
@@ -875,8 +881,6 @@ class TempVoiceCore(commands.Cog):
                         e,
                     )
 
-                await self._apply_owner_settings(lane, member.id)
-
                 refreshed_member, refreshed_channel = self._current_member_and_channel(guild, member_id)
                 if not refreshed_member or not refreshed_channel:
                     await self._cleanup_lane(int(lane.id), channel=lane, reason="TempVoice: Owner nicht auffindbar")
@@ -930,6 +934,8 @@ class TempVoiceCore(commands.Cog):
                         reason="TempVoice: Move fehlgeschlagen (unexpected)",
                     )
                     return
+
+                asyncio.create_task(self._apply_owner_settings_background(lane, member.id))
 
                 # NUR hier initial den Namen setzen (innerhalb des Create-Fensters)
                 await self._refresh_name(lane)
