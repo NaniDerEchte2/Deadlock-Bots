@@ -7,8 +7,9 @@ import json
 import socket
 import threading
 import queue
-import sqlite3
 from pathlib import Path
+
+from service import db as central_db
 
 # Event Loop Policy für Windows setzen
 if sys.platform == 'win32':
@@ -30,37 +31,29 @@ def ensure_directories():
 
 ensure_directories()
 
-# Datenbank initialisieren (zentral)
-SHARED_DIR = BASE_DIR / "shared"
-SHARED_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = SHARED_DIR / "deadlock.db"
+# Datenbank initialisieren (zentral Ã¼ber service.db)
+DB_PATH = Path(central_db.db_path())
 
 def init_database():
-    """Initialisiert die zentrale Datenbank-Tabelle für Claims."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS claimed_threads (
-            thread_id         BIGINT PRIMARY KEY,
-            assigned_user_id  BIGINT,
-            claimed_by_id     BIGINT,
-            created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
+    """Initialisiert die zentrale Datenbank-Tabelle fÃ¼r Claims."""
+    with central_db.get_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS claimed_threads (
+                thread_id         BIGINT PRIMARY KEY,
+                assigned_user_id  BIGINT,
+                claimed_by_id     BIGINT,
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
 init_database()
 
 # Claim-Daten in Memory laden (bereits bearbeitete Threads)
 def load_claimed_threads():
-    """Lädt alle Einträge aus claimed_threads in ein Dictionary."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT thread_id, claimed_by_id FROM claimed_threads")
-    rows = cursor.fetchall()
-    conn.close()
-    # Dictionary: thread_id (als str) -> claimed_by (None falls noch nicht übernommen)
+    """Laedt alle Eintraege aus claimed_threads in ein Dictionary."""
+    with central_db.get_conn() as conn:
+        rows = conn.execute("SELECT thread_id, claimed_by_id FROM claimed_threads").fetchall()
+    # Dictionary: thread_id (als str) -> claimed_by (None falls noch nicht uebernommen)
     data = {}
     for thread_id, claimed_by in rows:
         data[str(thread_id)] = None if claimed_by is None else int(claimed_by)
@@ -107,43 +100,34 @@ USERS = {
 # Queue für Kommunikation zwischen Socket-Thread und Bot-Thread
 notification_queue = queue.Queue()
 
-# --- Funktionen zum Persistieren über die DB (statt JSON) ---
+# --- Funktionen zum Persistieren ueber die DB (statt JSON) ---
 def mark_thread_processed(thread_id: int, assigned_user_id: int):
-    """Markiert einen neuen Thread als bearbeitet (noch nicht übernommen)."""
-    # Eintrag in DB anlegen mit assigned_user und noch keinem Claimer
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO claimed_threads (thread_id, assigned_user_id, claimed_by_id) VALUES (?, ?, NULL)",
-        (thread_id, assigned_user_id)
-    )
-    conn.commit()
-    conn.close()
-    # Im Cache-Dict vermerken (None = noch nicht übernommen)
+    """Markiert einen neuen Thread als bearbeitet (noch nicht uebernommen)."""
+    with central_db.get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO claimed_threads (thread_id, assigned_user_id, claimed_by_id) VALUES (?, ?, NULL)",
+            (thread_id, assigned_user_id),
+        )
+    # Im Cache-Dict vermerken (None = noch nicht uebernommen)
     CLAIMED_THREADS[str(thread_id)] = None
 
 def mark_thread_claimed(thread_id: int, claimer_id: int):
-    """Markiert einen Thread als übernommen durch claimer_id."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE claimed_threads SET claimed_by_id = ? WHERE thread_id = ?",
-        (claimer_id, thread_id)
-    )
-    conn.commit()
-    conn.close()
+    """Markiert einen Thread als uebernommen durch claimer_id."""
+    with central_db.get_conn() as conn:
+        conn.execute(
+            "UPDATE claimed_threads SET claimed_by_id=? WHERE thread_id=?",
+            (claimer_id, thread_id),
+        )
+    # Im Cache-Dict vermerken
     CLAIMED_THREADS[str(thread_id)] = claimer_id
 
 def release_thread(thread_id: int):
     """Markiert einen Thread als freigegeben (assigned_user_id = 0)."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE claimed_threads SET assigned_user_id = 0 WHERE thread_id = ?",
-        (thread_id,)
-    )
-    conn.commit()
-    conn.close()
+    with central_db.get_conn() as conn:
+        conn.execute(
+            "UPDATE claimed_threads SET assigned_user_id = 0 WHERE thread_id = ?",
+            (thread_id,),
+        )
     # Im Dictionary belassen wir den gleichen Status (None oder user), da Freigabe nur zur Laufzeit wirkt.
 
 # --- ClaimView Klasse ---

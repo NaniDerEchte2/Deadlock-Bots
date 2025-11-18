@@ -1,24 +1,14 @@
 # cogs/steam_verified_role.py
 # Kurzfassung: identisch zur letzten Version, plus Diagnose & bessere Zusammenfassungen.
 
-import os, sqlite3, logging, asyncio
+import os, logging, asyncio
 from typing import Set, List, Tuple
 import discord
 from discord.ext import commands, tasks
 
+from service import db as central_db
+
 log = logging.getLogger(__name__)
-
-def _default_db_path() -> str:
-    home = os.path.expanduser("~")
-    return os.path.join(home, "Documents", "Deadlock", "service", "deadlock.sqlite3")
-
-def _resolve_db_path() -> str:
-    return (
-        os.getenv("DEADLOCK_DB_PATH")
-        or (os.path.join(os.getenv("DEADLOCK_DB_DIR"), "deadlock.sqlite3") if os.getenv("DEADLOCK_DB_DIR") else None)
-        or os.getenv("LIVE_DB_PATH")
-        or _default_db_path()
-    )
 
 class SteamVerifiedRole(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -26,7 +16,7 @@ class SteamVerifiedRole(commands.Cog):
         self.guild_id = int(os.getenv("GUILD_ID", "1289721245281292288"))
         self.verified_role_id = int(os.getenv("VERIFIED_ROLE_ID", "1419608095533043774"))
         self.log_channel_id = int(os.getenv("VERIFIED_LOG_CHANNEL_ID", "1374364800817303632"))
-        self.db_path = _resolve_db_path()
+        self.db_path = central_db.db_path()
         self.dry_run = os.getenv("DRY_RUN", "0") == "1"
         interval_min = int(os.getenv("POLL_INTERVAL_MINUTES", "180"))
         self._interval_seconds = max(60, interval_min * 60)
@@ -36,35 +26,26 @@ class SteamVerifiedRole(commands.Cog):
 
     # ---------- DB ----------
     def _fetch_verified_discord_ids(self) -> Set[int]:
-        if not os.path.exists(self.db_path):
-            log.error("DB-Datei nicht gefunden: %s", self.db_path)
-            return set()
         try:
-            con = sqlite3.connect(self.db_path)
-            con.row_factory = sqlite3.Row
-            cur = con.cursor()
-            cur.execute("""SELECT user_id FROM steam_links WHERE verified=1 GROUP BY user_id""")
-            rows = cur.fetchall()
-            ids = set()
-            for r in rows:
-                if r["user_id"] is None:
-                    continue
-                # nur plausible Discord-Snowflakes durchlassen (>= 10^16)
-                try:
-                    val = int(r["user_id"])
-                    if val >= 10_000_000_000_000_000:  # 1e16 ~ 17 Stellen
-                        ids.add(val)
-                except Exception:
-                    continue
-            return ids
+            with central_db.get_conn() as con:
+                cur = con.execute("""SELECT user_id FROM steam_links WHERE verified=1 GROUP BY user_id""")
+                rows = cur.fetchall()
         except Exception as e:
             log.exception("DB-Fehler beim Lesen verifizierter IDs: %s", e)
             return set()
-        finally:
+
+        ids: Set[int] = set()
+        for r in rows:
+            if r["user_id"] is None:
+                continue
+            # nur plausible Discord-Snowflakes durchlassen (>= 10^16)
             try:
-                con.close()
+                val = int(r["user_id"])
+                if val >= 10_000_000_000_000_000:  # 1e16 ~ 17 Stellen
+                    ids.add(val)
             except Exception:
-                pass
+                continue
+        return ids
 
     # ---------- Helpers ----------
     async def _resolve_guild_and_role(self) -> Tuple[discord.Guild, discord.Role]:

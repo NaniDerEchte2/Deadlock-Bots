@@ -24,6 +24,11 @@ from typing import Any, Iterable, Iterator, Optional
 
 log = logging.getLogger(__name__)
 
+# ---- Timeouts (per-connection) ---------------------------------------------
+# Default: wait up to 15s on busy locks; override with ENV if needed.
+DB_BUSY_TIMEOUT_MS = int(os.environ.get("DEADLOCK_DB_BUSY_TIMEOUT_MS", "15000"))
+DB_CONNECT_TIMEOUT = float(os.environ.get("DEADLOCK_DB_TIMEOUT", str(DB_BUSY_TIMEOUT_MS / 1000)))
+
 # ---- Env-Keys (nur diese beiden werden unterstützt) ----
 ENV_DB_PATH = "DEADLOCK_DB_PATH"   # kompletter Pfad zur DB-Datei (höchste Prio)
 ENV_DB_DIR  = "DEADLOCK_DB_DIR"    # nur Verzeichnis; Datei = deadlock.sqlite3
@@ -111,6 +116,7 @@ def connect() -> sqlite3.Connection:
         path,
         check_same_thread=False,
         isolation_level=None,   # Autocommit
+        timeout=DB_CONNECT_TIMEOUT,
     )
     _CONN.row_factory = sqlite3.Row
 
@@ -119,7 +125,7 @@ def connect() -> sqlite3.Connection:
         _CONN.execute("PRAGMA journal_mode=WAL;")
         _CONN.execute("PRAGMA synchronous=NORMAL;")
         _CONN.execute("PRAGMA foreign_keys=ON;")
-        _CONN.execute("PRAGMA busy_timeout=5000;")               # 5s
+        _CONN.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS};")
         _CONN.execute("PRAGMA wal_autocheckpoint=1000;")         # ~1000 Seiten
         _CONN.execute("PRAGMA journal_size_limit=104857600;")    # 100 MB
         _CONN.execute("PRAGMA temp_store=MEMORY;")

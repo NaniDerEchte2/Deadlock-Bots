@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands, tasks
-import sqlite3
 import json
+import sqlite3
 import asyncio
 from datetime import datetime, timedelta
 import os
@@ -29,9 +29,9 @@ def _add_repo_root_for_imports(marker="service/db.py") -> str:
 
 REPO_ROOT = _add_repo_root_for_imports()
 
-# zentrale DB (nur Pfad holen, keine Auto-Neuanlage)
-from service.db import db_path as central_db_path
-DB_FILE = str(Path(central_db_path()))
+# zentrale DB via service.db
+from service import db as central_db
+DB_FILE = str(Path(central_db.db_path()))
 
 # .env laden (fixer Pfad)
 from dotenv import load_dotenv
@@ -82,40 +82,24 @@ STATE_PUBLISH_INTERVAL = 30  # seconds
 NOTIFICATION_START_HOUR = 8
 NOTIFICATION_END_HOUR = 22
 
-# ============= ZENTRALE DB – NUR RW, KEIN Fallback/Auto-Neuanlage =============
-def _db_uri_rw(p: str) -> str:
-    """Erzeugt eine SQLite-URI mit mode=rw (Datei muss bereits existieren)."""
-    ap = Path(p).resolve().as_posix()
-    return f"file:{ap}?mode=rw"
-
-def open_conn(timeout: float = 5.0) -> sqlite3.Connection:
-    """Öffnet die zentrale DB im rw-Modus (ohne Neuanlage)."""
-    try:
-        conn = sqlite3.connect(_db_uri_rw(DB_FILE), timeout=timeout, uri=True)
-        return conn
-    except sqlite3.OperationalError as e:
-        logger.critical(
-            "❌ Zentrale DB konnte nicht geöffnet werden (mode=rw).\n"
-            f"Pfad: {DB_FILE}\nFehler: {e}\n"
-            "Bitte sicherstellen, dass die Datei existiert und beschreibbar ist."
-        )
-        raise
+# ============= ZENTRALE DB - immer ueber service.db =============
 
 def _vacuum_db():
     try:
-        with open_conn() as conn:
+        with central_db.get_conn() as conn:
             conn.execute("VACUUM")
-    except sqlite3.Error as e:
+    except Exception as e:
         logger.warning(f"Database vacuum failed: {e}")
 
 atexit.register(_vacuum_db)
+
 
 def init_database():
     """
     Initialisiert/verwaltet Tabellen innerhalb der zentralen DB.
     WICHTIG: Die DB-Datei selbst wird NICHT angelegt – sie muss existieren.
     """
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         # WAL/Sync für Skalierung (idempotent)
         cursor.execute('PRAGMA journal_mode=WAL')
@@ -187,7 +171,7 @@ def init_database():
 
 # ---------- DB Helper ----------
 def get_user_data(user_id: str) -> dict:
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT custom_interval, paused_until FROM user_data WHERE user_id = ?', (user_id,))
         result = cursor.fetchone()
@@ -197,7 +181,7 @@ def get_user_data(user_id: str) -> dict:
         return {}
 
 def save_user_data(user_id: str, data: dict):
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO user_data (user_id, custom_interval, paused_until, updated_at)
@@ -206,7 +190,7 @@ def save_user_data(user_id: str, data: dict):
         conn.commit()
 
 def save_persistent_view(message_id: str, channel_id: str, guild_id: str, view_type: str, user_id: str = None):
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO persistent_views (message_id, channel_id, guild_id, view_type, user_id)
@@ -215,13 +199,13 @@ def save_persistent_view(message_id: str, channel_id: str, guild_id: str, view_t
         conn.commit()
 
 def remove_persistent_view(message_id: str):
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM persistent_views WHERE message_id = ?', (message_id,))
         conn.commit()
 
 def load_persistent_views():
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(persistent_views)")
         columns = [row[1] for row in cursor.fetchall()]
@@ -234,7 +218,7 @@ def load_persistent_views():
         return cursor.fetchall()
 
 def cleanup_old_views(guild_id: str, view_type: str):
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM persistent_views WHERE guild_id = ? AND view_type = ?', (guild_id, view_type))
         deleted_count = cursor.rowcount
@@ -245,7 +229,7 @@ def cleanup_old_views(guild_id: str, view_type: str):
 # ---------- Standalone Dashboard Integration ----------
 
 def fetch_pending_commands(limit: int = COMMAND_POLL_LIMIT) -> List[sqlite3.Row]:
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -263,7 +247,7 @@ def fetch_pending_commands(limit: int = COMMAND_POLL_LIMIT) -> List[sqlite3.Row]
     return rows
 
 def mark_command_running(command_id: int) -> bool:
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -289,7 +273,7 @@ def _truncate_error(message: Optional[str], limit: int = 1500) -> Optional[str]:
 def finalize_command(command_id: int, status: str, *, result: Optional[Dict[str, Any]] = None, error: Optional[str] = None) -> None:
     result_json = json.dumps(result, ensure_ascii=False) if result is not None else None
     error_text = _truncate_error(error)
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -326,7 +310,7 @@ def collect_rank_bot_snapshot() -> Dict[str, Any]:
     }
 
     try:
-        with open_conn() as conn:
+        with central_db.get_conn() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -440,7 +424,7 @@ def collect_rank_bot_snapshot() -> Dict[str, Any]:
 def update_standalone_state(snapshot: Dict[str, Any]) -> None:
     heartbeat = int(time.time())
     payload = json.dumps(snapshot, ensure_ascii=False)
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -564,7 +548,7 @@ async def remove_all_rank_roles(member: discord.Member, guild: discord.Guild):
                 logger.warning("remove_all_rank_roles: konnte Rolle nicht entfernen: %s", e)
 
 def track_dm_sent(user_id: str):
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO dm_response_tracking 
@@ -574,7 +558,7 @@ def track_dm_sent(user_id: str):
         conn.commit()
 
 def track_dm_response(user_id: str):
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             UPDATE dm_response_tracking 
@@ -723,7 +707,7 @@ class NoNotificationButton(discord.ui.Button):
                 logger.debug("Followup send after error failed: %r", e2)
 
         try:
-            with open_conn() as conn:
+            with central_db.get_conn() as conn:
                 cursor = conn.cursor()
                 cursor.execute('DELETE FROM persistent_views WHERE message_id = ? AND view_type = ?', (str(interaction.message.id), 'dm_rank_select'))
                 conn.commit()
@@ -775,7 +759,7 @@ class NoDeadlockButton(discord.ui.Button):
                 logger.debug("Followup send after error failed: %r", e2)
 
         try:
-            with open_conn() as conn:
+            with central_db.get_conn() as conn:
                 cursor = conn.cursor()
                 cursor.execute('DELETE FROM persistent_views WHERE message_id = ? AND view_type = ?', (str(interaction.message.id), 'dm_rank_select'))
                 conn.commit()
@@ -805,7 +789,7 @@ class FinishedButton(discord.ui.Button):
         await interaction.response.edit_message(embed=embed, view=None)
         track_dm_response(str(interaction.user.id))
         try:
-            with open_conn() as conn:
+            with central_db.get_conn() as conn:
                 cur = conn.cursor()
                 cur.execute('DELETE FROM persistent_views WHERE message_id = ? AND view_type = ?', (str(interaction.message.id), 'dm_rank_select'))
                 conn.commit()
@@ -930,7 +914,7 @@ async def restore_persistent_views():
 
 # ---------- DM Helper ----------
 async def get_existing_dm_view(user_id: str) -> Optional[Dict[str, Any]]:
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT message_id, channel_id FROM persistent_views WHERE user_id = ? AND view_type = ? LIMIT 1',
                        (user_id, 'dm_rank_select'))
@@ -954,7 +938,7 @@ async def get_existing_dm_view(user_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 async def cleanup_old_dm_views(user_id: str):
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT message_id, channel_id FROM persistent_views WHERE user_id = ? AND view_type = ?',
                        (user_id, 'dm_rank_select'))
@@ -974,7 +958,7 @@ async def cleanup_old_dm_views(user_id: str):
         except Exception as e:
             logger.warning(f"Could not delete old DM message {message_id}: {e}")
 
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM persistent_views WHERE user_id = ? AND view_type = ?',
                        (user_id, 'dm_rank_select'))
@@ -988,7 +972,7 @@ async def cleanup_old_dm_views_auto() -> int:
     cutoff_date = (datetime.now() - timedelta(days=7)).isoformat()
     cleaned_count = 0
 
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             SELECT message_id, channel_id, user_id 
@@ -1012,7 +996,7 @@ async def cleanup_old_dm_views_auto() -> int:
             logger.warning(f"Could not delete old DM message {message_id}: {e}")
         cleaned_count += 1
 
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM persistent_views WHERE view_type = ? AND created_at < ?',
                        ('dm_rank_select', cutoff_date))
@@ -1251,7 +1235,7 @@ async def set_test_users(ctx: commands.Context, *users: discord.Member):
 async def create_queue_manually(ctx: commands.Context):
     msg = await ctx.send(embed=discord.Embed(title="🔄 Queue wird erstellt...", description="Erstelle Benachrichtigungs-Queue für heute", color=0xffaa00))
     await create_daily_queue()
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM notification_queue WHERE queue_date = ?', (datetime.now().strftime('%Y-%m-%d'),))
         queue_count = cursor.fetchone()[0]
@@ -1265,7 +1249,7 @@ async def create_queue_manually(ctx: commands.Context):
 async def create_remaining_queue(ctx: commands.Context):
     msg = await ctx.send(embed=discord.Embed(title="🔄 Remaining Queue wird erstellt...", description="Erstelle Queue nur mit noch nicht verarbeiteten Usern", color=0xffaa00))
     today = datetime.now().strftime('%Y-%m-%d')
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT user_id, guild_id, rank FROM notification_queue WHERE queue_date = ? AND processed = FALSE', (today,))
         remaining_users = cursor.fetchall()
@@ -1275,7 +1259,7 @@ async def create_remaining_queue(ctx: commands.Context):
         return
 
     new_queue_data = [(user_id, guild_id, rank, today, False) for user_id, guild_id, rank in remaining_users]
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM notification_queue WHERE queue_date = ?', (today,))
         cursor.executemany('''
@@ -1297,7 +1281,7 @@ async def create_never_contacted_queue(ctx: commands.Context):
     today = datetime.now().strftime('%Y-%m-%d')
     all_members = [m for m in guild.members if not m.bot]
 
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT DISTINCT user_id FROM notification_log')
         contacted_users = {row[0] for row in cursor.fetchall()}
@@ -1317,7 +1301,7 @@ async def create_never_contacted_queue(ctx: commands.Context):
         await msg.edit(embed=discord.Embed(title="ℹ️ Alle User bereits kontaktiert", description="Alle User mit Rang-Rollen haben bereits mindestens eine DM erhalten!", color=0x0099ff))
         return
 
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM notification_queue WHERE queue_date = ?', (today,))
         cursor.executemany('''
@@ -1352,7 +1336,7 @@ async def check_never_contacted(ctx: commands.Context):
                     break
             user_mapping[str(member.id)] = (member, user_rank)
 
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT DISTINCT user_id FROM notification_log')
         contacted_users = {row[0] for row in cursor.fetchall()}
@@ -1442,7 +1426,7 @@ async def add_user_to_queue(ctx: commands.Context, user: discord.Member):
         await ctx.send(embed=embed)
         return
 
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO notification_queue (user_id, guild_id, rank, queue_date)
@@ -1462,7 +1446,7 @@ async def add_user_to_queue(ctx: commands.Context, user: discord.Member):
 @commands.has_permissions(administrator=True)
 async def view_database(ctx: commands.Context, table: str = None):
     if not table:
-        with open_conn() as conn:
+        with central_db.get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT COUNT(*) FROM user_data')
             user_count = cursor.fetchone()[0]
@@ -1483,7 +1467,7 @@ async def view_database(ctx: commands.Context, table: str = None):
 
     t = table.lower()
     if t == 'users':
-        with open_conn() as conn:
+        with central_db.get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT user_id, custom_interval, paused_until FROM user_data LIMIT 10')
             results = cursor.fetchall()
@@ -1510,7 +1494,7 @@ async def view_database(ctx: commands.Context, table: str = None):
         return
 
     if t == 'notifications':
-        with open_conn() as conn:
+        with central_db.get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT user_id, rank, notification_time, count FROM notification_log ORDER BY notification_time DESC LIMIT 10')
             results = cursor.fetchall()
@@ -1536,7 +1520,7 @@ async def view_database(ctx: commands.Context, table: str = None):
         return
 
     if t == 'queue':
-        with open_conn() as conn:
+        with central_db.get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT user_id, rank, queue_date FROM notification_queue WHERE queue_date = ? ORDER BY user_id', (datetime.now().strftime('%Y-%m-%d'),))
             results = cursor.fetchall()
@@ -1564,7 +1548,7 @@ async def view_database(ctx: commands.Context, table: str = None):
         return
 
     if t == 'views':
-        with open_conn() as conn:
+        with central_db.get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT message_id, channel_id, guild_id, view_type, user_id FROM persistent_views')
             results = cursor.fetchall()
@@ -1605,7 +1589,7 @@ async def view_database(ctx: commands.Context, table: str = None):
 
 # ---------- Scheduler ----------
 def log_notification(user_id: str, rank: str):
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('INSERT INTO notification_log (user_id, rank) VALUES (?, ?)', (user_id, rank))
         conn.commit()
@@ -1617,7 +1601,7 @@ def is_notification_time() -> bool:
     return NOTIFICATION_START_HOUR <= now.hour < NOTIFICATION_END_HOUR
 
 def save_queue_data(queue_data: list, date: str):
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM notification_queue WHERE queue_date = ?', (date,))
         for item in queue_data:
@@ -1628,7 +1612,7 @@ def save_queue_data(queue_data: list, date: str):
         conn.commit()
 
 def load_queue_data(date: str) -> list:
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             SELECT user_id, guild_id, rank 
@@ -1640,7 +1624,7 @@ def load_queue_data(date: str) -> list:
         return [{'user_id': row[0], 'guild_id': row[1], 'rank': row[2]} for row in results]
 
 def mark_queue_item_processed(user_id: str, guild_id: str, date: str):
-    with open_conn() as conn:
+    with central_db.get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute('''
             UPDATE notification_queue 
@@ -1737,7 +1721,7 @@ async def create_daily_queue():
             custom_interval = user_data.get('custom_interval')
             interval_days = custom_interval if custom_interval else RANK_INTERVALS.get(current_rank, 30)
 
-            with open_conn() as conn:
+            with central_db.get_conn() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     SELECT notification_time 

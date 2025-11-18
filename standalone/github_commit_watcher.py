@@ -18,11 +18,18 @@ import os
 import sys
 import time
 import json
-import sqlite3
 import logging
+from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
 
 import requests
+
+# Repo-Root einbinden, damit service.db importierbar ist
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from service import db as central_db
 
 # -------------------- Logging früh initialisieren -------------------- #
 logging.basicConfig(
@@ -161,7 +168,7 @@ load_dotenv_fallback()
 DISCORD_WEBHOOK = (os.getenv("DISCORD_WEBHOOK") or "").strip()
 WATCH_LIST = os.getenv("WATCH_LIST", "SteamDatabase/GameTracking-Deadlock@master")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SEC", "60"))
-DB_PATH = os.getenv("DB_PATH", "./commit_watcher.sqlite3")
+DB_PATH = central_db.db_path()
 GITHUB_TOKEN = (os.getenv("GITHUB_TOKEN") or "").strip()
 
 ATTACH_PATCH = (os.getenv("ATTACH_PATCH", "false").lower() == "true")
@@ -189,25 +196,22 @@ CREATE TABLE IF NOT EXISTS state (
 );
 """
 
-def db_connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute(DDL)
-    return conn
+def db_init() -> None:
+    with central_db.get_conn() as conn:
+        conn.executescript(DDL)
 
-def db_get_state(conn: sqlite3.Connection, repo: str, branch: str) -> Tuple[Optional[str], Optional[str]]:
-    cur = conn.execute("SELECT last_commit_sha, etag FROM state WHERE repo=? AND branch=?", (repo, branch))
-    row = cur.fetchone()
+
+def db_get_state(repo: str, branch: str) -> Tuple[Optional[str], Optional[str]]:
+    row = central_db.query_one("SELECT last_commit_sha, etag FROM state WHERE repo=? AND branch=?", (repo, branch))
     return (row[0], row[1]) if row else (None, None)
 
-def db_set_state(conn: sqlite3.Connection, repo: str, branch: str, sha: Optional[str], etag: Optional[str]) -> None:
-    conn.execute(
+
+def db_set_state(repo: str, branch: str, sha: Optional[str], etag: Optional[str]) -> None:
+    central_db.execute(
         "INSERT INTO state(repo,branch,last_commit_sha,etag) VALUES(?,?,?,?) "
         "ON CONFLICT(repo,branch) DO UPDATE SET last_commit_sha=excluded.last_commit_sha, etag=excluded.etag",
-        (repo, branch, sha, etag)
+        (repo, branch, sha, etag),
     )
-    conn.commit()
 
 # ---------- HTTP / GitHub Helper ----------
 SESSION = requests.Session()
@@ -450,8 +454,8 @@ def build_single_commit_embed(repo: str, commit: Dict[str, Any]) -> Dict[str, An
 
 
 # ---------- Watcher ----------
-def process_repo(conn: sqlite3.Connection, repo: str, branch: str) -> None:
-    last_sha, etag = db_get_state(conn, repo, branch)
+def process_repo(repo: str, branch: str) -> None:
+    last_sha, etag = db_get_state(repo, branch)
     status, new_etag, commits = gh_list_commits(repo, branch, etag)
     if status == 304:
         return
@@ -468,7 +472,7 @@ def process_repo(conn: sqlite3.Connection, repo: str, branch: str) -> None:
         new_items = [commits[0]]  # Erstlauf: nur neuesten posten
 
     if not new_items:
-        db_set_state(conn, repo, branch, last_sha or commits[0]["sha"], new_etag)
+        db_set_state(repo, branch, last_sha or commits[0]["sha"], new_etag)
         return
 
     if len(new_items) == 1:
@@ -482,23 +486,23 @@ def process_repo(conn: sqlite3.Connection, repo: str, branch: str) -> None:
             else:
                 ok = discord_post_embed(embed)
             if ok:
-                db_set_state(conn, repo, branch, sha, new_etag)
+                db_set_state(repo, branch, sha, new_etag)
                 log.info("[%s@%s] 1 Commit gemeldet (%s)", repo, branch, sha[:7])
                 return
 
     embed = build_overview_embed(repo, branch, new_items)
     if discord_post_embed(embed):
         newest_sha = new_items[0]["sha"]
-        db_set_state(conn, repo, branch, newest_sha, new_etag)
+        db_set_state(repo, branch, newest_sha, new_etag)
         log.info("[%s@%s] %d Commits gemeldet (overview), last=%s", repo, branch, len(new_items), newest_sha[:7])
 
 
 def main():
     watch = parse_watch_list(WATCH_LIST)
     if not watch:
-        log.error("WATCH_LIST leer – nichts zu tun.")
+        log.error("WATCH_LIST leer - nichts zu tun.")
         sys.exit(1)
-    conn = db_connect()
+    db_init()
     log.info(
         "Watcher gestartet. Interval=%ss, DB=%s, Repos=%s",
         POLL_INTERVAL, DB_PATH, ", ".join([f"{r}@{b}" for r, b in watch])
@@ -507,18 +511,13 @@ def main():
         while True:
             for repo, branch in watch:
                 try:
-                    process_repo(conn, repo, branch)
+                    process_repo(repo, branch)
                 except Exception:
                     log.exception("Fehler bei %s@%s", repo, branch)
                 time.sleep(1.5)
             time.sleep(POLL_INTERVAL)
     except KeyboardInterrupt:
         log.info("Beendet.")
-    finally:
-        try:
-            conn.close()
-        except Exception as e:
-            log.warning("DB close Warnung: %s", e)
 
 
 if __name__ == "__main__":

@@ -1,80 +1,22 @@
 # cogs/twitch/storage.py
 import logging
-import os
 import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
+
+from service import db as central_db
 
 log = logging.getLogger("TwitchStreams")
-
-# --- zentrale DB anbinden, mit Fallback auf lokale Datei --------------------
-try:
-    from service.db import get_conn as _central_get_conn  # type: ignore
-    from service.db import db_path as _central_db_path  # type: ignore
-except Exception:
-    _central_get_conn = None  # type: ignore[assignment]
-    _central_db_path = None  # type: ignore[assignment]
-
-if _central_get_conn is None:
-    _fallback = os.getenv("DEADLOCK_DB_PATH")
-    if not _fallback:
-        if _central_db_path is not None:
-            _fallback = _central_db_path()
-        else:
-            user_profile = os.environ.get("USERPROFILE")
-            if user_profile:
-                base_dir = Path(user_profile) / "Documents" / "Deadlock" / "service"
-            else:
-                base_dir = Path.home() / "Documents" / "Deadlock" / "service"
-            _fallback = str(base_dir / "deadlock.sqlite3")
-    _FALLBACK_PATH = _fallback
-else:
-    _FALLBACK_PATH = _central_db_path() if "_central_db_path" in globals() and _central_db_path else None
-
-if _FALLBACK_PATH:
-    Path(_FALLBACK_PATH).parent.mkdir(parents=True, exist_ok=True)
-
-
-@contextmanager
-def _fallback_ctx():
-    conn = sqlite3.connect(_FALLBACK_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        ensure_schema(conn)
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 @contextmanager
 def get_conn():
     """
-    Contextmanager für eine SQLite-Connection.
-    - Nutzt die zentrale DB (service.db.get_conn), wenn verfügbar.
-    - Fällt ansonsten auf eine lokale Datei (deadlock.db) zurück.
-    Wichtig: In *jedem* Zweig muss 'yield' verwendet werden (kein 'return' eines Generators)!
+    Contextmanager fuer eine SQLite-Connection.
+    - Nutzt ausschliesslich die zentrale DB (service.db.get_conn) als einzige Quelle.
     """
-    # Versuch: zentrale DB
-    if _central_get_conn:
-        try:
-            cm = _central_get_conn()  # liefert selbst einen Contextmanager
-        except Exception:
-            log.exception("Zentrale DB nicht verfügbar – nutze lokalen Fallback")
-            cm = None
-        if cm is not None:
-            with cm as conn:  # type: ignore[misc]
-                ensure_schema(conn)
-                yield conn
-                return
-
-    # Fallback: lokale Datei
-    with _fallback_ctx() as conn:
+    with central_db.get_conn() as conn:
+        ensure_schema(conn)
         yield conn
-
 
 # --- Schema / Migration -----------------------------------------------------
 

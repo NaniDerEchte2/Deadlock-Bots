@@ -538,6 +538,7 @@ const RECONNECT_DELAY_MS = parseInt(process.env.STEAM_RECONNECT_DELAY_MS || '500
 const COMMAND_BOT_KEY = 'steam';
 const COMMAND_POLL_INTERVAL_MS = parseInt(process.env.STEAM_COMMAND_POLL_MS || '2000', 10);
 const STATE_PUBLISH_INTERVAL_MS = parseInt(process.env.STEAM_STATE_PUBLISH_MS || '15000', 10);
+const DB_BUSY_TIMEOUT_MS = Math.max(5000, parseInt(process.env.DEADLOCK_DB_BUSY_TIMEOUT_MS || '15000', 10));
 
 const dbPath = resolveDbPath();
 ensureDir(path.dirname(dbPath));
@@ -545,7 +546,7 @@ log('info', 'Using SQLite database', { dbPath });
 const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
-db.pragma('busy_timeout = 5000');
+db.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
 
 // ---------- Tasks Table ----------
 db.prepare(`
