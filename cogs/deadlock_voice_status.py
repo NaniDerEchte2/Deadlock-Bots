@@ -24,7 +24,7 @@ TARGET_CATEGORY_IDS: Set[int] = {
 
 POLL_INTERVAL_SECONDS = 60
 PRESENCE_STALE_SECONDS = 180
-RENAME_COOLDOWN_SECONDS = 620
+RENAME_COOLDOWN_SECONDS = 360
 RENAME_REASON = "Deadlock Voice Status Update"
 MIN_ACTIVE_PLAYERS = 1
 
@@ -423,19 +423,7 @@ class DeadlockVoiceStatus(commands.Cog):
             )
             return
 
-        allow_rename = False
-        if stage_label != last_stage:
-            allow_rename = True
-        elif last_base and last_base != base_clean:
-            allow_rename = True
-        elif stage_label == "match" and bucket_label != last_bucket:
-            allow_rename = elapsed >= RENAME_COOLDOWN_SECONDS
-        elif desired_suffix is None and last_suffix is not None:
-            allow_rename = elapsed >= RENAME_COOLDOWN_SECONDS
-        else:
-            allow_rename = elapsed >= RENAME_COOLDOWN_SECONDS
-
-        if not allow_rename:
+        if elapsed < RENAME_COOLDOWN_SECONDS:
             return
 
         try:
@@ -469,7 +457,7 @@ class DeadlockVoiceStatus(commands.Cog):
     def _bucket_minutes(minutes: int) -> str:
         if minutes >= 50:
             return "50+"
-        bucket = (minutes // 10) * 10
+        bucket = (minutes // 5) * 5
         return str(bucket)
 
 
