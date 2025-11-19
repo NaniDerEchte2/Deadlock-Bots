@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+import aiohttp
 import aiosqlite
 import discord
 from discord.ext import commands
@@ -429,8 +430,9 @@ class DeadlockVoiceStatus(commands.Cog):
         try:
             await channel.edit(name=target_name, reason=RENAME_REASON)
             await asyncio.sleep(1)  # gentle pacing against rate limits
-        except discord.HTTPException as exc:
+        except (discord.HTTPException, aiohttp.ClientError, OSError) as exc:
             log.warning("Failed to rename voice channel %s: %s", channel.id, exc)
+            state["last_rename"] = time.time()
             return
 
         self.channel_states[channel.id] = {
