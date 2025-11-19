@@ -631,7 +631,6 @@ class TwitchLeaderboardMixin:
         {hour_clause}
         GROUP BY streamer
         ORDER BY avg_viewers DESC
-        LIMIT 100
         """
         ).format(hour_clause=hour_clause)
         category_sql = (
@@ -646,7 +645,6 @@ class TwitchLeaderboardMixin:
         {hour_clause}
         GROUP BY streamer
         ORDER BY avg_viewers DESC
-        LIMIT 100
         """
         ).format(hour_clause=hour_clause)
 
