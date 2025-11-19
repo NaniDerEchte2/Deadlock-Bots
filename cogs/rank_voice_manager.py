@@ -1,11 +1,15 @@
 import asyncio
 import logging
+import os
+import time
+from pathlib import Path
 from typing import Dict, Tuple, List, Optional, Set
+
 import aiosqlite
 import discord
 from discord.ext import commands
+
 from service.db import db_path
-from pathlib import Path
 
 try:
     from cogs.tempvoice.core import MINRANK_CATEGORY_IDS
@@ -90,6 +94,16 @@ class RolePermissionVoiceManager(commands.Cog):
 
         # DB
         self.db: Optional[aiosqlite.Connection] = None
+        # Rename throttle
+        interval_raw = os.getenv("RANK_VOICE_RENAME_INTERVAL_SECONDS", "360")
+        try:
+            interval_val = int(interval_raw)
+        except ValueError:
+            interval_val = 360
+        self._channel_rename_interval = max(60, interval_val)
+        self._last_channel_rename: Dict[int, float] = {}
+        self._pending_channel_renames: Dict[int, str] = {}
+        self._rename_tasks: Dict[int, asyncio.Task] = {}
 
     @staticmethod
     def _is_tempvoice_lane(channel: discord.VoiceChannel) -> bool:
@@ -257,6 +271,13 @@ class RolePermissionVoiceManager(commands.Cog):
             self.guild_roles_cache.clear()
             self.channel_anchors.clear()
             self.channel_settings.clear()
+            for task in list(self._rename_tasks.values()):
+                try:
+                    task.cancel()
+                except Exception:
+                    pass
+            self._rename_tasks.clear()
+            self._pending_channel_renames.clear()
             if self.db:
                 await self.db.close()
             logger.info("RolePermissionVoiceManager Cog erfolgreich entladen")
@@ -419,7 +440,7 @@ class RolePermissionVoiceManager(commands.Cog):
         except Exception as e:
             logger.error(f"clear_role_permissions Fehler: {e}")
 
-    async def update_channel_name(self, channel: discord.VoiceChannel):
+    async def update_channel_name(self, channel: discord.VoiceChannel, *, force: bool = False):
         try:
             if not await self.channel_exists(channel):
                 return
@@ -445,12 +466,73 @@ class RolePermissionVoiceManager(commands.Cog):
                     rank_name, _rv2 = members_ranks[first_member]
                     new_name = f"{rank_name} Lobby"
 
-            if channel.name != new_name:
-                await channel.edit(name=new_name)
+            if channel.name == new_name:
+                self._pending_channel_renames.pop(channel.id, None)
+                existing_task = self._rename_tasks.pop(channel.id, None)
+                if existing_task and not existing_task.done():
+                    existing_task.cancel()
+                return
+
+            now = time.monotonic()
+            if not force:
+                last_rename = self._last_channel_rename.get(channel.id)
+                if last_rename is not None:
+                    elapsed = now - last_rename
+                    if elapsed < self._channel_rename_interval:
+                        remaining = self._channel_rename_interval - elapsed
+                        logger.debug(
+                            "rename cooldown active for %s (%.1fs remaining)",
+                            channel.name,
+                            remaining,
+                        )
+                        self._schedule_delayed_channel_rename(channel, new_name, remaining)
+                        return
+
+            pending_task = self._rename_tasks.pop(channel.id, None)
+            if pending_task and not pending_task.done():
+                pending_task.cancel()
+            self._pending_channel_renames.pop(channel.id, None)
+
+            await channel.edit(name=new_name)
+            self._last_channel_rename[channel.id] = now
         except discord.NotFound:
             return
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"update_channel_name Fehler: {e}")
+
+    def _schedule_delayed_channel_rename(
+        self, channel: discord.VoiceChannel, new_name: str, delay: float
+    ) -> None:
+        self._pending_channel_renames[channel.id] = new_name
+        delay_seconds = max(0.0, float(delay))
+
+        existing = self._rename_tasks.get(channel.id)
+        if existing and not existing.done():
+            return
+
+        async def _apply_later():
+            try:
+                await asyncio.sleep(delay_seconds)
+                latest_name = self._pending_channel_renames.get(channel.id)
+                if not latest_name:
+                    return
+                if not await self.channel_exists(channel):
+                    return
+                await channel.edit(name=latest_name)
+                self._last_channel_rename[channel.id] = time.monotonic()
+            except asyncio.CancelledError:
+                raise
+            except discord.NotFound:
+                return
+            except Exception as exc:
+                logger.error(f"Verzögerter Channel-Rename fehlgeschlagen (%s): %s", channel.id, exc)
+            finally:
+                self._pending_channel_renames.pop(channel.id, None)
+                self._rename_tasks.pop(channel.id, None)
+
+        self._rename_tasks[channel.id] = asyncio.create_task(_apply_later())
 
     def get_rank_name_from_value(self, rank_value: int) -> str:
         for rn, val in self.deadlock_ranks.items():
@@ -732,7 +814,7 @@ class RolePermissionVoiceManager(commands.Cog):
             await self.set_channel_system_enabled(channel, True)
             await ctx.send(f"✅ Aktiviert: **{channel.name}**")
             await self.update_channel_permissions_via_roles(channel)
-            await self.update_channel_name(channel)
+            await self.update_channel_name(channel, force=True)
         elif action_l in ["aus", "off", "deaktivieren", "disable"]:
             if not current:
                 await ctx.send(f"ℹ️ Bereits deaktiviert für **{channel.name}**.")
@@ -849,7 +931,7 @@ class RolePermissionVoiceManager(commands.Cog):
                 await self.set_channel_anchor(channel, first_member, rn, rv)
 
             await self.update_channel_permissions_via_roles(channel, force=True)
-            await self.update_channel_name(channel)
+            await self.update_channel_name(channel, force=True)
             await ctx.send(f"✅ Kanal **{channel.name}** aktualisiert.")
         except Exception as e:
             logger.error(f"force_update Fehler: {e}")
