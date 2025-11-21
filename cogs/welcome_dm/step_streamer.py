@@ -764,28 +764,42 @@ class StreamerOnboarding(commands.Cog):
 
     @app_commands.command(name="streamer", description="Streamer-Partner werden (2 Schritte).")
     async def streamer_cmd(self, interaction: discord.Interaction):
-        """Startet Schritt 1 im aktuellen Kanal/Thread oder in DMs."""
+        """Startet Schritt 1 direkt per DM und bestaetigt hier nur kurz."""
         try:
-            await interaction.response.send_message(
+            await interaction.response.defer(ephemeral=True)
+        except Exception:
+            log.debug("streamer_cmd defer failed", exc_info=True)
+
+        try:
+            dm = await interaction.user.create_dm()
+            await dm.send(
                 embed=StreamerIntroView.build_embed(interaction.user),
                 view=StreamerIntroView(),
-                ephemeral=False  # bewusst öffentlich, damit Mods ggf. helfen können
+            )
+            await _safe_send(
+                interaction,
+                content=(
+                    "Ich habe dir den Streamer-Setup in die DMs geschickt. "
+                    "Schau dort vorbei; die Buttons bleiben persistent."
+                ),
+                ephemeral=True,
             )
         except discord.Forbidden:
-            # Fallback auf DM
-            try:
-                dm = await interaction.user.create_dm()
-                await dm.send(embed=StreamerIntroView.build_embed(interaction.user), view=StreamerIntroView())
-                await interaction.followup.send("Ich habe dir den Streamer-Setup per DM geschickt.", ephemeral=True)
-            except Exception as e:
-                log.error("streamer_cmd DM fallback failed: %r", e)
-                await interaction.followup.send("Konnte dir keine Nachricht senden. Bitte kontaktiere das Team.", ephemeral=True)
+            await _safe_send(
+                interaction,
+                content=(
+                    "Ich konnte dir keine DM senden. "
+                    "Bitte erlaube Direktnachrichten vom Server oder kontaktiere das Team."
+                ),
+                ephemeral=True,
+            )
         except Exception as e:
             log.error("streamer_cmd failed: %r", e)
-            try:
-                await interaction.followup.send("Unerwarteter Fehler beim Start. Bitte probiere es erneut.", ephemeral=True)
-            except Exception as exc:
-                log.debug("streamer_cmd followup send failed: %s", exc)
+            await _safe_send(
+                interaction,
+                content="Unerwarteter Fehler beim Start. Bitte probiere es erneut.",
+                ephemeral=True,
+            )
 
 
 async def setup(bot: commands.Bot):
