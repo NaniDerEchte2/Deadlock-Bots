@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import aiohttp
 import aiosqlite
@@ -46,6 +48,20 @@ class DeadlockVoiceStatus(commands.Cog):
         self.db: Optional[aiosqlite.Connection] = None
         self.channel_states: Dict[int, Dict[str, object]] = {}
         self._task: Optional[asyncio.Task[None]] = None
+        self.last_observation: Dict[int, Dict[str, Any]] = {}
+
+        trace_env = (os.getenv("DEADLOCK_VS_TRACE") or "").strip().lower()
+        self.trace_enabled = trace_env in {"1", "true", "yes", "on"}
+        self.trace_channel_filter: Set[int] = set()
+        self.trace_file = Path(os.getenv("DEADLOCK_VS_TRACE_FILE", "logs/deadlock_voice_status.log"))
+        channel_filter_raw = os.getenv("DEADLOCK_VS_TRACE_CHANNELS", "")
+        for part in re.split(r"[\\s,;]+", channel_filter_raw):
+            part = part.strip()
+            if part.isdigit():
+                self.trace_channel_filter.add(int(part))
+        self._trace_handler: Optional[logging.Handler] = None
+        if self.trace_enabled:
+            self._enable_trace_logger()
 
     async def cog_load(self) -> None:
         await self._ensure_db()
@@ -69,6 +85,59 @@ class DeadlockVoiceStatus(commands.Cog):
         path = Path(db_path())
         self.db = await aiosqlite.connect(str(path))
         self.db.row_factory = aiosqlite.Row
+
+    def _enable_trace_logger(self) -> None:
+        if self._trace_handler:
+            return
+        try:
+            self.trace_file.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        handler = logging.FileHandler(self.trace_file, encoding="utf-8")
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter("%(asctime)s [TRACE] %(message)s"))
+        log.addHandler(handler)
+        log.setLevel(logging.DEBUG)
+        self._trace_handler = handler
+        log.info("DeadlockVoiceStatus trace logging enabled at %s", self.trace_file)
+
+    def _disable_trace_logger(self) -> None:
+        if not self._trace_handler:
+            self.trace_enabled = False
+            return
+        try:
+            log.removeHandler(self._trace_handler)
+            self._trace_handler.close()
+        except Exception:
+            pass
+        finally:
+            self._trace_handler = None
+        self.trace_enabled = False
+        log.info("DeadlockVoiceStatus trace logging disabled")
+
+    @staticmethod
+    def _json_fallback(obj: Any) -> Any:
+        if isinstance(obj, set):
+            return list(obj)
+        if isinstance(obj, Path):
+            return str(obj)
+        return str(obj)
+
+    def _store_trace(self, channel_id: int, payload: Dict[str, Any]) -> None:
+        if not payload:
+            return
+        try:
+            self.last_observation[channel_id] = payload
+        except Exception:
+            pass
+        if not self.trace_enabled:
+            return
+        if self.trace_channel_filter and channel_id not in self.trace_channel_filter:
+            return
+        try:
+            log.debug(json.dumps(payload, ensure_ascii=True, default=self._json_fallback))
+        except Exception:
+            log.debug("trace %r", payload)
 
     async def _run_loop(self) -> None:
         await self.bot.wait_until_ready()
@@ -204,15 +273,39 @@ class DeadlockVoiceStatus(commands.Cog):
     ) -> None:
         base_name, current_suffix = self._split_suffix(channel.name)
         total_members = len(members)
-
+        trace_payload: Dict[str, Any] = {
+            "channel_id": channel.id,
+            "channel_name": channel.name,
+            "base_name": base_name,
+            "current_suffix": current_suffix,
+            "total_members": total_members,
+            "presence": [],
+            "decision": {},
+        }
         if total_members == 0:
-            await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None)
+            trace_payload["decision"] = {"reason": "empty_channel"}
+            await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None, trace_payload)
             return
-
         presence_entries: List[Tuple[str, int, Optional[str]]] = []
         for member in members:
             steam_id = steam_map.get(member.id)
             presence = self._evaluate_presence(steam_id, presence_map, now)
+            row = presence_map.get(str(steam_id)) if steam_id else None
+            trace_entry: Dict[str, Any] = {
+                "member_id": member.id,
+                "member": member.display_name,
+                "steam_id": steam_id,
+                "stage": presence[0] if presence else None,
+                "minutes": presence[1] if presence else None,
+                "server_id": presence[2] if presence else None,
+                "raw_stage": self._safe_row_value(row, "deadlock_stage"),
+                "raw_minutes": self._safe_row_value(row, "deadlock_minutes"),
+                "raw_updated_at": self._safe_row_value(row, "deadlock_updated_at") or self._safe_row_value(row, "last_seen_ts"),
+                "raw_localized": self._safe_row_value(row, "deadlock_localized"),
+                "raw_party_hint": self._safe_row_value(row, "deadlock_party_hint"),
+                "raw_last_server_id": self._safe_row_value(row, "last_server_id"),
+            }
+            trace_payload["presence"].append(trace_entry)
             if not presence:
                 continue
             stage, minutes, server_id = presence
@@ -221,7 +314,8 @@ class DeadlockVoiceStatus(commands.Cog):
             presence_entries.append((stage, minutes or 0, server_id))
 
         if not presence_entries:
-            await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None)
+            trace_payload["decision"] = {"reason": "no_presence_entries"}
+            await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None, trace_payload)
             return
         candidate_stage: Optional[str] = None
         candidate_minutes: List[int] = []
@@ -276,16 +370,38 @@ class DeadlockVoiceStatus(commands.Cog):
                 chosen_server_id = None
 
         if not candidate_stage or candidate_count < MIN_ACTIVE_PLAYERS:
-            await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None)
+            trace_payload["decision"] = {
+                "reason": "no_candidate",
+                "candidate_stage": candidate_stage,
+                "candidate_count": candidate_count,
+            }
+            await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None, trace_payload)
             return
 
         player_count_raw = len(candidate_minutes)
         player_count = min(player_count_raw, 6)
         effective_total = min(total_members, 6)
         voice_slots = max(player_count, effective_total)
+        trace_payload["decision"] = {
+            "reason": "candidate_selected",
+            "candidate_stage": candidate_stage,
+            "candidate_count": candidate_count,
+            "candidate_minutes": candidate_minutes,
+            "chosen_server_id": chosen_server_id,
+            "player_count_raw": player_count_raw,
+            "voice_slots": voice_slots,
+            "member_count": total_members,
+        }
 
         if candidate_stage == "lobby":
             suffix = f"{player_count}/{voice_slots} in der Lobby"
+            trace_payload["decision"].update(
+                {
+                    "suffix": suffix,
+                    "player_count": player_count,
+                    "voice_slots_effective": voice_slots,
+                }
+            )
             await self._apply_channel_name(
                 channel,
                 base_name,
@@ -296,6 +412,7 @@ class DeadlockVoiceStatus(commands.Cog):
                 player_count,
                 voice_slots,
                 chosen_server_id,
+                trace_payload,
             )
             return
 
@@ -303,6 +420,15 @@ class DeadlockVoiceStatus(commands.Cog):
             max_minutes = max(candidate_minutes) if candidate_minutes else 0
             bucket = self._bucket_minutes(max_minutes)
             suffix = f"{player_count}/{voice_slots} im Match Min {bucket}"
+            trace_payload["decision"].update(
+                {
+                    "suffix": suffix,
+                    "player_count": player_count,
+                    "voice_slots_effective": voice_slots,
+                    "bucket": bucket,
+                    "max_minutes": max_minutes,
+                }
+            )
             await self._apply_channel_name(
                 channel,
                 base_name,
@@ -313,10 +439,21 @@ class DeadlockVoiceStatus(commands.Cog):
                 player_count,
                 voice_slots,
                 chosen_server_id,
+                trace_payload,
             )
             return
 
-        await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None)
+        trace_payload["decision"]["reason"] = "fallback"
+        await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None, trace_payload)
+
+    @staticmethod
+    def _safe_row_value(row: Optional[aiosqlite.Row], key: str) -> Optional[Any]:
+        if row is None:
+            return None
+        try:
+            return row[key]
+        except Exception:
+            return None
 
     def _evaluate_presence(
         self,
@@ -381,9 +518,24 @@ class DeadlockVoiceStatus(commands.Cog):
         player_count: Optional[int],
         voice_slots: Optional[int],
         server_identifier: Optional[str] = None,
+        debug_payload: Optional[Dict[str, Any]] = None,
     ) -> None:
         base_clean = base_name.rstrip()
         target_name = base_clean if not desired_suffix else f"{base_clean} - {desired_suffix}"
+        trace_data = debug_payload or {}
+        rename_info: Dict[str, Any] = {
+            "base": base_clean,
+            "target_name": target_name,
+            "current_name": channel.name,
+            "desired_suffix": desired_suffix,
+            "current_suffix": current_suffix,
+            "stage": stage_label,
+            "bucket": bucket_label,
+            "player_count": player_count,
+            "voice_slots": voice_slots,
+            "server_id": server_identifier,
+            "attempted": False,
+        }
 
         if channel.name == target_name:
             state = self.channel_states.setdefault(channel.id, {})
@@ -398,17 +550,23 @@ class DeadlockVoiceStatus(commands.Cog):
                     "server_id": server_identifier,
                 }
             )
+            rename_info["result"] = "noop_target_matches"
+            trace_data["rename"] = rename_info
+            self._store_trace(channel.id, trace_data)
             return
 
         state = self.channel_states.setdefault(channel.id, {})
-        last_stage = state.get("stage")
-        last_bucket = state.get("bucket")
-        last_suffix = state.get("suffix")
-        last_base = state.get("base")
         last_rename = state.get("last_rename", 0.0)
         elapsed = time.time() - float(last_rename)
 
         should_rename = desired_suffix != current_suffix or base_clean != channel.name.rstrip()
+        rename_info.update(
+            {
+                "should_rename": should_rename,
+                "elapsed_since_last": elapsed,
+                "cooldown_remaining": max(0.0, RENAME_COOLDOWN_SECONDS - elapsed),
+            }
+        )
 
         if not should_rename:
             state.update(
@@ -422,9 +580,15 @@ class DeadlockVoiceStatus(commands.Cog):
                     "server_id": server_identifier,
                 }
             )
+            rename_info["result"] = "noop_same_suffix"
+            trace_data["rename"] = rename_info
+            self._store_trace(channel.id, trace_data)
             return
 
         if elapsed < RENAME_COOLDOWN_SECONDS:
+            rename_info["result"] = "cooldown"
+            trace_data["rename"] = rename_info
+            self._store_trace(channel.id, trace_data)
             return
 
         try:
@@ -433,8 +597,14 @@ class DeadlockVoiceStatus(commands.Cog):
         except (discord.HTTPException, aiohttp.ClientError, OSError) as exc:
             log.warning("Failed to rename voice channel %s: %s", channel.id, exc)
             state["last_rename"] = time.time()
+            rename_info.update({"result": "error", "error": str(exc)})
+            trace_data["rename"] = rename_info
+            self._store_trace(channel.id, trace_data)
             return
 
+        rename_info["result"] = "renamed"
+        rename_info["attempted"] = True
+        trace_data["rename"] = rename_info
         self.channel_states[channel.id] = {
             "base": base_clean,
             "stage": stage_label,
@@ -445,6 +615,89 @@ class DeadlockVoiceStatus(commands.Cog):
             "server_id": server_identifier,
             "last_rename": time.time(),
         }
+        self._store_trace(channel.id, trace_data)
+
+    @commands.group(name="dlvs", invoke_without_command=True)
+    @commands.has_permissions(manage_guild=True)
+    async def dlvs_group(self, ctx: commands.Context) -> None:
+        status = "aktiv" if self.trace_enabled else "aus"
+        filter_info = (
+            "alle Kanaele"
+            if not self.trace_channel_filter
+            else ", ".join(str(cid) for cid in sorted(self.trace_channel_filter))
+        )
+        await ctx.send(
+            f"DeadlockVoiceStatus Trace: {status} | Filter: {filter_info} | Logfile: {self.trace_file}"
+        )
+
+    @dlvs_group.command(name="trace")
+    @commands.has_permissions(manage_guild=True)
+    async def dlvs_trace(
+        self,
+        ctx: commands.Context,
+        mode: Optional[str] = None,
+        channel: Optional[discord.VoiceChannel] = None,
+    ) -> None:
+        if not mode:
+            await self.dlvs_group(ctx)
+            return
+
+        mode_l = mode.lower()
+        if mode_l in {"on", "an", "start", "enable"}:
+            self.trace_enabled = True
+            target_channel = channel or (ctx.author.voice.channel if ctx.author.voice else None)
+            self.trace_channel_filter = {target_channel.id} if target_channel else set()
+            self._enable_trace_logger()
+            target_label = f"Channel {target_channel.name} ({target_channel.id})" if target_channel else "alle"
+            await ctx.send(f"Trace an ({target_label}), schreibt nach {self.trace_file}")
+            return
+
+        if mode_l in {"off", "aus", "stop", "disable"}:
+            self.trace_channel_filter.clear()
+            self._disable_trace_logger()
+            await ctx.send("Trace aus.")
+            return
+
+        await ctx.send("Nutze `on/an` oder `off/aus`. Optional kannst du einen Voice-Channel angeben.")
+
+    @dlvs_group.command(name="snapshot")
+    @commands.has_permissions(manage_guild=True)
+    async def dlvs_snapshot(
+        self,
+        ctx: commands.Context,
+        channel: Optional[discord.VoiceChannel] = None,
+    ) -> None:
+        target_channel = channel or (ctx.author.voice.channel if ctx.author.voice else None)
+        if not target_channel:
+            await ctx.send("Bitte gib einen Voice-Channel an oder sei in einem VC.")
+            return
+
+        snapshot = self.last_observation.get(target_channel.id)
+        if not snapshot:
+            await ctx.send("Keine Beobachtung fuer diesen Kanal vorhanden.")
+            return
+
+        decision = snapshot.get("decision", {}) or {}
+        rename = snapshot.get("rename", {}) or {}
+        lines = [
+            f"{target_channel.name} ({target_channel.id})",
+            f"Entscheidung: {decision.get('candidate_stage')} | Server: {decision.get('chosen_server_id')} | Suffix: {decision.get('suffix')}",
+            f"Bucket/Min: {decision.get('bucket') or decision.get('max_minutes')} | Spieler: {decision.get('player_count')} / {decision.get('voice_slots_effective')}",
+            f"Rename: {rename.get('result')} | should={rename.get('should_rename')} | cooldown={rename.get('cooldown_remaining')}s",
+        ]
+
+        presence_lines = []
+        for entry in (snapshot.get("presence") or [])[:10]:
+            presence_lines.append(
+                f"- {entry.get('member')} ({entry.get('steam_id') or '-'}) -> {entry.get('stage')} "
+                f"{entry.get('minutes')}m srv={entry.get('server_id')} raw_stage={entry.get('raw_stage')}"
+            )
+        if not presence_lines:
+            presence_lines.append("- Keine Presence-Daten.")
+        if len((snapshot.get("presence") or [])) > len(presence_lines):
+            presence_lines.append("... gekuerzt ...")
+
+        await ctx.send("\n".join(lines + presence_lines))
 
     @staticmethod
     def _split_suffix(name: str) -> Tuple[str, Optional[str]]:
