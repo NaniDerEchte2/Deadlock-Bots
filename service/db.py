@@ -180,6 +180,21 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               last_update   DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            -- Voice Session Log (historisch, f\u00fcr Zeitverl\u00e4ufe)
+            CREATE TABLE IF NOT EXISTS voice_session_log(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              guild_id INTEGER,
+              channel_id INTEGER,
+              channel_name TEXT,
+              started_at DATETIME NOT NULL,
+              ended_at DATETIME NOT NULL,
+              duration_seconds INTEGER NOT NULL DEFAULT 0,
+              points INTEGER NOT NULL DEFAULT 0,
+              peak_users INTEGER,
+              user_counts_json TEXT
+            );
+
             -- Steam-Links (mehrere Konten pro User möglich)
             CREATE TABLE IF NOT EXISTS steam_links(
               user_id    INTEGER NOT NULL,
@@ -384,6 +399,9 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute("CREATE INDEX IF NOT EXISTS idx_standalone_commands_status ON standalone_commands(bot, status, id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_standalone_commands_created ON standalone_commands(created_at)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_standalone_state_updated ON standalone_bot_state(updated_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_log_started ON voice_session_log(started_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_log_user ON voice_session_log(user_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_log_guild ON voice_session_log(guild_id)")
         except sqlite3.Error as e:
             logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)
 

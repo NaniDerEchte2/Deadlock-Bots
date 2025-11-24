@@ -354,6 +354,29 @@ class RolePermissionVoiceManager(commands.Cog):
             logger.error(f"@everyone setzen fehlgeschlagen: {e}")
             return False
 
+    async def reset_everyone_connect(self, channel: discord.VoiceChannel) -> bool:
+        """Entfernt den Connect-Deny f�r @everyone, damit neue Anker den Kanal wieder betreten k�nnen."""
+        try:
+            if not await self.channel_exists(channel):
+                return False
+            everyone_role = channel.guild.default_role
+            ow = channel.overwrites_for(everyone_role)
+            changed = False
+            if ow.connect is not None:
+                ow.connect = None
+                changed = True
+            if ow.view_channel is None:
+                ow.view_channel = True
+                changed = True
+            if changed:
+                await channel.set_permissions(everyone_role, overwrite=ow)
+            return True
+        except discord.NotFound:
+            return False
+        except Exception as e:
+            logger.error(f"@everyone Reset fehlgeschlagen: {e}")
+            return False
+
     async def channel_exists(self, channel: discord.VoiceChannel) -> bool:
         try:
             fresh = channel.guild.get_channel(channel.id)
@@ -369,19 +392,20 @@ class RolePermissionVoiceManager(commands.Cog):
             if not self.is_channel_system_enabled(channel):
                 return
 
+            members_ranks = await self.get_channel_members_ranks(channel)
+            if not members_ranks:
+                # leer -> Anker entfernen + Rollen-Overwrites entfernen
+                await self.remove_channel_anchor(channel)
+                await self.reset_everyone_connect(channel)
+                await self.clear_role_permissions(channel)
+                self.channel_permissions_initialized.discard(channel.id)
+                return
+
             if not force and channel.id in self.channel_permissions_initialized:
                 return
 
             ok = await self.set_everyone_deny_connect(channel)
             if not ok:
-                return
-
-            members_ranks = await self.get_channel_members_ranks(channel)
-            if not members_ranks:
-                # leer -> Anker entfernen + Rollen-Overwrites entfernen
-                await self.remove_channel_anchor(channel)
-                await self.clear_role_permissions(channel)
-                self.channel_permissions_initialized.discard(channel.id)
                 return
 
             allowed_min, allowed_max = self.calculate_balancing_range_from_anchor(channel)

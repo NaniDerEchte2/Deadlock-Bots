@@ -210,6 +210,39 @@ class VoiceActivityTrackerCog(commands.Cog):
             )
         except Exception as e:
             logger.error(f"DB write failed on session finalize: {e}")
+
+        # Historische Session protokollieren (f\u00fcr Verlauf im Dashboard)
+        try:
+            started_at = session.get('start_time')
+            if isinstance(started_at, datetime):
+                started_iso = started_at.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                started_iso = None
+            ended_iso = end_time.strftime("%Y-%m-%d %H:%M:%S")
+            user_counts_json = json.dumps(session.get('user_counts') or [])
+            central_db.execute(
+                """
+                INSERT INTO voice_session_log(
+                  user_id, guild_id, channel_id, channel_name,
+                  started_at, ended_at, duration_seconds, points, peak_users, user_counts_json
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    session.get('user_id'),
+                    session.get('guild_id'),
+                    session.get('channel_id'),
+                    session.get('channel_name'),
+                    started_iso,
+                    ended_iso,
+                    seconds,
+                    points,
+                    session.get('peak_users'),
+                    user_counts_json,
+                ),
+            )
+        except Exception as e:
+            logger.error(f"Failed to log voice session history: {e}")
         return seconds, points
 
     def is_user_active_basic(self, voice_state: discord.VoiceState) -> bool:

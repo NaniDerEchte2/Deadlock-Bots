@@ -273,9 +273,9 @@ class TwitchMonitoringMixin:
                 if self._alert_mention:
                     message_prefix.append(self._alert_mention)
                 stream_title = (stream.get("title") or "").strip()
-                live_announcement = f"🔴 **{display_name}** ist live: {url}"
+                live_announcement = f"🔴 **{display_name}** ist live! Schau über den Button unten rein."
                 if stream_title:
-                    live_announcement = f"{live_announcement} – {stream_title}"
+                    live_announcement = f"{live_announcement} - {stream_title}"
                 message_prefix.append(live_announcement)
                 content = " ".join(part for part in message_prefix if part).strip()
 
@@ -336,7 +336,7 @@ class TwitchMonitoringMixin:
                     except Exception:
                         log.exception("Konnte Deadlock-Ende-Posting nicht laden: %s", login)
                     else:
-                        ended_content = f"**{display_name}** (Beendet): {referral_url}"
+                        ended_content = f"**{display_name}** (Beendet)"
                         try:
                             await fetched_message.edit(content=ended_content, embed=None, view=None)
                         except Exception:

@@ -515,6 +515,81 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             font-size: 0.85rem;
             margin: 0;
         }
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+        .section-header h2 {
+            margin: 0;
+        }
+        .section-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.6rem;
+            color: #adb5bd;
+            font-size: 0.9rem;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.75rem;
+            margin-top: 1rem;
+        }
+        .stat-card {
+            background: #161616;
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 10px;
+            padding: 0.9rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .stat-label {
+            color: #adb5bd;
+            font-size: 0.9rem;
+        }
+        .stat-value {
+            font-size: 1.4rem;
+            font-weight: 700;
+        }
+        .stat-sub {
+            color: #868e96;
+            font-size: 0.8rem;
+        }
+        .voice-columns {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        .voice-table {
+            width: 100%;
+            overflow-x: auto;
+        }
+        .voice-table table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .voice-table th, .voice-table td {
+            padding: 0.45rem 0.4rem;
+            text-align: left;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .voice-table th {
+            font-size: 0.85rem;
+            color: #adb5bd;
+            font-weight: 600;
+        }
+        .voice-table td {
+            font-size: 0.92rem;
+        }
+        .voice-meta {
+            color: #adb5bd;
+            font-size: 0.9rem;
+        }
     </style>
 </head>
 <body>
@@ -548,6 +623,55 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     <section>
         <h2>Site Health</h2>
         <div id="health-container" class="health-grid"></div>
+    </section>
+
+    <section>
+        <div class="section-header">
+            <h2>Voice Aktivit\u00e4t</h2>
+            <div class="section-actions">
+                <button class="reload" id="voice-refresh">Neu laden</button>
+                <span class="voice-meta" id="voice-updated">Letzte Aktualisierung: -</span>
+            </div>
+        </div>
+        <div id="voice-summary" class="stats-grid"></div>
+        <div class="voice-columns">
+            <div class="card">
+                <h3>Top nach Zeit</h3>
+                <div id="voice-top-time" class="voice-table"></div>
+            </div>
+            <div class="card">
+                <h3>Top nach Punkten</h3>
+                <div id="voice-top-points" class="voice-table"></div>
+            </div>
+            <div class="card">
+                <h3>Aktive Sessions</h3>
+                <div id="voice-live" class="voice-table"></div>
+            </div>
+        </div>
+    </section>
+
+    <section>
+        <div class="section-header">
+            <h2>Voice Historie</h2>
+            <div class="section-actions">
+                <button class="reload" id="voice-history-refresh">Neu laden</button>
+                <span class="voice-meta" id="voice-history-updated">Letzte Aktualisierung: -</span>
+            </div>
+        </div>
+        <div class="voice-columns">
+            <div class="card">
+                <h3>Tages-\u00dcbersicht</h3>
+                <div id="voice-history-daily" class="voice-table"></div>
+            </div>
+            <div class="card">
+                <h3>Top User (Zeitraum)</h3>
+                <div id="voice-history-top" class="voice-table"></div>
+            </div>
+            <div class="card">
+                <h3>Letzte Sessions</h3>
+                <div id="voice-history-sessions" class="voice-table"></div>
+            </div>
+        </div>
     </section>
 
     <section>
@@ -588,6 +712,17 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const resetSelectionBtn = document.getElementById('reset-selection');
     const standaloneContainer = document.getElementById('standalone-container');
     const healthContainer = document.getElementById('health-container');
+    const voiceSummary = document.getElementById('voice-summary');
+    const voiceTopTime = document.getElementById('voice-top-time');
+    const voiceTopPoints = document.getElementById('voice-top-points');
+    const voiceLive = document.getElementById('voice-live');
+    const voiceUpdated = document.getElementById('voice-updated');
+    const voiceRefreshButton = document.getElementById('voice-refresh');
+    const voiceHistoryDaily = document.getElementById('voice-history-daily');
+    const voiceHistoryTop = document.getElementById('voice-history-top');
+    const voiceHistorySessions = document.getElementById('voice-history-sessions');
+    const voiceHistoryUpdated = document.getElementById('voice-history-updated');
+    const voiceHistoryRefreshButton = document.getElementById('voice-history-refresh');
     const STANDALONE_COMMANDS = {
         rank: [
             { value: 'queue.daily', label: 'Daily Queue erstellen' },
@@ -645,6 +780,18 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             showHiddenCogs = !showHiddenCogs;
             updateHiddenToggleButton();
             renderTree(lastTreeData);
+        });
+    }
+
+    if (voiceRefreshButton) {
+        voiceRefreshButton.addEventListener('click', () => {
+            loadVoiceStats();
+        });
+    }
+
+    if (voiceHistoryRefreshButton) {
+        voiceHistoryRefreshButton.addEventListener('click', () => {
+            loadVoiceHistory();
         });
     }
 
@@ -945,6 +1092,297 @@ function formatLatency(ms) {
         return ms.toFixed(0) + ' ms';
     }
     return ms.toFixed(2) + ' ms';
+}
+
+function renderVoiceSummary(summary = {}, liveSummary = {}) {
+    if (!voiceSummary) {
+        return;
+    }
+    voiceSummary.innerHTML = '';
+    const cards = [
+        {
+            label: 'Erfasste User',
+            value: safeNumber(summary.tracked_users),
+            sub: formatTimestamp(summary.last_update) !== '-' ? 'Letztes Update: ' + formatTimestamp(summary.last_update) : '-',
+        },
+        {
+            label: 'Gesamtzeit',
+            value: formatSeconds(summary.total_seconds),
+            sub: `${safeNumber(summary.total_points)} Punkte`,
+        },
+        {
+            label: '\u00d8 Zeit pro User',
+            value: formatSeconds(summary.avg_seconds_per_user),
+            sub: 'Alle Eintr\u00e4ge in voice_stats',
+        },
+        {
+            label: 'Live',
+            value: `${safeNumber(liveSummary.active_sessions)} aktiv`,
+            sub: `${formatSeconds(liveSummary.total_seconds)} laufend`,
+        },
+    ];
+    cards.forEach((card) => {
+        const el = document.createElement('div');
+        el.className = 'stat-card';
+        const label = document.createElement('div');
+        label.className = 'stat-label';
+        label.textContent = card.label;
+        const value = document.createElement('div');
+        value.className = 'stat-value';
+        value.textContent = card.value;
+        const sub = document.createElement('div');
+        sub.className = 'stat-sub';
+        sub.textContent = card.sub;
+        el.appendChild(label);
+        el.appendChild(value);
+        el.appendChild(sub);
+        voiceSummary.appendChild(el);
+    });
+}
+
+function renderVoiceTable(target, rows, emptyLabel) {
+    if (!target) {
+        return;
+    }
+    target.innerHTML = '';
+    if (!Array.isArray(rows) || rows.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'voice-meta';
+        empty.textContent = emptyLabel || 'Keine Daten verf\u00fcgbar.';
+        target.appendChild(empty);
+        return;
+    }
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>#</th><th>User</th><th>Zeit</th><th>Punkte</th><th>Update</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    rows.forEach((row, idx) => {
+        const tr = document.createElement('tr');
+        const pos = document.createElement('td');
+        pos.textContent = idx + 1;
+        const user = document.createElement('td');
+        user.textContent = row.display_name || row.user_id;
+        const time = document.createElement('td');
+        time.textContent = formatSeconds(row.total_seconds);
+        const points = document.createElement('td');
+        points.textContent = safeNumber(row.total_points);
+        const updated = document.createElement('td');
+        updated.textContent = formatTimestamp(row.last_update);
+        tr.appendChild(pos);
+        tr.appendChild(user);
+        tr.appendChild(time);
+        tr.appendChild(points);
+        tr.appendChild(updated);
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    target.appendChild(table);
+}
+
+function renderVoiceLive(target, sessions) {
+    if (!target) {
+        return;
+    }
+    target.innerHTML = '';
+    if (!Array.isArray(sessions) || sessions.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'voice-meta';
+        empty.textContent = 'Keine aktiven Sessions.';
+        target.appendChild(empty);
+        return;
+    }
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>User</th><th>Dauer</th><th>Channel</th><th>Peak</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    sessions.forEach((session) => {
+        const tr = document.createElement('tr');
+        const user = document.createElement('td');
+        user.textContent = session.display_name || session.user_id;
+        const duration = document.createElement('td');
+        duration.textContent = formatSeconds(session.duration_seconds);
+        const channel = document.createElement('td');
+        channel.textContent = session.channel_name || session.channel_id || '-';
+        if (session.started_at) {
+            const meta = document.createElement('div');
+            meta.className = 'stat-sub';
+            meta.textContent = 'Start: ' + formatTimestamp(session.started_at);
+            channel.appendChild(meta);
+        }
+        const peak = document.createElement('td');
+        peak.textContent = safeNumber(session.peak_users) || '-';
+        tr.appendChild(user);
+        tr.appendChild(duration);
+        tr.appendChild(channel);
+        tr.appendChild(peak);
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    target.appendChild(table);
+}
+
+function renderVoiceStats(data) {
+    const summary = (data && data.summary) || {};
+    const live = (data && data.live) || {};
+    const liveSummary = live.summary || {};
+    renderVoiceSummary(summary, liveSummary);
+    renderVoiceTable(voiceTopTime, data ? data.top_by_time : [], 'Noch keine Voice-Aktivit\u00e4t.');
+    renderVoiceTable(voiceTopPoints, data ? data.top_by_points : [], 'Noch keine Voice-Aktivit\u00e4t.');
+    renderVoiceLive(voiceLive, live.sessions || []);
+    if (voiceUpdated) {
+        const label = summary.last_update ? formatTimestamp(summary.last_update) : new Date().toLocaleTimeString();
+        voiceUpdated.textContent = 'Letzte Aktualisierung: ' + label;
+    }
+}
+
+async function loadVoiceStats() {
+    try {
+        const data = await fetchJSON('/api/voice-stats');
+        renderVoiceStats(data);
+    } catch (err) {
+        if (voiceSummary) {
+            voiceSummary.innerHTML = '<div class=\"voice-meta\">Fehler beim Laden der Voice-Daten.</div>';
+        }
+        log('Voice Stats konnten nicht geladen werden: ' + err.message, 'error');
+    }
+}
+
+function renderVoiceHistoryDaily(target, rows) {
+    if (!target) {
+        return;
+    }
+    target.innerHTML = '';
+    if (!Array.isArray(rows) || !rows.length) {
+        const empty = document.createElement('div');
+        empty.className = 'voice-meta';
+        empty.textContent = 'Keine Historie im gewählten Zeitraum.';
+        target.appendChild(empty);
+        return;
+    }
+    const table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>Tag</th><th>Gesamtzeit</th><th>Sessions</th><th>User</th></tr></thead>';
+    const tbody = document.createElement('tbody');
+    rows.forEach((row) => {
+        const tr = document.createElement('tr');
+        const day = document.createElement('td');
+        day.textContent = row.day || '-';
+        const dur = document.createElement('td');
+        dur.textContent = formatSeconds(row.total_seconds);
+        const sess = document.createElement('td');
+        sess.textContent = safeNumber(row.sessions);
+        const users = document.createElement('td');
+        users.textContent = safeNumber(row.users);
+        tr.appendChild(day);
+        tr.appendChild(dur);
+        tr.appendChild(sess);
+        tr.appendChild(users);
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    target.appendChild(table);
+}
+
+function renderVoiceHistoryTop(target, rows) {
+    if (!target) {
+        return;
+    }
+    target.innerHTML = '';
+    if (!Array.isArray(rows) || !rows.length) {
+        const empty = document.createElement('div');
+        empty.className = 'voice-meta';
+        empty.textContent = 'Noch keine Daten im Zeitraum.';
+        target.appendChild(empty);
+        return;
+    }
+    const table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>#</th><th>User</th><th>Zeit</th><th>Punkte</th><th>Sessions</th></tr></thead>';
+    const tbody = document.createElement('tbody');
+    rows.forEach((row, idx) => {
+        const tr = document.createElement('tr');
+        const pos = document.createElement('td');
+        pos.textContent = idx + 1;
+        const name = document.createElement('td');
+        name.textContent = row.display_name || row.user_id;
+        const dur = document.createElement('td');
+        dur.textContent = formatSeconds(row.total_seconds);
+        const pts = document.createElement('td');
+        pts.textContent = safeNumber(row.total_points);
+        const sess = document.createElement('td');
+        sess.textContent = safeNumber(row.sessions);
+        tr.appendChild(pos);
+        tr.appendChild(name);
+        tr.appendChild(dur);
+        tr.appendChild(pts);
+        tr.appendChild(sess);
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    target.appendChild(table);
+}
+
+function renderVoiceHistorySessions(target, rows) {
+    if (!target) {
+        return;
+    }
+    target.innerHTML = '';
+    if (!Array.isArray(rows) || !rows.length) {
+        const empty = document.createElement('div');
+        empty.className = 'voice-meta';
+        empty.textContent = 'Keine Sessions im Zeitraum.';
+        target.appendChild(empty);
+        return;
+    }
+    const table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>User</th><th>Dauer</th><th>Channel</th><th>Start</th><th>Punkte</th></tr></thead>';
+    const tbody = document.createElement('tbody');
+    rows.forEach((row) => {
+        const tr = document.createElement('tr');
+        const user = document.createElement('td');
+        user.textContent = row.display_name || row.user_id;
+        const dur = document.createElement('td');
+        dur.textContent = formatSeconds(row.duration_seconds);
+        const channel = document.createElement('td');
+        channel.textContent = row.channel_name || '-';
+        const start = document.createElement('td');
+        start.textContent = formatTimestamp(row.started_at);
+        const pts = document.createElement('td');
+        pts.textContent = safeNumber(row.points);
+        tr.appendChild(user);
+        tr.appendChild(dur);
+        tr.appendChild(channel);
+        tr.appendChild(start);
+        tr.appendChild(pts);
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    target.appendChild(table);
+}
+
+function renderVoiceHistory(data) {
+    if (!data) {
+        return;
+    }
+    renderVoiceHistoryDaily(voiceHistoryDaily, data.daily || []);
+    renderVoiceHistoryTop(voiceHistoryTop, data.top_users || []);
+    renderVoiceHistorySessions(voiceHistorySessions, data.sessions || []);
+    if (voiceHistoryUpdated) {
+        const now = new Date().toLocaleTimeString();
+        voiceHistoryUpdated.textContent = 'Letzte Aktualisierung: ' + now + ` (letzte ${data.range_days || 0} Tage)`;
+    }
+}
+
+async function loadVoiceHistory() {
+    try {
+        const data = await fetchJSON('/api/voice-history?range=14&limit=50&top=10');
+        renderVoiceHistory(data);
+    } catch (err) {
+        if (voiceHistoryDaily) {
+            voiceHistoryDaily.innerHTML = '<div class=\"voice-meta\">Fehler beim Laden der Voice-Historie.</div>';
+        }
+        log('Voice Historie konnte nicht geladen werden: ' + err.message, 'error');
+    }
 }
 
 function renderRankMetrics(container, metrics) {
@@ -1822,6 +2260,10 @@ async function fetchStandaloneLogs(key, limit = 200) {
 
     loadStatus();
     setInterval(loadStatus, 15000);
+    loadVoiceStats();
+    setInterval(loadVoiceStats, 30000);
+    loadVoiceHistory();
+    setInterval(loadVoiceHistory, 60000);
     </script>
 </body>
 </html>
@@ -1927,6 +2369,8 @@ class DashboardServer:
                     web.post("/api/cogs/reload-namespace", self._handle_reload_namespace),
                     web.post("/api/cogs/block", self._handle_block),
                     web.post("/api/cogs/unblock", self._handle_unblock),
+                    web.get("/api/voice-stats", self._handle_voice_stats),
+                    web.get("/api/voice-history", self._handle_voice_history),
                     web.post("/api/cogs/discover", self._handle_discover),
                     web.get("/api/standalone", self._handle_standalone_list),
                     web.get("/api/standalone/{key}/logs", self._handle_standalone_logs),
@@ -2334,6 +2778,316 @@ class DashboardServer:
         self._check_auth(request, required=bool(self.token))
         html_text = _HTML_TEMPLATE.replace("{{TWITCH_URL}}", self._twitch_dashboard_href)
         return web.Response(text=html_text, content_type="text/html")
+
+    def _voice_cog(self) -> Any:
+        """
+        Try to retrieve the VoiceActivityTrackerCog instance without importing it directly.
+        Falls back to name matching to stay resilient if the cog isn't loaded.
+        """
+        try:
+            cog = self.bot.get_cog("VoiceActivityTrackerCog")
+            if cog:
+                return cog
+        except Exception:
+            pass
+        for cog in self.bot.cogs.values():
+            if cog.__class__.__name__ == "VoiceActivityTrackerCog":
+                return cog
+        return None
+
+    def _resolve_display_names(self, user_ids: Iterable[int]) -> Dict[int, str]:
+        names: Dict[int, str] = {}
+        for uid in {u for u in user_ids if u}:
+            display_name: Optional[str] = None
+            for guild in self.bot.guilds:
+                try:
+                    member = guild.get_member(uid)
+                except Exception:
+                    member = None
+                if member:
+                    display_name = getattr(member, "display_name", None) or getattr(member, "name", None)
+                    break
+            if not display_name:
+                user = self.bot.get_user(uid)
+                if user:
+                    display_name = getattr(user, "display_name", None) or getattr(user, "name", None)
+            names[uid] = display_name or f"User {uid}"
+        return names
+
+    async def _collect_live_voice_sessions(self) -> List[Dict[str, Any]]:
+        cog = self._voice_cog()
+        if not cog:
+            return []
+        try:
+            voice_sessions = dict(getattr(cog, "voice_sessions", {}) or {})
+        except Exception:
+            voice_sessions = {}
+        now = _dt.datetime.utcnow()
+        sessions: List[Dict[str, Any]] = []
+        for session in voice_sessions.values():
+            user_id = session.get("user_id")
+            start_time = session.get("start_time")
+            guild_id = session.get("guild_id")
+            channel_id = session.get("channel_id")
+            channel_name = session.get("channel_name")
+            if not channel_name and guild_id and channel_id:
+                guild = self.bot.get_guild(guild_id)
+                if guild:
+                    channel = guild.get_channel(channel_id)
+                    if channel:
+                        channel_name = getattr(channel, "name", None) or channel_name
+            started_at: Optional[str]
+            if isinstance(start_time, _dt.datetime):
+                try:
+                    started_at = start_time.replace(tzinfo=_dt.timezone.utc).isoformat()
+                except Exception:
+                    started_at = start_time.isoformat()
+                duration_seconds = max(0, int((now - start_time).total_seconds()))
+            else:
+                started_at = None
+                duration_seconds = 0
+            sessions.append(
+                {
+                    "user_id": user_id,
+                    "guild_id": guild_id,
+                    "channel_id": channel_id,
+                    "channel_name": channel_name,
+                    "duration_seconds": duration_seconds,
+                    "peak_users": session.get("peak_users") or 1,
+                    "started_at": started_at,
+                }
+            )
+        sessions.sort(key=lambda s: s.get("duration_seconds", 0), reverse=True)
+        return sessions
+
+    async def _handle_voice_stats(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        raw_limit = request.query.get("limit")
+        try:
+            limit = int(raw_limit) if raw_limit else 10
+            if limit <= 0:
+                raise ValueError
+            limit = min(limit, 50)
+        except ValueError:
+            raise web.HTTPBadRequest(text="limit must be a positive integer (max 50)")
+
+        try:
+            summary_row = db.query_one(
+                """
+                SELECT COUNT(*) AS user_count,
+                       SUM(total_seconds) AS total_seconds,
+                       SUM(total_points) AS total_points,
+                       MAX(last_update) AS last_update
+                FROM voice_stats
+                """
+            )
+            top_time_rows = db.query_all(
+                """
+                SELECT user_id, total_seconds, total_points, last_update
+                FROM voice_stats
+                ORDER BY total_seconds DESC, total_points DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            top_point_rows = db.query_all(
+                """
+                SELECT user_id, total_seconds, total_points, last_update
+                FROM voice_stats
+                ORDER BY total_points DESC, total_seconds DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.exception("Failed to load voice stats: %s", exc)
+            raise web.HTTPInternalServerError(text="Voice stats unavailable") from exc
+
+        live_sessions = await self._collect_live_voice_sessions()
+        user_ids = set()
+        for row in top_time_rows + top_point_rows:
+            try:
+                uid = row["user_id"]
+            except Exception:
+                uid = None
+            if uid:
+                user_ids.add(uid)
+        for sess in live_sessions:
+            uid = sess.get("user_id")
+            if uid:
+                user_ids.add(uid)
+        name_map = self._resolve_display_names(user_ids)
+
+        def _map_row(row: Any) -> Dict[str, Any]:
+            uid = row["user_id"]
+            return {
+                "user_id": uid,
+                "display_name": name_map.get(uid, f"User {uid}"),
+                "total_seconds": int(row["total_seconds"] or 0),
+                "total_points": int(row["total_points"] or 0),
+                "last_update": row["last_update"],
+            }
+
+        summary = {
+            "tracked_users": int(summary_row["user_count"] or 0) if summary_row else 0,
+            "total_seconds": int(summary_row["total_seconds"] or 0) if summary_row else 0,
+            "total_points": int(summary_row["total_points"] or 0) if summary_row else 0,
+            "last_update": summary_row["last_update"] if summary_row else None,
+        }
+        if summary["tracked_users"] > 0:
+            summary["avg_seconds_per_user"] = summary["total_seconds"] / summary["tracked_users"]
+        else:
+            summary["avg_seconds_per_user"] = 0
+
+        live_summary = {
+            "active_sessions": len(live_sessions),
+            "total_seconds": sum(sess.get("duration_seconds", 0) for sess in live_sessions),
+        }
+        for sess in live_sessions:
+            uid = sess.get("user_id")
+            if uid:
+                sess["display_name"] = name_map.get(uid, f"User {uid}")
+
+        payload = {
+            "summary": summary,
+            "top_by_time": [_map_row(r) for r in top_time_rows],
+            "top_by_points": [_map_row(r) for r in top_point_rows],
+            "live": {
+                "summary": live_summary,
+                "sessions": live_sessions,
+            },
+        }
+        return self._json(payload)
+
+    async def _handle_voice_history(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        range_raw = request.query.get("range")
+        sessions_raw = request.query.get("limit")
+        top_raw = request.query.get("top")
+        try:
+            days = int(range_raw) if range_raw else 14
+            if days <= 0:
+                raise ValueError
+            days = min(days, 90)
+        except ValueError:
+            raise web.HTTPBadRequest(text="range must be a positive integer (days, max 90)")
+        try:
+            session_limit = int(sessions_raw) if sessions_raw else 50
+            if session_limit <= 0:
+                raise ValueError
+            session_limit = min(session_limit, 200)
+        except ValueError:
+            raise web.HTTPBadRequest(text="limit must be a positive integer (max 200)")
+        try:
+            top_limit = int(top_raw) if top_raw else 10
+            if top_limit <= 0:
+                raise ValueError
+            top_limit = min(top_limit, 50)
+        except ValueError:
+            raise web.HTTPBadRequest(text="top must be a positive integer (max 50)")
+
+        cutoff = f"-{days} day"
+        try:
+            daily_rows = db.query_all(
+                """
+                SELECT date(started_at) AS day,
+                       SUM(duration_seconds) AS total_seconds,
+                       COUNT(*) AS sessions,
+                       COUNT(DISTINCT user_id) AS users
+                FROM voice_session_log
+                WHERE started_at >= datetime('now', ?)
+                GROUP BY date(started_at)
+                ORDER BY day DESC
+                """,
+                (cutoff,),
+            )
+            top_users_rows = db.query_all(
+                """
+                SELECT user_id,
+                       SUM(duration_seconds) AS total_seconds,
+                       SUM(points) AS total_points,
+                       COUNT(*) AS sessions
+                FROM voice_session_log
+                WHERE started_at >= datetime('now', ?)
+                GROUP BY user_id
+                ORDER BY total_seconds DESC, total_points DESC
+                LIMIT ?
+                """,
+                (cutoff, top_limit),
+            )
+            session_rows = db.query_all(
+                """
+                SELECT user_id, guild_id, channel_name, started_at, ended_at,
+                       duration_seconds, points, peak_users
+                FROM voice_session_log
+                WHERE started_at >= datetime('now', ?)
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                (cutoff, session_limit),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.exception("Failed to load voice history: %s", exc)
+            raise web.HTTPInternalServerError(text="Voice history unavailable") from exc
+
+        user_ids: set[int] = set()
+        for row in top_users_rows:
+            try:
+                uid = row["user_id"]
+            except Exception:
+                uid = None
+            if uid:
+                user_ids.add(uid)
+        for row in session_rows:
+            try:
+                uid = row["user_id"]
+            except Exception:
+                uid = None
+            if uid:
+                user_ids.add(uid)
+        name_map = self._resolve_display_names(user_ids)
+
+        def _map_top_user(row: Any) -> Dict[str, Any]:
+            uid = row["user_id"]
+            return {
+                "user_id": uid,
+                "display_name": name_map.get(uid, f"User {uid}"),
+                "total_seconds": int(row["total_seconds"] or 0),
+                "total_points": int(row["total_points"] or 0),
+                "sessions": int(row["sessions"] or 0),
+            }
+
+        def _map_session(row: Any) -> Dict[str, Any]:
+            uid = row["user_id"]
+            return {
+                "user_id": uid,
+                "display_name": name_map.get(uid, f"User {uid}"),
+                "guild_id": row["guild_id"],
+                "channel_name": row["channel_name"],
+                "started_at": row["started_at"],
+                "ended_at": row["ended_at"],
+                "duration_seconds": int(row["duration_seconds"] or 0),
+                "points": int(row["points"] or 0),
+                "peak_users": row["peak_users"],
+            }
+
+        daily = [
+            {
+                "day": row["day"],
+                "total_seconds": int(row["total_seconds"] or 0),
+                "sessions": int(row["sessions"] or 0),
+                "users": int(row["users"] or 0),
+            }
+            for row in daily_rows
+        ]
+
+        payload = {
+            "range_days": days,
+            "daily": daily,
+            "top_users": [_map_top_user(r) for r in top_users_rows],
+            "sessions": [_map_session(r) for r in session_rows],
+        }
+        return self._json(payload)
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
