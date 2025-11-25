@@ -329,7 +329,7 @@ $r.Content -match 'steamcommunity\.com/openid/login'
 
 **End-to-End (echter Flow):**
 
-1. In Discord `/link` ausführen → Button klicken.
+1. In Discord `/steam link` ausführen → Button klicken.
 2. Discord OAuth zeigt Connections.
 3. Falls keine Steam-Connection vorhanden → automatische Weiterleitung zu Steam.
 4. Nach Steam-Login landest du auf `https://link.earlysalty.com/steam/return?...` (Erfolg) und der Bot schickt eine **DM**.

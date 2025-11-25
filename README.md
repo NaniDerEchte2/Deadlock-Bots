@@ -7,9 +7,9 @@ Diese README fasst alle Features zusammen, die auf dem Server für Community-Mit
 - Der Welcome-DM/Thread-Flow führt dich Schritt für Schritt durch Status-Abfrage, optionale Streamer-Infos, Steam-Verknüpfung und Regelbestätigung – inklusive abschließender Tipps je nach Spielstatus.【F:cogs/welcome_dm/dm_main.py†L116-L340】
 
 ## Steam-Verknüpfung & Verified-Rolle
-- Slash-Commands `/link` und `/link_steam` starten wahlweise den Discord-OAuth-Flow (mit automatischem Steam-Fallback) oder direkt Steam OpenID. Nach erfolgreicher Verknüpfung erhältst du sofort eine DM samt Hinweis auf die anstehende Freundschaftsanfrage des Steam-Bots.【F:cogs/steam/steam_link_oauth.py†L748-L825】【F:cogs/steam/steam_link_oauth.py†L307-L325】
-- Zusätzliche Befehle `/links`, `/whoami`, `/addsteam`, `/setprimary` und `/unlink` helfen beim Auflisten, Prüfen oder Anpassen deiner gespeicherten Steam-Accounts – inklusive Primär-Markierung und manuellem Eintrag, falls die automatische Verknüpfung einmal nicht greift.【F:cogs/steam/steam_link_oauth.py†L802-L921】
-- Solltest du länger als 30 Minuten im Voice sein ohne Steam-Link (und keine Opt-out-Rolle besitzen), bekommst du eine DM mit Direkt-Buttons für OAuth, Steam-Login, Schnell-Einladung oder manuelle SteamID-Eingabe. Die Ansicht bleibt persistent, bis du sie schließt oder einen Link hinterlegt hast.【F:cogs/steam_link_voice_nudge.py†L28-L520】
+- Slash-Gruppe `/steam` mit `link` (Discord-OAuth mit Steam-Fallback) und `link_steam` (direkte OpenID). Nach erfolgreicher Verknüpfung erhältst du sofort eine DM samt Hinweis auf die anstehende Freundschaftsanfrage des Steam-Bots.【F:cogs/steam/steam_link_oauth.py†L748-L825】【F:cogs/steam/steam_link_oauth.py†L307-L325】
+- Zusätzliche Subcommands `links`, `whoami`, `setprimary` und `unlink` helfen beim Auflisten, Prüfen oder Anpassen deiner gespeicherten Steam-Accounts – inklusive Primär-Markierung.【F:cogs/steam/steam_link_oauth.py†L802-L900】
+- Solltest du länger als 30 Minuten im Voice sein ohne Steam-Link (und keine Opt-out-Rolle besitzen), bekommst du eine DM mit Direkt-Buttons für OAuth, Steam-Login oder Schnell-Einladung. Die Ansicht bleibt persistent, bis du sie schließt oder einen Link hinterlegt hast.【F:cogs/steam_link_voice_nudge.py†L28-L520】
 - Ein Hintergrunddienst durchsucht regelmäßig alle verifizierten Steam-Verknüpfungen und vergibt automatisch die Server-Rolle **„Verified“**, damit du Zugriff auf geschützte Bereiche behältst.【F:cogs/steam_verified_role.py†L23-L199】
 
 ## TempVoice-Lanes

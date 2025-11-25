@@ -215,7 +215,6 @@ class ConfirmPermissionView(discord.ui.View):
     async def open_modal(self, interaction: discord.Interaction):
         await interaction.response.send_modal(ClipSubmitModal(self.cog))
 
-
 class ClipSubmitModal(discord.ui.Modal, title="Gameplay-Clip einreichen"):
     def __init__(self, cog: "ClipSubmissionCog"):
         super().__init__(timeout=180)
@@ -316,7 +315,6 @@ class ClipSubmitModal(discord.ui.Modal, title="Gameplay-Clip einreichen"):
             "✅ Danke! Dein Clip ist eingegangen.\n\nMindestqualität **1080p**.",
             ephemeral=True,
         )
-
 
 class ClipSubmitView(discord.ui.View):
     def __init__(self, cog: "ClipSubmissionCog"):
@@ -613,30 +611,6 @@ class ClipSubmissionCog(commands.Cog):
     # Gruppe
     clips_group = app_commands.Group(name="clips", description="Clips & Zeitfenster")
 
-    @clips_group.command(name="dump", description="Erzeuge einen TXT-Dump für einen Zeitraum (beeinflusst das Wochenfenster NICHT).")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def clips_dump(self,
-                         interaction: discord.Interaction,
-                         start_ts: Optional[int] = None,
-                         end_ts: Optional[int] = None,
-                         to_channel: Optional[discord.TextChannel] = None):
-        guild = interaction.guild
-        if not guild:
-            await interaction.response.send_message("Nur im Server nutzbar.", ephemeral=True)
-            return
-
-        # Default: aktuelles Wochenfenster
-        if start_ts is None or end_ts is None:
-            s, e = _compute_week_window_berlin(datetime.now(tz=TZ))
-            start_ts = start_ts or s
-            end_ts = end_ts or e
-
-        await self._send_window_dump(guild, int(start_ts), int(end_ts), target_channel=to_channel)
-        await interaction.response.send_message(
-            f"📦 Dump angefordert: {_format_ts(int(start_ts),'f')} → {_format_ts(int(end_ts),'f')}",
-            ephemeral=True
-        )
-
     @clips_group.command(name="winner_draw", description="Zufallsgewinner aus einem Zeitraum ziehen (reiner Test, ohne Fensterlogik).")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def clips_winner_draw(self,
@@ -669,7 +643,6 @@ class ClipSubmissionCog(commands.Cog):
 
         winner_id = random.choice(users)
         await interaction.response.send_message(f"🏆 Gewinner (Test): <@{winner_id}>", ephemeral=True)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ClipSubmissionCog(bot))

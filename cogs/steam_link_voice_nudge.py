@@ -438,14 +438,14 @@ class SteamLinkVoiceNudge(commands.Cog):
         if browser_fallback and (primary_discord or "").startswith("discord://"):
             desc += f"\n\n_Falls sich nichts öffnet:_ [Browser-Variante]({browser_fallback})"
         if not primary_discord and not steam_url:
-            desc += "\n\n_Heads-up:_ Der Link-Dienst ist gerade nicht verfügbar. Nutze vorerst **/link**."
+            desc += "\n\n_Heads-up:_ Der Link-Dienst ist gerade nicht verfügbar. Nutze vorerst **/steam link**."
 
         embed = discord.Embed(
             title="Kleiner Tipp für besseres Voice-Erlebnis 🎧",
             description=desc,
             color=discord.Color.blurple(),
         )
-        embed.set_footer(text="Kurzbefehle: /link · /link_steam · /addsteam · /unlink · /setprimary")
+        embed.set_footer(text="Kurzbefehle: /steam link · /steam link_steam · /steam unlink · /steam setprimary")
 
         view = _OptionsView(discord_url=primary_discord, steam_url=steam_url)
         return embed, view
