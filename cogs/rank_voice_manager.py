@@ -469,6 +469,11 @@ class RolePermissionVoiceManager(commands.Cog):
             if not await self.channel_exists(channel):
                 return
 
+            # TempVoice-Lanes verwalten wir bzgl. Permissions, aber nicht beim Namen,
+            # damit es keinen Rename-Kampf mit dem TempVoice-Core gibt.
+            if self._is_tempvoice_lane(channel):
+                return
+
             members_ranks = await self.get_channel_members_ranks(channel)
             if not members_ranks:
                 new_name = "Rang-Sprachkanal"
