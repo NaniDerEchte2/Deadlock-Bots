@@ -15,7 +15,6 @@ from discord.ext import commands
 
 from service import db
 from cogs.steam import SCHNELL_LINK_AVAILABLE, SchnellLinkButton
-from cogs.steam.friend_requests import queue_friend_request
 from cogs.steam.steam_master import SteamTaskClient
 from cogs.welcome_dm import base as welcome_base
 
@@ -759,16 +758,39 @@ class BetaInviteFlow(commands.Cog):
             return
 
         try:
-            queue_friend_request(resolved)
+            fr_outcome = await self.tasks.run(
+                "AUTH_SEND_FRIEND_REQUEST",
+                {"steam_id": resolved},
+                timeout=20.0,
+            )
         except Exception as exc:
-            log.exception("Konnte Steam-Freundschaftsanfrage nicht einreihen")
+            log.exception("Konnte Steam-Freundschaftsanfrage nicht senden")
             _update_invite(
                 record.id,
                 status=STATUS_ERROR,
-                last_error=f"Konnte Freundschaftsanfrage nicht vormerken: {exc}",
+                last_error=f"Freundschaftsanfrage fehlgeschlagen: {exc}",
             )
             await interaction.followup.send(
-                "❌ Konnte die Freundschaftsanfrage nicht vormerken. Bitte versuche es später erneut.",
+                "❌ Konnte die Freundschaftsanfrage nicht senden. Bitte versuche es später erneut.",
+                ephemeral=True,
+            )
+            return
+
+        if not fr_outcome.ok:
+            error_msg = fr_outcome.error or "Unbekannter Fehler beim Senden der Freundschaftsanfrage"
+            log.warning(
+                "Freundschaftsanfrage fehlgeschlagen: discord_id=%s, steam_id=%s, error=%s",
+                interaction.user.id,
+                resolved,
+                error_msg,
+            )
+            _update_invite(
+                record.id,
+                status=STATUS_ERROR,
+                last_error=f"Freundschaftsanfrage fehlgeschlagen: {error_msg}",
+            )
+            await interaction.followup.send(
+                "❌ Konnte die Freundschaftsanfrage nicht senden. Bitte prüfe deine Steam-Privatsphäreeinstellungen und versuche es erneut.",
                 ephemeral=True,
             )
             return
