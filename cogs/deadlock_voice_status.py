@@ -18,6 +18,7 @@ from discord.ext import commands
 from service.db import db_path
 
 log = logging.getLogger("DeadlockVoiceStatus")
+trace_log = logging.getLogger("DeadlockVoiceStatus.trace")
 
 TARGET_CATEGORY_IDS: Set[int] = {
     1289721245281292290,
@@ -50,8 +51,8 @@ class DeadlockVoiceStatus(commands.Cog):
         self._task: Optional[asyncio.Task[None]] = None
         self.last_observation: Dict[int, Dict[str, Any]] = {}
 
-        trace_env = (os.getenv("DEADLOCK_VS_TRACE") or "").strip().lower()
-        self.trace_enabled = trace_env in {"1", "true", "yes", "on"}
+        trace_env = (os.getenv("DEADLOCK_VS_TRACE") or "1").strip().lower()
+        self.trace_enabled = trace_env not in {"0", "false", "no", "off"}
         self.trace_channel_filter: Set[int] = set()
         self.trace_file = Path(os.getenv("DEADLOCK_VS_TRACE_FILE", "logs/deadlock_voice_status.log"))
         channel_filter_raw = os.getenv("DEADLOCK_VS_TRACE_CHANNELS", "")
@@ -60,6 +61,7 @@ class DeadlockVoiceStatus(commands.Cog):
             if part.isdigit():
                 self.trace_channel_filter.add(int(part))
         self._trace_handler: Optional[logging.Handler] = None
+        self._trace_logger = trace_log
         if self.trace_enabled:
             self._enable_trace_logger()
 
@@ -96,8 +98,9 @@ class DeadlockVoiceStatus(commands.Cog):
         handler = logging.FileHandler(self.trace_file, encoding="utf-8")
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(logging.Formatter("%(asctime)s [TRACE] %(message)s"))
-        log.addHandler(handler)
-        log.setLevel(logging.DEBUG)
+        self._trace_logger.addHandler(handler)
+        self._trace_logger.setLevel(logging.DEBUG)
+        self._trace_logger.propagate = False  # nur Datei, kein Root/Console
         self._trace_handler = handler
         log.info("DeadlockVoiceStatus trace logging enabled at %s", self.trace_file)
 
@@ -106,7 +109,7 @@ class DeadlockVoiceStatus(commands.Cog):
             self.trace_enabled = False
             return
         try:
-            log.removeHandler(self._trace_handler)
+            self._trace_logger.removeHandler(self._trace_handler)
             self._trace_handler.close()
         except Exception:
             pass
@@ -135,9 +138,9 @@ class DeadlockVoiceStatus(commands.Cog):
         if self.trace_channel_filter and channel_id not in self.trace_channel_filter:
             return
         try:
-            log.debug(json.dumps(payload, ensure_ascii=True, default=self._json_fallback))
+            self._trace_logger.debug(json.dumps(payload, ensure_ascii=True, default=self._json_fallback))
         except Exception:
-            log.debug("trace %r", payload)
+            self._trace_logger.debug("trace %r", payload)
 
     async def _run_loop(self) -> None:
         await self.bot.wait_until_ready()

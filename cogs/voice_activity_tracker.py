@@ -220,16 +220,22 @@ class VoiceActivityTrackerCog(commands.Cog):
                 started_iso = None
             ended_iso = end_time.strftime("%Y-%m-%d %H:%M:%S")
             user_counts_json = json.dumps(session.get('user_counts') or [])
+            display_name = session.get('display_name')
+            if not display_name:
+                user_obj = self.bot.get_user(session.get('user_id'))
+                display_name = getattr(user_obj, "display_name", None) if user_obj else None
+            display_name = display_name or f"User {session.get('user_id')}"
             central_db.execute(
                 """
                 INSERT INTO voice_session_log(
-                  user_id, guild_id, channel_id, channel_name,
+                  user_id, display_name, guild_id, channel_id, channel_name,
                   started_at, ended_at, duration_seconds, points, peak_users, user_counts_json
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     session.get('user_id'),
+                    display_name,
                     session.get('guild_id'),
                     session.get('channel_id'),
                     session.get('channel_name'),
@@ -326,6 +332,7 @@ class VoiceActivityTrackerCog(commands.Cog):
         if key not in self.voice_sessions:
             self.voice_sessions[key] = {
                 'user_id': member.id,
+                'display_name': member.display_name,
                 'guild_id': channel.guild.id,
                 'channel_id': channel.id,
                 'channel_name': channel.name,

@@ -32,6 +32,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     <meta charset=\"utf-8\">
     <title>Master Bot Dashboard</title>
     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+    <script src=\"https://cdn.jsdelivr.net/npm/chart.js\"></script>
     <style>
         :root {
             color-scheme: dark light;
@@ -590,6 +591,71 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             color: #adb5bd;
             font-size: 0.9rem;
         }
+        .filter-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+        .filter-row select,
+        .filter-row input {
+            padding: 0.45rem 0.65rem;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.1);
+            background: #1f1f1f;
+            color: inherit;
+        }
+        .segmented {
+            display: inline-flex;
+            align-items: center;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .segmented button {
+            border: none;
+            background: transparent;
+            color: inherit;
+            padding: 0.45rem 0.75rem;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .segmented button.active {
+            background: #3b82f6;
+            color: #0b1021;
+        }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            min-height: 420px;
+        }
+        .bar-row {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin: 0.25rem 0;
+        }
+        .bar-label {
+            width: 44px;
+            font-variant-numeric: tabular-nums;
+            color: #adb5bd;
+            font-size: 0.9rem;
+        }
+        .bar {
+            flex: 1;
+            height: 10px;
+            border-radius: 999px;
+            background: linear-gradient(90deg, #4dabf7, #845ef7);
+            position: relative;
+        }
+        .bar-value {
+            width: 82px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+            color: #adb5bd;
+            font-size: 0.85rem;
+        }
     </style>
 </head>
 <body>
@@ -625,30 +691,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         <div id="health-container" class="health-grid"></div>
     </section>
 
-    <section>
-        <div class="section-header">
-            <h2>Voice Aktivit\u00e4t</h2>
-            <div class="section-actions">
-                <button class="reload" id="voice-refresh">Neu laden</button>
-                <span class="voice-meta" id="voice-updated">Letzte Aktualisierung: -</span>
-            </div>
-        </div>
-        <div id="voice-summary" class="stats-grid"></div>
-        <div class="voice-columns">
-            <div class="card">
-                <h3>Top nach Zeit</h3>
-                <div id="voice-top-time" class="voice-table"></div>
-            </div>
-            <div class="card">
-                <h3>Top nach Punkten</h3>
-                <div id="voice-top-points" class="voice-table"></div>
-            </div>
-            <div class="card">
-                <h3>Aktive Sessions</h3>
-                <div id="voice-live" class="voice-table"></div>
-            </div>
-        </div>
-    </section>
+    
 
     <section>
         <div class="section-header">
@@ -660,16 +703,20 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
         <div class="voice-columns">
             <div class="card">
-                <h3>Tages-\u00dcbersicht</h3>
-                <div id="voice-history-daily" class="voice-table"></div>
-            </div>
-            <div class="card">
-                <h3>Top User (Zeitraum)</h3>
-                <div id="voice-history-top" class="voice-table"></div>
-            </div>
-            <div class="card">
-                <h3>Letzte Sessions</h3>
-                <div id="voice-history-sessions" class="voice-table"></div>
+                <h3>Aktivität nach Stunde</h3>
+                <div class="filter-row">
+                    <div class="segmented" id="voice-mode-buttons">
+                        <button class="voice-mode-btn active" data-mode="hour">Stunde</button>
+                        <button class="voice-mode-btn" data-mode="day">Tag</button>
+                        <button class="voice-mode-btn" data-mode="week">Wochentag</button>
+                        <button class="voice-mode-btn" data-mode="month">Monat</button>
+                    </div>
+                    <input id="voice-history-user" type="text" placeholder="User ID (optional)" />
+                    <button class="reload" id="voice-user-apply">Anzeigen</button>
+                </div>
+                <div class="chart-container">
+                    <canvas id="voice-hourly-chart"></canvas>
+                </div>
             </div>
         </div>
     </section>
@@ -718,11 +765,15 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const voiceLive = document.getElementById('voice-live');
     const voiceUpdated = document.getElementById('voice-updated');
     const voiceRefreshButton = document.getElementById('voice-refresh');
-    const voiceHistoryDaily = document.getElementById('voice-history-daily');
-    const voiceHistoryTop = document.getElementById('voice-history-top');
-    const voiceHistorySessions = document.getElementById('voice-history-sessions');
+    const voiceHourlyChartCanvas = document.getElementById('voice-hourly-chart');
+    let voiceHourlyChart = null;
     const voiceHistoryUpdated = document.getElementById('voice-history-updated');
     const voiceHistoryRefreshButton = document.getElementById('voice-history-refresh');
+    const voiceHistoryUser = document.getElementById('voice-history-user');
+    const voiceUserApply = document.getElementById('voice-user-apply');
+    const voiceModeButtons = document.querySelectorAll('.voice-mode-btn');
+    let currentVoiceMode = 'hour';
+    let currentVoiceUser = '';
     const STANDALONE_COMMANDS = {
         rank: [
             { value: 'queue.daily', label: 'Daily Queue erstellen' },
@@ -792,6 +843,22 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     if (voiceHistoryRefreshButton) {
         voiceHistoryRefreshButton.addEventListener('click', () => {
             loadVoiceHistory();
+        });
+    }
+    if (voiceUserApply) {
+        voiceUserApply.addEventListener('click', () => {
+            currentVoiceUser = voiceHistoryUser ? voiceHistoryUser.value.trim() : '';
+            loadVoiceHistory();
+        });
+    }
+    if (voiceModeButtons && voiceModeButtons.length) {
+        voiceModeButtons.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                voiceModeButtons.forEach((b) => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentVoiceMode = btn.dataset.mode || 'hour';
+                loadVoiceHistory();
+            });
         });
     }
 
@@ -1249,124 +1316,102 @@ async function loadVoiceStats() {
     }
 }
 
-function renderVoiceHistoryDaily(target, rows) {
-    if (!target) {
+function renderVoiceHourlyChart(rows, mode, userInfo) {
+    if (!voiceHourlyChartCanvas) {
         return;
     }
-    target.innerHTML = '';
-    if (!Array.isArray(rows) || !rows.length) {
-        const empty = document.createElement('div');
-        empty.className = 'voice-meta';
-        empty.textContent = 'Keine Historie im gewählten Zeitraum.';
-        target.appendChild(empty);
-        return;
-    }
-    const table = document.createElement('table');
-    table.innerHTML = '<thead><tr><th>Tag</th><th>Gesamtzeit</th><th>Sessions</th><th>User</th></tr></thead>';
-    const tbody = document.createElement('tbody');
-    rows.forEach((row) => {
-        const tr = document.createElement('tr');
-        const day = document.createElement('td');
-        day.textContent = row.day || '-';
-        const dur = document.createElement('td');
-        dur.textContent = formatSeconds(row.total_seconds);
-        const sess = document.createElement('td');
-        sess.textContent = safeNumber(row.sessions);
-        const users = document.createElement('td');
-        users.textContent = safeNumber(row.users);
-        tr.appendChild(day);
-        tr.appendChild(dur);
-        tr.appendChild(sess);
-        tr.appendChild(users);
-        tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    target.appendChild(table);
-}
+    const formatLabel = (lbl) => {
+        if (mode === 'hour') {
+            return lbl.toString().padStart(2, '0') + ':00';
+        }
+        if (mode === 'week') {
+            const names = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+            const idx = Number(lbl);
+            return Number.isFinite(idx) ? names[(idx + 6) % 7] : lbl;
+        }
+        return lbl;
+    };
 
-function renderVoiceHistoryTop(target, rows) {
-    if (!target) {
-        return;
+    const labels = rows.map((r) => formatLabel(r.label || r.hour));
+    const hoursData = rows.map((r) => safeNumber(r.total_seconds) / 3600);
+    const peakData = rows.map((r) => safeNumber(r.avg_peak));
+    if (voiceHourlyChart) {
+        voiceHourlyChart.destroy();
     }
-    target.innerHTML = '';
-    if (!Array.isArray(rows) || !rows.length) {
-        const empty = document.createElement('div');
-        empty.className = 'voice-meta';
-        empty.textContent = 'Noch keine Daten im Zeitraum.';
-        target.appendChild(empty);
-        return;
-    }
-    const table = document.createElement('table');
-    table.innerHTML = '<thead><tr><th>#</th><th>User</th><th>Zeit</th><th>Punkte</th><th>Sessions</th></tr></thead>';
-    const tbody = document.createElement('tbody');
-    rows.forEach((row, idx) => {
-        const tr = document.createElement('tr');
-        const pos = document.createElement('td');
-        pos.textContent = idx + 1;
-        const name = document.createElement('td');
-        name.textContent = row.display_name || row.user_id;
-        const dur = document.createElement('td');
-        dur.textContent = formatSeconds(row.total_seconds);
-        const pts = document.createElement('td');
-        pts.textContent = safeNumber(row.total_points);
-        const sess = document.createElement('td');
-        sess.textContent = safeNumber(row.sessions);
-        tr.appendChild(pos);
-        tr.appendChild(name);
-        tr.appendChild(dur);
-        tr.appendChild(pts);
-        tr.appendChild(sess);
-        tbody.appendChild(tr);
+    const baseLabel = userInfo && userInfo.display_name ? userInfo.display_name : 'Voice';
+    const subtitle = mode === 'hour' ? 'Stunde (UTC)' : mode === 'day' ? 'Tag' : mode === 'week' ? 'Wochentag' : 'Monat';
+    voiceHourlyChart = new Chart(voiceHourlyChartCanvas, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: `${baseLabel} Ø Stunden`,
+                    data: hoursData,
+                    borderColor: '#4dabf7',
+                    backgroundColor: 'rgba(77,171,247,0.18)',
+                    fill: true,
+                    tension: 0.35,
+                    yAxisID: 'yHours',
+                    pointRadius: 3,
+                },
+                {
+                    label: `${baseLabel} Ø Peak`,
+                    data: peakData,
+                    borderColor: '#e599f7',
+                    backgroundColor: 'rgba(229,153,247,0.15)',
+                    borderDash: [6, 4],
+                    fill: false,
+                    tension: 0.35,
+                    yAxisID: 'yPeak',
+                    pointRadius: 3,
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                yHours: {
+                    position: 'left',
+                    title: { display: true, text: 'Stunden' },
+                    suggestedMin: 0,
+                },
+                yPeak: {
+                    position: 'right',
+                    title: { display: true, text: 'Ø Peak User' },
+                    suggestedMin: 0,
+                    grid: { drawOnChartArea: false },
+                },
+                x: {
+                    title: { display: true, text: subtitle },
+                },
+            },
+            plugins: {
+                legend: { position: 'top' },
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                            const label = ctx.dataset.label || '';
+                            const value = ctx.parsed.y || 0;
+                            if (ctx.dataset.yAxisID === 'yHours') {
+                                return `${label}: ${value.toFixed(2)} h`;
+                            }
+                            return `${label}: ${value.toFixed(1)}`;
+                        },
+                    },
+                },
+            },
+        },
     });
-    table.appendChild(tbody);
-    target.appendChild(table);
-}
-
-function renderVoiceHistorySessions(target, rows) {
-    if (!target) {
-        return;
-    }
-    target.innerHTML = '';
-    if (!Array.isArray(rows) || !rows.length) {
-        const empty = document.createElement('div');
-        empty.className = 'voice-meta';
-        empty.textContent = 'Keine Sessions im Zeitraum.';
-        target.appendChild(empty);
-        return;
-    }
-    const table = document.createElement('table');
-    table.innerHTML = '<thead><tr><th>User</th><th>Dauer</th><th>Channel</th><th>Start</th><th>Punkte</th></tr></thead>';
-    const tbody = document.createElement('tbody');
-    rows.forEach((row) => {
-        const tr = document.createElement('tr');
-        const user = document.createElement('td');
-        user.textContent = row.display_name || row.user_id;
-        const dur = document.createElement('td');
-        dur.textContent = formatSeconds(row.duration_seconds);
-        const channel = document.createElement('td');
-        channel.textContent = row.channel_name || '-';
-        const start = document.createElement('td');
-        start.textContent = formatTimestamp(row.started_at);
-        const pts = document.createElement('td');
-        pts.textContent = safeNumber(row.points);
-        tr.appendChild(user);
-        tr.appendChild(dur);
-        tr.appendChild(channel);
-        tr.appendChild(start);
-        tr.appendChild(pts);
-        tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    target.appendChild(table);
 }
 
 function renderVoiceHistory(data) {
     if (!data) {
         return;
     }
-    renderVoiceHistoryDaily(voiceHistoryDaily, data.daily || []);
-    renderVoiceHistoryTop(voiceHistoryTop, data.top_users || []);
-    renderVoiceHistorySessions(voiceHistorySessions, data.sessions || []);
+    renderVoiceHourlyChart(data.buckets || [], data.mode || 'hour', data.user || null);
     if (voiceHistoryUpdated) {
         const now = new Date().toLocaleTimeString();
         voiceHistoryUpdated.textContent = 'Letzte Aktualisierung: ' + now + ` (letzte ${data.range_days || 0} Tage)`;
@@ -1375,12 +1420,19 @@ function renderVoiceHistory(data) {
 
 async function loadVoiceHistory() {
     try {
-        const data = await fetchJSON('/api/voice-history?range=14&limit=50&top=10');
+        const mode = currentVoiceMode || 'hour';
+        const userId = currentVoiceUser || (voiceHistoryUser ? voiceHistoryUser.value.trim() : '');
+        let range = 14;
+        if (mode === 'day') range = 60;
+        if (mode === 'week') range = 180;
+        if (mode === 'month') range = 365;
+        const params = new URLSearchParams({ mode, range: range.toString(), top: '10' });
+        if (userId) {
+            params.set('user_id', userId);
+        }
+        const data = await fetchJSON('/api/voice-history?' + params.toString());
         renderVoiceHistory(data);
     } catch (err) {
-        if (voiceHistoryDaily) {
-            voiceHistoryDaily.innerHTML = '<div class=\"voice-meta\">Fehler beim Laden der Voice-Historie.</div>';
-        }
         log('Voice Historie konnte nicht geladen werden: ' + err.message, 'error');
     }
 }
@@ -2962,8 +3014,9 @@ class DashboardServer:
     async def _handle_voice_history(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
         range_raw = request.query.get("range")
-        sessions_raw = request.query.get("limit")
         top_raw = request.query.get("top")
+        mode_raw = request.query.get("mode") or "hour"
+        user_raw = request.query.get("user_id")
         try:
             days = int(range_raw) if range_raw else 14
             if days <= 0:
@@ -2972,21 +3025,39 @@ class DashboardServer:
         except ValueError:
             raise web.HTTPBadRequest(text="range must be a positive integer (days, max 90)")
         try:
-            session_limit = int(sessions_raw) if sessions_raw else 50
-            if session_limit <= 0:
-                raise ValueError
-            session_limit = min(session_limit, 200)
-        except ValueError:
-            raise web.HTTPBadRequest(text="limit must be a positive integer (max 200)")
-        try:
             top_limit = int(top_raw) if top_raw else 10
             if top_limit <= 0:
                 raise ValueError
             top_limit = min(top_limit, 50)
         except ValueError:
             raise web.HTTPBadRequest(text="top must be a positive integer (max 50)")
+        mode = mode_raw.strip().lower()
+        if mode not in {"hour", "day", "week", "month"}:
+            raise web.HTTPBadRequest(text="mode must be one of hour, day, week, month")
+        user_id: Optional[int] = None
+        if user_raw:
+            try:
+                user_id = int(user_raw)
+            except ValueError:
+                raise web.HTTPBadRequest(text="user_id must be an integer")
 
         cutoff = f"-{days} day"
+        where_clauses = ["started_at >= datetime('now', ?)"]
+        params: list[Any] = [cutoff]
+        if user_id is not None:
+            where_clauses.append("user_id = ?")
+            params.append(user_id)
+        where_sql = " AND ".join(where_clauses)
+
+        def _group_sql() -> str:
+            if mode == "hour":
+                return "strftime('%H', started_at)"
+            if mode == "day":
+                return "date(started_at)"
+            if mode == "week":
+                return "strftime('%Y-%W', started_at)"
+            return "strftime('%Y-%m', started_at)"
+
         try:
             daily_rows = db.query_all(
                 """
@@ -3004,27 +3075,30 @@ class DashboardServer:
             top_users_rows = db.query_all(
                 """
                 SELECT user_id,
+                       MAX(display_name) AS display_name,
                        SUM(duration_seconds) AS total_seconds,
                        SUM(points) AS total_points,
                        COUNT(*) AS sessions
                 FROM voice_session_log
-                WHERE started_at >= datetime('now', ?)
+                WHERE """ + where_sql + """
                 GROUP BY user_id
                 ORDER BY total_seconds DESC, total_points DESC
                 LIMIT ?
                 """,
-                (cutoff, top_limit),
+                (*params, top_limit),
             )
-            session_rows = db.query_all(
+            hourly_rows = db.query_all(
                 """
-                SELECT user_id, guild_id, channel_name, started_at, ended_at,
-                       duration_seconds, points, peak_users
+                SELECT """ + _group_sql() + """ AS bucket,
+                       SUM(duration_seconds) AS total_seconds,
+                       COUNT(*) AS sessions,
+                       SUM(COALESCE(peak_users, 0)) AS sum_peak
                 FROM voice_session_log
-                WHERE started_at >= datetime('now', ?)
-                ORDER BY started_at DESC
-                LIMIT ?
+                WHERE """ + where_sql + """
+                GROUP BY bucket
+                ORDER BY bucket
                 """,
-                (cutoff, session_limit),
+                tuple(params),
             )
         except Exception as exc:  # noqa: BLE001
             logging.exception("Failed to load voice history: %s", exc)
@@ -3038,37 +3112,16 @@ class DashboardServer:
                 uid = None
             if uid:
                 user_ids.add(uid)
-        for row in session_rows:
-            try:
-                uid = row["user_id"]
-            except Exception:
-                uid = None
-            if uid:
-                user_ids.add(uid)
         name_map = self._resolve_display_names(user_ids)
 
         def _map_top_user(row: Any) -> Dict[str, Any]:
             uid = row["user_id"]
             return {
                 "user_id": uid,
-                "display_name": name_map.get(uid, f"User {uid}"),
+                "display_name": row["display_name"] or name_map.get(uid, f"User {uid}"),
                 "total_seconds": int(row["total_seconds"] or 0),
                 "total_points": int(row["total_points"] or 0),
                 "sessions": int(row["sessions"] or 0),
-            }
-
-        def _map_session(row: Any) -> Dict[str, Any]:
-            uid = row["user_id"]
-            return {
-                "user_id": uid,
-                "display_name": name_map.get(uid, f"User {uid}"),
-                "guild_id": row["guild_id"],
-                "channel_name": row["channel_name"],
-                "started_at": row["started_at"],
-                "ended_at": row["ended_at"],
-                "duration_seconds": int(row["duration_seconds"] or 0),
-                "points": int(row["points"] or 0),
-                "peak_users": row["peak_users"],
             }
 
         daily = [
@@ -3081,11 +3134,41 @@ class DashboardServer:
             for row in daily_rows
         ]
 
+        buckets = []
+        for row in hourly_rows:
+            sessions_count = int(row["sessions"] or 0)
+            buckets.append(
+                {
+                    "label": row["bucket"],
+                    "total_seconds": int(row["total_seconds"] or 0),
+                    "sessions": sessions_count,
+                    "avg_peak": (
+                        (int(row["sum_peak"] or 0) / sessions_count)
+                        if sessions_count > 0
+                        else 0
+                    ),
+                }
+            )
+
+        if mode == "hour":
+            existing = {b["label"]: b for b in buckets}
+            buckets = []
+            for h in range(24):
+                key = str(h).zfill(2)
+                buckets.append(
+                    existing.get(
+                        key,
+                        {"label": key, "total_seconds": 0, "sessions": 0, "avg_peak": 0},
+                    )
+                )
+
         payload = {
             "range_days": days,
+            "mode": mode,
+            "user": ({"user_id": user_id, "display_name": name_map.get(user_id)} if user_id else None),
             "daily": daily,
             "top_users": [_map_top_user(r) for r in top_users_rows],
-            "sessions": [_map_session(r) for r in session_rows],
+            "buckets": buckets,
         }
         return self._json(payload)
 

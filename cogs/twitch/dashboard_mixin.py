@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import asyncio
 from typing import List, Optional
 
 import discord
@@ -48,34 +49,41 @@ class TwitchDashboardMixin:
         return await self._cmd_remove(login)
 
     async def _dashboard_list(self):
-        with storage.get_conn() as c:
-            c.execute(
-                """
-                UPDATE twitch_streamers
-                   SET is_on_discord=1
-                 WHERE is_on_discord=0
-                   AND (
-                        manual_verified_permanent=1
-                     OR manual_verified_until IS NOT NULL
-                     OR manual_verified_at IS NOT NULL
-                   )
-                """
-            )
-            rows = c.execute(
-                """
-                SELECT twitch_login,
-                       manual_verified_permanent,
-                       manual_verified_until,
-                       manual_verified_at,
-                       manual_partner_opt_out,
-                       is_on_discord,
-                       discord_user_id,
-                       discord_display_name
-                  FROM twitch_streamers
-                 ORDER BY twitch_login
-                """
-            ).fetchall()
-        return [dict(row) for row in rows]
+        # kleine Retry-Logik gegen gelegentliche "database is locked" Antworten
+        for attempt in range(3):
+            try:
+                with storage.get_conn() as c:
+                    c.execute(
+                        """
+                        UPDATE twitch_streamers
+                           SET is_on_discord=1
+                         WHERE is_on_discord=0
+                           AND (
+                                manual_verified_permanent=1
+                             OR manual_verified_until IS NOT NULL
+                             OR manual_verified_at IS NOT NULL
+                           )
+                        """
+                    )
+                    rows = c.execute(
+                        """
+                        SELECT twitch_login,
+                               manual_verified_permanent,
+                               manual_verified_until,
+                               manual_verified_at,
+                               manual_partner_opt_out,
+                               is_on_discord,
+                               discord_user_id,
+                               discord_display_name
+                          FROM twitch_streamers
+                         ORDER BY twitch_login
+                        """
+                    ).fetchall()
+                return [dict(row) for row in rows]
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() or attempt == 2:
+                    raise
+                await asyncio.sleep(0.3 * (attempt + 1))
 
     async def _dashboard_set_discord_flag(self, login: str, is_on_discord: bool) -> str:
         normalized = self._normalize_login(login)
