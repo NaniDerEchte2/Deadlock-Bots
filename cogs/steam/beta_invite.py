@@ -538,17 +538,48 @@ class BetaInviteFlow(commands.Cog):
             record.discord_id, record.steam_id64, account_id
         )
         
-        # Use longer timeouts to handle Game Coordinator delays
+        invite_timeout_ms = 30000
+        gc_ready_timeout_ms = 20000
+        invite_attempts = 1
+        gc_ready_attempts = 1
+        runtime_budget_ms = (
+            gc_ready_timeout_ms * max(gc_ready_attempts, 1)
+            + invite_timeout_ms * max(invite_attempts, 1)
+        )
+        invite_task_timeout = min(120.0, max(60.0, runtime_budget_ms / 1000 + 15.0))
+
+        log.info(
+            "Steam invite timing config: invite_timeout_ms=%s, gc_ready_timeout_ms=%s, invite_attempts=%s, gc_ready_attempts=%s, task_timeout=%s",
+            invite_timeout_ms, gc_ready_timeout_ms, invite_attempts, gc_ready_attempts, invite_task_timeout
+        )
+
         invite_outcome = await self.tasks.run(
             "AUTH_SEND_PLAYTEST_INVITE",
             {
                 "steam_id": record.steam_id64,
                 "account_id": account_id,
                 "location": "discord-betainvite",
-                "timeout_ms": 45000,  # Increased from 15s to 45s
+                "timeout_ms": invite_timeout_ms,
+                "retry_attempts": invite_attempts,
+                "gc_ready_timeout_ms": gc_ready_timeout_ms,
+                "gc_ready_retry_attempts": gc_ready_attempts,
             },
-            timeout=60.0,  # Increased from 25s to 60s
+            timeout=invite_task_timeout,
         )
+
+        if invite_outcome.timed_out and str(invite_outcome.status or "").upper() == "RUNNING":
+            log.warning(
+                "Steam invite task %s still running after initial timeout, extending wait by %.1fs",
+                getattr(invite_outcome, "task_id", "?"),
+                invite_task_timeout,
+            )
+            try:
+                invite_outcome = await self.tasks.wait(
+                    invite_outcome.task_id,
+                    timeout=invite_task_timeout,
+                )
+            except Exception:
+                log.exception("Extended wait for Steam invite task failed")
         
         # Log das Ergebnis für bessere Diagnose
         log.info(

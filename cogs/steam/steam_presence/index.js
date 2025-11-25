@@ -1167,7 +1167,7 @@ function sendFriendRequest(steamId) {
 
 async function sendPlaytestInvite(accountId, location, timeoutMs = DEFAULT_PLAYTEST_INVITE_TIMEOUT_MS, options = {}) {
   const inviteTimeout = normalizeTimeoutMs(timeoutMs, DEFAULT_PLAYTEST_INVITE_TIMEOUT_MS, MIN_PLAYTEST_INVITE_TIMEOUT_MS);
-  const attempts = normalizeAttempts(
+  const inviteAttempts = normalizeAttempts(
     Object.prototype.hasOwnProperty.call(options, 'retryAttempts') ? options.retryAttempts : undefined,
     DEFAULT_PLAYTEST_INVITE_ATTEMPTS,
     5
@@ -1177,23 +1177,41 @@ async function sendPlaytestInvite(accountId, location, timeoutMs = DEFAULT_PLAYT
     DEFAULT_GC_READY_ATTEMPTS,
     5
   );
-  const gcTimeout = Math.max(inviteTimeout, DEFAULT_GC_READY_TIMEOUT_MS);
+  const gcTimeoutOverride = Object.prototype.hasOwnProperty.call(options, 'gcTimeoutMs')
+    ? options.gcTimeoutMs
+    : (
+      Object.prototype.hasOwnProperty.call(options, 'gc_ready_timeout_ms')
+        ? options.gc_ready_timeout_ms
+        : options.gcTimeout
+    );
+  const gcTimeout = normalizeTimeoutMs(
+    gcTimeoutOverride !== undefined ? gcTimeoutOverride : Math.max(inviteTimeout, DEFAULT_GC_READY_TIMEOUT_MS),
+    Math.max(inviteTimeout, DEFAULT_GC_READY_TIMEOUT_MS),
+    MIN_GC_READY_TIMEOUT_MS
+  );
   let attempt = 0;
   let lastError = null;
 
-  while (attempt < attempts) {
+  log('info', 'Deadlock playtest invite timings', {
+    inviteTimeoutMs: inviteTimeout,
+    inviteAttempts,
+    gcTimeoutMs: gcTimeout,
+    gcAttempts,
+  });
+
+  while (attempt < inviteAttempts) {
     attempt += 1;
     try {
       await waitForDeadlockGcReady(gcTimeout, { retryAttempts: gcAttempts });
       return await sendPlaytestInviteOnce(accountId, location, inviteTimeout);
     } catch (err) {
       lastError = err;
-      if (attempt >= attempts || !isTimeoutError(err)) {
+      if (attempt >= inviteAttempts || !isTimeoutError(err)) {
         break;
       }
       log('warn', 'Deadlock playtest invite timed out - retrying', {
         attempt,
-        attempts,
+        attempts: inviteAttempts,
         timeoutMs: inviteTimeout,
       });
       await sleep(PLAYTEST_RETRY_DELAY_MS);
@@ -1202,6 +1220,7 @@ async function sendPlaytestInvite(accountId, location, timeoutMs = DEFAULT_PLAYT
 
   if (lastError && typeof lastError === 'object') {
     lastError.timeoutMs = inviteTimeout;
+    lastError.gcTimeoutMs = gcTimeout;
     lastError.attempts = attempt;
   }
   throw lastError || new Error('Playtest invite failed');
@@ -1783,6 +1802,9 @@ function processNextTask() {
           if (!runtimeState.logged_on) throw new Error('Not logged in');
           const raw = payload?.steam_id ?? payload?.steam_id64;
           const timeoutMs = payload?.timeout_ms ?? payload?.response_timeout_ms;
+          const inviteRetryAttempts = payload?.retry_attempts ?? payload?.invite_retry_attempts ?? payload?.attempts;
+          const gcReadyRetryAttempts = payload?.gc_ready_retry_attempts ?? payload?.gc_retry_attempts;
+          const gcReadyTimeoutMs = payload?.gc_ready_timeout_ms ?? payload?.gc_timeout_ms;
           const sid = raw ? parseSteamID(raw) : null;
           const accountId = payload?.account_id != null ? Number(payload.account_id) : (sid ? sid.accountid : null);
           if (!Number.isFinite(accountId) || accountId <= 0) throw new Error('account_id missing or invalid');
@@ -1792,7 +1814,12 @@ function processNextTask() {
           const response = await sendPlaytestInvite(
             Number(accountId),
             location,
-            Number.isFinite(inviteTimeout) ? inviteTimeout : undefined
+            Number.isFinite(inviteTimeout) ? inviteTimeout : undefined,
+            {
+              retryAttempts: Number.isFinite(Number(inviteRetryAttempts)) ? Number(inviteRetryAttempts) : undefined,
+              gcRetryAttempts: Number.isFinite(Number(gcReadyRetryAttempts)) ? Number(gcReadyRetryAttempts) : undefined,
+              gcTimeoutMs: Number.isFinite(Number(gcReadyTimeoutMs)) ? Number(gcReadyTimeoutMs) : undefined,
+            }
           );
           const sid64 = sid && typeof sid.getSteamID64 === 'function' ? sid.getSteamID64() : (sid ? String(sid) : null);
           const success = Boolean(response && response.success);
