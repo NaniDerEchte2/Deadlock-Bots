@@ -111,6 +111,23 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             padding: 1rem;
             border: 1px solid rgba(255,255,255,0.05);
         }
+        .dashboard-meta {
+            margin-top: 0.6rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .dashboard-row {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .dashboard-url,
+        .dashboard-last {
+            color: #adb5bd;
+            font-size: 0.9rem;
+        }
         .standalone-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -682,6 +699,19 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                 <p id=\"bot-uptime\">-</p>
                 <p id=\"bot-guilds\">-</p>
                 <p id=\"bot-latency\">-</p>
+                <div class=\"dashboard-meta\">
+                    <div class=\"dashboard-row\">
+                        <span class=\"status-pill\" id=\"dashboard-status-pill\">Status unbekannt</span>
+                        <span class=\"dashboard-last\" id=\"dashboard-restart-info\">Letzter Restart: \u2013</span>
+                    </div>
+                    <div class=\"dashboard-row\">
+                        <span class=\"dashboard-url\" id=\"dashboard-listen\">Listen: \u2013</span>
+                        <span class=\"dashboard-url\" id=\"dashboard-public\">Public: \u2013</span>
+                    </div>
+                    <div class=\"dashboard-row\">
+                        <button class=\"namespace\" id=\"dashboard-restart\">Dashboard neu starten</button>
+                    </div>
+                </div>
             </div>
         </div>
     </section>
@@ -772,6 +802,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const voiceHistoryUser = document.getElementById('voice-history-user');
     const voiceUserApply = document.getElementById('voice-user-apply');
     const voiceModeButtons = document.querySelectorAll('.voice-mode-btn');
+    const dashboardRestartBtn = document.getElementById('dashboard-restart');
+    const dashboardStatusPill = document.getElementById('dashboard-status-pill');
+    const dashboardRestartInfo = document.getElementById('dashboard-restart-info');
+    const dashboardListen = document.getElementById('dashboard-listen');
+    const dashboardPublic = document.getElementById('dashboard-public');
     let currentVoiceMode = 'hour';
     let currentVoiceUser = '';
     const STANDALONE_COMMANDS = {
@@ -859,6 +894,24 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                 currentVoiceMode = btn.dataset.mode || 'hour';
                 loadVoiceHistory();
             });
+        });
+    }
+    if (dashboardRestartBtn) {
+        dashboardRestartBtn.addEventListener('click', async () => {
+            dashboardRestartBtn.disabled = true;
+            dashboardRestartBtn.textContent = 'Restart l\u00e4uft...';
+            try {
+                await fetchJSON('/api/dashboard/restart', { method: 'POST', body: JSON.stringify({}) });
+                log('Dashboard-Restart ausgel\u00f6st', 'success');
+                setTimeout(loadStatus, 1200);
+            } catch (err) {
+                log('Dashboard-Restart fehlgeschlagen: ' + err.message, 'error');
+            } finally {
+                setTimeout(() => {
+                    dashboardRestartBtn.disabled = false;
+                    dashboardRestartBtn.textContent = 'Dashboard neu starten';
+                }, 1200);
+            }
         });
     }
 
@@ -973,7 +1026,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('bot-user').textContent = data.bot.user || 'Unbekannt';
             document.getElementById('bot-uptime').textContent = 'Uptime: ' + data.bot.uptime;
             document.getElementById('bot-guilds').textContent = 'Guilds: ' + data.bot.guilds;
-            document.getElementById('bot-latency').textContent = 'Latency: ' + data.bot.latency_ms + ' ms';
+            document.getElementById('bot-latency').textContent = 'Latency: ' + formatLatency(data.bot.latency_ms);
+
+            renderDashboard(data.dashboard || {});
 
             const healthChecks = data.health || [];
             renderHealth(healthChecks);
@@ -985,6 +1040,51 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             renderTree(tree);
         } catch (err) {
             log('Status konnte nicht geladen werden: ' + err.message, 'error');
+        }
+    }
+
+    function renderDashboard(info = {}) {
+        const restarting = Boolean(info.restart_in_progress);
+        const running = info.running === undefined ? true : Boolean(info.running);
+
+        if (dashboardStatusPill) {
+            let cls = 'status-pill ';
+            let label = 'Status unbekannt';
+            if (restarting) {
+                cls += 'status-running';
+                label = 'Restart l\u00e4uft';
+            } else if (running) {
+                cls += 'status-success';
+                label = 'L\u00e4uft';
+            } else {
+                cls += 'status-error';
+                label = 'Gestoppt';
+            }
+            dashboardStatusPill.className = cls;
+            dashboardStatusPill.textContent = label;
+        }
+
+        if (dashboardRestartBtn) {
+            dashboardRestartBtn.disabled = restarting;
+            dashboardRestartBtn.textContent = restarting ? 'Restart l\u00e4uft...' : 'Dashboard neu starten';
+        }
+
+        if (dashboardRestartInfo) {
+            const last = info.last_restart || {};
+            const when = last.at || last.time || last.timestamp;
+            const statusLabel = last.ok === false ? 'Letzter Restart fehlgeschlagen' : 'Letzter Restart';
+            const whenLabel = when ? formatTimestamp(when) : '\u2013';
+            const errText = last.error ? ' (' + last.error + ')' : '';
+            dashboardRestartInfo.textContent = statusLabel + ': ' + whenLabel + errText;
+        }
+
+        if (dashboardListen) {
+            const listen = info.listen_url || info.listen || '-';
+            dashboardListen.textContent = 'Listen: ' + (listen || '-');
+        }
+        if (dashboardPublic) {
+            const pub = info.public_url || info.public || '-';
+            dashboardPublic.textContent = 'Public: ' + (pub || '-');
         }
     }
 
@@ -2341,6 +2441,9 @@ class DashboardServer:
         self._site: Optional[web.TCPSite] = None
         self._lock = asyncio.Lock()
         self._started = False
+        self._restart_lock = asyncio.Lock()
+        self._restart_task: Optional[asyncio.Task] = None
+        self._last_restart: Dict[str, Any] = {"at": None, "ok": None, "error": None}
         scheme_env = (os.getenv("MASTER_DASHBOARD_SCHEME") or "").strip().lower()
         self._scheme = scheme_env or "http"
         self._listen_base_url = self._format_base_url(self.host, self.port, self._scheme)
@@ -2414,6 +2517,7 @@ class DashboardServer:
                     web.get("/", self._handle_index),
                     web.get("/admin", self._handle_index),
                     web.get("/api/status", self._handle_status),
+                    web.post("/api/dashboard/restart", self._handle_dashboard_restart),
                     web.post("/api/cogs/reload", self._handle_reload),
                     web.post("/api/cogs/load", self._handle_load),
                     web.post("/api/cogs/unload", self._handle_unload),
@@ -2525,6 +2629,50 @@ class DashboardServer:
             finally:
                 self._started = False
                 logging.info("Master dashboard stopped")
+
+    async def _restart_dashboard(self) -> Dict[str, Any]:
+        # Allow the response to be flushed before we tear the server down.
+        await asyncio.sleep(0.25)
+        stop_error: Optional[str] = None
+        try:
+            await self.stop()
+        except Exception as exc:  # pragma: no cover - defensive restart path
+            stop_error = str(exc)
+            logging.exception("Stopping dashboard before restart failed: %s", exc)
+
+        await asyncio.sleep(0.1)
+
+        try:
+            await self.start()
+            result: Dict[str, Any] = {
+                "ok": stop_error is None,
+                "listen_url": self._listen_base_url,
+                "public_url": self._public_base_url,
+            }
+            if stop_error:
+                result["error"] = stop_error
+        except Exception as exc:  # pragma: no cover - defensive restart path
+            logging.exception("Dashboard start failed during restart: %s", exc)
+            result = {"ok": False, "error": str(exc)}
+
+        self._last_restart = {
+            "ok": result.get("ok"),
+            "error": result.get("error"),
+            "at": _dt.datetime.utcnow().isoformat() + "Z",
+        }
+        return result
+
+    def _on_restart_finished(self, task: asyncio.Task) -> None:
+        try:
+            result = task.result()
+            if isinstance(result, dict) and not result.get("ok", True):
+                logging.warning("Dashboard restart finished with errors: %s", result.get("error"))
+            else:
+                logging.info("Dashboard restart completed")
+        except Exception:  # pragma: no cover - defensive restart path
+            logging.exception("Dashboard restart task crashed")
+        finally:
+            self._restart_task = None
 
     # ------------------------------------------------------------------
     # Helpers
@@ -3205,6 +3353,9 @@ class DashboardServer:
         else:
             latency_ms = None
 
+        restart_in_progress = bool(self._restart_task and not self._restart_task.done())
+        last_restart = self._last_restart if any(self._last_restart.values()) else None
+
         payload = {
             "bot": {
                 "user": str(bot.user) if bot.user else None,
@@ -3224,6 +3375,9 @@ class DashboardServer:
             "dashboard": {
                 "listen_url": self._listen_base_url,
                 "public_url": self._public_base_url,
+                "running": self._started,
+                "restart_in_progress": restart_in_progress,
+                "last_restart": last_restart,
             },
             "settings": {
                 "per_cog_unload_timeout": bot.per_cog_unload_timeout,
@@ -3232,6 +3386,15 @@ class DashboardServer:
             "standalone": await self._collect_standalone_snapshot(),
         }
         return self._json(payload)
+
+    async def _handle_dashboard_restart(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        if self._restart_task and not self._restart_task.done():
+            return self._json({"ok": True, "message": "Dashboard restart already running"})
+
+        self._restart_task = asyncio.create_task(self._restart_dashboard())
+        self._restart_task.add_done_callback(self._on_restart_finished)
+        return self._json({"ok": True, "message": "Dashboard restart scheduled"})
 
     async def _collect_health_checks(self) -> List[Dict[str, Any]]:
         if not self._health_targets:

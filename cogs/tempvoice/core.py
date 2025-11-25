@@ -28,6 +28,7 @@ STAGING_CHANNEL_IDS: Set[int] = {
 MINRANK_CATEGORY_IDS: Set[int] = {
     1412804540994162789,  # Grind Lanes
     1289721245281292290,  # Normal Lanes (MinRank freigeschaltet)
+    1357422957017698478,  # Ranked Lanes
 }
 # Legacy-Alias für ältere Imports, zeigt weiterhin auf die ursprüngliche Grind-ID
 MINRANK_CATEGORY_ID: int = 1412804540994162789

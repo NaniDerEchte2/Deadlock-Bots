@@ -74,7 +74,7 @@ class RolePermissionVoiceManager(commands.Cog):
             "Eternus": 11,
         }
 
-        # Balancing-Regeln (Rang -> (minus, plus)); Ranked-Lanes dürfen nur +/-1 Spielstärke abweichen.
+        # Balancing-Regeln (Rang -> (minus, plus)); Standard: +/-1 (Ranked)
         self.balancing_rules = {
             rank_name: (-1, 1)
             for rank_name in self.deadlock_ranks.keys()
@@ -475,15 +475,11 @@ class RolePermissionVoiceManager(commands.Cog):
             else:
                 anchor = self.get_channel_anchor(channel)
                 if anchor:
-                    _uid, anchor_rank_name, _rv, allowed_min, allowed_max = anchor
-                    min_rank_name = self.get_rank_name_from_value(allowed_min)
-                    max_rank_name = self.get_rank_name_from_value(allowed_max)
-                    if allowed_min == allowed_max:
-                        new_name = f"{anchor_rank_name} Lobby"
-                    elif allowed_max - allowed_min <= 1:
-                        new_name = f"{anchor_rank_name} Elo"
-                    else:
-                        new_name = f"{min_rank_name}-{max_rank_name} ({anchor_rank_name})"
+                    _uid, anchor_rank_name, anchor_rank_value, allowed_min, allowed_max = anchor
+                    range_minus = max(0, anchor_rank_value - allowed_min)
+                    range_plus = max(0, allowed_max - anchor_rank_value)
+                    radius = max(range_minus, range_plus)
+                    new_name = f"{anchor_rank_name} +/-{radius}" if radius > 0 else f"{anchor_rank_name}"
                 else:
                     # Fallback: erster User
                     first_member = next(iter(members_ranks.keys()))
@@ -573,6 +569,8 @@ class RolePermissionVoiceManager(commands.Cog):
 
         if mode == "grind":
             minus, plus = -2, 2
+        elif mode == "ranked":
+            minus, plus = -1, 1
         else:
             minus, plus = self.balancing_rules.get(rank_name, (-1, 1))
 
@@ -620,8 +618,6 @@ class RolePermissionVoiceManager(commands.Cog):
 
     def is_monitored_channel(self, channel: discord.VoiceChannel) -> bool:
         if channel.id in self.excluded_channel_ids:
-            return False
-        if self._is_tempvoice_lane(channel):
             return False
         return (
             channel.category_id in self.monitored_categories

@@ -87,7 +87,7 @@ class TempVoiceInterface(commands.Cog):
                 "  - 👑 Owner Claim (übernimmt die Lane)\n"
                 "  - 🎚️ Limit setzen (0–99)\n"
                 "  - 👢 Kick / 🚫 Ban / ♻️ Unban\n"
-                "  - 🪪 Mindest-Rang (nur in spezieller Kategorie)"
+                "  - 🪪 Mindest-Rang (Grind & Ranked)"
             ),
             color=0x2ecc71
         )
@@ -490,14 +490,6 @@ class MinRankSelect(discord.ui.Select):
             await itx.response.send_message("Mindest-Rang ist hier deaktiviert.", ephemeral=True)
             return
         choice = self.values[0]
-        try:
-            await itx.response.defer(ephemeral=True, thinking=False)
-        except discord.HTTPException as e:
-            logger.debug("MinRankSelect: defer fehlgeschlagen: %r", e)
-        except Exception as e:
-            logger.debug("MinRankSelect: unerwarteter defer-Fehler: %r", e)
-
-        self.core.lane_min_rank[lane.id] = choice
         ranks = _rank_roles(lane.guild)
 
         def _idx(name: str) -> int:
@@ -507,40 +499,34 @@ class MinRankSelect(discord.ui.Select):
             except ValueError:
                 return 0
 
-        if choice == "unknown":
-            for role in ranks.values():
-                ow = lane.overwrites_for(role)
-                if ow.connect is not None:
-                    try:
-                        await lane.set_permissions(role, overwrite=None, reason="TempVoice: MinRank reset")
-                    except discord.HTTPException as e:
-                        logger.debug("MinRankSelect reset: set_permissions fehlgeschlagen: %r", e)
-                    except Exception as e:
-                        logger.debug("MinRankSelect reset: unerwarteter Fehler: %r", e)
-                    await asyncio.sleep(0.02)
-        else:
-            min_idx = _idx(choice)
-            for name, role in ranks.items():
-                if _idx(name) < min_idx:
-                    try:
-                        ow = lane.overwrites_for(role)
-                        ow.connect = False
-                        await lane.set_permissions(role, overwrite=ow, reason="TempVoice: MinRank deny")
-                    except discord.HTTPException as e:
-                        logger.debug("MinRankSelect deny: set_permissions fehlgeschlagen: %r", e)
-                    except Exception as e:
-                        logger.debug("MinRankSelect deny: unerwarteter Fehler: %r", e)
-                else:
-                    ow = lane.overwrites_for(role)
-                    if ow.connect is not None:
-                        try:
-                            await lane.set_permissions(role, overwrite=None, reason="TempVoice: MinRank clear")
-                        except discord.HTTPException as e:
-                            logger.debug("MinRankSelect clear: set_permissions fehlgeschlagen: %r", e)
-                        except Exception as e:
-                            logger.debug("MinRankSelect clear: unerwarteter Fehler: %r", e)
-                await asyncio.sleep(0.02)
+        member_rank_idx = 0
+        for role in m.roles:
+            member_rank_idx = max(member_rank_idx, _idx(role.name.lower()))
+        choice_idx = _idx(choice)
+        if choice_idx > member_rank_idx:
+            user_rank_label = RANK_ORDER[member_rank_idx].capitalize() if member_rank_idx < len(RANK_ORDER) else "Unknown"
+            await itx.response.send_message(
+                f"Du kannst keinen Mindest-Rang über deinem eigenen setzen. Dein Rang: {user_rank_label}.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await itx.response.defer(ephemeral=True, thinking=False)
+        except discord.HTTPException as e:
+            logger.debug("MinRankSelect: defer fehlgeschlagen: %r", e)
+        except Exception as e:
+            logger.debug("MinRankSelect: unerwarteter defer-Fehler: %r", e)
+
+        self.core.lane_min_rank[lane.id] = choice
+        await self.core._apply_min_rank(lane, choice)  # type: ignore[attr-defined]
         await self.core.refresh_name(lane)
+
+        label = "Kein Limit" if choice == "unknown" else choice.capitalize()
+        try:
+            await itx.followup.send(f"Mindest-Rang gesetzt auf: {label}.", ephemeral=True)
+        except Exception as e:
+            logger.debug("MinRankSelect followup fehlgeschlagen: %r", e)
 
 class KickButton(discord.ui.Button):
     def __init__(self, util):
