@@ -64,7 +64,7 @@ class TempVoiceInterface(commands.Cog):
     async def _startup(self):
         await self.bot.wait_until_ready()
         await self.ensure_interface_message()
-        await self.rehydrate_lane_interfaces()
+        await self.refresh_all_interfaces()
 
     async def ensure_interface_message(self, channel_hint: Optional[discord.TextChannel] = None):
         """
@@ -288,6 +288,52 @@ class TempVoiceInterface(commands.Cog):
             except Exception as e:
                 logger.debug("rehydrate_lane_interfaces: Fehler beim Editieren (Lane %s): %r", lane_id, e)
 
+    async def _refresh_global_interface_messages(self):
+        """
+        Aktualisiert Interface-Nachrichten (ohne Lane-Bindung) mit der aktuellen View,
+        damit neue Buttons (z. B. Normale Lane) auch dort erscheinen.
+        """
+        try:
+            rows = await self.core.db.fetchall(
+                "SELECT guild_id, channel_id, message_id, category_id FROM tempvoice_interface WHERE lane_id IS NULL"
+            )
+        except Exception as e:
+            logger.debug("refresh_global_interfaces: DB-Select fehlgeschlagen: %r", e)
+            return
+
+        for row in rows:
+            channel = self.bot.get_channel(int(row["channel_id"]))
+            if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel)):
+                continue
+            try:
+                msg = await channel.fetch_message(int(row["message_id"]))
+            except (discord.NotFound, discord.Forbidden):
+                continue
+            except discord.HTTPException as e:
+                logger.debug("refresh_global_interfaces: fetch fehlgeschlagen f�r Message %s: %r", row["message_id"], e)
+                continue
+            except Exception as e:
+                logger.debug("refresh_global_interfaces: unerwarteter Fehler f�r Message %s: %r", row["message_id"], e)
+                continue
+
+            try:
+                await msg.edit(view=MainView(self.core, self.util))
+                await self._record_interface_message(
+                    int(row["guild_id"]),
+                    int(channel.id),
+                    int(msg.id),
+                    int(row["category_id"]) if row["category_id"] else None,
+                    None,
+                )
+            except discord.HTTPException as e:
+                logger.debug("refresh_global_interfaces: edit fehlgeschlagen f�r Message %s: %r", msg.id, e)
+            except Exception as e:
+                logger.debug("refresh_global_interfaces: unerwarteter Fehler beim Editieren f�r Message %s: %r", msg.id, e)
+
+    async def refresh_all_interfaces(self):
+        await self._refresh_global_interface_messages()
+        await self.rehydrate_lane_interfaces()
+
     async def _remove_lane_interface_record(self, lane_id: int):
         try:
             await self.core.db.exec(
@@ -329,6 +375,7 @@ class MainView(discord.ui.View):
         # Row 2: MinRank (eigene Reihe!)
         self.add_item(MinRankSelect(core))
         # Row 3: Quick Templates
+        self.add_item(ResetLaneButton(core))
         self.add_item(DuoCallButton(core))
         self.add_item(TrioCallButton(core))
 
@@ -468,6 +515,28 @@ class DuoCallButton(QuickTemplateButton):
 class TrioCallButton(QuickTemplateButton):
     def __init__(self, core):
         super().__init__(core, label="Trio Call (3)", template_name="Trio Call", limit=3, custom_id="tv_tpl_trio")
+
+class ResetLaneButton(discord.ui.Button):
+    def __init__(self, core):
+        super().__init__(label="Normale Lane", style=discord.ButtonStyle.secondary, row=3, custom_id="tv_tpl_reset")
+        self.core = core
+
+    async def callback(self, itx: discord.Interaction):
+        m: discord.Member = itx.user  # type: ignore
+        lane = MainView.lane_of(itx)
+        if not lane:
+            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
+            return
+        owner_id = self.core.lane_owner.get(lane.id, m.id)
+        perms = lane.permissions_for(m)
+        if not (owner_id == m.id or perms.manage_channels or perms.administrator):
+            await itx.response.send_message("Nur Owner/Mods d�rfen Templates benutzen.", ephemeral=True)
+            return
+        base, limit = await self.core.reset_lane_template(lane)
+        await itx.response.send_message(
+            f"Lane auf {base} zur�ckgesetzt (Limit {limit}).",
+            ephemeral=True,
+        )
 
 class MinRankSelect(discord.ui.Select):
     def __init__(self, core):
