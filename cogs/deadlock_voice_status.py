@@ -38,7 +38,7 @@ except ValueError:
     MATCH_MINUTE_DISPLAY_OFFSET = 3
 
 _SUFFIX_REGEX = re.compile(
-    r"\s*-\s*(?:in der Lobby\s*\(\d+/\d+\)|im Match Min (?:\d+|\d+\+)\s*\(\d+/\d+\))$",
+    r"\s*-\s*(?:in der Lobby(?:\s*\(\d+/\d+\))?|im Match Min (?:\d+|\d+\+)\s*\(\d+/\d+\))$",
     re.IGNORECASE,
 )
 
@@ -408,7 +408,7 @@ class DeadlockVoiceStatus(commands.Cog):
         }
 
         if candidate_stage == "lobby":
-            suffix = f"in der Lobby ({player_count}/{voice_slots})"
+            suffix = "in der Lobby"
             trace_payload["decision"].update(
                 {
                     "suffix": suffix,
