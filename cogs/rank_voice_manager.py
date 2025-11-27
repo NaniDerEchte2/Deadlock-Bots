@@ -469,9 +469,14 @@ class RolePermissionVoiceManager(commands.Cog):
             if not await self.channel_exists(channel):
                 return
 
-            # TempVoice-Lanes verwalten wir bzgl. Permissions, aber nicht beim Namen,
-            # damit es keinen Rename-Kampf mit dem TempVoice-Core gibt.
-            if self._is_tempvoice_lane(channel):
+            mode = self.get_channel_mode(channel)
+
+            if mode is None:
+                return
+
+            # TempVoice lanes only get renamed when we manage them via the rank system (ranked/grind).
+            # Regular lanes keep their TempVoice naming.
+            if self._is_tempvoice_lane(channel) and mode not in {"ranked", "grind"}:
                 return
 
             members_ranks = await self.get_channel_members_ranks(channel)
