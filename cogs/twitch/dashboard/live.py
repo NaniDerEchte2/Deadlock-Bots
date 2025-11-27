@@ -144,8 +144,9 @@ class DashboardLiveMixin:
 
             is_current_partner = False
             if not partner_opt_out:
-                is_current_partner = bool(permanent)
-                if not is_current_partner and until_dt:
+                if permanent:
+                    is_current_partner = True
+                elif until_dt:
                     is_current_partner = until_dt >= now
 
             should_list_as_non_partner = partner_opt_out

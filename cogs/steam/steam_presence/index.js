@@ -436,7 +436,7 @@ function normalizeAttempts(value, fallback, maximum = 4) {
 
 function isTimeoutError(err) {
   if (!err) return false;
-  const message = err && err.message ? err.message : String(err);
+  const message = err.message ? err.message : String(err);
   return String(message).toLowerCase().includes('timeout');
 }
 

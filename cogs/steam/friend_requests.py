@@ -53,7 +53,7 @@ def _queue_single(steam_id: str) -> None:
         safe_sid = sanitize_log_value(sid)
         log.exception(
             "Failed to queue Steam friend request",
-            extra={"steam_id": safe_sid},
+            extra=safe_log_extra({"steam_id": safe_sid}),
         )
 
 
