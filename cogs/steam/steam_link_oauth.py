@@ -6,7 +6,7 @@ import uuid
 import logging
 import html
 import asyncio
-from typing import Dict, Optional, List, Union
+from typing import Any, Dict, Optional, List, Union
 from urllib.parse import urlencode, urljoin, urlparse
 
 import aiohttp
@@ -19,7 +19,7 @@ from service import db
 
 from cogs.steam import SchnellLinkButton
 from cogs.steam.friend_requests import queue_friend_request, queue_friend_requests
-from cogs.steam.logging_utils import safe_log_extra, sanitize_log_value
+from cogs.steam.logging_utils import sanitize_log_value
 
 log = logging.getLogger("SteamLink")
 
@@ -58,6 +58,10 @@ __all__ = ("get_public_urls", "start_urls_for")
 def _safe_log_text(value: str) -> str:
     """Escape control characters before logging external/user-provided text."""
     return str(sanitize_log_value(value))
+
+def _safe_log_repr(value: Any) -> str:
+    """Return a repr-style string with control chars escaped for safe logging."""
+    return repr(sanitize_log_value(value))
 
 def _env_client_id(bot: commands.Bot) -> str:
     cid = (os.getenv("DISCORD_OAUTH_CLIENT_ID") or "").strip()
@@ -158,10 +162,9 @@ def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: 
     try:
         queue_friend_request(steam_id)
     except Exception:
-        safe_id = sanitize_log_value(steam_id)
         log.exception(
-            "Konnte Steam-Freundschaftsanfrage nicht einreihen",
-            extra=safe_log_extra({"steam_id": safe_id}),
+            "Konnte Steam-Freundschaftsanfrage nicht einreihen (steam_id=%s)",
+            _safe_log_repr(steam_id),
         )
 
 
@@ -734,7 +737,7 @@ class SteamLink(commands.Cog):
                         steam_id = meta_sid
 
                 if not steam_id:
-                    log.info("Ignoriere Verbindung ohne gültige SteamID: %s", c)
+                    log.info("Ignoriere Verbindung ohne gültige SteamID: %s", _safe_log_repr(c))
                     continue
 
                 persona = await self._fetch_persona(steam_id) or (c.get("name") or "")
@@ -746,7 +749,11 @@ class SteamLink(commands.Cog):
                 saved.append(steam_id)
 
             except Exception:
-                log.exception("Fehler beim Speichern der Steam-Verknüpfung: user_id=%s, conn=%s", uid, c)
+                log.exception(
+                    "Fehler beim Speichern der Steam-Verknüpfung: user_id=%s, conn=%s",
+                    uid,
+                    _safe_log_repr(c),
+                )
 
         return saved
 
