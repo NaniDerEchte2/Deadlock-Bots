@@ -314,11 +314,21 @@ class SteamLink(commands.Cog):
         try:
             queue_friend_requests(steam_ids)
         except Exception:
-            safe_ids = [sanitize_log_value(s) for s in steam_ids]
-            safe_user = sanitize_log_value(user_id)
+            ids_for_log = steam_ids or []
+            steam_id_count = len(ids_for_log)
+            invalid_ids = any(not re.fullmatch(r"\d{17,20}", str(sid)) for sid in ids_for_log)
+            try:
+                safe_user = int(user_id)
+            except Exception:
+                safe_user = None
             log.exception(
                 "Konnte Steam-Freundschaftsanfragen nicht in die Queue legen",
-                extra=safe_log_extra({"user_id": safe_user, "steam_ids": safe_ids}),
+                # Avoid logging raw user-controlled identifiers; keep structured, bounded data only.
+                extra={
+                    "user_id": safe_user,
+                    "steam_id_count": steam_id_count,
+                    "steam_ids_invalid": invalid_ids,
+                },
             )
         try:
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
