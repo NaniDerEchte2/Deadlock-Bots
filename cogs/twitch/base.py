@@ -211,9 +211,7 @@ class TwitchBaseCog(commands.Cog):
             else:
                 return ""
         login = login.strip().lstrip("@")
-        from re import sub
-
-        login = sub(r"[^a-z0-9_]", "", login.lower())
+        login = re.sub(r"[^a-z0-9_]", "", login.lower())
         return login
 
     @staticmethod

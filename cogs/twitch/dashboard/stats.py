@@ -674,7 +674,12 @@ class DashboardStatsMixin:
             hour_section = hour_tables_block
             weekday_section = weekday_tables_block
 
-        display_toggle_html = ""
+        display_toggle_html = (
+            '<div class="toggle-group">'
+            f'  <a class="btn btn-small{" btn-active" if display_mode == "charts" else " btn-secondary"}" href="{_build_url(display="charts")}">Charts</a>'
+            f'  <a class="btn btn-small{" btn-active" if display_mode == "raw" else " btn-secondary"}" href="{_build_url(display="raw")}">Tabelle</a>'
+            '</div>'
+        )
         analysis_controls_html = ""
         if focus_mode in {"time", "weekday"}:
             analysis_controls_html = f"<div class='analysis-controls'>{display_toggle_html}</div>"
@@ -1074,13 +1079,6 @@ class DashboardStatsMixin:
                 filter_descriptions.append(f"Stunden {start:02d}–{end:02d} UTC{wrap_hint}")
         if not filter_descriptions:
             filter_descriptions.append("Keine Filter aktiv")
-
-        display_toggle_html = (
-            '<div class="toggle-group">'
-            f'  <a class="btn btn-small{" btn-active" if display_mode == "charts" else " btn-secondary"}" href="{_build_url(display="charts")}">Charts</a>'
-            f'  <a class="btn btn-small{" btn-active" if display_mode == "raw" else " btn-secondary"}" href="{_build_url(display="raw")}">Tabelle</a>'
-            '</div>'
-        )
 
         def _focus_href(mode: str) -> str:
             updates = {"focus": mode}

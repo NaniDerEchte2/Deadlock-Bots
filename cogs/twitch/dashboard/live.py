@@ -142,13 +142,6 @@ class DashboardLiveMixin:
             )
             toggle_classes = "btn btn-small" if not is_on_discord else "btn btn-small btn-secondary"
 
-            is_current_partner = False
-            if not partner_opt_out:
-                if permanent:
-                    is_current_partner = True
-                elif until_dt:
-                    is_current_partner = until_dt >= now
-
             should_list_as_non_partner = partner_opt_out
             if should_list_as_non_partner:
                 non_partner_entries.append(

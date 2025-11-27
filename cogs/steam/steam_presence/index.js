@@ -2207,7 +2207,8 @@ function autoLoginIfPossible() {
   if (!refreshToken) { log('info', 'Auto-login disabled (no refresh token). Waiting for tasks.'); scheduleStatePublish({ reason: 'auto_login_skipped' }); return; }
   const result = initiateLogin('auto-start', {});
   log('info', 'Auto-login kick-off', result);
-  scheduleStatePublish({ reason: 'auto_login', started: result && result.started });
+  const started = Boolean(result?.started);
+  scheduleStatePublish({ reason: 'auto_login', started });
 }
 autoLoginIfPossible();
 publishStandaloneState({ reason: 'startup' });

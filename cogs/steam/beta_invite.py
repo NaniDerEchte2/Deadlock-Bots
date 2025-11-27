@@ -80,7 +80,6 @@ STATUS_INVITE_SENT = "invite_sent"
 STATUS_ERROR = "error"
 
 SERVER_LEAVE_BAN_REASON = "Ausschluss aus der Community wegen Leaven des Servers"
-_AUDIT_TABLE_READY = False
 
 _ALLOWED_UPDATE_FIELDS = {
     "status",
@@ -93,9 +92,6 @@ _ALLOWED_UPDATE_FIELDS = {
 }
 
 def _ensure_invite_audit_table() -> None:
-    global _AUDIT_TABLE_READY
-    if _AUDIT_TABLE_READY:
-        return
     with db.get_conn() as conn:
         conn.execute(
             """
@@ -110,7 +106,6 @@ def _ensure_invite_audit_table() -> None:
             )
             """
         )
-    _AUDIT_TABLE_READY = True
 
 
 def _format_discord_name(user: discord.abc.User) -> str:
