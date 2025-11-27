@@ -437,7 +437,7 @@ function normalizeAttempts(value, fallback, maximum = 4) {
 function isTimeoutError(err) {
   if (!err) return false;
   const message = err && err.message ? err.message : String(err);
-  return typeof message === 'string' && message.toLowerCase().includes('timeout');
+  return String(message).toLowerCase().includes('timeout');
 }
 
 const MIN_GC_READY_TIMEOUT_MS = 5000;

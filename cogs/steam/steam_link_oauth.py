@@ -158,9 +158,10 @@ def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: 
     try:
         queue_friend_request(steam_id)
     except Exception:
+        safe_id = sanitize_log_value(steam_id)
         log.exception(
             "Konnte Steam-Freundschaftsanfrage nicht einreihen",
-            extra=safe_log_extra({"steam_id": steam_id}),
+            extra={"steam_id": safe_id},
         )
 
 
@@ -313,9 +314,10 @@ class SteamLink(commands.Cog):
         try:
             queue_friend_requests(steam_ids)
         except Exception:
+            safe_ids = [sanitize_log_value(s) for s in steam_ids]
             log.exception(
                 "Konnte Steam-Freundschaftsanfragen nicht in die Queue legen",
-                extra=safe_log_extra({"user_id": user_id, "steam_ids": steam_ids}),
+                extra={"user_id": user_id, "steam_ids": safe_ids},
             )
         try:
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)

@@ -4,7 +4,7 @@ import logging
 from typing import Iterable
 
 from service import db
-from cogs.steam.logging_utils import safe_log_extra
+from cogs.steam.logging_utils import safe_log_extra, sanitize_log_value
 
 log = logging.getLogger("SteamFriendRequests")
 
@@ -50,9 +50,10 @@ def _queue_single(steam_id: str) -> None:
             (sid,),
         )
     except Exception:
+        safe_sid = sanitize_log_value(sid)
         log.exception(
             "Failed to queue Steam friend request",
-            extra=safe_log_extra({"steam_id": sid}),
+            extra={"steam_id": safe_sid},
         )
 
 

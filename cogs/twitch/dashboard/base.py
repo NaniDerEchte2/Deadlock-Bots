@@ -15,6 +15,10 @@ log = logging.getLogger("TwitchStreams")
 # Erlaubte Twitch-Logins: 3–25 Zeichen, a–z, 0–9, _
 LOGIN_RE = re.compile(r"^[A-Za-z0-9_]{3,25}$")
 
+def _sanitize_log_value(value: str) -> str:
+    text = "" if value is None else str(value)
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
 
 class DashboardBase:
     """Common setup and helpers shared by the dashboard views."""
@@ -172,7 +176,8 @@ class DashboardBase:
                         params["err"] = err
                     return urlunsplit(("", "", parts.path, urlencode(params), "")) or "/twitch"
             except Exception as exc:
-                log.debug("Failed to build Twitch redirect from referer %s: %s", referer, exc, exc_info=True)
+                safe_referer = _sanitize_log_value(referer)
+                log.debug("Failed to build Twitch redirect from referer %s: %s", safe_referer, exc, exc_info=True)
 
         params = {}
         if ok:
