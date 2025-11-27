@@ -683,6 +683,19 @@ class TempVoiceCore(commands.Cog):
             force_name=True,
         )
 
+    async def reset_lane_template(self, lane: discord.VoiceChannel) -> Tuple[str, int]:
+        """
+        Stellt die Lane auf den Standard-Namen und das Standard-Limit zur�ck.
+        - Name: n�chste freie "Lane X" in der Kategorie (oder vorhandene Lane-Basis, falls schon Lane).
+        - Limit: Standard-Cap je nach Kategorie (Ranked/Casual).
+        """
+        base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
+        if not base.startswith("Lane "):
+            base = await self._next_name(lane.category, "Lane")
+        limit = _default_cap(lane)
+        await self.set_lane_template(lane, base_name=base, limit=limit)
+        return base, limit
+
     async def _persist_lane_base(self, lane_id: int, base_name: str) -> None:
         self.lane_base[lane_id] = base_name
         if not self._tvdb.connected:
