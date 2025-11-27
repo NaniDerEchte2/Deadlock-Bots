@@ -257,6 +257,13 @@ class TwitchMonitoringMixin:
             game_name = (stream.get("game_name") or "").strip() if stream else ""
             game_name_lower = game_name.lower()
             is_deadlock = is_live and bool(target_game_lower) and game_name_lower == target_game_lower
+            last_title_value = (stream.get("title") if stream else previous_state.get("last_title")) or None
+            last_game_value = (game_name or previous_state.get("last_game") or "").strip() or None
+            last_viewer_count_value = (
+                int(stream.get("viewer_count") or 0)
+                if stream
+                else int(previous_state.get("last_viewer_count") or 0)
+            )
 
             should_post = (
                 notify_ch is not None
@@ -267,13 +274,12 @@ class TwitchMonitoringMixin:
 
             if should_post:
                 referral_url = self._build_referral_url(login)
-                url = referral_url
                 display_name = stream.get("user_name") or login
                 message_prefix: List[str] = []
                 if self._alert_mention:
                     message_prefix.append(self._alert_mention)
                 stream_title = (stream.get("title") or "").strip()
-                live_announcement = f"🔴 **{display_name}** ist live! Schau über den Button unten rein."
+                live_announcement = f"**{display_name}** ist live! Schau ueber den Button unten rein."
                 if stream_title:
                     live_announcement = f"{live_announcement} - {stream_title}"
                 message_prefix.append(live_announcement)
@@ -336,9 +342,33 @@ class TwitchMonitoringMixin:
                     except Exception:
                         log.exception("Konnte Deadlock-Ende-Posting nicht laden: %s", login)
                     else:
-                        ended_content = f"**{display_name}** (Beendet)"
+                        existing_image_url = None
+                        if fetched_message.embeds:
+                            first_embed = fetched_message.embeds[0]
+                            existing_image_url = getattr(getattr(first_embed, "image", None), "url", None)
+
+                        thumbnail_url = ""
+                        if stream:
+                            thumbnail_url = (stream.get("thumbnail_url") or "").strip()
+                        preview_image_url = None
+                        if thumbnail_url:
+                            thumbnail_url = thumbnail_url.replace("{width}", "1280").replace("{height}", "720")
+                            cache_bust = int(datetime.now(tz=timezone.utc).timestamp())
+                            preview_image_url = f"{thumbnail_url}?rand={cache_bust}"
+                        elif existing_image_url:
+                            preview_image_url = existing_image_url
+
+                        ended_content = f"**{display_name}** ist OFFLINE - VOD per Button."
+                        offline_embed = self._build_offline_embed(
+                            login=login,
+                            display_name=display_name,
+                            last_title=last_title_value,
+                            last_game=last_game_value,
+                            preview_image_url=preview_image_url,
+                        )
+                        offline_view = self._build_offline_link_view(referral_url)
                         try:
-                            await fetched_message.edit(content=ended_content, embed=None, view=None)
+                            await fetched_message.edit(content=ended_content, embed=offline_embed, view=offline_view)
                         except Exception:
                             log.exception(
                                 "Konnte Deadlock-Ende-Posting nicht aktualisieren: %s", login
@@ -360,9 +390,9 @@ class TwitchMonitoringMixin:
                     db_streamer_login,
                     int(is_live),
                     now_iso,
-                    (stream.get("title") if stream else None),
-                    (stream.get("game_name") if stream else None),
-                    int(stream.get("viewer_count") or 0) if stream else 0,
+                    last_title_value,
+                    last_game_value,
+                    last_viewer_count_value,
                     db_message_id,
                     tracking_token_to_store,
                 )
@@ -440,7 +470,6 @@ class TwitchMonitoringMixin:
         """Erzeuge ein Discord-Embed für das Go-Live-Posting mit Stream-Vorschau."""
 
         display_name = stream.get("user_name") or login
-        url = self._build_referral_url(login)
         game = stream.get("game_name") or TWITCH_TARGET_GAME_NAME
         title = stream.get("title") or "Live!"
         viewer_count = int(stream.get("viewer_count") or 0)
@@ -456,14 +485,12 @@ class TwitchMonitoringMixin:
         embed = discord.Embed(
             title=f"{display_name} ist LIVE in {game}!",
             description=title,
-            url=url,
             colour=discord.Color(TWITCH_BRAND_COLOR_HEX),
             timestamp=timestamp,
         )
 
         embed.add_field(name="Viewer", value=str(viewer_count), inline=True)
         embed.add_field(name="Kategorie", value=game, inline=True)
-        embed.add_field(name="Link", value=url, inline=False)
 
         thumbnail_url = (stream.get("thumbnail_url") or "").strip()
         if thumbnail_url:
@@ -471,10 +498,55 @@ class TwitchMonitoringMixin:
             cache_bust = int(datetime.now(tz=timezone.utc).timestamp())
             embed.set_image(url=f"{thumbnail_url}?rand={cache_bust}")
 
-        embed.set_footer(text="Auf Twitch ansehen für mehr Deadlock-Action!")
-        embed.set_author(name=f"🔴 {display_name}", url=url)
+        embed.set_footer(text="Auf Twitch ansehen fuer mehr Deadlock-Action!")
+        embed.set_author(name=f"LIVE: {display_name}")
 
         return embed
+
+    def _build_offline_embed(
+        self,
+        *,
+        login: str,
+        display_name: str,
+        last_title: Optional[str],
+        last_game: Optional[str],
+        preview_image_url: Optional[str],
+    ) -> discord.Embed:
+        """Offline-Overlay: gleicher Stil wie live, aber klar als VOD markiert."""
+
+        game = last_game or TWITCH_TARGET_GAME_NAME or "Twitch"
+        description = last_title or "Letzten Stream als VOD ansehen."
+
+        embed = discord.Embed(
+            title=f"{display_name} ist OFFLINE",
+            description=description,
+            colour=discord.Color(TWITCH_BRAND_COLOR_HEX),
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+
+        embed.add_field(name="Status", value="OFFLINE", inline=True)
+        embed.add_field(name="Kategorie", value=game, inline=True)
+        embed.add_field(name="Hinweis", value="VOD ueber den Button abrufen.", inline=False)
+
+        if preview_image_url:
+            embed.set_image(url=preview_image_url)
+
+        embed.set_footer(text="Letzten Stream auf Twitch ansehen.")
+        embed.set_author(name=f"OFFLINE: {display_name}")
+
+        return embed
+
+    def _build_offline_link_view(self, referral_url: str) -> discord.ui.View:
+        """Offline-Ansicht: einfacher Link-Button ohne Tracking."""
+        view = discord.ui.View(timeout=None)
+        view.add_item(
+            discord.ui.Button(
+                label=TWITCH_BUTTON_LABEL,
+                style=discord.ButtonStyle.link,
+                url=referral_url,
+            )
+        )
+        return view
 
     async def cog_load(self) -> None:
         await super().cog_load()
