@@ -31,6 +31,11 @@ PRESENCE_STALE_SECONDS = 180
 RENAME_COOLDOWN_SECONDS = 360
 RENAME_REASON = "Deadlock Voice Status Update"
 MIN_ACTIVE_PLAYERS = 1
+_MATCH_MINUTE_OFFSET_RAW = os.getenv("DEADLOCK_MATCH_MINUTE_OFFSET", "3")
+try:
+    MATCH_MINUTE_DISPLAY_OFFSET = max(0, int(_MATCH_MINUTE_OFFSET_RAW))
+except ValueError:
+    MATCH_MINUTE_DISPLAY_OFFSET = 3
 
 _SUFFIX_REGEX = re.compile(
     r"\s*-\s*(?:in der Lobby\s*\(\d+/\d+\)|im Match Min (?:\d+|\d+\+)\s*\(\d+/\d+\))$",
@@ -428,15 +433,16 @@ class DeadlockVoiceStatus(commands.Cog):
 
         if candidate_stage == "match":
             max_minutes = max(candidate_minutes) if candidate_minutes else 0
-            bucket = self._bucket_minutes(max_minutes)
-            suffix = f"im Match Min {bucket} ({player_count}/{voice_slots})"
+            display_minutes = max(0, max_minutes + MATCH_MINUTE_DISPLAY_OFFSET)
+            suffix = f"im Match Min {display_minutes} ({player_count}/{voice_slots})"
             trace_payload["decision"].update(
                 {
                     "suffix": suffix,
                     "player_count": player_count,
                     "voice_slots_effective": voice_slots,
-                    "bucket": bucket,
+                    "bucket": str(display_minutes),
                     "max_minutes": max_minutes,
+                    "display_minutes": display_minutes,
                 }
             )
             await self._apply_channel_name(
@@ -444,7 +450,7 @@ class DeadlockVoiceStatus(commands.Cog):
                 base_name,
                 suffix,
                 candidate_stage,
-                bucket,
+                str(display_minutes),
                 current_suffix,
                 player_count,
                 voice_slots,
@@ -585,6 +591,8 @@ class DeadlockVoiceStatus(commands.Cog):
             return
 
         state = self.channel_states.setdefault(channel.id, {})
+        previous_stage = state.get("stage")
+        match_exit_override = previous_stage == "match" and stage_label == "lobby"
         last_rename = state.get("last_rename", 0.0)
         elapsed = time.time() - float(last_rename)
 
@@ -624,6 +632,7 @@ class DeadlockVoiceStatus(commands.Cog):
                 "elapsed_since_last": elapsed,
                 "effective_cooldown": effective_cooldown,
                 "cooldown_remaining": max(0.0, effective_cooldown - elapsed),
+                "match_exit_override": match_exit_override,
             }
         )
 
@@ -644,11 +653,13 @@ class DeadlockVoiceStatus(commands.Cog):
             self._store_trace(channel.id, trace_data)
             return
 
-        if elapsed < effective_cooldown:
+        if elapsed < effective_cooldown and not match_exit_override:
             rename_info["result"] = "cooldown"
             trace_data["rename"] = rename_info
             self._store_trace(channel.id, trace_data)
             return
+        if match_exit_override and elapsed < effective_cooldown:
+            rename_info["cooldown_bypassed"] = True
 
         try:
             await channel.edit(name=target_name, reason=RENAME_REASON)
