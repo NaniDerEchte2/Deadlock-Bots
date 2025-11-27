@@ -267,8 +267,8 @@ class SteamLinkStepView(discord.ui.View):
             try:
                 await self.on_next(interaction)
                 return
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOGGER.debug("SteamLinkStepView on_next handler failed: %s", exc, exc_info=True)
 
     def bind_persistence(self, manager: Any, message_id: int) -> None:
         self._persistence_info = {"manager": manager, "message_id": message_id}

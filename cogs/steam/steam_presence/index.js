@@ -2198,8 +2198,12 @@ function shutdown(code = 0) {
     flushPendingPlaytestInvites(new Error('Service shutting down'));
     flushDeadlockGcWaiters(new Error('Service shutting down'));
     client.logOff();
-  } catch {}
-  try { db.close(); } catch {}
+  } catch (err) {
+    log('warn', 'Error during shutdown cleanup', { error: err && err.message ? err.message : String(err) });
+  }
+  try { db.close(); } catch (err) {
+    log('warn', 'Failed to close database during shutdown', { error: err && err.message ? err.message : String(err) });
+  }
   process.exit(code);
 }
 process.on('SIGINT', () => shutdown(0));

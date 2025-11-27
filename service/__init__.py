@@ -18,10 +18,6 @@ try:
 except Exception:
     faq_logs = None
 try:
-    from . import changelogs
-except Exception:
-    changelogs = None
-try:
     from . import standalone_manager
 except Exception:
     standalone_manager = None
@@ -32,6 +28,5 @@ __all__ = [
     "worker_client",
     "dashboard",
     "faq_logs",
-    "changelogs",
     "standalone_manager",
 ]

@@ -2494,6 +2494,14 @@ class DashboardServer:
             return None
         return value
 
+    @staticmethod
+    def _safe_log_value(value: Any) -> str:
+        """
+        Sanitize values before logging to avoid log injection via crafted newlines.
+        """
+        text = "" if value is None else str(value)
+        return text.replace("\r", "\\r").replace("\n", "\\n")
+
     def _json(self, payload: Any, **kwargs: Any) -> web.Response:
         return web.json_response(self._sanitize(payload), **kwargs)
 
@@ -2989,7 +2997,9 @@ class DashboardServer:
             if cog:
                 return cog
         except Exception:
-            pass
+            logging.getLogger(__name__).debug(
+                "VoiceActivityTrackerCog lookup failed via direct get_cog", exc_info=True
+            )
         for cog in self.bot.cogs.values():
             if cog.__class__.__name__ == "VoiceActivityTrackerCog":
                 return cog
@@ -3876,6 +3886,7 @@ class DashboardServer:
         self._check_auth(request, required=bool(self.token))
         manager = self._require_standalone_manager()
         key = request.match_info.get("key", "").strip()
+        safe_key = self._safe_log_value(key)
         try:
             status = await manager.start(key)
         except Exception as exc:
@@ -3884,15 +3895,22 @@ class DashboardServer:
             elif StandaloneConfigNotFound and isinstance(exc, StandaloneConfigNotFound):
                 raise web.HTTPNotFound(text="Standalone bot not found")
             elif StandaloneManagerError and isinstance(exc, StandaloneManagerError):
-                raise web.HTTPInternalServerError(text=str(exc))
+                logging.getLogger(__name__).exception(
+                    "Error when starting standalone bot (key=%s)", safe_key
+                )
+                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
             else:
-                raise
+                logging.getLogger(__name__).exception(
+                    "Unexpected error when starting standalone bot (key=%s)", safe_key
+                )
+                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
         return self._json({"standalone": status})
 
     async def _handle_standalone_stop(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
         manager = self._require_standalone_manager()
         key = request.match_info.get("key", "").strip()
+        safe_key = self._safe_log_value(key)
         try:
             status = await manager.stop(key)
         except Exception as exc:
@@ -3901,24 +3919,36 @@ class DashboardServer:
             elif StandaloneConfigNotFound and isinstance(exc, StandaloneConfigNotFound):
                 raise web.HTTPNotFound(text="Standalone bot not found")
             elif StandaloneManagerError and isinstance(exc, StandaloneManagerError):
-                raise web.HTTPInternalServerError(text=str(exc))
+                logging.getLogger(__name__).exception(
+                    "Error when stopping standalone bot (key=%s)", safe_key
+                )
+                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
             else:
-                raise
+                logging.getLogger(__name__).exception(
+                    "Unexpected error when stopping standalone bot (key=%s)", safe_key
+                )
+                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
         return self._json({"standalone": status})
 
     async def _handle_standalone_restart(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
         manager = self._require_standalone_manager()
         key = request.match_info.get("key", "").strip()
+        safe_key = self._safe_log_value(key)
         try:
             status = await manager.restart(key)
         except Exception as exc:
             if StandaloneConfigNotFound and isinstance(exc, StandaloneConfigNotFound):
                 raise web.HTTPNotFound(text="Standalone bot not found")
             if StandaloneManagerError and isinstance(exc, StandaloneManagerError):
-                logging.exception("Error when restarting standalone bot (key=%r): %s", key, exc)
-                raise web.HTTPInternalServerError(text="An internal error has occurred.")
-            raise
+                logging.getLogger(__name__).exception(
+                    "Error when restarting standalone bot (key=%s)", safe_key
+                )
+                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
+            logging.getLogger(__name__).exception(
+                "Unexpected error when restarting standalone bot (key=%s)", safe_key
+            )
+            raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
         return self._json({"standalone": status})
 
     async def _handle_standalone_autostart(self, request: web.Request) -> web.Response:
@@ -3975,6 +4005,7 @@ class DashboardServer:
         self._check_auth(request, required=bool(self.token))
         manager = self._require_standalone_manager()
         key = request.match_info.get("key", "").strip()
+        safe_key = self._safe_log_value(key)
         try:
             manager.config(key)
         except Exception as exc:
@@ -4004,7 +4035,9 @@ class DashboardServer:
             await manager.ensure_running(key)
         except Exception as exc:
             logging.getLogger(__name__).warning(
-                "Could not ensure %s running after command enqueue: %s", key, exc
+                "Could not ensure %s running after command enqueue: %s",
+                safe_key,
+                self._safe_log_value(exc),
             )
 
         status = await manager.status(key)

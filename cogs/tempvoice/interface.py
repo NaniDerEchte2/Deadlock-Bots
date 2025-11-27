@@ -4,10 +4,7 @@ import logging
 import asyncio
 from discord.ext import commands
 from typing import Optional
-from .core import (
-    INTERFACE_TEXT_CHANNEL_ID, ENGLISH_ONLY_ROLE_ID, MINRANK_CATEGORY_IDS,
-    RANK_ORDER, _rank_roles
-)
+from .core import MINRANK_CATEGORY_IDS, RANK_ORDER
 
 logger = logging.getLogger("cogs.tempvoice.interface")
 
@@ -490,8 +487,6 @@ class MinRankSelect(discord.ui.Select):
             await itx.response.send_message("Mindest-Rang ist hier deaktiviert.", ephemeral=True)
             return
         choice = self.values[0]
-        ranks = _rank_roles(lane.guild)
-
         def _idx(name: str) -> int:
             order = ["unknown","initiate","seeker","alchemist","arcanist","ritualist","emissary","archon","oracle","phantom","ascendant","eternus"]
             try:

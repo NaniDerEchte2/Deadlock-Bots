@@ -171,8 +171,8 @@ class DashboardBase:
                     if err:
                         params["err"] = err
                     return urlunsplit(("", "", parts.path, urlencode(params), "")) or "/twitch"
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Failed to build Twitch redirect from referer %s: %s", referer, exc, exc_info=True)
 
         params = {}
         if ok:

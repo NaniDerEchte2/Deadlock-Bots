@@ -19,7 +19,7 @@ from service import db
 
 from cogs.steam import SchnellLinkButton
 from cogs.steam.friend_requests import queue_friend_request, queue_friend_requests
-from cogs.steam.logging_utils import safe_log_extra
+from cogs.steam.logging_utils import safe_log_extra, sanitize_log_value
 
 log = logging.getLogger("SteamLink")
 
@@ -53,6 +53,11 @@ STEAM_BUTTON_LABEL = (os.getenv("STEAM_BUTTON_LABEL") or "Direkt bei Steam anmel
 # Öffentliche Schnittstelle für andere Cogs (Welcome-DM, Rules-Panel, etc.)
 # ---------------------------------------------------------------------------
 __all__ = ("get_public_urls", "start_urls_for")
+
+
+def _safe_log_text(value: str) -> str:
+    """Escape control characters before logging external/user-provided text."""
+    return str(sanitize_log_value(value))
 
 def _env_client_id(bot: commands.Bot) -> str:
     cid = (os.getenv("DISCORD_OAUTH_CLIENT_ID") or "").strip()
@@ -390,7 +395,11 @@ class SteamLink(commands.Cog):
             async with s.post(f"{DISCORD_API}/oauth2/token", data=data, headers=headers) as r:
                 if r.status != 200:
                     body = await r.text()
-                    log.warning("Discord Token-Exchange fehlgeschlagen (%s): %s", r.status, body)
+                    log.warning(
+                        "Discord Token-Exchange fehlgeschlagen (%s): %s",
+                        r.status,
+                        _safe_log_text(body),
+                    )
                     return None
                 return await r.json()
 
@@ -400,7 +409,11 @@ class SteamLink(commands.Cog):
             async with s.get(f"{DISCORD_API}/users/@me/connections", headers=headers) as r:
                 if r.status != 200:
                     body = await r.text()
-                    log.warning("Discord Connections-API fehlgeschlagen (%s): %s", r.status, body)
+                    log.warning(
+                        "Discord Connections-API fehlgeschlagen (%s): %s",
+                        r.status,
+                        _safe_log_text(body),
+                    )
                     return None
                 return await r.json()
 
@@ -516,7 +529,11 @@ class SteamLink(commands.Cog):
             async with session.post(STEAM_OPENID_ENDPOINT, data=verify_params, timeout=15) as resp:
                 body = await resp.text()
                 if resp.status != 200 or "is_valid:true" not in body:
-                    log.warning("Steam OpenID verify fehlgeschlagen: HTTP=%s body=%s", resp.status, body)
+                    log.warning(
+                        "Steam OpenID verify fehlgeschlagen: HTTP=%s body=%s",
+                        resp.status,
+                        _safe_log_text(body),
+                    )
                     return None
 
         claimed_id = query.get("openid.claimed_id", "")

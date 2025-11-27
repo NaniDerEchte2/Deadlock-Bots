@@ -84,6 +84,7 @@ class TwitchDashboardMixin:
                 if "locked" not in str(exc).lower() or attempt == 2:
                     raise
                 await asyncio.sleep(0.3 * (attempt + 1))
+        return []
 
     async def _dashboard_set_discord_flag(self, login: str, is_on_discord: bool) -> str:
         normalized = self._normalize_login(login)

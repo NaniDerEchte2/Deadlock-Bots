@@ -274,8 +274,8 @@ class RolePermissionVoiceManager(commands.Cog):
             for task in list(self._rename_tasks.values()):
                 try:
                     task.cancel()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to cancel rename task: %s", exc, exc_info=True)
             self._rename_tasks.clear()
             self._pending_channel_renames.clear()
             if self.db:

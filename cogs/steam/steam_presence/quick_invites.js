@@ -126,10 +126,8 @@ function findFirstUrlString(value, maxDepth = 4) {
 function normalizeSteamToken(rawToken, fallbackTimestamp) {
   if (!rawToken) return null;
 
-  const tokenData =
-    rawToken && typeof rawToken === 'object' && rawToken.token && typeof rawToken.token === 'object'
-      ? rawToken.token
-      : rawToken;
+  const nestedToken = typeof rawToken === 'object' ? rawToken.token : null;
+  const tokenData = nestedToken && typeof nestedToken === 'object' ? nestedToken : rawToken;
 
   if (!tokenData || typeof tokenData !== 'object') return null;
 

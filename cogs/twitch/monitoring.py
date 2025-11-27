@@ -309,7 +309,6 @@ class TwitchMonitoringMixin:
             )
 
             if ended_deadlock:
-                referral_url = self._build_referral_url(login)
                 display_name = (
                     (stream.get("user_name") if stream else previous_state.get("streamer_login"))
                     or login

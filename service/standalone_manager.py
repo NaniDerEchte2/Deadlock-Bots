@@ -85,19 +85,19 @@ class _RuntimeState:
 
 
 class StandaloneManagerError(RuntimeError):
-    ...
+    pass
 
 
 class StandaloneConfigNotFound(StandaloneManagerError):
-    ...
+    pass
 
 
 class StandaloneAlreadyRunning(StandaloneManagerError):
-    ...
+    pass
 
 
 class StandaloneNotRunning(StandaloneManagerError):
-    ...
+    pass
 
 
 class StandaloneBotManager:
@@ -200,7 +200,7 @@ class StandaloneBotManager:
         try:
             await self.stop(key)
         except StandaloneNotRunning:
-            pass
+            log.debug("Restart requested but %s was not running; continuing", key)
         return await self.start(key)
 
     async def ensure_running(self, key: str) -> Dict[str, Any]:
@@ -291,7 +291,7 @@ class StandaloneBotManager:
             try:
                 await task
             except asyncio.CancelledError:
-                pass
+                log.debug("Reader task for %s was cancelled during cleanup", key)
             except Exception as exc:  # noqa: BLE001
                 log.debug("Reader task for %s raised during cleanup: %s", key, exc)
         state.reader_tasks.clear()
@@ -356,7 +356,7 @@ class StandaloneBotManager:
         try:
             await self.start(key)
         except StandaloneAlreadyRunning:
-            pass
+            log.debug("Skip auto-restart for %s because it is already running", key)
         except StandaloneManagerError as exc:
             log.error("Automatic restart for %s failed: %s", key, exc)
 

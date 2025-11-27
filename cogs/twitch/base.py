@@ -9,8 +9,8 @@ from typing import Any, Coroutine, Dict, List, Optional, Set
 
 from urllib.parse import urlparse
 
-import discord
 from aiohttp import web
+from discord import Forbidden, Guild, HTTPException
 from discord.ext import commands
 
 from . import storage
@@ -174,16 +174,16 @@ class TwitchBaseCog(commands.Cog):
             except Exception:
                 log.exception("Einladungen für Guild %s fehlgeschlagen", guild.id)
 
-    async def _refresh_guild_invites(self, guild: discord.Guild):
+    async def _refresh_guild_invites(self, guild: Guild):
         codes: Set[str] = set()
         try:
             invites = await guild.invites()
             for inv in invites:
                 if inv.code:
                     codes.add(inv.code)
-        except discord.Forbidden:
+        except Forbidden:
             log.warning("Fehlende Berechtigung, um Invites von Guild %s zu lesen", guild.id)
-        except discord.HTTPException:
+        except HTTPException:
             log.exception("HTTP-Fehler beim Abruf der Invites für Guild %s", guild.id)
 
         self._invite_codes[guild.id] = codes

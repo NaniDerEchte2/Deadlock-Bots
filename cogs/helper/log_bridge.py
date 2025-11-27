@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from typing import Optional
 
 import discord
@@ -43,8 +42,8 @@ class _DiscordChannelHandler(logging.Handler):
                 await asyncio.sleep(0.8)
                 while not self.queue.empty() and len("\n".join(buffer)) < 1800 and len(buffer) < 12:
                     buffer.append(self.queue.get_nowait())
-            except Exception:
-                pass
+            except Exception as exc:
+                LOG.debug("LogBridge queue bundling failed: %s", exc, exc_info=True)
             text = "```\n" + "\n".join(buffer)
             if len(text) > 1950:
                 text = text[-1950:]  # letzter Block
@@ -101,8 +100,8 @@ class LogBridgeCog(commands.Cog):
         if self.handler:
             try:
                 logging.getLogger("steam.presence").removeHandler(self.handler)
-            except Exception:
-                pass
+            except Exception as exc:
+                LOG.debug("Failed to remove steam.presence handler: %s", exc, exc_info=True)
             self.handler = None
 
     # Optionaler Command, um ad hoc einen anderen Channel zu nutzen (nur Admins)

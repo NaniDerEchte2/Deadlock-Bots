@@ -354,12 +354,7 @@ class VoiceActivityTrackerCog(commands.Cog):
 
         # finalisieren & persistieren
         end_time = datetime.utcnow()
-        seconds, points = self._finalize_session(session, end_time)
-        #if seconds > 0:
-            #logger.info(
-           #     f"Ended voice session: {member.display_name}, {seconds}s, {points}pts"
-         #   )
-
+        _seconds, _points = self._finalize_session(session, end_time)
         await self.end_grace_period(member.id, guild_id, "voice_leave")
 
     # ===== Discord Events =====

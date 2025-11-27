@@ -93,8 +93,8 @@ class DeadlockVoiceStatus(commands.Cog):
             return
         try:
             self.trace_file.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Could not create trace log directory: %s", exc, exc_info=True)
         handler = logging.FileHandler(self.trace_file, encoding="utf-8")
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(logging.Formatter("%(asctime)s [TRACE] %(message)s"))
@@ -111,8 +111,8 @@ class DeadlockVoiceStatus(commands.Cog):
         try:
             self._trace_logger.removeHandler(self._trace_handler)
             self._trace_handler.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Failed to close trace handler: %s", exc, exc_info=True)
         finally:
             self._trace_handler = None
         self.trace_enabled = False
@@ -131,8 +131,8 @@ class DeadlockVoiceStatus(commands.Cog):
             return
         try:
             self.last_observation[channel_id] = payload
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Could not store last observation for %s: %s", channel_id, exc, exc_info=True)
         if not self.trace_enabled:
             return
         if self.trace_channel_filter and channel_id not in self.trace_channel_filter:
