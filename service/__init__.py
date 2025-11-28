@@ -14,6 +14,10 @@ try:
 except Exception:
     dashboard = None
 try:
+    from . import changelogs
+except Exception:
+    changelogs = None
+try:
     from . import faq_logs
 except Exception:
     faq_logs = None
@@ -27,6 +31,7 @@ __all__ = [
     "socket_bus",
     "worker_client",
     "dashboard",
+    "changelogs",
     "faq_logs",
     "standalone_manager",
 ]
