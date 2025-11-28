@@ -228,3 +228,38 @@ class TwitchAPI:
         Convenience wrapper that delegates to get_streams_for_game.
         """
         return await self.get_streams_for_game(game_id=category_id, game_name="", language=language, limit=limit)
+
+    async def get_latest_vod_thumbnail(self, *, user_id: Optional[str] = None, login: Optional[str] = None) -> Optional[str]:
+        """Best-effort: Thumbnail des neuesten VOD (type=archive) als 1280x720-URL."""
+        target_user_id = (user_id or "").strip()
+        login_normalized = (login or "").strip().lower()
+
+        if not target_user_id and login_normalized:
+            try:
+                users = await self.get_users([login_normalized])
+                if login_normalized in users:
+                    target_user_id = str(users[login_normalized].get("id") or "").strip()
+            except Exception:
+                self._log.exception("get_latest_vod_thumbnail: konnte user-id nicht ermitteln (%s)", login_normalized)
+                return None
+
+        if not target_user_id:
+            return None
+
+        try:
+            js = await self._get(
+                "/videos",
+                params={"user_id": target_user_id, "type": "archive", "first": "1"},
+            )
+        except Exception:
+            self._log.exception("get_latest_vod_thumbnail: API-Fehler fuer %s", login_normalized or target_user_id)
+            return None
+
+        first = (js.get("data", []) or [])
+        if not first:
+            return None
+        thumb = (first[0].get("thumbnail_url") or "").strip()
+        if not thumb:
+            return None
+        thumb = thumb.replace("{width}", "1280").replace("{height}", "720")
+        return f"{thumb}?rand={int(time.time())}"

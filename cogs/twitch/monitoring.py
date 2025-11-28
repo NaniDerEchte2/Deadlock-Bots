@@ -19,6 +19,7 @@ from .constants import (
     TWITCH_BRAND_COLOR_HEX,
     TWITCH_BUTTON_LABEL,
     TWITCH_DISCORD_REF_CODE,
+    TWITCH_VOD_BUTTON_LABEL,
     TWITCH_TARGET_GAME_NAME,
 )
 from .logger import log
@@ -264,6 +265,7 @@ class TwitchMonitoringMixin:
                 if stream
                 else int(previous_state.get("last_viewer_count") or 0)
             )
+            twitch_user_id = str(entry.get("twitch_user_id") or "").strip() or None
 
             should_post = (
                 notify_ch is not None
@@ -341,21 +343,10 @@ class TwitchMonitoringMixin:
                     except Exception:
                         log.exception("Konnte Deadlock-Ende-Posting nicht laden: %s", login)
                     else:
-                        existing_image_url = None
-                        if fetched_message.embeds:
-                            first_embed = fetched_message.embeds[0]
-                            existing_image_url = getattr(getattr(first_embed, "image", None), "url", None)
-
-                        thumbnail_url = ""
-                        if stream:
-                            thumbnail_url = (stream.get("thumbnail_url") or "").strip()
-                        preview_image_url = None
-                        if thumbnail_url:
-                            thumbnail_url = thumbnail_url.replace("{width}", "1280").replace("{height}", "720")
-                            cache_bust = int(datetime.now(tz=timezone.utc).timestamp())
-                            preview_image_url = f"{thumbnail_url}?rand={cache_bust}"
-                        elif existing_image_url:
-                            preview_image_url = existing_image_url
+                        preview_image_url = await self._get_latest_vod_preview_url(
+                            login=login,
+                            twitch_user_id=twitch_user_id or previous_state.get("twitch_user_id"),
+                        )
 
                         ended_content = f"**{display_name}** ist OFFLINE - VOD per Button."
                         offline_embed = self._build_offline_embed(
@@ -365,7 +356,7 @@ class TwitchMonitoringMixin:
                             last_game=last_game_value,
                             preview_image_url=preview_image_url,
                         )
-                        offline_view = self._build_offline_link_view(referral_url)
+                        offline_view = self._build_offline_link_view(referral_url, label=TWITCH_VOD_BUTTON_LABEL)
                         try:
                             await fetched_message.edit(content=ended_content, embed=offline_embed, view=offline_view)
                         except Exception:
@@ -377,8 +368,7 @@ class TwitchMonitoringMixin:
                             tracking_token_to_store = None
                             self._drop_live_view(tracking_token_previous)
 
-            user_id = str(entry.get("twitch_user_id") or "").strip()
-            db_user_id = user_id or previous_state.get("twitch_user_id") or login_lower
+            db_user_id = twitch_user_id or previous_state.get("twitch_user_id") or login_lower
             db_user_id = str(db_user_id)
             db_message_id = str(message_id_to_store) if message_id_to_store else None
             db_streamer_login = login_lower
@@ -465,6 +455,16 @@ class TwitchMonitoringMixin:
         except Exception:
             log.exception("Konnte category-Stats nicht loggen")
 
+    async def _get_latest_vod_preview_url(self, *, login: str, twitch_user_id: Optional[str]) -> Optional[str]:
+        """Hole das juengste VOD-Thumbnail; faellt bei Fehler still auf None."""
+        if self.api is None:
+            return None
+        try:
+            return await self.api.get_latest_vod_thumbnail(user_id=twitch_user_id, login=login)
+        except Exception:
+            log.exception("Konnte VOD-Thumbnail nicht laden: %s", login)
+            return None
+
     def _build_live_embed(self, login: str, stream: dict) -> discord.Embed:
         """Erzeuge ein Discord-Embed für das Go-Live-Posting mit Stream-Vorschau."""
 
@@ -535,12 +535,12 @@ class TwitchMonitoringMixin:
 
         return embed
 
-    def _build_offline_link_view(self, referral_url: str) -> discord.ui.View:
+    def _build_offline_link_view(self, referral_url: str, *, label: Optional[str] = None) -> discord.ui.View:
         """Offline-Ansicht: einfacher Link-Button ohne Tracking."""
         view = discord.ui.View(timeout=None)
         view.add_item(
             discord.ui.Button(
-                label=TWITCH_BUTTON_LABEL,
+                label=label or TWITCH_BUTTON_LABEL,
                 style=discord.ButtonStyle.link,
                 url=referral_url,
             )
