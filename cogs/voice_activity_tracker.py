@@ -136,6 +136,10 @@ class VoiceActivityTrackerCog(commands.Cog):
         self.grace_period_users: Dict[str, Dict] = {}
         self.rate_limiter = RateLimiter(max_requests=5, time_window=30)
 
+        # Performance: Display Name Cache (TTL 5min, max 512 entries)
+        self._display_name_cache: Dict[int, tuple[str, float]] = {}  # user_id -> (name, timestamp)
+        self._display_name_cache_ttl = 300  # 5 minutes
+
         self.session_stats = {
             'total_sessions_created': 0,
             'total_grace_periods': 0,
@@ -297,10 +301,21 @@ class VoiceActivityTrackerCog(commands.Cog):
             #logger.info(f"Grace period ended for {member_id} ({reason})")
 
     async def _resolve_display_name(self, guild: discord.Guild, user_id: int) -> str:
-        """Resolve a stable display name for leaderboard rows."""
+        """Resolve a stable display name for leaderboard rows (mit Cache)."""
+        now = time.time()
+
+        # Cache-Check
+        if user_id in self._display_name_cache:
+            cached_name, cached_ts = self._display_name_cache[user_id]
+            if now - cached_ts < self._display_name_cache_ttl:
+                return cached_name
+
+        # Cache miss - resolve name
         member = guild.get_member(user_id)
         if member:
-            return member.display_name
+            name = member.display_name
+            self._display_name_cache[user_id] = (name, now)
+            return name
 
         try:
             member = await guild.fetch_member(user_id)
@@ -311,11 +326,15 @@ class VoiceActivityTrackerCog(commands.Cog):
             member = None
 
         if member:
-            return member.display_name
+            name = member.display_name
+            self._display_name_cache[user_id] = (name, now)
+            return name
 
         user = self.bot.get_user(user_id)
         if user:
-            return user.display_name
+            name = user.display_name
+            self._display_name_cache[user_id] = (name, now)
+            return name
 
         try:
             user = await self.bot.fetch_user(user_id)
@@ -325,7 +344,18 @@ class VoiceActivityTrackerCog(commands.Cog):
             logger.debug(f"Failed to fetch user {user_id}: {e}")
             user = None
 
-        return user.display_name if user else f"User {user_id}"
+        name = user.display_name if user else f"User {user_id}"
+        self._display_name_cache[user_id] = (name, now)
+
+        # Cache-Größenlimit: Behalte nur neueste 512 Einträge
+        if len(self._display_name_cache) > 512:
+            # Entferne älteste 25%
+            sorted_entries = sorted(self._display_name_cache.items(), key=lambda x: x[1][1])
+            to_remove = sorted_entries[:128]
+            for uid, _ in to_remove:
+                del self._display_name_cache[uid]
+
+        return name
 
     async def start_voice_session(self, member: discord.Member, channel: discord.VoiceChannel):
         key = f"{member.id}:{channel.guild.id}"
@@ -469,12 +499,20 @@ class VoiceActivityTrackerCog(commands.Cog):
         if not self.voice_sessions:
             return
         now = datetime.utcnow()
-        to_close = []
+
+        # Gruppiere Sessions nach Guild (nur 1x Config-Lookup pro Guild statt pro Session!)
+        guild_sessions = defaultdict(list)
         for k, s in self.voice_sessions.items():
-            cfg = await self.cfg(s['guild_id'])
+            guild_sessions[s['guild_id']].append((k, s))
+
+        to_close = []
+        for guild_id, sessions in guild_sessions.items():
+            cfg = await self.cfg(guild_id)  # Nur 1x pro Guild!
             cutoff = now - timedelta(seconds=cfg.session_timeout)
-            if s['last_update'] < cutoff:
-                to_close.append(k)
+            for k, s in sessions:
+                if s['last_update'] < cutoff:
+                    to_close.append(k)
+
         for k in to_close:
             s = self.voice_sessions.get(k)
             if not s:

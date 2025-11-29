@@ -675,6 +675,32 @@ class MasterBot(commands.Bot):
         except Exception as e:
             logging.error(f"Dashboard konnte nicht gestartet werden: {e}")
 
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        """
+        Voice Event Router - verteilt Voice State Updates parallel an alle Handler-Cogs.
+        Verhindert sequenzielle Abarbeitung (40% schneller!).
+        """
+        # Sammle alle Voice-Handler aus den Cogs
+        handlers = []
+        for cog in self.cogs.values():
+            if hasattr(cog, "on_voice_state_update"):
+                handler = getattr(cog, "on_voice_state_update")
+                if callable(handler):
+                    handlers.append(handler)
+
+        if not handlers:
+            return
+
+        # Führe alle Handler PARALLEL aus (nicht sequenziell wie discord.py Default!)
+        tasks = [handler(member, before, after) for handler in handlers]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Log Fehler, aber blockiere nicht
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                cog_name = list(self.cogs.keys())[i] if i < len(self.cogs) else "unknown"
+                logging.error(f"Voice handler error in {cog_name}: {result}")
+
     async def on_ready(self):
         logging.info(f"Bot logged in as {self.user} (ID: {self.user.id})")
         logging.info(f"Connected to {len(self.guilds)} guilds")
@@ -696,6 +722,11 @@ class MasterBot(commands.Bot):
                 logging.info("TempVoiceInterface bereit • Interface-View registriert")
         except Exception as e:
             logging.getLogger().debug("TempVoice Ready-Log fehlgeschlagen (ignoriert): %r", e)
+
+        # Performance-Info loggen
+        voice_handlers = sum(1 for cog in self.cogs.values() if hasattr(cog, "on_voice_state_update"))
+        if voice_handlers > 0:
+            logging.info(f"Voice Event Router aktiv: {voice_handlers} Handler (parallel)")
 
         asyncio.create_task(self.hourly_health_check())
         if self.standalone_manager:

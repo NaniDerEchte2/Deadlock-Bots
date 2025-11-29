@@ -40,7 +40,7 @@ DEFAULT_CASUAL_CAP = 8
 DEFAULT_RANKED_CAP = 6
 NAME_EDIT_COOLDOWN_SEC = 120
 STARTUP_PURGE_DELAY_SEC = 3
-PURGE_INTERVAL_SECONDS = 60
+PURGE_INTERVAL_SECONDS = 180  # Optimiert: 60s → 180s (weniger CPU-Last)
 
 # LiveMatch-Suffix (vom Worker) – NICHT von TempVoice anfassen
 LIVE_SUFFIX_RX = re.compile(
@@ -309,6 +309,10 @@ class TempVoiceCore(commands.Cog):
         self._last_name_patch_ts: Dict[int, float] = {}
         self._bg_tasks: Set[asyncio.Task] = set()
         self._shutting_down: bool = False
+
+        # Performance: Role-Caching (5min TTL)
+        self._rank_roles_cache: Dict[int, Dict[str, discord.Role]] = {}
+        self._cache_timestamp: Dict[int, float] = {}
 
     # --------- Lifecycle ---------
     async def cog_load(self):
@@ -804,39 +808,56 @@ class TempVoiceCore(commands.Cog):
         except Exception as e:
             log.debug("apply_owner_settings background failed for lane %s: %r", getattr(lane, "id", "?"), e)
 
+    def _rank_roles_cached(self, guild: discord.Guild) -> Dict[str, discord.Role]:
+        """Cached version of _rank_roles - invalidiert alle 5 Minuten"""
+        now = time.time()
+        if guild.id in self._rank_roles_cache:
+            if now - self._cache_timestamp.get(guild.id, 0) < 300:  # 5min TTL
+                return self._rank_roles_cache[guild.id]
+
+        # Cache miss oder abgelaufen - neu berechnen
+        out = {r.name.lower(): r for r in guild.roles if r.name.lower() in RANK_SET}
+        self._rank_roles_cache[guild.id] = out
+        self._cache_timestamp[guild.id] = now
+        return out
+
     async def _apply_min_rank(self, lane: discord.VoiceChannel, min_rank: str):
         if lane.category_id not in MINRANK_CATEGORY_IDS:
             return
         guild = lane.guild
-        ranks = _rank_roles(guild)
+        ranks = self._rank_roles_cached(guild)  # Nutze gecachte Version!
+
+        # Sammle alle Permission-Updates zuerst, dann parallel ausführen
+        async def _set_perm_safe(role, overwrite, reason):
+            try:
+                await lane.set_permissions(role, overwrite=overwrite, reason=reason)
+            except Exception as e:
+                log.debug("apply_min_rank %s failed for role %s: %r", reason, role.id, e)
 
         if min_rank == "unknown":
+            # Reset alle Permissions parallel
+            tasks = []
             for role in ranks.values():
                 ow = lane.overwrites_for(role)
                 if ow.connect is not None:
-                    try:
-                        await lane.set_permissions(role, overwrite=None, reason="TempVoice: MinRank reset")
-                    except Exception as e:
-                        log.debug("apply_min_rank reset failed for role %s: %r", role.id, e)
-                    await asyncio.sleep(0.02)
+                    tasks.append(_set_perm_safe(role, None, "TempVoice: MinRank reset"))
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
             return
 
+        # Apply MinRank parallel
         min_idx = _rank_index(min_rank)
+        tasks = []
         for name, role in ranks.items():
             if _rank_index(name) < min_idx:
-                try:
-                    ow = lane.overwrites_for(role); ow.connect = False
-                    await lane.set_permissions(role, overwrite=ow, reason="TempVoice: MinRank deny")
-                except Exception as e:
-                    log.debug("apply_min_rank deny failed for role %s: %r", role.id, e)
+                ow = lane.overwrites_for(role); ow.connect = False
+                tasks.append(_set_perm_safe(role, ow, "TempVoice: MinRank deny"))
             else:
                 ow = lane.overwrites_for(role)
                 if ow.connect is not None:
-                    try:
-                        await lane.set_permissions(role, overwrite=None, reason="TempVoice: MinRank clear")
-                    except Exception as e:
-                        log.debug("apply_min_rank clear failed for role %s: %r", role.id, e)
-            await asyncio.sleep(0.02)
+                    tasks.append(_set_perm_safe(role, None, "TempVoice: MinRank clear"))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     # --------- Lane-Erstellung ---------
     async def _create_lane(self, member: discord.Member, staging: discord.VoiceChannel):
