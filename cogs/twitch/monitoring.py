@@ -236,6 +236,7 @@ class TwitchMonitoringMixin:
             if not login:
                 continue
 
+            referral_url = self._build_referral_url(login)
             login_lower = login.lower()
             stream = streams_by_login.get(login_lower)
             previous_state = live_state.get(login_lower, {})

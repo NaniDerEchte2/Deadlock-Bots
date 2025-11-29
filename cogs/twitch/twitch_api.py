@@ -234,6 +234,13 @@ class TwitchAPI:
         target_user_id = (user_id or "").strip()
         login_normalized = (login or "").strip().lower()
 
+        # Falls f�lschlich ein Login als user_id gespeichert wurde (z.B. aus DB-Fallback),
+        # behandle ihn wie einen Login und ermittle die echte numerische ID.
+        if target_user_id and not target_user_id.isdigit():
+            if not login_normalized:
+                login_normalized = target_user_id.lower()
+            target_user_id = ""
+
         if not target_user_id and login_normalized:
             try:
                 users = await self.get_users([login_normalized])
