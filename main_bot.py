@@ -680,26 +680,25 @@ class MasterBot(commands.Bot):
         Voice Event Router - verteilt Voice State Updates parallel an alle Handler-Cogs.
         Verhindert sequenzielle Abarbeitung (40% schneller!).
         """
-        # Sammle alle Voice-Handler aus den Cogs
-        handlers = []
-        for cog in self.cogs.values():
+        # Sammle alle Voice-Handler aus den Cogs (mit Metadaten für Error-Logging)
+        handler_info = []
+        for cog_name, cog in self.cogs.items():
             if hasattr(cog, "on_voice_state_update"):
                 handler = getattr(cog, "on_voice_state_update")
                 if callable(handler):
-                    handlers.append(handler)
+                    handler_info.append((cog_name, handler))
 
-        if not handlers:
+        if not handler_info:
             return
 
         # Führe alle Handler PARALLEL aus (nicht sequenziell wie discord.py Default!)
-        tasks = [handler(member, before, after) for handler in handlers]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [(cog_name, handler(member, before, after)) for cog_name, handler in handler_info]
+        results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
 
-        # Log Fehler, aber blockiere nicht
-        for i, result in enumerate(results):
+        # Log Fehler mit korrektem Cog-Namen (Race-Safe!)
+        for (cog_name, _), result in zip(tasks, results):
             if isinstance(result, Exception):
-                cog_name = list(self.cogs.keys())[i] if i < len(self.cogs) else "unknown"
-                logging.error(f"Voice handler error in {cog_name}: {result}")
+                logging.error(f"Voice handler error in {cog_name}: {result}", exc_info=result)
 
     async def on_ready(self):
         logging.info(f"Bot logged in as {self.user} (ID: {self.user.id})")

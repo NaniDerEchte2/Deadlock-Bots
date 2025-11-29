@@ -272,6 +272,11 @@ class DeadlockVoiceStatus(commands.Cog):
             await self.db.commit()
         except Exception as exc:
             log.warning("Failed to persist voice watch entries: %s", exc)
+            # Rollback um inkonsistente DB zu verhindern
+            try:
+                await self.db.rollback()
+            except Exception as rollback_exc:
+                log.error("Failed to rollback transaction: %s", rollback_exc)
 
     async def _process_channel(
         self,

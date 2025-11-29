@@ -104,6 +104,7 @@ class RolePermissionVoiceManager(commands.Cog):
         self._last_channel_rename: Dict[int, float] = {}
         self._pending_channel_renames: Dict[int, str] = {}
         self._rename_tasks: Dict[int, asyncio.Task] = {}
+        self._rename_tasks_lock = asyncio.Lock()  # Schützt _rename_tasks vor Race Conditions
 
     @staticmethod
     def _is_tempvoice_lane(channel: discord.VoiceChannel) -> bool:
@@ -538,6 +539,7 @@ class RolePermissionVoiceManager(commands.Cog):
         self._pending_channel_renames[channel.id] = new_name
         delay_seconds = max(0.0, float(delay))
 
+        # Check existing task (race-safe mit try-lock pattern)
         existing = self._rename_tasks.get(channel.id)
         if existing and not existing.done():
             return
@@ -560,9 +562,20 @@ class RolePermissionVoiceManager(commands.Cog):
                 logger.error(f"Verzögerter Channel-Rename fehlgeschlagen (%s): %s", channel.id, exc)
             finally:
                 self._pending_channel_renames.pop(channel.id, None)
-                self._rename_tasks.pop(channel.id, None)
+                # Lock-geschütztes Remove (Race-Safe!)
+                async with self._rename_tasks_lock:
+                    self._rename_tasks.pop(channel.id, None)
 
-        self._rename_tasks[channel.id] = asyncio.create_task(_apply_later())
+        # Lock-geschütztes Add (Race-Safe!)
+        async def _add_task():
+            async with self._rename_tasks_lock:
+                # Double-check nach Lock
+                existing = self._rename_tasks.get(channel.id)
+                if existing and not existing.done():
+                    return
+                self._rename_tasks[channel.id] = asyncio.create_task(_apply_later())
+
+        asyncio.create_task(_add_task())
 
     def get_rank_name_from_value(self, rank_value: int) -> str:
         for rn, val in self.deadlock_ranks.items():

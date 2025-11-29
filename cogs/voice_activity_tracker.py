@@ -164,7 +164,8 @@ class VoiceActivityTrackerCog(commands.Cog):
 
         logger.info("Voice Activity Tracker initialized (DB-centralized)")
 
-    def cog_unload(self):
+    async def cog_unload(self):
+        """Cleanup: Cancel background tasks und warte auf sauberen Shutdown."""
         tasks_to_cancel = [
             self.cleanup_sessions, self.update_sessions,
             self.grace_period_monitor, self.health_check
@@ -172,7 +173,19 @@ class VoiceActivityTrackerCog(commands.Cog):
         for task in tasks_to_cancel:
             if task.is_running():
                 task.cancel()
-        logger.info("Voice Activity Tracker unloaded")
+
+        # Warte auf sauberen Task-Shutdown (Race-Safe!)
+        import asyncio
+        await asyncio.gather(*[
+            task.wait_for_cancel() if hasattr(task, 'wait_for_cancel') else asyncio.sleep(0)
+            for task in tasks_to_cancel if task.is_running()
+        ], return_exceptions=True)
+
+        # Invalidate Caches (verhindert stale data bei reload)
+        self.config_manager._cache.clear()
+        self._display_name_cache.clear()
+
+        logger.info("Voice Activity Tracker unloaded (clean shutdown)")
 
     # ===== Helpers =====
     async def cfg(self, guild_id: int) -> VoiceTrackerConfig:

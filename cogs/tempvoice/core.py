@@ -208,10 +208,19 @@ class TVDB:
                 SELECT guild_id, channel_id, message_id, COALESCE(updated_at, CURRENT_TIMESTAMP)
                 FROM tempvoice_interface_old
             """)
+            # Nur wenn INSERT erfolgreich → Drop old table
+            await self.db.execute("DROP TABLE IF EXISTS tempvoice_interface_old")
+            await self.db.commit()
         except Exception as e:
-            log.debug("tempvoice_interface migration copy failed: %r", e)
-        await self.db.execute("DROP TABLE IF EXISTS tempvoice_interface_old")
-        await self.db.commit()
+            log.error("tempvoice_interface migration copy failed: %r - rolling back!", e)
+            # Rollback: Restore old table
+            try:
+                await self.db.execute("DROP TABLE IF EXISTS tempvoice_interface")
+                await self.db.execute("ALTER TABLE tempvoice_interface_old RENAME TO tempvoice_interface")
+                await self.db.commit()
+                log.info("tempvoice_interface migration rolled back successfully")
+            except Exception as rollback_exc:
+                log.critical("Failed to rollback tempvoice_interface migration: %r", rollback_exc)
 
     async def fetchone(self, q: str, p: tuple = ()):
         if not self.connected:
