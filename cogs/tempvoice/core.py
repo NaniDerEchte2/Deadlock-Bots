@@ -450,6 +450,13 @@ class TempVoiceCore(commands.Cog):
         if channel:
             try:
                 await channel.delete(reason=reason)
+            except discord.NotFound:
+                # Channel wurde bereits gelöscht - das ist OK
+                log.debug(
+                    "TempVoice: lane %s (%s) bereits gelöscht",
+                    lane_id,
+                    getattr(channel, "name", "?"),
+                )
             except discord.Forbidden as e:
                 log.warning(
                     "TempVoice: missing permission to delete lane %s (%s): %s",
@@ -737,9 +744,15 @@ class TempVoiceCore(commands.Cog):
             return
         if ONLY_SET_NAME_ON_CREATE and _age_seconds(lane) > CREATE_RENAME_WINDOW_SEC:
             return
+        
+        # Prüfe ob der Name überhaupt geändert werden muss - verhindert redundante API-Calls
+        desired_name = self._compose_name(lane)
+        if lane.name == desired_name:
+            return
+        
         await self._safe_edit_channel(
             lane,
-            desired_name=self._compose_name(lane),
+            desired_name=desired_name,
             reason="TempVoice: Name aktualisiert"
         )
 

@@ -1439,7 +1439,7 @@ function renderVoiceHourlyChart(rows, mode, userInfo) {
         voiceHourlyChart.destroy();
     }
     const baseLabel = userInfo && userInfo.display_name ? userInfo.display_name : 'Voice';
-    const subtitle = mode === 'hour' ? 'Stunde (UTC)' : mode === 'day' ? 'Tag' : mode === 'week' ? 'Wochentag' : 'Monat';
+    const subtitle = mode === 'hour' ? 'Stunde (UTC)' : mode === 'day' ? 'Wochentag' : mode === 'week' ? 'Kalenderwoche' : 'Monat';
     voiceHourlyChart = new Chart(voiceHourlyChartCanvas, {
         type: 'line',
         data: {
@@ -3211,7 +3211,7 @@ class DashboardServer:
             if mode == "hour":
                 return "strftime('%H', started_at)"
             if mode == "day":
-                return "date(started_at)"
+                return "strftime('%w', started_at)"
             if mode == "week":
                 return "strftime('%Y-%W', started_at)"
             return "strftime('%Y-%m', started_at)"
@@ -3319,6 +3319,20 @@ class DashboardServer:
                         {"label": key, "total_seconds": 0, "sessions": 0, "avg_peak": 0},
                     )
                 )
+
+        if mode == "day":
+            existing = {b["label"]: b for b in buckets}
+            buckets = []
+            weekdays = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"]
+            for day in range(7):
+                key = str(day)
+                data = existing.get(key, {})
+                buckets.append({
+                    "label": weekdays[day],
+                    "total_seconds": data.get("total_seconds", 0),
+                    "sessions": data.get("sessions", 0),
+                    "avg_peak": data.get("avg_peak", 0),
+                })
 
         payload = {
             "range_days": days,

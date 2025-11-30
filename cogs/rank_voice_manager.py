@@ -414,20 +414,30 @@ class RolePermissionVoiceManager(commands.Cog):
 
             guild_roles = self.get_guild_roles(channel.guild)
 
-            # allow für erlaubte Rollen
+            # allow für erlaubte Rollen (mit besserer Rate-Limit-Vermeidung)
             for role_id in allowed_role_ids:
                 role = guild_roles.get(role_id)
                 if not role:
                     continue
                 ow = channel.overwrites_for(role)
-                if ow.connect is not True:
-                    await channel.set_permissions(
-                        role,
-                        overwrite=discord.PermissionOverwrite(
-                            connect=True, speak=True, view_channel=True
-                        ),
-                    )
-                    await asyncio.sleep(0.4)
+                # Nur updaten wenn wirklich nötig
+                if ow.connect is not True or ow.speak is not True or ow.view_channel is not True:
+                    try:
+                        await channel.set_permissions(
+                            role,
+                            overwrite=discord.PermissionOverwrite(
+                                connect=True, speak=True, view_channel=True
+                            ),
+                        )
+                        await asyncio.sleep(0.5)  # Erhöht von 0.4s auf 0.5s für bessere Rate-Limit-Vermeidung
+                    except discord.NotFound:
+                        # Channel wurde gelöscht während der Operation
+                        logger.debug(f"Channel {channel.id} not found during permission update")
+                        return
+                    except discord.HTTPException as e:
+                        # Rate limit oder andere HTTP Fehler
+                        logger.warning(f"HTTP error updating permissions for {channel.id}: {e}")
+                        await asyncio.sleep(1.0)  # Extra delay bei Fehlern
 
             # remove von nicht erlaubten Rollen
             await self.remove_disallowed_role_permissions(channel, allowed_role_ids)
@@ -497,7 +507,9 @@ class RolePermissionVoiceManager(commands.Cog):
                     rank_name, _rv2 = members_ranks[first_member]
                     new_name = f"{rank_name} Lobby"
 
+            # Prüfe zuerst ob Name schon passt - vermeidet redundante API-Calls
             if channel.name == new_name:
+                # Cleanup: Entferne pending renames und tasks für diesen Channel
                 self._pending_channel_renames.pop(channel.id, None)
                 existing_task = self._rename_tasks.pop(channel.id, None)
                 if existing_task and not existing_task.done():

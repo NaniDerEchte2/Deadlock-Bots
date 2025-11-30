@@ -755,10 +755,10 @@ class _TwitchReferralLinkView(discord.ui.View):
 class _TrackedTwitchButton(discord.ui.Button):
     def __init__(self, parent: "_TwitchLiveAnnouncementView", *, custom_id: str):
         super().__init__(label=TWITCH_BUTTON_LABEL, style=discord.ButtonStyle.primary, custom_id=custom_id)
-        self._parent = parent
+        self._view_ref = parent  # Renamed from _parent to avoid discord.py conflict
 
     async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
-        await self._parent.handle_click(interaction)
+        await self._view_ref.handle_click(interaction)
 
 
 class _TwitchLiveAnnouncementView(discord.ui.View):
