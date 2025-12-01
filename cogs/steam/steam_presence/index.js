@@ -1840,6 +1840,37 @@ function processNextTask() {
         break;
       }
 
+      case 'AUTH_GET_FRIENDS_LIST': {
+        const promise = (async () => {
+          if (!runtimeState.logged_on) throw new Error('Not logged in');
+
+          // Get friends from Web API
+          const friendIds = await loadWebApiFriendIds(true);
+          if (!friendIds) {
+            throw new Error('Failed to load friends list from Steam Web API');
+          }
+
+          const friends = [];
+          for (const steamId64 of friendIds) {
+            friends.push({
+              steam_id64: steamId64,
+              // Try to get account_id from steamID
+              account_id: null, // We'll compute this on Python side if needed
+            });
+          }
+
+          return {
+            ok: true,
+            data: {
+              count: friends.length,
+              friends: friends,
+            },
+          };
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
+
       default:
         throw new Error(`Unsupported task type: ${task.type}`);
     }
@@ -2098,12 +2129,52 @@ client.on('appLaunched', (appId) => {
 client.on('appQuit', (appId) => {
   log('info', 'Steam app quit', { appId });
   if (Number(appId) !== Number(DEADLOCK_APP_ID)) return;
-  
+
   log('info', 'Deadlock app quit – GC session ended');
   deadlockAppActive = false;
   deadlockGcReady = false;
   flushDeadlockGcWaiters(new Error('Deadlock app quit'));
   flushPendingPlaytestInvites(new Error('Deadlock app quit'));
+});
+
+// Track friend relationship changes to auto-save steam links to DB
+client.on('friendRelationship', (steamId, relationship) => {
+  const sid64 = steamId && typeof steamId.getSteamID64 === 'function' ? steamId.getSteamID64() : String(steamId);
+  const relName = relationshipName(relationship);
+
+  log('info', 'Friend relationship changed', {
+    steam_id64: sid64,
+    relationship: relationship,
+    relationship_name: relName,
+  });
+
+  // If we became friends, save to database
+  const EFriendRelationship = SteamUser.EFriendRelationship || {};
+  if (Number(relationship) === Number(EFriendRelationship.Friend)) {
+    log('info', 'New friend confirmed, saving to steam_links', { steam_id64: sid64 });
+
+    // Save to database
+    try {
+      const stmt = db.prepare(`
+        INSERT INTO steam_links(user_id, steam_id, name, verified)
+        VALUES(?, ?, ?, ?)
+        ON CONFLICT(user_id, steam_id) DO UPDATE SET
+          verified=1,
+          updated_at=CURRENT_TIMESTAMP
+      `);
+
+      // Use steam_id64 as both user_id and steam_id since we don't have Discord ID yet
+      // This will be updated later when the user links via Discord
+      stmt.run(0, sid64, '', 1);
+
+      log('info', 'Saved new friend to steam_links', { steam_id64: sid64 });
+    } catch (err) {
+      log('error', 'Failed to save friend to steam_links', {
+        steam_id64: sid64,
+        error: err && err.message ? err.message : String(err),
+      });
+    }
+  }
 });
 
 client.on('receivedFromGC', (appId, msgType, payload) => {
