@@ -312,6 +312,47 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               finished_at INTEGER
             );
 
+            -- Hero Build Mirror (Source Cache + Clone Queue)
+            CREATE TABLE IF NOT EXISTS hero_build_sources(
+              hero_build_id INTEGER PRIMARY KEY,
+              origin_build_id INTEGER,
+              author_account_id INTEGER NOT NULL,
+              hero_id INTEGER NOT NULL,
+              language INTEGER NOT NULL,
+              version INTEGER NOT NULL,
+              name TEXT NOT NULL,
+              description TEXT,
+              tags_json TEXT,
+              details_json TEXT,
+              publish_ts INTEGER,
+              last_updated_ts INTEGER,
+              fetched_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              last_seen_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS hero_build_clones(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              origin_hero_build_id INTEGER NOT NULL,
+              origin_build_id INTEGER,
+              hero_id INTEGER NOT NULL,
+              author_account_id INTEGER,
+              source_language INTEGER,
+              source_version INTEGER,
+              source_last_updated_ts INTEGER,
+              target_language INTEGER NOT NULL,
+              target_name TEXT,
+              target_description TEXT,
+              status TEXT NOT NULL DEFAULT 'pending',
+              status_info TEXT,
+              uploaded_build_id INTEGER,
+              uploaded_version INTEGER,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              last_attempt_at INTEGER,
+              attempts INTEGER NOT NULL DEFAULT 0,
+              UNIQUE(origin_hero_build_id, target_language)
+            );
+
             -- Protokollierte Fragen & Antworten des Server-FAQ-Bots
             CREATE TABLE IF NOT EXISTS server_faq_logs(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -380,6 +421,8 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             "ALTER TABLE live_player_state ADD COLUMN deadlock_hero TEXT",
             "ALTER TABLE live_player_state ADD COLUMN deadlock_party_hint TEXT",
             "ALTER TABLE live_player_state ADD COLUMN deadlock_updated_at INTEGER",
+            "ALTER TABLE hero_build_clones ADD COLUMN target_name TEXT",
+            "ALTER TABLE hero_build_clones ADD COLUMN target_description TEXT",
         ):
             try:
                 c.execute(alter_sql)
@@ -404,6 +447,12 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             )
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_status ON steam_tasks(status, id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_updated ON steam_tasks(updated_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_build_sources_hero ON hero_build_sources(hero_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_build_sources_author ON hero_build_sources(author_account_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_build_sources_origin ON hero_build_sources(origin_build_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_build_clones_status ON hero_build_clones(status, target_language)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_build_clones_origin ON hero_build_clones(origin_hero_build_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_build_clones_hero ON hero_build_clones(hero_id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_standalone_commands_status ON standalone_commands(bot, status, id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_standalone_commands_created ON standalone_commands(created_at)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_standalone_state_updated ON standalone_bot_state(updated_at)")

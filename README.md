@@ -1,40 +1,146 @@
-Community-Bot-Übersicht
+# Deutsche Deadlock Community Bot
 
-Diese README fasst alle Features zusammen, die auf dem Server für Community-Mitglieder bereitstehen. Admin- oder Backoffice-Funktionen sind bewusst ausgelassen.
+Discord-Bot für die Deutsche Deadlock Community mit umfangreichen Features.
 
-## Onboarding & Regelbestätigung
-- Im Regel-Channel liegt ein permanenter Button **„Weiter ➜“**, der dir einen privaten Onboarding-Thread eröffnet und dort den kompletten Begrüßungsflow startet.【F:cogs/rules_channel.py†L3-L198】
-- Der Welcome-DM/Thread-Flow führt dich Schritt für Schritt durch Status-Abfrage, optionale Streamer-Infos, Steam-Verknüpfung und Regelbestätigung – inklusive abschließender Tipps je nach Spielstatus.【F:cogs/welcome_dm/dm_main.py†L116-L340】
+## Features
 
-## Steam-Verknüpfung & Verified-Rolle
-- Slash-Gruppe `/steam` mit `link` (Discord-OAuth mit Steam-Fallback) und `link_steam` (direkte OpenID). Nach erfolgreicher Verknüpfung erhältst du sofort eine DM samt Hinweis auf die anstehende Freundschaftsanfrage des Steam-Bots.【F:cogs/steam/steam_link_oauth.py†L748-L825】【F:cogs/steam/steam_link_oauth.py†L307-L325】
-- Zusätzliche Subcommands `links`, `whoami`, `setprimary` und `unlink` helfen beim Auflisten, Prüfen oder Anpassen deiner gespeicherten Steam-Accounts – inklusive Primär-Markierung.【F:cogs/steam/steam_link_oauth.py†L802-L900】
-- Solltest du länger als 30 Minuten im Voice sein ohne Steam-Link (und keine Opt-out-Rolle besitzen), bekommst du eine DM mit Direkt-Buttons für OAuth, Steam-Login oder Schnell-Einladung. Die Ansicht bleibt persistent, bis du sie schließt oder einen Link hinterlegt hast.【F:cogs/steam_link_voice_nudge.py†L28-L520】
-- Ein Hintergrunddienst durchsucht regelmäßig alle verifizierten Steam-Verknüpfungen und vergibt automatisch die Server-Rolle **„Verified“**, damit du Zugriff auf geschützte Bereiche behältst.【F:cogs/steam_verified_role.py†L23-L199】
+### 🎮 Community Features
+- **Onboarding & Regelbestätigung** - Automatischer Welcome-Flow
+- **Steam-Verknüpfung** - OAuth + OpenID Integration
+- **TempVoice-Lanes** - Automatische Voice-Channel-Verwaltung
+- **Team Balancer** - Faire Match-Erstellung
+- **Voice-Activity-Tracking** - Leaderboards & Statistiken
+- **Match-Coaching** - Coaching-Request-System
 
-## TempVoice-Lanes
-- Sobald du einen Staging-Voice-Channel betrittst, erzeugt das TempVoice-System automatisch eine persönliche Lane, verschiebt dich dorthin und speichert alle Einstellungen in der zentralen DB.【F:cogs/tempvoice/DOK.MD†L5-L161】
-- Über das persistente Panel im zugehörigen Textkanal steuerst du deine Lane: DE/EU-Filter, User-Limit, Mindest-Rang (in der Rank-Kategorie), Kick/Ban/Unban sowie **Owner Claim** sind nur einen Button entfernt.【F:cogs/tempvoice/DOK.MD†L102-L188】
+### 🛠️ Build-Publishing (NEU!)
+- **Automatisches Build-Spiegeln** - Kopiert Builds von Top-Spielern
+- **Deutsches Branding** - Community-Namen & Credits
+- **Voll autonom** - Zero-Maintenance nach Aktivierung
 
-## Voice-Aktivität & Leaderboard
-- `!vstats [@User]` zeigt Gesamtspielzeit, Punkte sowie Live-Zuwachs der laufenden Session an – inklusive Hinweis, ob du die 3-Minuten-Grace-Rolle trägst.【F:cogs/voice_activity_tracker.py†L476-L527】
-- `!vleaderboard` (Aliases `!vlb`, `!voicetop`) listet die Top-Spieler nach Voice-Punkten, während `!vtest` einen Health-Check für das Voice-System liefert (u. a. aktive Sessions, Grace-Settings und persönlichen Voice-Status).【F:cogs/voice_activity_tracker.py†L533-L623】
+Siehe [docs/build-publishing/](docs/build-publishing/) für Details.
 
-## Deadlock Team Balancer
-- Das Command-Set `!balance` hilft beim Aufsetzen fairer Matches: `auto`/`voice` erstellt eine Vorschau, `start` legt automatisch zwei Team-Voice-Channels an und moved alle Teilnehmer, `manual` erlaubt eine Auswahl per Mentions.【F:cogs/deadlock_team_balancer.py†L305-L396】
-- Weitere Unterbefehle zeigen Ränge (`status`), laufende Matches (`matches`), bereinigen alte Matches (`cleanup`) oder schließen ein Spiel inklusive optionalem Debrief-Channel (`end`).【F:cogs/deadlock_team_balancer.py†L397-L520】
+### 🎥 Content Features
+- **Clip-Einreichung** - Wöchentliche Clip-Sammlung
+- **Feedback Hub** - Anonymes Community-Feedback
+- **Twitch-Statistiken** - Streamer-Leaderboards
 
-## Clip-Einreichung
-- Im Clip-Channel findest du einen persistierenden Button **„Clip einsenden“**. Nach der Rechtebestätigung öffnet sich ein Modal für Link, Credit und Zusatzinfos (inklusive Cooldown gegen Spam).【F:cogs/clip_submission.py†L201-L338】
-- Das Panel informiert dich über das aktuelle Wochenfenster und hält Einsendungen automatisch fest. Nach Ablauf generiert der Bot einen TXT-Dump aller Clips und versendet ihn an das verantwortliche Team bzw. postet ihn als Fallback im Channel.【F:cogs/clip_submission.py†L368-L533】
+## Setup
 
-## Feedback Hub
-- Ein permanenter Button **„Anonymes Feedback senden“** öffnet ein Formular mit fünf Freitext-Fragen zu Spielerlebnis, Server, Verbesserungen und Wünschen. Nach dem Absenden geht ein anonymes Embed an das Community-Team, optional mit Link zum ursprünglichen Interface.【F:cogs/feedback_hub.py†L28-L205】
+### Installation
 
-## Match-Coaching
-- Der Button **„Match-Coaching starten“** erzeugt einen privaten Thread und führt dich durch Rang-, Subrang- und Heldenauswahl sowie einen Kommentar. Abschließend erhältst du eine Zusammenfassung, der Thread wird archiviert und das Coaching-Team informiert.【F:cogs/dl_coaching.py†L217-L520】
+```bash
+# Dependencies installieren
+pip install -r requirements.txt
 
-## Twitch-Statistiken
-- `!twl` funktioniert als Proxy-Befehl für das Twitch-Cog: Im vorgesehenen Statistik-Channel erhältst du ein interaktives Leaderboard mit Filtern wie `samples=`, `avg=`, `partner=`, `limit=`, `sort=` und `order=`. Eine `help`-Abfrage erklärt alle Optionen.【F:cogs/twitch/__init__.py†L16-L61】【F:cogs/twitch/leaderboard.py†L323-L417】
+# Bot starten
+python main_bot.py
+```
 
-Viel Spaß beim Nutzen der Bots und Features – und danke fürs Mitgestalten der Deutschen Deadlock Community!
+### Konfiguration
+
+1. `.env` Datei erstellen (siehe `.env.example`)
+2. Discord Bot Token eintragen
+3. Optional: Steam API Key für erweiterte Features
+
+### Build-Publishing aktivieren
+
+```
+!load build_publisher
+```
+
+Siehe [docs/build-publishing/START.txt](docs/build-publishing/START.txt) für Details.
+
+## Projekt-Struktur
+
+```
+Deadlock/
+├── main_bot.py              # Haupt-Bot
+├── cogs/                    # Discord Cogs
+│   ├── build_mirror.py     # Build-Sync (alle 4h)
+│   ├── build_publisher.py  # Build-Publishing-Worker
+│   ├── steam/              # Steam-Integration
+│   └── ...                 # Weitere Cogs
+├── service/                 # Business Logic
+│   ├── db.py               # Datenbank
+│   ├── hero_builds.py      # Build-Logik
+│   └── standalone_manager.py
+├── data/                    # Datenbank & Exports
+├── logs/                    # Log-Dateien
+└── docs/                    # Dokumentation
+    ├── build-publishing/   # Build-Publishing-Docs
+    └── COMMUNITY_FEATURES.md
+```
+
+## Monitoring
+
+Das System läuft vollständig autonom. Status und Queue-Informationen findest du in den Logs:
+
+```bash
+# Master Bot Logs
+tail -f logs/master_bot.log | grep build_publisher
+
+# Steam GC Logs
+tail -f logs/deadlock_gc_messages.log
+```
+
+## Dokumentation
+
+| Bereich | Dokumentation |
+|---------|---------------|
+| **Build-Publishing** | [docs/build-publishing/](docs/build-publishing/) |
+| **Community Features** | [docs/COMMUNITY_FEATURES.md](docs/COMMUNITY_FEATURES.md) |
+| **Allgemein** | Siehe Code-Kommentare in `cogs/` |
+
+## Logs
+
+```bash
+# Master Bot
+tail -f logs/master_bot.log
+
+# Steam GC Messages
+tail -f logs/deadlock_gc_messages.log
+
+# Voice Status
+tail -f logs/deadlock_voice_status.log
+```
+
+## Support
+
+### Bei Problemen
+
+1. **Logs prüfen** (siehe oben)
+2. **Status-Scripts** ausführen
+3. **Dokumentation** in `docs/` lesen
+
+### Build-Publishing Issues
+
+Siehe [docs/build-publishing/AUTONOMER_BETRIEB.md](docs/build-publishing/AUTONOMER_BETRIEB.md) → Troubleshooting
+
+## Technologie-Stack
+
+- **Python 3.11+** - Bot-Framework
+- **discord.py** - Discord-Integration
+- **Node.js** - Steam-Bridge (standalone)
+- **SQLite** - Datenbank
+- **Protobuf** - Deadlock GC-Kommunikation
+
+## Autonome Komponenten
+
+Der Bot nutzt einen **Standalone Manager** für autonome Hintergrund-Prozesse:
+
+- **Steam-Bridge** - Node.js-Prozess für Steam-Integration
+  - Auto-Login mit Refresh-Token
+  - Auto-Reconnect bei Disconnect
+  - Auto-Recovery bei Crash
+
+Konfiguration in `service/standalone_manager.py`
+
+## Credits
+
+- **Deutsche Deadlock Community** - Community-Server
+- **EarlySalty** - Streamer & Community-Lead
+- Build-Quellen: Sanya Sniper, Cosmetical, Piggy, Average Jonas, u.a.
+
+## Lizenz
+
+Internes Community-Projekt

@@ -25,6 +25,7 @@ const os = require('os');
 const path = require('path');
 const https = require('https');
 const { URL } = require('url');
+const protobuf = require('protobufjs');
 const SteamUser = require('steam-user');
 const Database = require('better-sqlite3');
 const { QuickInvites } = require('./quick_invites');
@@ -63,6 +64,8 @@ function getWorkingAppId() {
 const PROTO_MASK = SteamUser.GCMsgProtoBuf || 0x80000000;
 const GC_MSG_CLIENT_HELLO = 4006;
 const GC_MSG_CLIENT_WELCOME = 4004;
+const GC_MSG_CLIENT_TO_GC_UPDATE_HERO_BUILD = 9193;
+const GC_MSG_CLIENT_TO_GC_UPDATE_HERO_BUILD_RESPONSE = 9194;
 
 // Multiple potential message IDs to try (Deadlock's actual IDs may have changed)
 const DEFAULT_PLAYTEST_MSG_IDS = [
@@ -509,11 +512,167 @@ function safeJsonParse(value) {
   try { return JSON.parse(value); }
   catch (err) { throw new Error(`Invalid JSON payload: ${err.message}`); }
 }
+function safeNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function cleanBuildDetails(details) {
+  if (!details || typeof details !== 'object') return {};
+  const clone = JSON.parse(JSON.stringify(details));
+  if (Array.isArray(clone.mod_categories)) {
+    clone.mod_categories = clone.mod_categories.map((cat) => {
+      const c = { ...cat };
+      if (Array.isArray(c.mods)) {
+        c.mods = c.mods.map((m) => {
+          const mm = { ...m };
+          Object.keys(mm).forEach((k) => { if (mm[k] === null) delete mm[k]; });
+          return mm;
+        });
+      }
+      Object.keys(c).forEach((k) => { if (c[k] === null) delete c[k]; });
+      return c;
+    });
+  }
+  if (clone.ability_order && Array.isArray(clone.ability_order.currency_changes)) {
+    clone.ability_order.currency_changes = clone.ability_order.currency_changes.map((cc) => {
+      const obj = { ...cc };
+      Object.keys(obj).forEach((k) => { if (obj[k] === null) delete obj[k]; });
+      return obj;
+    });
+  }
+  return clone;
+}
+
+function composeBuildDescription(base, originId, authorId) {
+  const parts = [];
+  const desc = (base || '').trim();
+  if (desc) parts.push(desc);
+  parts.push('www.twitch.tv/earlysalty (deutsch)');
+  parts.push('Deutsche Deadlock Community: discord.gg/z5TfVHuQq2');
+  if (originId) parts.push(`Original Build ID: ${originId}`);
+  if (authorId) parts.push(`Original Author: ${authorId}`);
+  return parts.join('\n');
+}
+
+function buildUpdateHeroBuild(row, meta = {}) {
+  const tags = safeJsonParse(row.tags_json || '[]');
+  const details = cleanBuildDetails(safeJsonParse(row.details_json || '{}'));
+  const targetName = meta.target_name || row.name || '';
+  const targetDescription = meta.target_description || row.description || '';
+  const targetLanguage = safeNumber(meta.target_language) ?? safeNumber(row.language) ?? 0;
+  const authorId = safeNumber(meta.author_account_id) ?? safeNumber(row.author_account_id);
+  const nowTs = Math.floor(Date.now() / 1000);
+  const baseVersion = safeNumber(row.version) || 1;
+  const originId = safeNumber(meta.origin_build_id) ?? safeNumber(row.origin_build_id) ?? safeNumber(row.hero_build_id);
+  return {
+    hero_build_id: safeNumber(row.hero_build_id),
+    hero_id: safeNumber(row.hero_id),
+    author_account_id: authorId,
+    origin_build_id: originId,
+    last_updated_timestamp: nowTs,
+    publish_timestamp: nowTs,
+    name: targetName,
+    description: composeBuildDescription(targetDescription, originId, authorId),
+    language: targetLanguage,
+    version: baseVersion + 1,
+    tags: Array.isArray(tags) ? tags.map((t) => Number(t)) : [],
+    details: details && typeof details === 'object' ? details : {},
+  };
+}
+
+function buildMinimalHeroBuild(row, meta = {}) {
+  const targetName = meta.target_name || row.name || '';
+  const targetDescription = meta.target_description || row.description || '';
+  const targetLanguage = safeNumber(meta.target_language) ?? 0;
+  const authorId = safeNumber(meta.author_account_id) ?? safeNumber(row.author_account_id);
+  return {
+    hero_id: safeNumber(row.hero_id),
+    author_account_id: authorId,
+    origin_build_id: undefined,
+    last_updated_timestamp: undefined,
+    name: targetName,
+    description: composeBuildDescription(targetDescription, row.hero_build_id, authorId),
+    language: targetLanguage,
+    version: 1,
+    tags: [],
+    details: {},
+    publish_timestamp: undefined,
+  };
+}
 function truncateError(message, limit = 1500) {
   if (!message) return null;
   const text = String(message);
   if (text.length <= limit) return text;
   return `${text.slice(0, limit - 3)}...`;
+}
+
+function mapHeroBuildFromRow(row, meta = {}) {
+  if (!row) throw new Error('hero_build_sources row missing');
+  const tags = safeJsonParse(row.tags_json || '[]');
+  const details = cleanBuildDetails(safeJsonParse(row.details_json || '{}'));
+  const targetName = meta.target_name || row.name || '';
+  const targetDescription = meta.target_description || row.description || '';
+  const targetLanguage = safeNumber(meta.target_language) ?? safeNumber(row.language) ?? 0;
+  const authorId = safeNumber(meta.author_account_id) ?? safeNumber(row.author_account_id);
+  const nowTs = Math.floor(Date.now() / 1000);
+  return {
+    hero_id: safeNumber(row.hero_id),
+    author_account_id: authorId,
+    origin_build_id: safeNumber(meta.origin_build_id) ?? safeNumber(row.hero_build_id) ?? safeNumber(row.origin_build_id),
+    last_updated_timestamp: nowTs,
+    publish_timestamp: nowTs,
+    name: targetName,
+    description: composeBuildDescription(targetDescription, meta.origin_build_id ?? row.hero_build_id, authorId),
+    language: targetLanguage,
+    version: safeNumber(meta.version) ?? (safeNumber(row.version) || 1),
+    tags: Array.isArray(tags) ? tags.map((t) => Number(t)) : [],
+    details: details && typeof details === 'object' ? details : {},
+  };
+}
+
+async function sendHeroBuildUpdate(heroBuild) {
+  await loadHeroBuildProto();
+  if (!heroBuild || typeof heroBuild !== 'object') throw new Error('heroBuild payload missing');
+  const message = UpdateHeroBuildMsg.create({ hero_build: heroBuild });
+  const payload = UpdateHeroBuildMsg.encode(message).finish();
+
+  return new Promise((resolve, reject) => {
+    if (heroBuildPublishWaiter) {
+      reject(new Error('Another hero build publish is in flight'));
+      return;
+    }
+    const timeout = setTimeout(() => {
+      heroBuildPublishWaiter = null;
+      reject(new Error('Timed out waiting for build publish response'));
+    }, 20000);
+    heroBuildPublishWaiter = {
+      resolve: (resp) => { clearTimeout(timeout); heroBuildPublishWaiter = null; resolve(resp); },
+      reject: (err) => { clearTimeout(timeout); heroBuildPublishWaiter = null; reject(err); },
+    };
+    writeDeadlockGcTrace('send_update_hero_build', {
+      heroId: heroBuild.hero_id,
+      language: heroBuild.language,
+      name: heroBuild.name,
+      mode: heroBuild.hero_build_id ? 'update' : 'new',
+      version: heroBuild.version,
+      origin_build_id: heroBuild.origin_build_id,
+      author: heroBuild.author_account_id,
+      payloadHex: payload.toString('hex'),
+    });
+    log('info', 'Sending UpdateHeroBuild', {
+      payloadHex: payload.toString('hex').slice(0, 200),
+      payloadLength: payload.length,
+      heroId: heroBuild.hero_id,
+      language: heroBuild.language,
+      name: heroBuild.name,
+      mode: heroBuild.hero_build_id ? 'update' : 'new',
+      version: heroBuild.version,
+      origin_build_id: heroBuild.origin_build_id,
+      author: heroBuild.author_account_id,
+    });
+    client.sendToGC(DEADLOCK_APP_ID, PROTO_MASK | GC_MSG_CLIENT_TO_GC_UPDATE_HERO_BUILD, payload);
+  });
 }
 function wrapOk(result) {
   if (result && typeof result === 'object' && Object.prototype.hasOwnProperty.call(result, 'ok')) {
@@ -548,6 +707,20 @@ db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 db.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
 
+// ---------- Protobuf (Hero Builds) ----------
+const HERO_BUILD_PROTO_PATH = path.join(__dirname, 'protos', 'hero_build.proto');
+let heroBuildRoot = null;
+let HeroBuildMsg = null;
+let UpdateHeroBuildMsg = null;
+let UpdateHeroBuildResponseMsg = null;
+
+async function loadHeroBuildProto() {
+  if (heroBuildRoot) return;
+  heroBuildRoot = await protobuf.load(HERO_BUILD_PROTO_PATH);
+  HeroBuildMsg = heroBuildRoot.lookupType('CMsgHeroBuild');
+  UpdateHeroBuildMsg = heroBuildRoot.lookupType('CMsgClientToGCUpdateHeroBuild');
+  UpdateHeroBuildResponseMsg = heroBuildRoot.lookupType('CMsgClientToGCUpdateHeroBuildResponse');
+}
 // ---------- Tasks Table ----------
 db.prepare(`
   CREATE TABLE IF NOT EXISTS steam_tasks (
@@ -588,6 +761,15 @@ const finishTaskStmt = db.prepare(`
          finished_at = ?,
          updated_at = ?
    WHERE id = ?
+`);
+
+const selectHeroBuildSourceStmt = db.prepare(`
+  SELECT * FROM hero_build_sources WHERE hero_build_id = ?
+`);
+const selectHeroBuildCloneMetaStmt = db.prepare(`
+  SELECT target_name, target_description, target_language
+    FROM hero_build_clones
+   WHERE origin_hero_build_id = ?
 `);
 
 // ---------- Standalone Dashboard Tables ----------
@@ -650,6 +832,15 @@ const upsertStandaloneStateStmt = db.prepare(`
     heartbeat = excluded.heartbeat,
     payload = excluded.payload,
     updated_at = CURRENT_TIMESTAMP
+`);
+const updateHeroBuildCloneUploadedStmt = db.prepare(`
+  UPDATE hero_build_clones
+     SET status = ?,
+         status_info = ?,
+         uploaded_build_id = ?,
+         uploaded_version = ?,
+         updated_at = strftime('%s','now')
+   WHERE origin_hero_build_id = ?
 `);
 
 const quickInviteCountsStmt = db.prepare(`
@@ -729,6 +920,7 @@ const deadlockGcBot = new DeadlockGcBot({
 });
 let gcTokenRequestInFlight = false;
 let lastLoggedGcTokenCount = 0;
+let heroBuildPublishWaiter = null;
 client.setOption('autoRelogin', false);
 client.setOption('machineName', process.env.STEAM_MACHINE_NAME || 'DeadlockBridge');
 
@@ -1797,6 +1989,62 @@ function processNextTask() {
         break;
       }
 
+      case 'BUILD_PUBLISH': {
+        const promise = (async () => {
+          if (!runtimeState.logged_on) throw new Error('Not logged in');
+          await loadHeroBuildProto();
+          const originId = payload?.origin_hero_build_id ?? payload?.hero_build_id;
+          if (!originId) throw new Error('origin_hero_build_id missing');
+          const src = selectHeroBuildSourceStmt.get(originId);
+          if (!src) throw new Error(`hero_build_sources missing for ${originId}`);
+          const cloneMeta = selectHeroBuildCloneMetaStmt.get(originId) || {};
+          const targetName = payload?.target_name || cloneMeta.target_name;
+      const targetDescription = payload?.target_description || cloneMeta.target_description;
+      const targetLanguage = safeNumber(payload?.target_language) ?? safeNumber(cloneMeta.target_language) ?? 1;
+      const authorAccountId = client?.steamID?.accountid ? Number(client.steamID.accountid) : undefined;
+      const useMinimal = payload?.minimal === true;
+      const useUpdate = payload?.update === true;
+      const minimalUpdate = payload?.minimal_update === true;
+      const meta = {
+        target_name: targetName,
+        target_description: targetDescription,
+        target_language: targetLanguage,
+        author_account_id: useUpdate ? safeNumber(src.author_account_id) : authorAccountId,
+        origin_build_id: src.hero_build_id,
+      };
+      let heroBuild;
+      if (useUpdate) {
+        heroBuild = buildUpdateHeroBuild(src, meta);
+        if (minimalUpdate) {
+          heroBuild.tags = [];
+          heroBuild.details = {};
+        }
+      } else if (useMinimal) {
+        heroBuild = buildMinimalHeroBuild(src, meta);
+      } else {
+        heroBuild = mapHeroBuildFromRow(src, meta);
+      }
+      if (!useUpdate) {
+        // new build => clear hero_build_id so GC assigns fresh
+        delete heroBuild.hero_build_id;
+      }
+      log('info', 'Publishing hero build', {
+        originId,
+        heroId: heroBuild.hero_id,
+        author: heroBuild.author_account_id,
+        language: heroBuild.language,
+        name: heroBuild.name,
+        mode: useUpdate ? (minimalUpdate ? 'update-minimal' : 'update') : (useMinimal ? 'new-minimal' : 'new'),
+        hero_build_id: heroBuild.hero_build_id,
+      });
+          const resp = await sendHeroBuildUpdate(heroBuild);
+          updateHeroBuildCloneUploadedStmt.run('done', null, resp.hero_build_id || null, resp.version || null, originId);
+          return { ok: true, response: resp, origin_id: originId };
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
+
       case 'AUTH_SEND_PLAYTEST_INVITE': {
         const promise = (async () => {
           if (!runtimeState.logged_on) throw new Error('Not logged in');
@@ -1930,6 +2178,10 @@ const COMMAND_HANDLERS = {
     });
   },
   'guard.submit': (payload) => ({ ok: true, data: handleGuardCodeTask(payload || {}) }),
+  restart: () => {
+    log('info', 'Restart command received - terminating process for restart');
+    process.exit(0);
+  },
 };
 
 function finalizeStandaloneCommand(commandId, status, resultObj, errorMessage) {
@@ -2191,7 +2443,7 @@ client.on('receivedFromGC', (appId, msgType, payload) => {
   });
 
   // ENHANCED DEBUG: Log ALL GC messages for diagnosis
-  log('info', '?? GC MESSAGE RECEIVED', {
+  log('info', '🚀 GC MESSAGE RECEIVED', {
     appId,
     messageId,
     messageIdHex: messageId.toString(16),
@@ -2203,6 +2455,16 @@ client.on('receivedFromGC', (appId, msgType, payload) => {
     expectedWelcome: GC_MSG_CLIENT_WELCOME,
     expectedResponses: playtestMsgConfigs.map(p => p.response)
   });
+
+  if (messageId === GC_MSG_CLIENT_TO_GC_UPDATE_HERO_BUILD_RESPONSE && heroBuildPublishWaiter) {
+    loadHeroBuildProto()
+      .then(() => {
+        const resp = UpdateHeroBuildResponseMsg.decode(payload);
+        heroBuildPublishWaiter.resolve(resp);
+      })
+      .catch((err) => heroBuildPublishWaiter.reject(err));
+    return;
+  }
 
   if (messageId === GC_MSG_CLIENT_WELCOME && isDeadlockApp) {
     log('info', '?? RECEIVED DEADLOCK GC WELCOME - GC CONNECTION ESTABLISHED!', {

@@ -186,15 +186,14 @@ def pv_get_latest(guild_id: int, view_type: str) -> Optional[dict]:
 
 def pv_upsert_single(guild_id: int, channel_id: int, message_id: int, view_type: str, user_id: Optional[int] = None) -> None:
     # genau 1 Datensatz je (guild_id, view_type)
-    with _conn() as c:
-        c.execute("DELETE FROM persistent_views WHERE guild_id = ? AND view_type = ?", (str(guild_id), view_type))
-        c.execute(
-            """
-            INSERT INTO persistent_views (message_id, channel_id, guild_id, view_type, user_id)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (str(message_id), str(channel_id), str(guild_id), view_type, str(user_id) if user_id else None)
-        )
+    central_db.execute("DELETE FROM persistent_views WHERE guild_id = ? AND view_type = ?", (str(guild_id), view_type))
+    central_db.execute(
+        """
+        INSERT INTO persistent_views (message_id, channel_id, guild_id, view_type, user_id)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (str(message_id), str(channel_id), str(guild_id), view_type, str(user_id) if user_id else None)
+    )
 
 # -------------------- Views & Modal --------------------
 
