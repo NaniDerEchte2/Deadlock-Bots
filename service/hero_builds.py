@@ -227,6 +227,101 @@ def latest_per_hero(builds: Iterable[HeroBuildSource]) -> Dict[int, HeroBuildSou
     return latest
 
 
+def top_builds_per_hero_from_db(
+    max_per_hero: int = 3,
+    target_language: int = DEFAULT_TARGET_LANGUAGE,
+    min_days_old: int = 0,
+    max_days_old: int = 30,
+) -> List[HeroBuildSource]:
+    """
+    Fetch the top N builds per hero from the database, respecting author priorities.
+
+    This queries hero_build_sources joined with watched_build_authors to get
+    priority information, then selects up to max_per_hero builds for each hero,
+    ordered by:
+    1. Author priority (DESC)
+    2. Publish timestamp (DESC)
+
+    Args:
+        max_per_hero: Maximum number of builds to return per hero (default: 3)
+        target_language: Target language for filtering (default: German/1)
+        min_days_old: Minimum age in days (default: 0 = no minimum)
+        max_days_old: Maximum age in days (default: 30)
+
+    Returns:
+        List of HeroBuildSource objects, up to max_per_hero per hero_id
+    """
+    now = int(time.time())
+    min_ts = now - (max_days_old * 24 * 60 * 60)
+    max_ts = now - (min_days_old * 24 * 60 * 60) if min_days_old > 0 else now
+
+    # Query with priority join and ranking
+    sql = """
+        SELECT
+            hbs.hero_build_id,
+            hbs.origin_build_id,
+            hbs.author_account_id,
+            hbs.hero_id,
+            hbs.language,
+            hbs.version,
+            hbs.name,
+            hbs.description,
+            hbs.tags_json,
+            hbs.details_json,
+            hbs.publish_ts,
+            hbs.last_updated_ts,
+            COALESCE(wba.priority, 0) as priority,
+            ROW_NUMBER() OVER (
+                PARTITION BY hbs.hero_id
+                ORDER BY COALESCE(wba.priority, 0) DESC, hbs.publish_ts DESC
+            ) as rank
+        FROM hero_build_sources hbs
+        LEFT JOIN watched_build_authors wba ON hbs.author_account_id = wba.author_account_id
+        WHERE hbs.language = 0  -- English builds only
+          AND hbs.publish_ts >= ?
+          AND hbs.publish_ts <= ?
+    """
+
+    with db.get_conn() as conn:
+        cursor = conn.execute(sql, (min_ts, max_ts))
+        rows = cursor.fetchall()
+
+    # Filter to max_per_hero and convert to HeroBuildSource objects
+    builds: List[HeroBuildSource] = []
+    for row in rows:
+        rank = row["rank"]
+        if rank > max_per_hero:
+            continue
+
+        try:
+            # Parse tags and details from JSON
+            tags_json = row["tags_json"]
+            tags = json.loads(tags_json) if tags_json else []
+
+            details_json = row["details_json"]
+            details = json.loads(details_json) if details_json else {}
+
+            build = HeroBuildSource(
+                hero_build_id=row["hero_build_id"],
+                origin_build_id=row["origin_build_id"],
+                author_account_id=row["author_account_id"],
+                hero_id=row["hero_id"],
+                language=row["language"],
+                version=row["version"],
+                name=row["name"],
+                description=row["description"],
+                tags=tags,
+                details=details,
+                publish_ts=row["publish_ts"],
+                last_updated_ts=row["last_updated_ts"],
+            )
+            builds.append(build)
+        except Exception as exc:
+            log.warning("Failed to parse build %s: %s", row.get("hero_build_id"), exc)
+
+    return builds
+
+
 def queue_clone(
     build: HeroBuildSource,
     target_language: int = DEFAULT_TARGET_LANGUAGE,

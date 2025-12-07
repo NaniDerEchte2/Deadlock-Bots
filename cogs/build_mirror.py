@@ -19,6 +19,7 @@ from service.hero_builds import (
     latest_per_hero,
     queue_clone,
     steam64_to_account_id,
+    top_builds_per_hero_from_db,
     upsert_sources,
 )
 
@@ -50,9 +51,8 @@ class BuildMirror(commands.Cog):
         self.bot = bot
         self.enabled = True
 
-        # Hard-wired source author (SteamID64 -> account_id)
-        default_author = steam64_to_account_id("76561198866277376")
-        self.author_account_ids = [default_author] if default_author else []
+        # Load all active authors from watched_build_authors table
+        self.author_account_ids = self._load_watched_authors()
 
         self.target_language = DEFAULT_TARGET_LANGUAGE
         self.interval_seconds = 4 * 60 * 60  # 4h
@@ -74,6 +74,24 @@ class BuildMirror(commands.Cog):
                 self.interval_seconds,
             )
 
+    def _load_watched_authors(self) -> List[int]:
+        """Load all active authors from watched_build_authors table."""
+        try:
+            conn = db.connect()
+            cursor = conn.execute("""
+                SELECT author_account_id FROM watched_build_authors
+                WHERE is_active = 1
+                ORDER BY priority DESC
+            """)
+            authors = [row["author_account_id"] for row in cursor.fetchall()]
+            log.info("Loaded %d active build authors from database", len(authors))
+            return authors
+        except Exception as exc:
+            log.error("Failed to load watched authors: %s", exc)
+            # Fallback to hardcoded author
+            default_author = steam64_to_account_id("76561198866277376")
+            return [default_author] if default_author else []
+
     def cog_unload(self) -> None:
         if self._task:
             self._task.cancel()
@@ -93,6 +111,7 @@ class BuildMirror(commands.Cog):
         async with self._sync_lock:
             stats = {"fetched": 0, "stored": 0, "queued": 0}
             try:
+                # Step 1: Fetch and store ALL builds from all authors
                 for author_id in self.author_account_ids:
                     builds = await fetch_builds_for_author(
                         author_id,
@@ -101,12 +120,20 @@ class BuildMirror(commands.Cog):
                     )
                     stats["fetched"] += len(builds)
                     stats["stored"] += upsert_sources(builds)
-                    latest = latest_per_hero(builds)
-                    for build in latest.values():
-                        status = queue_clone(build, target_language=self.target_language)
-                        if status in {"queued", "requeued"}:
-                            stats["queued"] += 1
-                            self._export_build(build)
+
+                # Step 2: Get top 3 builds per hero from DB (respecting priorities)
+                top_builds = top_builds_per_hero_from_db(
+                    max_per_hero=3,
+                    target_language=self.target_language,
+                    max_days_old=30,
+                )
+
+                # Step 3: Queue these builds for cloning
+                for build in top_builds:
+                    status = queue_clone(build, target_language=self.target_language)
+                    if status in {"queued", "requeued"}:
+                        stats["queued"] += 1
+                        self._export_build(build)
                 self.last_sync_ts = int(time.time())
                 self.last_error = None
                 db.set_kv("hero_build_mirror", "last_sync_ts", str(self.last_sync_ts))
