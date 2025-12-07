@@ -2626,11 +2626,15 @@ function processNextTask() {
           const thirtyDaysAgo = Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60);
 
           const sourceBuilds = db.prepare(`
-            SELECT * FROM hero_build_sources
-            WHERE publish_ts >= ?
-              AND language = 0  -- English builds only
-            ORDER BY hero_id, publish_ts DESC
+            SELECT hbs.*, wba.priority
+            FROM hero_build_sources hbs
+            LEFT JOIN watched_build_authors wba ON hbs.author_account_id = wba.author_account_id
+            WHERE hbs.publish_ts >= ?
+              AND hbs.language = 0  -- English builds only
+            ORDER BY hbs.hero_id, COALESCE(wba.priority, 0) DESC, hbs.publish_ts DESC
           `).all(thirtyDaysAgo);
+
+          const heroBuildCounts = {};
 
           log('info', 'MAINTAIN_BUILD_CATALOG: Found source builds', { count: sourceBuilds.length });
 
@@ -2639,6 +2643,11 @@ function processNextTask() {
           // For each source build, check if we need to clone or update
           for (const sourceBuild of sourceBuilds) {
             try {
+              const currentCount = heroBuildCounts[sourceBuild.hero_id] || 0;
+              if (currentCount >= 3) {
+                  continue;
+              }
+              heroBuildCounts[sourceBuild.hero_id] = currentCount + 1;
               // Check if clone exists
               const existingClone = db.prepare(`
                 SELECT * FROM hero_build_clones
@@ -2657,6 +2666,32 @@ function processNextTask() {
                   // Need to update the clone
                   stats.builds_to_update++;
 
+                  const targetName = 'EarlySalty - Deutsche Deadlock Community (Discord)';
+                  const descLines = [
+                    "🇩🇪 Deutsche Deadlock Community",
+                    "💬 Discord: discord.gg/z5TfVHuQq2",
+                    "📺 Twitch: twitch.tv/EarlySalty",
+                    "",
+                    "🏆 **Was wir bieten:**",
+                    "• 🎓 Free Coaching & Deutsche Patchnotes",
+                    "• 🤝 Mates für alle Ränge (auch Eternus)",
+                    "• 🕵️ Leaks & News",
+                    "• 🎮 Eigene Deadlock Games & Events",
+                    "",
+                    "⚔️ **Voice Kanäle:**",
+                    "• 🏅 **Ranked Grind:** Fokus auf Rang, Tryhard",
+                    "• ⚖️ **Grind:** Fokus auf Sieg, Rang-Cap ±2",
+                    "• 🤡 **Spaß Lane:** Austoben & Fun",
+                    "",
+                    "---",
+                    `Original Author ID: ${sourceBuild.author_account_id}`,
+                    `Original Build ID: ${sourceBuild.hero_build_id}`
+                  ];
+                  const targetDesc = descLines.join('\n');
+
+                  // Update DB record
+                  db.prepare('UPDATE hero_build_clones SET target_name = ?, target_description = ? WHERE id = ?').run(targetName, targetDesc, existingClone.id);
+
                   // Create BUILD_PUBLISH task for update
                   db.prepare(`
                     INSERT INTO steam_tasks (type, payload, status, created_at, updated_at)
@@ -2666,8 +2701,10 @@ function processNextTask() {
                       origin_hero_build_id: sourceBuild.hero_build_id,
                       hero_build_clone_id: existingClone.id,
                       minimal: false,
-                      update: true,  // This is an update, not a new build
-                      target_language: 1  // German
+                      update: true,
+                      target_language: 1,
+                      target_name: targetName,
+                      target_description: targetDesc
                     }),
                     now,
                     now
@@ -2686,8 +2723,28 @@ function processNextTask() {
 
                 // Insert into hero_build_clones first to track it
                 try {
-                  const targetName = 'Deutsche Deadlock Community x EarlySalty';
-                  const targetDesc = `Original Author: ${sourceBuild.author_account_id}\nOriginal Build: ${sourceBuild.hero_build_id}`;
+                  const targetName = 'EarlySalty - Deutsche Deadlock Community (Discord)';
+                  const descLines = [
+                    "🇩🇪 Deutsche Deadlock Community",
+                    "💬 Discord: discord.gg/z5TfVHuQq2",
+                    "📺 Twitch: twitch.tv/EarlySalty",
+                    "",
+                    "🏆 **Was wir bieten:**",
+                    "• 🎓 Free Coaching & Deutsche Patchnotes",
+                    "• 🤝 Mates für alle Ränge (auch Eternus)",
+                    "• 🕵️ Leaks & News",
+                    "• 🎮 Eigene Deadlock Games & Events",
+                    "",
+                    "⚔️ **Voice Kanäle:**",
+                    "• 🏅 **Ranked Grind:** Fokus auf Rang, Tryhard",
+                    "• ⚖️ **Grind:** Fokus auf Sieg, Rang-Cap ±2",
+                    "• 🤡 **Spaß Lane:** Austoben & Fun",
+                    "",
+                    "---",
+                    `Original Author ID: ${sourceBuild.author_account_id}`,
+                    `Original Build ID: ${sourceBuild.hero_build_id}`
+                  ];
+                  const targetDesc = descLines.join('\n');
                   
                   insertHeroBuildCloneStmt.run(
                     sourceBuild.hero_build_id,
