@@ -168,6 +168,10 @@ const WEB_API_HTTP_TIMEOUT_MS = Math.max(
     : 12000
 );
 
+// Deadlock Build API
+const DEADLOCK_API_BASE_URL = 'https://api.deadlock-api.com/v1/builds';
+const DEADLOCK_HEROES_API_URL = 'https://assets.deadlock-api.com/v2/heroes';
+
 // ---------- Logging ----------
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
@@ -394,6 +398,125 @@ function httpGetJson(url, timeoutMs = WEB_API_HTTP_TIMEOUT_MS) {
       reject(err);
     }
   });
+}
+
+/**
+ * Searches for Deadlock hero builds using the Deadlock API.
+ * @param {Object} params - Search parameters
+ * @param {number} [params.authorAccountId] - Filter by author account ID
+ * @param {number} [params.heroId] - Filter by hero ID
+ * @param {number} [params.heroBuildId] - Filter by specific build ID
+ * @param {number} [params.minPublishedUnixTimestamp] - Minimum publish timestamp
+ * @param {number} [params.maxPublishedUnixTimestamp] - Maximum publish timestamp
+ * @param {string} [params.sortBy='published_at'] - Sort field (published_at, favorites, etc.)
+ * @param {string} [params.sortDirection='desc'] - Sort direction (asc/desc)
+ * @param {number} [params.limit=100] - Maximum results
+ * @param {boolean} [params.onlyLatest=true] - Only latest version per build
+ * @param {string} [params.buildLanguage] - Filter by language (e.g., 'English', 'German')
+ * @param {string} [params.searchText] - Text search query
+ * @returns {Promise<Array>} Array of hero_build objects
+ */
+async function sendFindBuildsRequest(params = {}) {
+  try {
+    const url = new URL(DEADLOCK_API_BASE_URL);
+
+    // Set default parameters
+    if (params.authorAccountId) url.searchParams.set('author_account_id', params.authorAccountId);
+    if (params.heroId) url.searchParams.set('hero_id', params.heroId);
+    if (params.heroBuildId) url.searchParams.set('hero_build_id', params.heroBuildId);
+    if (params.minPublishedUnixTimestamp) url.searchParams.set('min_published_unix_timestamp', params.minPublishedUnixTimestamp);
+    if (params.maxPublishedUnixTimestamp) url.searchParams.set('max_published_unix_timestamp', params.maxPublishedUnixTimestamp);
+    if (params.buildLanguage) url.searchParams.set('build_language', params.buildLanguage);
+    if (params.searchText) url.searchParams.set('search_text', params.searchText);
+
+    // Set defaults for sorting and limiting
+    url.searchParams.set('sort_by', params.sortBy || 'published_at');
+    url.searchParams.set('sort_direction', params.sortDirection || 'desc');
+    url.searchParams.set('limit', params.limit !== undefined ? params.limit : 100);
+    url.searchParams.set('only_latest', params.onlyLatest !== false ? 'true' : 'false');
+
+    log('debug', 'Fetching builds from Deadlock API', { url: url.toString(), params });
+
+    const response = await httpGetJson(url.toString());
+
+    // The API returns an array of objects with a 'hero_build' property
+    if (!Array.isArray(response)) {
+      log('warn', 'Unexpected API response format', { responseType: typeof response });
+      return [];
+    }
+
+    // Extract the hero_build objects
+    const builds = response
+      .filter(item => item && item.hero_build)
+      .map(item => item.hero_build);
+
+    log('info', 'Successfully fetched builds', { count: builds.length, params });
+    return builds;
+
+  } catch (err) {
+    log('error', 'Failed to fetch builds from Deadlock API', {
+      error: err.message,
+      stack: err.stack,
+      params
+    });
+    return [];
+  }
+}
+
+/**
+ * Inserts or updates hero builds in the hero_build_sources table.
+ * @param {Array} builds - Array of hero_build objects from the API
+ * @returns {Object} Result with counts of inserted/updated builds
+ */
+function upsertBuildsToDatabase(builds) {
+  if (!Array.isArray(builds) || builds.length === 0) {
+    return { inserted: 0, updated: 0, errors: 0 };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  let inserted = 0;
+  let updated = 0;
+  let errors = 0;
+
+  for (const build of builds) {
+    try {
+      // Check if build already exists
+      const existing = selectHeroBuildSourceStmt.get(build.hero_build_id);
+      const isUpdate = !!existing;
+
+      upsertHeroBuildSourceStmt.run(
+        build.hero_build_id,
+        build.origin_build_id || null,
+        build.author_account_id,
+        build.hero_id,
+        build.language,
+        build.version || 1,
+        build.name || '',
+        build.description || '',
+        build.tags ? JSON.stringify(build.tags) : '[]',
+        build.details ? JSON.stringify(build.details) : '{}',
+        build.publish_ts || build.published_at || now,
+        build.last_updated_ts || build.last_updated_at || now,
+        isUpdate ? existing.fetched_at : now,  // Keep original fetched_at on update
+        now  // Update last_seen_at to now
+      );
+
+      if (isUpdate) {
+        updated++;
+      } else {
+        inserted++;
+      }
+    } catch (err) {
+      log('error', 'Failed to upsert build', {
+        hero_build_id: build.hero_build_id,
+        error: err.message
+      });
+      errors++;
+    }
+  }
+
+  log('info', 'Upserted builds to database', { inserted, updated, errors, total: builds.length });
+  return { inserted, updated, errors };
 }
 
 async function loadWebApiFriendIds(force = false) {
@@ -929,6 +1052,39 @@ const selectHeroBuildCloneMetaStmt = db.prepare(`
    WHERE origin_hero_build_id = ?
 `);
 
+const upsertHeroBuildSourceStmt = db.prepare(`
+  INSERT INTO hero_build_sources (
+    hero_build_id, origin_build_id, author_account_id, hero_id, language, version,
+    name, description, tags_json, details_json, publish_ts, last_updated_ts,
+    fetched_at, last_seen_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(hero_build_id) DO UPDATE SET
+    origin_build_id = excluded.origin_build_id,
+    author_account_id = excluded.author_account_id,
+    hero_id = excluded.hero_id,
+    language = excluded.language,
+    version = excluded.version,
+    name = excluded.name,
+    description = excluded.description,
+    tags_json = excluded.tags_json,
+    details_json = excluded.details_json,
+    publish_ts = excluded.publish_ts,
+    last_updated_ts = excluded.last_updated_ts,
+    last_seen_at = excluded.last_seen_at
+`);
+
+const selectWatchedAuthorsStmt = db.prepare(`
+  SELECT * FROM watched_build_authors WHERE is_active = 1 ORDER BY priority DESC, author_account_id
+`);
+
+const updateWatchedAuthorMetadataStmt = db.prepare(`
+  UPDATE watched_build_authors
+     SET last_checked_at = ?,
+         last_checked_status = ?,
+         last_checked_message = ?
+   WHERE author_account_id = ?
+`);
+
 // ---------- Standalone Dashboard Tables ----------
 db.prepare(`
   CREATE TABLE IF NOT EXISTS standalone_commands (
@@ -1000,68 +1156,21 @@ const updateHeroBuildCloneUploadedStmt = db.prepare(`
    WHERE origin_hero_build_id = ?
 `);
 
-const upsertHeroBuildSourceStmt = db.prepare(`
-  INSERT INTO hero_build_sources (
-    hero_build_id, origin_build_id, author_account_id, hero_id, language, version,
-    name, description, tags_json, details_json,
-    publish_ts, last_updated_ts, fetched_at
+const insertHeroBuildCloneStmt = db.prepare(`
+  INSERT INTO hero_build_clones (
+    origin_hero_build_id, origin_build_id, hero_id, author_account_id,
+    source_language, source_version, source_last_updated_ts,
+    target_language, target_name, target_description,
+    status, created_at, updated_at
   ) VALUES (
-    @heroBuildId, @originBuildId, @authorAccountId, @heroId, @language, @version,
-    @name, @description, @tagsJson, @detailsJson,
-    @publishTimestamp, @lastUpdatedTimestamp, strftime('%s','now')
-  ) ON CONFLICT(hero_build_id) DO UPDATE SET
-    origin_build_id = excluded.origin_build_id,
-    author_account_id = excluded.author_account_id,
-    hero_id = excluded.hero_id,
-    language = excluded.language,
-    version = excluded.version,
-    name = excluded.name,
-    description = excluded.description,
-    tags_json = excluded.tags_json,
-    details_json = excluded.details_json,
-    publish_ts = excluded.publish_ts,
-    last_updated_ts = excluded.last_updated_ts,
-    fetched_at = excluded.fetched_at,
-    last_seen_at = strftime('%s','now');
+    ?, ?, ?, ?,
+    ?, ?, ?,
+    ?, ?, ?,
+    'processing', strftime('%s','now'), strftime('%s','now')
+  )
 `);
 
-async function upsertBuildsToDatabase(builds) {
-  if (!builds || !Array.isArray(builds) || builds.length === 0) {
-    return { inserted: 0, updated: 0 };
-  }
 
-  const transaction = db.transaction((items) => {
-    let changed = 0;
-    for (const build of items) {
-      try {
-        const result = upsertHeroBuildSourceStmt.run({
-          heroBuildId: build.heroBuildId,
-          originBuildId: build.originBuildId,
-          authorAccountId: build.authorAccountId,
-          heroId: build.heroId,
-          language: build.language,
-          version: build.version,
-          name: build.name,
-          description: build.description,
-          tagsJson: JSON.stringify(build.tags || []),
-          detailsJson: JSON.stringify(build.details || {}),
-          publishTimestamp: build.publishTimestamp,
-          lastUpdatedTimestamp: build.lastUpdatedTimestamp,
-        });
-        if (result.changes > 0) {
-          changed++;
-        }
-      } catch (err) {
-        log('error', 'Failed to upsert hero build source', { heroBuildId: build.heroBuildId, error: err.message });
-      }
-    }
-    return { changed };
-  });
-
-  const { changed } = transaction(builds);
-  log('info', 'Upserted hero builds to database', { count: builds.length, changed });
-  return { inserted: changed, total: builds.length };
-}
 
 const quickInviteCountsStmt = db.prepare(`
   SELECT status, COUNT(*) AS count
@@ -2391,6 +2500,365 @@ function processNextTask() {
         break;
       }
 
+      case 'DISCOVER_WATCHED_BUILDS': {
+        const promise = (async () => {
+          log('info', 'DISCOVER_WATCHED_BUILDS: Starting build discovery');
+
+          // Get all watched authors
+          const authors = selectWatchedAuthorsStmt.all();
+          if (!authors || authors.length === 0) {
+            log('warn', 'No watched authors configured');
+            return { ok: true, data: { message: 'No authors to watch', authors_checked: 0, builds_discovered: 0 } };
+          }
+
+          log('info', 'DISCOVER_WATCHED_BUILDS: Fetching builds from watched authors', { author_count: authors.length });
+
+          let totalBuildsDiscovered = 0;
+          let authorsChecked = 0;
+          const now = Math.floor(Date.now() / 1000);
+
+          // Process each author
+          for (const author of authors) {
+            try {
+              log('info', 'DISCOVER_WATCHED_BUILDS: Fetching builds for author', {
+                author_account_id: author.author_account_id,
+                author_name: author.author_name
+              });
+
+              // Fetch builds from API (English originals only)
+              const builds = await sendFindBuildsRequest({
+                authorAccountId: author.author_account_id,
+                buildLanguage: 'English',
+                onlyLatest: true,
+                limit: 100
+              });
+
+              // Upsert builds to database
+              const result = upsertBuildsToDatabase(builds);
+              totalBuildsDiscovered += result.inserted + result.updated;
+
+              // Update author metadata
+              updateWatchedAuthorMetadataStmt.run(
+                now,
+                'success',
+                `Found ${builds.length} builds`,
+                author.author_account_id
+              );
+
+              authorsChecked++;
+
+              // Rate limiting: wait 2 seconds between authors
+              await new Promise(resolve => setTimeout(resolve, 2000));
+
+            } catch (err) {
+              log('error', 'DISCOVER_WATCHED_BUILDS: Failed to fetch builds for author', {
+                author_account_id: author.author_account_id,
+                error: err.message
+              });
+
+              // Update author metadata (just timestamp, even on error)
+              try {
+                updateWatchedAuthorMetadataStmt.run(
+                  now,
+                  'error',
+                  err.message,
+                  author.author_account_id
+                );
+              } catch (updateErr) {
+                log('warn', 'Failed to update author metadata', { error: updateErr.message });
+              }
+            }
+          }
+
+          log('info', 'DISCOVER_WATCHED_BUILDS: Completed', {
+            authors_checked: authorsChecked,
+            builds_discovered: totalBuildsDiscovered
+          });
+
+          return {
+            ok: true,
+            data: {
+              authors_checked: authorsChecked,
+              builds_discovered: totalBuildsDiscovered
+            }
+          };
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
+
+      case 'MAINTAIN_BUILD_CATALOG': {
+        const promise = (async () => {
+          log('info', 'MAINTAIN_BUILD_CATALOG: Starting catalog maintenance');
+
+          const stats = {
+            discovery_tasks_created: 0,
+            builds_to_clone: 0,
+            builds_to_update: 0,
+            tasks_created: 0
+          };
+
+          // Step 1: Ensure build discovery is running
+          // Check if there's already a pending or running DISCOVER_WATCHED_BUILDS task
+          const existingDiscovery = db.prepare(`
+            SELECT id FROM steam_tasks
+            WHERE type = 'DISCOVER_WATCHED_BUILDS'
+              AND status IN ('PENDING', 'RUNNING')
+            LIMIT 1
+          `).get();
+
+          if (!existingDiscovery) {
+            // Create a new discovery task
+            db.prepare(`
+              INSERT INTO steam_tasks (type, payload, status, created_at, updated_at)
+              VALUES ('DISCOVER_WATCHED_BUILDS', '{}', 'PENDING', ?, ?)
+            `).run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000));
+            stats.discovery_tasks_created = 1;
+            log('info', 'MAINTAIN_BUILD_CATALOG: Created DISCOVER_WATCHED_BUILDS task');
+          } else {
+            log('info', 'MAINTAIN_BUILD_CATALOG: DISCOVER_WATCHED_BUILDS task already exists', {
+              task_id: existingDiscovery.id
+            });
+          }
+
+          // Step 2: Find builds that need cloning or updating
+          // Get builds from the last 30 days
+          const thirtyDaysAgo = Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60);
+
+          const sourceBuilds = db.prepare(`
+            SELECT * FROM hero_build_sources
+            WHERE publish_ts >= ?
+              AND language = 0  -- English builds only
+            ORDER BY hero_id, publish_ts DESC
+          `).all(thirtyDaysAgo);
+
+          log('info', 'MAINTAIN_BUILD_CATALOG: Found source builds', { count: sourceBuilds.length });
+
+          const now = Math.floor(Date.now() / 1000);
+
+          // For each source build, check if we need to clone or update
+          for (const sourceBuild of sourceBuilds) {
+            try {
+              // Check if clone exists
+              const existingClone = db.prepare(`
+                SELECT * FROM hero_build_clones
+                WHERE origin_hero_build_id = ?
+                  AND target_language = 1  -- German
+                LIMIT 1
+              `).get(sourceBuild.hero_build_id);
+
+              if (existingClone) {
+                // Check if source is newer than clone
+                const sourceIsNewer =
+                  sourceBuild.version > existingClone.version ||
+                  sourceBuild.last_updated_ts > existingClone.updated_at;
+
+                if (sourceIsNewer && existingClone.status !== 'processing') {
+                  // Need to update the clone
+                  stats.builds_to_update++;
+
+                  // Create BUILD_PUBLISH task for update
+                  db.prepare(`
+                    INSERT INTO steam_tasks (type, payload, status, created_at, updated_at)
+                    VALUES ('BUILD_PUBLISH', ?, 'PENDING', ?, ?)
+                  `).run(
+                    JSON.stringify({
+                      origin_hero_build_id: sourceBuild.hero_build_id,
+                      hero_build_clone_id: existingClone.id,
+                      minimal: false,
+                      update: true,  // This is an update, not a new build
+                      target_language: 1  // German
+                    }),
+                    now,
+                    now
+                  );
+
+                  stats.tasks_created++;
+                  log('debug', 'MAINTAIN_BUILD_CATALOG: Queued update for build', {
+                    origin_id: sourceBuild.hero_build_id,
+                    clone_id: existingClone.id,
+                    hero_id: sourceBuild.hero_id
+                  });
+                }
+              } else {
+                // No clone exists - create one
+                stats.builds_to_clone++;
+
+                // Insert into hero_build_clones first to track it
+                try {
+                  const targetName = 'Deutsche Deadlock Community x EarlySalty';
+                  const targetDesc = `Original Author: ${sourceBuild.author_account_id}\nOriginal Build: ${sourceBuild.hero_build_id}`;
+                  
+                  insertHeroBuildCloneStmt.run(
+                    sourceBuild.hero_build_id,
+                    sourceBuild.origin_build_id || 0,
+                    sourceBuild.hero_id,
+                    sourceBuild.author_account_id,
+                    sourceBuild.language,
+                    sourceBuild.version,
+                    sourceBuild.last_updated_ts,
+                    1, // target_language (German)
+                    targetName,
+                    targetDesc
+                  );
+                  
+                  // Create BUILD_PUBLISH task for new clone
+                  db.prepare(`
+                    INSERT INTO steam_tasks (type, payload, status, created_at, updated_at)
+                    VALUES ('BUILD_PUBLISH', ?, 'PENDING', ?, ?)
+                  `).run(
+                    JSON.stringify({
+                      origin_hero_build_id: sourceBuild.hero_build_id,
+                      minimal: false,
+                      target_language: 1  // German
+                    }),
+                    now,
+                    now
+                  );
+
+                  stats.tasks_created++;
+                  log('debug', 'MAINTAIN_BUILD_CATALOG: Queued clone for build', {
+                    origin_id: sourceBuild.hero_build_id,
+                    hero_id: sourceBuild.hero_id
+                  });
+                } catch (err) {
+                   log('error', 'MAINTAIN_BUILD_CATALOG: Failed to insert clone record', {
+                     hero_build_id: sourceBuild.hero_build_id,
+                     error: err.message
+                   });
+                }
+              }
+            } catch (err) {
+              log('error', 'MAINTAIN_BUILD_CATALOG: Failed to process build', {
+                hero_build_id: sourceBuild.hero_build_id,
+                error: err.message
+              });
+            }
+          }
+
+          // Step 3: Ensure hero coverage (at least one build per hero)
+          // Get all heroes that have builds in our source database
+          const allHeroIds = db.prepare(`
+            SELECT DISTINCT hero_id FROM hero_build_sources
+            ORDER BY hero_id
+          `).all().map(row => row.hero_id);
+
+          // Get heroes that already have German clones
+          const heroesWithGermanBuilds = db.prepare(`
+            SELECT DISTINCT hbs.hero_id
+            FROM hero_build_clones hbc
+            JOIN hero_build_sources hbs ON hbc.origin_hero_build_id = hbs.hero_build_id
+            WHERE hbc.target_language = 1  -- German
+              AND hbc.status = 'done'
+          `).all().map(row => row.hero_id);
+
+          const heroesWithGermanBuildsSet = new Set(heroesWithGermanBuilds);
+          const missingHeroes = allHeroIds.filter(heroId => !heroesWithGermanBuildsSet.has(heroId));
+
+          log('info', 'MAINTAIN_BUILD_CATALOG: Hero coverage check', {
+            total_heroes: allHeroIds.length,
+            covered_heroes: heroesWithGermanBuilds.length,
+            missing_heroes: missingHeroes.length
+          });
+
+          // For each missing hero, find the most popular build from API
+          for (const heroId of missingHeroes) {
+            try {
+              log('info', 'MAINTAIN_BUILD_CATALOG: Fetching popular build for missing hero', { hero_id: heroId });
+              
+              const builds = await sendFindBuildsRequest({
+                heroId: heroId,
+                sortBy: 'favorites', 
+                sortDirection: 'desc',
+                onlyLatest: true,
+                buildLanguage: 'English',
+                limit: 1
+              });
+
+              if (builds && builds.length > 0) {
+                const popularBuild = builds[0];
+                
+                // Must upsert to DB first so BUILD_PUBLISH can find it
+                upsertBuildsToDatabase([popularBuild]);
+
+                // Check if there's already a task for this build
+                const existingTask = db.prepare(`
+                  SELECT id FROM steam_tasks
+                  WHERE type = 'BUILD_PUBLISH'
+                    AND payload LIKE ?
+                    AND status IN ('PENDING', 'RUNNING')
+                  LIMIT 1
+                `).get(`%"origin_hero_build_id":${popularBuild.hero_build_id}%`);
+
+                if (!existingTask) {
+                  // Ensure we have a clone record
+                  const existingClone = db.prepare('SELECT id FROM hero_build_clones WHERE origin_hero_build_id = ?').get(popularBuild.hero_build_id);
+                  
+                  if (!existingClone) {
+                    try {
+                      const targetName = 'Deutsche Deadlock Community x EarlySalty';
+                      const targetDesc = `Original Author: ${popularBuild.author_account_id}\nOriginal Build: ${popularBuild.hero_build_id}`;
+                      
+                      insertHeroBuildCloneStmt.run(
+                        popularBuild.hero_build_id,
+                        popularBuild.origin_build_id || 0,
+                        popularBuild.hero_id,
+                        popularBuild.author_account_id,
+                        popularBuild.language,
+                        popularBuild.version,
+                        popularBuild.last_updated_ts,
+                        1, // target_language (German)
+                        targetName,
+                        targetDesc
+                      );
+                    } catch (e) {
+                      log('warn', 'MAINTAIN_BUILD_CATALOG: Failed to insert clone record for popular build', { error: e.message });
+                    }
+                  }
+
+                  db.prepare(`
+                    INSERT INTO steam_tasks (type, payload, status, created_at, updated_at)
+                    VALUES ('BUILD_PUBLISH', ?, 'PENDING', ?, ?)
+                  `).run(
+                    JSON.stringify({
+                      origin_hero_build_id: popularBuild.hero_build_id,
+                      minimal: false,
+                      target_language: 1  // German
+                    }),
+                    now,
+                    now
+                  );
+
+                  stats.tasks_created++;
+                  log('info', 'MAINTAIN_BUILD_CATALOG: Queued popular build for missing hero', {
+                    hero_id: heroId,
+                    origin_id: popularBuild.hero_build_id,
+                    name: popularBuild.name
+                  });
+                }
+              } else {
+                log('warn', 'MAINTAIN_BUILD_CATALOG: No popular build found via API for hero', { hero_id: heroId });
+              }
+              
+              // Rate limit slightly
+              await new Promise(resolve => setTimeout(resolve, 500));
+              
+            } catch (err) {
+              log('error', 'MAINTAIN_BUILD_CATALOG: Failed to process missing hero', {
+                hero_id: heroId,
+                error: err.message
+              });
+            }
+          }
+
+          log('info', 'MAINTAIN_BUILD_CATALOG: Completed', stats);
+
+          return { ok: true, data: stats };
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
+
       default:
         throw new Error(`Unsupported task type: ${task.type}`);
     }
@@ -2826,6 +3294,46 @@ publishStandaloneState({ reason: 'startup' });
 if (typeof quickInvites.startAutoEnsure === 'function') {
   quickInvites.startAutoEnsure();
 }
+
+// ---------- Build Catalog Maintenance ----------
+// Periodically maintain the build catalog (discovery + cloning + updates)
+const CATALOG_MAINTENANCE_INTERVAL_MS = parseInt(process.env.CATALOG_MAINTENANCE_INTERVAL_MS || '1800000', 10); // Default: 30 minutes
+
+function scheduleCatalogMaintenance() {
+  try {
+    // Check if there's already a pending or running MAINTAIN_BUILD_CATALOG task
+    const existing = db.prepare(`
+      SELECT id FROM steam_tasks
+      WHERE type = 'MAINTAIN_BUILD_CATALOG'
+        AND status IN ('PENDING', 'RUNNING')
+      LIMIT 1
+    `).get();
+
+    if (!existing) {
+      const now = Math.floor(Date.now() / 1000);
+      db.prepare(`
+        INSERT INTO steam_tasks (type, payload, status, created_at, updated_at)
+        VALUES ('MAINTAIN_BUILD_CATALOG', '{}', 'PENDING', ?, ?)
+      `).run(now, now);
+      log('info', 'Scheduled MAINTAIN_BUILD_CATALOG task');
+    } else {
+      log('debug', 'MAINTAIN_BUILD_CATALOG task already scheduled', { task_id: existing.id });
+    }
+  } catch (err) {
+    log('error', 'Failed to schedule catalog maintenance', { error: err.message });
+  }
+}
+
+// Schedule immediately on startup (after a short delay to let system stabilize)
+setTimeout(() => {
+  log('info', 'Running initial catalog maintenance');
+  scheduleCatalogMaintenance();
+}, 30000); // 30 seconds after startup
+
+// Schedule periodically
+setInterval(() => {
+  scheduleCatalogMaintenance();
+}, CATALOG_MAINTENANCE_INTERVAL_MS);
 
 function shutdown(code = 0) {
   try {
