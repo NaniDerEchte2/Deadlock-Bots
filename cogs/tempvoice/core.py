@@ -121,8 +121,9 @@ class TVDB:
             return
         self.db = await aiosqlite.connect(self.db_path)
         self.db.row_factory = aiosqlite.Row
-        await self.db.execute("PRAGMA journal_mode=WAL")
-        await self.db.execute("PRAGMA synchronous=NORMAL")
+        # NOTE: PRAGMAs (journal_mode, synchronous) are already set by the central
+        # DB manager (service/db.py). Setting them again here causes connection
+        # corruption in multi-threaded environments. DO NOT add PRAGMA calls.
         await self._create_tables()
 
     async def _create_tables(self):

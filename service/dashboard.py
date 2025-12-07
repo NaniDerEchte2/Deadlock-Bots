@@ -642,6 +642,69 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             background: #3b82f6;
             color: #0b1021;
         }
+        .user-picker {
+            background: #121212;
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 8px;
+            padding: 0.75rem;
+            margin-top: 0.75rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+        }
+        .user-picker-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+        }
+        .user-chip-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+        }
+        .user-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.35rem 0.7rem;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: #1f1f1f;
+            color: #f5f5f5;
+            cursor: pointer;
+            font-weight: 600;
+            transition: border-color 0.15s ease, background 0.15s ease;
+        }
+        .user-chip:hover {
+            border-color: rgba(59,130,246,0.75);
+        }
+        .user-chip.active {
+            background: #3b82f6;
+            color: #0b1021;
+            border-color: #3b82f6;
+        }
+        .user-chip .meta {
+            color: #adb5bd;
+            font-size: 0.8rem;
+        }
+        .user-insights {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 0.6rem;
+            color: #adb5bd;
+            font-size: 0.9rem;
+        }
+        .user-insights strong {
+            color: #f5f5f5;
+            display: block;
+            margin-bottom: 0.15rem;
+        }
+        .button-ghost {
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.25);
+            color: inherit;
+        }
         .chart-container {
             position: relative;
             width: 100%;
@@ -738,11 +801,20 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                     <div class="segmented" id="voice-mode-buttons">
                         <button class="voice-mode-btn active" data-mode="hour">Stunde</button>
                         <button class="voice-mode-btn" data-mode="day">Tag</button>
-                        <button class="voice-mode-btn" data-mode="week">Wochentag</button>
                         <button class="voice-mode-btn" data-mode="month">Monat</button>
+                        <button class="voice-mode-btn" data-mode="user">User</button>
                     </div>
                     <input id="voice-history-user" type="text" placeholder="User ID (optional)" />
                     <button class="reload" id="voice-user-apply">Anzeigen</button>
+                    <button class="button-ghost" id="voice-user-reset">Alle User</button>
+                </div>
+                <div class="user-picker" id="voice-user-mode" style="display: none">
+                    <div class="user-picker-header">
+                        <div class="voice-meta">Aktivste User (letzte 14 Tage)</div>
+                        <div class="voice-meta" id="voice-user-count"></div>
+                    </div>
+                    <div id="voice-user-list" class="user-chip-list"></div>
+                    <div id="voice-user-insights" class="user-insights"></div>
                 </div>
                 <div class="chart-container">
                     <canvas id="voice-hourly-chart"></canvas>
@@ -801,6 +873,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const voiceHistoryRefreshButton = document.getElementById('voice-history-refresh');
     const voiceHistoryUser = document.getElementById('voice-history-user');
     const voiceUserApply = document.getElementById('voice-user-apply');
+    const voiceUserReset = document.getElementById('voice-user-reset');
+    const voiceUserList = document.getElementById('voice-user-list');
+    const voiceUserInsights = document.getElementById('voice-user-insights');
+    const voiceUserCount = document.getElementById('voice-user-count');
+    const voiceUserMode = document.getElementById('voice-user-mode');
     const voiceModeButtons = document.querySelectorAll('.voice-mode-btn');
     const dashboardRestartBtn = document.getElementById('dashboard-restart');
     const dashboardStatusPill = document.getElementById('dashboard-status-pill');
@@ -809,6 +886,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const dashboardPublic = document.getElementById('dashboard-public');
     let currentVoiceMode = 'hour';
     let currentVoiceUser = '';
+    let voiceActiveUsers = [];
     const STANDALONE_COMMANDS = {
         rank: [
             { value: 'queue.daily', label: 'Daily Queue erstellen' },
@@ -882,8 +960,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     }
     if (voiceUserApply) {
         voiceUserApply.addEventListener('click', () => {
-            currentVoiceUser = voiceHistoryUser ? voiceHistoryUser.value.trim() : '';
-            loadVoiceHistory();
+            const userId = voiceHistoryUser ? voiceHistoryUser.value.trim() : '';
+            applyVoiceUserSelection(userId);
+        });
+    }
+    if (voiceUserReset) {
+        voiceUserReset.addEventListener('click', () => {
+            applyVoiceUserSelection('', true);
         });
     }
     if (voiceModeButtons && voiceModeButtons.length) {
@@ -892,6 +975,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                 voiceModeButtons.forEach((b) => b.classList.remove('active'));
                 btn.classList.add('active');
                 currentVoiceMode = btn.dataset.mode || 'hour';
+                updateVoiceModeUI();
                 loadVoiceHistory();
             });
         });
@@ -924,6 +1008,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             : 'Nicht-managebare Cogs einblenden';
     }
     updateHiddenToggleButton();
+    updateVoiceModeUI();
 
     function renderStatus(status) {
         const dot = document.createElement('span');
@@ -1261,6 +1346,127 @@ function formatLatency(ms) {
     return ms.toFixed(2) + ' ms';
 }
 
+function updateVoiceModeUI() {
+    if (voiceUserMode) {
+        voiceUserMode.style.display = currentVoiceMode === 'user' ? 'block' : 'none';
+    }
+}
+
+function findActiveUserById(userId) {
+    if (!userId || !Array.isArray(voiceActiveUsers)) {
+        return null;
+    }
+    return voiceActiveUsers.find((u) => String(u.user_id) === String(userId)) || null;
+}
+
+function highlightVoiceUserChips() {
+    if (!voiceUserList) {
+        return;
+    }
+    const chips = voiceUserList.querySelectorAll('.user-chip');
+    chips.forEach((chip) => {
+        const id = chip.dataset.userId || '';
+        chip.classList.toggle('active', Boolean(currentVoiceUser) && id === currentVoiceUser);
+    });
+}
+
+function renderVoiceUserInsights(user) {
+    if (!voiceUserInsights) {
+        return;
+    }
+    voiceUserInsights.innerHTML = '';
+    if (!user) {
+        const hint = document.createElement('div');
+        hint.className = 'voice-meta';
+        hint.textContent = currentVoiceUser
+            ? 'Keine Daten fьr diesen User gefunden.'
+            : 'User auswдhlen, um Details zu sehen.';
+        voiceUserInsights.appendChild(hint);
+        return;
+    }
+    const items = [
+        { label: 'Gesamtzeit (14 Tage)', value: formatSeconds(user.total_seconds) },
+        { label: 'Punkte', value: safeNumber(user.total_points) },
+        { label: 'Sessions', value: safeNumber(user.sessions) },
+    ];
+    if (user.last_seen) {
+        items.push({ label: 'Zuletzt gesehen', value: formatTimestamp(user.last_seen) });
+    }
+    items.forEach((item) => {
+        const box = document.createElement('div');
+        const title = document.createElement('strong');
+        title.textContent = item.label;
+        const value = document.createElement('div');
+        value.textContent = String(item.value);
+        box.appendChild(title);
+        box.appendChild(value);
+        voiceUserInsights.appendChild(box);
+    });
+}
+
+function renderVoiceActiveUsers(users) {
+    voiceActiveUsers = Array.isArray(users) ? users : [];
+    if (!voiceUserList) {
+        return;
+    }
+    voiceUserList.innerHTML = '';
+    if (voiceUserCount) {
+        voiceUserCount.textContent = voiceActiveUsers.length
+            ? `${voiceActiveUsers.length} User`
+            : 'Keine User';
+    }
+    if (!voiceActiveUsers.length) {
+        const empty = document.createElement('div');
+        empty.className = 'voice-meta';
+        empty.textContent = 'Keine Voice-Aktivitдt in den letzten 14 Tagen.';
+        voiceUserList.appendChild(empty);
+        renderVoiceUserInsights(null);
+        return;
+    }
+    voiceActiveUsers.forEach((user) => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'user-chip';
+        chip.dataset.userId = String(user.user_id);
+        chip.textContent = user.display_name || user.user_id;
+        const meta = document.createElement('span');
+        meta.className = 'meta';
+        meta.textContent = formatSeconds(user.total_seconds);
+        chip.appendChild(meta);
+        if (String(user.user_id) === currentVoiceUser) {
+            chip.classList.add('active');
+        }
+        chip.addEventListener('click', () => {
+            applyVoiceUserSelection(String(user.user_id));
+        });
+        voiceUserList.appendChild(chip);
+    });
+    highlightVoiceUserChips();
+    let selected = findActiveUserById(currentVoiceUser);
+    if (currentVoiceMode === 'user' && !selected && voiceActiveUsers.length) {
+        selected = voiceActiveUsers[0];
+        currentVoiceUser = String(selected.user_id);
+        if (voiceHistoryUser) {
+            voiceHistoryUser.value = currentVoiceUser;
+        }
+        highlightVoiceUserChips();
+    }
+    renderVoiceUserInsights(selected || null);
+}
+
+function applyVoiceUserSelection(userId, triggerLoad = true) {
+    currentVoiceUser = userId ? String(userId) : '';
+    if (voiceHistoryUser) {
+        voiceHistoryUser.value = currentVoiceUser;
+    }
+    highlightVoiceUserChips();
+    const selected = findActiveUserById(currentVoiceUser);
+    renderVoiceUserInsights(selected || null);
+    if (triggerLoad) {
+        loadVoiceHistory();
+    }
+}
+
 function renderVoiceSummary(summary = {}, liveSummary = {}) {
     if (!voiceSummary) {
         return;
@@ -1511,7 +1717,17 @@ function renderVoiceHistory(data) {
     if (!data) {
         return;
     }
-    renderVoiceHourlyChart(data.buckets || [], data.mode || 'hour', data.user || null);
+    const activeUsers = data.active_users || data.top_users || [];
+    renderVoiceActiveUsers(activeUsers);
+    if (currentVoiceMode === 'user' && !currentVoiceUser && voiceActiveUsers.length) {
+        applyVoiceUserSelection(String(voiceActiveUsers[0].user_id), true);
+        return; // wait for the reload to render with user data
+    }
+    const selectedUser = currentVoiceMode === 'user'
+        ? findActiveUserById(currentVoiceUser) || null
+        : data.user || findActiveUserById(currentVoiceUser) || null;
+    const chartMode = currentVoiceMode === 'user' ? 'hour' : (data.mode || 'hour');
+    renderVoiceHourlyChart(data.buckets || [], chartMode, selectedUser);
     if (voiceHistoryUpdated) {
         const now = new Date().toLocaleTimeString();
         voiceHistoryUpdated.textContent = 'Letzte Aktualisierung: ' + now + ` (letzte ${data.range_days || 0} Tage)`;
@@ -1521,16 +1737,41 @@ function renderVoiceHistory(data) {
 async function loadVoiceHistory() {
     try {
         const mode = currentVoiceMode || 'hour';
-        const userId = currentVoiceUser || (voiceHistoryUser ? voiceHistoryUser.value.trim() : '');
+        const apiMode = mode === 'user' ? 'hour' : mode;
+        let userId = currentVoiceUser || (voiceHistoryUser ? voiceHistoryUser.value.trim() : '');
+        if (mode === 'user' && !userId && Array.isArray(voiceActiveUsers) && voiceActiveUsers.length) {
+            userId = String(voiceActiveUsers[0].user_id);
+            currentVoiceUser = userId;
+            if (voiceHistoryUser) {
+                voiceHistoryUser.value = userId;
+            }
+            highlightVoiceUserChips();
+        }
         let range = 14;
-        if (mode === 'day') range = 60;
-        if (mode === 'week') range = 180;
-        if (mode === 'month') range = 365;
-        const params = new URLSearchParams({ mode, range: range.toString(), top: '10' });
+        if (apiMode === 'day') range = 60;
+        if (apiMode === 'week') range = 180;
+        if (apiMode === 'month') range = 365;
+        const params = new URLSearchParams({ mode: apiMode, range: range.toString(), top: '20' });
         if (userId) {
             params.set('user_id', userId);
         }
-        const data = await fetchJSON('/api/voice-history?' + params.toString());
+        const url = '/api/voice-history?' + params.toString();
+        const data = await fetchJSON(url);
+        if (mode === 'user') {
+            const selected = findActiveUserById(userId) || null;
+            const bucketSum = Array.isArray(data.buckets)
+                ? data.buckets.reduce((sum, b) => sum + safeNumber(b.total_seconds), 0)
+                : 0;
+            const hasUserData = selected && safeNumber(selected.total_seconds) > 0;
+            if (hasUserData && bucketSum === 0) {
+                const retryParams = new URLSearchParams(params);
+                retryParams.set('_', Date.now().toString()); // cache-bust
+                const retry = await fetchJSON('/api/voice-history?' + retryParams.toString());
+                retry._retry = true;
+                renderVoiceHistory(retry);
+                return;
+            }
+        }
         renderVoiceHistory(data);
     } catch (err) {
         log('Voice Historie konnte nicht geladen werden: ' + err.message, 'error');
@@ -3216,6 +3457,7 @@ class DashboardServer:
                 return "strftime('%Y-%W', started_at)"
             return "strftime('%Y-%m', started_at)"
 
+        active_top_rows: List[Any] = []
         try:
             daily_rows = db.query_all(
                 """
@@ -3245,6 +3487,22 @@ class DashboardServer:
                 """,
                 (*params, top_limit),
             )
+            active_top_rows = db.query_all(
+                """
+                SELECT user_id,
+                       MAX(display_name) AS display_name,
+                       SUM(duration_seconds) AS total_seconds,
+                       SUM(points) AS total_points,
+                       COUNT(*) AS sessions,
+                       MAX(started_at) AS last_seen
+                FROM voice_session_log
+                WHERE started_at >= datetime('now', '-14 day')
+                GROUP BY user_id
+                ORDER BY total_seconds DESC, total_points DESC
+                LIMIT ?
+                """,
+                (top_limit,),
+            )
             hourly_rows = db.query_all(
                 """
                 SELECT """ + _group_sql() + """ AS bucket,
@@ -3270,6 +3528,15 @@ class DashboardServer:
                 uid = None
             if uid:
                 user_ids.add(uid)
+        for row in active_top_rows:
+            try:
+                uid = row["user_id"]
+            except Exception:
+                uid = None
+            if uid:
+                user_ids.add(uid)
+        if user_id:
+            user_ids.add(user_id)
         name_map = self._resolve_display_names(user_ids)
 
         def _map_top_user(row: Any) -> Dict[str, Any]:
@@ -3280,6 +3547,17 @@ class DashboardServer:
                 "total_seconds": int(row["total_seconds"] or 0),
                 "total_points": int(row["total_points"] or 0),
                 "sessions": int(row["sessions"] or 0),
+            }
+
+        def _map_active_user(row: Any) -> Dict[str, Any]:
+            uid = row["user_id"]
+            return {
+                "user_id": uid,
+                "display_name": row["display_name"] or name_map.get(uid, f"User {uid}"),
+                "total_seconds": int(row["total_seconds"] or 0),
+                "total_points": int(row["total_points"] or 0),
+                "sessions": int(row["sessions"] or 0),
+                "last_seen": row["last_seen"] if hasattr(row, "keys") and "last_seen" in row.keys() else None,
             }
 
         daily = [
@@ -3340,6 +3618,7 @@ class DashboardServer:
             "user": ({"user_id": user_id, "display_name": name_map.get(user_id)} if user_id else None),
             "daily": daily,
             "top_users": [_map_top_user(r) for r in top_users_rows],
+            "active_users": [_map_active_user(r) for r in active_top_rows],
             "buckets": buckets,
         }
         return self._json(payload)

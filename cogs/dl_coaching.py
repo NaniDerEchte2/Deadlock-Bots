@@ -22,14 +22,11 @@ import socket
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 
-import aiosqlite
 import discord
 from discord.ext import commands, tasks
 from discord.ui import Button, View, Modal, TextInput, Select
 
-from service.db import db_path
-from pathlib import Path
-DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
+from service import db
 
 
 logger = logging.getLogger(__name__)
@@ -110,12 +107,12 @@ class DlCoachingCog(commands.Cog):
     async def _db_connect(self):
         if self.db:
             return
-        self.db = await aiosqlite.connect(str(DB_PATH))
+        # NOTE: PRAGMAs (journal_mode, cache_size, etc.) are already set by the
+        # central DB manager (service/db.py). Setting them again causes connection
+        # corruption. DO NOT add PRAGMA calls here.
+        # TODO: Refactor to use service.db async API (see REFACTORING_PLAN.md)
+        self.db = await aiosqlite.connect(str(db.db_path()))
         self.db.row_factory = aiosqlite.Row
-        await self.db.execute("PRAGMA journal_mode=WAL")
-        await self.db.execute("PRAGMA synchronous=NORMAL")
-        await self.db.execute("PRAGMA cache_size=10000")
-        await self.db.execute("PRAGMA temp_store=MEMORY")
         await self._db_ensure_schema()
 
     async def _db_ensure_schema(self):

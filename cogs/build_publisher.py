@@ -28,31 +28,37 @@ class BuildPublisher(commands.Cog):
         self.bot = bot
         self.enabled = True
         self.interval_seconds = 10 * 60  # 10 minutes
+        self.monitor_interval_seconds = 2 * 60  # 2 minutes for task monitoring
         self.max_attempts = 3
         self.batch_size = 5  # Process max 5 builds per run
         self.wait_for_gc_ready = True  # Wait for GC instead of skipping
 
-        self._task: Optional[asyncio.Task] = None
+        self._publisher_task: Optional[asyncio.Task] = None
+        self._monitor_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
         self.last_run_ts: Optional[int] = None
         self.last_error: Optional[str] = None
         self.consecutive_skips = 0  # Track how many times we skipped due to GC not ready
 
         if self.enabled:
-            self._task = bot.loop.create_task(self._loop())
+            self._publisher_task = bot.loop.create_task(self._publisher_loop())
+            self._monitor_task = bot.loop.create_task(self._monitor_loop())
             log.info(
-                "Build publisher enabled (interval=%ss, max_attempts=%s, batch=%s)",
+                "Build publisher enabled (publish_interval=%ss, monitor_interval=%ss, max_attempts=%s, batch=%s)",
                 self.interval_seconds,
+                self.monitor_interval_seconds,
                 self.max_attempts,
                 self.batch_size,
             )
 
     def cog_unload(self) -> None:
-        if self._task:
-            self._task.cancel()
+        if self._publisher_task:
+            self._publisher_task.cancel()
+        if self._monitor_task:
+            self._monitor_task.cancel()
 
-    async def _loop(self) -> None:
-        """Main worker loop."""
+    async def _publisher_loop(self) -> None:
+        """Main publisher loop - creates BUILD_PUBLISH tasks."""
         await self.bot.wait_until_ready()
         # Wait 30s after bot ready to ensure Steam bridge is up
         await asyncio.sleep(30)
@@ -63,6 +69,19 @@ class BuildPublisher(commands.Cog):
             except Exception:
                 log.exception("Build publisher run failed")
             await asyncio.sleep(self.interval_seconds)
+
+    async def _monitor_loop(self) -> None:
+        """Monitor loop - checks task completion and updates clone status."""
+        await self.bot.wait_until_ready()
+        # Wait 60s after bot ready to give publisher a head start
+        await asyncio.sleep(60)
+
+        while not self.bot.is_closed():
+            try:
+                await self.monitor_tasks()
+            except Exception:
+                log.exception("Build monitor run failed")
+            await asyncio.sleep(self.monitor_interval_seconds)
 
     async def process_queue(self, *, triggered_by: str = "manual") -> Dict[str, int]:
         """Process pending builds in the queue."""
@@ -82,8 +101,10 @@ class BuildPublisher(commands.Cog):
 
             if state_row:
                 payload = json.loads(state_row["payload"]) if state_row["payload"] else {}
-                logged_in = payload.get("logged_on", False)
-                gc_ready = payload.get("deadlock_gc_ready", False)
+                # Extract runtime state from nested payload structure
+                runtime = payload.get("runtime", {})
+                logged_in = runtime.get("logged_on", False)
+                gc_ready = runtime.get("deadlock_gc_ready", False)
 
                 if not logged_in:
                     self.consecutive_skips += 1
@@ -96,21 +117,25 @@ class BuildPublisher(commands.Cog):
 
                 if not gc_ready:
                     self.consecutive_skips += 1
+                    skip_duration_min = self.consecutive_skips * (self.interval_seconds / 60)
                     log.warning(
-                        "Build publisher skipped: Deadlock GC not ready (skip #%s, waiting for handshake)",
-                        self.consecutive_skips
+                        "Build publisher skipped: Deadlock GC not ready (skip #%s, total: %.0f min, waiting for handshake)",
+                        self.consecutive_skips,
+                        skip_duration_min
                     )
                     stats["skipped"] = 1
-                    # Log warning if GC not ready for too long
+                    # Log error if GC not ready for too long
                     if self.consecutive_skips >= 6:  # 60 minutes
                         log.error(
-                            "Build publisher: GC not ready for %s intervals (%s min). Check Steam bridge!",
+                            "Build publisher: GC not ready for %s intervals (%.0f min). Check Steam bridge status!",
                             self.consecutive_skips,
-                            self.consecutive_skips * (self.interval_seconds / 60)
+                            skip_duration_min
                         )
                     return stats
 
             # Reset skip counter on successful check
+            if self.consecutive_skips > 0:
+                log.info("GC is now ready, resuming build publishing after %s skips", self.consecutive_skips)
             self.consecutive_skips = 0
 
             try:
@@ -167,7 +192,7 @@ class BuildPublisher(commands.Cog):
                                 row["target_language"],
                             ),
                         )
-                        conn.commit()
+                        # Autocommit mode - no explicit commit needed
 
                         stats["queued"] += 1
                         log.info(
@@ -196,9 +221,11 @@ class BuildPublisher(commands.Cog):
                                     row["target_language"],
                                 ),
                             )
-                            conn.commit()
+                            # conn.commit() removed - db.py uses autocommit mode (isolation_level=None)
 
-                conn.close()
+                # NOTE: Do NOT close the connection - it's the global shared connection
+                # managed by service/db.py. Closing it breaks all other cogs!
+                # conn.close()  # ❌ REMOVED
 
                 self.last_run_ts = int(time.time())
                 self.last_error = None
@@ -224,9 +251,31 @@ class BuildPublisher(commands.Cog):
 
     async def monitor_tasks(self) -> Dict[str, int]:
         """Monitor running BUILD_PUBLISH tasks and update clone status."""
-        stats = {"checked": 0, "completed": 0, "failed": 0}
+        stats = {"checked": 0, "completed": 0, "failed": 0, "reset_stale": 0}
 
         conn = db.connect()
+
+        # First, reset stale processing builds (stuck for > 30 minutes)
+        stale_threshold = int(time.time()) - (30 * 60)
+        stale_cursor = conn.execute(
+            """
+            UPDATE hero_build_clones
+            SET status = 'pending',
+                status_info = 'Reset: stuck in processing for >30min',
+                attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END
+            WHERE status = 'processing'
+              AND last_attempt_at < ?
+              AND last_attempt_at IS NOT NULL
+            """,
+            (stale_threshold,),
+        )
+        stats["reset_stale"] = stale_cursor.rowcount
+        if stats["reset_stale"] > 0:
+            log.warning(
+                "Reset %s stale builds stuck in processing state",
+                stats["reset_stale"]
+            )
+            # Autocommit mode - no explicit commit needed
 
         # Find processing clones with completed tasks
         cursor = conn.execute(
@@ -300,8 +349,10 @@ class BuildPublisher(commands.Cog):
                 stats["failed"] += 1
                 log.warning("Build %s publishing failed: %s", origin_id, error_msg[:100])
 
-        conn.commit()
-        conn.close()
+        # conn.commit() removed - db.py uses autocommit mode (isolation_level=None)
+        # NOTE: Do NOT close the connection - it's the global shared connection
+        # managed by service/db.py. Closing it breaks all other cogs!
+        # conn.close()  # ❌ REMOVED
 
         if stats["completed"] > 0 or stats["failed"] > 0:
             log.info(

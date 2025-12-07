@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import os
 import atexit
+import asyncio
 import sqlite3
 import threading
 import logging
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional, TypeVar
 
 
 log = logging.getLogger(__name__)
@@ -103,8 +105,17 @@ def connect() -> sqlite3.Connection:
     - Schema (idempotent) initialisiert
     """
     global _CONN, _DB_PATH_CACHED, DB_PATH
+
+    # Check if existing connection is still alive
     if _CONN is not None:
-        return _CONN
+        try:
+            # Health check: try a simple query
+            _CONN.execute("SELECT 1")
+            return _CONN
+        except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+            # Connection is closed or broken, recreate it
+            log.warning("DB connection was closed, recreating...")
+            _CONN = None
 
     path = _resolve_db_path()
     _ensure_parent(path)
@@ -517,6 +528,81 @@ def set_kv(ns: str, k: str, v: str) -> None:
 def get_kv(ns: str, k: str) -> Optional[str]:
     row = query_one("SELECT v FROM kv_store WHERE ns=? AND k=?", (ns, k))
     return row[0] if row else None
+
+
+# ---------- Async Wrappers (for Discord.py Cogs) ----------
+# These run sync DB operations in a thread executor to avoid blocking the event loop
+
+T = TypeVar('T')
+
+def _run_in_executor(func: Callable[..., T]) -> Callable[..., asyncio.Future[T]]:
+    """
+    Decorator that wraps a sync function to run in the default thread executor.
+    This allows async cogs to use the central DB without blocking the event loop.
+    """
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+    return wrapper
+
+
+# Async versions of core DB methods
+execute_async = _run_in_executor(execute)
+executemany_async = _run_in_executor(executemany)
+query_one_async = _run_in_executor(query_one)
+query_all_async = _run_in_executor(query_all)
+set_kv_async = _run_in_executor(set_kv)
+get_kv_async = _run_in_executor(get_kv)
+
+
+# ---------- Transaction Support ----------
+# Since we use autocommit mode (isolation_level=None), we need manual transaction control
+
+class AsyncTransaction:
+    """
+    Async context manager for manual transactions.
+
+    Usage:
+        async with db.transaction():
+            await db.execute_async("INSERT ...")
+            await db.execute_async("UPDATE ...")
+            # Automatic COMMIT on success, ROLLBACK on exception
+    """
+    def __init__(self):
+        self._active = False
+
+    async def __aenter__(self):
+        await execute_async("BEGIN")
+        self._active = True
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if not self._active:
+            return
+
+        try:
+            if exc_type is None:
+                await execute_async("COMMIT")
+            else:
+                await execute_async("ROLLBACK")
+        finally:
+            self._active = False
+
+        # Don't suppress exceptions
+        return False
+
+
+def transaction() -> AsyncTransaction:
+    """
+    Create a new async transaction context.
+
+    Example:
+        async with db.transaction():
+            await db.execute_async("DELETE FROM table WHERE id=?", (123,))
+            await db.execute_async("INSERT INTO log VALUES (?)", ("deleted",))
+    """
+    return AsyncTransaction()
 
 
 # ---------- Pflege ----------

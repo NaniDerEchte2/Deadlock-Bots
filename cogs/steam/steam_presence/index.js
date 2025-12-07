@@ -634,8 +634,52 @@ function mapHeroBuildFromRow(row, meta = {}) {
 async function sendHeroBuildUpdate(heroBuild) {
   await loadHeroBuildProto();
   if (!heroBuild || typeof heroBuild !== 'object') throw new Error('heroBuild payload missing');
-  const message = UpdateHeroBuildMsg.create({ hero_build: heroBuild });
+
+  log('info', 'sendHeroBuildUpdate: Creating message', {
+    heroBuild: JSON.stringify(heroBuild),
+    heroBuildKeys: Object.keys(heroBuild)
+  });
+
+  // Remove undefined fields - protobuf doesn't like them!
+  const cleanedHeroBuild = {};
+  for (const key in heroBuild) {
+    if (heroBuild[key] !== undefined) {
+      cleanedHeroBuild[key] = heroBuild[key];
+    }
+  }
+
+  log('info', 'sendHeroBuildUpdate: Cleaned heroBuild', {
+    cleanedKeys: Object.keys(cleanedHeroBuild),
+    removedKeys: Object.keys(heroBuild).filter(k => heroBuild[k] === undefined)
+  });
+
+  // CRITICAL: Create a proper CMsgHeroBuild message first!
+  // Passing a plain JS object to UpdateMsg.create() results in an empty payload.
+  // ALSO CRITICAL: The field name is 'heroBuild' (camelCase), not 'hero_build'!
+  // Protobufjs converts snake_case to camelCase automatically.
+  const heroBuildMsg = HeroBuildMsg.create(cleanedHeroBuild);
+  const message = UpdateHeroBuildMsg.create({ heroBuild: heroBuildMsg });
+
+  log('info', 'sendHeroBuildUpdate: Message created', {
+    message: JSON.stringify(message),
+    messageKeys: Object.keys(message)
+  });
+
   const payload = UpdateHeroBuildMsg.encode(message).finish();
+
+  log('info', 'sendHeroBuildUpdate: Payload encoded', {
+    payloadType: typeof payload,
+    payloadIsBuffer: Buffer.isBuffer(payload),
+    payloadLength: payload ? payload.length : 'null/undefined'
+  });
+
+  // Validate payload before using it
+  if (!payload || !Buffer.isBuffer(payload)) {
+    throw new Error(`Invalid payload after encoding: type=${typeof payload}, isBuffer=${Buffer.isBuffer(payload)}`);
+  }
+  if (payload.length === 0) {
+    throw new Error('Encoded payload is empty - this indicates a protobuf encoding issue');
+  }
 
   return new Promise((resolve, reject) => {
     if (heroBuildPublishWaiter) {
@@ -752,6 +796,13 @@ const markTaskRunningStmt = db.prepare(`
          started_at = ?,
          updated_at = ?
    WHERE id = ? AND status = 'PENDING'
+`);
+const resetTaskPendingStmt = db.prepare(`
+  UPDATE steam_tasks
+     SET status = 'PENDING',
+         started_at = NULL,
+         updated_at = ?
+   WHERE id = ?
 `);
 const finishTaskStmt = db.prepare(`
   UPDATE steam_tasks
@@ -891,6 +942,7 @@ const runtimeState = {
   last_disconnect_at: null,
   last_disconnect_eresult: null,
   last_guard_submission_at: null,
+  deadlock_gc_ready: false,
 };
 
 let loginInProgress = false;
@@ -1010,6 +1062,8 @@ function ensureDeadlockGamePlaying(force = false) {
     
     if (!previouslyActive) {
       deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
+      runtimeState.deadlock_gc_ready = false;
       // Give Steam more time to process the gamesPlayed request
       setTimeout(() => {
         log('debug', 'Initiating GC handshake after game start');
@@ -1120,6 +1174,8 @@ function flushDeadlockGcWaiters(error) {
 
 function notifyDeadlockGcReady() {
   deadlockGcReady = true;
+  runtimeState.deadlock_gc_ready = true;
+  scheduleStatePublish({ reason: 'gc_ready' });
   writeDeadlockGcTrace('gc_ready', { waiters: deadlockGcWaiters.length });
   while (deadlockGcWaiters.length) {
     const waiter = deadlockGcWaiters.shift();
@@ -1233,6 +1289,8 @@ async function waitForDeadlockGcReady(timeoutMs = DEFAULT_GC_READY_TIMEOUT_MS, o
     } catch (err) {
       lastError = err || new Error('Deadlock GC not ready');
       deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
+      runtimeState.deadlock_gc_ready = false;
       
       // Log more detailed error information
       log('warn', 'Deadlock GC attempt failed', {
@@ -1256,6 +1314,8 @@ async function waitForDeadlockGcReady(timeoutMs = DEFAULT_GC_READY_TIMEOUT_MS, o
       // Force a complete reset before retrying
       deadlockAppActive = false;
       deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
+      runtimeState.deadlock_gc_ready = false;
       flushDeadlockGcWaiters(new Error('Retry attempt'));
       
       await sleep(GC_READY_RETRY_DELAY_MS);
@@ -1745,6 +1805,7 @@ function getStatusPayload() {
     last_disconnect_at: runtimeState.last_disconnect_at,
     last_disconnect_eresult: runtimeState.last_disconnect_eresult,
     last_guard_submission_at: runtimeState.last_guard_submission_at,
+    deadlock_gc_ready: runtimeState.deadlock_gc_ready,
   };
 }
 
@@ -1990,15 +2051,36 @@ function processNextTask() {
       }
 
       case 'BUILD_PUBLISH': {
+        // Check if another build publish is already in progress
+        if (heroBuildPublishWaiter) {
+          log('info', 'Build publish already in progress, requeueing task', { id: task.id });
+          resetTaskPendingStmt.run(nowSeconds(), task.id);
+          break;
+        }
+
         const promise = (async () => {
-          if (!runtimeState.logged_on) throw new Error('Not logged in');
-          await loadHeroBuildProto();
-          const originId = payload?.origin_hero_build_id ?? payload?.hero_build_id;
-          if (!originId) throw new Error('origin_hero_build_id missing');
-          const src = selectHeroBuildSourceStmt.get(originId);
-          if (!src) throw new Error(`hero_build_sources missing for ${originId}`);
-          const cloneMeta = selectHeroBuildCloneMetaStmt.get(originId) || {};
-          const targetName = payload?.target_name || cloneMeta.target_name;
+          try {
+            log('info', 'BUILD_PUBLISH: Starting', { task_id: task.id, origin_id: payload?.origin_hero_build_id });
+
+            if (!runtimeState.logged_on) throw new Error('Not logged in');
+
+            log('info', 'BUILD_PUBLISH: Loading proto');
+            await loadHeroBuildProto();
+
+            const originId = payload?.origin_hero_build_id ?? payload?.hero_build_id;
+            if (!originId) throw new Error('origin_hero_build_id missing');
+
+            log('info', 'BUILD_PUBLISH: Fetching build source', { originId });
+            const src = selectHeroBuildSourceStmt.get(originId);
+            if (!src) throw new Error(`hero_build_sources missing for ${originId}`);
+
+            log('info', 'BUILD_PUBLISH: Fetching clone meta', { originId });
+            const cloneMeta = selectHeroBuildCloneMetaStmt.get(originId) || {};
+
+            log('info', 'BUILD_PUBLISH: Building metadata', {
+              cloneMeta: cloneMeta ? Object.keys(cloneMeta) : 'none'
+            });
+            const targetName = payload?.target_name || cloneMeta.target_name;
       const targetDescription = payload?.target_description || cloneMeta.target_description;
       const targetLanguage = safeNumber(payload?.target_language) ?? safeNumber(cloneMeta.target_language) ?? 1;
       const authorAccountId = client?.steamID?.accountid ? Number(client.steamID.accountid) : undefined;
@@ -2028,6 +2110,12 @@ function processNextTask() {
         // new build => clear hero_build_id so GC assigns fresh
         delete heroBuild.hero_build_id;
       }
+      log('info', 'BUILD_PUBLISH: Building hero object', {
+        useMinimal,
+        useUpdate,
+        minimalUpdate,
+      });
+
       log('info', 'Publishing hero build', {
         originId,
         heroId: heroBuild.hero_id,
@@ -2037,9 +2125,23 @@ function processNextTask() {
         mode: useUpdate ? (minimalUpdate ? 'update-minimal' : 'update') : (useMinimal ? 'new-minimal' : 'new'),
         hero_build_id: heroBuild.hero_build_id,
       });
-          const resp = await sendHeroBuildUpdate(heroBuild);
-          updateHeroBuildCloneUploadedStmt.run('done', null, resp.hero_build_id || null, resp.version || null, originId);
-          return { ok: true, response: resp, origin_id: originId };
+
+            log('info', 'BUILD_PUBLISH: Calling sendHeroBuildUpdate');
+            log('info', 'BUILD_PUBLISH: heroBuild object', { heroBuild: JSON.stringify(heroBuild) });
+            const resp = await sendHeroBuildUpdate(heroBuild);
+
+            log('info', 'BUILD_PUBLISH: Update successful', { resp });
+            updateHeroBuildCloneUploadedStmt.run('done', null, resp.hero_build_id || null, resp.version || null, originId);
+            return { ok: true, response: resp, origin_id: originId };
+          } catch (err) {
+            log('error', 'BUILD_PUBLISH: Failed', {
+              task_id: task.id,
+              origin_id: payload?.origin_hero_build_id,
+              error: err?.message || String(err),
+              stack: err?.stack || 'no stack'
+            });
+            throw err;
+          }
         })();
         finalizeTaskRun(task, promise);
         break;
@@ -2291,6 +2393,7 @@ function markLoggedOn(details) {
   runtimeState.last_error = null;
   deadlockAppActive = false;
   deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
   deadlockGameRequestedAt = 0;
   lastGcHelloAttemptAt = 0;
 
@@ -2370,6 +2473,7 @@ client.on('appLaunched', (appId) => {
   log('info', 'Deadlock app launched - GC session starting');
   deadlockAppActive = true;
   deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
   requestDeadlockGcTokens('app_launch');
   
   // Wait a bit longer for GC to initialize
@@ -2385,6 +2489,7 @@ client.on('appQuit', (appId) => {
   log('info', 'Deadlock app quit – GC session ended');
   deadlockAppActive = false;
   deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
   flushDeadlockGcWaiters(new Error('Deadlock app quit'));
   flushPendingPlaytestInvites(new Error('Deadlock app quit'));
 });
@@ -2505,6 +2610,7 @@ client.on('disconnected', (eresult, msg) => {
   runtimeState.last_disconnect_eresult = eresult;
   deadlockAppActive = false;
   deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
   lastLoggedGcTokenCount = 0;
   flushDeadlockGcWaiters(new Error('Steam disconnected'));
   flushPendingPlaytestInvites(new Error('Steam disconnected'));

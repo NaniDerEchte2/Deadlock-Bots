@@ -14,13 +14,10 @@ from functools import lru_cache
 from itertools import combinations
 from typing import Dict, List, Optional, Tuple
 
-import aiosqlite
 import discord
 from discord.ext import commands
 
-from service.db import db_path
-from pathlib import Path
-DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
+from service import db
 
 
 logger = logging.getLogger(__name__)
@@ -72,9 +69,10 @@ def _normalize_rank_name(raw: str) -> str:
 def _rank_value_from_name_cached(name: str) -> int:
     return DEADLOCK_RANKS.get(_normalize_rank_name(name), 0)
 
-async def _fetch_rank_from_db(db: aiosqlite.Connection, user_id: int) -> Tuple[str, int]:
+async def _fetch_rank_from_db(user_id: int) -> Tuple[str, int]:
+    """Fetch user rank from central DB using async wrapper."""
     try:
-        row = await db.execute_fetchone(
+        row = await db.query_one_async(
             "SELECT rank FROM user_ranks WHERE user_id = ?",
             (int(user_id),),
         )
@@ -267,39 +265,23 @@ class DeadlockTeamBalancer(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db: Optional[aiosqlite.Connection] = None
         self._guild_locks: Dict[int, asyncio.Lock] = {}
         self.active_matches: Dict[str, MatchInfo] = {}
         self._match_counter = 0
 
     # ---------- Lifecycle ----------
     async def cog_load(self):
-        self.db = await aiosqlite.connect(str(DB_PATH))
-        await self.db.execute("PRAGMA journal_mode=WAL")
-        await self.db.execute("PRAGMA synchronous=NORMAL")
-        await self.db.execute("PRAGMA cache_size=10000")
-        await self.db.execute("PRAGMA temp_store=MEMORY")
+        # DB is managed centrally by service.db - no setup needed
         logger.info("DeadlockTeamBalancer bereit (DB verbunden)")
         print("✅ DeadlockTeamBalancer Cog geladen")
-
-    def cog_unload(self):
-        if self.db:
-            asyncio.create_task(self._close_db())
-
-    async def _close_db(self):
-        try:
-            await self.db.close()
-        except Exception as e:
-            logger.debug("DeadlockTeamBalancer: DB close failed: %r", e)
 
     # ---------- Rank-Ermittlung ----------
     async def get_user_rank(self, member: discord.Member) -> Tuple[str, int]:
         rn, rv = _rank_from_roles(member)
         if rv > 0:
             return rn, rv
-        if self.db:
-            return await _fetch_rank_from_db(self.db, member.id)
-        return "Obscurus", 0
+        # Fallback to DB lookup using central DB
+        return await _fetch_rank_from_db(member.id)
 
     # ---------- Commands ----------
     @commands.group(name="balance", aliases=["bal", "teams"], invoke_without_command=True)

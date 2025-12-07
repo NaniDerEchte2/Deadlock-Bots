@@ -33,8 +33,9 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, name: str, spec
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
     """Erstellt fehlende Tabellen/Spalten. Idempotent."""
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    # NOTE: PRAGMAs (journal_mode, foreign_keys, etc.) are already set by
+    # the central DB (service/db.py). Setting them again can corrupt the connection
+    # in multi-threaded environments. DO NOT add PRAGMA calls here.
 
     # 1) twitch_streamers
     conn.execute(
