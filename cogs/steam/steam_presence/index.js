@@ -518,9 +518,16 @@ function safeNumber(value) {
 }
 
 function cleanBuildDetails(details) {
-  if (!details || typeof details !== 'object') return {};
+  if (!details || typeof details !== 'object') {
+    // Return valid Details_V0 structure with empty arrays
+    return { mod_categories: [] };
+  }
   const clone = JSON.parse(JSON.stringify(details));
-  if (Array.isArray(clone.mod_categories)) {
+
+  // Ensure mod_categories exists and is an array
+  if (!Array.isArray(clone.mod_categories)) {
+    clone.mod_categories = [];
+  } else {
     clone.mod_categories = clone.mod_categories.map((cat) => {
       const c = { ...cat };
       if (Array.isArray(c.mods)) {
@@ -534,6 +541,7 @@ function cleanBuildDetails(details) {
       return c;
     });
   }
+
   if (clone.ability_order && Array.isArray(clone.ability_order.currency_changes)) {
     clone.ability_order.currency_changes = clone.ability_order.currency_changes.map((cc) => {
       const obj = { ...cc };
@@ -582,11 +590,12 @@ function buildUpdateHeroBuild(row, meta = {}) {
 }
 
 function buildMinimalHeroBuild(row, meta = {}) {
+  log('info', 'buildMinimalHeroBuild: FIXED VERSION v2 - Creating minimal build');
   const targetName = meta.target_name || row.name || '';
   const targetDescription = meta.target_description || row.description || '';
   const targetLanguage = safeNumber(meta.target_language) ?? 0;
   const authorId = safeNumber(meta.author_account_id) ?? safeNumber(row.author_account_id);
-  return {
+  const result = {
     hero_id: safeNumber(row.hero_id),
     author_account_id: authorId,
     origin_build_id: undefined,
@@ -599,6 +608,13 @@ function buildMinimalHeroBuild(row, meta = {}) {
     details: { mod_categories: [] },
     publish_timestamp: undefined,
   };
+  log('info', 'buildMinimalHeroBuild: Result details', {
+    detailsType: typeof result.details,
+    detailsKeys: Object.keys(result.details),
+    modCategoriesIsArray: Array.isArray(result.details.mod_categories),
+    modCategoriesLength: result.details.mod_categories.length
+  });
+  return result;
 }
 function truncateError(message, limit = 1500) {
   if (!message) return null;
@@ -657,8 +673,16 @@ async function sendHeroBuildUpdate(heroBuild) {
   // Passing a plain JS object to UpdateMsg.create() results in an empty payload.
   // ALSO CRITICAL: The field name is 'heroBuild' (camelCase), not 'hero_build'!
   // Protobufjs converts snake_case to camelCase automatically.
+  log('info', 'sendHeroBuildUpdate: About to create HeroBuildMsg', {
+    cleanedHeroBuild: JSON.stringify(cleanedHeroBuild),
+    detailsType: typeof cleanedHeroBuild.details,
+    detailsKeys: cleanedHeroBuild.details ? Object.keys(cleanedHeroBuild.details) : 'null/undefined',
+    modCategoriesIsArray: Array.isArray(cleanedHeroBuild.details?.mod_categories)
+  });
   const heroBuildMsg = HeroBuildMsg.create(cleanedHeroBuild);
+  log('info', 'sendHeroBuildUpdate: HeroBuildMsg created successfully');
   const message = UpdateHeroBuildMsg.create({ heroBuild: heroBuildMsg });
+  log('info', 'sendHeroBuildUpdate: UpdateHeroBuildMsg created successfully');
 
   log('info', 'sendHeroBuildUpdate: Message created', {
     message: JSON.stringify(message),
@@ -2099,7 +2123,7 @@ function processNextTask() {
         heroBuild = buildUpdateHeroBuild(src, meta);
         if (minimalUpdate) {
           heroBuild.tags = [];
-          heroBuild.details = {};
+          heroBuild.details = { mod_categories: [] };
         }
       } else if (useMinimal) {
         heroBuild = buildMinimalHeroBuild(src, meta);
