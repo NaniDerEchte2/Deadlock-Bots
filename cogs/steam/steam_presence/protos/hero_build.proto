@@ -12,7 +12,7 @@ message CMsgHeroBuild {
   }
 
   message BuildModCategory {
-    repeated CMsgHeroBuild.BuildModEntry mods = 1;
+    repeated .CMsgHeroBuild.BuildModEntry mods = 1;
     optional string name = 2;
     optional string description = 3;
     optional float width = 4;
@@ -28,12 +28,12 @@ message CMsgHeroBuild {
   }
 
   message AbilityOrder {
-    repeated CMsgHeroBuild.CurrencyChange currency_changes = 1;
+    repeated .CMsgHeroBuild.CurrencyChange currency_changes = 1;
   }
 
   message Details_V0 {
-    repeated CMsgHeroBuild.BuildModCategory mod_categories = 1;
-    optional CMsgHeroBuild.AbilityOrder ability_order = 2;
+    repeated .CMsgHeroBuild.BuildModCategory mod_categories = 1;
+    optional .CMsgHeroBuild.AbilityOrder ability_order = 2;
   }
 
   optional uint32 hero_build_id = 1;
@@ -45,7 +45,7 @@ message CMsgHeroBuild {
   optional uint32 language = 7;
   optional uint32 version = 8;
   optional uint32 origin_build_id = 9;
-  optional CMsgHeroBuild.Details_V0 details = 10;
+  optional .CMsgHeroBuild.Details_V0 details = 10;
   repeated uint32 tags = 11;
   optional bool development_build = 12;
   optional uint32 publish_timestamp = 13;
