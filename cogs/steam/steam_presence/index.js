@@ -135,6 +135,8 @@ const LOG_THRESHOLD = Object.prototype.hasOwnProperty.call(LOG_LEVELS, LOG_LEVEL
   ? LOG_LEVELS[LOG_LEVEL]
   : LOG_LEVELS.info;
 
+const STEAM_LOG_FILE = path.join(__dirname, '..', '..', '..', 'logs', 'steam_bridge.log');
+
 function log(level, message, extra = undefined) {
   const lvl = LOG_LEVELS[level];
   if (lvl === undefined || lvl > LOG_THRESHOLD) return;
@@ -145,7 +147,14 @@ function log(level, message, extra = undefined) {
       payload[key] = value;
     }
   }
+  const line = JSON.stringify(payload) + '\n';
   console.log(JSON.stringify(payload));
+  // Also write to file
+  try {
+    fs.appendFileSync(STEAM_LOG_FILE, line, 'utf8');
+  } catch (err) {
+    // Ignore file write errors
+  }
 }
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -679,23 +688,53 @@ async function sendHeroBuildUpdate(heroBuild) {
     detailsKeys: cleanedHeroBuild.details ? Object.keys(cleanedHeroBuild.details) : 'null/undefined',
     modCategoriesIsArray: Array.isArray(cleanedHeroBuild.details?.mod_categories)
   });
-  const heroBuildMsg = HeroBuildMsg.create(cleanedHeroBuild);
-  log('info', 'sendHeroBuildUpdate: HeroBuildMsg created successfully');
-  const message = UpdateHeroBuildMsg.create({ heroBuild: heroBuildMsg });
-  log('info', 'sendHeroBuildUpdate: UpdateHeroBuildMsg created successfully');
+
+  let heroBuildMsg, message;
+  try {
+    heroBuildMsg = HeroBuildMsg.create(cleanedHeroBuild);
+    log('info', 'sendHeroBuildUpdate: HeroBuildMsg created successfully');
+  } catch (err) {
+    log('error', 'sendHeroBuildUpdate: HeroBuildMsg.create() failed', {
+      error: err.message,
+      stack: err.stack,
+      cleanedHeroBuild: JSON.stringify(cleanedHeroBuild)
+    });
+    throw new Error(`HeroBuildMsg.create failed: ${err.message}`);
+  }
+
+  try {
+    message = UpdateHeroBuildMsg.create({ heroBuild: heroBuildMsg });
+    log('info', 'sendHeroBuildUpdate: UpdateHeroBuildMsg created successfully');
+  } catch (err) {
+    log('error', 'sendHeroBuildUpdate: UpdateHeroBuildMsg.create() failed', {
+      error: err.message,
+      stack: err.stack
+    });
+    throw new Error(`UpdateHeroBuildMsg.create failed: ${err.message}`);
+  }
 
   log('info', 'sendHeroBuildUpdate: Message created', {
     message: JSON.stringify(message),
     messageKeys: Object.keys(message)
   });
 
-  const payload = UpdateHeroBuildMsg.encode(message).finish();
-
-  log('info', 'sendHeroBuildUpdate: Payload encoded', {
-    payloadType: typeof payload,
-    payloadIsBuffer: Buffer.isBuffer(payload),
-    payloadLength: payload ? payload.length : 'null/undefined'
-  });
+  let payload;
+  try {
+    log('info', 'sendHeroBuildUpdate: About to encode message');
+    payload = UpdateHeroBuildMsg.encode(message).finish();
+    log('info', 'sendHeroBuildUpdate: Payload encoded successfully', {
+      payloadType: typeof payload,
+      payloadIsBuffer: Buffer.isBuffer(payload),
+      payloadLength: payload ? payload.length : 'null/undefined'
+    });
+  } catch (err) {
+    log('error', 'sendHeroBuildUpdate: encode().finish() failed', {
+      error: err.message,
+      stack: err.stack,
+      message: JSON.stringify(message)
+    });
+    throw new Error(`Protobuf encoding failed: ${err.message}`);
+  }
 
   // Validate payload before using it
   if (!payload || !Buffer.isBuffer(payload)) {
@@ -739,7 +778,7 @@ async function sendHeroBuildUpdate(heroBuild) {
       origin_build_id: heroBuild.origin_build_id,
       author: heroBuild.author_account_id,
     });
-    client.sendToGC(DEADLOCK_APP_ID, PROTO_MASK | GC_MSG_CLIENT_TO_GC_UPDATE_HERO_BUILD, payload);
+    client.sendToGC(DEADLOCK_APP_ID, PROTO_MASK | GC_MSG_CLIENT_TO_GC_UPDATE_HERO_BUILD, {}, payload);
   });
 }
 function wrapOk(result) {
