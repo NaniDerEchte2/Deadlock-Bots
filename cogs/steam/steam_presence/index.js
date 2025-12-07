@@ -51,6 +51,33 @@ function convertKeysToCamelCase(obj) {
     return obj;
 }
 
+async function getPersonaName(accountId) {
+    if (!client || !accountId) return String(accountId);
+
+    try {
+        const steamId = SteamID.fromIndividualAccountID(accountId);
+        const steamId64 = steamId.getSteamID64();
+
+        // Check cache first
+        if (client.users && client.users[steamId64]) {
+            return client.users[steamId64].player_name || String(accountId);
+        }
+
+        // Fetch from network if not in cache
+        if (typeof client.getPersonas === 'function') {
+            const personas = await client.getPersonas([steamId]);
+            const persona = personas[steamId64];
+            if (persona && persona.player_name) {
+                return persona.player_name;
+            }
+        }
+    } catch (err) {
+        log('warn', 'Failed to get persona name', { accountId, error: err.message });
+    }
+
+    return String(accountId); // Fallback to ID
+}
+
 let SteamID = null;
 if (SteamUser && SteamUser.SteamID) {
   SteamID = SteamUser.SteamID;
@@ -574,18 +601,18 @@ function cleanBuildDetails(details) {
   return clone;
 }
 
-function composeBuildDescription(base, originId, authorId) {
+function composeBuildDescription(base, originId, authorName) {
   const parts = [];
   const desc = (base || '').trim();
   if (desc) parts.push(desc);
   parts.push('www.twitch.tv/earlysalty (deutsch)');
   parts.push('Deutsche Deadlock Community: discord.gg/z5TfVHuQq2');
   if (originId) parts.push(`Original Build ID: ${originId}`);
-  if (authorId) parts.push(`Original Author: ${authorId}`);
+  if (authorName) parts.push(`Original Author: ${authorName}`);
   return parts.join('\n');
 }
 
-function buildUpdateHeroBuild(row, meta = {}) {
+async function buildUpdateHeroBuild(row, meta = {}) {
   const tags = safeJsonParse(row.tags_json || '[]');
   const details = cleanBuildDetails(safeJsonParse(row.details_json || '{}'));
   const targetName = meta.target_name || row.name || '';
@@ -595,6 +622,9 @@ function buildUpdateHeroBuild(row, meta = {}) {
   const nowTs = Math.floor(Date.now() / 1000);
   const baseVersion = safeNumber(row.version) || 1;
   const originId = safeNumber(meta.origin_build_id) ?? safeNumber(row.origin_build_id) ?? safeNumber(row.hero_build_id);
+
+  const originalAuthorName = await getPersonaName(safeNumber(row.author_account_id));
+
   return {
     hero_build_id: safeNumber(row.hero_build_id),
     hero_id: safeNumber(row.hero_id),
@@ -603,7 +633,7 @@ function buildUpdateHeroBuild(row, meta = {}) {
     last_updated_timestamp: nowTs,
     publish_timestamp: nowTs,
     name: targetName,
-    description: composeBuildDescription(targetDescription, originId, authorId),
+    description: composeBuildDescription(targetDescription, originId, originalAuthorName),
     language: targetLanguage,
     version: baseVersion + 1,
     tags: Array.isArray(tags) ? tags.map((t) => Number(t)) : [],
@@ -611,19 +641,22 @@ function buildUpdateHeroBuild(row, meta = {}) {
   };
 }
 
-function buildMinimalHeroBuild(row, meta = {}) {
+async function buildMinimalHeroBuild(row, meta = {}) {
   log('info', 'buildMinimalHeroBuild: FIXED VERSION v2 - Creating minimal build');
   const targetName = meta.target_name || row.name || '';
   const targetDescription = meta.target_description || row.description || '';
   const targetLanguage = safeNumber(meta.target_language) ?? 0;
   const authorId = safeNumber(meta.author_account_id) ?? safeNumber(row.author_account_id);
+
+  const originalAuthorName = await getPersonaName(safeNumber(row.author_account_id));
+
   const result = {
     hero_id: safeNumber(row.hero_id),
     author_account_id: authorId,
     origin_build_id: undefined,
     last_updated_timestamp: undefined,
     name: targetName,
-    description: composeBuildDescription(targetDescription, row.hero_build_id, authorId),
+    description: composeBuildDescription(targetDescription, row.hero_build_id, originalAuthorName),
     language: targetLanguage,
     version: 1,
     tags: [],
@@ -638,32 +671,29 @@ function buildMinimalHeroBuild(row, meta = {}) {
   });
   return result;
 }
-function truncateError(message, limit = 1500) {
-  if (!message) return null;
-  const text = String(message);
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit - 3)}...`;
-}
 
-function mapHeroBuildFromRow(row, meta = {}) {
+async function mapHeroBuildFromRow(row, meta = {}) {
   if (!row) throw new Error('hero_build_sources row missing');
   const tags = safeJsonParse(row.tags_json || '[]');
   const details = cleanBuildDetails(safeJsonParse(row.details_json || '{}'));
   const targetName = meta.target_name || row.name || '';
   const targetDescription = meta.target_description || row.description || '';
   const targetLanguage = safeNumber(meta.target_language) ?? safeNumber(row.language) ?? 0;
-  const authorId = safeNumber(meta.author_account_id) ?? safeNumber(row.author_account_id);
+  const publisherAccountId = safeNumber(meta.author_account_id) ?? safeNumber(row.author_account_id);
   const nowTs = Math.floor(Date.now() / 1000);
+
+  const originalAuthorName = await getPersonaName(safeNumber(row.author_account_id));
+
   return {
     hero_id: safeNumber(row.hero_id),
-    author_account_id: authorId,
+    author_account_id: publisherAccountId,
     origin_build_id: safeNumber(meta.origin_build_id) ?? safeNumber(row.hero_build_id) ?? safeNumber(row.origin_build_id),
     last_updated_timestamp: nowTs,
     publish_timestamp: nowTs,
     name: targetName,
-    description: composeBuildDescription(targetDescription, meta.origin_build_id ?? row.hero_build_id, authorId),
+    description: composeBuildDescription(targetDescription, meta.origin_build_id ?? row.hero_build_id, originalAuthorName),
     language: targetLanguage,
-    version: safeNumber(meta.version) ?? (safeNumber(row.version) || 1),
+    version: (safeNumber(row.version) || 0) + 1,
     tags: Array.isArray(tags) ? tags.map((t) => Number(t)) : [],
     details: details && typeof details === 'object' ? details : {},
   };
@@ -970,6 +1000,69 @@ const updateHeroBuildCloneUploadedStmt = db.prepare(`
    WHERE origin_hero_build_id = ?
 `);
 
+const upsertHeroBuildSourceStmt = db.prepare(`
+  INSERT INTO hero_build_sources (
+    hero_build_id, origin_build_id, author_account_id, hero_id, language, version,
+    name, description, tags_json, details_json,
+    publish_ts, last_updated_ts, fetched_at
+  ) VALUES (
+    @heroBuildId, @originBuildId, @authorAccountId, @heroId, @language, @version,
+    @name, @description, @tagsJson, @detailsJson,
+    @publishTimestamp, @lastUpdatedTimestamp, strftime('%s','now')
+  ) ON CONFLICT(hero_build_id) DO UPDATE SET
+    origin_build_id = excluded.origin_build_id,
+    author_account_id = excluded.author_account_id,
+    hero_id = excluded.hero_id,
+    language = excluded.language,
+    version = excluded.version,
+    name = excluded.name,
+    description = excluded.description,
+    tags_json = excluded.tags_json,
+    details_json = excluded.details_json,
+    publish_ts = excluded.publish_ts,
+    last_updated_ts = excluded.last_updated_ts,
+    fetched_at = excluded.fetched_at,
+    last_seen_at = strftime('%s','now');
+`);
+
+async function upsertBuildsToDatabase(builds) {
+  if (!builds || !Array.isArray(builds) || builds.length === 0) {
+    return { inserted: 0, updated: 0 };
+  }
+
+  const transaction = db.transaction((items) => {
+    let changed = 0;
+    for (const build of items) {
+      try {
+        const result = upsertHeroBuildSourceStmt.run({
+          heroBuildId: build.heroBuildId,
+          originBuildId: build.originBuildId,
+          authorAccountId: build.authorAccountId,
+          heroId: build.heroId,
+          language: build.language,
+          version: build.version,
+          name: build.name,
+          description: build.description,
+          tagsJson: JSON.stringify(build.tags || []),
+          detailsJson: JSON.stringify(build.details || {}),
+          publishTimestamp: build.publishTimestamp,
+          lastUpdatedTimestamp: build.lastUpdatedTimestamp,
+        });
+        if (result.changes > 0) {
+          changed++;
+        }
+      } catch (err) {
+        log('error', 'Failed to upsert hero build source', { heroBuildId: build.heroBuildId, error: err.message });
+      }
+    }
+    return { changed };
+  });
+
+  const { changed } = transaction(builds);
+  log('info', 'Upserted hero builds to database', { count: builds.length, changed });
+  return { inserted: changed, total: builds.length };
+}
+
 const quickInviteCountsStmt = db.prepare(`
   SELECT status, COUNT(*) AS count
     FROM steam_quick_invites
@@ -1049,6 +1142,7 @@ const deadlockGcBot = new DeadlockGcBot({
 let gcTokenRequestInFlight = false;
 let lastLoggedGcTokenCount = 0;
 let heroBuildPublishWaiter = null;
+
 client.setOption('autoRelogin', false);
 client.setOption('machineName', process.env.STEAM_MACHINE_NAME || 'DeadlockBridge');
 
@@ -2157,57 +2251,57 @@ function processNextTask() {
               cloneMeta: cloneMeta ? Object.keys(cloneMeta) : 'none'
             });
             const targetName = payload?.target_name || cloneMeta.target_name;
-      const targetDescription = payload?.target_description || cloneMeta.target_description;
-      const targetLanguage = safeNumber(payload?.target_language) ?? safeNumber(cloneMeta.target_language) ?? 1;
-      const authorAccountId = client?.steamID?.accountid ? Number(client.steamID.accountid) : undefined;
-      const useMinimal = payload?.minimal === true;
-      const useUpdate = payload?.update === true;
-      const minimalUpdate = payload?.minimal_update === true;
-      const meta = {
-        target_name: targetName,
-        target_description: targetDescription,
-        target_language: targetLanguage,
-        author_account_id: useUpdate ? safeNumber(src.author_account_id) : authorAccountId,
-        origin_build_id: src.hero_build_id,
-      };
-      let heroBuild;
-      if (useUpdate) {
-        heroBuild = buildUpdateHeroBuild(src, meta);
-        if (minimalUpdate) {
-          heroBuild.tags = [];
-          heroBuild.details = { mod_categories: [] };
-        }
-      } else if (useMinimal) {
-        heroBuild = buildMinimalHeroBuild(src, meta);
-      } else {
-        heroBuild = mapHeroBuildFromRow(src, meta);
-      }
-      if (!useUpdate) {
-        // new build => clear hero_build_id so GC assigns fresh
-        delete heroBuild.hero_build_id;
-      }
-      log('info', 'BUILD_PUBLISH: Building hero object', {
-        useMinimal,
-        useUpdate,
-        minimalUpdate,
-      });
+            const targetDescription = payload?.target_description || cloneMeta.target_description;
+            const targetLanguage = safeNumber(payload?.target_language) ?? safeNumber(cloneMeta.target_language) ?? 1;
+            const authorAccountId = client?.steamID?.accountid ? Number(client.steamID.accountid) : undefined;
+            const useMinimal = payload?.minimal === true;
+            const useUpdate = payload?.update === true;
+            const minimalUpdate = payload?.minimal_update === true;
+            const meta = {
+                target_name: targetName,
+                target_description: targetDescription,
+                target_language: targetLanguage,
+                author_account_id: useUpdate ? safeNumber(src.author_account_id) : authorAccountId,
+                origin_build_id: src.hero_build_id,
+            };
+            let heroBuild;
+            if (useUpdate) {
+                heroBuild = await buildUpdateHeroBuild(src, meta);
+                if (minimalUpdate) {
+                heroBuild.tags = [];
+                heroBuild.details = { mod_categories: [] };
+                }
+            } else if (useMinimal) {
+                heroBuild = await buildMinimalHeroBuild(src, meta);
+            } else {
+                heroBuild = await mapHeroBuildFromRow(src, meta);
+            }
+            if (!useUpdate) {
+              // new build => clear hero_build_id so GC assigns fresh
+              delete heroBuild.hero_build_id;
+            }
+            log('info', 'BUILD_PUBLISH: Building hero object', {
+                useMinimal,
+                useUpdate,
+                minimalUpdate,
+            });
 
-      log('info', 'Publishing hero build', {
-        originId,
-        heroId: heroBuild.hero_id,
-        author: heroBuild.author_account_id,
-        language: heroBuild.language,
-        name: heroBuild.name,
-        mode: useUpdate ? (minimalUpdate ? 'update-minimal' : 'update') : (useMinimal ? 'new-minimal' : 'new'),
-        hero_build_id: heroBuild.hero_build_id,
-      });
+            log('info', 'Publishing hero build', {
+                originId,
+                heroId: heroBuild.hero_id,
+                author: heroBuild.author_account_id,
+                language: heroBuild.language,
+                name: heroBuild.name,
+                mode: useUpdate ? (minimalUpdate ? 'update-minimal' : 'update') : (useMinimal ? 'new-minimal' : 'new'),
+                hero_build_id: heroBuild.hero_build_id,
+            });
 
             log('info', 'BUILD_PUBLISH: Calling sendHeroBuildUpdate');
             log('info', 'BUILD_PUBLISH: heroBuild object', { heroBuild: JSON.stringify(heroBuild) });
             const resp = await sendHeroBuildUpdate(heroBuild);
 
             log('info', 'BUILD_PUBLISH: Update successful', { resp });
-            updateHeroBuildCloneUploadedStmt.run('done', null, resp.hero_build_id || null, resp.version || null, originId);
+            updateHeroBuildCloneUploadedStmt.run('done', null, resp.heroBuildId || null, resp.version || null, originId);
             return { ok: true, response: resp, origin_id: originId };
           } catch (err) {
             log('error', 'BUILD_PUBLISH: Failed', {
