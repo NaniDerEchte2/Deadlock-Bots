@@ -596,7 +596,7 @@ function buildMinimalHeroBuild(row, meta = {}) {
     language: targetLanguage,
     version: 1,
     tags: [],
-    details: {},
+    details: { mod_categories: [] },
     publish_timestamp: undefined,
   };
 }
