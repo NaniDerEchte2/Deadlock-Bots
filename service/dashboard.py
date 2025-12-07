@@ -1623,7 +1623,10 @@ async function loadVoiceStats() {
 }
 
 function renderVoiceHourlyChart(rows, mode, userInfo) {
+    console.log('=== renderVoiceHourlyChart START ===');
+    console.log('rows:', rows.length, 'mode:', mode, 'userInfo:', userInfo);
     if (!voiceHourlyChartCanvas) {
+        console.log('ERROR: voiceHourlyChartCanvas not found!');
         return;
     }
     const formatLabel = (lbl) => {
@@ -1641,11 +1644,18 @@ function renderVoiceHourlyChart(rows, mode, userInfo) {
     const labels = rows.map((r) => formatLabel(r.label || r.hour));
     const hoursData = rows.map((r) => safeNumber(r.total_seconds) / 3600);
     const peakData = rows.map((r) => safeNumber(r.avg_peak));
+    console.log('Chart data prepared:');
+    console.log('  labels:', labels.length);
+    console.log('  hoursData sum:', hoursData.reduce((a, b) => a + b, 0).toFixed(2), 'hours');
+    console.log('  hoursData (first 5):', hoursData.slice(0, 5));
+    console.log('  peakData (first 5):', peakData.slice(0, 5));
     if (voiceHourlyChart) {
+        console.log('Destroying existing chart');
         voiceHourlyChart.destroy();
     }
     const baseLabel = userInfo && userInfo.display_name ? userInfo.display_name : 'Voice';
     const subtitle = mode === 'hour' ? 'Stunde (UTC)' : mode === 'day' ? 'Wochentag' : mode === 'week' ? 'Kalenderwoche' : 'Monat';
+    console.log('Creating chart with baseLabel:', baseLabel, 'subtitle:', subtitle);
     voiceHourlyChart = new Chart(voiceHourlyChartCanvas, {
         type: 'line',
         data: {
@@ -1711,23 +1721,33 @@ function renderVoiceHourlyChart(rows, mode, userInfo) {
             },
         },
     });
+    console.log('=== renderVoiceHourlyChart END - Chart created successfully ===');
 }
 
 function renderVoiceHistory(data) {
+    console.log('=== renderVoiceHistory START ===');
+    console.log('currentVoiceMode:', currentVoiceMode, 'currentVoiceUser:', currentVoiceUser);
     if (!data) {
+        console.log('ERROR: No data provided!');
         return;
     }
     const activeUsers = data.active_users || data.top_users || [];
+    console.log('Active users:', activeUsers.length);
     renderVoiceActiveUsers(activeUsers);
     if (currentVoiceMode === 'user' && !currentVoiceUser && voiceActiveUsers.length) {
+        console.log('Auto-selecting first user and returning early');
         applyVoiceUserSelection(String(voiceActiveUsers[0].user_id), true);
         return; // wait for the reload to render with user data
     }
     const selectedUser = currentVoiceMode === 'user'
         ? findActiveUserById(currentVoiceUser) || null
         : data.user || findActiveUserById(currentVoiceUser) || null;
+    console.log('selectedUser:', selectedUser ? selectedUser.display_name : 'None', selectedUser ? `(${selectedUser.user_id})` : '');
     const chartMode = currentVoiceMode === 'user' ? 'hour' : (data.mode || 'hour');
-    renderVoiceHourlyChart(data.buckets || [], chartMode, selectedUser);
+    const buckets = data.buckets || [];
+    const bucketSum = buckets.reduce((sum, b) => sum + (b.total_seconds || 0), 0);
+    console.log('Buckets:', buckets.length, 'Total seconds:', bucketSum, 'Mode:', chartMode);
+    renderVoiceHourlyChart(buckets, chartMode, selectedUser);
     if (voiceHistoryUpdated) {
         const now = new Date().toLocaleTimeString();
         voiceHistoryUpdated.textContent = 'Letzte Aktualisierung: ' + now + ` (letzte ${data.range_days || 0} Tage)`;
@@ -1735,6 +1755,8 @@ function renderVoiceHistory(data) {
 }
 
 async function loadVoiceHistory() {
+    console.log('=== loadVoiceHistory START ===');
+    console.log('Initial state - currentVoiceMode:', currentVoiceMode, 'currentVoiceUser:', currentVoiceUser);
     try {
         const mode = currentVoiceMode || 'hour';
         const apiMode = mode === 'user' ? 'hour' : mode;
@@ -1742,6 +1764,7 @@ async function loadVoiceHistory() {
         if (mode === 'user' && !userId && Array.isArray(voiceActiveUsers) && voiceActiveUsers.length) {
             userId = String(voiceActiveUsers[0].user_id);
             currentVoiceUser = userId;
+            console.log('Auto-selected first user:', userId);
             if (voiceHistoryUser) {
                 voiceHistoryUser.value = userId;
             }
@@ -1756,24 +1779,30 @@ async function loadVoiceHistory() {
             params.set('user_id', userId);
         }
         const url = '/api/voice-history?' + params.toString();
+        console.log('Fetching:', url);
         const data = await fetchJSON(url);
+        console.log('API response received. Buckets:', data.buckets ? data.buckets.length : 0);
         if (mode === 'user') {
             const selected = findActiveUserById(userId) || null;
             const bucketSum = Array.isArray(data.buckets)
                 ? data.buckets.reduce((sum, b) => sum + safeNumber(b.total_seconds), 0)
                 : 0;
             const hasUserData = selected && safeNumber(selected.total_seconds) > 0;
+            console.log('User mode checks - selected:', selected ? selected.display_name : 'None', 'hasUserData:', hasUserData, 'bucketSum:', bucketSum);
             if (hasUserData && bucketSum === 0) {
+                console.log('RETRY TRIGGERED - hasUserData but bucketSum is 0');
                 const retryParams = new URLSearchParams(params);
                 retryParams.set('_', Date.now().toString()); // cache-bust
                 const retry = await fetchJSON('/api/voice-history?' + retryParams.toString());
                 retry._retry = true;
+                console.log('Retry response received. Buckets:', retry.buckets ? retry.buckets.length : 0);
                 renderVoiceHistory(retry);
                 return;
             }
         }
         renderVoiceHistory(data);
     } catch (err) {
+        console.error('loadVoiceHistory ERROR:', err);
         log('Voice Historie konnte nicht geladen werden: ' + err.message, 'error');
     }
 }
@@ -3299,9 +3328,9 @@ class DashboardServer:
                 duration_seconds = 0
             sessions.append(
                 {
-                    "user_id": user_id,
-                    "guild_id": guild_id,
-                    "channel_id": channel_id,
+                    "user_id": str(user_id),  # Convert to string to preserve precision in JavaScript
+                    "guild_id": str(guild_id) if guild_id else None,
+                    "channel_id": str(channel_id) if channel_id else None,
                     "channel_name": channel_name,
                     "duration_seconds": duration_seconds,
                     "peak_users": session.get("peak_users") or 1,
@@ -3372,7 +3401,7 @@ class DashboardServer:
         def _map_row(row: Any) -> Dict[str, Any]:
             uid = row["user_id"]
             return {
-                "user_id": uid,
+                "user_id": str(uid),  # Convert to string to preserve precision in JavaScript
                 "display_name": name_map.get(uid, f"User {uid}"),
                 "total_seconds": int(row["total_seconds"] or 0),
                 "total_points": int(row["total_points"] or 0),
@@ -3542,7 +3571,7 @@ class DashboardServer:
         def _map_top_user(row: Any) -> Dict[str, Any]:
             uid = row["user_id"]
             return {
-                "user_id": uid,
+                "user_id": str(uid),  # Convert to string to preserve precision in JavaScript
                 "display_name": row["display_name"] or name_map.get(uid, f"User {uid}"),
                 "total_seconds": int(row["total_seconds"] or 0),
                 "total_points": int(row["total_points"] or 0),
@@ -3552,7 +3581,7 @@ class DashboardServer:
         def _map_active_user(row: Any) -> Dict[str, Any]:
             uid = row["user_id"]
             return {
-                "user_id": uid,
+                "user_id": str(uid),  # Convert to string to preserve precision in JavaScript
                 "display_name": row["display_name"] or name_map.get(uid, f"User {uid}"),
                 "total_seconds": int(row["total_seconds"] or 0),
                 "total_points": int(row["total_points"] or 0),
@@ -3615,7 +3644,7 @@ class DashboardServer:
         payload = {
             "range_days": days,
             "mode": mode,
-            "user": ({"user_id": user_id, "display_name": name_map.get(user_id)} if user_id else None),
+            "user": ({"user_id": str(user_id), "display_name": name_map.get(user_id)} if user_id else None),
             "daily": daily,
             "top_users": [_map_top_user(r) for r in top_users_rows],
             "active_users": [_map_active_user(r) for r in active_top_rows],
