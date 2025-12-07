@@ -693,6 +693,12 @@ async function sendHeroBuildUpdate(heroBuild) {
   try {
     heroBuildMsg = HeroBuildMsg.create(cleanedHeroBuild);
     log('info', 'sendHeroBuildUpdate: HeroBuildMsg created successfully');
+    log('info', 'sendHeroBuildUpdate: heroBuildMsg content', {
+      heroBuildMsg: JSON.stringify(heroBuildMsg),
+      detailsType: typeof heroBuildMsg.details,
+      detailsKeys: heroBuildMsg.details ? Object.keys(heroBuildMsg.details) : 'null/undefined',
+      modCategoriesLength: heroBuildMsg.details?.mod_categories?.length
+    });
   } catch (err) {
     log('error', 'sendHeroBuildUpdate: HeroBuildMsg.create() failed', {
       error: err.message,
