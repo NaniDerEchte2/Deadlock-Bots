@@ -38,6 +38,19 @@ const {
   getOverrideInfo: getGcOverrideInfo,
 } = require('./deadlock_gc_protocol');
 
+function convertKeysToCamelCase(obj) {
+    if (Array.isArray(obj)) {
+        return obj.map(v => convertKeysToCamelCase(v));
+    } else if (obj !== null && obj.constructor === Object) {
+        return Object.keys(obj).reduce((result, key) => {
+            const camelCaseKey = key.replace(/_([a-z])/g, g => g[1].toUpperCase());
+            result[camelCaseKey] = convertKeysToCamelCase(obj[key]);
+            return result;
+        }, {});
+    }
+    return obj;
+}
+
 let SteamID = null;
 if (SteamUser && SteamUser.SteamID) {
   SteamID = SteamUser.SteamID;
@@ -691,14 +704,8 @@ async function sendHeroBuildUpdate(heroBuild) {
 
   let heroBuildMsg, message;
   try {
-    heroBuildMsg = HeroBuildMsg.create(cleanedHeroBuild);
-    log('info', 'sendHeroBuildUpdate: HeroBuildMsg created successfully');
-    log('info', 'sendHeroBuildUpdate: heroBuildMsg content', {
-      heroBuildMsg: JSON.stringify(heroBuildMsg),
-      detailsType: typeof heroBuildMsg.details,
-      detailsKeys: heroBuildMsg.details ? Object.keys(heroBuildMsg.details) : 'null/undefined',
-      modCategoriesLength: heroBuildMsg.details?.mod_categories?.length
-    });
+    const camelCaseHeroBuild = convertKeysToCamelCase(cleanedHeroBuild);
+    heroBuildMsg = HeroBuildMsg.create(camelCaseHeroBuild);
   } catch (err) {
     log('error', 'sendHeroBuildUpdate: HeroBuildMsg.create() failed', {
       error: err.message,
