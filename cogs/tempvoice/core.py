@@ -11,7 +11,7 @@ from datetime import datetime
 
 import discord
 from discord.ext import commands
-import aiosqlite
+from service import db
 from service.db import db_path
 from pathlib import Path
 DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
@@ -109,26 +109,17 @@ def _age_seconds(ch: discord.VoiceChannel) -> float:
 # --------- DB-Layer (zentral) ---------
 class TVDB:
     def __init__(self, db_path: str):
-        self.db_path = db_path
-        self.db: Optional[aiosqlite.Connection] = None
+        pass
 
     @property
     def connected(self) -> bool:
-        return self.db is not None
+        return True
 
     async def connect(self):
-        if self.db is not None:
-            return
-        self.db = await aiosqlite.connect(self.db_path)
-        self.db.row_factory = aiosqlite.Row
-        # NOTE: PRAGMAs (journal_mode, synchronous) are already set by the central
-        # DB manager (service/db.py). Setting them again here causes connection
-        # corruption in multi-threaded environments. DO NOT add PRAGMA calls.
         await self._create_tables()
 
     async def _create_tables(self):
-        assert self.db is not None
-        await self.db.execute("""
+        await db.execute_async("""
             CREATE TABLE IF NOT EXISTS tempvoice_bans (
                 owner_id    INTEGER NOT NULL,
                 banned_id   INTEGER NOT NULL,
@@ -136,7 +127,7 @@ class TVDB:
                 PRIMARY KEY (owner_id, banned_id)
             )
         """)
-        await self.db.execute("""
+        await db.execute_async("""
             CREATE TABLE IF NOT EXISTS tempvoice_lanes (
                 channel_id  INTEGER PRIMARY KEY,
                 guild_id    INTEGER NOT NULL,
@@ -146,25 +137,30 @@ class TVDB:
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await self.db.execute("""
+        await db.execute_async("""
             CREATE TABLE IF NOT EXISTS tempvoice_owner_prefs (
                 owner_id    INTEGER PRIMARY KEY,
                 region      TEXT NOT NULL CHECK(region IN ('DE','EU')),
                 updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await self.db.commit()
+        await db.execute_async("""
+            CREATE TABLE IF NOT EXISTS tempvoice_lurkers (
+                guild_id       INTEGER NOT NULL,
+                channel_id     INTEGER NOT NULL,
+                user_id        INTEGER NOT NULL,
+                original_nick  TEXT,
+                created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (channel_id, user_id)
+            )
+        """)
         await self._ensure_interface_table()
 
     async def _ensure_interface_table(self):
-        assert self.db is not None
-        cur = await self.db.execute("PRAGMA table_info(tempvoice_interface)")
-        rows = await cur.fetchall()
-        await cur.close()
+        rows = await db.query_all_async("PRAGMA table_info(tempvoice_interface)")
 
         if not rows:
             await self._create_interface_table()
-            await self.db.commit()
             return
 
         col_names = {str(row["name"]) for row in rows}
@@ -177,8 +173,7 @@ class TVDB:
         await self._migrate_interface_table()
 
     async def _create_interface_table(self):
-        assert self.db is not None
-        await self.db.execute("""
+        await db.execute_async("""
             CREATE TABLE IF NOT EXISTS tempvoice_interface (
                 guild_id    INTEGER NOT NULL,
                 channel_id  INTEGER NOT NULL,
@@ -193,66 +188,43 @@ class TVDB:
         """)
 
     async def _migrate_interface_table(self):
-        assert self.db is not None
         try:
-            await self.db.execute("ALTER TABLE tempvoice_interface RENAME TO tempvoice_interface_old")
+            await db.execute_async("ALTER TABLE tempvoice_interface RENAME TO tempvoice_interface_old")
         except Exception as e:
             log.debug("tempvoice_interface rename failed (migration skipped): %r", e)
             await self._create_interface_table()
-            await self.db.commit()
             return
 
         await self._create_interface_table()
         try:
-            await self.db.execute("""
+            await db.execute_async("""
                 INSERT INTO tempvoice_interface(guild_id, channel_id, message_id, updated_at)
                 SELECT guild_id, channel_id, message_id, COALESCE(updated_at, CURRENT_TIMESTAMP)
                 FROM tempvoice_interface_old
             """)
             # Nur wenn INSERT erfolgreich → Drop old table
-            await self.db.execute("DROP TABLE IF EXISTS tempvoice_interface_old")
-            await self.db.commit()
+            await db.execute_async("DROP TABLE IF EXISTS tempvoice_interface_old")
         except Exception as e:
             log.error("tempvoice_interface migration copy failed: %r - rolling back!", e)
             # Rollback: Restore old table
             try:
-                await self.db.execute("DROP TABLE IF EXISTS tempvoice_interface")
-                await self.db.execute("ALTER TABLE tempvoice_interface_old RENAME TO tempvoice_interface")
-                await self.db.commit()
+                await db.execute_async("DROP TABLE IF EXISTS tempvoice_interface")
+                await db.execute_async("ALTER TABLE tempvoice_interface_old RENAME TO tempvoice_interface")
                 log.info("tempvoice_interface migration rolled back successfully")
             except Exception as rollback_exc:
                 log.critical("Failed to rollback tempvoice_interface migration: %r", rollback_exc)
 
     async def fetchone(self, q: str, p: tuple = ()):
-        if not self.connected:
-            raise ValueError("no active connection")
-        cur = await self.db.execute(q, p)  # type: ignore
-        row = await cur.fetchone()
-        await cur.close()
-        return row
+        return await db.query_one_async(q, p)
 
     async def fetchall(self, q: str, p: tuple = ()):
-        if not self.connected:
-            raise ValueError("no active connection")
-        cur = await self.db.execute(q, p)  # type: ignore
-        rows = await cur.fetchall()
-        await cur.close()
-        return rows
+        return await db.query_all_async(q, p)
 
     async def exec(self, q: str, p: tuple = ()):
-        if not self.connected:
-            raise ValueError("no active connection")
-        await self.db.execute(q, p)  # type: ignore
-        await self.db.commit()
+        await db.execute_async(q, p)
 
     async def close(self):
-        if self.db:
-            try:
-                await self.db.close()
-            except Exception as e:
-                log.debug("TVDB close failed: %r", e)
-            finally:
-                self.db = None
+        pass
 
 # --------- Ban-Store ---------
 class AsyncBanStore:
@@ -298,6 +270,46 @@ class AsyncBanStore:
         except Exception as e:
             log.warning("remove_ban failed (%s->%s): %r", owner_id, user_id, e)
 
+# --------- Lurker-Store ---------
+class LurkerStore:
+    def __init__(self, db: TVDB):
+        self.db = db
+
+    async def add_lurker(self, guild_id: int, channel_id: int, user_id: int, original_nick: Optional[str]):
+        try:
+            await self.db.exec(
+                """
+                INSERT INTO tempvoice_lurkers(guild_id, channel_id, user_id, original_nick)
+                VALUES(?,?,?,?)
+                ON CONFLICT(channel_id, user_id) DO UPDATE SET
+                    original_nick=excluded.original_nick,
+                    created_at=CURRENT_TIMESTAMP
+                """,
+                (int(guild_id), int(channel_id), int(user_id), original_nick)
+            )
+        except Exception as e:
+            log.warning("add_lurker failed (%s in %s): %r", user_id, channel_id, e)
+
+    async def get_lurker(self, channel_id: int, user_id: int) -> Optional[dict]:
+        try:
+            row = await self.db.fetchone(
+                "SELECT * FROM tempvoice_lurkers WHERE channel_id=? AND user_id=?",
+                (int(channel_id), int(user_id))
+            )
+            return dict(row) if row else None
+        except Exception as e:
+            log.warning("get_lurker failed (%s in %s): %r", user_id, channel_id, e)
+            return None
+
+    async def remove_lurker(self, channel_id: int, user_id: int):
+        try:
+            await self.db.exec(
+                "DELETE FROM tempvoice_lurkers WHERE channel_id=? AND user_id=?",
+                (int(channel_id), int(user_id))
+            )
+        except Exception as e:
+            log.warning("remove_lurker failed (%s in %s): %r", user_id, channel_id, e)
+
 # --------- Core-Cog ---------
 class TempVoiceCore(commands.Cog):
     """Kern: Auto-Lanes, Owner, Persistenz, MinRank, Region-Filter, Purge"""
@@ -306,6 +318,7 @@ class TempVoiceCore(commands.Cog):
         self.bot = bot
         self._tvdb = TVDB(str(DB_PATH))
         self.bans = AsyncBanStore(self._tvdb)
+        self.lurkers = LurkerStore(self._tvdb)
 
         # Laufzeit-State
         self.created_channels: Set[int] = set()
@@ -335,7 +348,7 @@ class TempVoiceCore(commands.Cog):
             t.cancel()
         if self._bg_tasks:
             await asyncio.gather(*list(self._bg_tasks), return_exceptions=True)
-        await self._tvdb.close()
+        # TVDB.close is no-op now
 
     def _track(self, aw: Any):
         t = asyncio.create_task(aw)
@@ -354,9 +367,6 @@ class TempVoiceCore(commands.Cog):
         try:
             await asyncio.sleep(delay)
             while not self._shutting_down:
-                if not self._tvdb.connected:
-                    await asyncio.sleep(PURGE_INTERVAL_SECONDS)
-                    continue
                 try:
                     await self._purge_empty_lanes_once()
                 except Exception as inner:
@@ -1018,10 +1028,41 @@ class TempVoiceCore(commands.Cog):
         except Exception as e:
             log.warning(f"Auto-lane create failed: {e}")
 
-        # Owner verlassen / Lane ggf. löschen
+        # Check for Lurker Leave & Owner logic
         try:
             if before and before.channel and isinstance(before.channel, discord.VoiceChannel):
                 ch = before.channel
+
+                # --- Lurker Cleanup Start ---
+                lurker_data = await self.lurkers.get_lurker(ch.id, member.id)
+                if lurker_data:
+                    await self.lurkers.remove_lurker(ch.id, member.id)
+                    
+                    # Role remove
+                    role = discord.utils.get(member.guild.roles, name="Lurker")
+                    if role:
+                        try:
+                            await member.remove_roles(role, reason="TempVoice: Lurker left")
+                        except Exception as e:
+                            log.debug("Lurker role remove failed: %r", e)
+                    
+                    # Nick restore
+                    orig_nick = lurker_data.get("original_nick")
+                    # If orig_nick is None/Empty, we reset to None (remove nickname)
+                    try:
+                        await member.edit(nick=orig_nick, reason="TempVoice: Lurker left")
+                    except Exception as e:
+                        log.debug("Lurker nick restore failed: %r", e)
+
+                    # Limit decrease
+                    if ch.user_limit > 0:
+                        await self.safe_edit_channel(
+                            ch, 
+                            desired_limit=max(0, ch.user_limit - 1),
+                            reason="TempVoice: Lurker left"
+                        )
+                # --- Lurker Cleanup End ---
+
                 if ch.id in self.join_time:
                     self.join_time[ch.id].pop(member.id, None)
                 if ch.id in self.lane_owner and self.lane_owner[ch.id] == member.id:

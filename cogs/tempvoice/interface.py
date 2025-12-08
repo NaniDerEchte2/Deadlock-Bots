@@ -375,6 +375,7 @@ class MainView(discord.ui.View):
         self.add_item(ResetLaneButton(core))
         self.add_item(DuoCallButton(core))
         self.add_item(TrioCallButton(core))
+        self.add_item(LurkerButton(util))
 
     @staticmethod
     def lane_of(itx: discord.Interaction) -> Optional[discord.VoiceChannel]:
@@ -706,3 +707,47 @@ class BanModal(discord.ui.Modal, title="User (Un)Ban"):
             logger.debug("BanModal: followup.send fehlgeschlagen: %r", e)
         except Exception as e:
             logger.debug("BanModal: unerwarteter followup-Fehler: %r", e)
+
+class LurkerButton(discord.ui.Button):
+    def __init__(self, util):
+        super().__init__(label="👻 Lurker", style=discord.ButtonStyle.secondary, row=3, custom_id="tv_lurker")
+        self.util = util
+    async def callback(self, itx: discord.Interaction):
+        m: discord.Member = itx.user  # type: ignore
+        lane = MainView.lane_of(itx)
+        if not lane:
+            await itx.response.send_message("Du musst in einer Lane sein.", ephemeral=True)
+            return
+        # Permission check: Owner or Mod
+        owner_id = itx.client.get_cog("TempVoiceCore").lane_owner.get(lane.id, m.id)
+        perms = lane.permissions_for(m)
+        if not (owner_id == m.id or perms.manage_channels or perms.administrator):
+            await itx.response.send_message("Nur Owner/Mods dürfen Lurker ernennen.", ephemeral=True)
+            return
+
+        options = [discord.SelectOption(label=u.display_name, value=str(u.id)) for u in lane.members]
+        if not options:
+            await itx.response.send_message("Niemand da.", ephemeral=True)
+            return
+        
+        view = LurkerSelectView(self.util, lane, options)
+        await itx.response.send_message("Wer soll Lurker sein?", view=view, ephemeral=True)
+
+class LurkerSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(min_values=1, max_values=1, options=options, placeholder="Mitglied wählen …")
+    async def callback(self, itx: discord.Interaction):
+        view: "LurkerSelectView" = self.view  # type: ignore
+        await view.handle_selection(itx, int(self.values[0]))
+
+class LurkerSelectView(discord.ui.View):
+    def __init__(self, util, lane: discord.VoiceChannel, options):
+        super().__init__(timeout=60)
+        self.util = util
+        self.lane = lane
+        self.add_item(LurkerSelect(options))
+    async def handle_selection(self, itx: discord.Interaction, target_id: int):
+        await itx.response.defer(ephemeral=True)
+        ok, msg = await self.util.make_lurker(self.lane, target_id)
+        await itx.followup.send(msg, ephemeral=True)
+

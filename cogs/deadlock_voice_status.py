@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import aiohttp
-import aiosqlite
 import discord
 from discord.ext import commands
 
+from service import db
 from service.db import db_path
 
 log = logging.getLogger("DeadlockVoiceStatus")
@@ -51,7 +51,6 @@ _MATCH_STATUS_REGEX = re.compile(
 class DeadlockVoiceStatus(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.db: Optional[aiosqlite.Connection] = None
         self.channel_states: Dict[int, Dict[str, object]] = {}
         self._task: Optional[asyncio.Task[None]] = None
         self.last_observation: Dict[int, Dict[str, Any]] = {}
@@ -71,7 +70,6 @@ class DeadlockVoiceStatus(commands.Cog):
             self._enable_trace_logger()
 
     async def cog_load(self) -> None:
-        await self._ensure_db()
         self._task = asyncio.create_task(self._run_loop())
         log.info("DeadlockVoiceStatus background task started")
 
@@ -81,17 +79,7 @@ class DeadlockVoiceStatus(commands.Cog):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
-        if self.db:
-            await self.db.close()
-            self.db = None
         log.info("DeadlockVoiceStatus shut down")
-
-    async def _ensure_db(self) -> None:
-        if self.db:
-            return
-        path = Path(db_path())
-        self.db = await aiosqlite.connect(str(path))
-        self.db.row_factory = aiosqlite.Row
 
     def _enable_trace_logger(self) -> None:
         if self._trace_handler:
@@ -200,7 +188,7 @@ class DeadlockVoiceStatus(commands.Cog):
 
     async def _fetch_user_steam_ids(self, user_ids: Iterable[int]) -> Dict[int, List[str]]:
         ids = {int(uid) for uid in user_ids if uid}
-        if not ids or not self.db:
+        if not ids:
             return {}
 
         placeholders = ",".join("?" for _ in ids)
@@ -210,9 +198,7 @@ class DeadlockVoiceStatus(commands.Cog):
             "AND steam_id IS NOT NULL AND steam_id != '' "
             "ORDER BY primary_account DESC, verified DESC, updated_at DESC"
         )
-        cursor = await self.db.execute(query, tuple(ids))
-        rows = await cursor.fetchall()
-        await cursor.close()
+        rows = await db.query_all_async(query, tuple(ids))
 
         mapping: Dict[int, List[str]] = {}
         for row in rows:
@@ -223,9 +209,9 @@ class DeadlockVoiceStatus(commands.Cog):
                 bucket.append(sid)
         return mapping
 
-    async def _fetch_presence_rows(self, steam_ids: Iterable[str]) -> Dict[str, aiosqlite.Row]:
+    async def _fetch_presence_rows(self, steam_ids: Iterable[str]) -> Dict[str, Any]:
         ids = {sid for sid in steam_ids if sid}
-        if not ids or not self.db:
+        if not ids:
             return {}
 
         placeholders = ",".join("?" for _ in ids)
@@ -235,55 +221,46 @@ class DeadlockVoiceStatus(commands.Cog):
             "last_server_id, deadlock_party_hint "
             f"FROM live_player_state WHERE steam_id IN ({placeholders})"
         )
-        cursor = await self.db.execute(query, tuple(ids))
-        rows = await cursor.fetchall()
-        await cursor.close()
+        rows = await db.query_all_async(query, tuple(ids))
 
         return {str(row["steam_id"]): row for row in rows}
 
     async def _persist_voice_watch_entries(self, entries: List[Tuple[str, int, int]]) -> None:
-        await self._ensure_db()
-        if not self.db:
-            return
         now_ts = int(time.time())
         if not entries:
-            await self.db.execute("DELETE FROM deadlock_voice_watch")
-            await self.db.commit()
+            await db.execute_async("DELETE FROM deadlock_voice_watch")
             return
 
         try:
-            rows = [(steam_id, guild_id, channel_id, now_ts) for (steam_id, guild_id, channel_id) in entries]
-            await self.db.executemany(
-                """
-                INSERT INTO deadlock_voice_watch(steam_id, guild_id, channel_id, updated_at)
-                VALUES(?, ?, ?, ?)
-                ON CONFLICT(steam_id) DO UPDATE SET
-                  guild_id=excluded.guild_id,
-                  channel_id=excluded.channel_id,
-                  updated_at=excluded.updated_at
-                """,
-                rows,
-            )
-            placeholders = ",".join("?" for _ in entries)
-            await self.db.execute(
-                f"DELETE FROM deadlock_voice_watch WHERE steam_id NOT IN ({placeholders})",
-                [steam_id for (steam_id, _, _) in entries],
-            )
-            await self.db.commit()
+            async with db.transaction():
+                rows = [(steam_id, guild_id, channel_id, now_ts) for (steam_id, guild_id, channel_id) in entries]
+                await db.executemany_async(
+                    """
+                    INSERT INTO deadlock_voice_watch(steam_id, guild_id, channel_id, updated_at)
+                    VALUES(?, ?, ?, ?)
+                    ON CONFLICT(steam_id) DO UPDATE SET
+                      guild_id=excluded.guild_id,
+                      channel_id=excluded.channel_id,
+                      updated_at=excluded.updated_at
+                    """,
+                    rows,
+                )
+                placeholders = ",".join("?" for _ in entries)
+                # Flat list for DELETE IN clause
+                delete_ids = [steam_id for (steam_id, _, _) in entries]
+                await db.execute_async(
+                    f"DELETE FROM deadlock_voice_watch WHERE steam_id NOT IN ({placeholders})",
+                    delete_ids,
+                )
         except Exception as exc:
             log.warning("Failed to persist voice watch entries: %s", exc)
-            # Rollback um inkonsistente DB zu verhindern
-            try:
-                await self.db.rollback()
-            except Exception as rollback_exc:
-                log.error("Failed to rollback transaction: %s", rollback_exc)
 
     async def _process_channel(
         self,
         channel: discord.VoiceChannel,
         members: Sequence[discord.Member],
         steam_map: Dict[int, List[str]],
-        presence_map: Dict[str, aiosqlite.Row],
+        presence_map: Dict[str, Any],
         now: int,
     ) -> None:
         base_name, current_suffix = self._split_suffix(channel.name)
@@ -469,7 +446,7 @@ class DeadlockVoiceStatus(commands.Cog):
         await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None, None, trace_payload)
 
     @staticmethod
-    def _safe_row_value(row: Optional[aiosqlite.Row], key: str) -> Optional[Any]:
+    def _safe_row_value(row: Optional[Any], key: str) -> Optional[Any]:
         if row is None:
             return None
         try:
@@ -480,7 +457,7 @@ class DeadlockVoiceStatus(commands.Cog):
     def _select_best_presence(
         self,
         steam_ids: Sequence[str],
-        presence_map: Dict[str, aiosqlite.Row],
+        presence_map: Dict[str, Any],
         now: int,
     ) -> Optional[Tuple[str, Optional[int], Optional[str], str]]:
         best: Optional[Tuple[str, Optional[int], Optional[str]]] = None
@@ -512,7 +489,7 @@ class DeadlockVoiceStatus(commands.Cog):
     def _evaluate_presence(
         self,
         steam_id: Optional[str],
-        presence_map: Dict[str, aiosqlite.Row],
+        presence_map: Dict[str, Any],
         now: int,
     ) -> Optional[Tuple[str, Optional[int], Optional[str]]]:
         if not steam_id:
