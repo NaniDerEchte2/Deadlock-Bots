@@ -23,17 +23,14 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Optional, TypeVar
 
+from service.config import settings
 
 log = logging.getLogger(__name__)
 
 # ---- Timeouts (per-connection) ---------------------------------------------
-# Default: wait up to 15s on busy locks; override with ENV if needed.
-DB_BUSY_TIMEOUT_MS = int(os.environ.get("DEADLOCK_DB_BUSY_TIMEOUT_MS", "15000"))
-DB_CONNECT_TIMEOUT = float(os.environ.get("DEADLOCK_DB_TIMEOUT", str(DB_BUSY_TIMEOUT_MS / 1000)))
-
-# ---- Env-Keys (nur diese beiden werden unterstützt) ----
-ENV_DB_PATH = "DEADLOCK_DB_PATH"   # kompletter Pfad zur DB-Datei (höchste Prio)
-ENV_DB_DIR  = "DEADLOCK_DB_DIR"    # nur Verzeichnis; Datei = deadlock.sqlite3
+# Default: wait up to 15s on busy locks
+DB_BUSY_TIMEOUT_MS = settings.deadlock_db_busy_timeout_ms
+DB_CONNECT_TIMEOUT = float(DB_BUSY_TIMEOUT_MS / 1000)
 
 # ---- Default-Dateiname/Ort (plattform-sicher) ----
 def _default_dir() -> str:
@@ -61,16 +58,17 @@ def _resolve_db_path() -> str:
     """
     Ermittelt den endgültigen DB-Pfad (eine Quelle der Wahrheit).
     Prio:
-      1) DEADLOCK_DB_PATH (vollständiger Pfad)
-      2) DEADLOCK_DB_DIR + DB_NAME
+      1) settings.deadlock_db_path (vollständiger Pfad)
+      2) settings.deadlock_db_dir + DB_NAME
       3) DEFAULT_DIR + DB_NAME
     """
-    p = os.environ.get(ENV_DB_PATH)
-    if p:
-        return str(Path(p))
+    if settings.deadlock_db_path:
+        return str(settings.deadlock_db_path)
 
-    d = os.environ.get(ENV_DB_DIR) or DEFAULT_DIR
-    return str(Path(d) / DB_NAME)
+    if settings.deadlock_db_dir:
+        return str(settings.deadlock_db_dir / DB_NAME)
+
+    return str(Path(DEFAULT_DIR) / DB_NAME)
 
 
 def _ensure_parent(path: str) -> None:

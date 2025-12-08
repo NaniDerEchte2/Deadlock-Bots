@@ -16,6 +16,7 @@ from discord.ext import commands
 
 from service import db
 from service.db import db_path
+from service.config import settings
 
 log = logging.getLogger("DeadlockVoiceStatus")
 trace_log = logging.getLogger("DeadlockVoiceStatus.trace")
@@ -28,14 +29,10 @@ TARGET_CATEGORY_IDS: Set[int] = {
 
 POLL_INTERVAL_SECONDS = 60
 PRESENCE_STALE_SECONDS = 180
-RENAME_COOLDOWN_SECONDS = 360
+RENAME_COOLDOWN_SECONDS = settings.rename_cooldown_seconds
 RENAME_REASON = "Deadlock Voice Status Update"
 MIN_ACTIVE_PLAYERS = 1
-_MATCH_MINUTE_OFFSET_RAW = os.getenv("DEADLOCK_MATCH_MINUTE_OFFSET", "3")
-try:
-    MATCH_MINUTE_DISPLAY_OFFSET = max(0, int(_MATCH_MINUTE_OFFSET_RAW))
-except ValueError:
-    MATCH_MINUTE_DISPLAY_OFFSET = 3
+MATCH_MINUTE_DISPLAY_OFFSET = max(0, settings.match_minute_offset)
 
 _SUFFIX_REGEX = re.compile(
     r"\s*-\s*(?:in der Lobby(?:\s*\(\d+/\d+\))?|im Match Min (?:\d+|\d+\+)\s*\(\d+/\d+\))$",

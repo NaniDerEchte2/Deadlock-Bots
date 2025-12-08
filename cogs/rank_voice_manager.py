@@ -10,6 +10,7 @@ from discord.ext import commands
 
 from service import db
 from service.db import db_path
+from service.config import settings
 
 try:
     from cogs.tempvoice.core import MINRANK_CATEGORY_IDS
@@ -93,12 +94,7 @@ class RolePermissionVoiceManager(commands.Cog):
         self.channel_permissions_initialized: Set[int] = set()
 
         # Rename throttle
-        interval_raw = os.getenv("RANK_VOICE_RENAME_INTERVAL_SECONDS", "360")
-        try:
-            interval_val = int(interval_raw)
-        except ValueError:
-            interval_val = 360
-        self._channel_rename_interval = max(60, interval_val)
+        self._channel_rename_interval = max(60, settings.rename_cooldown_seconds)
         self._last_channel_rename: Dict[int, float] = {}
         self._pending_channel_renames: Dict[int, str] = {}
         self._rename_tasks: Dict[int, asyncio.Task] = {}

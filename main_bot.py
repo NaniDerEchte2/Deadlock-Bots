@@ -24,6 +24,7 @@ import hashlib
 
 import discord
 from discord.ext import commands
+from service.config import settings
 # --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
 import re
 
@@ -214,10 +215,10 @@ class MasterBot(commands.Bot):
         intents.guilds = True
 
         super().__init__(
-            command_prefix=os.getenv("COMMAND_PREFIX", "!"),
+            command_prefix=settings.command_prefix,
             intents=intents,
             description="Master Bot System - Verwaltet alle Bot-Funktionen",
-            owner_id=int(os.getenv("OWNER_ID", 0)),
+            owner_id=settings.owner_id,
             case_insensitive=True,
             chunk_guilds_at_startup=False,
             max_messages=1000,
@@ -1627,7 +1628,7 @@ async def main():
     except Exception as e:
         logging.getLogger().debug("Signal-Handler Registrierung teilweise fehlgeschlagen (OS?): %r", e)
 
-    token = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
+    token = settings.discord_token.get_secret_value()
     if not token:
         raise SystemExit("DISCORD_TOKEN fehlt in ENV/.env")
 

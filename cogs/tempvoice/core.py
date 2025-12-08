@@ -106,19 +106,137 @@ def _age_seconds(ch: discord.VoiceChannel) -> float:
         log.debug("age_seconds failed for %s: %r", getattr(ch, "id", "?"), e)
         return 999999.0
 
-# --------- DB-Layer (zentral) ---------
-class TVDB:
-    def __init__(self, db_path: str):
+# --------- Ban-Store ---------
+class AsyncBanStore:
+    def __init__(self):
         pass
 
-    @property
-    def connected(self) -> bool:
-        return True
+    async def is_banned_by_owner(self, owner_id: int, user_id: int) -> bool:
+        try:
+            row = await db.query_one_async(
+                "SELECT 1 FROM tempvoice_bans WHERE owner_id=? AND banned_id=?",
+                (int(owner_id), int(user_id))
+            )
+            return row is not None
+        except Exception as e:
+            log.warning("is_banned_by_owner failed (%s->%s): %r", owner_id, user_id, e)
+            return False
 
-    async def connect(self):
-        await self._create_tables()
+    async def list_bans(self, owner_id: int) -> List[int]:
+        try:
+            rows = await db.query_all_async(
+                "SELECT banned_id FROM tempvoice_bans WHERE owner_id=?",
+                (int(owner_id),)
+            )
+            return [int(r["banned_id"]) for r in rows]
+        except Exception as e:
+            log.warning("list_bans failed for %s: %r", owner_id, e)
+            return []
 
-    async def _create_tables(self):
+    async def add_ban(self, owner_id: int, user_id: int):
+        try:
+            await db.execute_async(
+                "INSERT OR IGNORE INTO tempvoice_bans(owner_id, banned_id) VALUES(?,?)",
+                (int(owner_id), int(user_id))
+            )
+        except Exception as e:
+            log.warning("add_ban failed (%s->%s): %r", owner_id, user_id, e)
+
+    async def remove_ban(self, owner_id: int, user_id: int):
+        try:
+            await db.execute_async(
+                "DELETE FROM tempvoice_bans WHERE owner_id=? AND banned_id=?",
+                (int(owner_id), int(user_id))
+            )
+        except Exception as e:
+            log.warning("remove_ban failed (%s->%s): %r", owner_id, user_id, e)
+
+# --------- Lurker-Store ---------
+class LurkerStore:
+    def __init__(self):
+        pass
+
+    async def add_lurker(self, guild_id: int, channel_id: int, user_id: int, original_nick: Optional[str]):
+        try:
+            await db.execute_async(
+                """
+                INSERT INTO tempvoice_lurkers(guild_id, channel_id, user_id, original_nick)
+                VALUES(?,?,?,?)
+                ON CONFLICT(channel_id, user_id) DO UPDATE SET
+                    original_nick=excluded.original_nick,
+                    created_at=CURRENT_TIMESTAMP
+                """,
+                (int(guild_id), int(channel_id), int(user_id), original_nick)
+            )
+        except Exception as e:
+            log.warning("add_lurker failed (%s in %s): %r", user_id, channel_id, e)
+
+    async def get_lurker(self, channel_id: int, user_id: int) -> Optional[dict]:
+        try:
+            row = await db.query_one_async(
+                "SELECT * FROM tempvoice_lurkers WHERE channel_id=? AND user_id=?",
+                (int(channel_id), int(user_id))
+            )
+            return dict(row) if row else None
+        except Exception as e:
+            log.warning("get_lurker failed (%s in %s): %r", user_id, channel_id, e)
+            return None
+
+    async def remove_lurker(self, channel_id: int, user_id: int):
+        try:
+            await db.execute_async(
+                "DELETE FROM tempvoice_lurkers WHERE channel_id=? AND user_id=?",
+                (int(channel_id), int(user_id))
+            )
+        except Exception as e:
+            log.warning("remove_lurker failed (%s in %s): %r", user_id, channel_id, e)
+
+# --------- Core-Cog ---------
+class TempVoiceCore(commands.Cog):
+    """Kern: Auto-Lanes, Owner, Persistenz, MinRank, Region-Filter, Purge"""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        # self._tvdb entfernt - wir nutzen service.db direkt
+        self.bans = AsyncBanStore()
+        self.lurkers = LurkerStore()
+
+        # Laufzeit-State
+        self.created_channels: Set[int] = set()
+        self.lane_owner: Dict[int, int] = {}
+        self.lane_base: Dict[int, str] = {}
+        self.lane_min_rank: Dict[int, str] = {}
+        self.join_time: Dict[int, Dict[int, float]] = {}
+        self._edit_locks: Dict[int, asyncio.Lock] = {}
+        self._lane_creation_locks: Dict[int, asyncio.Lock] = {}
+        self._last_name_desired: Dict[int, str] = {}
+        self._last_name_patch_ts: Dict[int, float] = {}
+        self._bg_tasks: Set[asyncio.Task] = set()
+        self._shutting_down: bool = False
+
+        # Performance: Role-Caching (5min TTL)
+        self._rank_roles_cache: Dict[int, Dict[str, discord.Role]] = {}
+        self._cache_timestamp: Dict[int, float] = {}
+
+    # --------- Lifecycle ---------
+    async def cog_load(self):
+        # DB Verbindung ist bereits global da
+        self._track(self._startup())
+
+    async def cog_unload(self):
+        self._shutting_down = True
+        for t in list(self._bg_tasks):
+            t.cancel()
+        if self._bg_tasks:
+            await asyncio.gather(*list(self._bg_tasks), return_exceptions=True)
+
+    def _track(self, aw: Any):
+        t = asyncio.create_task(aw)
+        self._bg_tasks.add(t)
+        t.add_done_callback(lambda _: self._bg_tasks.discard(t))
+
+    async def _ensure_tables(self):
+        """Stellt sicher, dass TempVoice-spezifische Tabellen existieren."""
         await db.execute_async("""
             CREATE TABLE IF NOT EXISTS tempvoice_bans (
                 owner_id    INTEGER NOT NULL,
@@ -160,7 +278,19 @@ class TVDB:
         rows = await db.query_all_async("PRAGMA table_info(tempvoice_interface)")
 
         if not rows:
-            await self._create_interface_table()
+            await db.execute_async("""
+                CREATE TABLE IF NOT EXISTS tempvoice_interface (
+                    guild_id    INTEGER NOT NULL,
+                    channel_id  INTEGER NOT NULL,
+                    message_id  INTEGER NOT NULL,
+                    category_id INTEGER,
+                    lane_id     INTEGER,
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, message_id),
+                    UNIQUE(lane_id)
+                )
+            """)
             return
 
         col_names = {str(row["name"]) for row in rows}
@@ -170,9 +300,13 @@ class TVDB:
         if required.issubset(col_names) and pk_cols == ["guild_id", "message_id"]:
             return
 
-        await self._migrate_interface_table()
+        # Migration logic
+        try:
+            await db.execute_async("ALTER TABLE tempvoice_interface RENAME TO tempvoice_interface_old")
+        except Exception as e:
+            log.debug("tempvoice_interface rename failed (migration skipped): %r", e)
+            return
 
-    async def _create_interface_table(self):
         await db.execute_async("""
             CREATE TABLE IF NOT EXISTS tempvoice_interface (
                 guild_id    INTEGER NOT NULL,
@@ -186,27 +320,15 @@ class TVDB:
                 UNIQUE(lane_id)
             )
         """)
-
-    async def _migrate_interface_table(self):
-        try:
-            await db.execute_async("ALTER TABLE tempvoice_interface RENAME TO tempvoice_interface_old")
-        except Exception as e:
-            log.debug("tempvoice_interface rename failed (migration skipped): %r", e)
-            await self._create_interface_table()
-            return
-
-        await self._create_interface_table()
         try:
             await db.execute_async("""
                 INSERT INTO tempvoice_interface(guild_id, channel_id, message_id, updated_at)
                 SELECT guild_id, channel_id, message_id, COALESCE(updated_at, CURRENT_TIMESTAMP)
                 FROM tempvoice_interface_old
             """)
-            # Nur wenn INSERT erfolgreich → Drop old table
             await db.execute_async("DROP TABLE IF EXISTS tempvoice_interface_old")
         except Exception as e:
             log.error("tempvoice_interface migration copy failed: %r - rolling back!", e)
-            # Rollback: Restore old table
             try:
                 await db.execute_async("DROP TABLE IF EXISTS tempvoice_interface")
                 await db.execute_async("ALTER TABLE tempvoice_interface_old RENAME TO tempvoice_interface")
@@ -214,150 +336,12 @@ class TVDB:
             except Exception as rollback_exc:
                 log.critical("Failed to rollback tempvoice_interface migration: %r", rollback_exc)
 
-    async def fetchone(self, q: str, p: tuple = ()):
-        return await db.query_one_async(q, p)
-
-    async def fetchall(self, q: str, p: tuple = ()):
-        return await db.query_all_async(q, p)
-
-    async def exec(self, q: str, p: tuple = ()):
-        await db.execute_async(q, p)
-
-    async def close(self):
-        pass
-
-# --------- Ban-Store ---------
-class AsyncBanStore:
-    def __init__(self, db: TVDB): self.db = db
-
-    async def is_banned_by_owner(self, owner_id: int, user_id: int) -> bool:
-        try:
-            row = await self.db.fetchone(
-                "SELECT 1 FROM tempvoice_bans WHERE owner_id=? AND banned_id=?",
-                (int(owner_id), int(user_id))
-            )
-            return row is not None
-        except Exception as e:
-            log.warning("is_banned_by_owner failed (%s->%s): %r", owner_id, user_id, e)
-            return False
-
-    async def list_bans(self, owner_id: int) -> List[int]:
-        try:
-            rows = await self.db.fetchall(
-                "SELECT banned_id FROM tempvoice_bans WHERE owner_id=?",
-                (int(owner_id),)
-            )
-            return [int(r["banned_id"]) for r in rows]
-        except Exception as e:
-            log.warning("list_bans failed for %s: %r", owner_id, e)
-            return []
-
-    async def add_ban(self, owner_id: int, user_id: int):
-        try:
-            await self.db.exec(
-                "INSERT OR IGNORE INTO tempvoice_bans(owner_id, banned_id) VALUES(?,?)",
-                (int(owner_id), int(user_id))
-            )
-        except Exception as e:
-            log.warning("add_ban failed (%s->%s): %r", owner_id, user_id, e)
-
-    async def remove_ban(self, owner_id: int, user_id: int):
-        try:
-            await self.db.exec(
-                "DELETE FROM tempvoice_bans WHERE owner_id=? AND banned_id=?",
-                (int(owner_id), int(user_id))
-            )
-        except Exception as e:
-            log.warning("remove_ban failed (%s->%s): %r", owner_id, user_id, e)
-
-# --------- Lurker-Store ---------
-class LurkerStore:
-    def __init__(self, db: TVDB):
-        self.db = db
-
-    async def add_lurker(self, guild_id: int, channel_id: int, user_id: int, original_nick: Optional[str]):
-        try:
-            await self.db.exec(
-                """
-                INSERT INTO tempvoice_lurkers(guild_id, channel_id, user_id, original_nick)
-                VALUES(?,?,?,?)
-                ON CONFLICT(channel_id, user_id) DO UPDATE SET
-                    original_nick=excluded.original_nick,
-                    created_at=CURRENT_TIMESTAMP
-                """,
-                (int(guild_id), int(channel_id), int(user_id), original_nick)
-            )
-        except Exception as e:
-            log.warning("add_lurker failed (%s in %s): %r", user_id, channel_id, e)
-
-    async def get_lurker(self, channel_id: int, user_id: int) -> Optional[dict]:
-        try:
-            row = await self.db.fetchone(
-                "SELECT * FROM tempvoice_lurkers WHERE channel_id=? AND user_id=?",
-                (int(channel_id), int(user_id))
-            )
-            return dict(row) if row else None
-        except Exception as e:
-            log.warning("get_lurker failed (%s in %s): %r", user_id, channel_id, e)
-            return None
-
-    async def remove_lurker(self, channel_id: int, user_id: int):
-        try:
-            await self.db.exec(
-                "DELETE FROM tempvoice_lurkers WHERE channel_id=? AND user_id=?",
-                (int(channel_id), int(user_id))
-            )
-        except Exception as e:
-            log.warning("remove_lurker failed (%s in %s): %r", user_id, channel_id, e)
-
-# --------- Core-Cog ---------
-class TempVoiceCore(commands.Cog):
-    """Kern: Auto-Lanes, Owner, Persistenz, MinRank, Region-Filter, Purge"""
-
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        self._tvdb = TVDB(str(DB_PATH))
-        self.bans = AsyncBanStore(self._tvdb)
-        self.lurkers = LurkerStore(self._tvdb)
-
-        # Laufzeit-State
-        self.created_channels: Set[int] = set()
-        self.lane_owner: Dict[int, int] = {}
-        self.lane_base: Dict[int, str] = {}
-        self.lane_min_rank: Dict[int, str] = {}
-        self.join_time: Dict[int, Dict[int, float]] = {}
-        self._edit_locks: Dict[int, asyncio.Lock] = {}
-        self._lane_creation_locks: Dict[int, asyncio.Lock] = {}
-        self._last_name_desired: Dict[int, str] = {}
-        self._last_name_patch_ts: Dict[int, float] = {}
-        self._bg_tasks: Set[asyncio.Task] = set()
-        self._shutting_down: bool = False
-
-        # Performance: Role-Caching (5min TTL)
-        self._rank_roles_cache: Dict[int, Dict[str, discord.Role]] = {}
-        self._cache_timestamp: Dict[int, float] = {}
-
-    # --------- Lifecycle ---------
-    async def cog_load(self):
-        await self._tvdb.connect()
-        self._track(self._startup())
-
-    async def cog_unload(self):
-        self._shutting_down = True
-        for t in list(self._bg_tasks):
-            t.cancel()
-        if self._bg_tasks:
-            await asyncio.gather(*list(self._bg_tasks), return_exceptions=True)
-        # TVDB.close is no-op now
-
-    def _track(self, aw: Any):
-        t = asyncio.create_task(aw)
-        self._bg_tasks.add(t)
-        t.add_done_callback(lambda _: self._bg_tasks.discard(t))
-
     async def _startup(self):
         await self.bot.wait_until_ready()
         await asyncio.sleep(STARTUP_PURGE_DELAY_SEC)
+        
+        await self._ensure_tables()
+        
         await self._rehydrate_from_db()
         await self._purge_empty_lanes_once()
         self._track(self._delayed_purge(30))
@@ -367,6 +351,7 @@ class TempVoiceCore(commands.Cog):
         try:
             await asyncio.sleep(delay)
             while not self._shutting_down:
+                # db.connected Check entfällt, da service.db dies managed
                 try:
                     await self._purge_empty_lanes_once()
                 except Exception as inner:
@@ -386,7 +371,7 @@ class TempVoiceCore(commands.Cog):
         if not guild:
             return
         try:
-            rows = await self._tvdb.fetchall(
+            rows = await db.query_all_async(
                 "SELECT channel_id, owner_id, base_name, category_id FROM tempvoice_lanes WHERE guild_id=?",
                 (int(guild.id),)
             )
@@ -399,7 +384,7 @@ class TempVoiceCore(commands.Cog):
             lane: Optional[discord.VoiceChannel] = guild.get_channel(lane_id)  # type: ignore
             if not isinstance(lane, discord.VoiceChannel):
                 try:
-                    await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
+                    await db.execute_async("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
                 except Exception as e:
                     log.debug("rehydrate: cleanup row failed for %s: %r", lane_id, e)
                 continue
@@ -416,11 +401,11 @@ class TempVoiceCore(commands.Cog):
 
     async def _purge_empty_lanes_once(self):
         guild = self._first_guild()
-        if not guild or not self._tvdb.connected:
+        if not guild:
             return
 
         try:
-            rows = await self._tvdb.fetchall(
+            rows = await db.query_all_async(
                 "SELECT channel_id FROM tempvoice_lanes WHERE guild_id=?",
                 (int(guild.id),)
             )
@@ -482,15 +467,16 @@ class TempVoiceCore(commands.Cog):
                     getattr(channel, "name", "?"),
                     e,
                 )
-        if self._tvdb.connected:
-            try:
-                await self._tvdb.exec("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
-            except Exception as e:
-                log.debug("cleanup: delete row %s failed: %r", lane_id, e)
-            try:
-                await self._tvdb.exec("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_id,))
-            except Exception as e:
-                log.debug("cleanup: delete interface row %s failed: %r", lane_id, e)
+        
+        try:
+            await db.execute_async("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
+        except Exception as e:
+            log.debug("cleanup: delete row %s failed: %r", lane_id, e)
+        try:
+            await db.execute_async("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_id,))
+        except Exception as e:
+            log.debug("cleanup: delete interface row %s failed: %r", lane_id, e)
+        
         self.created_channels.discard(lane_id)
         for mapping in (
             self.lane_owner,
@@ -544,7 +530,7 @@ class TempVoiceCore(commands.Cog):
 
     async def set_region_pref(self, owner_id: int, region: str):
         try:
-            await self._tvdb.exec(
+            await db.execute_async(
                 """
                 INSERT INTO tempvoice_owner_prefs(owner_id, region, updated_at)
                 VALUES(?,?,CURRENT_TIMESTAMP)
@@ -559,7 +545,7 @@ class TempVoiceCore(commands.Cog):
 
     async def get_region_pref(self, owner_id: int) -> str:
         try:
-            row = await self._tvdb.fetchone(
+            row = await db.query_one_async(
                 "SELECT region FROM tempvoice_owner_prefs WHERE owner_id=?",
                 (int(owner_id),)
             )
@@ -588,7 +574,7 @@ class TempVoiceCore(commands.Cog):
             return
         self.lane_owner[lane.id] = member.id
         try:
-            await self._tvdb.exec(
+            await db.execute_async(
                 "UPDATE tempvoice_lanes SET owner_id=? WHERE channel_id=?",
                 (int(member.id), int(lane.id))
             )
@@ -611,7 +597,11 @@ class TempVoiceCore(commands.Cog):
 # ===== Öffentliche Fassade für das Interface =====
     @property
     def db(self):
-        return self._tvdb
+        # Legacy support property for interface.py compatibility if needed
+        # But interface.py should ideally be refactored too. 
+        # For now, we can return a dummy object or just assume callers 
+        # access db directly if we updated interface.py
+        return db 
 
     def first_guild(self):
         return self._first_guild()
