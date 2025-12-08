@@ -88,8 +88,8 @@ class BuildPublisher(commands.Cog):
         if not self.enabled:
             return {"skipped": 1}
 
-                    async with self._lock:
-                        stats = {"checked": 0, "queued": 0, "skipped": 0, "errors": 0, "cancelled_excess": 0}
+        async with self._lock:
+            stats = {"checked": 0, "queued": 0, "skipped": 0, "errors": 0, "cancelled_excess": 0}
             # Check if Steam bridge is ready
             conn = db.connect()
             cursor = conn.execute("""

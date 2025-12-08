@@ -192,7 +192,12 @@ function log(level, message, extra = undefined) {
     }
   }
   const line = JSON.stringify(payload) + '\n';
-  console.log(JSON.stringify(payload));
+  // Ignore EPIPE errors when parent process closes stdout
+  try {
+    console.log(JSON.stringify(payload));
+  } catch (err) {
+    // Ignore broken pipe errors (EPIPE)
+  }
   // Also write to file
   try {
     fs.appendFileSync(STEAM_LOG_FILE, line, 'utf8');
@@ -3410,5 +3415,10 @@ function shutdown(code = 0) {
 }
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
-process.on('uncaughtException', (err) => { log('error', 'Uncaught exception', { error: err && err.stack ? err.stack : err }); shutdown(1); });
+process.on('uncaughtException', (err) => {
+  // Ignore EPIPE errors (broken pipe when parent process closes stdout)
+  if (err && err.code === 'EPIPE') return;
+  log('error', 'Uncaught exception', { error: err && err.stack ? err.stack : err });
+  shutdown(1);
+});
 process.on('unhandledRejection', (err) => { log('error', 'Unhandled rejection', { error: err && err.stack ? err.stack : err }); });
