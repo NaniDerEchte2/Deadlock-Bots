@@ -2627,17 +2627,17 @@ function processNextTask() {
           }
 
           // Step 2: Find builds that need cloning or updating
-          // Get builds from the last 30 days
-          const thirtyDaysAgo = Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60);
+          // Get builds from the last 1.5 months (approx 45 days)
+          const fortyFiveDaysAgo = Math.floor(Date.now() / 1000) - (45 * 24 * 60 * 60);
 
           const sourceBuilds = db.prepare(`
-            SELECT hbs.*, wba.priority
+            SELECT hbs.*, wba.priority, wba.notes as author_name_override
             FROM hero_build_sources hbs
             LEFT JOIN watched_build_authors wba ON hbs.author_account_id = wba.author_account_id
             WHERE hbs.publish_ts >= ?
               AND hbs.language = 0  -- English builds only
             ORDER BY hbs.hero_id, COALESCE(wba.priority, 0) DESC, hbs.publish_ts DESC
-          `).all(thirtyDaysAgo);
+          `).all(fortyFiveDaysAgo);
 
           const heroBuildCounts = {};
 
@@ -2661,6 +2661,30 @@ function processNextTask() {
                 LIMIT 1
               `).get(sourceBuild.hero_build_id);
 
+              // Determine Author Name (DB Override > Steam API > ID)
+              let authorDisplayName = sourceBuild.author_name_override;
+              if (!authorDisplayName) {
+                 authorDisplayName = await getPersonaName(sourceBuild.author_account_id);
+              }
+              if (!authorDisplayName) {
+                 authorDisplayName = String(sourceBuild.author_account_id);
+              }
+
+              // Condensed Description (7 Lines Promo + 2 Lines Ref)
+              const descLines = [
+                "🇩🇪 Deutsche Deadlock Community",
+                "💬 Discord: discord.gg/XmnqMbUZ7Z",
+                "📺 Twitch: twitch.tv/EarlySalty",
+                "",
+                "🏆 Free Coaching, Patchnotes, Leaks & Events",
+                "⚔️ Suche Mates: Ranked, Grind & Fun (alle Ränge)",
+                "---",
+                `Original Author: ${authorDisplayName}`, // Line 8
+                `Original Build: ${sourceBuild.hero_build_id}` // Line 9
+              ];
+              const targetDesc = descLines.join('\n');
+              const targetName = 'EarlySalty - Deutsche Deadlock Community';
+
               if (existingClone) {
                 // Check if source is newer than clone
                 const sourceIsNewer =
@@ -2670,29 +2694,6 @@ function processNextTask() {
                 if (sourceIsNewer && existingClone.status !== 'processing') {
                   // Need to update the clone
                   stats.builds_to_update++;
-
-                  const targetName = 'EarlySalty - Deutsche Deadlock Community (Discord)';
-                  const descLines = [
-                    "🇩🇪 Deutsche Deadlock Community",
-                    "💬 Discord: discord.gg/XmnqMbUZ7Z",
-                    "📺 Twitch: twitch.tv/EarlySalty",
-                    "",
-                    "🏆 **Was wir bieten:**",
-                    "• 🎓 Free Coaching & Deutsche Patchnotes",
-                    "• 🤝 Mates für alle Ränge (auch Eternus)",
-                    "• 🕵️ Leaks & News",
-                    "• 🎮 Eigene Deadlock Games & Events",
-                    "",
-                    "⚔️ **Voice Kanäle:**",
-                    "• 🏅 **Ranked Grind:** Fokus auf Rang, Tryhard",
-                    "• ⚖️ **Grind:** Fokus auf Sieg, Rang-Cap ±2",
-                    "• 🤡 **Spaß Lane:** Austoben & Fun",
-                    "",
-                    "---",
-                    `Original Author ID: ${sourceBuild.author_account_id}`,
-                    `Original Build ID: ${sourceBuild.hero_build_id}`
-                  ];
-                  const targetDesc = descLines.join('\n');
 
                   // Update DB record
                   db.prepare('UPDATE hero_build_clones SET target_name = ?, target_description = ? WHERE id = ?').run(targetName, targetDesc, existingClone.id);
@@ -2728,29 +2729,6 @@ function processNextTask() {
 
                 // Insert into hero_build_clones first to track it
                 try {
-                  const targetName = 'EarlySalty - Deutsche Deadlock Community (Discord)';
-                  const descLines = [
-                    "🇩🇪 Deutsche Deadlock Community",
-                    "💬 Discord: discord.gg/XmnqMbUZ7Z",
-                    "📺 Twitch: twitch.tv/EarlySalty",
-                    "",
-                    "🏆 **Was wir bieten:**",
-                    "• 🎓 Free Coaching & Deutsche Patchnotes",
-                    "• 🤝 Mates für alle Ränge (auch Eternus)",
-                    "• 🕵️ Leaks & News",
-                    "• 🎮 Eigene Deadlock Games & Events",
-                    "",
-                    "⚔️ **Voice Kanäle:**",
-                    "• 🏅 **Ranked Grind:** Fokus auf Rang, Tryhard",
-                    "• ⚖️ **Grind:** Fokus auf Sieg, Rang-Cap ±2",
-                    "• 🤡 **Spaß Lane:** Austoben & Fun",
-                    "",
-                    "---",
-                    `Original Author ID: ${sourceBuild.author_account_id}`,
-                    `Original Build ID: ${sourceBuild.hero_build_id}`
-                  ];
-                  const targetDesc = descLines.join('\n');
-                  
                   insertHeroBuildCloneStmt.run(
                     sourceBuild.hero_build_id,
                     sourceBuild.origin_build_id || 0,
@@ -2793,121 +2771,6 @@ function processNextTask() {
             } catch (err) {
               log('error', 'MAINTAIN_BUILD_CATALOG: Failed to process build', {
                 hero_build_id: sourceBuild.hero_build_id,
-                error: err.message
-              });
-            }
-          }
-
-          // Step 3: Ensure hero coverage (at least one build per hero)
-          // Get all heroes that have builds in our source database
-          const allHeroIds = db.prepare(`
-            SELECT DISTINCT hero_id FROM hero_build_sources
-            ORDER BY hero_id
-          `).all().map(row => row.hero_id);
-
-          // Get heroes that already have German clones
-          const heroesWithGermanBuilds = db.prepare(`
-            SELECT DISTINCT hbs.hero_id
-            FROM hero_build_clones hbc
-            JOIN hero_build_sources hbs ON hbc.origin_hero_build_id = hbs.hero_build_id
-            WHERE hbc.target_language = 1  -- German
-              AND hbc.status = 'done'
-          `).all().map(row => row.hero_id);
-
-          const heroesWithGermanBuildsSet = new Set(heroesWithGermanBuilds);
-          const missingHeroes = allHeroIds.filter(heroId => !heroesWithGermanBuildsSet.has(heroId));
-
-          log('info', 'MAINTAIN_BUILD_CATALOG: Hero coverage check', {
-            total_heroes: allHeroIds.length,
-            covered_heroes: heroesWithGermanBuilds.length,
-            missing_heroes: missingHeroes.length
-          });
-
-          // For each missing hero, find the most popular build from API
-          for (const heroId of missingHeroes) {
-            try {
-              log('info', 'MAINTAIN_BUILD_CATALOG: Fetching popular build for missing hero', { hero_id: heroId });
-              
-              const builds = await sendFindBuildsRequest({
-                heroId: heroId,
-                sortBy: 'favorites', 
-                sortDirection: 'desc',
-                onlyLatest: true,
-                buildLanguage: 'English',
-                limit: 1
-              });
-
-              if (builds && builds.length > 0) {
-                const popularBuild = builds[0];
-                
-                // Must upsert to DB first so BUILD_PUBLISH can find it
-                upsertBuildsToDatabase([popularBuild]);
-
-                // Check if there's already a task for this build
-                const existingTask = db.prepare(`
-                  SELECT id FROM steam_tasks
-                  WHERE type = 'BUILD_PUBLISH'
-                    AND payload LIKE ?
-                    AND status IN ('PENDING', 'RUNNING')
-                  LIMIT 1
-                `).get(`%"origin_hero_build_id":${popularBuild.hero_build_id}%`);
-
-                if (!existingTask) {
-                  // Ensure we have a clone record
-                  const existingClone = db.prepare('SELECT id FROM hero_build_clones WHERE origin_hero_build_id = ?').get(popularBuild.hero_build_id);
-                  
-                  if (!existingClone) {
-                    try {
-                      const targetName = 'Deutsche Deadlock Community x EarlySalty';
-                      const targetDesc = `Original Author: ${popularBuild.author_account_id}\nOriginal Build: ${popularBuild.hero_build_id}`;
-                      
-                      insertHeroBuildCloneStmt.run(
-                        popularBuild.hero_build_id,
-                        popularBuild.origin_build_id || 0,
-                        popularBuild.hero_id,
-                        popularBuild.author_account_id,
-                        popularBuild.language,
-                        popularBuild.version,
-                        popularBuild.last_updated_ts,
-                        1, // target_language (German)
-                        targetName,
-                        targetDesc
-                      );
-                    } catch (e) {
-                      log('warn', 'MAINTAIN_BUILD_CATALOG: Failed to insert clone record for popular build', { error: e.message });
-                    }
-                  }
-
-                  db.prepare(`
-                    INSERT INTO steam_tasks (type, payload, status, created_at, updated_at)
-                    VALUES ('BUILD_PUBLISH', ?, 'PENDING', ?, ?)
-                  `).run(
-                    JSON.stringify({
-                      origin_hero_build_id: popularBuild.hero_build_id,
-                      minimal: false,
-                      target_language: 1  // German
-                    }),
-                    now,
-                    now
-                  );
-
-                  stats.tasks_created++;
-                  log('info', 'MAINTAIN_BUILD_CATALOG: Queued popular build for missing hero', {
-                    hero_id: heroId,
-                    origin_id: popularBuild.hero_build_id,
-                    name: popularBuild.name
-                  });
-                }
-              } else {
-                log('warn', 'MAINTAIN_BUILD_CATALOG: No popular build found via API for hero', { hero_id: heroId });
-              }
-              
-              // Rate limit slightly
-              await new Promise(resolve => setTimeout(resolve, 500));
-              
-            } catch (err) {
-              log('error', 'MAINTAIN_BUILD_CATALOG: Failed to process missing hero', {
-                hero_id: heroId,
                 error: err.message
               });
             }
