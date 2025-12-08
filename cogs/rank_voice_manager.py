@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Dict, Tuple, List, Optional, Set
@@ -228,13 +227,12 @@ class RolePermissionVoiceManager(commands.Cog):
             for guild in self.bot.guilds:
                 await self._db_load_state_for_guild(guild)
 
-            logger.info("RolePermissionVoiceManager Cog erfolgreich geladen")
-            print("✅ RolePermissionVoiceManager Cog geladen")
+            logger.info("RolePermissionVoiceManager Cog geladen")
             monitored_list = ", ".join(str(cid) for cid in self.monitored_categories.keys())
-            print(f"   Überwachte Kategorien: {monitored_list}")
-            print(f"   Überwachte Rollen: {len(self.discord_rank_roles)}")
-            print(f"   Ausgeschlossene Kanäle: {len(self.excluded_channel_ids)}")
-            print("   🔧 Persistenz: zentrale DB (Settings & Anker)")
+            logger.info(f"   Überwachte Kategorien: {monitored_list}")
+            logger.info(f"   Überwachte Rollen: {len(self.discord_rank_roles)}")
+            logger.info(f"   Ausgeschlossene Kanäle: {len(self.excluded_channel_ids)}")
+            logger.info("   🔧 Persistenz: zentrale DB (Settings & Anker)")
         except Exception as e:
             logger.error(f"Fehler beim Laden des RolePermissionVoiceManager Cogs: {e}")
             raise
@@ -252,8 +250,7 @@ class RolePermissionVoiceManager(commands.Cog):
                     logger.debug("Failed to cancel rename task: %s", exc, exc_info=True)
             self._rename_tasks.clear()
             self._pending_channel_renames.clear()
-            logger.info("RolePermissionVoiceManager Cog erfolgreich entladen")
-            print("✅ RolePermissionVoiceManager Cog entladen")
+            logger.info("RolePermissionVoiceManager Cog entladen")
         except Exception as e:
             logger.error(f"Fehler beim Entladen des RolePermissionVoiceManager Cogs: {e}")
 

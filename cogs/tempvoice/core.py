@@ -494,26 +494,51 @@ class TempVoiceCore(commands.Cog):
             log.debug("dispatch lane_deleted failed for %s: %r", lane_id, e)
 
     # --------- Öffentliche Helfer (von UI aufgerufen) ---------
-    async def parse_user_identifier(self, guild: discord.Guild, raw: str) -> Optional[int]:
+    async def parse_user_identifier(self, guild: discord.Guild, raw: str) -> Tuple[Optional[int], Optional[str]]:
         s = raw.strip()
-        if s.startswith("<@") and s.endswith(">"):
-            digits = "".join(ch for ch in s if ch.isdigit())
-            if digits:
-                return int(digits)
-        if s.startswith("@"):
-            s = s[1:].strip()
-        if s.isdigit():
-            return int(s)
+        if not s:
+            return None, "Eingabe ist leer."
 
-        low = s.lower()
-        matches: List[int] = []
+        # 1. Direkte User Mention (<@ID> oder <@!ID>)
+        mention_match = re.match(r"<@!?(\d+)>", s)
+        if mention_match:
+            try:
+                user_id = int(mention_match.group(1))
+                return user_id, None
+            except ValueError:
+                return None, "Ungültiges Format für User-Erwähnung."
+
+        # 2. Reine ID
+        if s.isdigit():
+            return int(s), None
+
+        # 3. Name (mit oder ohne '@')
+        name_search = s
+        if name_search.startswith("@"):
+            name_search = name_search[1:].strip()
+            if not name_search:
+                return None, "Nach '@' fehlt der Name."
+
+        low_name_search = name_search.lower()
+        matches: List[discord.Member] = []
         for m in guild.members:
-            names = {m.name, getattr(m, "global_name", None), m.display_name}
-            if any(n and n.lower() == low for n in names):
-                matches.append(m.id)
+            # Check display_name, global_name, and name
+            if m.display_name and m.display_name.lower() == low_name_search:
+                matches.append(m)
+            elif m.global_name and m.global_name.lower() == low_name_search:
+                matches.append(m)
+            elif m.name and m.name.lower() == low_name_search:
+                matches.append(m)
+
         if len(matches) == 1:
-            return matches[0]
-        return None
+            return matches[0].id, None
+        elif len(matches) > 1:
+            match_names = ", ".join([f"{m.display_name} ({m.id})" for m in matches[:5]])
+            if len(matches) > 5:
+                match_names += ", ..."
+            return None, f"Mehrere User gefunden: {match_names}. Bitte ID nutzen."
+        
+        return None, "Nutzer nicht gefunden."
 
     async def resolve_member(self, guild: discord.Guild, user_id: int) -> Optional[discord.Member]:
         """Finde ein Member-Objekt für set_permissions (inkl. Fetch-Fallback)."""

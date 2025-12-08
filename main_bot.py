@@ -248,31 +248,6 @@ class MasterBot(commands.Bot):
         self.dashboard: Optional[DashboardServer] = None  # Set by DashboardCog
         self._dashboard_start_task: Optional[asyncio.Task[None]] = None  # Legacy, kept for compatibility
 
-        # NOTE: Dashboard initialization moved to cogs/dashboard_cog.py
-        # The dashboard will be loaded as a cog during auto-discovery
-        # Old initialization code kept here for reference:
-        # dash_env = (os.getenv("MASTER_DASHBOARD_ENABLED", "1") or "1").lower()
-        # dashboard_enabled = dash_env in {"1", "true", "yes", "on"}
-        # if dashboard_enabled:
-        #     host = os.getenv("MASTER_DASHBOARD_HOST", "127.0.0.1")
-        #     try:
-        #         port = int(os.getenv("MASTER_DASHBOARD_PORT", "8766"))
-        #     except ValueError:
-        #         logging.error("MASTER_DASHBOARD_PORT ist ungültig – verwende 8766")
-        #         port = 8766
-        #     token = os.getenv("MASTER_DASHBOARD_TOKEN")
-        #     if DashboardServer is None:
-        #         logging.warning("DashboardServer nicht verfügbar - Dashboard wird deaktiviert")
-        #     else:
-        #         try:
-        #             self.dashboard = DashboardServer(self, host=host, port=port, token=token)
-        #             logging.info("Dashboard initialisiert (Host %s, Port %s)", host, port)
-        #         except Exception as e:
-        #             logging.error("Konnte Dashboard nicht initialisieren: %s", e)
-        # else:
-        #     logging.info("Master Dashboard deaktiviert (MASTER_DASHBOARD_ENABLED=0)")
-
-
         self.standalone_manager: Optional[StandaloneBotManager] = None
         if StandaloneBotManager is not None and StandaloneBotConfig is not None:
             try:
@@ -651,18 +626,6 @@ class MasterBot(commands.Bot):
 
         _init_db_if_available()
         await self.load_all_cogs()
-
-        # NOTE: Dashboard startup is now handled by DashboardCog
-        # The dashboard will be started automatically when the cog loads
-        # Old startup code kept for reference:
-        # logging.info(
-        #     "Dashboard available=%s current_start_task=%s",
-        #     bool(self.dashboard),
-        #     bool(self._dashboard_start_task),
-        # )
-        # if self.dashboard and (self._dashboard_start_task is None or self._dashboard_start_task.done()):
-        #     logging.info("Scheduling dashboard HTTP server startup task...")
-        #     self._dashboard_start_task = asyncio.create_task(self._start_dashboard_background())
 
         try:
             synced = await self.tree.sync()

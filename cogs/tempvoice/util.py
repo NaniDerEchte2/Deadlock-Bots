@@ -41,9 +41,9 @@ class TempVoiceUtil:
 
     async def ban(self, lane: discord.VoiceChannel, owner_id: int, raw: str) -> Tuple[bool, str]:
         # @Mention, Name oder ID robust auflösen
-        uid = await self.core.parse_user_identifier(lane.guild, raw)
+        uid, err_msg = await self.core.parse_user_identifier(lane.guild, raw)
         if not uid:
-            return False, "Konnte den Nutzer nicht eindeutig erkennen. Bitte @Mention oder numerische ID angeben."
+            return False, f"Konnte den Nutzer nicht finden. {err_msg or 'Bitte @Erwähnung oder ID angeben.'}"
 
         # Persistenter Owner-Ban (DB) + Permission Overwrite
         try:
@@ -73,13 +73,13 @@ class TempVoiceUtil:
             logger.debug("Owner-Ban: Member %s nicht in Guild %s - nur Persistenz", uid, lane.guild.id)
 
         if overwrite_applied:
-            return True, "Nutzer gebannt (owner-persistent)."
-        return True, "Nutzer gebannt (owner-persistent). Hinweis: Nutzer ist aktuell nicht auf dem Server; Sperre greift beim nächsten Join."
+            return True, "User gebannt (dauerhaft für diesen Owner)."
+        return True, "User gebannt (dauerhaft für diesen Owner). Hinweis: User ist aktuell nicht auf dem Server; Sperre greift beim nächsten Join."
 
     async def unban(self, lane: discord.VoiceChannel, owner_id: int, raw: str) -> Tuple[bool, str]:
-        uid = await self.core.parse_user_identifier(lane.guild, raw)
+        uid, err_msg = await self.core.parse_user_identifier(lane.guild, raw)
         if not uid:
-            return False, "Konnte den Nutzer nicht eindeutig erkennen. Bitte @Mention oder numerische ID angeben."
+            return False, f"Konnte den Nutzer nicht finden. {err_msg or 'Bitte @Erwähnung oder ID angeben.'}"
 
         try:
             await self.core.bans.remove_ban(int(owner_id), int(uid))
@@ -93,7 +93,7 @@ class TempVoiceUtil:
                     target_member,
                     overwrite=None, reason="TempVoice: Owner-Unban"
                 )
-                return True, "Nutzer entbannt."
+                return True, "User entbannt."
             except discord.Forbidden:
                 logger.warning("Owner-Unban set_permissions: fehlende Rechte (owner=%s, target=%s, lane=%s)", owner_id, uid, lane.id)
                 return False, "Konnte Unban nicht setzen (fehlende Rechte)."
@@ -104,7 +104,7 @@ class TempVoiceUtil:
                 logger.exception("Owner-Unban set_permissions: unerwarteter Fehler (owner=%s, target=%s, lane=%s)", owner_id, uid, lane.id)
                 return False, "Konnte Unban nicht setzen."
         logger.debug("Owner-Unban: Member %s nicht in Guild %s - nur Datenbankeintrag entfernt", uid, lane.guild.id)
-        return True, "Nutzer entbannt (es waren keine aktiven Channel-Rechte vorhanden)."
+        return True, "User entbannt (es waren keine aktiven Channel-Rechte vorhanden)."
 
     async def make_lurker(self, lane: discord.VoiceChannel, target_id: int) -> Tuple[bool, str]:
         target = lane.guild.get_member(int(target_id))

@@ -78,10 +78,10 @@ class TempVoiceInterface(commands.Cog):
         embed = discord.Embed(
             title="TempVoice Interface",
             description=(
-                "• Join einen **Staging-Channel** → deine Lane wird erstellt und du wirst gemoved.\n"
-                "• **Steuerung (hier im Interface)**:\n"
+                "• Geh in einen **(+) Channel** → deine Lane wird sofort erstellt.\n"
+                "• **Einstellungen für deine Lane**:\n"
                 "  - 🇩🇪/🇪🇺 Sprachfilter (Rolle „English Only“)\n"
-                "  - 👑 Owner Claim (übernimmt die Lane)\n"
+                "  - 👑 Owner Claim (übernimm die Lane)\n"
                 "  - 🎚️ Limit setzen (0–99)\n"
                 "  - 👢 Kick / 🚫 Ban / ♻️ Unban\n"
                 "  - 🪪 Mindest-Rang (Grind & Ranked)"
