@@ -3222,7 +3222,7 @@ if (typeof quickInvites.startAutoEnsure === 'function') {
 
 // ---------- Build Catalog Maintenance ----------
 // Periodically maintain the build catalog (discovery + cloning + updates)
-const CATALOG_MAINTENANCE_INTERVAL_MS = parseInt(process.env.CATALOG_MAINTENANCE_INTERVAL_MS || '1800000', 10); // Default: 30 minutes
+const CATALOG_MAINTENANCE_INTERVAL_MS = parseInt(process.env.CATALOG_MAINTENANCE_INTERVAL_MS || '600000', 10); // Default: 10 minutes
 
 function scheduleCatalogMaintenance() {
   try {
