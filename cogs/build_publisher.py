@@ -26,7 +26,7 @@ class BuildPublisher(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.enabled = True
+        self.enabled = False  # DISABLED - Fixing priority order!
         self.interval_seconds = 10 * 60  # 10 minutes
         self.monitor_interval_seconds = 2 * 60  # 2 minutes for task monitoring
         self.max_attempts = 3
@@ -88,9 +88,8 @@ class BuildPublisher(commands.Cog):
         if not self.enabled:
             return {"skipped": 1}
 
-        async with self._lock:
-            stats = {"checked": 0, "queued": 0, "skipped": 0, "errors": 0}
-
+                    async with self._lock:
+                        stats = {"checked": 0, "queued": 0, "skipped": 0, "errors": 0, "cancelled_excess": 0}
             # Check if Steam bridge is ready
             conn = db.connect()
             cursor = conn.execute("""
@@ -139,15 +138,32 @@ class BuildPublisher(commands.Cog):
             self.consecutive_skips = 0
 
             try:
-                # Get pending clones
+                # Get pending clones, applying the 3-build-per-hero rule based on priority
                 cursor = conn.execute(
                     """
+                    WITH RankedClones AS (
+                        SELECT
+                            hbc.origin_hero_build_id,
+                            hbc.hero_id,
+                            hbc.target_language,
+                            hbc.target_name,
+                            hbc.target_description,
+                            hbc.attempts,
+                            hbs.publish_ts, -- Needed for sorting
+                            wba.priority,   -- Needed for sorting
+                            hbc.created_at, -- Also needed for final order
+                            ROW_NUMBER() OVER(PARTITION BY hbc.hero_id ORDER BY COALESCE(wba.priority, 0) ASC, hbs.publish_ts DESC, hbc.created_at ASC) as rn
+                        FROM hero_build_clones hbc
+                        INNER JOIN hero_build_sources hbs ON hbc.origin_hero_build_id = hbs.hero_build_id
+                        LEFT JOIN watched_build_authors wba ON hbs.author_account_id = wba.author_account_id
+                        WHERE hbc.status = 'pending'
+                          AND hbc.attempts < ?
+                    )
                     SELECT origin_hero_build_id, hero_id, target_language,
                            target_name, target_description, attempts
-                    FROM hero_build_clones
-                    WHERE status = 'pending'
-                      AND attempts < ?
-                    ORDER BY created_at ASC
+                    FROM RankedClones
+                    WHERE rn <= 3
+                    ORDER BY created_at ASC -- Process oldest valid tasks first
                     LIMIT ?
                     """,
                     (self.max_attempts, self.batch_size),
@@ -226,6 +242,32 @@ class BuildPublisher(commands.Cog):
                 # NOTE: Do NOT close the connection - it's the global shared connection
                 # managed by service/db.py. Closing it breaks all other cogs!
                 # conn.close()  # ❌ REMOVED
+
+                # After processing, mark any remaining 'pending' builds that are not in the top 3 as cancelled.
+                # This ensures the DB is cleaned of old, irrelevant pending tasks.
+                # This query uses a CTE to rank all pending builds and updates those with rank > 3.
+                cancel_cursor = conn.execute(
+                    """
+                    WITH RankedPendingClones AS (
+                        SELECT
+                            hbc.ROWID,
+                            ROW_NUMBER() OVER(PARTITION BY hbc.hero_id ORDER BY COALESCE(wba.priority, 0) ASC, hbs.publish_ts DESC, hbc.created_at ASC) as rn
+                        FROM hero_build_clones hbc
+                        INNER JOIN hero_build_sources hbs ON hbc.origin_hero_build_id = hbs.hero_build_id
+                        LEFT JOIN watched_build_authors wba ON hbs.author_account_id = wba.author_account_id
+                        WHERE hbc.status = 'pending'
+                          AND hbc.attempts < ?
+                    )
+                    UPDATE hero_build_clones
+                    SET status = 'cancelled',
+                        status_info = 'Cancelled: Excluded by 3-build-per-hero rule based on priority/recency.'
+                    WHERE ROWID IN (SELECT ROWID FROM RankedPendingClones WHERE rn > 3);
+                    """,
+                    (self.max_attempts,)
+                )
+                stats["cancelled_excess"] = cancel_cursor.rowcount
+                if stats["cancelled_excess"] > 0:
+                    log.info("Build publisher: Cancelled %s excess pending builds due to 3-build-per-hero rule.", stats["cancelled_excess"])
 
                 self.last_run_ts = int(time.time())
                 self.last_error = None

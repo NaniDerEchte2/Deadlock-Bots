@@ -56,13 +56,11 @@ Siehe [docs/build-publishing/START.txt](docs/build-publishing/START.txt) für De
 Deadlock/
 ├── main_bot.py              # Haupt-Bot
 ├── cogs/                    # Discord Cogs
-│   ├── build_mirror.py     # Build-Sync (alle 4h)
-│   ├── build_publisher.py  # Build-Publishing-Worker
-│   ├── steam/              # Steam-Integration
+│   ├── build_publisher.py  # Build-Publishing-Worker (Python)
+│   ├── steam/              # Steam-Integration (Node.js Build fetching)
 │   └── ...                 # Weitere Cogs
 ├── service/                 # Business Logic
 │   ├── db.py               # Datenbank
-│   ├── hero_builds.py      # Build-Logik
 │   └── standalone_manager.py
 ├── data/                    # Datenbank & Exports
 ├── logs/                    # Log-Dateien
@@ -109,7 +107,7 @@ tail -f logs/deadlock_voice_status.log
 ### Bei Problemen
 
 1. **Logs prüfen** (siehe oben)
-2. **Status-Scripts** ausführen
+2. **Datenbank-Status** direkt prüfen (z.B. mit DB Browser for SQLite)
 3. **Dokumentation** in `docs/` lesen
 
 ### Build-Publishing Issues

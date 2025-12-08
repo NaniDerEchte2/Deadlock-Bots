@@ -174,12 +174,10 @@ self.max_attempts = 3              # Max Retries
 self.batch_size = 5                # Builds pro Run
 ```
 
-### Build Mirror (`cogs/build_mirror.py`)
+### Build Fetching (Node.js `index.js` - DISCOVER_WATCHED_BUILDS)
 
-```python
-self.interval_seconds = 4 * 60 * 60  # Intervall (4h)
-self.only_latest = True              # Nur neueste Builds
-```
+Build fetching wird automatisch vom Node.js Steam Bridge durchgeführt.
+Konfiguration erfolgt über `watched_build_authors` Tabelle in der Datenbank.
 
 ### Steam-Bridge (Umgebungsvariablen)
 

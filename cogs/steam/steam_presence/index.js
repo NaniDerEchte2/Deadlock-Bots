@@ -729,7 +729,7 @@ function composeBuildDescription(base, originId, authorName) {
   const desc = (base || '').trim();
   if (desc) parts.push(desc);
   parts.push('www.twitch.tv/earlysalty (deutsch)');
-  parts.push('Deutsche Deadlock Community: discord.gg/z5TfVHuQq2');
+  parts.push('Deutsche Deadlock Community: discord.gg/XmnqMbUZ7Z');
   if (originId) parts.push(`Original Build ID: ${originId}`);
   if (authorName) parts.push(`Original Author: ${authorName}`);
   return parts.join('\n');
@@ -2669,7 +2669,7 @@ function processNextTask() {
                   const targetName = 'EarlySalty - Deutsche Deadlock Community (Discord)';
                   const descLines = [
                     "🇩🇪 Deutsche Deadlock Community",
-                    "💬 Discord: discord.gg/z5TfVHuQq2",
+                    "💬 Discord: discord.gg/XmnqMbUZ7Z",
                     "📺 Twitch: twitch.tv/EarlySalty",
                     "",
                     "🏆 **Was wir bieten:**",
@@ -2726,7 +2726,7 @@ function processNextTask() {
                   const targetName = 'EarlySalty - Deutsche Deadlock Community (Discord)';
                   const descLines = [
                     "🇩🇪 Deutsche Deadlock Community",
-                    "💬 Discord: discord.gg/z5TfVHuQq2",
+                    "💬 Discord: discord.gg/XmnqMbUZ7Z",
                     "📺 Twitch: twitch.tv/EarlySalty",
                     "",
                     "🏆 **Was wir bieten:**",
