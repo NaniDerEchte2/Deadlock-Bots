@@ -2673,11 +2673,11 @@ function processNextTask() {
               // Condensed Description (7 Lines Promo + 2 Lines Ref)
               const descLines = [
                 "🇩🇪 Deutsche Deadlock Community",
-                "💬 Discord: discord.gg/XmnqMbUZ7Z",
+                "💬 Discord: Scrolle links ganz nach unten,",
+                "klicke auf ➕ -> 'Server beitreten'",
+                "und gib den Code ein: XmnqMbUZ7Z",
                 "📺 Twitch: twitch.tv/EarlySalty",
-                "",
                 "🏆 Free Coaching, Patchnotes, Leaks & Events",
-                "⚔️ Suche Mates: Ranked, Grind & Fun (alle Ränge)",
                 "---",
                 `Original Author: ${authorDisplayName}`, // Line 8
                 `Original Build: ${sourceBuild.hero_build_id}` // Line 9
