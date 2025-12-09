@@ -755,10 +755,10 @@ class TempVoiceCore(commands.Cog):
 
     async def _persist_lane_base(self, lane_id: int, base_name: str) -> None:
         self.lane_base[lane_id] = base_name
-        if not self._tvdb.connected:
+        if not db.is_connected():
             return
         try:
-            await self._tvdb.exec(
+            await db.execute_async(
                 "UPDATE tempvoice_lanes SET base_name=? WHERE channel_id=?",
                 (base_name, int(lane_id)),
             )
@@ -961,7 +961,7 @@ class TempVoiceCore(commands.Cog):
                 self.join_time.setdefault(lane.id, {})
 
                 try:
-                    await self._tvdb.exec(
+                    await db.execute_async(
                         "INSERT OR REPLACE INTO tempvoice_lanes(channel_id, guild_id, owner_id, base_name, category_id) "
                         "VALUES(?,?,?,?,?)",
                         (int(lane.id), int(guild.id), int(member.id), base, int(cat.id) if cat else 0)
@@ -1099,7 +1099,7 @@ class TempVoiceCore(commands.Cog):
                         new_owner_member = candidates[0]
                         self.lane_owner[ch.id] = new_owner_member.id
                         try:
-                            await self._tvdb.exec(
+                            await db.execute_async(
                                 "UPDATE tempvoice_lanes SET owner_id=? WHERE channel_id=?",
                                 (int(self.lane_owner[ch.id]), int(ch.id))
                             )
@@ -1136,7 +1136,7 @@ class TempVoiceCore(commands.Cog):
                     self.lane_base[ch.id] = base_name
                     self.created_channels.add(ch.id)
                     try:
-                        await self._tvdb.exec(
+                        await db.execute_async(
                             """
                             INSERT INTO tempvoice_lanes(channel_id, guild_id, owner_id, base_name, category_id)
                             VALUES(?,?,?,?,?)

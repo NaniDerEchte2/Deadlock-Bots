@@ -26,7 +26,7 @@ class BuildPublisher(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.enabled = False  # DISABLED - Fixing priority order!
+        self.enabled = True  # ENABLED - Clean start with strict schema
         self.interval_seconds = 10 * 60  # 10 minutes
         self.monitor_interval_seconds = 2 * 60  # 2 minutes for task monitoring
         self.max_attempts = 3

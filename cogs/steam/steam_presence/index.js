@@ -426,7 +426,7 @@ async function sendFindBuildsRequest(params = {}) {
     const url = new URL(DEADLOCK_API_BASE_URL);
 
     // Set default parameters
-    if (params.authorAccountId) url.searchParams.set('author_account_id', params.authorAccountId);
+    if (params.authorAccountId) url.searchParams.set('author_id', params.authorAccountId);
     if (params.heroId) url.searchParams.set('hero_id', params.heroId);
     if (params.heroBuildId) url.searchParams.set('hero_build_id', params.heroBuildId);
     if (params.minPublishedUnixTimestamp) url.searchParams.set('min_published_unix_timestamp', params.minPublishedUnixTimestamp);
@@ -2633,10 +2633,11 @@ function processNextTask() {
           const sourceBuilds = db.prepare(`
             SELECT hbs.*, wba.priority, wba.notes as author_name_override
             FROM hero_build_sources hbs
-            LEFT JOIN watched_build_authors wba ON hbs.author_account_id = wba.author_account_id
+            INNER JOIN watched_build_authors wba ON hbs.author_account_id = wba.author_account_id
             WHERE hbs.publish_ts >= ?
               AND hbs.language = 0  -- English builds only
-            ORDER BY hbs.hero_id, COALESCE(wba.priority, 0) DESC, hbs.publish_ts DESC
+              AND wba.is_active = 1  -- Only active watched authors
+            ORDER BY hbs.hero_id, wba.priority ASC, hbs.publish_ts DESC
           `).all(fortyFiveDaysAgo);
 
           const heroBuildCounts = {};
@@ -2670,17 +2671,22 @@ function processNextTask() {
                  authorDisplayName = String(sourceBuild.author_account_id);
               }
 
-              // Condensed Description (7 Lines Promo + 2 Lines Ref)
+              // Plain text Description (no emojis)
               const descLines = [
-                "🇩🇪 Deutsche Deadlock Community",
-                "💬 Discord: Scrolle links ganz nach unten,",
-                "klicke auf ➕ -> 'Server beitreten'",
-                "und gib den Code ein: XmnqMbUZ7Z",
-                "📺 Twitch: twitch.tv/EarlySalty",
-                "🏆 Free Coaching, Patchnotes, Leaks & Events",
+                "Deutsche Deadlock Community",
+                "",
+                "Discord Server beitreten:",
+                "  - Scrolle in Discord links ganz nach unten",
+                "  - Klicke auf das + Symbol",
+                "  - Waehle 'Server beitreten'",
+                "  - Gib den Code ein: XmnqMbUZ7Z",
+                "",
+                "Twitch: twitch.tv/EarlySalty",
+                "Kostenlos: Coaching, Patchnotes, Leaks & Events",
+                "",
                 "---",
-                `Original Author: ${authorDisplayName}`, // Line 8
-                `Original Build: ${sourceBuild.hero_build_id}` // Line 9
+                `Original Author: ${authorDisplayName}`,
+                `Original Build: ${sourceBuild.hero_build_id}`
               ];
               const targetDesc = descLines.join('\n');
               const targetName = 'EarlySalty - Deutsche Deadlock Community';

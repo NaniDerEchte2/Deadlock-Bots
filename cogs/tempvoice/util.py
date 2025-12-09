@@ -106,56 +106,79 @@ class TempVoiceUtil:
         logger.debug("Owner-Unban: Member %s nicht in Guild %s - nur Datenbankeintrag entfernt", uid, lane.guild.id)
         return True, "User entbannt (es waren keine aktiven Channel-Rechte vorhanden)."
 
-    async def make_lurker(self, lane: discord.VoiceChannel, target_id: int) -> Tuple[bool, str]:
+    async def toggle_lurker(self, lane: discord.VoiceChannel, target_id: int) -> Tuple[bool, str]:
         target = lane.guild.get_member(int(target_id))
         if not target:
             return False, "Nutzer nicht gefunden."
         if not target.voice or target.voice.channel != lane:
             return False, "Nutzer muss in der Lane sein."
 
-        role = discord.utils.get(lane.guild.roles, name="Lurker")
+        role = lane.guild.get_role(1447747896253485127) # Hardcoded Lurker Role ID
         if not role:
-            return False, "Rolle 'Lurker' existiert nicht auf dem Server."
+            return False, "Die konfigurierte Lurker-Rolle (ID 1447747896253485127) existiert nicht auf dem Server."
 
-        # 1. DB Save first (so we have original state)
-        # We assume if they are already lurker, we might overwrite?
-        # Better: check if already lurker.
-        existing = await self.core.lurkers.get_lurker(lane.id, target.id)
-        if existing:
-            return False, "Nutzer ist bereits Lurker."
+        existing_lurker_data = await self.core.lurkers.get_lurker(lane.id, target.id)
 
-        original_nick = target.nick  # Can be None
+        if existing_lurker_data: # User is currently a lurker, so remove
+            try:
+                await self.core.lurkers.remove_lurker(lane.id, target.id)
+            except Exception as e:
+                logger.error("toggle_lurker DB remove error: %r", e)
+                return False, "Datenbankfehler beim Entfernen des Lurker-Status."
 
-        try:
-            await self.core.lurkers.add_lurker(lane.guild.id, lane.id, target.id, original_nick)
-        except Exception as e:
-            logger.error("make_lurker DB error: %r", e)
-            return False, "Datenbankfehler."
+            try:
+                if role in target.roles:
+                    await target.remove_roles(role, reason="TempVoice: Remove Lurker")
+            except discord.Forbidden:
+                return False, "Fehlende Berechtigung für Rolle 'Lurker' zu entfernen."
+            except Exception as e:
+                logger.error("toggle_lurker remove_roles error: %r", e)
+                return False, "Konnte Rolle nicht entfernen."
 
-        # 2. Add Role
-        try:
-            await target.add_roles(role, reason="TempVoice: Make Lurker")
-        except discord.Forbidden:
-             await self.core.lurkers.remove_lurker(lane.id, target.id)
-             return False, "Fehlende Berechtigung für Rolle 'Lurker'."
-        except Exception as e:
-             await self.core.lurkers.remove_lurker(lane.id, target.id)
-             logger.error("make_lurker add_roles error: %r", e)
-             return False, "Konnte Rolle nicht vergeben."
+            # Restore original nickname
+            original_nick = existing_lurker_data.get("original_nick")
+            try:
+                await target.edit(nick=original_nick, reason="TempVoice: Restore Nick")
+            except discord.Forbidden:
+                pass # Not critical, continue
+            except Exception as e:
+                logger.warning("toggle_lurker nick restore failed: %r", e)
 
-        # 3. Change Nickname
-        try:
-            await target.edit(nick="Lurker", reason="TempVoice: Make Lurker")
-        except discord.Forbidden:
-            # Not critical, but annoying. We continue.
-            pass
-        except Exception as e:
-            logger.warning("make_lurker nick change failed: %r", e)
+            # Decrease Limit
+            if lane.user_limit > 0:
+                new_limit = max(0, lane.user_limit - 1)
+                await self.core.safe_edit_channel(lane, desired_limit=new_limit, reason="TempVoice: Lurker removed")
 
-        # 4. Increase Limit
-        if lane.user_limit > 0:
-            new_limit = min(99, lane.user_limit + 1)
-            await self.core.safe_edit_channel(lane, desired_limit=new_limit, reason="TempVoice: Lurker added")
+            return True, f"{target.display_name} ist kein Lurker mehr."
 
-        return True, f"{target.display_name} ist jetzt Lurker."
+        else: # User is not a lurker, so add
+            original_nick = target.nick
 
+            try:
+                await self.core.lurkers.add_lurker(lane.guild.id, lane.id, target.id, original_nick)
+            except Exception as e:
+                logger.error("toggle_lurker DB add error: %r", e)
+                return False, "Datenbankfehler beim Hinzufügen des Lurker-Status."
+
+            try:
+                await target.add_roles(role, reason="TempVoice: Make Lurker")
+            except discord.Forbidden:
+                await self.core.lurkers.remove_lurker(lane.id, target.id) # Rollback DB
+                return False, "Fehlende Berechtigung für Rolle 'Lurker' zu vergeben."
+            except Exception as e:
+                await self.core.lurkers.remove_lurker(lane.id, target.id) # Rollback DB
+                logger.error("toggle_lurker add_roles error: %r", e)
+                return False, "Konnte Rolle nicht vergeben."
+
+            try:
+                await target.edit(nick="Lurker", reason="TempVoice: Make Lurker")
+            except discord.Forbidden:
+                pass # Not critical, continue
+            except Exception as e:
+                logger.warning("toggle_lurker nick change failed: %r", e)
+
+            if lane.user_limit > 0:
+                new_limit = min(99, lane.user_limit + 1)
+                await self.core.safe_edit_channel(lane, desired_limit=new_limit, reason="TempVoice: Lurker added")
+
+            return True, f"{target.display_name} ist jetzt Lurker."
