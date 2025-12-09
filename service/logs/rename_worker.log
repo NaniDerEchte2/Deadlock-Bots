@@ -1,0 +1,15 @@
+2025-12-09 01:26:40,191 - RenameWorker - INFO - RenameWorker will log to: C:\Users\Nani-Admin\Documents\Deadlock\service\logs\rename_worker.log
+2025-12-09 01:26:40,205 - RenameWorker - INFO - Starting RenameWorkerBot (DB Path: C:\Users\Nani-Admin\Documents\Deadlock\service\deadlock.sqlite3)
+2025-12-09 01:26:43,640 - RenameWorker - INFO - RenameWorkerBot logged in as DL Master 2#2099 (ID: 1412199378625499318)
+2025-12-09 01:26:43,640 - RenameWorker - INFO - Starting DB rename processor...
+2025-12-09 01:27:01,265 - RenameWorker - INFO - RenameWorker will log to: C:\Users\Nani-Admin\Documents\Deadlock\service\logs\rename_worker.log
+2025-12-09 01:27:01,283 - RenameWorker - INFO - Starting RenameWorkerBot (DB Path: C:\Users\Nani-Admin\Documents\Deadlock\service\deadlock.sqlite3)
+2025-12-09 01:27:27,948 - RenameWorker - INFO - DB rename processor (Worker) cancelled.
+2025-12-09 01:27:27,948 - RenameWorker - INFO - DB rename processor (Worker) stopped.
+2025-12-09 01:27:27,950 - RenameWorker - INFO - RenameWorkerBot gestoppt.
+2025-12-09 01:27:27,950 - RenameWorker - INFO - RenameWorkerBot beendet.
+2025-12-09 01:27:27,956 - RenameWorker - INFO - WorkerBot: Prozess beendet.
+2025-12-09 01:27:46,178 - RenameWorker - INFO - RenameWorker will log to: C:\Users\Nani-Admin\Documents\Deadlock\service\logs\rename_worker.log
+2025-12-09 01:27:46,193 - RenameWorker - INFO - Starting RenameWorkerBot (DB Path: C:\Users\Nani-Admin\Documents\Deadlock\service\deadlock.sqlite3)
+2025-12-09 01:27:49,019 - RenameWorker - INFO - RenameWorkerBot logged in as DL Master 2#2099 (ID: 1412199378625499318)
+2025-12-09 01:27:49,019 - RenameWorker - INFO - Starting DB rename processor...

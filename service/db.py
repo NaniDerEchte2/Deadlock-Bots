@@ -405,6 +405,27 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
+            -- Rename Requests Table for DB Worker communication
+            CREATE TABLE IF NOT EXISTS rename_requests(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id INTEGER NOT NULL,
+                new_name TEXT NOT NULL,
+                reason TEXT,
+                status TEXT NOT NULL DEFAULT 'PENDING', -- PENDING, PROCESSING, COMPLETED, FAILED
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                processed_at TIMESTAMP,
+                retry_count INTEGER DEFAULT 0,
+                last_error TEXT,
+                assigned_worker_id INTEGER DEFAULT 0 -- 0=unassigned, 1=main bot, 2=worker bot
+            );
+            
+            -- Global state for rename throttle and worker assignment
+            CREATE TABLE IF NOT EXISTS rename_global_state(
+                id INTEGER PRIMARY KEY DEFAULT 1, -- Only one row expected
+                last_rename_timestamp DATETIME DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', '-5 minutes')),
+                next_worker_id INTEGER DEFAULT 1 -- 1=main bot, 2=worker bot
+            );
+
             """
         )
         # Nachträglich hinzugefügte Spalten idempotent sicherstellen

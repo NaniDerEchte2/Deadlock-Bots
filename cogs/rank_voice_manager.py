@@ -93,7 +93,7 @@ class RolePermissionVoiceManager(commands.Cog):
         self.channel_permissions_initialized: Set[int] = set()
 
         # Rename throttle
-        self._channel_rename_interval = max(60, settings.rename_cooldown_seconds)
+        self._channel_rename_interval = max(60, settings.rank_vs_rename_cooldown_seconds)
         self._last_channel_rename: Dict[int, float] = {}
         self._pending_channel_renames: Dict[int, str] = {}
         self._rename_tasks: Dict[int, asyncio.Task] = {}
@@ -504,7 +504,7 @@ class RolePermissionVoiceManager(commands.Cog):
                 pending_task.cancel()
             self._pending_channel_renames.pop(channel.id, None)
 
-            await channel.edit(name=new_name)
+            await self.bot.queue_channel_rename(channel.id, new_name, reason="Rank Voice Manager Rename")
             self._last_channel_rename[channel.id] = now
         except discord.NotFound:
             return
@@ -532,7 +532,7 @@ class RolePermissionVoiceManager(commands.Cog):
                     return
                 if not await self.channel_exists(channel):
                     return
-                await channel.edit(name=latest_name)
+                await self.bot.queue_channel_rename(channel.id, latest_name, reason="Rank Voice Manager Delayed Rename")
                 self._last_channel_rename[channel.id] = time.monotonic()
             except asyncio.CancelledError:
                 raise

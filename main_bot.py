@@ -27,6 +27,7 @@ from discord.ext import commands
 from service.config import settings
 # --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
 import re
+from service import db # Import db for worker communication
 
 try:
     from service.dashboard import DashboardServer
@@ -170,9 +171,9 @@ def _install_workerproxy_shim():
     if "shared" not in sys.modules:
         sys.modules["shared"] = types.ModuleType("shared")
     if "shared.worker_client" not in sys.modules:
-        wc_mod = types.ModuleType("shared.worker_client")
+        wc_mod = types.ModuleType("shared") # Fixed module name
         setattr(wc_mod, "WorkerProxy", _WorkerProxyStub)
-        sys.modules["shared.worker_client"] = wc_mod
+        sys.modules["shared.worker_client"] = wc_mod # Fixed module name
 
 _install_workerproxy_shim()
 
@@ -282,6 +283,46 @@ class MasterBot(commands.Bot):
                 )
                 logging.info("Standalone manager initialisiert (Rank Bot registriert)")
 
+                # --- Register Rename Worker Bot ---
+                rename_worker_script = repo_root / "standalone" / "rename_worker.py"
+                if rename_worker_script.exists():
+                    rename_worker_env: Dict[str, str] = {}
+                    
+                    # Pass the worker's token securely
+                    if settings.rename_worker_bot_token:
+                        rename_worker_env["DISCORD_TOKEN_WORKER"] = settings.rename_worker_bot_token.get_secret_value()
+                    
+                    # Pass DB path if it's explicitly set for worker
+                    try:
+                        from service import db as _db
+                        rename_worker_env["DEADLOCK_DB_PATH"] = str(_db.db_path())
+                    except Exception as db_exc: # defensive logging
+                        logging.getLogger(__name__).warning(
+                            "Konnte DEADLOCK_DB_PATH für Rename Worker nicht bestimmen: %s",
+                            db_exc,
+                        )
+
+                    manager.register(
+                        StandaloneBotConfig(
+                            key="rename_worker",
+                            name="Rename Worker Bot",
+                            script=rename_worker_script,
+                            workdir=repo_root,
+                            description="Dedicated Python worker for channel renaming.",
+                            executable=sys.executable, # Use the same Python interpreter
+                            env=rename_worker_env,
+                            autostart=True,
+                            restart_on_crash=True,
+                            tags=["discord", "rename", "worker"],
+                            command_namespace="worker", # Can use a custom namespace for commands
+                            max_log_lines=400,
+                            # metrics_provider=self._collect_rename_worker_metrics, # Optional: if worker provides metrics
+                        )
+                    )
+                    logging.info("Standalone manager: Rename Worker Bot registriert")
+                else:
+                    logging.warning("Rename Worker Script %s nicht gefunden – Registrierung übersprungen", rename_worker_script)
+                # --- End Rename Worker Bot Registration ---
                 steam_dir = repo_root / "cogs" / "steam" / "steam_presence"
                 steam_script = steam_dir / "index.js"
                 if steam_script.exists():
@@ -290,7 +331,7 @@ class MasterBot(commands.Bot):
                         from service import db as _db
 
                         steam_env["DEADLOCK_DB_PATH"] = str(_db.db_path())
-                    except Exception as db_exc:  # pragma: no cover - defensive logging
+                    except Exception as db_exc: # defensive logging
                         logging.getLogger(__name__).warning(
                             "Konnte DEADLOCK_DB_PATH für Steam Bridge nicht bestimmen: %s",
                             db_exc,
@@ -341,6 +382,8 @@ class MasterBot(commands.Bot):
             self.per_cog_unload_timeout = float(os.getenv("PER_COG_UNLOAD_TIMEOUT", "3.0"))
         except ValueError:
             self.per_cog_unload_timeout = 3.0
+        
+        # Rate Limit Aware Rename Queue is now handled by a dedicated Cog (RenameManagerCog)
 
     # --------------------- Discovery & Filters -------------------------
     def normalize_namespace(self, raw: str) -> str:
@@ -703,6 +746,62 @@ class MasterBot(commands.Bot):
         asyncio.create_task(self.hourly_health_check())
         if self.standalone_manager:
             asyncio.create_task(self._bootstrap_standalone_autostart())
+    
+    # --------------------- Rename Queue (Delegation) ----------------------------------
+    async def queue_channel_rename(self, channel_id: int, new_name: str, reason: str = "Automated Rename"):
+        # Helper to get/set global rename state atomically
+        async def _get_and_update_global_rename_state():
+            async with db.transaction():
+                # Ensure the global state row exists
+                await db.execute_async(
+                    """
+                    INSERT OR IGNORE INTO rename_global_state (id, last_rename_timestamp, next_worker_id)
+                    VALUES (1, STRFTIME('%Y-%m-%d %H:%M:%S', 'now', '-5 minutes'), 1)
+                    """
+                )
+                
+                state_row = await db.query_one_async(
+                    "SELECT last_rename_timestamp, next_worker_id FROM rename_global_state WHERE id = 1"
+                )
+                
+                last_ts = _dt.datetime.strptime(state_row["last_rename_timestamp"], '%Y-%m-%d %H:%M:%S')
+                next_worker = state_row["next_worker_id"]
+
+                # Update next worker for the next request
+                new_next_worker = 1 if next_worker == 2 else 2
+                await db.execute_async(
+                    "UPDATE rename_global_state SET next_worker_id = ?",
+                    (new_next_worker,)
+                )
+                
+                return last_ts, next_worker
+
+        # Check for DB worker mode
+        if settings.use_db_rename_worker:
+            try:
+                # Get current global state for alternating and throttle
+                last_rename_timestamp, assigned_worker_id = await _get_and_update_global_rename_state()
+
+                # Insert into DB
+                await db.execute_async(
+                    """
+                    INSERT INTO rename_requests (channel_id, new_name, reason, status, assigned_worker_id)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (channel_id, new_name, reason, "PENDING", assigned_worker_id)
+                )
+                logging.info(f"Rename Anfrage für Channel {channel_id} zu '{new_name}' an DB-Worker (Assigned Worker: {assigned_worker_id}) gesendet (PENDING).")
+                return # DB worker will handle it
+            except Exception as e:
+                logging.error(f"Fehler beim Senden der Rename-Anfrage an DB-Worker für Channel {channel_id}: {e}. Fällt auf lokale Queue zurück.", exc_info=True)
+        
+        # Fallback to local queue in RenameManagerCog if not using DB worker or DB insert failed
+        rename_cog = self.get_cog("RenameManagerCog")
+        if rename_cog:
+            # For local queue, the Main Bot is the worker, so assigned_worker_id is 1
+            rename_cog.queue_local_rename_request(channel_id, new_name, reason)
+        else:
+            logging.error(f"RenameManagerCog nicht geladen. Rename für Channel {channel_id} zu '{new_name}' kann nicht verarbeitet werden.")
 
     async def load_all_cogs(self):
         logging.info("Loading all cogs in parallel...")
@@ -873,7 +972,7 @@ class MasterBot(commands.Bot):
     async def _collect_rank_bot_metrics(self) -> Dict[str, Any]:
         try:
             from service import db
-        except Exception as exc:  # pragma: no cover - defensive import
+        except Exception as exc: # defensive import
             logging.getLogger(__name__).warning(
                 "DB module unavailable for rank metrics: %s", exc
             )
@@ -949,7 +1048,7 @@ class MasterBot(commands.Bot):
     async def _collect_steam_bridge_metrics(self) -> Dict[str, Any]:
         try:
             from service import db
-        except Exception as exc:  # pragma: no cover - defensive import
+        except Exception as exc: # defensive import
             logging.getLogger(__name__).warning(
                 "DB module unavailable for steam metrics: %s", exc
             )
@@ -1210,8 +1309,11 @@ class MasterBot(commands.Bot):
         if to_unload:
             logging.info(f"Unloading {len(to_unload)} cogs with timeout {self.per_cog_unload_timeout:.1f}s each ...")
             _ = await self.unload_many(to_unload, timeout=self.per_cog_unload_timeout)
+        
+        # 2) Rename Queue Task abbrechen
+        # Removed: Rename logic is in Cog now
 
-        # 2) discord.Client.close() mit Timeout schützen
+        # 3) discord.Client.close() mit Timeout schützen
         try:
             timeout = float(os.getenv("DISCORD_CLOSE_TIMEOUT", "5"))
         except ValueError:
