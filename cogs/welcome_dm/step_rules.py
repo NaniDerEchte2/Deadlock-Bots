@@ -43,7 +43,12 @@ class RulesView(StepView):
         channel = interaction.channel
         if channel is not None:
             try:
-                thank_msg = await channel.send("✅ Danke! Willkommen an Bord!")
+                thank_embed = discord.Embed(
+                    title="✅ Danke!",
+                    description="Willkommen an Bord!",
+                    color=discord.Color.green()
+                )
+                thank_msg = await channel.send(embed=thank_embed)
             except (discord.Forbidden, discord.HTTPException) as e:
                 logger.debug("Could not send thank-you message: %s", e)
             else:

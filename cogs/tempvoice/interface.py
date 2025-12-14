@@ -137,7 +137,7 @@ class TempVoiceInterface(commands.Cog):
                                         category_id: Optional[int], lane_id: Optional[int]):
         try:
             if lane_id is not None:
-                await self.core.db.exec(
+                await self.core.db.execute_async(
                     """
                     INSERT INTO tempvoice_interface(guild_id, channel_id, message_id, category_id, lane_id, updated_at)
                     VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
@@ -150,7 +150,7 @@ class TempVoiceInterface(commands.Cog):
                     (guild_id, channel_id, message_id, category_id, lane_id)
                 )
             else:
-                await self.core.db.exec(
+                await self.core.db.execute_async(
                     """
                     INSERT INTO tempvoice_interface(guild_id, channel_id, message_id, category_id, lane_id, updated_at)
                     VALUES(?,?,?,?,NULL,CURRENT_TIMESTAMP)
@@ -191,7 +191,7 @@ class TempVoiceInterface(commands.Cog):
 
         row = None
         try:
-            row = await self.core.db.fetchone(
+            row = await self.core.db.query_one_async(
                 "SELECT channel_id, message_id FROM tempvoice_interface WHERE lane_id=?",
                 (int(lane.id),)
             )
@@ -242,7 +242,7 @@ class TempVoiceInterface(commands.Cog):
 
     async def rehydrate_lane_interfaces(self):
         try:
-            rows = await self.core.db.fetchall(
+            rows = await self.core.db.query_all_async(
                 "SELECT channel_id, message_id, lane_id FROM tempvoice_interface WHERE lane_id IS NOT NULL"
             )
         except Exception as e:
@@ -291,7 +291,7 @@ class TempVoiceInterface(commands.Cog):
         damit neue Buttons (z. B. Normale Lane) auch dort erscheinen.
         """
         try:
-            rows = await self.core.db.fetchall(
+            rows = await self.core.db.query_all_async(
                 "SELECT guild_id, channel_id, message_id, category_id FROM tempvoice_interface WHERE lane_id IS NULL"
             )
         except Exception as e:
@@ -333,7 +333,7 @@ class TempVoiceInterface(commands.Cog):
 
     async def _remove_lane_interface_record(self, lane_id: int):
         try:
-            await self.core.db.exec(
+            await self.core.db.execute_async(
                 "DELETE FROM tempvoice_interface WHERE lane_id=?",
                 (int(lane_id),)
             )
@@ -712,21 +712,16 @@ class LurkerButton(discord.ui.Button):
     def __init__(self, util):
         super().__init__(label="👻 Lurker", style=discord.ButtonStyle.secondary, row=3, custom_id="tv_lurker")
         self.util = util
+
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
             await itx.response.send_message("Du musst in einer Lane sein.", ephemeral=True)
             return
-        # Permission check: Owner or Mod
-        owner_id = itx.client.get_cog("TempVoiceCore").lane_owner.get(lane.id, m.id)
-        perms = lane.permissions_for(m)
-        if not (owner_id == m.id or perms.manage_channels or perms.administrator):
-            await itx.response.send_message("Nur Owner/Mods dürfen den Lurker-Status ändern.", ephemeral=True)
-            return
 
         await itx.response.defer(ephemeral=True, thinking=False)
-        ok, msg = await self.util.toggle_lurker(lane, m.id)
+        ok, msg = await self.util.toggle_lurker(lane, m)
         await itx.followup.send(msg, ephemeral=True)
 
 

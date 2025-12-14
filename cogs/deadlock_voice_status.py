@@ -229,26 +229,25 @@ class DeadlockVoiceStatus(commands.Cog):
             return
 
         try:
-            async with db.transaction():
-                rows = [(steam_id, guild_id, channel_id, now_ts) for (steam_id, guild_id, channel_id) in entries]
-                await db.executemany_async(
-                    """
-                    INSERT INTO deadlock_voice_watch(steam_id, guild_id, channel_id, updated_at)
-                    VALUES(?, ?, ?, ?)
-                    ON CONFLICT(steam_id) DO UPDATE SET
-                      guild_id=excluded.guild_id,
-                      channel_id=excluded.channel_id,
-                      updated_at=excluded.updated_at
-                    """,
-                    rows,
-                )
-                placeholders = ",".join("?" for _ in entries)
-                # Flat list for DELETE IN clause
-                delete_ids = [steam_id for (steam_id, _, _) in entries]
-                await db.execute_async(
-                    f"DELETE FROM deadlock_voice_watch WHERE steam_id NOT IN ({placeholders})",
-                    delete_ids,
-                )
+            rows = [(steam_id, guild_id, channel_id, now_ts) for (steam_id, guild_id, channel_id) in entries]
+            await db.executemany_async(
+                """
+                INSERT INTO deadlock_voice_watch(steam_id, guild_id, channel_id, updated_at)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(steam_id) DO UPDATE SET
+                  guild_id=excluded.guild_id,
+                  channel_id=excluded.channel_id,
+                  updated_at=excluded.updated_at
+                """,
+                rows,
+            )
+            placeholders = ",".join("?" for _ in entries)
+            # Flat list for DELETE IN clause
+            delete_ids = [steam_id for (steam_id, _, _) in entries]
+            await db.execute_async(
+                f"DELETE FROM deadlock_voice_watch WHERE steam_id NOT IN ({placeholders})",
+                delete_ids,
+            )
         except Exception as exc:
             log.warning("Failed to persist voice watch entries: %s", exc)
 

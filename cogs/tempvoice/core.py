@@ -1046,18 +1046,26 @@ class TempVoiceCore(commands.Cog):
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member,
                                     before: discord.VoiceState, after: discord.VoiceState):
+        before_channel: Optional[discord.VoiceChannel] = (
+            before.channel if before and isinstance(before.channel, discord.VoiceChannel) else None
+        )
+        after_channel: Optional[discord.VoiceChannel] = (
+            after.channel if after and isinstance(after.channel, discord.VoiceChannel) else None
+        )
+        left_previous_channel = bool(before_channel and (not after_channel or before_channel.id != after_channel.id))
+        joined_new_channel = bool(after_channel and (not before_channel or before_channel.id != after_channel.id))
+
         # Auto-Lane bei Join in Staging
         try:
-            if after and after.channel and isinstance(after.channel, discord.VoiceChannel):
-                if after.channel.id in STAGING_CHANNEL_IDS:
-                    await self._create_lane(member, after.channel)
+            if joined_new_channel and after_channel and after_channel.id in STAGING_CHANNEL_IDS:
+                await self._create_lane(member, after_channel)
         except Exception as e:
             log.warning(f"Auto-lane create failed: {e}")
 
         # Check for Lurker Leave & Owner logic
         try:
-            if before and before.channel and isinstance(before.channel, discord.VoiceChannel):
-                ch = before.channel
+            if left_previous_channel and before_channel:
+                ch = before_channel
 
                 # --- Lurker Cleanup Start ---
                 lurker_data = await self.lurkers.get_lurker(ch.id, member.id)
@@ -1125,8 +1133,8 @@ class TempVoiceCore(commands.Cog):
 
         # Join-Zeit & Bannprüfung; KEIN Namens-Refresh mehr außer im Create-Fenster
         try:
-            if after and after.channel and isinstance(after.channel, discord.VoiceChannel):
-                ch = after.channel
+            if joined_new_channel and after_channel and isinstance(after_channel, discord.VoiceChannel):
+                ch = after_channel
                 self.join_time.setdefault(ch.id, {})
                 self.join_time[ch.id][member.id] = datetime.utcnow().timestamp()
 

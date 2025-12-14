@@ -2689,15 +2689,17 @@ function processNextTask() {
                 `Original Build: ${sourceBuild.hero_build_id}`
               ];
               const targetDesc = descLines.join('\n');
-              const targetName = 'EarlySalty - Deutsche Deadlock Community';
+              const targetName = 'EarlySalty - Deutsche Deadlock Community (Discord)';
 
               if (existingClone) {
                 // Check if source is newer than clone
-                const sourceIsNewer =
+                const cloneNeedsUpdate =
                   sourceBuild.version > existingClone.version ||
-                  sourceBuild.last_updated_ts > existingClone.updated_at;
+                  sourceBuild.last_updated_ts > existingClone.updated_at ||
+                  existingClone.target_name !== targetName ||
+                  existingClone.target_description !== targetDesc;
 
-                if (sourceIsNewer && existingClone.status !== 'processing') {
+                if (cloneNeedsUpdate && existingClone.status !== 'processing') {
                   // Need to update the clone
                   stats.builds_to_update++;
 
