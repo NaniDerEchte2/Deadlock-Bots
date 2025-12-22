@@ -418,12 +418,37 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
                 last_error TEXT,
                 assigned_worker_id INTEGER DEFAULT 0 -- 0=unassigned, 1=main bot, 2=worker bot
             );
-            
+
             -- Global state for rename throttle and worker assignment
             CREATE TABLE IF NOT EXISTS rename_global_state(
                 id INTEGER PRIMARY KEY DEFAULT 1, -- Only one row expected
                 last_rename_timestamp DATETIME DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', '-5 minutes')),
                 next_worker_id INTEGER DEFAULT 1 -- 1=main bot, 2=worker bot
+            );
+
+            -- User Retention Tracking ("Wir vermissen dich"-Feature)
+            CREATE TABLE IF NOT EXISTS user_retention_tracking(
+                user_id INTEGER PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                first_seen_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                last_active_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                total_active_days INTEGER NOT NULL DEFAULT 0,
+                avg_weekly_sessions REAL DEFAULT 0,
+                last_miss_you_sent_at INTEGER,
+                miss_you_count INTEGER NOT NULL DEFAULT 0,
+                opted_out INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
+            -- User Retention Messages Log (für Analyse)
+            CREATE TABLE IF NOT EXISTS user_retention_messages(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                message_type TEXT NOT NULL, -- 'miss_you', 'welcome_back'
+                sent_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                delivery_status TEXT NOT NULL DEFAULT 'sent', -- 'sent', 'failed', 'blocked'
+                error_message TEXT
             );
 
             """
@@ -498,6 +523,10 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute("CREATE INDEX IF NOT EXISTS idx_voice_stats_user_lookup ON voice_stats(user_id, total_seconds, total_points)")
             # TempVoice Rehydration: WHERE guild_id=? (composite index)
             c.execute("CREATE INDEX IF NOT EXISTS idx_tempvoice_lanes_guild ON tempvoice_lanes(guild_id, channel_id)")
+            # User Retention Indexes
+            c.execute("CREATE INDEX IF NOT EXISTS idx_retention_tracking_guild ON user_retention_tracking(guild_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_retention_tracking_last_active ON user_retention_tracking(last_active_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_retention_messages_user ON user_retention_messages(user_id, sent_at)")
         except sqlite3.Error as e:
             logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)
 

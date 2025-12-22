@@ -831,6 +831,33 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     </section>
 
     <section>
+        <h2>User Retention</h2>
+        <div class="card">
+            <h3>Statistiken</h3>
+            <div id="retention-stats" class="stats-grid">
+                <div class="stat-item"><span class="stat-value" id="ret-total">-</span><span class="stat-label">Getrackte User</span></div>
+                <div class="stat-item"><span class="stat-value" id="ret-regular">-</span><span class="stat-label">Reguläre User</span></div>
+                <div class="stat-item"><span class="stat-value" id="ret-inactive">-</span><span class="stat-label">Inaktiv (eligible)</span></div>
+                <div class="stat-item"><span class="stat-value" id="ret-optout">-</span><span class="stat-label">Opted-out</span></div>
+                <div class="stat-item"><span class="stat-value" id="ret-sent">-</span><span class="stat-label">Nachrichten gesendet</span></div>
+                <div class="stat-item"><span class="stat-value" id="ret-feedback">-</span><span class="stat-label">Feedbacks erhalten</span></div>
+            </div>
+            <div style="margin-top: 1rem;">
+                <button class="namespace" id="retention-refresh">Aktualisieren</button>
+                <button class="namespace" id="retention-run-check" style="background:#e67e22;">Jetzt Check ausführen</button>
+            </div>
+        </div>
+        <div class="card" style="margin-top: 1rem;">
+            <h3>Inaktive User (eligible)</h3>
+            <div id="retention-users" style="max-height: 300px; overflow-y: auto;"></div>
+        </div>
+        <div class="card" style="margin-top: 1rem;">
+            <h3>Feedback</h3>
+            <div id="retention-feedback-list" style="max-height: 300px; overflow-y: auto;"></div>
+        </div>
+    </section>
+
+    <section>
         <h2>Cog Management</h2>
         <div class=\"card cog-management\">
             <h3>Management Tools</h3>
@@ -1644,12 +1671,12 @@ function renderVoiceHourlyChart(rows, mode, userInfo) {
     };
 
     const labels = rows.map((r) => formatLabel(r.label || r.hour));
-    const hoursData = rows.map((r) => safeNumber(r.total_seconds) / 3600);
+    const usersData = rows.map((r) => safeNumber(r.users));
     const peakData = rows.map((r) => safeNumber(r.avg_peak));
     console.log('Chart data prepared:');
     console.log('  labels:', labels.length);
-    console.log('  hoursData sum:', hoursData.reduce((a, b) => a + b, 0).toFixed(2), 'hours');
-    console.log('  hoursData (first 5):', hoursData.slice(0, 5));
+    console.log('  usersData sum:', usersData.reduce((a, b) => a + b, 0), 'users');
+    console.log('  usersData (first 5):', usersData.slice(0, 5));
     console.log('  peakData (first 5):', peakData.slice(0, 5));
     if (voiceHourlyChart) {
         console.log('Destroying existing chart');
@@ -1664,17 +1691,17 @@ function renderVoiceHourlyChart(rows, mode, userInfo) {
             labels,
             datasets: [
                 {
-                    label: `${baseLabel} Ø Stunden`,
-                    data: hoursData,
+                    label: `${baseLabel} User`,
+                    data: usersData,
                     borderColor: '#4dabf7',
                     backgroundColor: 'rgba(77,171,247,0.18)',
                     fill: true,
                     tension: 0.35,
-                    yAxisID: 'yHours',
+                    yAxisID: 'yUsers',
                     pointRadius: 3,
                 },
                 {
-                    label: `${baseLabel} Ø Peak`,
+                    label: `${baseLabel} Peak User`,
                     data: peakData,
                     borderColor: '#e599f7',
                     backgroundColor: 'rgba(229,153,247,0.15)',
@@ -1691,14 +1718,14 @@ function renderVoiceHourlyChart(rows, mode, userInfo) {
             maintainAspectRatio: false,
             interaction: { mode: 'index', intersect: false },
             scales: {
-                yHours: {
+                yUsers: {
                     position: 'left',
-                    title: { display: true, text: 'Stunden' },
+                    title: { display: true, text: 'User' },
                     suggestedMin: 0,
                 },
                 yPeak: {
                     position: 'right',
-                    title: { display: true, text: 'Ø Peak User' },
+                    title: { display: true, text: 'Peak User' },
                     suggestedMin: 0,
                     grid: { drawOnChartArea: false },
                 },
@@ -1713,10 +1740,7 @@ function renderVoiceHourlyChart(rows, mode, userInfo) {
                         label: function(ctx) {
                             const label = ctx.dataset.label || '';
                             const value = ctx.parsed.y || 0;
-                            if (ctx.dataset.yAxisID === 'yHours') {
-                                return `${label}: ${value.toFixed(2)} h`;
-                            }
-                            return `${label}: ${value.toFixed(1)}`;
+                            return `${label}: ${Math.round(value)}`;
                         },
                     },
                 },
@@ -2688,6 +2712,119 @@ async function fetchStandaloneLogs(key, limit = 200) {
     setInterval(loadVoiceStats, 30000);
     loadVoiceHistory();
     setInterval(loadVoiceHistory, 60000);
+
+    // ========= Retention Functions =========
+    const retTotal = document.getElementById('ret-total');
+    const retRegular = document.getElementById('ret-regular');
+    const retInactive = document.getElementById('ret-inactive');
+    const retOptout = document.getElementById('ret-optout');
+    const retSent = document.getElementById('ret-sent');
+    const retFeedback = document.getElementById('ret-feedback');
+    const retentionUsers = document.getElementById('retention-users');
+    const retentionFeedbackList = document.getElementById('retention-feedback-list');
+    const retentionRefreshBtn = document.getElementById('retention-refresh');
+    const retentionRunCheckBtn = document.getElementById('retention-run-check');
+
+    async function loadRetentionStats() {
+        try {
+            const res = await apiFetch('/api/retention/stats');
+            retTotal.textContent = res.total_tracked || 0;
+            retRegular.textContent = res.regular_users || 0;
+            retInactive.textContent = res.inactive_eligible || 0;
+            retOptout.textContent = res.opted_out || 0;
+            retSent.textContent = res.messages_sent || 0;
+            retFeedback.textContent = res.feedback_count || 0;
+        } catch (err) {
+            log('Retention stats failed: ' + err.message, 'error');
+        }
+    }
+
+    async function loadRetentionUsers() {
+        try {
+            const res = await apiFetch('/api/retention/inactive-users?limit=30');
+            if (!res.users || res.users.length === 0) {
+                retentionUsers.innerHTML = '<p style="color:#888;">Keine inaktiven User gefunden.</p>';
+                return;
+            }
+            let html = '<table style="width:100%;font-size:0.9em;"><tr><th>User</th><th>Tage inaktiv</th><th>Aktion</th></tr>';
+            for (const u of res.users) {
+                html += '<tr><td>' + (u.display_name || u.user_id) + '</td><td>' + u.days_inactive + '</td>';
+                html += '<td><button class="namespace" onclick="sendRetentionMsg(' + u.user_id + ',' + u.guild_id + ')">DM senden</button></td></tr>';
+            }
+            html += '</table>';
+            retentionUsers.innerHTML = html;
+        } catch (err) {
+            retentionUsers.innerHTML = '<p style="color:#c00;">Fehler: ' + err.message + '</p>';
+        }
+    }
+
+    async function loadRetentionFeedback() {
+        try {
+            const res = await apiFetch('/api/retention/feedback?limit=15');
+            if (!res.feedback || res.feedback.length === 0) {
+                retentionFeedbackList.innerHTML = '<p style="color:#888;">Noch kein Feedback erhalten.</p>';
+                return;
+            }
+            let html = '';
+            for (const f of res.feedback) {
+                const date = new Date(f.timestamp * 1000).toLocaleString('de-DE');
+                html += '<div style="border-bottom:1px solid #444;padding:0.5rem 0;">';
+                html += '<strong>User ' + f.user_id + '</strong> <small>(' + date + ')</small><br>';
+                html += '<span style="color:#aaa;">' + (f.feedback || 'Kein Text') + '</span></div>';
+            }
+            retentionFeedbackList.innerHTML = html;
+        } catch (err) {
+            retentionFeedbackList.innerHTML = '<p style="color:#c00;">Fehler: ' + err.message + '</p>';
+        }
+    }
+
+    window.sendRetentionMsg = async function(userId, guildId) {
+        if (!confirm('Wirklich DM an User ' + userId + ' senden?')) return;
+        try {
+            const res = await apiFetch('/api/retention/send/' + userId, {
+                method: 'POST',
+                body: JSON.stringify({ guild_id: guildId })
+            });
+            if (res.success) {
+                log('DM gesendet an User ' + userId, 'success');
+            } else {
+                log('DM fehlgeschlagen für User ' + userId, 'error');
+            }
+            loadRetentionStats();
+            loadRetentionUsers();
+        } catch (err) {
+            log('Retention send failed: ' + err.message, 'error');
+        }
+    };
+
+    retentionRefreshBtn?.addEventListener('click', () => {
+        loadRetentionStats();
+        loadRetentionUsers();
+        loadRetentionFeedback();
+        log('Retention data refreshed', 'info');
+    });
+
+    retentionRunCheckBtn?.addEventListener('click', async () => {
+        if (!confirm('Retention-Check jetzt ausführen? Dies sendet DMs an alle eligible User!')) return;
+        retentionRunCheckBtn.disabled = true;
+        retentionRunCheckBtn.textContent = 'Läuft...';
+        try {
+            const res = await apiFetch('/api/retention/run-check', { method: 'POST' });
+            log('Retention-Check: ' + res.sent + '/' + res.total_checked + ' gesendet', 'success');
+            loadRetentionStats();
+            loadRetentionUsers();
+        } catch (err) {
+            log('Retention-Check failed: ' + err.message, 'error');
+        } finally {
+            retentionRunCheckBtn.disabled = false;
+            retentionRunCheckBtn.textContent = 'Jetzt Check ausführen';
+        }
+    });
+
+    // Initial load
+    loadRetentionStats();
+    loadRetentionUsers();
+    loadRetentionFeedback();
     </script>
 </body>
 </html>
@@ -2815,6 +2952,12 @@ class DashboardServer:
                     web.post("/api/standalone/{key}/restart", self._handle_standalone_restart),
                     web.post("/api/standalone/{key}/autostart", self._handle_standalone_autostart),
                     web.post("/api/standalone/{key}/command", self._handle_standalone_command),
+                    # Retention API
+                    web.get("/api/retention/stats", self._handle_retention_stats),
+                    web.get("/api/retention/inactive-users", self._handle_retention_inactive_users),
+                    web.get("/api/retention/feedback", self._handle_retention_feedback),
+                    web.post("/api/retention/send/{user_id}", self._handle_retention_send),
+                    web.post("/api/retention/run-check", self._handle_retention_run_check),
                 ]
             )
 
@@ -3539,6 +3682,7 @@ class DashboardServer:
                 SELECT """ + _group_sql() + """ AS bucket,
                        SUM(duration_seconds) AS total_seconds,
                        COUNT(*) AS sessions,
+                       COUNT(DISTINCT user_id) AS users,
                        SUM(COALESCE(peak_users, 0)) AS sum_peak
                 FROM voice_session_log
                 WHERE """ + where_sql + """
@@ -3609,6 +3753,7 @@ class DashboardServer:
                     "label": row["bucket"],
                     "total_seconds": int(row["total_seconds"] or 0),
                     "sessions": sessions_count,
+                    "users": int(row["users"] or 0),
                     "avg_peak": (
                         (int(row["sum_peak"] or 0) / sessions_count)
                         if sessions_count > 0
@@ -3625,7 +3770,7 @@ class DashboardServer:
                 buckets.append(
                     existing.get(
                         key,
-                        {"label": key, "total_seconds": 0, "sessions": 0, "avg_peak": 0},
+                        {"label": key, "total_seconds": 0, "sessions": 0, "users": 0, "avg_peak": 0},
                     )
                 )
 
@@ -3640,6 +3785,7 @@ class DashboardServer:
                     "label": weekdays[day],
                     "total_seconds": data.get("total_seconds", 0),
                     "sessions": data.get("sessions", 0),
+                    "users": data.get("users", 0),
                     "avg_peak": data.get("avg_peak", 0),
                 })
 
@@ -4372,6 +4518,87 @@ class DashboardServer:
             },
             status=201,
         )
+
+    # ========= Retention API Handlers =========
+
+    def _get_retention_cog(self):
+        """Holt den UserRetentionCog wenn verfügbar."""
+        if not self.bot:
+            return None
+        return self.bot.get_cog("UserRetentionCog")
+
+    async def _handle_retention_stats(self, request: web.Request) -> web.Response:
+        """GET /api/retention/stats - Statistiken abrufen"""
+        self._check_auth(request, required=bool(self.token))
+        cog = self._get_retention_cog()
+        if not cog:
+            return self._json({"error": "UserRetentionCog nicht geladen"}, status=503)
+        try:
+            stats = await cog.get_retention_stats()
+            return self._json(stats)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Retention stats error: {e}")
+            return self._json({"error": str(e)}, status=500)
+
+    async def _handle_retention_inactive_users(self, request: web.Request) -> web.Response:
+        """GET /api/retention/inactive-users - Inaktive User auflisten"""
+        self._check_auth(request, required=bool(self.token))
+        cog = self._get_retention_cog()
+        if not cog:
+            return self._json({"error": "UserRetentionCog nicht geladen"}, status=503)
+        try:
+            limit = int(request.query.get("limit", 50))
+            users = await cog.get_inactive_users_list(limit)
+            return self._json({"users": users})
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Retention inactive users error: {e}")
+            return self._json({"error": str(e)}, status=500)
+
+    async def _handle_retention_feedback(self, request: web.Request) -> web.Response:
+        """GET /api/retention/feedback - Feedbacks abrufen"""
+        self._check_auth(request, required=bool(self.token))
+        cog = self._get_retention_cog()
+        if not cog:
+            return self._json({"error": "UserRetentionCog nicht geladen"}, status=503)
+        try:
+            limit = int(request.query.get("limit", 20))
+            feedback = await cog.get_feedback_list(limit)
+            return self._json({"feedback": feedback})
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Retention feedback error: {e}")
+            return self._json({"error": str(e)}, status=500)
+
+    async def _handle_retention_send(self, request: web.Request) -> web.Response:
+        """POST /api/retention/send/{user_id} - Nachricht an einzelnen User senden"""
+        self._check_auth(request, required=bool(self.token))
+        cog = self._get_retention_cog()
+        if not cog:
+            return self._json({"error": "UserRetentionCog nicht geladen"}, status=503)
+        try:
+            user_id = int(request.match_info.get("user_id", 0))
+            payload = await request.json()
+            guild_id = int(payload.get("guild_id", 0))
+            if not user_id or not guild_id:
+                return self._json({"error": "user_id und guild_id erforderlich"}, status=400)
+            result = await cog.send_message_to_user(user_id, guild_id)
+            return self._json(result)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Retention send error: {e}")
+            return self._json({"error": str(e)}, status=500)
+
+    async def _handle_retention_run_check(self, request: web.Request) -> web.Response:
+        """POST /api/retention/run-check - Retention-Check manuell ausführen"""
+        self._check_auth(request, required=bool(self.token))
+        cog = self._get_retention_cog()
+        if not cog:
+            return self._json({"error": "UserRetentionCog nicht geladen"}, status=503)
+        try:
+            result = await cog.run_retention_check_now()
+            return self._json(result)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Retention run check error: {e}")
+            return self._json({"error": str(e)}, status=500)
+
 
 if TYPE_CHECKING:  # pragma: no cover - avoid runtime dependency cycle
     from main_bot import MasterBot

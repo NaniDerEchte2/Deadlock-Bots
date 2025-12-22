@@ -1,0 +1,45 @@
+syntax = "proto2";
+
+// Messages for searching hero builds via the Deadlock Game Coordinator
+// Based on SteamDatabase/Protobufs/deadlock/citadel_gcmessages_client.proto
+// Message IDs: k_EMsgClientToGCFindHeroBuilds = 9195, k_EMsgClientToGCFindHeroBuildsResponse = 9196
+
+import "hero_build.proto";
+
+message CMsgHeroBuildPreference {
+  optional bool favorited = 1;
+  optional bool ignored = 2;
+  optional bool reported = 3;
+}
+
+message CMsgClientToGCFindHeroBuilds {
+  optional uint32 author_account_id = 1;
+  optional uint32 hero_id = 2;
+  repeated int32 language = 3;
+  optional string search_text = 4;
+  optional uint32 hero_build_id = 5;
+  repeated uint32 tags = 6;
+}
+
+message CMsgClientToGCFindHeroBuildsResponse {
+  message HeroBuildResult {
+    optional CMsgHeroBuild hero_build = 1;
+    optional CMsgHeroBuildPreference preference = 2;
+    optional uint32 num_favorites = 3;
+    optional uint32 num_ignores = 4;
+    optional uint32 num_reports = 5;
+    optional uint32 num_weekly_favorites = 6;
+    optional uint32 num_daily_favorites = 7;
+    optional uint32 rollup_category = 8;
+  }
+
+  enum EResponse {
+    k_eInternalError = 0;
+    k_eSuccess = 1;
+    k_eTooBusy = 2;
+  }
+
+  optional EResponse response = 1;
+  repeated HeroBuildResult results = 2;
+  optional uint32 build_window_start_time_override = 3;
+}

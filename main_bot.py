@@ -283,46 +283,7 @@ class MasterBot(commands.Bot):
                 )
                 logging.info("Standalone manager initialisiert (Rank Bot registriert)")
 
-                # --- Register Rename Worker Bot ---
-                rename_worker_script = repo_root / "standalone" / "rename_worker.py"
-                if rename_worker_script.exists():
-                    rename_worker_env: Dict[str, str] = {}
-                    
-                    # Pass the worker's token securely
-                    if settings.rename_worker_bot_token:
-                        rename_worker_env["DISCORD_TOKEN_WORKER"] = settings.rename_worker_bot_token.get_secret_value()
-                    
-                    # Pass DB path if it's explicitly set for worker
-                    try:
-                        from service import db as _db
-                        rename_worker_env["DEADLOCK_DB_PATH"] = str(_db.db_path())
-                    except Exception as db_exc: # defensive logging
-                        logging.getLogger(__name__).warning(
-                            "Konnte DEADLOCK_DB_PATH für Rename Worker nicht bestimmen: %s",
-                            db_exc,
-                        )
 
-                    manager.register(
-                        StandaloneBotConfig(
-                            key="rename_worker",
-                            name="Rename Worker Bot",
-                            script=rename_worker_script,
-                            workdir=repo_root,
-                            description="Dedicated Python worker for channel renaming.",
-                            executable=sys.executable, # Use the same Python interpreter
-                            env=rename_worker_env,
-                            autostart=True,
-                            restart_on_crash=True,
-                            tags=["discord", "rename", "worker"],
-                            command_namespace="worker", # Can use a custom namespace for commands
-                            max_log_lines=400,
-                            # metrics_provider=self._collect_rename_worker_metrics, # Optional: if worker provides metrics
-                        )
-                    )
-                    logging.info("Standalone manager: Rename Worker Bot registriert")
-                else:
-                    logging.warning("Rename Worker Script %s nicht gefunden – Registrierung übersprungen", rename_worker_script)
-                # --- End Rename Worker Bot Registration ---
                 steam_dir = repo_root / "cogs" / "steam" / "steam_presence"
                 steam_script = steam_dir / "index.js"
                 if steam_script.exists():
@@ -749,59 +710,16 @@ class MasterBot(commands.Bot):
     
     # --------------------- Rename Queue (Delegation) ----------------------------------
     async def queue_channel_rename(self, channel_id: int, new_name: str, reason: str = "Automated Rename"):
-        # Helper to get/set global rename state atomically
-        async def _get_and_update_global_rename_state():
-            async with db.transaction():
-                # Ensure the global state row exists
-                await db.execute_async(
-                    """
-                    INSERT OR IGNORE INTO rename_global_state (id, last_rename_timestamp, next_worker_id)
-                    VALUES (1, STRFTIME('%Y-%m-%d %H:%M:%S', 'now', '-5 minutes'), 1)
-                    """
-                )
-                
-                state_row = await db.query_one_async(
-                    "SELECT last_rename_timestamp, next_worker_id FROM rename_global_state WHERE id = 1"
-                )
-                
-                last_ts = _dt.datetime.strptime(state_row["last_rename_timestamp"], '%Y-%m-%d %H:%M:%S')
-                next_worker = state_row["next_worker_id"]
-
-                # Update next worker for the next request
-                new_next_worker = 1 if next_worker == 2 else 2
-                await db.execute_async(
-                    "UPDATE rename_global_state SET next_worker_id = ?",
-                    (new_next_worker,)
-                )
-                
-                return last_ts, next_worker
-
-        # Check for DB worker mode
-        if settings.use_db_rename_worker:
-            try:
-                # Get current global state for alternating and throttle
-                last_rename_timestamp, assigned_worker_id = await _get_and_update_global_rename_state()
-
-                # Insert into DB
-                await db.execute_async(
-                    """
-                    INSERT INTO rename_requests (channel_id, new_name, reason, status, assigned_worker_id)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (channel_id, new_name, reason, "PENDING", assigned_worker_id)
-                )
-                logging.info(f"Rename Anfrage für Channel {channel_id} zu '{new_name}' an DB-Worker (Assigned Worker: {assigned_worker_id}) gesendet (PENDING).")
-                return # DB worker will handle it
-            except Exception as e:
-                logging.error(f"Fehler beim Senden der Rename-Anfrage an DB-Worker für Channel {channel_id}: {e}. Fällt auf lokale Queue zurück.", exc_info=True)
-        
-        # Fallback to local queue in RenameManagerCog if not using DB worker or DB insert failed
         rename_cog = self.get_cog("RenameManagerCog")
         if rename_cog:
-            # For local queue, the Main Bot is the worker, so assigned_worker_id is 1
             rename_cog.queue_local_rename_request(channel_id, new_name, reason)
         else:
-            logging.error(f"RenameManagerCog nicht geladen. Rename für Channel {channel_id} zu '{new_name}' kann nicht verarbeitet werden.")
+            logging.error(
+                "RenameManagerCog nicht geladen. Rename fuer Channel %s zu '%s' kann nicht verarbeitet werden.",
+                channel_id,
+                new_name,
+            )
+
 
     async def load_all_cogs(self):
         logging.info("Loading all cogs in parallel...")
