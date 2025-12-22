@@ -17,6 +17,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 import logging
 import time
+import re
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 from dataclasses import dataclass
@@ -42,6 +43,10 @@ class RetentionConfig:
 
     # Check-Intervall
     check_hour: int = 12                    # Um 12 Uhr mittags checken
+
+    # Direktlinks zu Channels (feste URLs)
+    server_link: Optional[str] = "https://discord.com/channels/1289721245281292288/1289721245281292291"
+    voice_link: Optional[str] = "https://discord.com/channels/1289721245281292288/1330278323145801758"
 
     # Ausgeschlossene Rollen (bekommen keine Nachrichten)
     excluded_role_ids: tuple = (
@@ -92,13 +97,38 @@ class FeedbackModal(discord.ui.Modal, title="Feedback geben"):
 class MissYouView(discord.ui.View):
     """View mit Buttons für die Miss-You-Nachricht."""
 
-    def __init__(self, guild_id: int, guild_name: str, invite_url: Optional[str] = None):
+    def __init__(
+        self,
+        guild_id: int,
+        guild_name: str,
+        invite_url: Optional[str] = None,
+        server_link: Optional[str] = None,
+        voice_link: Optional[str] = None,
+    ):
         super().__init__(timeout=None)  # Persistent view
         self.guild_id = guild_id
         self.guild_name = guild_name
 
-        # Server-Link Button (wenn vorhanden)
-        if invite_url:
+        # Direktlink zum Server-/Text-Channel
+        if server_link:
+            self.add_item(discord.ui.Button(
+                label="Zum Server",
+                style=discord.ButtonStyle.link,
+                url=server_link,
+                emoji="🏠"
+            ))
+
+        # Direktlink zum Voice-Channel
+        if voice_link:
+            self.add_item(discord.ui.Button(
+                label="Zum Voice",
+                style=discord.ButtonStyle.link,
+                url=voice_link,
+                emoji="🎧"
+            ))
+
+        # Fallback: Invite-Link (falls kein Channel-Link konfiguriert)
+        if invite_url and not server_link:
             self.add_item(discord.ui.Button(
                 label="Zum Server",
                 style=discord.ButtonStyle.link,
@@ -111,23 +141,23 @@ class MissYouView(discord.ui.View):
         """Öffnet das Feedback-Modal."""
         await interaction.response.send_modal(FeedbackModal(self.guild_id, self.guild_name))
 
-    @discord.ui.button(label="Keine Nachrichten mehr", style=discord.ButtonStyle.secondary, emoji="🔕", custom_id="retention_optout_btn")
-    async def optout_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Opt-out direkt aus der Nachricht."""
-        now = int(time.time())
-        central_db.execute(
-            """
-            INSERT INTO user_retention_tracking (user_id, guild_id, opted_out, updated_at)
-            VALUES (?, ?, 1, ?)
-            ON CONFLICT(user_id) DO UPDATE SET opted_out = 1, updated_at = ?
-            """,
-            (interaction.user.id, self.guild_id, now, now)
-        )
-        await interaction.response.send_message(
-            "Okay, du bekommst keine solchen Nachrichten mehr von uns.",
-            ephemeral=True
-        )
-        logger.info(f"User {interaction.user.id} hat sich per Button abgemeldet")
+    # @discord.ui.button(label="Keine Nachrichten mehr", style=discord.ButtonStyle.secondary, emoji="🔕", custom_id="retention_optout_btn")
+    # async def optout_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    #     """Opt-out direkt aus der Nachricht."""
+    #     now = int(time.time())
+    #     central_db.execute(
+    #         """
+    #         INSERT INTO user_retention_tracking (user_id, guild_id, opted_out, updated_at)
+    #         VALUES (?, ?, 1, ?)
+    #         ON CONFLICT(user_id) DO UPDATE SET opted_out = 1, updated_at = ?
+    #         """,
+    #         (interaction.user.id, self.guild_id, now, now)
+    #     )
+    #     await interaction.response.send_message(
+    #         "Okay, du bekommst keine solchen Nachrichten mehr von uns.",
+    #         ephemeral=True
+    #     )
+    #     logger.info(f"User {interaction.user.id} hat sich per Button abgemeldet")
 
 
 class UserRetentionCog(commands.Cog):
@@ -151,7 +181,7 @@ class UserRetentionCog(commands.Cog):
             raise
 
         # Registriere persistent View für Buttons (funktioniert nach Bot-Restart)
-        self.bot.add_view(MissYouView(0, "", None))
+        self.bot.add_view(MissYouView(0, "", None, self.config.server_link, self.config.voice_link))
 
         # DEAKTIVIERT: Automatischer Check läuft jetzt über Dashboard
         # self.daily_retention_check.start()
@@ -534,14 +564,20 @@ class UserRetentionCog(commands.Cog):
                 except discord.Forbidden:
                     pass  # Keine Berechtigung für Invites
 
+            display_name = user.display_name
+            if guild:
+                member = guild.get_member(user_id)
+                if member:
+                    display_name = member.display_name
+
             embed = discord.Embed(
-                title="Hey Bro, wir vermissen dich! :(",
+                title=f"Hey {display_name}, wir vermissen dich! :(",
                 description=(
                     f"Dir ist bestimmt aufgefallen, dass du schon **{days_inactive} Tage** "
                     f"nicht mehr aktiv in der **{guild_name}** warst.\n\n"
-                    f"Wir würden uns freuen, dich mal wieder zu sehen!\n\n"
-                    f"Falls es irgendwelche Probleme gab oder du Feedback hast, "
-                    f"lass es uns gerne wissen – wir sind immer offen für Verbesserungen."
+                    f"Wir würden uns freuen, dich mal wieder im Voice oder Chat zu sehen.\n\n"
+                    f"Falls dich etwas stört oder du Feedback hast, lass es uns bitte wissen "
+                    f"- wir wollen den Server für dich besser machen."
                 ),
                 color=discord.Color.blue()
             )
@@ -550,7 +586,13 @@ class UserRetentionCog(commands.Cog):
                 embed.set_thumbnail(url=guild.icon.url)
 
             # View mit Buttons erstellen
-            view = MissYouView(guild_id, guild_name, invite_url)
+            view = MissYouView(
+                guild_id,
+                guild_name,
+                invite_url,
+                self.config.server_link,
+                self.config.voice_link
+            )
 
             await user.send(embed=embed, view=view)
 
@@ -749,14 +791,15 @@ class UserRetentionCog(commands.Cog):
     async def retention_test(self, ctx: commands.Context, user: discord.Member):
         """Testet die Retention-Nachricht für einen spezifischen User."""
         # Preview der Nachricht
+        display_name = user.display_name
         embed = discord.Embed(
-            title="Hey Bro, wir vermissen dich! :(",
+            title=f"Hey {display_name}, wir vermissen dich! :(",
             description=(
                 f"Dir ist bestimmt aufgefallen, dass du schon **14 Tage** "
                 f"nicht mehr aktiv in der **{ctx.guild.name}** warst.\n\n"
-                f"Wir würden uns freuen, dich mal wieder zu sehen!\n\n"
-                f"Falls es irgendwelche Probleme gab oder du Feedback hast, "
-                f"lass es uns gerne wissen – wir sind immer offen für Verbesserungen."
+                f"Wir würden uns freuen, dich mal wieder im Voice oder Chat zu sehen.\n\n"
+                f"Falls dich etwas stört oder du Feedback hast, lass es uns bitte wissen "
+                f"- wir wollen den Server für dich besser machen."
             ),
             color=discord.Color.blue()
         )
@@ -765,9 +808,81 @@ class UserRetentionCog(commands.Cog):
             embed.set_thumbnail(url=ctx.guild.icon.url)
 
         # View mit Buttons (ohne echten Invite für Preview)
-        view = MissYouView(ctx.guild.id, ctx.guild.name, None)
+        view = MissYouView(
+            ctx.guild.id,
+            ctx.guild.name,
+            None,
+            self.config.server_link,
+            self.config.voice_link
+        )
 
-        await ctx.send(f"**Preview für {user.mention}:**", embed=embed, view=view)
+        await ctx.send(f"**Preview für {display_name}:**", embed=embed, view=view)
+
+    @commands.command(name="retention_test_dm")
+    @commands.has_permissions(administrator=True)
+    async def retention_test_dm(self, ctx: commands.Context, user_ref: str, days_inactive: int = 14):
+        """Sendet die Retention-DM testweise an eine User-ID oder @Mention (ohne DB-Update)."""
+        days_inactive = max(1, days_inactive)
+        target_guild = ctx.guild
+        guild_id = target_guild.id if target_guild else 0
+        guild_name = target_guild.name if target_guild else "unserem Server"
+
+        try:
+            match = re.search(r"\d+", str(user_ref))
+            if not match:
+                await ctx.send("⚠️ Bitte gib eine gültige User-ID oder @Mention an.")
+                return
+            user_id = int(match.group(0))
+
+            user = await self.bot.fetch_user(user_id)
+
+            invite_url = None
+            if target_guild:
+                try:
+                    invites = await target_guild.invites()
+                    for inv in invites:
+                        if inv.max_age == 0:  # Permanenter Invite
+                            invite_url = str(inv)
+                            break
+                except discord.Forbidden:
+                    pass  # Keine Berechtigung für Invites
+
+            display_name = user.display_name
+            if target_guild:
+                member = target_guild.get_member(user_id)
+                if member:
+                    display_name = member.display_name
+
+            embed = discord.Embed(
+                title=f"Hey {display_name}, wir vermissen dich! :(",
+                description=(
+                    f"Dir ist bestimmt aufgefallen, dass du schon **{days_inactive} Tage** "
+                    f"nicht mehr aktiv in der **{guild_name}** warst.\n\n"
+                    f"Wir würden uns freuen, dich mal wieder im Voice oder Chat zu sehen.\n\n"
+                    f"Falls dich etwas stört oder du Feedback hast, lass es uns bitte wissen "
+                    f"- wir wollen den Server für dich besser machen."
+                ),
+                color=discord.Color.blue()
+            )
+
+            if target_guild and target_guild.icon:
+                embed.set_thumbnail(url=target_guild.icon.url)
+
+            view = MissYouView(
+                guild_id,
+                guild_name,
+                invite_url,
+                self.config.server_link,
+                self.config.voice_link
+            )
+            await user.send(embed=embed, view=view)
+
+            await ctx.send(f"✅ Test-DM an User {display_name} (ID {user_id}) gesendet ({days_inactive} Tage).")
+
+        except discord.Forbidden:
+            await ctx.send(f"⚠️ Konnte keine DM an {user_id} senden (DMs deaktiviert?).")
+        except Exception as e:
+            await ctx.send(f"❌ Fehler beim Senden an {user_id}: {e}")
 
     @commands.command(name="retention_feedback")
     @commands.has_permissions(administrator=True)
