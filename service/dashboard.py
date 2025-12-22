@@ -968,6 +968,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         return response.json();
     }
 
+    // Alias for existing fetch helper so retention dashboard calls work
+    const apiFetch = fetchJSON;
+
     if (toggleUnmanageableButton) {
         toggleUnmanageableButton.addEventListener('click', () => {
             showHiddenCogs = !showHiddenCogs;
@@ -4602,4 +4605,3 @@ class DashboardServer:
 
 if TYPE_CHECKING:  # pragma: no cover - avoid runtime dependency cycle
     from main_bot import MasterBot
-
