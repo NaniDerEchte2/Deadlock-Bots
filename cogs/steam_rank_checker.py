@@ -403,9 +403,10 @@ class SteamRankChecker(commands.Cog):
                     "messages": [{
                         "role": "user",
                         "content": (
-                            f"Analysiere den Schreibstil dieser Nachricht und antworte im EXAKT gleichen Stil "
-                            f"(gleiche Sprache, gleicher Ton, gleiche Lockerheit). Schreibe als wärst du ein Freund "
-                            f"der auf Augenhöhe antwortet. Max 2 Sätze. Keine Emojis.\n\n"
+                            f"Analysiere den Schreibstil (Jugendsprache/Slang/Umgangssprache/Standard) und antworte "
+                            f"im EXAKT gleichen Stil. Nutze die GLEICHEN Formulierungen, gleiche Abkürzungen, "
+                            f"gleiche Wörter wenn möglich. Schreibe wie ein Kumpel auf Augenhöhe.\n\n"
+                            f"WICHTIG: Niemals 'Sie', immer 'du'. Keine Emojis. Max 2 Sätze.\n\n"
                             f"Original: \"{original_message}\"\n\n"
                             f"Schlage diese Voice Channels vor:\n{context}"
                         )
