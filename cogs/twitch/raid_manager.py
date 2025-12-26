@@ -401,7 +401,7 @@ class RaidBot:
         Diese Nachricht wird nur gesendet, wenn ein deutscher Deadlock-Streamer
         (kein Partner) geraidet wird, um ihn zur Community einzuladen.
 
-        Zeigt dem Streamer seine aktuellen Stats als Teaser.
+        Zeigt dem Streamer minimale Stats als Teaser (Avg Viewer, Peak).
         """
         if not self.chat_bot:
             log.debug("Chat bot not available for recruitment message")
@@ -411,36 +411,42 @@ class RaidBot:
             # Nachricht mit Discord-Link (ENV-Variable oder hardcoded)
             discord_invite = "discord.gg/deadlock-de"  # TODO: Aus ENV holen
 
-            # Stream-Insights als Teaser berechnen
-            insights = ""
+            # Stats aus DB holen als Teaser
+            stats_teaser = ""
             if target_stream_data:
-                viewer_count = target_stream_data.get("viewer_count", 0)
-                started_at = target_stream_data.get("started_at")
-
-                if started_at:
-                    from datetime import datetime, timezone
+                user_id = target_stream_data.get("user_id")
+                if user_id:
                     try:
-                        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-                        now = datetime.now(timezone.utc)
-                        hours = (now - started).total_seconds() / 3600
+                        with get_conn() as conn:
+                            # Hole Average Viewer + Peak für Deadlock
+                            stats = conn.execute(
+                                """
+                                SELECT
+                                    ROUND(AVG(last_viewer_count)) as avg_viewers,
+                                    MAX(last_viewer_count) as peak_viewers
+                                FROM twitch_stream_history
+                                WHERE twitch_user_id = ?
+                                  AND last_viewer_count > 0
+                                """,
+                                (user_id,),
+                            ).fetchone()
 
-                        if hours < 1:
-                            minutes = int((now - started).total_seconds() / 60)
-                            time_str = f"{minutes} Minuten"
-                        else:
-                            time_str = f"{hours:.1f} Stunden"
-
-                        insights = f"Wir tracken alle deutschen Deadlock-Streamer – du streamst gerade seit {time_str} mit {viewer_count} Viewern. "
+                        if stats and stats[0]:
+                            avg_viewers = int(stats[0])
+                            peak_viewers = int(stats[1]) if stats[1] else 0
+                            if peak_viewers > 0:
+                                stats_teaser = f"Übrigens: Du hattest im Schnitt {avg_viewers} Viewer bei Deadlock, dein Peak war {peak_viewers}. Weitere Details haben wir auch – "
                     except Exception:
-                        pass
+                        log.debug("Could not fetch stats for %s", to_broadcaster_login, exc_info=True)
 
             message = (
                 f"Hey @{to_broadcaster_login}! 👋 Dieser RAID kommt von der deutschen Deadlock Community! "
-                f"{insights}"
-                f"{from_broadcaster_login} ist bei uns Partner und bekommt automatisch Raids von anderen Partnern. "
-                f"Als Partner kriegst du nicht nur Raids, sondern auch Zugriff auf detaillierte Stream-Stats und Analytics. "
-                f"Bock drauf? Schau auf unserem Discord vorbei: {discord_invite} "
-                f"Komplett kostenfrei, keine Verpflichtungen – nur gegenseitige Unterstützung! 🎮"
+                f"{from_broadcaster_login} ist bei uns Partner und supportet damit andere deutsche Deadlock-Streamer. "
+                f"{stats_teaser}"
+                f"Falls du auch Bock hast, Teil der Community zu werden – "
+                f"schau gerne mal auf unserem Discord vorbei: {discord_invite} "
+                f"Streamer-Partner zu werden ist komplett kostenfrei und du bekommst automatisch Raids von anderen Partnern, "
+                f"wenn du offline gehst. Win-Win für alle! 🎮"
             )
 
             # Sende Nachricht im Chat des geraideten Streamers
