@@ -367,10 +367,12 @@ class SteamRankChecker(commands.Cog):
         self,
         author_name: str,
         author_rank: str,
+        original_message: str,
         suggestions: List[Tuple[discord.VoiceChannel, str, List[Tuple[str, int]], float]]
     ) -> Optional[str]:
         """
         Generiert eine freundliche, menschliche Antwort für Voice Channel Vorschläge.
+        Analysiert den Stil der originalen Nachricht und antwortet auf gleicher Augenhöhe.
         """
         if not ANTHROPIC_API_KEY or not suggestions:
             return None
@@ -394,15 +396,18 @@ class SteamRankChecker(commands.Cog):
                     "content-type": "application/json",
                 }
 
-                # Sparsames Prompt
+                # Stil-angepasstes Prompt
                 payload = {
                     "model": "claude-3-haiku-20240307",
                     "max_tokens": 150,
                     "messages": [{
                         "role": "user",
                         "content": (
-                            f"Schreibe eine kurze, freundliche Nachricht (max 2 Sätze) für {author_name} ({author_rank}), "
-                            f"um folgende Voice Channels vorzuschlagen. Sei locker und nutze 'du'. Keine Emojis:\n\n{context}"
+                            f"Analysiere den Schreibstil dieser Nachricht und antworte im EXAKT gleichen Stil "
+                            f"(gleiche Sprache, gleicher Ton, gleiche Lockerheit). Schreibe als wärst du ein Freund "
+                            f"der auf Augenhöhe antwortet. Max 2 Sätze. Keine Emojis.\n\n"
+                            f"Original: \"{original_message}\"\n\n"
+                            f"Schlage diese Voice Channels vor:\n{context}"
                         )
                     }]
                 }
@@ -556,10 +561,11 @@ class SteamRankChecker(commands.Cog):
 
         # Voice Channel Vorschläge hinzufügen
         if voice_suggestions:
-            # AI-generierte Nachricht für Voice Channels
+            # AI-generierte Nachricht für Voice Channels (im Stil der Original-Nachricht)
             ai_suggestion_text = await self._generate_ai_voice_suggestion(
                 message.author.display_name,
                 author_rank_name,
+                message.content,  # Original-Nachricht für Stil-Analyse
                 voice_suggestions
             )
 
