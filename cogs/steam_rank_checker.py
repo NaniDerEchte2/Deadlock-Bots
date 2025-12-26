@@ -6,12 +6,14 @@ Steam Rank Checker - LFG System
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
 import time
 from typing import Dict, List, Optional, Set, Tuple
 
+import aiohttp
 import aiosqlite
 import discord
 from discord.ext import commands
@@ -33,8 +35,20 @@ RANK_TOLERANCE = int(os.getenv("LFG_RANK_TOLERANCE", "2"))  # +/- 2 Ränge (Grin
 # LFG Trigger-Wörter (case-insensitive)
 LFG_TRIGGERS = [
     "lfg", "lf game", "looking for game", "suche mitspieler",
-    "suche spieler", "wer will spielen", "jemand bock"
+    "suche spieler", "wer will spielen", "jemand bock", "jmd bock",
+    "zu zocken", "suche noch", "wer hat lust", "wer zockt"
 ]
+
+# Voice Channel Kategorien (aus deadlock_voice_status.py und rank_voice_manager.py)
+VOICE_CATEGORIES = {
+    1357422957017698478: "ranked",  # Ranked Kategorie
+    1412804540994162789: "grind",   # Grind Kategorie
+    1289721245281292290: "casual",  # Casual/Spaß Kategorie
+}
+
+# AI Configuration (Anthropic Claude)
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+USE_AI_DETECTION = os.getenv("LFG_USE_AI", "true").lower() in ("true", "1", "yes")
 
 # Deadlock Rank-System (muss mit rank_voice_manager.py übereinstimmen)
 DISCORD_RANK_ROLES = {
@@ -100,6 +114,50 @@ class SteamRankChecker(commands.Cog):
         """Prüft ob eine Nachricht ein LFG-Trigger enthält"""
         content_lower = content.lower()
         return any(trigger in content_lower for trigger in LFG_TRIGGERS)
+
+    async def _ai_check_lfg_intent(self, message_content: str) -> bool:
+        """
+        Nutzt AI um zu prüfen ob jemand nach Mitspielern sucht.
+        Nur wenn kein Keyword-Match gefunden wurde.
+        """
+        if not ANTHROPIC_API_KEY or not USE_AI_DETECTION:
+            return False
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                }
+
+                # Sehr sparsames Prompt für Token-Kosten
+                payload = {
+                    "model": "claude-3-haiku-20240307",  # Günstigstes Modell
+                    "max_tokens": 10,
+                    "messages": [{
+                        "role": "user",
+                        "content": f"Sucht diese Person nach Mitspielern für ein Spiel? Antworte nur 'ja' oder 'nein':\n\n\"{message_content}\""
+                    }]
+                }
+
+                async with session.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    if resp.status != 200:
+                        log.warning("AI API Fehler: %s", resp.status)
+                        return False
+
+                    data = await resp.json()
+                    answer = data.get("content", [{}])[0].get("text", "").lower().strip()
+                    return "ja" in answer or "yes" in answer
+
+        except Exception as exc:
+            log.debug("AI-Check fehlgeschlagen: %s", exc)
+            return False
 
     async def _get_all_steam_links(self) -> Dict[int, List[str]]:
         """
@@ -240,6 +298,131 @@ class SteamRankChecker(commands.Cog):
 
         return matching_players
 
+    async def _get_voice_channel_suggestions(
+        self,
+        author: discord.Member,
+        author_rank_value: int
+    ) -> List[Tuple[discord.VoiceChannel, str, List[Tuple[str, int]], float]]:
+        """
+        Findet passende Voice Channels basierend auf Rang.
+        Returns: [(channel, category_type, [(member_name, rank)], avg_rank_diff), ...]
+        """
+        if author.voice and author.voice.channel:
+            # User ist bereits in einem Voice Channel
+            return []
+
+        guild = self.bot.get_guild(GUILD_ID)
+        if not guild:
+            return []
+
+        suggestions = []
+
+        for category_id, category_type in VOICE_CATEGORIES.items():
+            category = guild.get_channel(category_id)
+            if not category or not isinstance(category, discord.CategoryChannel):
+                continue
+
+            for channel in category.voice_channels:
+                # Channel muss Mitglieder haben
+                if not channel.members:
+                    continue
+
+                # Mitglieder und deren Ränge sammeln
+                member_ranks = []
+                rank_values = []
+
+                for member in channel.members:
+                    if member.bot:
+                        continue
+
+                    rank_name, rank_value = self._get_user_rank_from_roles(member)
+                    if rank_value > 0:
+                        member_ranks.append((member.display_name, rank_value))
+                        rank_values.append(rank_value)
+
+                if not rank_values:
+                    continue
+
+                # Durchschnitts-Rang berechnen
+                avg_rank = sum(rank_values) / len(rank_values)
+                rank_diff = abs(avg_rank - author_rank_value)
+
+                # Ranked: ±1, Grind: ±2, Casual: ±4
+                tolerance = {
+                    "ranked": 1.5,
+                    "grind": 2.5,
+                    "casual": 4.5
+                }.get(category_type, 3.0)
+
+                # Nur Channels im Toleranzbereich vorschlagen
+                if rank_diff <= tolerance:
+                    suggestions.append((channel, category_type, member_ranks, rank_diff))
+
+        # Sortiere nach Rank-Diff (beste Matches zuerst)
+        suggestions.sort(key=lambda x: x[3])
+
+        return suggestions[:3]  # Max 3 Vorschläge
+
+    async def _generate_ai_voice_suggestion(
+        self,
+        author_name: str,
+        author_rank: str,
+        suggestions: List[Tuple[discord.VoiceChannel, str, List[Tuple[str, int]], float]]
+    ) -> Optional[str]:
+        """
+        Generiert eine freundliche, menschliche Antwort für Voice Channel Vorschläge.
+        """
+        if not ANTHROPIC_API_KEY or not suggestions:
+            return None
+
+        try:
+            # Context für AI vorbereiten
+            context_lines = []
+            for channel, cat_type, members, rank_diff in suggestions:
+                member_count = len(members)
+                cat_emoji = {"ranked": "🏆", "grind": "💪", "casual": "🎉"}.get(cat_type, "🎮")
+                context_lines.append(
+                    f"{cat_emoji} {channel.name} ({cat_type}) - {member_count} Spieler"
+                )
+
+            context = "\n".join(context_lines)
+
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                }
+
+                # Sparsames Prompt
+                payload = {
+                    "model": "claude-3-haiku-20240307",
+                    "max_tokens": 150,
+                    "messages": [{
+                        "role": "user",
+                        "content": (
+                            f"Schreibe eine kurze, freundliche Nachricht (max 2 Sätze) für {author_name} ({author_rank}), "
+                            f"um folgende Voice Channels vorzuschlagen. Sei locker und nutze 'du'. Keine Emojis:\n\n{context}"
+                        )
+                    }]
+                }
+
+                async with session.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    if resp.status != 200:
+                        return None
+
+                    data = await resp.json()
+                    return data.get("content", [{}])[0].get("text", "").strip()
+
+        except Exception as exc:
+            log.debug("AI-Response-Generation fehlgeschlagen: %s", exc)
+            return None
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         """Überwacht LFG-Kanal nach LFG-Anfragen"""
@@ -252,7 +435,15 @@ class SteamRankChecker(commands.Cog):
             return
 
         # Prüfe ob Nachricht LFG-Trigger enthält
-        if not self._is_lfg_message(message.content):
+        is_lfg = self._is_lfg_message(message.content)
+
+        # Falls kein Keyword-Match: AI-basierte Erkennung
+        if not is_lfg and USE_AI_DETECTION:
+            is_lfg = await self._ai_check_lfg_intent(message.content)
+            if is_lfg:
+                log.info("AI erkannte LFG-Intent von %s: %s", message.author.display_name, message.content[:50])
+
+        if not is_lfg:
             return
 
         # Rate limiting
@@ -301,10 +492,16 @@ class SteamRankChecker(commands.Cog):
             message.author.id
         )
 
+        # Voice Channel Vorschläge holen (nur wenn User nicht in VC ist)
+        voice_suggestions = await self._get_voice_channel_suggestions(
+            message.author,
+            author_rank_value
+        )
+
         # Antwort erstellen
-        if not matching_players:
+        if not matching_players and not voice_suggestions:
             await thinking_msg.edit(
-                content=f"😔 Keine Spieler im Rang-Bereich **{author_rank_name} ±{RANK_TOLERANCE}** sind derzeit online in Deadlock."
+                content=f"😔 Keine Spieler im Rang-Bereich **{author_rank_name} ±{RANK_TOLERANCE}** sind derzeit online in Deadlock und keine passenden Voice Channels gefunden."
             )
             return
 
@@ -323,10 +520,11 @@ class SteamRankChecker(commands.Cog):
                 in_match.append((member, rank_name, rank_value, minutes))
 
         # Embed erstellen
+        embed_color = discord.Color.green() if matching_players else discord.Color.blue()
         embed = discord.Embed(
-            title="🎮 Verfügbare Spieler gefunden!",
-            description=f"Spieler im Rang-Bereich **{author_rank_name} ±{RANK_TOLERANCE}**",
-            color=discord.Color.green()
+            title="🎮 Verfügbare Spieler gefunden!" if matching_players else "🎮 Voice Channel Vorschläge",
+            description=f"Spieler im Rang-Bereich **{author_rank_name} ±{RANK_TOLERANCE}**" if matching_players else f"Passende Voice Channels für **{author_rank_name}**",
+            color=embed_color
         )
 
         mentions = []
@@ -356,16 +554,55 @@ class SteamRankChecker(commands.Cog):
                 inline=False
             )
 
+        # Voice Channel Vorschläge hinzufügen
+        if voice_suggestions:
+            # AI-generierte Nachricht für Voice Channels
+            ai_suggestion_text = await self._generate_ai_voice_suggestion(
+                message.author.display_name,
+                author_rank_name,
+                voice_suggestions
+            )
+
+            vc_lines = []
+            for channel, cat_type, members, rank_diff in voice_suggestions:
+                cat_emoji = {"ranked": "🏆", "grind": "💪", "casual": "🎉"}.get(cat_type, "🎮")
+                member_count = len(members)
+
+                # Warnung bei Casual Lanes
+                warning = ""
+                if cat_type == "casual" and rank_diff > 2:
+                    warning = " ⚠️ (größere Rank-Diff)"
+
+                vc_lines.append(f"{cat_emoji} {channel.mention} - {member_count} Spieler{warning}")
+
+            embed.add_field(
+                name="🔊 Passende Voice Channels",
+                value="\n".join(vc_lines),
+                inline=False
+            )
+
+            if ai_suggestion_text:
+                embed.add_field(
+                    name="💬 Tipp",
+                    value=ai_suggestion_text,
+                    inline=False
+                )
+
         embed.set_footer(text=f"Angefordert von {message.author.display_name}")
         embed.timestamp = message.created_at
 
         # Nachricht mit Pings
-        mention_text = " ".join(mentions[:10])  # Max 10 Mentions um Discord-Limits zu beachten
-        if len(mentions) > 10:
-            mention_text += f"\n... und {len(mentions) - 10} weitere"
+        response_parts = []
+        if matching_players:
+            mention_text = " ".join(mentions[:10])  # Max 10 Mentions um Discord-Limits zu beachten
+            if len(mentions) > 10:
+                mention_text += f"\n... und {len(mentions) - 10} weitere"
+            response_parts.append(f"{message.author.mention} sucht Mitspieler!\n{mention_text}")
+        else:
+            response_parts.append(f"{message.author.mention}")
 
         await thinking_msg.edit(
-            content=f"{message.author.mention} sucht Mitspieler!\n{mention_text}",
+            content="\n".join(response_parts),
             embed=embed
         )
 
