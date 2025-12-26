@@ -409,7 +409,7 @@ class RaidBot:
             discord_invite = "discord.gg/deadlock-de"  # TODO: Aus ENV holen
 
             message = (
-                f"Hey! 👋 Dieser RAID kommt von der deutschen Deadlock Community! "
+                f"Hey @{to_broadcaster_login}! 👋 Dieser RAID kommt von der deutschen Deadlock Community! "
                 f"{from_broadcaster_login} ist bei uns Partner und supportet damit andere deutsche Deadlock-Streamer. "
                 f"Falls du auch Bock hast, Teil der Community zu werden – "
                 f"schau gerne mal auf unserem Discord vorbei: {discord_invite} "
