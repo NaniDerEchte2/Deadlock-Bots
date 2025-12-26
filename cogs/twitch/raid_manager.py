@@ -445,8 +445,8 @@ class RaidBot:
                 f"{stats_teaser}"
                 f"Falls du auch Bock hast, Teil der Community zu werden – "
                 f"schau gerne mal auf unserem Discord vorbei: {discord_invite} "
-                f"Streamer-Partner zu werden ist komplett kostenfrei und du bekommst automatisch Raids von anderen Partnern, "
-                f"wenn du offline gehst. Win-Win für alle! 🎮"
+                f"Als Partner kriegst du automatisch Raids, wenn andere Partner offline gehen – "
+                f"und du supportest andere, wenn du selbst offline gehst. Win-Win für alle! 🎮"
             )
 
             # Sende Nachricht im Chat des geraideten Streamers
