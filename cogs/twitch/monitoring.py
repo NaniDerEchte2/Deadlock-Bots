@@ -317,6 +317,15 @@ class TwitchMonitoringMixin:
                 and (not is_live or not is_deadlock)
             )
 
+            # Auto-Raid beim Offline-Gehen
+            if ended_deadlock and was_live and not is_live:
+                await self._handle_auto_raid_on_offline(
+                    login=login,
+                    twitch_user_id=twitch_user_id or previous_state.get("twitch_user_id"),
+                    previous_state=previous_state,
+                    streams_by_login=streams_by_login,
+                )
+
             if ended_deadlock:
                 display_name = (
                     (stream.get("user_name") if stream else previous_state.get("streamer_login"))

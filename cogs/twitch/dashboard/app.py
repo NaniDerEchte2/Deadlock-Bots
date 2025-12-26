@@ -10,9 +10,11 @@ from .base import DashboardBase, log
 from .live import DashboardLiveMixin
 from .stats import DashboardStatsMixin
 from .templates import DashboardTemplateMixin
+from .raid import DashboardRaidMixin
 
 
 class Dashboard(
+    DashboardRaidMixin,
     DashboardStatsMixin,
     DashboardLiveMixin,
     DashboardTemplateMixin,
@@ -31,6 +33,11 @@ class Dashboard(
             web.post("/twitch/discord_link", self.discord_link),
             web.get("/twitch/stats", self.stats),
             web.get("/twitch/partners", self.partner_stats),
+            # Raid Bot Routes
+            web.get("/twitch/raid/auth", self.raid_auth_start),
+            web.get("/twitch/raid/callback", self.raid_oauth_callback),
+            web.post("/twitch/raid/toggle", self.raid_toggle),
+            web.get("/twitch/raid/history", self.raid_history),
         ])
 
 
@@ -46,8 +53,17 @@ def build_app(
     verify_cb=None,
     discord_flag_cb=None,
     discord_profile_cb=None,
+    raid_history_cb=None,
+    raid_bot=None,
+    http_session=None,
+    redirect_uri: str = "",
 ) -> web.Application:
     app = web.Application()
+
+    # HTTP-Session für OAuth-Callbacks speichern
+    if http_session:
+        app["_http_session"] = http_session
+
     have_full_ui = all(
         cb is not None
         for cb in (
@@ -74,6 +90,10 @@ def build_app(
             discord_flag_cb=discord_flag_cb,
             discord_profile_cb=discord_profile_cb,
         )
+        # Raid-Bot Attribute setzen
+        ui._raid_bot = raid_bot
+        ui._redirect_uri = redirect_uri
+        ui._raid_history_cb = raid_history_cb
         ui.attach(app)
     else:
         async def index(request: web.Request):

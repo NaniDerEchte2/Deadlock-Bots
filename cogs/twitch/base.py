@@ -29,6 +29,8 @@ from .constants import (
 )
 from .logger import log
 from .twitch_api import TwitchAPI
+from .raid_manager import RaidBot
+from .twitch_chat_bot import create_twitch_chat_bot
 
 
 class TwitchBaseCog(commands.Cog):
@@ -82,6 +84,31 @@ class TwitchBaseCog(commands.Cog):
 
         self.api = TwitchAPI(self.client_id, self.client_secret)
 
+        # Raid-Bot initialisieren
+        self._raid_bot: Optional[RaidBot] = None
+        self._twitch_chat_bot = None
+        redirect_uri = os.getenv("TWITCH_RAID_REDIRECT_URI", "").strip()
+        if not redirect_uri:
+            # Fallback: Dashboard-URL verwenden
+            redirect_uri = f"http://{self._dashboard_host}:{self._dashboard_port}/twitch/raid/callback"
+        self._raid_redirect_uri = redirect_uri
+
+        try:
+            session = self.api.get_http_session()
+            self._raid_bot = RaidBot(
+                client_id=self.client_id,
+                client_secret=self.client_secret,
+                redirect_uri=redirect_uri,
+                session=session,
+            )
+            log.info("Raid-Bot initialisiert (redirect_uri: %s)", redirect_uri)
+
+            # Twitch Chat Bot starten
+            self._spawn_bg_task(self._init_twitch_chat_bot(), "twitch.chat_bot")
+        except Exception:
+            log.exception("Fehler beim Initialisieren des Raid-Bots")
+            self._raid_bot = None
+
         # Background tasks
         self.poll_streams.start()
         self.invites_refresh.start()
@@ -107,6 +134,14 @@ class TwitchBaseCog(commands.Cog):
                 except Exception:
                     log.exception("Konnte Loop nicht canceln: %r", lp)
             await asyncio.sleep(0)
+
+            # Twitch Chat Bot stoppen
+            if self._twitch_chat_bot:
+                try:
+                    if hasattr(self._twitch_chat_bot, "close"):
+                        await self._twitch_chat_bot.close()
+                except Exception:
+                    log.exception("Twitch Chat Bot shutdown fehlgeschlagen")
 
             if self._web:
                 try:
@@ -187,6 +222,51 @@ class TwitchBaseCog(commands.Cog):
             log.exception("HTTP-Fehler beim Abruf der Invites für Guild %s", guild.id)
 
         self._invite_codes[guild.id] = codes
+
+    async def _init_twitch_chat_bot(self):
+        """Initialisiert den Twitch Chat Bot für Raid-Commands."""
+        try:
+            await self.bot.wait_until_ready()
+            if not self._raid_bot:
+                log.info("Raid-Bot nicht verfügbar, überspringe Twitch Chat Bot")
+                return
+
+            self._twitch_chat_bot = await create_twitch_chat_bot(
+                client_id=self.client_id,
+                client_secret=self.client_secret,
+                redirect_uri=self._raid_redirect_uri,
+                raid_bot=self._raid_bot,
+            )
+
+            if self._twitch_chat_bot:
+                # Bot im Hintergrund laufen lassen
+                asyncio.create_task(self._twitch_chat_bot.start(), name="twitch.chat_bot.start")
+                log.info("Twitch Chat Bot gestartet")
+
+                # Periodisch neue Partner-Channels joinen
+                asyncio.create_task(self._periodic_channel_join(), name="twitch.chat_bot.join_channels")
+            else:
+                log.info("Twitch Chat Bot nicht verfügbar (kein Token gesetzt)")
+
+        except Exception:
+            log.exception("Fehler beim Initialisieren des Twitch Chat Bots")
+
+    async def _periodic_channel_join(self):
+        """Joint periodisch neue Partner-Channels."""
+        if not self._twitch_chat_bot:
+            return
+
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(60)  # Initial delay
+
+        while True:
+            try:
+                if hasattr(self._twitch_chat_bot, "join_partner_channels"):
+                    await self._twitch_chat_bot.join_partner_channels()
+            except Exception:
+                log.exception("Fehler beim Joinen von Partner-Channels")
+
+            await asyncio.sleep(3600)  # Alle Stunde prüfen
 
     # -------------------------------------------------------
     # Utils

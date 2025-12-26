@@ -477,6 +477,10 @@ class TwitchDashboardMixin:
                 verify_cb=self._dashboard_verify,
                 discord_flag_cb=self._dashboard_set_discord_flag,
                 discord_profile_cb=self._dashboard_save_discord_profile,
+                raid_history_cb=self._dashboard_raid_history if hasattr(self, "_dashboard_raid_history") else None,
+                raid_bot=getattr(self, "_raid_bot", None),
+                http_session=self.api.get_http_session() if self.api else None,
+                redirect_uri=getattr(self, "_raid_redirect_uri", ""),
             )
             runner = web.AppRunner(app)
             await runner.setup()

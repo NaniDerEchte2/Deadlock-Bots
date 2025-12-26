@@ -7,6 +7,7 @@ from .base import TwitchBaseCog
 from .dashboard_mixin import TwitchDashboardMixin
 from .leaderboard import LeaderboardOptions, TwitchLeaderboardMixin, TwitchLeaderboardView
 from .monitoring import TwitchMonitoringMixin
+from .raid_mixin import TwitchRaidMixin
 
 __all__ = [
     "TwitchStreamCog",
@@ -16,13 +17,14 @@ __all__ = [
 
 
 class TwitchStreamCog(
+    TwitchRaidMixin,
     TwitchDashboardMixin,
     TwitchLeaderboardMixin,
     TwitchAdminMixin,
     TwitchMonitoringMixin,
     TwitchBaseCog,
 ):
-    """Monitor Twitch-Streamer (Deadlock), poste Go-Live, sammle Stats, Dashboard."""
+    """Monitor Twitch-Streamer (Deadlock), poste Go-Live, sammle Stats, Dashboard, Auto-Raids."""
 
     # The mixins and base class provide the full implementation.
     pass
