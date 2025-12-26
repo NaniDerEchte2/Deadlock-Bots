@@ -393,12 +393,15 @@ class RaidBot:
         self,
         from_broadcaster_login: str,
         to_broadcaster_login: str,
+        target_stream_data: Optional[Dict] = None,
     ):
         """
         Sendet eine Einladungs-Nachricht im Chat des geraideten Nicht-Partners.
 
         Diese Nachricht wird nur gesendet, wenn ein deutscher Deadlock-Streamer
         (kein Partner) geraidet wird, um ihn zur Community einzuladen.
+
+        Zeigt dem Streamer seine aktuellen Stats als Teaser.
         """
         if not self.chat_bot:
             log.debug("Chat bot not available for recruitment message")
@@ -408,13 +411,36 @@ class RaidBot:
             # Nachricht mit Discord-Link (ENV-Variable oder hardcoded)
             discord_invite = "discord.gg/deadlock-de"  # TODO: Aus ENV holen
 
+            # Stream-Insights als Teaser berechnen
+            insights = ""
+            if target_stream_data:
+                viewer_count = target_stream_data.get("viewer_count", 0)
+                started_at = target_stream_data.get("started_at")
+
+                if started_at:
+                    from datetime import datetime, timezone
+                    try:
+                        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                        now = datetime.now(timezone.utc)
+                        hours = (now - started).total_seconds() / 3600
+
+                        if hours < 1:
+                            minutes = int((now - started).total_seconds() / 60)
+                            time_str = f"{minutes} Minuten"
+                        else:
+                            time_str = f"{hours:.1f} Stunden"
+
+                        insights = f"Wir tracken alle deutschen Deadlock-Streamer – du streamst gerade seit {time_str} mit {viewer_count} Viewern. "
+                    except Exception:
+                        pass
+
             message = (
                 f"Hey @{to_broadcaster_login}! 👋 Dieser RAID kommt von der deutschen Deadlock Community! "
-                f"{from_broadcaster_login} ist bei uns Partner und supportet damit andere deutsche Deadlock-Streamer. "
-                f"Falls du auch Bock hast, Teil der Community zu werden – "
-                f"schau gerne mal auf unserem Discord vorbei: {discord_invite} "
-                f"Streamer-Partner zu werden ist komplett kostenfrei und du bekommst automatisch Raids von anderen Partnern, "
-                f"wenn du offline gehst. Win-Win für alle! 🎮"
+                f"{insights}"
+                f"{from_broadcaster_login} ist bei uns Partner und bekommt automatisch Raids von anderen Partnern. "
+                f"Als Partner kriegst du nicht nur Raids, sondern auch Zugriff auf detaillierte Stream-Stats und Analytics. "
+                f"Bock drauf? Schau auf unserem Discord vorbei: {discord_invite} "
+                f"Komplett kostenfrei, keine Verpflichtungen – nur gegenseitige Unterstützung! 🎮"
             )
 
             # Sende Nachricht im Chat des geraideten Streamers
@@ -647,6 +673,7 @@ class RaidBot:
             await self._send_recruitment_message(
                 from_broadcaster_login=broadcaster_login,
                 to_broadcaster_login=target_login,
+                target_stream_data=target,
             )
 
         return target_login if success else None
