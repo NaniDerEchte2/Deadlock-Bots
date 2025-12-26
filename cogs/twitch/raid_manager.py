@@ -383,6 +383,58 @@ class RaidBot:
         self.auth_manager = RaidAuthManager(client_id, client_secret, redirect_uri)
         self.raid_executor = RaidExecutor(client_id, self.auth_manager)
         self.session = session
+        self.chat_bot = None  # Wird später gesetzt
+
+    def set_chat_bot(self, chat_bot):
+        """Setzt den Twitch Chat Bot für Recruitment-Nachrichten."""
+        self.chat_bot = chat_bot
+
+    async def _send_recruitment_message(
+        self,
+        from_broadcaster_login: str,
+        to_broadcaster_login: str,
+    ):
+        """
+        Sendet eine Einladungs-Nachricht im Chat des geraideten Nicht-Partners.
+
+        Diese Nachricht wird nur gesendet, wenn ein deutscher Deadlock-Streamer
+        (kein Partner) geraidet wird, um ihn zur Community einzuladen.
+        """
+        if not self.chat_bot:
+            log.debug("Chat bot not available for recruitment message")
+            return
+
+        try:
+            # Nachricht mit Discord-Link (ENV-Variable oder hardcoded)
+            discord_invite = "discord.gg/deadlock-de"  # TODO: Aus ENV holen
+
+            message = (
+                f"Hey! 👋 Dieser RAID kommt von der deutschen Deadlock Community! "
+                f"{from_broadcaster_login} ist bei uns Partner und supportet damit andere deutsche Deadlock-Streamer. "
+                f"Falls du auch Bock hast, Teil der Community zu werden – "
+                f"schau gerne mal auf unserem Discord vorbei: {discord_invite} "
+                f"Streamer-Partner zu werden ist komplett kostenfrei und du bekommst automatisch Raids von anderen Partnern, "
+                f"wenn du offline gehst. Win-Win für alle! 🎮"
+            )
+
+            # Sende Nachricht im Chat des geraideten Streamers
+            channel = await self.chat_bot.fetch_channel(to_broadcaster_login)
+            if channel:
+                await channel.send(message)
+                log.info(
+                    "Sent recruitment message in %s's chat (raided by %s)",
+                    to_broadcaster_login,
+                    from_broadcaster_login,
+                )
+            else:
+                log.warning("Could not join channel %s for recruitment message", to_broadcaster_login)
+
+        except Exception:
+            log.exception(
+                "Failed to send recruitment message to %s (raided by %s)",
+                to_broadcaster_login,
+                from_broadcaster_login,
+            )
 
     def _select_fairest_candidate(
         self, candidates: List[Dict], from_broadcaster_id: str
@@ -462,6 +514,8 @@ class RaidBot:
         viewer_count: int,
         stream_duration_sec: int,
         online_partners: List[Dict],
+        api=None,
+        category_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Wird aufgerufen, wenn ein Streamer offline geht.
@@ -507,26 +561,73 @@ class RaidBot:
             if s.get("user_id") != broadcaster_id
         ]
 
-        if not candidates:
-            log.info("No raid candidates for %s (nobody else online)", broadcaster_login)
-            return None
+        is_partner_raid = False
+        target = None
+        target_id = None
+        target_login = None
+        target_started_at = ""
 
-        # Fairness-basierte Auswahl: Wer weniger Raids bekommen hat + kürzere Stream-Zeit
-        target = self._select_fairest_candidate(candidates, broadcaster_id)
-        if not target:
-            log.warning("Could not select raid target for %s", broadcaster_login)
-            return None
+        if candidates:
+            # Partner vorhanden -> Fairness-basierte Auswahl
+            is_partner_raid = True
+            target = self._select_fairest_candidate(candidates, broadcaster_id)
+            if not target:
+                log.warning("Could not select raid target for %s", broadcaster_login)
+                return None
 
-        target_id = target["user_id"]
-        target_login = target["user_login"]
-        target_started_at = target.get("started_at", "")
+            target_id = target["user_id"]
+            target_login = target["user_login"]
+            target_started_at = target.get("started_at", "")
 
-        log.info(
-            "Executing raid for %s -> %s (%d candidates available)",
-            broadcaster_login,
-            target_login,
-            len(candidates),
-        )
+            log.info(
+                "Executing partner raid: %s -> %s (%d partner candidates)",
+                broadcaster_login,
+                target_login,
+                len(candidates),
+            )
+        else:
+            # Keine Partner online -> Fallback auf deutsche Deadlock-Streamer
+            log.info("No partners online for %s, trying Deadlock-DE fallback", broadcaster_login)
+
+            if not api or not category_id:
+                log.warning("Cannot fallback to Deadlock-DE (no API or category_id)")
+                return None
+
+            try:
+                # Hole deutsche Deadlock-Streamer
+                de_streams = await api.get_streams_by_category(
+                    category_id,
+                    language="de",
+                    limit=50
+                )
+
+                # Filtere eigenen Stream raus
+                de_streams = [
+                    s for s in de_streams
+                    if s.get("user_id") != broadcaster_id
+                ]
+
+                if not de_streams:
+                    log.info("No German Deadlock streamers found for fallback raid")
+                    return None
+
+                # Sortiere nach kürzester Stream-Zeit
+                de_streams.sort(key=lambda s: s.get("started_at", "9999-99-99"))
+                target = de_streams[0]
+
+                target_id = target["user_id"]
+                target_login = target["user_login"]
+                target_started_at = target.get("started_at", "")
+
+                log.info(
+                    "Executing Deadlock-DE fallback raid: %s -> %s (non-partner, %d DE streamers found)",
+                    broadcaster_login,
+                    target_login,
+                    len(de_streams),
+                )
+            except Exception:
+                log.exception("Failed to get Deadlock-DE streams for fallback raid")
+                return None
 
         # Raid ausführen
         success, error = await self.raid_executor.start_raid(
@@ -537,8 +638,15 @@ class RaidBot:
             viewer_count=viewer_count,
             stream_duration_sec=stream_duration_sec,
             target_stream_started_at=target_started_at,
-            candidates_count=len(candidates),
+            candidates_count=len(candidates) if is_partner_raid else len(de_streams) if 'de_streams' in locals() else 0,
             session=self.session,
         )
+
+        # Bei Nicht-Partner-Raid: Chat-Nachricht senden
+        if success and not is_partner_raid:
+            await self._send_recruitment_message(
+                from_broadcaster_login=broadcaster_login,
+                to_broadcaster_login=target_login,
+            )
 
         return target_login if success else None

@@ -72,10 +72,6 @@ class TwitchRaidMixin:
                 stream_data["user_id"] = partner_user_id
                 online_partners.append(stream_data)
 
-        if not online_partners:
-            log.debug("Keine Online-Partner für Auto-Raid von %s gefunden", login)
-            return
-
         log.info(
             "Auto-Raid triggered für %s (offline): %d Online-Partner gefunden, "
             "Stream-Dauer: %d Sek, Viewer: %d",
@@ -85,7 +81,7 @@ class TwitchRaidMixin:
             viewer_count,
         )
 
-        # Raid ausführen
+        # Raid ausführen (mit Fallback auf DE-Deadlock-Streamer)
         try:
             target_login = await self._raid_bot.handle_streamer_offline(
                 broadcaster_id=twitch_user_id,
@@ -93,6 +89,8 @@ class TwitchRaidMixin:
                 viewer_count=viewer_count,
                 stream_duration_sec=stream_duration_sec,
                 online_partners=online_partners,
+                api=self.api if hasattr(self, "api") else None,
+                category_id=self._category_id if hasattr(self, "_category_id") else None,
             )
             if target_login:
                 log.info("✅ Auto-Raid erfolgreich: %s -> %s", login, target_login)

@@ -243,6 +243,11 @@ class TwitchBaseCog(commands.Cog):
                 asyncio.create_task(self._twitch_chat_bot.start(), name="twitch.chat_bot.start")
                 log.info("Twitch Chat Bot gestartet")
 
+                # Verknüpfe Chat-Bot mit Raid-Bot für Recruitment-Messages
+                if self._raid_bot:
+                    self._raid_bot.set_chat_bot(self._twitch_chat_bot)
+                    log.info("Chat-Bot mit Raid-Bot verknüpft für Recruitment-Messages")
+
                 # Periodisch neue Partner-Channels joinen
                 asyncio.create_task(self._periodic_channel_join(), name="twitch.chat_bot.join_channels")
             else:
