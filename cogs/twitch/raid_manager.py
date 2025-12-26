@@ -369,8 +369,8 @@ class RaidBot:
     Hauptklasse für automatische Raid-Verwaltung.
 
     - Erkennt, wenn ein Partner offline geht
-    - Wählt einen anderen Partner zum Raiden (kürzeste Stream-Zeit)
-    - Führt den Raid aus und loggt Metadaten
+    - Wählt Partner nach Fairness aus (wer weniger Raids bekommen hat)
+    - Führt den Raid aus und loggt Metadaten (gesendete + empfangene Raids)
     """
 
     def __init__(
@@ -383,6 +383,77 @@ class RaidBot:
         self.auth_manager = RaidAuthManager(client_id, client_secret, redirect_uri)
         self.raid_executor = RaidExecutor(client_id, self.auth_manager)
         self.session = session
+
+    def _select_fairest_candidate(
+        self, candidates: List[Dict], from_broadcaster_id: str
+    ) -> Optional[Dict]:
+        """
+        Wählt den fairsten Raid-Kandidaten aus.
+
+        Fairness-Kriterien:
+        1. Wer weniger Raids bekommen hat (Hauptkriterium)
+        2. Wer kürzer live ist (Tiebreaker)
+
+        Returns:
+            Der fairste Kandidat oder None
+        """
+        if not candidates:
+            return None
+
+        # Raid-Statistiken für alle Kandidaten holen
+        candidate_stats = []
+
+        with get_conn() as conn:
+            for candidate in candidates:
+                user_id = candidate.get("user_id")
+                user_login = candidate.get("user_login", "")
+                started_at = candidate.get("started_at", "9999-99-99")
+
+                # Anzahl empfangener Raids
+                received = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM twitch_raid_history
+                    WHERE to_broadcaster_id = ? AND success = 1
+                    """,
+                    (user_id,),
+                ).fetchone()
+                received_count = received[0] if received else 0
+
+                # Anzahl gesendeter Raids (für spätere Analysen)
+                sent = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM twitch_raid_history
+                    WHERE from_broadcaster_id = ? AND success = 1
+                    """,
+                    (user_id,),
+                ).fetchone()
+                sent_count = sent[0] if sent else 0
+
+                candidate_stats.append({
+                    "candidate": candidate,
+                    "user_id": user_id,
+                    "user_login": user_login,
+                    "started_at": started_at,
+                    "received_raids": received_count,
+                    "sent_raids": sent_count,
+                })
+
+        # Sortieren nach Fairness:
+        # 1. Weniger empfangene Raids = höhere Priorität
+        # 2. Bei Gleichstand: kürzere Stream-Zeit
+        candidate_stats.sort(key=lambda x: (x["received_raids"], x["started_at"]))
+
+        selected = candidate_stats[0]
+        log.info(
+            "Raid target selection: %s (received: %d raids, sent: %d raids, started: %s) from %d candidates",
+            selected["user_login"],
+            selected["received_raids"],
+            selected["sent_raids"],
+            selected["started_at"][:16],
+            len(candidates),
+        )
+
+        return selected["candidate"]
 
     async def handle_streamer_offline(
         self,
@@ -440,16 +511,18 @@ class RaidBot:
             log.info("No raid candidates for %s (nobody else online)", broadcaster_login)
             return None
 
-        # Sortieren nach kürzester Stream-Zeit
-        candidates.sort(key=lambda s: s.get("started_at", "9999-99-99"))
-        target = candidates[0]
+        # Fairness-basierte Auswahl: Wer weniger Raids bekommen hat + kürzere Stream-Zeit
+        target = self._select_fairest_candidate(candidates, broadcaster_id)
+        if not target:
+            log.warning("Could not select raid target for %s", broadcaster_login)
+            return None
 
         target_id = target["user_id"]
         target_login = target["user_login"]
         target_started_at = target.get("started_at", "")
 
         log.info(
-            "Selected raid target for %s: %s (shortest stream time, %d candidates)",
+            "Executing raid for %s -> %s (%d candidates available)",
             broadcaster_login,
             target_login,
             len(candidates),

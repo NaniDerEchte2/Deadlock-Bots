@@ -177,30 +177,54 @@ Neues Feld:
 3. Partner hat den Bot autorisiert (Token in `twitch_raid_auth`)
 4. Mindestens ein anderer Partner ist gerade online
 
-### Partner-Auswahl
+### Partner-Auswahl (Fairness-System)
 
-Der Bot wählt den Online-Partner mit der **kürzesten Stream-Zeit** aus:
+Der Bot wählt den Online-Partner nach **Fairness** aus:
+
+**Kriterien (in dieser Reihenfolge):**
+1. **Wer hat weniger Raids bekommen?** (Hauptkriterium)
+2. **Wer ist kürzer live?** (Tiebreaker bei Gleichstand)
 
 ```python
-candidates.sort(key=lambda s: s.get("started_at", "9999-99-99"))
-target = candidates[0]  # Kürzeste Stream-Zeit
+# Sortierung nach Fairness
+candidate_stats.sort(key=lambda x: (x["received_raids"], x["started_at"]))
+target = candidate_stats[0]  # Fairster Kandidat
 ```
 
-**Warum kürzeste Stream-Zeit?**
-- Neue Streams profitieren mehr von einem Raid
-- Fairere Verteilung der Raids
-- Unterstützt Partner beim Wachstum
+**Warum Fairness statt nur Stream-Zeit?**
+- Gleichmäßige Verteilung der Raid-Unterstützung
+- Jeder Partner bekommt gleich viel Hilfe
+- Verhindert, dass einzelne Partner bevorzugt werden
+- Fördert echte gegenseitige Unterstützung
+
+**Logging:**
+- Gesendete Raids werden geloggt
+- Empfangene Raids werden gezählt
+- Statistiken fließen in die Auswahl ein
 
 ### Beispiel
 
 ```
 Partner-Status:
 - PartnerA: Offline (geht gerade offline, 150 Viewer)
-- PartnerB: Online (seit 3 Stunden)
-- PartnerC: Online (seit 30 Minuten) ← AUSGEWÄHLT
-- PartnerD: Offline
+- PartnerB: Online (seit 1 Stunde, 5 Raids bekommen)
+- PartnerC: Online (seit 3 Stunden, 2 Raids bekommen) ← AUSGEWÄHLT
+- PartnerD: Online (seit 30 Minuten, 2 Raids bekommen)
 
 PartnerA raidet PartnerC mit 150 Viewern
+(PartnerC hat am wenigsten Raids bekommen)
+```
+
+**Bei Gleichstand:**
+```
+Partner-Status:
+- PartnerA: Offline (geht gerade offline, 150 Viewer)
+- PartnerB: Online (seit 2 Stunden, 3 Raids bekommen)
+- PartnerC: Online (seit 30 Minuten, 3 Raids bekommen) ← AUSGEWÄHLT
+- PartnerD: Online (seit 1 Stunde, 5 Raids bekommen)
+
+PartnerA raidet PartnerC mit 150 Viewern
+(Beide haben 3 Raids, aber PartnerC ist kürzer live)
 ```
 
 ## Troubleshooting
