@@ -580,10 +580,15 @@ class SteamRankChecker(commands.Cog):
                 if cat_type == "casual" and rank_diff > 2:
                     warning = " ⚠️ (größere Rank-Diff)"
 
-                vc_lines.append(f"{cat_emoji} {channel.mention} - {member_count} Spieler{warning}")
+                # Klickbarer Voice Channel Link (Discord URL)
+                vc_url = f"https://discord.com/channels/{GUILD_ID}/{channel.id}"
+                # Zeige Channel Mention (klickbar) + direkten Join-Link
+                vc_lines.append(
+                    f"{cat_emoji} {channel.mention} - {member_count} Spieler{warning} → [Beitreten]({vc_url})"
+                )
 
             embed.add_field(
-                name="🔊 Passende Voice Channels",
+                name="🔊 Passende Voice Channels (klick zum Beitreten)",
                 value="\n".join(vc_lines),
                 inline=False
             )
