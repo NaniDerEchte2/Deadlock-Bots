@@ -237,6 +237,9 @@ class VoiceActivityTrackerCog(commands.Cog):
                 started_iso = None
             ended_iso = end_time.strftime("%Y-%m-%d %H:%M:%S")
             user_counts_json = json.dumps(session.get('user_counts') or [])
+            # Co-Spieler IDs: Set zu Liste für JSON
+            co_player_ids_set = session.get('co_player_ids') or set()
+            co_player_ids_json = json.dumps(list(co_player_ids_set))
             display_name = session.get('display_name')
             if not display_name:
                 user_obj = self.bot.get_user(session.get('user_id'))
@@ -246,9 +249,10 @@ class VoiceActivityTrackerCog(commands.Cog):
                 """
                 INSERT INTO voice_session_log(
                   user_id, display_name, guild_id, channel_id, channel_name,
-                  started_at, ended_at, duration_seconds, points, peak_users, user_counts_json
+                  started_at, ended_at, duration_seconds, points, peak_users, user_counts_json,
+                  co_player_ids
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     session.get('user_id'),
@@ -262,6 +266,7 @@ class VoiceActivityTrackerCog(commands.Cog):
                     points,
                     session.get('peak_users'),
                     user_counts_json,
+                    co_player_ids_json,
                 ),
             )
         except Exception as e:
@@ -384,6 +389,7 @@ class VoiceActivityTrackerCog(commands.Cog):
                 'total_time': 0,  # Sekunden seit Start
                 'peak_users': 1,
                 'user_counts': [],
+                'co_player_ids': set(),  # Set von User-IDs die zusammen gespielt haben
             }
             self.session_stats['total_sessions_created'] += 1
             #logger.info(f"Started voice session: {member.display_name} in {channel.name}")
@@ -457,6 +463,10 @@ class VoiceActivityTrackerCog(commands.Cog):
                 s = self.voice_sessions[k]
                 s['user_counts'].append(user_count)
                 s['peak_users'] = max(s['peak_users'], user_count)
+
+                # Track Co-Spieler (alle anderen aktiven User im Channel)
+                co_player_ids = {m.id for m in active_users if m.id != member.id}
+                s['co_player_ids'].update(co_player_ids)
 
         # Sessions starten/aktualisieren/enden
         if user_count >= cfg.min_users_for_tracking and active_users:
