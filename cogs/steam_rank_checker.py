@@ -29,6 +29,10 @@ GUILD_ID = int(os.getenv("LFG_GUILD_ID", "1289721245281292288"))
 # Steam presence freshness (wie lange die Daten maximal alt sein dürfen)
 PRESENCE_STALE_SECONDS = 300  # 5 Minuten
 
+# Activity Pattern Analysis
+ACTIVITY_ANALYSIS_DAYS = 14  # Analysiere letzte 2 Wochen
+ACTIVITY_MIN_SESSIONS = 3    # Mindestens 3 Sessions für valide Muster
+
 # Rank-Matching: wie viele Ränge Unterschied sind erlaubt?
 RANK_TOLERANCE = int(os.getenv("LFG_RANK_TOLERANCE", "2"))  # +/- 2 Ränge (Grind-Modus)
 
@@ -298,6 +302,256 @@ class SteamRankChecker(commands.Cog):
 
         return matching_players
 
+    async def _analyze_user_activity_patterns(
+        self,
+        user_id: int
+    ) -> Optional[Dict[str, any]]:
+        """
+        Analysiert Aktivitätsmuster eines Users:
+        - Zu welchen Uhrzeiten ist er normalerweise online?
+        - Wie aktiv war er in den letzten 2 Wochen?
+
+        Returns: {
+            'active_hours': [14, 15, 16, 20, 21, 22],  # Uhrzeiten (0-23)
+            'total_sessions': 15,
+            'total_minutes': 450,
+            'avg_session_length': 30,
+            'is_currently_typical_time': True/False
+        }
+        """
+        await self._ensure_db()
+        if not self.db:
+            return None
+
+        # Letzte 2 Wochen analysieren
+        cutoff_date = time.time() - (ACTIVITY_ANALYSIS_DAYS * 24 * 3600)
+
+        query = """
+            SELECT
+                started_at,
+                ended_at,
+                duration_seconds
+            FROM voice_session_log
+            WHERE user_id = ?
+            AND guild_id = ?
+            AND started_at >= datetime(?, 'unixepoch')
+            ORDER BY started_at DESC
+        """
+
+        cursor = await self.db.execute(query, (user_id, GUILD_ID, cutoff_date))
+        rows = await cursor.fetchall()
+        await cursor.close()
+
+        if len(rows) < ACTIVITY_MIN_SESSIONS:
+            return None
+
+        # Uhrzeiten sammeln (jede Stunde einer Session zählt)
+        hour_counts = {}
+        total_minutes = 0
+
+        for row in rows:
+            try:
+                # Parse datetime strings
+                start_str = row["started_at"]
+                end_str = row["ended_at"]
+
+                # Simple parsing (assumes format: YYYY-MM-DD HH:MM:SS)
+                start_hour = int(start_str[11:13]) if len(start_str) > 13 else 12
+                end_hour = int(end_str[11:13]) if len(end_str) > 13 else 12
+
+                # Zähle alle Stunden zwischen Start und Ende
+                duration_minutes = row["duration_seconds"] // 60
+                total_minutes += duration_minutes
+
+                # Einfache Variante: Start-Stunde zählt
+                hour_counts[start_hour] = hour_counts.get(start_hour, 0) + 1
+
+            except Exception:
+                continue
+
+        if not hour_counts:
+            return None
+
+        # Top Uhrzeiten (mindestens 20% der max Häufigkeit)
+        max_count = max(hour_counts.values())
+        threshold = max_count * 0.2
+        active_hours = sorted([h for h, c in hour_counts.items() if c >= threshold])
+
+        # Ist jetzt eine typische Zeit?
+        import datetime
+        current_hour = datetime.datetime.now().hour
+        is_typical_time = current_hour in active_hours
+
+        return {
+            'active_hours': active_hours,
+            'total_sessions': len(rows),
+            'total_minutes': total_minutes,
+            'avg_session_length': total_minutes // len(rows) if rows else 0,
+            'is_currently_typical_time': is_typical_time
+        }
+
+    async def _find_coplay_partners(
+        self,
+        user_id: int,
+        min_rank: int,
+        max_rank: int
+    ) -> List[Tuple[int, int]]:
+        """
+        Findet User die oft mit dem angegebenen User zusammen spielen.
+
+        Returns: [(other_user_id, co_play_count), ...]
+        """
+        await self._ensure_db()
+        if not self.db:
+            return []
+
+        cutoff_date = time.time() - (ACTIVITY_ANALYSIS_DAYS * 24 * 3600)
+
+        # Hole alle Sessions des Users
+        query = """
+            SELECT channel_id, started_at, ended_at
+            FROM voice_session_log
+            WHERE user_id = ?
+            AND guild_id = ?
+            AND started_at >= datetime(?, 'unixepoch')
+        """
+
+        cursor = await self.db.execute(query, (user_id, GUILD_ID, cutoff_date))
+        user_sessions = await cursor.fetchall()
+        await cursor.close()
+
+        if not user_sessions:
+            return []
+
+        # Finde überlappende Sessions von anderen Usern
+        coplay_counts = {}
+
+        for session in user_sessions:
+            channel_id = session["channel_id"]
+            start = session["started_at"]
+            end = session["ended_at"]
+
+            # Finde andere User die zur gleichen Zeit im gleichen Channel waren
+            overlap_query = """
+                SELECT DISTINCT user_id
+                FROM voice_session_log
+                WHERE channel_id = ?
+                AND user_id != ?
+                AND guild_id = ?
+                AND (
+                    (started_at <= ? AND ended_at >= ?)
+                    OR (started_at >= ? AND started_at <= ?)
+                )
+            """
+
+            cursor = await self.db.execute(
+                overlap_query,
+                (channel_id, user_id, GUILD_ID, start, start, start, end)
+            )
+            coplay_users = await cursor.fetchall()
+            await cursor.close()
+
+            for row in coplay_users:
+                other_id = row["user_id"]
+                coplay_counts[other_id] = coplay_counts.get(other_id, 0) + 1
+
+        # Filtere nach Rank
+        guild = self.bot.get_guild(GUILD_ID)
+        if not guild:
+            return []
+
+        filtered_partners = []
+        for other_id, count in coplay_counts.items():
+            member = guild.get_member(other_id)
+            if not member or member.bot:
+                continue
+
+            rank_name, rank_value = self._get_user_rank_from_roles(member)
+            if min_rank <= rank_value <= max_rank and rank_value > 0:
+                filtered_partners.append((other_id, count))
+
+        # Sortiere nach Häufigkeit
+        filtered_partners.sort(key=lambda x: x[1], reverse=True)
+
+        return filtered_partners[:5]  # Top 5 Co-Player
+
+    async def _get_suggested_offline_users(
+        self,
+        author_id: int,
+        author_rank_value: int
+    ) -> List[Tuple[int, str, int, Dict[str, any]]]:
+        """
+        Schlägt OFFLINE User vor die:
+        1. Normalerweise zu dieser Uhrzeit online sind
+        2. Im Rank-Bereich sind
+        3. Oft mit dem Author oder ähnlichen Leuten spielen
+
+        Returns: [(discord_id, rank_name, rank_value, activity_pattern), ...]
+        """
+        steam_links = await self._get_all_steam_links()
+        guild = self.bot.get_guild(GUILD_ID)
+        if not guild:
+            return []
+
+        suggestions = []
+        min_rank = max(1, author_rank_value - RANK_TOLERANCE)
+        max_rank = min(11, author_rank_value + RANK_TOLERANCE)
+
+        # Finde Co-Play Partners des Authors
+        coplay_partners = await self._find_coplay_partners(author_id, min_rank, max_rank)
+        coplay_ids = {uid for uid, _ in coplay_partners}
+
+        # Alle online Steam-User (um sie zu excluden)
+        all_steam_ids = {sid for sids in steam_links.values() for sid in sids}
+        online_users = await self._get_online_steam_users(all_steam_ids)
+        online_discord_ids = {
+            discord_id
+            for discord_id, steam_ids in steam_links.items()
+            for sid in steam_ids
+            if sid in online_users
+        }
+
+        # Analysiere Offline-User
+        for discord_id in steam_links.keys():
+            # Skip Author, Online-User und Bots
+            if discord_id == author_id or discord_id in online_discord_ids:
+                continue
+
+            member = guild.get_member(discord_id)
+            if not member or member.bot:
+                continue
+
+            # Rank check
+            rank_name, rank_value = self._get_user_rank_from_roles(member)
+            if not (min_rank <= rank_value <= max_rank and rank_value > 0):
+                continue
+
+            # Aktivitäts-Muster analysieren
+            activity_pattern = await self._analyze_user_activity_patterns(discord_id)
+            if not activity_pattern:
+                continue
+
+            # Nur vorschlagen wenn es eine typische Zeit ist
+            if not activity_pattern['is_currently_typical_time']:
+                continue
+
+            # Bonus wenn Co-Play Partner
+            activity_pattern['is_coplay_partner'] = discord_id in coplay_ids
+            activity_pattern['coplay_count'] = next(
+                (count for uid, count in coplay_partners if uid == discord_id),
+                0
+            )
+
+            suggestions.append((discord_id, rank_name, rank_value, activity_pattern))
+
+        # Sortiere: Co-Play Partner zuerst, dann nach Aktivität
+        suggestions.sort(
+            key=lambda x: (x[3]['is_coplay_partner'], x[3]['coplay_count'], x[3]['total_sessions']),
+            reverse=True
+        )
+
+        return suggestions[:3]  # Max 3 Vorschläge
+
     async def _get_voice_channel_suggestions(
         self,
         author: discord.Member,
@@ -504,8 +758,14 @@ class SteamRankChecker(commands.Cog):
             author_rank_value
         )
 
+        # Intelligente Offline-User Vorschläge (basierend auf Aktivitätsmustern)
+        offline_suggestions = await self._get_suggested_offline_users(
+            message.author.id,
+            author_rank_value
+        )
+
         # Antwort erstellen
-        if not matching_players and not voice_suggestions:
+        if not matching_players and not voice_suggestions and not offline_suggestions:
             await thinking_msg.edit(
                 content=f"😔 Keine Spieler im Rang-Bereich **{author_rank_name} ±{RANK_TOLERANCE}** sind derzeit online in Deadlock und keine passenden Voice Channels gefunden."
             )
@@ -596,6 +856,37 @@ class SteamRankChecker(commands.Cog):
                 embed.add_field(
                     name="💬 Tipp",
                     value=ai_suggestion_text,
+                    inline=False
+                )
+
+        # Intelligente Offline-User Vorschläge (mit Vorsicht!)
+        if offline_suggestions:
+            offline_lines = []
+            for discord_id, rank_name, rank_value, pattern in offline_suggestions:
+                member = message.guild.get_member(discord_id)
+                if not member:
+                    continue
+
+                # Info zusammenbauen
+                parts = [member.mention, f"**{rank_name}**"]
+
+                # Co-Play Partner Hinweis
+                if pattern.get('is_coplay_partner'):
+                    coplay_count = pattern.get('coplay_count', 0)
+                    parts.append(f"🤝 {coplay_count}x zusammen gespielt")
+
+                # Typische Zeit
+                hours = pattern.get('active_hours', [])
+                if hours:
+                    hour_range = f"{min(hours)}-{max(hours)} Uhr"
+                    parts.append(f"⏰ meist {hour_range}")
+
+                offline_lines.append(" • ".join(parts))
+
+            if offline_lines:
+                embed.add_field(
+                    name="💡 Könnte passen (offline, aber meist jetzt online)",
+                    value="\n".join(offline_lines),
                     inline=False
                 )
 
