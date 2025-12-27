@@ -193,7 +193,8 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               duration_seconds INTEGER NOT NULL DEFAULT 0,
               points INTEGER NOT NULL DEFAULT 0,
               peak_users INTEGER,
-              user_counts_json TEXT
+              user_counts_json TEXT,
+              co_player_ids TEXT
             );
 
             -- Steam-Links (mehrere Konten pro User möglich)
@@ -355,6 +356,30 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
+            -- User Activity Patterns (für Smart Pinging & Personalisierung)
+            CREATE TABLE IF NOT EXISTS user_activity_patterns(
+              user_id INTEGER PRIMARY KEY,
+              typical_hours TEXT,
+              typical_days TEXT,
+              activity_score_2w INTEGER DEFAULT 0,
+              sessions_count_2w INTEGER DEFAULT 0,
+              total_minutes_2w INTEGER DEFAULT 0,
+              last_active_at DATETIME,
+              last_analyzed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              last_pinged_at DATETIME,
+              ping_count_30d INTEGER DEFAULT 0
+            );
+
+            -- Co-Player Tracking (wer zockt mit wem)
+            CREATE TABLE IF NOT EXISTS user_co_players(
+              user_id INTEGER NOT NULL,
+              co_player_id INTEGER NOT NULL,
+              sessions_together INTEGER DEFAULT 1,
+              total_minutes_together INTEGER DEFAULT 0,
+              last_played_together DATETIME DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY(user_id, co_player_id)
+            );
+
             """
         )
         # Nachträglich hinzugefügte Spalten idempotent sicherstellen
@@ -368,6 +393,13 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
         try:
             c.execute(
                 "ALTER TABLE voice_session_log ADD COLUMN display_name TEXT"
+            )
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+        try:
+            c.execute(
+                "ALTER TABLE voice_session_log ADD COLUMN co_player_ids TEXT"
             )
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
@@ -419,6 +451,13 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute("CREATE INDEX IF NOT EXISTS idx_voice_stats_user_lookup ON voice_stats(user_id, total_seconds, total_points)")
             # TempVoice Rehydration: WHERE guild_id=? (composite index)
             c.execute("CREATE INDEX IF NOT EXISTS idx_tempvoice_lanes_guild ON tempvoice_lanes(guild_id, channel_id)")
+            # Activity Patterns: Schnelle Lookups für Smart Pinging
+            c.execute("CREATE INDEX IF NOT EXISTS idx_activity_patterns_score ON user_activity_patterns(activity_score_2w DESC)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_activity_patterns_last_active ON user_activity_patterns(last_active_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_activity_patterns_last_pinged ON user_activity_patterns(last_pinged_at)")
+            # Co-Players: Bi-direktionale Lookups
+            c.execute("CREATE INDEX IF NOT EXISTS idx_co_players_user ON user_co_players(user_id, sessions_together DESC)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_co_players_co_player ON user_co_players(co_player_id)")
         except sqlite3.Error as e:
             logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)
 
