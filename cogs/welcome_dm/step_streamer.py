@@ -529,6 +529,7 @@ class StreamerRequirementsView(StepView):
         super().__init__()
         self.acknowledged = False
         self.twitch_login: Optional[str] = None
+        self.raid_bot_authorized = False
         self.verification_started = False
         self.verification_message: Optional[str] = None
         self._sync_button_states()
@@ -538,6 +539,7 @@ class StreamerRequirementsView(StepView):
         *,
         acknowledged: bool = False,
         twitch_login: Optional[str] = None,
+        raid_bot_authorized: bool = False,
         verification_started: bool = False,
         verification_message: Optional[str] = None,
     ) -> discord.Embed:
@@ -545,9 +547,12 @@ class StreamerRequirementsView(StepView):
         if twitch_login:
             twitch_entry += f" (**{twitch_login}**)"
 
+        raid_entry = f"{'✅' if raid_bot_authorized else '⬜'} Raid-Bot autorisiert"
+
         checklist = [
             f"{'✅' if acknowledged else '⬜'} Voraussetzungen bestätigt",
             twitch_entry,
+            raid_entry,
             f"{'✅' if verification_started else '⬜'} Verifizierung angestoßen",
         ]
 
@@ -556,14 +561,26 @@ class StreamerRequirementsView(StepView):
         requirement_text = (
             "📋 **Voraussetzungen:**\n\n"
             "**1️⃣ Invite-Link erstellen**\n"
-            " Rechtsklick auf den Server → *Leute einladen* → **„Einladungslink bearbeiten“**\n"
+            " Rechtsklick auf den Server → *Leute einladen* → **„Einladungslink bearbeiten"**\n"
             " Stelle ein: `Läuft ab: Nie` · `Kein Limit`\n\n"
 
             "**2️⃣ Twitch-Bio anpassen**\n"
             " Füge den Server-Link in deine Bio ein, z. B.:\n"
-            "> *„Deutscher Deadlock Community Server“*\n\n"
+            "> *„Deutscher Deadlock Community Server"*\n\n"
 
-            "**3️⃣ Unterstützung & Promo**\n"
+            "**3️⃣ Raid-Bot aktivieren (PFLICHT)**\n"
+            " **Unterstütze andere Partner beim Wachsen – und profitiere selbst davon!**\n\n"
+            " So funktioniert's:\n"
+            "• Wenn du offline gehst, raidest du automatisch einen unserer Partner\n"
+            "• Das gleiche passiert für dich – andere Partner raiden dich, wenn sie offline gehen\n"
+            "• Der Bot wählt für dich das beste Raid-Ziel (nach Fairness)\n"
+            "• Ist kein Partner online? Dann raiden wir einen deutschen Deadlock-Streamer und laden ihn zur Community ein\n"
+            "• Du kannst es jederzeit mit `!raid_disable` in deinem Chat pausieren\n\n"
+            " **Einrichtung:**\n"
+            " Klick auf den Button unten, autorisier den Bot auf Twitch, fertig.\n"
+            " Er kann nur raiden, sonst nichts.\n\n"
+
+            "**4️⃣ Unterstützung & Promo**\n"
             "• Wenn du Deadlock streamst oder Content erstellst, kannst du gern in den Promo-Kanälen posten.\n"
             "• Erwähne den Server in Stream oder Chat und lade interessierte Zuschauer oder Mitspieler ein.\n"
             "• Je mehr aktive Spieler zusammenkommen, desto stärker wächst die Community – "
@@ -619,8 +636,10 @@ class StreamerRequirementsView(StepView):
                 child.disabled = self.acknowledged
             elif child.custom_id == "wdm:streamer:req_twitch":
                 child.disabled = (not self.acknowledged) or self.verification_started
+            elif child.custom_id == "wdm:streamer:req_raid_bot":
+                child.disabled = (not self.twitch_login) or self.raid_bot_authorized or self.verification_started
             elif child.custom_id == "wdm:streamer:req_verify":
-                child.disabled = not (self.acknowledged and self.twitch_login and not self.verification_started)
+                child.disabled = not (self.acknowledged and self.twitch_login and self.raid_bot_authorized and not self.verification_started)
             elif child.custom_id == "wdm:streamer:req_cancel":
                 child.disabled = self.verification_started
 
@@ -629,6 +648,7 @@ class StreamerRequirementsView(StepView):
         embed = self.build_embed(
             acknowledged=self.acknowledged,
             twitch_login=self.twitch_login,
+            raid_bot_authorized=self.raid_bot_authorized,
             verification_started=self.verification_started,
             verification_message=self.verification_message,
         )
@@ -682,15 +702,164 @@ class StreamerRequirementsView(StepView):
         await interaction.response.send_modal(StreamerTwitchProfileModal(self))
 
     @discord.ui.button(
+        label="🎯 Raid-Bot autorisieren",
+        style=discord.ButtonStyle.primary,
+        custom_id="wdm:streamer:req_raid_bot",
+    )
+    async def btn_raid_bot(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.twitch_login:
+            await _safe_send(
+                interaction,
+                content="Bitte gib zuerst deinen Twitch-Link an, bevor du den Raid-Bot autorisierst.",
+                ephemeral=True,
+            )
+            return
+
+        if self.raid_bot_authorized:
+            await _safe_send(
+                interaction,
+                content="Du hast den Raid-Bot bereits autorisiert.",
+                ephemeral=True,
+            )
+            return
+
+        # Twitch Cog finden und OAuth-URL generieren
+        try:
+            possible_cogs = ("TwitchDeadlock", "TwitchBot", "Twitch")
+            raid_bot = None
+            for name in possible_cogs:
+                cog = interaction.client.get_cog(name)  # type: ignore
+                if cog and hasattr(cog, "_raid_bot"):
+                    raid_bot = cog._raid_bot  # type: ignore
+                    break
+
+            if not raid_bot:
+                await _safe_send(
+                    interaction,
+                    content="⚠️ Raid-Bot ist derzeit nicht verfügbar. Bitte informiere einen Admin.",
+                    ephemeral=True,
+                )
+                return
+
+            # OAuth-URL generieren
+            auth_url = raid_bot.auth_manager.generate_auth_url(self.twitch_login)
+
+            # View mit Link-Button erstellen
+            view = discord.ui.View()
+            view.add_item(
+                discord.ui.Button(
+                    label="Auf Twitch autorisieren",
+                    url=auth_url,
+                    style=discord.ButtonStyle.link,
+                )
+            )
+
+            await _safe_send(
+                interaction,
+                content=(
+                    f"**Raid-Bot autorisieren für {self.twitch_login}**\n\n"
+                    "Klick auf den Button unten, um den Bot auf Twitch zu autorisieren.\n\n"
+                    "**Was passiert danach?**\n"
+                    "• Der Bot kann in deinem Namen raiden (NUR raiden, nichts anderes)\n"
+                    "• Wenn du offline gehst, raidet er automatisch einen Partner\n"
+                    "• Du kannst es jederzeit mit `!raid_disable` in deinem Chat ausschalten\n\n"
+                    "**Nachdem du autorisiert hast:**\n"
+                    "Komm zurück und klick unten auf **'Ich habe autorisiert'**, damit wir das abhaken können."
+                ),
+                embed=None,
+                ephemeral=True,
+            )
+
+            # Followup mit Link
+            await interaction.followup.send(
+                view=view,
+                ephemeral=True
+            )
+
+            # Confirmations-Button zum Abhaken
+            confirm_view = discord.ui.View(timeout=None)
+            confirm_button = discord.ui.Button(
+                label="✅ Ich habe autorisiert",
+                style=discord.ButtonStyle.success,
+                custom_id=f"wdm:streamer:raid_confirmed:{interaction.user.id}",
+            )
+
+            async def confirm_callback(btn_interaction: discord.Interaction):
+                if btn_interaction.user.id != interaction.user.id:
+                    await btn_interaction.response.send_message(
+                        "Dieser Button ist nicht für dich.",
+                        ephemeral=True
+                    )
+                    return
+
+                await btn_interaction.response.defer(ephemeral=True)
+
+                # Prüfe, ob Autorisierung in DB vorhanden
+                if twitch_storage:
+                    try:
+                        with twitch_storage.get_conn() as conn:
+                            row = conn.execute(
+                                "SELECT raid_enabled FROM twitch_raid_auth WHERE twitch_login = ?",
+                                (self.twitch_login,),
+                            ).fetchone()
+
+                        if row:
+                            self.raid_bot_authorized = True
+                            await self._update_message(btn_interaction)
+                            await btn_interaction.followup.send(
+                                "✅ Raid-Bot erfolgreich autorisiert! Du kannst jetzt die Verifizierung anstoßen.",
+                                ephemeral=True
+                            )
+                            confirm_button.disabled = True
+                            await btn_interaction.message.edit(view=confirm_view)  # type: ignore
+                        else:
+                            await btn_interaction.followup.send(
+                                "⚠️ Ich konnte deine Autorisierung noch nicht in der Datenbank finden. "
+                                "Stelle sicher, dass du den Bot auf Twitch autorisiert hast, und versuche es dann erneut.",
+                                ephemeral=True
+                            )
+                    except Exception as e:
+                        log.exception("Failed to check raid auth: %r", e)
+                        await btn_interaction.followup.send(
+                            "⚠️ Fehler beim Prüfen der Autorisierung. Bitte versuche es erneut.",
+                            ephemeral=True
+                        )
+
+            confirm_button.callback = confirm_callback
+            confirm_view.add_item(confirm_button)
+
+            await interaction.followup.send(
+                "Sobald du auf Twitch autorisiert hast, klick hier:",
+                view=confirm_view,
+                ephemeral=True
+            )
+
+        except Exception as e:
+            log.exception("Raid bot authorization failed: %r", e)
+            await _safe_send(
+                interaction,
+                content="⚠️ Fehler beim Generieren des Autorisierungs-Links. Bitte informiere einen Admin.",
+                ephemeral=True,
+            )
+
+    @discord.ui.button(
         label="Verifizierung anstoßen",
         style=discord.ButtonStyle.success,
         custom_id="wdm:streamer:req_verify",
     )
     async def btn_verify(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.acknowledged or not self.twitch_login:
+        if not self.acknowledged or not self.twitch_login or not self.raid_bot_authorized:
+            missing = []
+            if not self.acknowledged:
+                missing.append("Voraussetzungen bestätigen")
+            if not self.twitch_login:
+                missing.append("Twitch-Profil angeben")
+            if not self.raid_bot_authorized:
+                missing.append("Raid-Bot autorisieren")
+
             await _safe_send(
                 interaction,
-                content="Bitte bestätige die Voraussetzungen und hinterlege dein Twitch-Profil, bevor du die Verifizierung startest.",
+                content=f"⚠️ Bitte erledige noch folgende Schritte:\n• " + "\n• ".join(missing),
                 ephemeral=True,
             )
             return

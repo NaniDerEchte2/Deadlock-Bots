@@ -66,6 +66,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ("manual_verified_until", "TEXT"),
         ("manual_verified_at", "TEXT"),
         ("manual_partner_opt_out", "INTEGER DEFAULT 0"),
+        ("raid_bot_enabled", "INTEGER DEFAULT 1"),  # Auto-Raid Opt-in/out
         ("created_at", "TEXT DEFAULT CURRENT_TIMESTAMP"),
     ]:
         _add_column_if_missing(conn, "twitch_streamers", col, spec)
@@ -140,5 +141,56 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_twitch_link_clicks_streamer ON twitch_link_clicks(streamer_login)"
+    )
+
+    # 5) Raid-Autorisierung (OAuth User Access Tokens)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_raid_auth (
+            twitch_user_id       TEXT PRIMARY KEY,
+            twitch_login         TEXT NOT NULL,
+            access_token         TEXT NOT NULL,
+            refresh_token        TEXT NOT NULL,
+            token_expires_at     TEXT NOT NULL,
+            scopes               TEXT NOT NULL,
+            authorized_at        TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_refreshed_at    TEXT,
+            raid_enabled         INTEGER DEFAULT 1,
+            created_at           TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_twitch_raid_auth_login ON twitch_raid_auth(twitch_login)"
+    )
+
+    # 6) Raid-History (Metadaten zu durchgeführten Raids)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_raid_history (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_broadcaster_id   TEXT NOT NULL,
+            from_broadcaster_login TEXT NOT NULL,
+            to_broadcaster_id     TEXT NOT NULL,
+            to_broadcaster_login  TEXT NOT NULL,
+            viewer_count          INTEGER DEFAULT 0,
+            stream_duration_sec   INTEGER,
+            reason                TEXT,
+            executed_at           TEXT DEFAULT CURRENT_TIMESTAMP,
+            success               INTEGER DEFAULT 1,
+            error_message         TEXT,
+            target_stream_started_at TEXT,
+            candidates_count      INTEGER DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_raid_history_from ON twitch_raid_history(from_broadcaster_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_raid_history_to ON twitch_raid_history(to_broadcaster_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_raid_history_executed ON twitch_raid_history(executed_at)"
     )
 
