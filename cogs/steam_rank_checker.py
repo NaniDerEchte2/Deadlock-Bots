@@ -1,6 +1,7 @@
 """
 Steam Rank Checker - LFG System
 Überwacht einen Discord-Textkanal und pingt Spieler basierend auf Rank und Steam-Online-Status
+Erweitert mit Activity-Pattern-Erkennung und Smart-Pinging
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 
 import aiohttp
@@ -429,6 +431,178 @@ class SteamRankChecker(commands.Cog):
             log.debug("AI-Response-Generation fehlgeschlagen: %s", exc)
             return None
 
+    async def _get_activity_based_suggestions(
+        self,
+        author_id: int,
+        author_rank_value: int
+    ) -> List[Tuple[int, str, int, str]]:
+        """
+        Findet User die normalerweise jetzt online sind (basierend auf Activity-Patterns).
+        Auch wenn sie gerade NICHT online sind.
+
+        Returns: [(discord_user_id, rank_name, rank_value, reason), ...]
+        reason: "co_player" | "typical_hours" | "active_user"
+        """
+        await self._ensure_db()
+        if not self.db:
+            return []
+
+        now = datetime.utcnow()
+        current_hour = now.hour
+        current_day = now.weekday()
+
+        # Hole alle User die normalerweise jetzt online sind
+        query = """
+            SELECT user_id, typical_hours, typical_days, activity_score_2w,
+                   last_pinged_at, ping_count_30d
+            FROM user_activity_patterns
+            WHERE activity_score_2w >= 5
+            AND user_id != ?
+        """
+        cursor = await self.db.execute(query, (author_id,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+
+        suggestions = []
+        guild = self.bot.get_guild(GUILD_ID)
+        if not guild:
+            return []
+
+        min_rank = max(1, author_rank_value - RANK_TOLERANCE)
+        max_rank = min(11, author_rank_value + RANK_TOLERANCE)
+
+        # Hole Co-Spieler des Autors
+        co_player_query = """
+            SELECT co_player_id, sessions_together
+            FROM user_co_players
+            WHERE user_id = ?
+            ORDER BY sessions_together DESC
+            LIMIT 10
+        """
+        co_cursor = await self.db.execute(co_player_query, (author_id,))
+        co_rows = await co_cursor.fetchall()
+        await co_cursor.close()
+
+        co_player_ids = {row["co_player_id"]: row["sessions_together"] for row in co_rows}
+
+        for row in rows:
+            user_id = int(row["user_id"])
+            typical_hours_json = row["typical_hours"]
+            typical_days_json = row["typical_days"]
+            last_pinged_str = row["last_pinged_at"]
+            ping_count = row["ping_count_30d"] or 0
+
+            # Rate-Limit-Check
+            if ping_count >= 3:
+                continue  # User wurde schon zu oft gepingt
+
+            if last_pinged_str:
+                try:
+                    last_pinged = datetime.strptime(last_pinged_str, "%Y-%m-%d %H:%M:%S")
+                    time_since_ping = (now - last_pinged).total_seconds()
+                    if time_since_ping < 86400:  # 24h
+                        continue
+                except Exception:
+                    pass
+
+            # Zeitfenster-Check
+            match_reason = None
+
+            # Check 1: Ist User ein häufiger Co-Spieler?
+            if user_id in co_player_ids:
+                sessions_together = co_player_ids[user_id]
+                if sessions_together >= 3:  # Mindestens 3x zusammen gespielt
+                    match_reason = "co_player"
+
+            # Check 2: Typische Online-Zeit?
+            if not match_reason and typical_hours_json:
+                try:
+                    typical_hours = json.loads(typical_hours_json)
+                    # Flexibles Fenster: ±2h
+                    for typ_hour in typical_hours:
+                        hour_diff = abs(current_hour - typ_hour)
+                        if hour_diff <= 2 or hour_diff >= 22:  # wrap around
+                            match_reason = "typical_hours"
+                            break
+                except Exception:
+                    pass
+
+            if not match_reason:
+                continue
+
+            # Rang-Check
+            member = guild.get_member(user_id)
+            if not member or member.bot:
+                continue
+
+            rank_name, rank_value = self._get_user_rank_from_roles(member)
+
+            if min_rank <= rank_value <= max_rank:
+                suggestions.append((user_id, rank_name, rank_value, match_reason))
+
+        return suggestions[:5]  # Max 5 Activity-basierte Vorschläge
+
+    async def _send_smart_pings(
+        self,
+        author: discord.Member,
+        author_rank: str,
+        suggested_users: List[Tuple[int, str, int, str]],
+        message: discord.Message
+    ) -> int:
+        """
+        Sendet Smart-Pings an vorgeschlagene User.
+        Nutzt das User-Activity-Analyzer Cog falls verfügbar, sonst einfache Pings.
+
+        Returns: Anzahl gesendeter Pings
+        """
+        if not suggested_users:
+            return 0
+
+        # Versuche Activity-Analyzer Cog zu holen
+        activity_cog = self.bot.get_cog("UserActivityAnalyzer")
+
+        pings_sent = 0
+        ping_mentions = []
+
+        for user_id, rank_name, rank_value, reason in suggested_users[:3]:  # Max 3 Pings
+            member = message.guild.get_member(user_id)
+            if not member:
+                continue
+
+            # Generiere personalisierte Nachricht (falls Activity-Cog vorhanden)
+            if activity_cog and hasattr(activity_cog, 'should_ping_user'):
+                can_ping, ping_reason = await activity_cog.should_ping_user(user_id, max_pings_30d=3)
+
+                if not can_ping:
+                    log.debug(f"Skipping ping for {member.display_name}: {ping_reason}")
+                    continue
+
+                # Record Ping
+                if hasattr(activity_cog, 'record_ping'):
+                    await activity_cog.record_ping(user_id)
+
+            ping_mentions.append(member.mention)
+            pings_sent += 1
+
+            # Update DB: Ping Count
+            await self._ensure_db()
+            if self.db:
+                try:
+                    await self.db.execute(
+                        """
+                        UPDATE user_activity_patterns
+                        SET last_pinged_at = CURRENT_TIMESTAMP,
+                            ping_count_30d = ping_count_30d + 1
+                        WHERE user_id = ?
+                        """,
+                        (user_id,)
+                    )
+                    await self.db.commit()
+                except Exception as e:
+                    log.debug(f"Failed to update ping stats: {e}")
+
+        return pings_sent
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         """Überwacht LFG-Kanal nach LFG-Anfragen"""
@@ -504,8 +678,14 @@ class SteamRankChecker(commands.Cog):
             author_rank_value
         )
 
+        # Activity-basierte Vorschläge (User die normalerweise jetzt online sind)
+        activity_suggestions = await self._get_activity_based_suggestions(
+            message.author.id,
+            author_rank_value
+        )
+
         # Antwort erstellen
-        if not matching_players and not voice_suggestions:
+        if not matching_players and not voice_suggestions and not activity_suggestions:
             await thinking_msg.edit(
                 content=f"😔 Keine Spieler im Rang-Bereich **{author_rank_name} ±{RANK_TOLERANCE}** sind derzeit online in Deadlock und keine passenden Voice Channels gefunden."
             )
@@ -599,12 +779,48 @@ class SteamRankChecker(commands.Cog):
                     inline=False
                 )
 
+        # Activity-basierte Vorschläge hinzufügen
+        activity_pings_sent = 0
+        if activity_suggestions:
+            activity_pings_sent = await self._send_smart_pings(
+                message.author,
+                author_rank_name,
+                activity_suggestions,
+                message
+            )
+
+            if activity_pings_sent > 0:
+                activity_lines = []
+                for user_id, rank_name, rank_value, reason in activity_suggestions[:activity_pings_sent]:
+                    member = message.guild.get_member(user_id)
+                    if not member:
+                        continue
+
+                    reason_emoji = {
+                        "co_player": "👥",  # Häufiger Mitspieler
+                        "typical_hours": "🕐",  # Typische Online-Zeit
+                    }.get(reason, "⭐")
+
+                    reason_text = {
+                        "co_player": "oft zusammen gespielt",
+                        "typical_hours": "typischerweise jetzt online",
+                    }.get(reason, "aktiver Spieler")
+
+                    activity_lines.append(f"{reason_emoji} {member.mention} - **{rank_name}** ({reason_text})")
+                    mentions.append(member.mention)
+
+                embed.add_field(
+                    name=f"🔔 Gepingte Spieler ({activity_pings_sent})",
+                    value="\n".join(activity_lines) + "\n\n_Diese Spieler sind normalerweise jetzt online und wurden benachrichtigt_",
+                    inline=False
+                )
+
         embed.set_footer(text=f"Angefordert von {message.author.display_name}")
         embed.timestamp = message.created_at
 
         # Nachricht mit Pings
         response_parts = []
-        if matching_players:
+        if matching_players or activity_pings_sent > 0:
             mention_text = " ".join(mentions[:10])  # Max 10 Mentions um Discord-Limits zu beachten
             if len(mentions) > 10:
                 mention_text += f"\n... und {len(mentions) - 10} weitere"
@@ -618,12 +834,13 @@ class SteamRankChecker(commands.Cog):
         )
 
         log.info(
-            "LFG: %s (%s) -> %d Spieler gefunden (%d Lobby, %d Match)",
+            "LFG: %s (%s) -> %d online Spieler (%d Lobby, %d Match), %d Activity-Pings gesendet",
             message.author.display_name,
             author_rank_name,
             len(matching_players),
             len(in_lobby),
-            len(in_match)
+            len(in_match),
+            activity_pings_sent
         )
 
     @commands.command(name="lfg")
