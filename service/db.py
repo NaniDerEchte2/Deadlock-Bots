@@ -380,6 +380,30 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               PRIMARY KEY(user_id, co_player_id)
             );
 
+            -- Member Events (Join/Leave/Ban Tracking)
+            CREATE TABLE IF NOT EXISTS member_events(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              guild_id INTEGER NOT NULL,
+              event_type TEXT NOT NULL,
+              timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+              display_name TEXT,
+              account_created_at DATETIME,
+              join_position INTEGER,
+              metadata TEXT
+            );
+
+            -- Message Activity (Message Tracking pro User)
+            CREATE TABLE IF NOT EXISTS message_activity(
+              user_id INTEGER NOT NULL,
+              guild_id INTEGER NOT NULL,
+              channel_id INTEGER,
+              message_count INTEGER DEFAULT 1,
+              last_message_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              first_message_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY(user_id, guild_id)
+            );
+
             """
         )
         # Nachträglich hinzugefügte Spalten idempotent sicherstellen
@@ -458,6 +482,13 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             # Co-Players: Bi-direktionale Lookups
             c.execute("CREATE INDEX IF NOT EXISTS idx_co_players_user ON user_co_players(user_id, sessions_together DESC)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_co_players_co_player ON user_co_players(co_player_id)")
+            # Member Events: Schnelle User-Lookups & Event-Type Filtering
+            c.execute("CREATE INDEX IF NOT EXISTS idx_member_events_user ON member_events(user_id, timestamp DESC)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_member_events_guild ON member_events(guild_id, event_type, timestamp DESC)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_member_events_type ON member_events(event_type, timestamp DESC)")
+            # Message Activity: User & Guild Lookups
+            c.execute("CREATE INDEX IF NOT EXISTS idx_message_activity_user ON message_activity(user_id, message_count DESC)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_message_activity_guild ON message_activity(guild_id, message_count DESC)")
         except sqlite3.Error as e:
             logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)
 

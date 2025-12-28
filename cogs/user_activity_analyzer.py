@@ -65,6 +65,9 @@ class UserActivityAnalyzer(commands.Cog):
 
         logger.info("User Activity Analyzer loaded - Background tasks started")
 
+        # Initialisiere neue DB-Tabellen (falls nicht vorhanden)
+        self._ensure_new_tables()
+
     async def cog_unload(self):
         """Stoppt Background-Tasks sauber."""
         tasks_to_cancel = [
@@ -424,6 +427,318 @@ class UserActivityAnalyzer(commands.Cog):
     async def before_cleanup(self):
         await self.bot.wait_until_ready()
 
+    # ========== NEW: MEMBER & MESSAGE TRACKING ==========
+
+    def _ensure_new_tables(self):
+        """Stellt sicher dass die neuen Tabellen existieren (Schema wird automatisch erstellt)."""
+        # Die Tabellen werden bereits in service/db.py::init_schema erstellt
+        # Dieser Call sorgt nur dafür dass init_schema nochmal läuft falls nötig
+        try:
+            central_db.connect()
+            logger.info("Member & Message tracking tables initialized")
+        except Exception as e:
+            logger.error(f"Error initializing new tables: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        """Trackt wenn ein Member dem Server beitritt."""
+        try:
+            if member.bot:
+                return
+
+            # Berechne Join-Position (wievielter Member ist das?)
+            join_position = len(member.guild.members)
+
+            # Account-Erstellungsdatum
+            account_created = member.created_at.strftime("%Y-%m-%d %H:%M:%S") if member.created_at else None
+
+            # Metadata (zusätzliche Infos als JSON)
+            metadata = {
+                'avatar_url': str(member.display_avatar.url) if member.display_avatar else None,
+                'is_pending': member.pending if hasattr(member, 'pending') else None,
+            }
+
+            central_db.execute(
+                """
+                INSERT INTO member_events(
+                    user_id, guild_id, event_type, display_name,
+                    account_created_at, join_position, metadata
+                )
+                VALUES (?, ?, 'join', ?, ?, ?, ?)
+                """,
+                (member.id, member.guild.id, member.display_name,
+                 account_created, join_position, json.dumps(metadata))
+            )
+
+            logger.info(f"Member join tracked: {member.display_name} ({member.id}) -> {member.guild.name}")
+
+        except Exception as e:
+            logger.error(f"Error tracking member join: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        """Trackt wenn ein Member den Server verlässt UND erstellt automatisch eine Analyse."""
+        try:
+            if member.bot:
+                return
+
+            # Event loggen
+            central_db.execute(
+                """
+                INSERT INTO member_events(
+                    user_id, guild_id, event_type, display_name
+                )
+                VALUES (?, ?, 'leave', ?)
+                """,
+                (member.id, member.guild.id, member.display_name)
+            )
+
+            logger.info(f"Member leave tracked: {member.display_name} ({member.id}) -> {member.guild.name}")
+
+            # AUTOMATISCHE ANALYSE beim Leave (Optional - kann aktiviert werden)
+            # Uncomment die nächste Zeile wenn du automatische Analysen beim Leave willst:
+            # await self._send_leave_analysis(member)
+
+        except Exception as e:
+            logger.error(f"Error tracking member leave: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_member_ban(self, guild: discord.Guild, user: discord.User):
+        """Trackt wenn ein Member gebannt wird."""
+        try:
+            if user.bot:
+                return
+
+            # Ban-Event loggen
+            central_db.execute(
+                """
+                INSERT INTO member_events(
+                    user_id, guild_id, event_type, display_name
+                )
+                VALUES (?, ?, 'ban', ?)
+                """,
+                (user.id, guild.id, user.display_name)
+            )
+
+            logger.info(f"Member ban tracked: {user.display_name} ({user.id}) -> {guild.name}")
+
+        except Exception as e:
+            logger.error(f"Error tracking member ban: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_member_unban(self, guild: discord.Guild, user: discord.User):
+        """Trackt wenn ein Member entbannt wird."""
+        try:
+            if user.bot:
+                return
+
+            # Unban-Event loggen
+            central_db.execute(
+                """
+                INSERT INTO member_events(
+                    user_id, guild_id, event_type, display_name
+                )
+                VALUES (?, ?, 'unban', ?)
+                """,
+                (user.id, guild.id, user.display_name)
+            )
+
+            logger.info(f"Member unban tracked: {user.display_name} ({user.id}) -> {guild.name}")
+
+        except Exception as e:
+            logger.error(f"Error tracking member unban: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Trackt Message-Aktivität von Usern."""
+        try:
+            # Ignore Bots & DMs
+            if not message.guild or message.author.bot:
+                return
+
+            # Update/Insert Message Activity
+            central_db.execute(
+                """
+                INSERT INTO message_activity(
+                    user_id, guild_id, channel_id, message_count,
+                    last_message_at, first_message_at
+                )
+                VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, guild_id) DO UPDATE SET
+                    message_count = message_count + 1,
+                    last_message_at = CURRENT_TIMESTAMP,
+                    channel_id = excluded.channel_id
+                """,
+                (message.author.id, message.guild.id, message.channel.id)
+            )
+
+            # Kein Log hier (zu viel Spam bei vielen Messages)
+
+        except Exception as e:
+            logger.error(f"Error tracking message activity: {e}", exc_info=True)
+
+    async def _send_leave_analysis(self, member: discord.Member):
+        """
+        Sendet eine automatische Analyse wenn ein Member den Server verlässt.
+        Zeigt was der User alles gemacht hat.
+        """
+        try:
+            # Finde einen geeigneten Channel zum Posten (z.B. einen Log-Channel)
+            # Du kannst das anpassen auf deinen spezifischen Log-Channel
+            log_channel = None
+            for channel in member.guild.text_channels:
+                if 'log' in channel.name.lower() or 'audit' in channel.name.lower():
+                    log_channel = channel
+                    break
+
+            if not log_channel:
+                return  # Kein Log-Channel gefunden
+
+            # Generiere Analyse-Embed
+            embed = await self._generate_user_analysis_embed(member)
+
+            await log_channel.send(f"📊 **User-Leave-Analyse:** {member.mention}", embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error sending leave analysis: {e}", exc_info=True)
+
+    async def _generate_user_analysis_embed(self, member: discord.Member) -> discord.Embed:
+        """Generiert ein umfassendes Analyse-Embed für einen User."""
+        embed = discord.Embed(
+            title=f"📊 User-Aktivitäts-Analyse - {member.display_name}",
+            color=discord.Color.orange()
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+
+        # === 1. Join/Leave History ===
+        join_leave_events = central_db.query_all(
+            """
+            SELECT event_type, timestamp, account_created_at, join_position
+            FROM member_events
+            WHERE user_id = ? AND guild_id = ?
+            ORDER BY timestamp ASC
+            """,
+            (member.id, member.guild.id)
+        )
+
+        if join_leave_events:
+            first_join = join_leave_events[0]
+            joins = [e for e in join_leave_events if e[0] == 'join']
+            leaves = [e for e in join_leave_events if e[0] == 'leave']
+            bans = [e for e in join_leave_events if e[0] == 'ban']
+
+            history_text = f"**Erstes Join:** {first_join[1][:16] if first_join[1] else 'Unbekannt'}\n"
+            history_text += f"**Joins:** {len(joins)} | **Leaves:** {len(leaves)}"
+            if bans:
+                history_text += f" | **Bans:** {len(bans)}"
+
+            if first_join[2]:  # account_created_at
+                history_text += f"\n**Account erstellt:** {first_join[2][:10]}"
+            if first_join[3]:  # join_position
+                history_text += f"\n**Join-Position:** #{first_join[3]}"
+
+            embed.add_field(name="📅 Server-History", value=history_text, inline=False)
+
+        # === 2. Voice Activity ===
+        voice_stats = central_db.query_one(
+            """
+            SELECT total_seconds, total_points
+            FROM voice_stats
+            WHERE user_id = ?
+            """,
+            (member.id,)
+        )
+
+        if voice_stats and voice_stats[0]:
+            total_seconds = voice_stats[0]
+            total_points = voice_stats[1] or 0
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+
+            # Letzte Voice-Session
+            last_session = central_db.query_one(
+                """
+                SELECT channel_name, ended_at, duration_seconds
+                FROM voice_session_log
+                WHERE user_id = ? AND guild_id = ?
+                ORDER BY ended_at DESC
+                LIMIT 1
+                """,
+                (member.id, member.guild.id)
+            )
+
+            voice_text = f"**Gesamtzeit:** {hours}h {minutes}m\n**Punkte:** {total_points}"
+            if last_session:
+                voice_text += f"\n**Letzter Voice:** {last_session[0]} ({last_session[2]//60}min)"
+
+            embed.add_field(name="🎙️ Voice-Aktivität", value=voice_text, inline=True)
+        else:
+            embed.add_field(name="🎙️ Voice-Aktivität", value="Keine Voice-Aktivität", inline=True)
+
+        # === 3. Message Activity ===
+        msg_stats = central_db.query_one(
+            """
+            SELECT message_count, last_message_at, first_message_at
+            FROM message_activity
+            WHERE user_id = ? AND guild_id = ?
+            """,
+            (member.id, member.guild.id)
+        )
+
+        if msg_stats and msg_stats[0]:
+            msg_count = msg_stats[0]
+            last_msg = msg_stats[1][:16] if msg_stats[1] else "Unbekannt"
+            first_msg = msg_stats[2][:16] if msg_stats[2] else "Unbekannt"
+
+            msg_text = f"**Nachrichten:** {msg_count}\n"
+            msg_text += f"**Erste Nachricht:** {first_msg}\n"
+            msg_text += f"**Letzte Nachricht:** {last_msg}"
+
+            embed.add_field(name="💬 Nachrichten", value=msg_text, inline=True)
+        else:
+            embed.add_field(name="💬 Nachrichten", value="Keine Nachrichten", inline=True)
+
+        # === 4. Co-Spieler (Top 3) ===
+        co_players = await self.get_top_co_players(member.id, limit=3)
+        if co_players:
+            co_text = ""
+            for co_id, sessions_together in co_players:
+                co_member = member.guild.get_member(co_id)
+                name = co_member.display_name if co_member else f"User {co_id}"
+                co_text += f"**{name}** ({sessions_together}x)\n"
+            embed.add_field(name="👥 Top Mitspieler", value=co_text, inline=False)
+
+        # === 5. Aktivitätsmuster ===
+        patterns = central_db.query_one(
+            """
+            SELECT typical_hours, typical_days, activity_score_2w
+            FROM user_activity_patterns
+            WHERE user_id = ?
+            """,
+            (member.id,)
+        )
+
+        if patterns and patterns[2]:  # activity_score_2w
+            typical_hours = json.loads(patterns[0]) if patterns[0] else []
+            typical_days = json.loads(patterns[1]) if patterns[1] else []
+            activity_score = patterns[2]
+
+            pattern_text = f"**Activity Score:** {activity_score}\n"
+            if typical_hours:
+                hours_str = ", ".join([f"{h}:00" for h in typical_hours[:3]])
+                pattern_text += f"**Typische Zeiten:** {hours_str}\n"
+            if typical_days:
+                day_names = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+                days_str = ", ".join([day_names[d] for d in typical_days[:3]])
+                pattern_text += f"**Typische Tage:** {days_str}"
+
+            embed.add_field(name="📈 Aktivitätsmuster", value=pattern_text, inline=False)
+
+        embed.set_footer(text=f"User ID: {member.id}")
+        embed.timestamp = datetime.utcnow()
+
+        return embed
+
     # ========== SMART PINGING ==========
 
     async def should_ping_user(self, user_id: int, max_pings_30d: int = 3) -> Tuple[bool, str]:
@@ -773,6 +1088,227 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
         embed.add_field(name="Grund", value=reason, inline=False)
 
         await ctx.send(embed=embed)
+
+    # ========== NEW COMMANDS: USER ANALYSIS ==========
+
+    @commands.command(name="useranalysis", aliases=["ua", "analyze"])
+    async def user_analysis_command(self, ctx, user: Optional[discord.Member] = None):
+        """
+        Zeigt eine umfassende Analyse eines Users.
+        Zeigt alle Aktivitäten: Joins, Leaves, Voice, Messages, Co-Spieler, Bans etc.
+
+        Usage: !useranalysis [@User]
+        """
+        target = user or ctx.author
+
+        try:
+            embed = await self._generate_user_analysis_embed(target)
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error in user_analysis command: {e}", exc_info=True)
+            await ctx.send(f"❌ Fehler beim Erstellen der Analyse: {e}")
+
+    @commands.command(name="memberevents", aliases=["mevents"])
+    async def member_events_command(self, ctx, user: Optional[discord.Member] = None, limit: int = 10):
+        """
+        Zeigt die letzten Member-Events eines Users (Joins, Leaves, Bans).
+
+        Usage: !memberevents [@User] [limit]
+        """
+        target = user or ctx.author
+
+        try:
+            events = central_db.query_all(
+                """
+                SELECT event_type, timestamp, display_name
+                FROM member_events
+                WHERE user_id = ? AND guild_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (target.id, ctx.guild.id, min(limit, 50))
+            )
+
+            if not events:
+                await ctx.send(f"❌ Keine Events für {target.display_name} gefunden.")
+                return
+
+            embed = discord.Embed(
+                title=f"📋 Member-Events - {target.display_name}",
+                color=discord.Color.blue()
+            )
+
+            event_icons = {
+                'join': '➕',
+                'leave': '➖',
+                'ban': '🔨',
+                'unban': '✅'
+            }
+
+            desc = ""
+            for event_type, timestamp, display_name in events:
+                icon = event_icons.get(event_type, '•')
+                timestamp_str = timestamp[:16] if timestamp else 'Unbekannt'
+                desc += f"{icon} **{event_type.upper()}** - {timestamp_str}\n"
+
+            embed.description = desc
+            embed.set_thumbnail(url=target.display_avatar.url)
+            embed.set_footer(text=f"Zeige {len(events)} von max {limit} Events")
+
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error in member_events command: {e}", exc_info=True)
+            await ctx.send(f"❌ Fehler beim Abrufen der Events: {e}")
+
+    @commands.command(name="messagestats", aliases=["msgstats"])
+    async def message_stats_command(self, ctx, user: Optional[discord.Member] = None):
+        """
+        Zeigt Message-Statistiken eines Users.
+
+        Usage: !messagestats [@User]
+        """
+        target = user or ctx.author
+
+        try:
+            stats = central_db.query_one(
+                """
+                SELECT message_count, last_message_at, first_message_at, channel_id
+                FROM message_activity
+                WHERE user_id = ? AND guild_id = ?
+                """,
+                (target.id, ctx.guild.id)
+            )
+
+            if not stats or not stats[0]:
+                await ctx.send(f"❌ Keine Message-Aktivität für {target.display_name} gefunden.")
+                return
+
+            msg_count = stats[0]
+            last_msg_at = stats[1][:16] if stats[1] else "Unbekannt"
+            first_msg_at = stats[2][:16] if stats[2] else "Unbekannt"
+            channel_id = stats[3]
+
+            embed = discord.Embed(
+                title=f"💬 Message-Statistiken - {target.display_name}",
+                color=discord.Color.green()
+            )
+
+            embed.add_field(name="📊 Nachrichten", value=f"{msg_count:,}", inline=True)
+            embed.add_field(name="📅 Erste Nachricht", value=first_msg_at, inline=True)
+            embed.add_field(name="🕐 Letzte Nachricht", value=last_msg_at, inline=True)
+
+            if channel_id:
+                channel = ctx.guild.get_channel(channel_id)
+                if channel:
+                    embed.add_field(name="📍 Letzter Channel", value=channel.mention, inline=True)
+
+            # Durchschnitt pro Tag
+            if stats[1] and stats[2]:
+                try:
+                    first = datetime.strptime(stats[2], "%Y-%m-%d %H:%M:%S")
+                    last = datetime.strptime(stats[1], "%Y-%m-%d %H:%M:%S")
+                    days = max(1, (last - first).days)
+                    avg_per_day = msg_count / days
+                    embed.add_field(name="📈 Durchschnitt/Tag", value=f"{avg_per_day:.1f}", inline=True)
+                except Exception:
+                    pass
+
+            embed.set_thumbnail(url=target.display_avatar.url)
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error in message_stats command: {e}", exc_info=True)
+            await ctx.send(f"❌ Fehler beim Abrufen der Statistiken: {e}")
+
+    @commands.command(name="serverstats")
+    @commands.has_permissions(manage_guild=True)
+    async def server_stats_command(self, ctx):
+        """
+        Zeigt Server-weite Statistiken (nur für Admins).
+
+        Usage: !serverstats
+        """
+        try:
+            embed = discord.Embed(
+                title=f"📊 Server-Statistiken - {ctx.guild.name}",
+                color=discord.Color.gold()
+            )
+
+            # Member Events
+            event_counts = central_db.query_all(
+                """
+                SELECT event_type, COUNT(*) as count
+                FROM member_events
+                WHERE guild_id = ?
+                GROUP BY event_type
+                ORDER BY count DESC
+                """,
+                (ctx.guild.id,)
+            )
+
+            if event_counts:
+                event_text = ""
+                for event_type, count in event_counts:
+                    event_text += f"**{event_type.upper()}:** {count}\n"
+                embed.add_field(name="📋 Member Events", value=event_text, inline=True)
+
+            # Message Activity
+            total_messages = central_db.query_one(
+                """
+                SELECT SUM(message_count)
+                FROM message_activity
+                WHERE guild_id = ?
+                """,
+                (ctx.guild.id,)
+            )
+
+            if total_messages and total_messages[0]:
+                embed.add_field(name="💬 Nachrichten (gesamt)", value=f"{total_messages[0]:,}", inline=True)
+
+            # Voice Activity
+            total_voice_time = central_db.query_one(
+                """
+                SELECT SUM(duration_seconds)
+                FROM voice_session_log
+                WHERE guild_id = ?
+                """,
+                (ctx.guild.id,)
+            )
+
+            if total_voice_time and total_voice_time[0]:
+                hours = total_voice_time[0] // 3600
+                embed.add_field(name="🎙️ Voice-Zeit (gesamt)", value=f"{hours:,}h", inline=True)
+
+            # Top Active Users (nach Messages)
+            top_users = central_db.query_all(
+                """
+                SELECT user_id, message_count
+                FROM message_activity
+                WHERE guild_id = ?
+                ORDER BY message_count DESC
+                LIMIT 5
+                """,
+                (ctx.guild.id,)
+            )
+
+            if top_users:
+                top_text = ""
+                for i, (user_id, msg_count) in enumerate(top_users, 1):
+                    member = ctx.guild.get_member(user_id)
+                    name = member.display_name if member else f"User {user_id}"
+                    top_text += f"{i}. **{name}** - {msg_count:,} Messages\n"
+                embed.add_field(name="🏆 Top 5 Aktivste User", value=top_text, inline=False)
+
+            embed.set_footer(text=f"Server ID: {ctx.guild.id}")
+            embed.timestamp = datetime.utcnow()
+
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error in server_stats command: {e}", exc_info=True)
+            await ctx.send(f"❌ Fehler beim Abrufen der Server-Statistiken: {e}")
 
 
 async def setup(bot):
