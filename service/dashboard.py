@@ -583,6 +583,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             gap: 1rem;
             margin-top: 1rem;
         }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
         .voice-table {
             width: 100%;
             overflow-x: auto;
@@ -752,6 +758,30 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     </section>
 
     <section>
+        <div class="section-header">
+            <h2>Server Statistiken & User Activity</h2>
+            <div class="section-actions">
+                <button class="reload" id="server-stats-refresh">Neu laden</button>
+                <span class="voice-meta" id="server-stats-updated">Letzte Aktualisierung: -</span>
+            </div>
+        </div>
+        <div class="stats-grid">
+            <div class="card">
+                <h3>Server Übersicht</h3>
+                <div id="server-stats-summary" class="grid"></div>
+            </div>
+            <div class="card">
+                <h3>Member Events (Letzte 50)</h3>
+                <div id="member-events-container"></div>
+            </div>
+            <div class="card">
+                <h3>Top Aktivste User (Messages)</h3>
+                <div id="message-activity-container"></div>
+            </div>
+        </div>
+    </section>
+
+    <section>
         <h2>Standalone Dienste</h2>
         <div id="standalone-container" class="standalone-grid"></div>
     </section>
@@ -802,6 +832,14 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const voiceHistoryUser = document.getElementById('voice-history-user');
     const voiceUserApply = document.getElementById('voice-user-apply');
     const voiceModeButtons = document.querySelectorAll('.voice-mode-btn');
+
+    // Server Stats & User Activity
+    const serverStatsSummary = document.getElementById('server-stats-summary');
+    const memberEventsContainer = document.getElementById('member-events-container');
+    const messageActivityContainer = document.getElementById('message-activity-container');
+    const serverStatsRefreshButton = document.getElementById('server-stats-refresh');
+    const serverStatsUpdated = document.getElementById('server-stats-updated');
+
     const dashboardRestartBtn = document.getElementById('dashboard-restart');
     const dashboardStatusPill = document.getElementById('dashboard-status-pill');
     const dashboardRestartInfo = document.getElementById('dashboard-restart-info');
@@ -1535,6 +1573,182 @@ async function loadVoiceHistory() {
     } catch (err) {
         log('Voice Historie konnte nicht geladen werden: ' + err.message, 'error');
     }
+}
+
+// ========== SERVER STATS & USER ACTIVITY ==========
+
+async function loadServerStats() {
+    try {
+        const [statsData, eventsData, messageData] = await Promise.all([
+            fetchJSON('/api/server-stats'),
+            fetchJSON('/api/member-events?limit=50'),
+            fetchJSON('/api/message-activity?limit=20'),
+        ]);
+        renderServerStats(statsData);
+        renderMemberEvents(eventsData);
+        renderMessageActivity(messageData);
+        if (serverStatsUpdated) {
+            serverStatsUpdated.textContent = 'Letzte Aktualisierung: ' + new Date().toLocaleTimeString();
+        }
+    } catch (err) {
+        log('Server Stats konnten nicht geladen werden: ' + err.message, 'error');
+        if (serverStatsSummary) {
+            serverStatsSummary.innerHTML = '<div class="voice-meta">Fehler beim Laden der Server-Statistiken.</div>';
+        }
+    }
+}
+
+function renderServerStats(data) {
+    if (!serverStatsSummary) return;
+    serverStatsSummary.innerHTML = '';
+
+    const cards = [
+        {
+            label: 'Member Events',
+            value: Object.values(data.member_events || {}).reduce((a, b) => a + b, 0),
+            sub: `Joins: ${data.member_events?.join || 0} | Leaves: ${data.member_events?.leave || 0}${data.member_events?.ban ? ` | Bans: ${data.member_events.ban}` : ''}`,
+        },
+        {
+            label: 'Nachrichten (Total)',
+            value: (data.total_messages || 0).toLocaleString(),
+            sub: 'Alle erfassten Messages',
+        },
+        {
+            label: 'Voice-Zeit (Total)',
+            value: `${data.total_voice_hours || 0}h`,
+            sub: 'Gesamte Voice-Aktivität',
+        },
+        {
+            label: 'Aktive User (7d)',
+            value: data.active_users_7d || 0,
+            sub: 'User mit Messages in letzten 7 Tagen',
+        },
+        {
+            label: 'Wachstum (30d)',
+            value: data.growth_30d?.net >= 0 ? `+${data.growth_30d.net}` : data.growth_30d?.net || 0,
+            sub: `${data.growth_30d?.joins || 0} Joins - ${data.growth_30d?.leaves || 0} Leaves`,
+        },
+    ];
+
+    cards.forEach((card) => {
+        const el = document.createElement('div');
+        el.className = 'stat-card';
+        const label = document.createElement('div');
+        label.className = 'stat-label';
+        label.textContent = card.label;
+        const value = document.createElement('div');
+        value.className = 'stat-value';
+        value.textContent = card.value;
+        const sub = document.createElement('div');
+        sub.className = 'stat-sub';
+        sub.textContent = card.sub;
+        el.appendChild(label);
+        el.appendChild(value);
+        el.appendChild(sub);
+        serverStatsSummary.appendChild(el);
+    });
+}
+
+function renderMemberEvents(data) {
+    if (!memberEventsContainer) return;
+    memberEventsContainer.innerHTML = '';
+
+    const events = data.events || [];
+    if (!events.length) {
+        const empty = document.createElement('div');
+        empty.className = 'voice-meta';
+        empty.textContent = 'Keine Events vorhanden.';
+        memberEventsContainer.appendChild(empty);
+        return;
+    }
+
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>User</th><th>Event</th><th>Zeit</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+
+    const eventIcons = {
+        'join': '➕',
+        'leave': '➖',
+        'ban': '🔨',
+        'unban': '✅'
+    };
+
+    events.slice(0, 15).forEach((event) => {
+        const tr = document.createElement('tr');
+        const userTd = document.createElement('td');
+        userTd.textContent = event.display_name || `User ${event.user_id}`;
+        const eventTd = document.createElement('td');
+        const icon = eventIcons[event.event_type] || '•';
+        eventTd.textContent = `${icon} ${event.event_type}`;
+        const timeTd = document.createElement('td');
+        timeTd.textContent = formatTimestamp(event.timestamp);
+        tr.appendChild(userTd);
+        tr.appendChild(eventTd);
+        tr.appendChild(timeTd);
+        tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    memberEventsContainer.appendChild(table);
+
+    if (events.length > 15) {
+        const more = document.createElement('div');
+        more.className = 'voice-meta';
+        more.style.marginTop = '0.5rem';
+        more.textContent = `...und ${events.length - 15} weitere Events`;
+        memberEventsContainer.appendChild(more);
+    }
+}
+
+function renderMessageActivity(data) {
+    if (!messageActivityContainer) return;
+    messageActivityContainer.innerHTML = '';
+
+    const users = data.top_users || [];
+    const summary = data.summary || {};
+
+    // Summary
+    const summaryDiv = document.createElement('div');
+    summaryDiv.className = 'voice-meta';
+    summaryDiv.style.marginBottom = '0.75rem';
+    summaryDiv.textContent = `${summary.total_users || 0} User • ${(summary.total_messages || 0).toLocaleString()} Messages • Ø ${summary.avg_per_user || 0} pro User`;
+    messageActivityContainer.appendChild(summaryDiv);
+
+    if (!users.length) {
+        const empty = document.createElement('div');
+        empty.className = 'voice-meta';
+        empty.textContent = 'Keine Message-Aktivität vorhanden.';
+        messageActivityContainer.appendChild(empty);
+        return;
+    }
+
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>#</th><th>User</th><th>Messages</th><th>Letzte Activity</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+
+    users.slice(0, 10).forEach((user, idx) => {
+        const tr = document.createElement('tr');
+        const rankTd = document.createElement('td');
+        rankTd.textContent = idx + 1;
+        const userTd = document.createElement('td');
+        userTd.textContent = user.display_name;
+        const countTd = document.createElement('td');
+        countTd.textContent = (user.message_count || 0).toLocaleString();
+        const timeTd = document.createElement('td');
+        timeTd.textContent = formatTimestamp(user.last_message_at);
+        tr.appendChild(rankTd);
+        tr.appendChild(userTd);
+        tr.appendChild(countTd);
+        tr.appendChild(timeTd);
+        tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    messageActivityContainer.appendChild(table);
 }
 
 function renderRankMetrics(container, metrics) {
@@ -2416,6 +2630,17 @@ async function fetchStandaloneLogs(key, limit = 200) {
     setInterval(loadVoiceStats, 30000);
     loadVoiceHistory();
     setInterval(loadVoiceHistory, 60000);
+
+    // Server Stats Initial Load
+    loadServerStats();
+    setInterval(loadServerStats, 60000);
+
+    // Server Stats Refresh Button
+    if (serverStatsRefreshButton) {
+        serverStatsRefreshButton.addEventListener('click', () => {
+            loadServerStats();
+        });
+    }
     </script>
 </body>
 </html>
@@ -2535,6 +2760,9 @@ class DashboardServer:
                     web.post("/api/cogs/unblock", self._handle_unblock),
                     web.get("/api/voice-stats", self._handle_voice_stats),
                     web.get("/api/voice-history", self._handle_voice_history),
+                    web.get("/api/member-events", self._handle_member_events),
+                    web.get("/api/message-activity", self._handle_message_activity),
+                    web.get("/api/server-stats", self._handle_server_stats),
                     web.post("/api/cogs/discover", self._handle_discover),
                     web.get("/api/standalone", self._handle_standalone_list),
                     web.get("/api/standalone/{key}/logs", self._handle_standalone_logs),
@@ -3343,6 +3571,292 @@ class DashboardServer:
             "buckets": buckets,
         }
         return self._json(payload)
+
+    async def _handle_member_events(self, request: web.Request) -> web.Response:
+        """Handler für Member-Events (Joins, Leaves, Bans)."""
+        self._check_auth(request, required=bool(self.token))
+
+        raw_limit = request.query.get("limit")
+        event_type = request.query.get("type")  # optional filter
+        guild_id_raw = request.query.get("guild_id")
+
+        try:
+            limit = int(raw_limit) if raw_limit else 50
+            if limit <= 0:
+                raise ValueError
+            limit = min(limit, 200)
+        except ValueError:
+            raise web.HTTPBadRequest(text="limit must be a positive integer (max 200)")
+
+        guild_id: Optional[int] = None
+        if guild_id_raw:
+            try:
+                guild_id = int(guild_id_raw)
+            except ValueError:
+                raise web.HTTPBadRequest(text="guild_id must be an integer")
+
+        try:
+            # Query für Events
+            where_clauses = []
+            params = []
+
+            if guild_id:
+                where_clauses.append("guild_id = ?")
+                params.append(guild_id)
+
+            if event_type:
+                where_clauses.append("event_type = ?")
+                params.append(event_type)
+
+            where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+            # Hole Events
+            events = db.query_all(
+                f"""
+                SELECT id, user_id, guild_id, event_type, timestamp,
+                       display_name, account_created_at, join_position, metadata
+                FROM member_events
+                WHERE {where_sql}
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (*params, limit)
+            )
+
+            # Event-Type Counts
+            event_counts = db.query_all(
+                """
+                SELECT event_type, COUNT(*) as count
+                FROM member_events
+                WHERE """ + (where_sql if where_clauses else "1=1") + """
+                GROUP BY event_type
+                ORDER BY count DESC
+                """,
+                tuple(params)
+            )
+
+            # Recent Joins (letzten 7 Tage)
+            recent_joins = db.query_one(
+                """
+                SELECT COUNT(*) as count
+                FROM member_events
+                WHERE event_type = 'join'
+                  AND timestamp >= datetime('now', '-7 days')
+                """ + (f" AND guild_id = {guild_id}" if guild_id else ""),
+            )
+
+            # Recent Leaves (letzten 7 Tage)
+            recent_leaves = db.query_one(
+                """
+                SELECT COUNT(*) as count
+                FROM member_events
+                WHERE event_type = 'leave'
+                  AND timestamp >= datetime('now', '-7 days')
+                """ + (f" AND guild_id = {guild_id}" if guild_id else ""),
+            )
+
+            events_list = []
+            for row in events:
+                events_list.append({
+                    "id": row[0],
+                    "user_id": row[1],
+                    "guild_id": row[2],
+                    "event_type": row[3],
+                    "timestamp": row[4],
+                    "display_name": row[5],
+                    "account_created_at": row[6],
+                    "join_position": row[7],
+                    "metadata": row[8],
+                })
+
+            counts = {row[0]: row[1] for row in event_counts}
+
+            payload = {
+                "events": events_list,
+                "summary": {
+                    "total_events": len(events_list),
+                    "event_counts": counts,
+                    "recent_joins_7d": recent_joins[0] if recent_joins else 0,
+                    "recent_leaves_7d": recent_leaves[0] if recent_leaves else 0,
+                },
+            }
+            return self._json(payload)
+
+        except Exception as exc:
+            logging.exception("Failed to load member events: %s", exc)
+            raise web.HTTPInternalServerError(text="Member events unavailable") from exc
+
+    async def _handle_message_activity(self, request: web.Request) -> web.Response:
+        """Handler für Message-Activity."""
+        self._check_auth(request, required=bool(self.token))
+
+        raw_limit = request.query.get("limit")
+        guild_id_raw = request.query.get("guild_id")
+
+        try:
+            limit = int(raw_limit) if raw_limit else 20
+            if limit <= 0:
+                raise ValueError
+            limit = min(limit, 100)
+        except ValueError:
+            raise web.HTTPBadRequest(text="limit must be a positive integer (max 100)")
+
+        guild_id: Optional[int] = None
+        if guild_id_raw:
+            try:
+                guild_id = int(guild_id_raw)
+            except ValueError:
+                raise web.HTTPBadRequest(text="guild_id must be an integer")
+
+        try:
+            where_sql = "guild_id = ?" if guild_id else "1=1"
+            params = (guild_id,) if guild_id else ()
+
+            # Top Users by Message Count
+            top_users = db.query_all(
+                f"""
+                SELECT user_id, guild_id, channel_id, message_count,
+                       last_message_at, first_message_at
+                FROM message_activity
+                WHERE {where_sql}
+                ORDER BY message_count DESC
+                LIMIT ?
+                """,
+                (*params, limit)
+            )
+
+            # Summary
+            summary = db.query_one(
+                f"""
+                SELECT
+                    COUNT(*) as total_users,
+                    SUM(message_count) as total_messages,
+                    AVG(message_count) as avg_per_user
+                FROM message_activity
+                WHERE {where_sql}
+                """,
+                params
+            )
+
+            # Resolve display names
+            user_ids = {row[0] for row in top_users}
+            name_map = self._resolve_display_names(user_ids)
+
+            users_list = []
+            for row in top_users:
+                user_id = row[0]
+                users_list.append({
+                    "user_id": user_id,
+                    "display_name": name_map.get(user_id, f"User {user_id}"),
+                    "guild_id": row[1],
+                    "channel_id": row[2],
+                    "message_count": row[3],
+                    "last_message_at": row[4],
+                    "first_message_at": row[5],
+                })
+
+            payload = {
+                "top_users": users_list,
+                "summary": {
+                    "total_users": summary[0] if summary else 0,
+                    "total_messages": summary[1] if summary else 0,
+                    "avg_per_user": round(summary[2], 1) if summary and summary[2] else 0,
+                },
+            }
+            return self._json(payload)
+
+        except Exception as exc:
+            logging.exception("Failed to load message activity: %s", exc)
+            raise web.HTTPInternalServerError(text="Message activity unavailable") from exc
+
+    async def _handle_server_stats(self, request: web.Request) -> web.Response:
+        """Handler für aggregierte Server-Statistiken."""
+        self._check_auth(request, required=bool(self.token))
+
+        guild_id_raw = request.query.get("guild_id")
+
+        guild_id: Optional[int] = None
+        if guild_id_raw:
+            try:
+                guild_id = int(guild_id_raw)
+            except ValueError:
+                raise web.HTTPBadRequest(text="guild_id must be an integer")
+
+        try:
+            where_sql = "guild_id = ?" if guild_id else "1=1"
+            params = (guild_id,) if guild_id else ()
+
+            # Member Events Summary
+            member_events_summary = db.query_all(
+                f"""
+                SELECT event_type, COUNT(*) as count
+                FROM member_events
+                WHERE {where_sql}
+                GROUP BY event_type
+                """,
+                params
+            )
+
+            # Message Activity Summary
+            message_summary = db.query_one(
+                f"""
+                SELECT SUM(message_count) as total
+                FROM message_activity
+                WHERE {where_sql}
+                """,
+                params
+            )
+
+            # Voice Activity Summary
+            voice_summary = db.query_one(
+                f"""
+                SELECT SUM(duration_seconds) as total_seconds
+                FROM voice_session_log
+                WHERE {where_sql if guild_id else "1=1"}
+                """,
+                (guild_id,) if guild_id else ()
+            )
+
+            # Active Users (last 7 days)
+            active_users_7d = db.query_one(
+                f"""
+                SELECT COUNT(DISTINCT user_id) as count
+                FROM message_activity
+                WHERE {where_sql}
+                  AND last_message_at >= datetime('now', '-7 days')
+                """,
+                params
+            )
+
+            # Growth (Joins vs Leaves last 30 days)
+            growth = db.query_one(
+                f"""
+                SELECT
+                    SUM(CASE WHEN event_type = 'join' THEN 1 ELSE 0 END) as joins,
+                    SUM(CASE WHEN event_type = 'leave' THEN 1 ELSE 0 END) as leaves
+                FROM member_events
+                WHERE {where_sql}
+                  AND timestamp >= datetime('now', '-30 days')
+                """,
+                params
+            )
+
+            payload = {
+                "member_events": {row[0]: row[1] for row in member_events_summary},
+                "total_messages": message_summary[0] if message_summary and message_summary[0] else 0,
+                "total_voice_hours": (voice_summary[0] // 3600) if voice_summary and voice_summary[0] else 0,
+                "active_users_7d": active_users_7d[0] if active_users_7d else 0,
+                "growth_30d": {
+                    "joins": growth[0] if growth else 0,
+                    "leaves": growth[1] if growth else 0,
+                    "net": (growth[0] or 0) - (growth[1] or 0) if growth else 0,
+                },
+            }
+            return self._json(payload)
+
+        except Exception as exc:
+            logging.exception("Failed to load server stats: %s", exc)
+            raise web.HTTPInternalServerError(text="Server stats unavailable") from exc
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
