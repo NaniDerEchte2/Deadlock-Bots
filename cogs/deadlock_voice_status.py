@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import aiohttp
-import aiosqlite
 import discord
 from discord.ext import commands
 
+from service import db
 from service.db import db_path
+from service.config import settings
 
 log = logging.getLogger("DeadlockVoiceStatus")
 trace_log = logging.getLogger("DeadlockVoiceStatus.trace")
@@ -28,14 +29,10 @@ TARGET_CATEGORY_IDS: Set[int] = {
 
 POLL_INTERVAL_SECONDS = 60
 PRESENCE_STALE_SECONDS = 180
-RENAME_COOLDOWN_SECONDS = 360
+RENAME_COOLDOWN_SECONDS = settings.deadlock_vs_rename_cooldown_seconds
 RENAME_REASON = "Deadlock Voice Status Update"
 MIN_ACTIVE_PLAYERS = 1
-_MATCH_MINUTE_OFFSET_RAW = os.getenv("DEADLOCK_MATCH_MINUTE_OFFSET", "3")
-try:
-    MATCH_MINUTE_DISPLAY_OFFSET = max(0, int(_MATCH_MINUTE_OFFSET_RAW))
-except ValueError:
-    MATCH_MINUTE_DISPLAY_OFFSET = 3
+MATCH_MINUTE_DISPLAY_OFFSET = max(0, settings.match_minute_offset)
 
 _SUFFIX_REGEX = re.compile(
     r"\s*-\s*(?:in der Lobby(?:\s*\(\d+/\d+\))?|im Match Min (?:\d+|\d+\+)\s*\(\d+/\d+\))$",
@@ -51,7 +48,6 @@ _MATCH_STATUS_REGEX = re.compile(
 class DeadlockVoiceStatus(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.db: Optional[aiosqlite.Connection] = None
         self.channel_states: Dict[int, Dict[str, object]] = {}
         self._task: Optional[asyncio.Task[None]] = None
         self.last_observation: Dict[int, Dict[str, Any]] = {}
@@ -71,7 +67,6 @@ class DeadlockVoiceStatus(commands.Cog):
             self._enable_trace_logger()
 
     async def cog_load(self) -> None:
-        await self._ensure_db()
         self._task = asyncio.create_task(self._run_loop())
         log.info("DeadlockVoiceStatus background task started")
 
@@ -81,17 +76,7 @@ class DeadlockVoiceStatus(commands.Cog):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
-        if self.db:
-            await self.db.close()
-            self.db = None
         log.info("DeadlockVoiceStatus shut down")
-
-    async def _ensure_db(self) -> None:
-        if self.db:
-            return
-        path = Path(db_path())
-        self.db = await aiosqlite.connect(str(path))
-        self.db.row_factory = aiosqlite.Row
 
     def _enable_trace_logger(self) -> None:
         if self._trace_handler:
@@ -200,7 +185,7 @@ class DeadlockVoiceStatus(commands.Cog):
 
     async def _fetch_user_steam_ids(self, user_ids: Iterable[int]) -> Dict[int, List[str]]:
         ids = {int(uid) for uid in user_ids if uid}
-        if not ids or not self.db:
+        if not ids:
             return {}
 
         placeholders = ",".join("?" for _ in ids)
@@ -210,9 +195,7 @@ class DeadlockVoiceStatus(commands.Cog):
             "AND steam_id IS NOT NULL AND steam_id != '' "
             "ORDER BY primary_account DESC, verified DESC, updated_at DESC"
         )
-        cursor = await self.db.execute(query, tuple(ids))
-        rows = await cursor.fetchall()
-        await cursor.close()
+        rows = await db.query_all_async(query, tuple(ids))
 
         mapping: Dict[int, List[str]] = {}
         for row in rows:
@@ -223,9 +206,9 @@ class DeadlockVoiceStatus(commands.Cog):
                 bucket.append(sid)
         return mapping
 
-    async def _fetch_presence_rows(self, steam_ids: Iterable[str]) -> Dict[str, aiosqlite.Row]:
+    async def _fetch_presence_rows(self, steam_ids: Iterable[str]) -> Dict[str, Any]:
         ids = {sid for sid in steam_ids if sid}
-        if not ids or not self.db:
+        if not ids:
             return {}
 
         placeholders = ",".join("?" for _ in ids)
@@ -235,25 +218,19 @@ class DeadlockVoiceStatus(commands.Cog):
             "last_server_id, deadlock_party_hint "
             f"FROM live_player_state WHERE steam_id IN ({placeholders})"
         )
-        cursor = await self.db.execute(query, tuple(ids))
-        rows = await cursor.fetchall()
-        await cursor.close()
+        rows = await db.query_all_async(query, tuple(ids))
 
         return {str(row["steam_id"]): row for row in rows}
 
     async def _persist_voice_watch_entries(self, entries: List[Tuple[str, int, int]]) -> None:
-        await self._ensure_db()
-        if not self.db:
-            return
         now_ts = int(time.time())
         if not entries:
-            await self.db.execute("DELETE FROM deadlock_voice_watch")
-            await self.db.commit()
+            await db.execute_async("DELETE FROM deadlock_voice_watch")
             return
 
         try:
             rows = [(steam_id, guild_id, channel_id, now_ts) for (steam_id, guild_id, channel_id) in entries]
-            await self.db.executemany(
+            await db.executemany_async(
                 """
                 INSERT INTO deadlock_voice_watch(steam_id, guild_id, channel_id, updated_at)
                 VALUES(?, ?, ?, ?)
@@ -265,25 +242,21 @@ class DeadlockVoiceStatus(commands.Cog):
                 rows,
             )
             placeholders = ",".join("?" for _ in entries)
-            await self.db.execute(
+            # Flat list for DELETE IN clause
+            delete_ids = [steam_id for (steam_id, _, _) in entries]
+            await db.execute_async(
                 f"DELETE FROM deadlock_voice_watch WHERE steam_id NOT IN ({placeholders})",
-                [steam_id for (steam_id, _, _) in entries],
+                delete_ids,
             )
-            await self.db.commit()
         except Exception as exc:
             log.warning("Failed to persist voice watch entries: %s", exc)
-            # Rollback um inkonsistente DB zu verhindern
-            try:
-                await self.db.rollback()
-            except Exception as rollback_exc:
-                log.error("Failed to rollback transaction: %s", rollback_exc)
 
     async def _process_channel(
         self,
         channel: discord.VoiceChannel,
         members: Sequence[discord.Member],
         steam_map: Dict[int, List[str]],
-        presence_map: Dict[str, aiosqlite.Row],
+        presence_map: Dict[str, Any],
         now: int,
     ) -> None:
         base_name, current_suffix = self._split_suffix(channel.name)
@@ -469,7 +442,7 @@ class DeadlockVoiceStatus(commands.Cog):
         await self._apply_channel_name(channel, base_name, None, None, None, current_suffix, None, None, None, trace_payload)
 
     @staticmethod
-    def _safe_row_value(row: Optional[aiosqlite.Row], key: str) -> Optional[Any]:
+    def _safe_row_value(row: Optional[Any], key: str) -> Optional[Any]:
         if row is None:
             return None
         try:
@@ -480,7 +453,7 @@ class DeadlockVoiceStatus(commands.Cog):
     def _select_best_presence(
         self,
         steam_ids: Sequence[str],
-        presence_map: Dict[str, aiosqlite.Row],
+        presence_map: Dict[str, Any],
         now: int,
     ) -> Optional[Tuple[str, Optional[int], Optional[str], str]]:
         best: Optional[Tuple[str, Optional[int], Optional[str]]] = None
@@ -512,7 +485,7 @@ class DeadlockVoiceStatus(commands.Cog):
     def _evaluate_presence(
         self,
         steam_id: Optional[str],
-        presence_map: Dict[str, aiosqlite.Row],
+        presence_map: Dict[str, Any],
         now: int,
     ) -> Optional[Tuple[str, Optional[int], Optional[str]]]:
         if not steam_id:
@@ -604,6 +577,7 @@ class DeadlockVoiceStatus(commands.Cog):
         effective_cooldown = RENAME_COOLDOWN_SECONDS
         if stage_label == "match" and minutes_value is not None:
             if minutes_value >= 45:
+                # Update current state but don't rename if already frozen over 45
                 state.update(
                     {
                         "base": base_clean,
@@ -613,6 +587,7 @@ class DeadlockVoiceStatus(commands.Cog):
                         "players": player_count,
                         "voice_slots": voice_slots,
                         "server_id": server_identifier,
+                        "previous_member_count": player_count, # Store current member count
                     }
                 )
                 rename_info.update(
@@ -630,7 +605,41 @@ class DeadlockVoiceStatus(commands.Cog):
             if minutes_value >= 25:
                 effective_cooldown = max(RENAME_COOLDOWN_SECONDS, 600)
 
-        should_rename = desired_suffix != current_suffix or base_clean != channel.name.rstrip()
+        # Retrieve previous state to implement "no rename on user join"
+        previous_state = self.channel_states.get(channel.id, {})
+        previous_stage = previous_state.get("stage")
+        previous_member_count = previous_state.get("previous_member_count", 0)
+
+        # Logic for "Rename soll nicht triggern wenn eine person dazu komtm in den Channel"
+        # Only rename if:
+        # 1. The game stage (lobby/match) has changed.
+        # 2. The suffix (reflecting game time/player counts based on game status) has changed.
+        # 3. If stage_label is None (no game active) AND member count changed: do NOT rename.
+        #    This prevents renaming just because people join/leave an empty/non-game channel.
+        #    (unless new_name is significantly different from base_name, i.e., new suffix is determined)
+        
+        # Determine if a meaningful game state change occurred
+        meaningful_game_state_change = (
+            stage_label != previous_stage or
+            (desired_suffix != current_suffix) # Suffix includes player counts based on game status
+        )
+        
+        # Decide if we should rename
+        should_rename_based_on_conditions = False
+        if meaningful_game_state_change:
+            should_rename_based_on_conditions = True
+        elif stage_label is None and player_count != previous_member_count:
+            # If no game is detected (stage_label is None), and only member count changed, DO NOT rename.
+            # This is the core of "rename soll nicht triggern wenn eine person dazu komtm in den Channel".
+            # It prevents renaming a "Waiting" channel to "Waiting (4)" just because someone joined.
+            logging.debug(f"DeadlockVoiceStatus: Channel {channel.id} member count changed, but no game stage detected. Suppressing rename.")
+            should_rename_based_on_conditions = False
+        else:
+            # All other cases, if the suffix or base name demands it (e.g. template changes from TempVoice)
+            should_rename_based_on_conditions = desired_suffix != current_suffix or base_clean != channel.name.rstrip()
+
+
+        should_rename = should_rename_based_on_conditions # Final decision to rename
         rename_info.update(
             {
                 "should_rename": should_rename,
@@ -638,6 +647,9 @@ class DeadlockVoiceStatus(commands.Cog):
                 "effective_cooldown": effective_cooldown,
                 "cooldown_remaining": max(0.0, effective_cooldown - elapsed),
                 "match_exit_override": match_exit_override,
+                "meaningful_game_state_change": meaningful_game_state_change,
+                "previous_stage": previous_stage,
+                "previous_member_count": previous_member_count,
             }
         )
 
@@ -651,9 +663,10 @@ class DeadlockVoiceStatus(commands.Cog):
                     "players": player_count,
                     "voice_slots": voice_slots,
                     "server_id": server_identifier,
+                    "previous_member_count": player_count, # Update member count even if not renaming
                 }
             )
-            rename_info["result"] = "noop_same_suffix"
+            rename_info["result"] = "noop_no_meaningful_change"
             trace_data["rename"] = rename_info
             self._store_trace(channel.id, trace_data)
             return
@@ -667,19 +680,19 @@ class DeadlockVoiceStatus(commands.Cog):
             rename_info["cooldown_bypassed"] = True
 
         try:
-            await channel.edit(name=target_name, reason=RENAME_REASON)
-            await asyncio.sleep(1)  # gentle pacing against rate limits
-        except (discord.HTTPException, aiohttp.ClientError, OSError) as exc:
-            log.warning("Failed to rename voice channel %s: %s", channel.id, exc)
-            state["last_rename"] = time.time()
+            await self.bot.queue_channel_rename(channel.id, target_name, reason=RENAME_REASON)
+        except Exception as exc:
+            log.warning("Failed to queue rename for voice channel %s: %s", channel.id, exc)
+            state["last_rename"] = time.time() # Ensure cooldown still applies for direct attempts or next queue
             rename_info.update({"result": "error", "error": str(exc)})
             trace_data["rename"] = rename_info
             self._store_trace(channel.id, trace_data)
             return
 
-        rename_info["result"] = "renamed"
+        rename_info["result"] = "queued"
         rename_info["attempted"] = True
         trace_data["rename"] = rename_info
+        # Update state immediately for current logic, rename queue will eventually apply it
         self.channel_states[channel.id] = {
             "base": base_clean,
             "stage": stage_label,
@@ -688,7 +701,8 @@ class DeadlockVoiceStatus(commands.Cog):
             "players": player_count,
             "voice_slots": voice_slots,
             "server_id": server_identifier,
-            "last_rename": time.time(),
+            "last_rename": time.time(), # Cooldown starts from when it's queued
+            "previous_member_count": player_count, # Update member count after queueing
         }
         self._store_trace(channel.id, trace_data)
 

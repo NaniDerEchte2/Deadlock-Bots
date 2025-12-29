@@ -26,6 +26,13 @@ try:
 except Exception:
     standalone_manager = None
 
+# Auto-Setup für Pre-Commit Hook (verhindert direkte DB-Zugriffe)
+# Aktiviert sich automatisch bei jedem Import von service
+try:
+    from . import hooks
+except Exception:
+    hooks = None
+
 __all__ = [
     "db",
     "socket_bus",
@@ -34,4 +41,5 @@ __all__ = [
     "changelogs",
     "faq_logs",
     "standalone_manager",
+    "hooks",
 ]

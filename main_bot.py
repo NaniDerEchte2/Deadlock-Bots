@@ -24,8 +24,10 @@ import hashlib
 
 import discord
 from discord.ext import commands
+from service.config import settings
 # --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
 import re
+from service import db # Import db for worker communication
 
 try:
     from service.dashboard import DashboardServer
@@ -169,9 +171,9 @@ def _install_workerproxy_shim():
     if "shared" not in sys.modules:
         sys.modules["shared"] = types.ModuleType("shared")
     if "shared.worker_client" not in sys.modules:
-        wc_mod = types.ModuleType("shared.worker_client")
+        wc_mod = types.ModuleType("shared") # Fixed module name
         setattr(wc_mod, "WorkerProxy", _WorkerProxyStub)
-        sys.modules["shared.worker_client"] = wc_mod
+        sys.modules["shared.worker_client"] = wc_mod # Fixed module name
 
 _install_workerproxy_shim()
 
@@ -214,10 +216,10 @@ class MasterBot(commands.Bot):
         intents.guilds = True
 
         super().__init__(
-            command_prefix=os.getenv("COMMAND_PREFIX", "!"),
+            command_prefix=settings.command_prefix,
             intents=intents,
             description="Master Bot System - Verwaltet alle Bot-Funktionen",
-            owner_id=int(os.getenv("OWNER_ID", 0)),
+            owner_id=settings.owner_id,
             case_insensitive=True,
             chunk_guilds_at_startup=False,
             max_messages=1000,
@@ -242,29 +244,10 @@ class MasterBot(commands.Bot):
         tz = pytz.timezone("Europe/Berlin")
         self.startup_time = _dt.datetime.now(tz=tz)
 
-        self.dashboard: Optional[DashboardServer] = None
-        self._dashboard_start_task: Optional[asyncio.Task[None]] = None
-        dash_env = (os.getenv("MASTER_DASHBOARD_ENABLED", "1") or "1").lower()
-        dashboard_enabled = dash_env in {"1", "true", "yes", "on"}
-        if dashboard_enabled:
-            host = os.getenv("MASTER_DASHBOARD_HOST", "127.0.0.1")
-            try:
-                port = int(os.getenv("MASTER_DASHBOARD_PORT", "8766"))
-            except ValueError:
-                logging.error("MASTER_DASHBOARD_PORT ist ungültig – verwende 8766")
-                port = 8766
-            token = os.getenv("MASTER_DASHBOARD_TOKEN")
-            if DashboardServer is None:
-                logging.warning("DashboardServer nicht verfügbar - Dashboard wird deaktiviert")
-            else:
-                try:
-                    self.dashboard = DashboardServer(self, host=host, port=port, token=token)
-                    logging.info("Dashboard initialisiert (Host %s, Port %s)", host, port)
-                except Exception as e:
-                    logging.error("Konnte Dashboard nicht initialisieren: %s", e)
-        else:
-            logging.info("Master Dashboard deaktiviert (MASTER_DASHBOARD_ENABLED=0)")
-
+        # Dashboard is now loaded as a Cog (cogs/dashboard_cog.py)
+        # This allows it to be reloaded without restarting the bot
+        self.dashboard: Optional[DashboardServer] = None  # Set by DashboardCog
+        self._dashboard_start_task: Optional[asyncio.Task[None]] = None  # Legacy, kept for compatibility
 
         self.standalone_manager: Optional[StandaloneBotManager] = None
         if StandaloneBotManager is not None and StandaloneBotConfig is not None:
@@ -300,6 +283,7 @@ class MasterBot(commands.Bot):
                 )
                 logging.info("Standalone manager initialisiert (Rank Bot registriert)")
 
+
                 steam_dir = repo_root / "cogs" / "steam" / "steam_presence"
                 steam_script = steam_dir / "index.js"
                 if steam_script.exists():
@@ -308,7 +292,7 @@ class MasterBot(commands.Bot):
                         from service import db as _db
 
                         steam_env["DEADLOCK_DB_PATH"] = str(_db.db_path())
-                    except Exception as db_exc:  # pragma: no cover - defensive logging
+                    except Exception as db_exc: # defensive logging
                         logging.getLogger(__name__).warning(
                             "Konnte DEADLOCK_DB_PATH für Steam Bridge nicht bestimmen: %s",
                             db_exc,
@@ -359,6 +343,8 @@ class MasterBot(commands.Bot):
             self.per_cog_unload_timeout = float(os.getenv("PER_COG_UNLOAD_TIMEOUT", "3.0"))
         except ValueError:
             self.per_cog_unload_timeout = 3.0
+        
+        # Rate Limit Aware Rename Queue is now handled by a dedicated Cog (RenameManagerCog)
 
     # --------------------- Discovery & Filters -------------------------
     def normalize_namespace(self, raw: str) -> str:
@@ -645,15 +631,6 @@ class MasterBot(commands.Bot):
         _init_db_if_available()
         await self.load_all_cogs()
 
-        logging.info(
-            "Dashboard available=%s current_start_task=%s",
-            bool(self.dashboard),
-            bool(self._dashboard_start_task),
-        )
-        if self.dashboard and (self._dashboard_start_task is None or self._dashboard_start_task.done()):
-            logging.info("Scheduling dashboard HTTP server startup task...")
-            self._dashboard_start_task = asyncio.create_task(self._start_dashboard_background())
-
         try:
             synced = await self.tree.sync()
             logging.info(f"Synced {len(synced)} slash commands")
@@ -730,6 +707,19 @@ class MasterBot(commands.Bot):
         asyncio.create_task(self.hourly_health_check())
         if self.standalone_manager:
             asyncio.create_task(self._bootstrap_standalone_autostart())
+    
+    # --------------------- Rename Queue (Delegation) ----------------------------------
+    async def queue_channel_rename(self, channel_id: int, new_name: str, reason: str = "Automated Rename"):
+        rename_cog = self.get_cog("RenameManagerCog")
+        if rename_cog:
+            rename_cog.queue_local_rename_request(channel_id, new_name, reason)
+        else:
+            logging.error(
+                "RenameManagerCog nicht geladen. Rename fuer Channel %s zu '%s' kann nicht verarbeitet werden.",
+                channel_id,
+                new_name,
+            )
+
 
     async def load_all_cogs(self):
         logging.info("Loading all cogs in parallel...")
@@ -900,7 +890,7 @@ class MasterBot(commands.Bot):
     async def _collect_rank_bot_metrics(self) -> Dict[str, Any]:
         try:
             from service import db
-        except Exception as exc:  # pragma: no cover - defensive import
+        except Exception as exc: # defensive import
             logging.getLogger(__name__).warning(
                 "DB module unavailable for rank metrics: %s", exc
             )
@@ -976,7 +966,7 @@ class MasterBot(commands.Bot):
     async def _collect_steam_bridge_metrics(self) -> Dict[str, Any]:
         try:
             from service import db
-        except Exception as exc:  # pragma: no cover - defensive import
+        except Exception as exc: # defensive import
             logging.getLogger(__name__).warning(
                 "DB module unavailable for steam metrics: %s", exc
             )
@@ -1237,8 +1227,11 @@ class MasterBot(commands.Bot):
         if to_unload:
             logging.info(f"Unloading {len(to_unload)} cogs with timeout {self.per_cog_unload_timeout:.1f}s each ...")
             _ = await self.unload_many(to_unload, timeout=self.per_cog_unload_timeout)
+        
+        # 2) Rename Queue Task abbrechen
+        # Removed: Rename logic is in Cog now
 
-        # 2) discord.Client.close() mit Timeout schützen
+        # 3) discord.Client.close() mit Timeout schützen
         try:
             timeout = float(os.getenv("DISCORD_CLOSE_TIMEOUT", "5"))
         except ValueError:
@@ -1618,7 +1611,7 @@ async def main():
     except Exception as e:
         logging.getLogger().debug("Signal-Handler Registrierung teilweise fehlgeschlagen (OS?): %r", e)
 
-    token = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
+    token = settings.discord_token.get_secret_value()
     if not token:
         raise SystemExit("DISCORD_TOKEN fehlt in ENV/.env")
 

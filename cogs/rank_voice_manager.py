@@ -1,15 +1,15 @@
 import asyncio
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Dict, Tuple, List, Optional, Set
 
-import aiosqlite
 import discord
 from discord.ext import commands
 
+from service import db
 from service.db import db_path
+from service.config import settings
 
 try:
     from cogs.tempvoice.core import MINRANK_CATEGORY_IDS
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 class RolePermissionVoiceManager(commands.Cog):
     """Rollen-basierte Sprachkanal-Verwaltung über Discord-Rollen-Berechtigungen
-    Persistenz (Toggle & Anker) über zentrale DB (aiosqlite / DB_PATH).
+    Persistenz (Toggle & Anker) über zentrale DB (service.db).
     """
 
     def __init__(self, bot):
@@ -92,15 +92,8 @@ class RolePermissionVoiceManager(commands.Cog):
         # Nach Initial-Setup dürfen Permissions manuell angepasst werden
         self.channel_permissions_initialized: Set[int] = set()
 
-        # DB
-        self.db: Optional[aiosqlite.Connection] = None
         # Rename throttle
-        interval_raw = os.getenv("RANK_VOICE_RENAME_INTERVAL_SECONDS", "360")
-        try:
-            interval_val = int(interval_raw)
-        except ValueError:
-            interval_val = 360
-        self._channel_rename_interval = max(60, interval_val)
+        self._channel_rename_interval = max(60, settings.rank_vs_rename_cooldown_seconds)
         self._last_channel_rename: Dict[int, float] = {}
         self._pending_channel_renames: Dict[int, str] = {}
         self._rename_tasks: Dict[int, asyncio.Task] = {}
@@ -119,16 +112,9 @@ class RolePermissionVoiceManager(commands.Cog):
 
     # -------------------- DB Layer --------------------
 
-    async def _db_connect(self):
-        if self.db:
-            return
-        self.db = await aiosqlite.connect(str(DB_PATH))
-        self.db.row_factory = aiosqlite.Row
-        await self._db_ensure_schema()
-
     async def _db_ensure_schema(self):
-        assert self.db
-        await self.db.execute(
+        # NOTE: Using central DB connection (autocommit)
+        await db.execute_async(
             """
             CREATE TABLE IF NOT EXISTS voice_channel_settings (
                 channel_id  INTEGER PRIMARY KEY,
@@ -139,7 +125,7 @@ class RolePermissionVoiceManager(commands.Cog):
             )
             """
         )
-        await self.db.execute(
+        await db.execute_async(
             """
             CREATE TABLE IF NOT EXISTS voice_channel_anchors (
                 channel_id   INTEGER PRIMARY KEY,
@@ -154,31 +140,27 @@ class RolePermissionVoiceManager(commands.Cog):
             )
             """
         )
-        await self.db.commit()
 
     async def _db_load_state_for_guild(self, guild: discord.Guild):
         """Lädt Settings & Anker der Gilde in die In-Memory-Maps."""
-        await self._db_connect()
-        assert self.db
+        await self._db_ensure_schema()
 
         # Settings
-        cur = await self.db.execute(
+        rows = await db.query_all_async(
             "SELECT channel_id, enabled FROM voice_channel_settings WHERE guild_id=?",
             (guild.id,),
         )
-        rows = await cur.fetchall()
         for r in rows:
             self.channel_settings[int(r["channel_id"])] = {"enabled": bool(r["enabled"])}
 
         # Anchors
-        cur = await self.db.execute(
+        rows = await db.query_all_async(
             """
             SELECT channel_id, user_id, rank_name, rank_value, allowed_min, allowed_max
             FROM voice_channel_anchors WHERE guild_id=?
             """,
             (guild.id,),
         )
-        rows = await cur.fetchall()
         for r in rows:
             self.channel_anchors[int(r["channel_id"])] = (
                 int(r["user_id"]),
@@ -189,9 +171,7 @@ class RolePermissionVoiceManager(commands.Cog):
             )
 
     async def _db_upsert_setting(self, channel: discord.VoiceChannel, enabled: bool):
-        await self._db_connect()
-        assert self.db
-        await self.db.execute(
+        await db.execute_async(
             """
             INSERT INTO voice_channel_settings(channel_id, guild_id, enabled)
             VALUES (?, ?, ?)
@@ -201,7 +181,6 @@ class RolePermissionVoiceManager(commands.Cog):
             """,
             (channel.id, channel.guild.id, int(enabled)),
         )
-        await self.db.commit()
 
     async def _db_upsert_anchor(
         self,
@@ -212,9 +191,7 @@ class RolePermissionVoiceManager(commands.Cog):
         allowed_min: int,
         allowed_max: int,
     ):
-        await self._db_connect()
-        assert self.db
-        await self.db.execute(
+        await db.execute_async(
             """
             INSERT INTO voice_channel_anchors(channel_id, guild_id, user_id, rank_name, rank_value, allowed_min, allowed_max)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -236,32 +213,26 @@ class RolePermissionVoiceManager(commands.Cog):
                 allowed_max,
             ),
         )
-        await self.db.commit()
 
     async def _db_delete_anchor(self, channel: discord.VoiceChannel):
-        await self._db_connect()
-        assert self.db
-        await self.db.execute(
+        await db.execute_async(
             "DELETE FROM voice_channel_anchors WHERE channel_id=?", (channel.id,)
         )
-        await self.db.commit()
 
     # -------------------- Lifecycle --------------------
 
     async def cog_load(self):
         try:
-            await self._db_connect()
             # Bei Start für alle bekannten Guilds laden
             for guild in self.bot.guilds:
                 await self._db_load_state_for_guild(guild)
 
-            logger.info("RolePermissionVoiceManager Cog erfolgreich geladen")
-            print("✅ RolePermissionVoiceManager Cog geladen")
+            logger.info("RolePermissionVoiceManager Cog geladen")
             monitored_list = ", ".join(str(cid) for cid in self.monitored_categories.keys())
-            print(f"   Überwachte Kategorien: {monitored_list}")
-            print(f"   Überwachte Rollen: {len(self.discord_rank_roles)}")
-            print(f"   Ausgeschlossene Kanäle: {len(self.excluded_channel_ids)}")
-            print("   🔧 Persistenz: zentrale DB (Settings & Anker)")
+            logger.info(f"   Überwachte Kategorien: {monitored_list}")
+            logger.info(f"   Überwachte Rollen: {len(self.discord_rank_roles)}")
+            logger.info(f"   Ausgeschlossene Kanäle: {len(self.excluded_channel_ids)}")
+            logger.info("   🔧 Persistenz: zentrale DB (Settings & Anker)")
         except Exception as e:
             logger.error(f"Fehler beim Laden des RolePermissionVoiceManager Cogs: {e}")
             raise
@@ -279,10 +250,7 @@ class RolePermissionVoiceManager(commands.Cog):
                     logger.debug("Failed to cancel rename task: %s", exc, exc_info=True)
             self._rename_tasks.clear()
             self._pending_channel_renames.clear()
-            if self.db:
-                await self.db.close()
-            logger.info("RolePermissionVoiceManager Cog erfolgreich entladen")
-            print("✅ RolePermissionVoiceManager Cog entladen")
+            logger.info("RolePermissionVoiceManager Cog entladen")
         except Exception as e:
             logger.error(f"Fehler beim Entladen des RolePermissionVoiceManager Cogs: {e}")
 
@@ -536,7 +504,7 @@ class RolePermissionVoiceManager(commands.Cog):
                 pending_task.cancel()
             self._pending_channel_renames.pop(channel.id, None)
 
-            await channel.edit(name=new_name)
+            await self.bot.queue_channel_rename(channel.id, new_name, reason="Rank Voice Manager Rename")
             self._last_channel_rename[channel.id] = now
         except discord.NotFound:
             return
@@ -564,7 +532,7 @@ class RolePermissionVoiceManager(commands.Cog):
                     return
                 if not await self.channel_exists(channel):
                     return
-                await channel.edit(name=latest_name)
+                await self.bot.queue_channel_rename(channel.id, latest_name, reason="Rank Voice Manager Delayed Rename")
                 self._last_channel_rename[channel.id] = time.monotonic()
             except asyncio.CancelledError:
                 raise

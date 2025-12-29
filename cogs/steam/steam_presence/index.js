@@ -25,17 +25,60 @@ const os = require('os');
 const path = require('path');
 const https = require('https');
 const { URL } = require('url');
+const protobuf = require('protobufjs');
 const SteamUser = require('steam-user');
 const Database = require('better-sqlite3');
 const { QuickInvites } = require('./quick_invites');
 const { StatusAnzeige } = require('./statusanzeige');
 const { DeadlockGcBot } = require('./deadlock_gc_bot');
+const { GcBuildSearch, GC_MSG_FIND_HERO_BUILDS_RESPONSE } = require('./gc_build_search');
+const { BuildCatalogManager } = require('./build_catalog_manager');
 const {
   DEADLOCK_GC_PROTOCOL_OVERRIDE_PATH,
   getHelloPayloadOverride,
   getPlaytestOverrides,
   getOverrideInfo: getGcOverrideInfo,
 } = require('./deadlock_gc_protocol');
+
+function convertKeysToCamelCase(obj) {
+    if (Array.isArray(obj)) {
+        return obj.map(v => convertKeysToCamelCase(v));
+    } else if (obj !== null && obj.constructor === Object) {
+        return Object.keys(obj).reduce((result, key) => {
+            const camelCaseKey = key.replace(/_([a-z])/g, g => g[1].toUpperCase());
+            result[camelCaseKey] = convertKeysToCamelCase(obj[key]);
+            return result;
+        }, {});
+    }
+    return obj;
+}
+
+async function getPersonaName(accountId) {
+    if (!client || !accountId) return String(accountId);
+
+    try {
+        const steamId = SteamID.fromIndividualAccountID(accountId);
+        const steamId64 = steamId.getSteamID64();
+
+        // Check cache first
+        if (client.users && client.users[steamId64]) {
+            return client.users[steamId64].player_name || String(accountId);
+        }
+
+        // Fetch from network if not in cache
+        if (typeof client.getPersonas === 'function') {
+            const personas = await client.getPersonas([steamId]);
+            const persona = personas[steamId64];
+            if (persona && persona.player_name) {
+                return persona.player_name;
+            }
+        }
+    } catch (err) {
+        log('warn', 'Failed to get persona name', { accountId, error: err.message });
+    }
+
+    return String(accountId); // Fallback to ID
+}
 
 let SteamID = null;
 if (SteamUser && SteamUser.SteamID) {
@@ -63,6 +106,8 @@ function getWorkingAppId() {
 const PROTO_MASK = SteamUser.GCMsgProtoBuf || 0x80000000;
 const GC_MSG_CLIENT_HELLO = 4006;
 const GC_MSG_CLIENT_WELCOME = 4004;
+const GC_MSG_CLIENT_TO_GC_UPDATE_HERO_BUILD = 9193;
+const GC_MSG_CLIENT_TO_GC_UPDATE_HERO_BUILD_RESPONSE = 9194;
 
 // Multiple potential message IDs to try (Deadlock's actual IDs may have changed)
 const DEFAULT_PLAYTEST_MSG_IDS = [
@@ -125,12 +170,16 @@ const WEB_API_HTTP_TIMEOUT_MS = Math.max(
     : 12000
 );
 
+// NOTE: External Deadlock API removed - now using In-Game GC for build discovery
+
 // ---------- Logging ----------
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
 const LOG_THRESHOLD = Object.prototype.hasOwnProperty.call(LOG_LEVELS, LOG_LEVEL)
   ? LOG_LEVELS[LOG_LEVEL]
   : LOG_LEVELS.info;
+
+const STEAM_LOG_FILE = path.join(__dirname, '..', '..', '..', 'logs', 'steam_bridge.log');
 
 function log(level, message, extra = undefined) {
   const lvl = LOG_LEVELS[level];
@@ -142,7 +191,19 @@ function log(level, message, extra = undefined) {
       payload[key] = value;
     }
   }
-  console.log(JSON.stringify(payload));
+  const line = JSON.stringify(payload) + '\n';
+  // Ignore EPIPE errors when parent process closes stdout
+  try {
+    console.log(JSON.stringify(payload));
+  } catch (err) {
+    // Ignore broken pipe errors (EPIPE)
+  }
+  // Also write to file
+  try {
+    fs.appendFileSync(STEAM_LOG_FILE, line, 'utf8');
+  } catch (err) {
+    // Ignore file write errors
+  }
 }
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -344,6 +405,9 @@ function httpGetJson(url, timeoutMs = WEB_API_HTTP_TIMEOUT_MS) {
   });
 }
 
+// NOTE: sendFindBuildsRequest and upsertBuildsToDatabase removed
+// Build discovery now uses GC via BuildCatalogManager
+
 async function loadWebApiFriendIds(force = false) {
   if (!STEAM_WEB_API_KEY) {
     if (!webApiFriendCacheWarned) {
@@ -509,11 +573,268 @@ function safeJsonParse(value) {
   try { return JSON.parse(value); }
   catch (err) { throw new Error(`Invalid JSON payload: ${err.message}`); }
 }
-function truncateError(message, limit = 1500) {
-  if (!message) return null;
-  const text = String(message);
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit - 3)}...`;
+function safeNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function cleanBuildDetails(details) {
+  if (!details || typeof details !== 'object') {
+    // Return valid Details_V0 structure with empty arrays
+    return { mod_categories: [] };
+  }
+  const clone = JSON.parse(JSON.stringify(details));
+
+  // Ensure mod_categories exists and is an array
+  if (!Array.isArray(clone.mod_categories)) {
+    clone.mod_categories = [];
+  } else {
+    clone.mod_categories = clone.mod_categories.map((cat) => {
+      const c = { ...cat };
+      if (Array.isArray(c.mods)) {
+        c.mods = c.mods.map((m) => {
+          const mm = { ...m };
+          Object.keys(mm).forEach((k) => { if (mm[k] === null) delete mm[k]; });
+          return mm;
+        });
+      }
+      Object.keys(c).forEach((k) => { if (c[k] === null) delete c[k]; });
+      return c;
+    });
+  }
+
+  if (clone.ability_order && Array.isArray(clone.ability_order.currency_changes)) {
+    clone.ability_order.currency_changes = clone.ability_order.currency_changes.map((cc) => {
+      const obj = { ...cc };
+      Object.keys(obj).forEach((k) => { if (obj[k] === null) delete obj[k]; });
+      return obj;
+    });
+  }
+  return clone;
+}
+
+function composeBuildDescription(base, originId, authorName) {
+  const parts = [];
+  const desc = (base || '').trim();
+  if (desc) parts.push(desc);
+  parts.push('www.twitch.tv/earlysalty (deutsch)');
+  parts.push('Deutsche Deadlock Community: discord.gg/XmnqMbUZ7Z');
+  if (originId) parts.push(`Original Build ID: ${originId}`);
+  if (authorName) parts.push(`Original Author: ${authorName}`);
+  return parts.join('\n');
+}
+
+async function buildUpdateHeroBuild(row, meta = {}) {
+  const tags = safeJsonParse(row.tags_json || '[]');
+  const details = cleanBuildDetails(safeJsonParse(row.details_json || '{}'));
+  const targetName = meta.target_name || row.name || '';
+  const targetDescription = meta.target_description || row.description || '';
+  const targetLanguage = safeNumber(meta.target_language) ?? safeNumber(row.language) ?? 0;
+  const authorId = safeNumber(meta.author_account_id) ?? safeNumber(row.author_account_id);
+  const nowTs = Math.floor(Date.now() / 1000);
+  const baseVersion = safeNumber(row.version) || 1;
+  const originId = safeNumber(meta.origin_build_id) ?? safeNumber(row.origin_build_id) ?? safeNumber(row.hero_build_id);
+
+  const originalAuthorName = await getPersonaName(safeNumber(row.author_account_id));
+
+  return {
+    hero_build_id: safeNumber(row.hero_build_id),
+    hero_id: safeNumber(row.hero_id),
+    author_account_id: authorId,
+    origin_build_id: originId,
+    last_updated_timestamp: nowTs,
+    publish_timestamp: nowTs,
+    name: targetName,
+    description: composeBuildDescription(targetDescription, originId, originalAuthorName),
+    language: targetLanguage,
+    version: baseVersion + 1,
+    tags: Array.isArray(tags) ? tags.map((t) => Number(t)) : [],
+    details: details && typeof details === 'object' ? details : {},
+  };
+}
+
+async function buildMinimalHeroBuild(row, meta = {}) {
+  log('info', 'buildMinimalHeroBuild: FIXED VERSION v2 - Creating minimal build');
+  const targetName = meta.target_name || row.name || '';
+  const targetDescription = meta.target_description || row.description || '';
+  const targetLanguage = safeNumber(meta.target_language) ?? 0;
+  const authorId = safeNumber(meta.author_account_id) ?? safeNumber(row.author_account_id);
+
+  const originalAuthorName = await getPersonaName(safeNumber(row.author_account_id));
+
+  const result = {
+    hero_id: safeNumber(row.hero_id),
+    author_account_id: authorId,
+    origin_build_id: undefined,
+    last_updated_timestamp: undefined,
+    name: targetName,
+    description: composeBuildDescription(targetDescription, row.hero_build_id, originalAuthorName),
+    language: targetLanguage,
+    version: 1,
+    tags: [],
+    details: { mod_categories: [] },
+    publish_timestamp: undefined,
+  };
+  log('info', 'buildMinimalHeroBuild: Result details', {
+    detailsType: typeof result.details,
+    detailsKeys: Object.keys(result.details),
+    modCategoriesIsArray: Array.isArray(result.details.mod_categories),
+    modCategoriesLength: result.details.mod_categories.length
+  });
+  return result;
+}
+
+async function mapHeroBuildFromRow(row, meta = {}) {
+  if (!row) throw new Error('hero_build_sources row missing');
+  const tags = safeJsonParse(row.tags_json || '[]');
+  const details = cleanBuildDetails(safeJsonParse(row.details_json || '{}'));
+  const targetName = meta.target_name || row.name || '';
+  const targetDescription = meta.target_description || row.description || '';
+  const targetLanguage = safeNumber(meta.target_language) ?? safeNumber(row.language) ?? 0;
+  const publisherAccountId = safeNumber(meta.author_account_id) ?? safeNumber(row.author_account_id);
+  const nowTs = Math.floor(Date.now() / 1000);
+
+  const originalAuthorName = await getPersonaName(safeNumber(row.author_account_id));
+
+  return {
+    hero_id: safeNumber(row.hero_id),
+    author_account_id: publisherAccountId,
+    origin_build_id: safeNumber(meta.origin_build_id) ?? safeNumber(row.hero_build_id) ?? safeNumber(row.origin_build_id),
+    last_updated_timestamp: nowTs,
+    publish_timestamp: nowTs,
+    name: targetName,
+    description: composeBuildDescription(targetDescription, meta.origin_build_id ?? row.hero_build_id, originalAuthorName),
+    language: targetLanguage,
+    version: (safeNumber(row.version) || 0) + 1,
+    tags: Array.isArray(tags) ? tags.map((t) => Number(t)) : [],
+    details: details && typeof details === 'object' ? details : {},
+  };
+}
+
+async function sendHeroBuildUpdate(heroBuild) {
+  await loadHeroBuildProto();
+  if (!heroBuild || typeof heroBuild !== 'object') throw new Error('heroBuild payload missing');
+
+  log('info', 'sendHeroBuildUpdate: Creating message', {
+    heroBuild: JSON.stringify(heroBuild),
+    heroBuildKeys: Object.keys(heroBuild)
+  });
+
+  // Remove undefined fields - protobuf doesn't like them!
+  const cleanedHeroBuild = {};
+  for (const key in heroBuild) {
+    if (heroBuild[key] !== undefined) {
+      cleanedHeroBuild[key] = heroBuild[key];
+    }
+  }
+
+  log('info', 'sendHeroBuildUpdate: Cleaned heroBuild', {
+    cleanedKeys: Object.keys(cleanedHeroBuild),
+    removedKeys: Object.keys(heroBuild).filter(k => heroBuild[k] === undefined)
+  });
+
+  // CRITICAL: Create a proper CMsgHeroBuild message first!
+  // Passing a plain JS object to UpdateMsg.create() results in an empty payload.
+  // ALSO CRITICAL: The field name is 'heroBuild' (camelCase), not 'hero_build'!
+  // Protobufjs converts snake_case to camelCase automatically.
+  log('info', 'sendHeroBuildUpdate: About to create HeroBuildMsg', {
+    cleanedHeroBuild: JSON.stringify(cleanedHeroBuild),
+    detailsType: typeof cleanedHeroBuild.details,
+    detailsKeys: cleanedHeroBuild.details ? Object.keys(cleanedHeroBuild.details) : 'null/undefined',
+    modCategoriesIsArray: Array.isArray(cleanedHeroBuild.details?.mod_categories)
+  });
+
+  let heroBuildMsg, message;
+  try {
+    const camelCaseHeroBuild = convertKeysToCamelCase(cleanedHeroBuild);
+    heroBuildMsg = HeroBuildMsg.create(camelCaseHeroBuild);
+  } catch (err) {
+    log('error', 'sendHeroBuildUpdate: HeroBuildMsg.create() failed', {
+      error: err.message,
+      stack: err.stack,
+      cleanedHeroBuild: JSON.stringify(cleanedHeroBuild)
+    });
+    throw new Error(`HeroBuildMsg.create failed: ${err.message}`);
+  }
+
+  try {
+    message = UpdateHeroBuildMsg.create({ heroBuild: heroBuildMsg });
+    log('info', 'sendHeroBuildUpdate: UpdateHeroBuildMsg created successfully');
+  } catch (err) {
+    log('error', 'sendHeroBuildUpdate: UpdateHeroBuildMsg.create() failed', {
+      error: err.message,
+      stack: err.stack
+    });
+    throw new Error(`UpdateHeroBuildMsg.create failed: ${err.message}`);
+  }
+
+  log('info', 'sendHeroBuildUpdate: Message created', {
+    message: JSON.stringify(message),
+    messageKeys: Object.keys(message)
+  });
+
+  let payload;
+  try {
+    log('info', 'sendHeroBuildUpdate: About to encode message');
+    payload = UpdateHeroBuildMsg.encode(message).finish();
+    log('info', 'sendHeroBuildUpdate: Payload encoded successfully', {
+      payloadType: typeof payload,
+      payloadIsBuffer: Buffer.isBuffer(payload),
+      payloadLength: payload ? payload.length : 'null/undefined'
+    });
+  } catch (err) {
+    log('error', 'sendHeroBuildUpdate: encode().finish() failed', {
+      error: err.message,
+      stack: err.stack,
+      message: JSON.stringify(message)
+    });
+    throw new Error(`Protobuf encoding failed: ${err.message}`);
+  }
+
+  // Validate payload before using it
+  if (!payload || !Buffer.isBuffer(payload)) {
+    throw new Error(`Invalid payload after encoding: type=${typeof payload}, isBuffer=${Buffer.isBuffer(payload)}`);
+  }
+  if (payload.length === 0) {
+    throw new Error('Encoded payload is empty - this indicates a protobuf encoding issue');
+  }
+
+  return new Promise((resolve, reject) => {
+    if (heroBuildPublishWaiter) {
+      reject(new Error('Another hero build publish is in flight'));
+      return;
+    }
+    const timeout = setTimeout(() => {
+      heroBuildPublishWaiter = null;
+      reject(new Error('Timed out waiting for build publish response'));
+    }, 20000);
+    heroBuildPublishWaiter = {
+      resolve: (resp) => { clearTimeout(timeout); heroBuildPublishWaiter = null; resolve(resp); },
+      reject: (err) => { clearTimeout(timeout); heroBuildPublishWaiter = null; reject(err); },
+    };
+    writeDeadlockGcTrace('send_update_hero_build', {
+      heroId: heroBuild.hero_id,
+      language: heroBuild.language,
+      name: heroBuild.name,
+      mode: heroBuild.hero_build_id ? 'update' : 'new',
+      version: heroBuild.version,
+      origin_build_id: heroBuild.origin_build_id,
+      author: heroBuild.author_account_id,
+      payloadHex: payload.toString('hex'),
+    });
+    log('info', 'Sending UpdateHeroBuild', {
+      payloadHex: payload.toString('hex').slice(0, 200),
+      payloadLength: payload.length,
+      heroId: heroBuild.hero_id,
+      language: heroBuild.language,
+      name: heroBuild.name,
+      mode: heroBuild.hero_build_id ? 'update' : 'new',
+      version: heroBuild.version,
+      origin_build_id: heroBuild.origin_build_id,
+      author: heroBuild.author_account_id,
+    });
+    client.sendToGC(DEADLOCK_APP_ID, PROTO_MASK | GC_MSG_CLIENT_TO_GC_UPDATE_HERO_BUILD, {}, payload);
+  });
 }
 function wrapOk(result) {
   if (result && typeof result === 'object' && Object.prototype.hasOwnProperty.call(result, 'ok')) {
@@ -539,6 +860,9 @@ const COMMAND_BOT_KEY = 'steam';
 const COMMAND_POLL_INTERVAL_MS = parseInt(process.env.STEAM_COMMAND_POLL_MS || '2000', 10);
 const STATE_PUBLISH_INTERVAL_MS = parseInt(process.env.STEAM_STATE_PUBLISH_MS || '15000', 10);
 const DB_BUSY_TIMEOUT_MS = Math.max(5000, parseInt(process.env.DEADLOCK_DB_BUSY_TIMEOUT_MS || '15000', 10));
+const FRIEND_SYNC_INTERVAL_MS = Math.max(60000, parseInt(process.env.STEAM_FRIEND_SYNC_MS || '300000', 10));
+const FRIEND_REQUEST_BATCH_SIZE = Math.max(1, parseInt(process.env.STEAM_FRIEND_REQUEST_BATCH || '10', 10));
+const FRIEND_REQUEST_RETRY_SECONDS = Math.max(60, parseInt(process.env.STEAM_FRIEND_REQUEST_RETRY_SEC || '900', 10));
 
 const dbPath = resolveDbPath();
 ensureDir(path.dirname(dbPath));
@@ -548,6 +872,20 @@ db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 db.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
 
+// ---------- Protobuf (Hero Builds) ----------
+const HERO_BUILD_PROTO_PATH = path.join(__dirname, 'protos', 'hero_build.proto');
+let heroBuildRoot = null;
+let HeroBuildMsg = null;
+let UpdateHeroBuildMsg = null;
+let UpdateHeroBuildResponseMsg = null;
+
+async function loadHeroBuildProto() {
+  if (heroBuildRoot) return;
+  heroBuildRoot = await protobuf.load(HERO_BUILD_PROTO_PATH);
+  HeroBuildMsg = heroBuildRoot.lookupType('CMsgHeroBuild');
+  UpdateHeroBuildMsg = heroBuildRoot.lookupType('CMsgClientToGCUpdateHeroBuild');
+  UpdateHeroBuildResponseMsg = heroBuildRoot.lookupType('CMsgClientToGCUpdateHeroBuildResponse');
+}
 // ---------- Tasks Table ----------
 db.prepare(`
   CREATE TABLE IF NOT EXISTS steam_tasks (
@@ -567,6 +905,33 @@ db.prepare(`
 db.prepare(`CREATE INDEX IF NOT EXISTS idx_steam_tasks_status ON steam_tasks(status, id)`).run();
 db.prepare(`CREATE INDEX IF NOT EXISTS idx_steam_tasks_updated ON steam_tasks(updated_at)`).run();
 
+// Steam links + friend requests (keeps DB in sync with actual Steam friends)
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS steam_links(
+    user_id    INTEGER NOT NULL,
+    steam_id   TEXT    NOT NULL,
+    name       TEXT,
+    verified   INTEGER DEFAULT 0,
+    primary_account INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(user_id, steam_id)
+  )
+`).run();
+db.prepare(`CREATE INDEX IF NOT EXISTS idx_steam_links_user ON steam_links(user_id)`).run();
+db.prepare(`CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)`).run();
+
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS steam_friend_requests(
+    steam_id TEXT PRIMARY KEY,
+    status TEXT DEFAULT 'pending',
+    requested_at INTEGER DEFAULT (strftime('%s','now')),
+    last_attempt INTEGER,
+    attempts INTEGER DEFAULT 0,
+    error TEXT
+  )
+`).run();
+
 const selectPendingTaskStmt = db.prepare(`
   SELECT id, type, payload FROM steam_tasks
   WHERE status = 'PENDING'
@@ -580,6 +945,13 @@ const markTaskRunningStmt = db.prepare(`
          updated_at = ?
    WHERE id = ? AND status = 'PENDING'
 `);
+const resetTaskPendingStmt = db.prepare(`
+  UPDATE steam_tasks
+     SET status = 'PENDING',
+         started_at = NULL,
+         updated_at = ?
+   WHERE id = ?
+`);
 const finishTaskStmt = db.prepare(`
   UPDATE steam_tasks
      SET status = ?,
@@ -589,6 +961,38 @@ const finishTaskStmt = db.prepare(`
          updated_at = ?
    WHERE id = ?
 `);
+
+const selectHeroBuildSourceStmt = db.prepare(`
+  SELECT * FROM hero_build_sources WHERE hero_build_id = ?
+`);
+const selectHeroBuildCloneMetaStmt = db.prepare(`
+  SELECT target_name, target_description, target_language
+    FROM hero_build_clones
+   WHERE origin_hero_build_id = ?
+`);
+
+const upsertHeroBuildSourceStmt = db.prepare(`
+  INSERT INTO hero_build_sources (
+    hero_build_id, origin_build_id, author_account_id, hero_id, language, version,
+    name, description, tags_json, details_json, publish_ts, last_updated_ts,
+    fetched_at, last_seen_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(hero_build_id) DO UPDATE SET
+    origin_build_id = excluded.origin_build_id,
+    author_account_id = excluded.author_account_id,
+    hero_id = excluded.hero_id,
+    language = excluded.language,
+    version = excluded.version,
+    name = excluded.name,
+    description = excluded.description,
+    tags_json = excluded.tags_json,
+    details_json = excluded.details_json,
+    publish_ts = excluded.publish_ts,
+    last_updated_ts = excluded.last_updated_ts,
+    last_seen_at = excluded.last_seen_at
+`);
+
+// NOTE: selectWatchedAuthorsStmt and updateWatchedAuthorMetadataStmt moved to BuildCatalogManager
 
 // ---------- Standalone Dashboard Tables ----------
 db.prepare(`
@@ -651,6 +1055,17 @@ const upsertStandaloneStateStmt = db.prepare(`
     payload = excluded.payload,
     updated_at = CURRENT_TIMESTAMP
 `);
+const updateHeroBuildCloneUploadedStmt = db.prepare(`
+  UPDATE hero_build_clones
+     SET status = ?,
+         status_info = ?,
+         uploaded_build_id = ?,
+         uploaded_version = ?,
+         updated_at = strftime('%s','now')
+   WHERE origin_hero_build_id = ?
+`);
+
+// NOTE: insertHeroBuildCloneStmt moved to BuildCatalogManager
 
 const quickInviteCountsStmt = db.prepare(`
   SELECT status, COUNT(*) AS count
@@ -680,6 +1095,52 @@ const steamTaskRecentStmt = db.prepare(`
 ORDER BY updated_at DESC
    LIMIT 10
 `);
+const steamLinksForSyncStmt = db.prepare(`
+  SELECT steam_id, user_id, verified
+    FROM steam_links
+   WHERE steam_id IS NOT NULL
+     AND steam_id != ''
+`);
+const upsertPendingFriendRequestStmt = db.prepare(`
+  INSERT INTO steam_friend_requests(steam_id, status)
+  VALUES(?, 'pending')
+  ON CONFLICT(steam_id) DO UPDATE SET
+    status='pending',
+    last_attempt=CASE WHEN steam_friend_requests.status='sent' THEN NULL ELSE steam_friend_requests.last_attempt END,
+    attempts=CASE WHEN steam_friend_requests.status='sent' THEN 0 ELSE COALESCE(steam_friend_requests.attempts, 0) END,
+    error=NULL,
+    requested_at=CASE WHEN steam_friend_requests.status='sent' THEN strftime('%s','now') ELSE steam_friend_requests.requested_at END
+`);
+const selectFriendRequestBatchStmt = db.prepare(`
+  SELECT steam_id, status, attempts, last_attempt
+    FROM steam_friend_requests
+   WHERE status != 'sent'
+ORDER BY COALESCE(last_attempt, 0) ASC
+   LIMIT ?
+`);
+const markFriendRequestSentStmt = db.prepare(`
+  UPDATE steam_friend_requests
+     SET status='sent',
+         last_attempt=?,
+         attempts=COALESCE(attempts,0)+1,
+         error=NULL
+   WHERE steam_id=?
+`);
+const markFriendRequestFailedStmt = db.prepare(`
+  UPDATE steam_friend_requests
+     SET status='pending',
+         last_attempt=?,
+         attempts=COALESCE(attempts,0)+1,
+         error=?
+   WHERE steam_id=?
+`);
+const upsertFriendSteamLinkStmt = db.prepare(`
+  INSERT INTO steam_links(user_id, steam_id, name, verified)
+  VALUES(0, ?, '', 1)
+  ON CONFLICT(user_id, steam_id) DO UPDATE SET
+    verified=1,
+    updated_at=CURRENT_TIMESTAMP
+`);
 
 // ---------- Steam State ----------
 let refreshToken = readToken(REFRESH_TOKEN_PATH);
@@ -700,6 +1161,7 @@ const runtimeState = {
   last_disconnect_at: null,
   last_disconnect_eresult: null,
   last_guard_submission_at: null,
+  deadlock_gc_ready: false,
 };
 
 let loginInProgress = false;
@@ -717,6 +1179,7 @@ let webApiFriendCacheIds = null;
 let webApiFriendCacheLastLoadedAt = 0;
 let webApiFriendCachePromise = null;
 let webApiFriendCacheWarned = false;
+let friendSyncInProgress = false;
 
 // ---------- Steam Client ----------
 const client = new SteamUser();
@@ -727,8 +1190,20 @@ const deadlockGcBot = new DeadlockGcBot({
   requestTokens: (reason) => requestDeadlockGcTokens(reason || 'deadlock_gc_bot'),
   getTokenCount: () => getDeadlockGcTokenCount(),
 });
+const gcBuildSearch = new GcBuildSearch({
+  client,
+  log: (level, msg, extra) => log(level, msg, extra),
+  trace: writeDeadlockGcTrace,
+  db,
+  appId: DEADLOCK_APP_ID,
+});
+// BuildCatalogManager needs gcBuildSearch and getPersonaName (defined later)
+// Initialize after all dependencies are ready
+let buildCatalogManager = null;
 let gcTokenRequestInFlight = false;
 let lastLoggedGcTokenCount = 0;
+let heroBuildPublishWaiter = null;
+
 client.setOption('autoRelogin', false);
 client.setOption('machineName', process.env.STEAM_MACHINE_NAME || 'DeadlockBridge');
 
@@ -755,6 +1230,16 @@ log('info', 'Statusanzeige initialisiert', {
   pollIntervalMs: statusAnzeige.pollIntervalMs,
 });
 statusAnzeige.start();
+
+// Initialize BuildCatalogManager (after getPersonaName is available)
+buildCatalogManager = new BuildCatalogManager({
+  db,
+  gcBuildSearch,
+  log: (level, msg, extra) => log(level, msg, extra),
+  trace: writeDeadlockGcTrace,
+  getPersonaName: async (accountId) => getPersonaName(accountId),
+});
+log('info', 'BuildCatalogManager initialisiert');
 
 // ---------- Helpers ----------
 function updateRefreshToken(token) {
@@ -818,6 +1303,8 @@ function ensureDeadlockGamePlaying(force = false) {
     
     if (!previouslyActive) {
       deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
+      runtimeState.deadlock_gc_ready = false;
       // Give Steam more time to process the gamesPlayed request
       setTimeout(() => {
         log('debug', 'Initiating GC handshake after game start');
@@ -928,6 +1415,8 @@ function flushDeadlockGcWaiters(error) {
 
 function notifyDeadlockGcReady() {
   deadlockGcReady = true;
+  runtimeState.deadlock_gc_ready = true;
+  scheduleStatePublish({ reason: 'gc_ready' });
   writeDeadlockGcTrace('gc_ready', { waiters: deadlockGcWaiters.length });
   while (deadlockGcWaiters.length) {
     const waiter = deadlockGcWaiters.shift();
@@ -1041,6 +1530,8 @@ async function waitForDeadlockGcReady(timeoutMs = DEFAULT_GC_READY_TIMEOUT_MS, o
     } catch (err) {
       lastError = err || new Error('Deadlock GC not ready');
       deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
+      runtimeState.deadlock_gc_ready = false;
       
       // Log more detailed error information
       log('warn', 'Deadlock GC attempt failed', {
@@ -1064,6 +1555,8 @@ async function waitForDeadlockGcReady(timeoutMs = DEFAULT_GC_READY_TIMEOUT_MS, o
       // Force a complete reset before retrying
       deadlockAppActive = false;
       deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
+      runtimeState.deadlock_gc_ready = false;
       flushDeadlockGcWaiters(new Error('Retry attempt'));
       
       await sleep(GC_READY_RETRY_DELAY_MS);
@@ -1163,6 +1656,186 @@ function sendFriendRequest(steamId) {
       reject(err);
     }
   });
+}
+
+function normalizeSteamId64(value) {
+  if (!value) return null;
+  const sid = String(value).trim();
+  if (!sid) return null;
+  if (!/^\d{5,}$/.test(sid)) return null;
+  return sid;
+}
+
+function queueFriendRequestForId(steamId64) {
+  const sid = normalizeSteamId64(steamId64);
+  if (!sid) return false;
+  try {
+    upsertPendingFriendRequestStmt.run(sid);
+    return true;
+  } catch (err) {
+    log('warn', 'Failed to queue Steam friend request', {
+      steam_id64: sid,
+      error: err && err.message ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+async function collectKnownFriendIds() {
+  const ids = new Set();
+  const relMap = SteamUser.EFriendRelationship || {};
+  const friendCode = Number(relMap.Friend);
+  let clientCount = 0;
+  let webCount = 0;
+
+  if (client && client.myFriends && Object.keys(client.myFriends).length) {
+    for (const [sid, rel] of Object.entries(client.myFriends)) {
+      if (Number(rel) === friendCode) {
+        const norm = normalizeSteamId64(sid);
+        if (norm) {
+          ids.add(norm);
+          clientCount += 1;
+        }
+      }
+    }
+  }
+
+  try {
+    const webIds = await loadWebApiFriendIds(false);
+    if (webIds && webIds.size) {
+      webIds.forEach((sid) => {
+        const norm = normalizeSteamId64(sid);
+        if (norm) ids.add(norm);
+      });
+      webCount = webIds.size;
+    }
+  } catch (err) {
+    log('debug', 'Friend sync: failed to load WebAPI friend list', { error: err && err.message ? err.message : String(err) });
+  }
+
+  return { ids, clientCount, webCount };
+}
+
+async function processFriendRequestQueue(currentFriends, reason) {
+  const outcome = { sent: 0, failed: 0, skipped: 0 };
+  if (!runtimeState.logged_on) return outcome;
+
+  const rows = selectFriendRequestBatchStmt.all(FRIEND_REQUEST_BATCH_SIZE);
+  const now = nowSeconds();
+
+  for (const row of rows) {
+    const sid = normalizeSteamId64(row.steam_id);
+    if (!sid) continue;
+
+    if (currentFriends && currentFriends.has(sid)) {
+      try {
+        markFriendRequestSentStmt.run(now, sid);
+        outcome.skipped += 1;
+      } catch (err) {
+        log('debug', 'Friend sync: failed to mark existing friend request as sent', {
+          steam_id64: sid,
+          error: err && err.message ? err.message : String(err),
+        });
+      }
+      continue;
+    }
+
+    if (row.last_attempt && now - Number(row.last_attempt) < FRIEND_REQUEST_RETRY_SECONDS) {
+      continue;
+    }
+
+    let parsed;
+    try {
+      parsed = parseSteamID(sid);
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      markFriendRequestFailedStmt.run(now, message, sid);
+      outcome.failed += 1;
+      continue;
+    }
+
+    try {
+      await sendFriendRequest(parsed);
+      markFriendRequestSentStmt.run(now, sid);
+      outcome.sent += 1;
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      markFriendRequestFailedStmt.run(now, message, sid);
+      outcome.failed += 1;
+      log('warn', 'Friend request failed', { steam_id64: sid, error: message, reason });
+    }
+  }
+
+  return outcome;
+}
+
+async function syncFriendsAndLinks(reason = 'interval') {
+  if (friendSyncInProgress) return;
+  if (!runtimeState.logged_on || !client || !client.steamID) return;
+
+  friendSyncInProgress = true;
+  try {
+    const { ids: friendIds, clientCount, webCount } = await collectKnownFriendIds();
+    const ownSid = normalizeSteamId64(
+      runtimeState.steam_id64 ||
+      (client.steamID && typeof client.steamID.getSteamID64 === 'function' ? client.steamID.getSteamID64() : null)
+    );
+    if (ownSid) friendIds.delete(ownSid);
+
+    const dbRows = steamLinksForSyncStmt.all();
+    const dbSteamIds = new Set();
+    let queued = 0;
+
+    for (const row of dbRows) {
+      const sid = normalizeSteamId64(row.steam_id);
+      if (!sid || (ownSid && sid === ownSid)) continue;
+      dbSteamIds.add(sid);
+      if (!friendIds.has(sid)) {
+        if (queueFriendRequestForId(sid)) queued += 1;
+      }
+    }
+
+    let inserted = 0;
+    for (const sid of friendIds) {
+      if (ownSid && sid === ownSid) continue;
+      if (dbSteamIds.has(sid)) continue;
+      try {
+        upsertFriendSteamLinkStmt.run(sid);
+        inserted += 1;
+      } catch (err) {
+        log('warn', 'Failed to persist Steam friend into steam_links', {
+          steam_id64: sid,
+          error: err && err.message ? err.message : String(err),
+        });
+      }
+    }
+
+    const requestOutcome = await processFriendRequestQueue(friendIds, reason);
+
+    if (queued || inserted || requestOutcome.sent || requestOutcome.failed) {
+      log('info', 'Friend/DB sync completed', {
+        reason,
+        queued_requests: queued,
+        inserted_links: inserted,
+        friend_requests_sent: requestOutcome.sent,
+        friend_requests_failed: requestOutcome.failed,
+        friends_known: friendIds.size,
+        links_known: dbSteamIds.size,
+        friend_sources: { client: clientCount, webapi: webCount },
+      });
+    } else {
+      log('debug', 'Friend/DB sync done (no changes)', {
+        reason,
+        friends_known: friendIds.size,
+        links_known: dbSteamIds.size,
+        friend_sources: { client: clientCount, webapi: webCount },
+      });
+    }
+  } catch (err) {
+    log('warn', 'Friend/DB sync failed', { reason, error: err && err.message ? err.message : String(err) });
+  } finally {
+    friendSyncInProgress = false;
+  }
 }
 
 async function sendPlaytestInvite(accountId, location, timeoutMs = DEFAULT_PLAYTEST_INVITE_TIMEOUT_MS, options = {}) {
@@ -1553,6 +2226,7 @@ function getStatusPayload() {
     last_disconnect_at: runtimeState.last_disconnect_at,
     last_disconnect_eresult: runtimeState.last_disconnect_eresult,
     last_guard_submission_at: runtimeState.last_guard_submission_at,
+    deadlock_gc_ready: runtimeState.deadlock_gc_ready,
   };
 }
 
@@ -1797,6 +2471,103 @@ function processNextTask() {
         break;
       }
 
+      case 'BUILD_PUBLISH': {
+        // Check if another build publish is already in progress
+        if (heroBuildPublishWaiter) {
+          log('info', 'Build publish already in progress, requeueing task', { id: task.id });
+          resetTaskPendingStmt.run(nowSeconds(), task.id);
+          break;
+        }
+
+        const promise = (async () => {
+          try {
+            log('info', 'BUILD_PUBLISH: Starting', { task_id: task.id, origin_id: payload?.origin_hero_build_id });
+
+            if (!runtimeState.logged_on) throw new Error('Not logged in');
+
+            log('info', 'BUILD_PUBLISH: Loading proto');
+            await loadHeroBuildProto();
+
+            const originId = payload?.origin_hero_build_id ?? payload?.hero_build_id;
+            if (!originId) throw new Error('origin_hero_build_id missing');
+
+            log('info', 'BUILD_PUBLISH: Fetching build source', { originId });
+            const src = selectHeroBuildSourceStmt.get(originId);
+            if (!src) throw new Error(`hero_build_sources missing for ${originId}`);
+
+            log('info', 'BUILD_PUBLISH: Fetching clone meta', { originId });
+            const cloneMeta = selectHeroBuildCloneMetaStmt.get(originId) || {};
+
+            log('info', 'BUILD_PUBLISH: Building metadata', {
+              cloneMeta: cloneMeta ? Object.keys(cloneMeta) : 'none'
+            });
+            const targetName = payload?.target_name || cloneMeta.target_name;
+            const targetDescription = payload?.target_description || cloneMeta.target_description;
+            const targetLanguage = safeNumber(payload?.target_language) ?? safeNumber(cloneMeta.target_language) ?? 1;
+            const authorAccountId = client?.steamID?.accountid ? Number(client.steamID.accountid) : undefined;
+            const useMinimal = payload?.minimal === true;
+            const useUpdate = payload?.update === true;
+            const minimalUpdate = payload?.minimal_update === true;
+            const meta = {
+                target_name: targetName,
+                target_description: targetDescription,
+                target_language: targetLanguage,
+                author_account_id: useUpdate ? safeNumber(src.author_account_id) : authorAccountId,
+                origin_build_id: src.hero_build_id,
+            };
+            let heroBuild;
+            if (useUpdate) {
+                heroBuild = await buildUpdateHeroBuild(src, meta);
+                if (minimalUpdate) {
+                heroBuild.tags = [];
+                heroBuild.details = { mod_categories: [] };
+                }
+            } else if (useMinimal) {
+                heroBuild = await buildMinimalHeroBuild(src, meta);
+            } else {
+                heroBuild = await mapHeroBuildFromRow(src, meta);
+            }
+            if (!useUpdate) {
+              // new build => clear hero_build_id so GC assigns fresh
+              delete heroBuild.hero_build_id;
+            }
+            log('info', 'BUILD_PUBLISH: Building hero object', {
+                useMinimal,
+                useUpdate,
+                minimalUpdate,
+            });
+
+            log('info', 'Publishing hero build', {
+                originId,
+                heroId: heroBuild.hero_id,
+                author: heroBuild.author_account_id,
+                language: heroBuild.language,
+                name: heroBuild.name,
+                mode: useUpdate ? (minimalUpdate ? 'update-minimal' : 'update') : (useMinimal ? 'new-minimal' : 'new'),
+                hero_build_id: heroBuild.hero_build_id,
+            });
+
+            log('info', 'BUILD_PUBLISH: Calling sendHeroBuildUpdate');
+            log('info', 'BUILD_PUBLISH: heroBuild object', { heroBuild: JSON.stringify(heroBuild) });
+            const resp = await sendHeroBuildUpdate(heroBuild);
+
+            log('info', 'BUILD_PUBLISH: Update successful', { resp });
+            updateHeroBuildCloneUploadedStmt.run('done', null, resp.heroBuildId || null, resp.version || null, originId);
+            return { ok: true, response: resp, origin_id: originId };
+          } catch (err) {
+            log('error', 'BUILD_PUBLISH: Failed', {
+              task_id: task.id,
+              origin_id: payload?.origin_hero_build_id,
+              error: err?.message || String(err),
+              stack: err?.stack || 'no stack'
+            });
+            throw err;
+          }
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
+
       case 'AUTH_SEND_PLAYTEST_INVITE': {
         const promise = (async () => {
           if (!runtimeState.logged_on) throw new Error('Not logged in');
@@ -1871,6 +2642,242 @@ function processNextTask() {
         break;
       }
 
+      // ========== BUILD DISCOVERY (via GC) ==========
+      // Discover builds from watched authors using In-Game GC (replaces external API)
+      case 'DISCOVER_WATCHED_BUILDS': {
+        const promise = (async () => {
+          log('info', 'DISCOVER_WATCHED_BUILDS: Starting build discovery via GC');
+
+          if (!deadlockGcReady) {
+            log('warn', 'DISCOVER_WATCHED_BUILDS: Deadlock GC not ready');
+            return { ok: false, error: 'Deadlock GC not connected. Please wait for GC connection.' };
+          }
+
+          if (!buildCatalogManager) {
+            log('error', 'DISCOVER_WATCHED_BUILDS: BuildCatalogManager not initialized');
+            return { ok: false, error: 'BuildCatalogManager not initialized' };
+          }
+
+          try {
+            const result = await buildCatalogManager.discoverWatchedBuilds();
+            return {
+              ok: result.success,
+              data: {
+                authors_checked: result.authorsChecked,
+                builds_discovered: result.totalNewBuilds + result.totalUpdatedBuilds,
+                new_builds: result.totalNewBuilds,
+                updated_builds: result.totalUpdatedBuilds,
+                errors: result.errors?.length || 0
+              }
+            };
+          } catch (err) {
+            log('error', 'DISCOVER_WATCHED_BUILDS: Failed', { error: err.message });
+            return { ok: false, error: err.message };
+          }
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
+
+      // ========== HERO-BASED BUILD DISCOVERY ==========
+      // Alternative discovery: search by hero instead of author (works when author-search times out)
+      case 'DISCOVER_BUILDS_VIA_HEROES': {
+        const promise = (async () => {
+          log('info', 'DISCOVER_BUILDS_VIA_HEROES: Starting HERO-based build discovery via GC');
+
+          if (!deadlockGcReady) {
+            log('warn', 'DISCOVER_BUILDS_VIA_HEROES: Deadlock GC not ready');
+            return { ok: false, error: 'Deadlock GC not connected. Please wait for GC connection.' };
+          }
+
+          if (!buildCatalogManager) {
+            log('error', 'DISCOVER_BUILDS_VIA_HEROES: BuildCatalogManager not initialized');
+            return { ok: false, error: 'BuildCatalogManager not initialized' };
+          }
+
+          try {
+            const result = await buildCatalogManager.discoverWatchedBuildsViaHeroes();
+            return {
+              ok: result.success,
+              data: {
+                heroes_checked: result.heroesChecked,
+                heroes_with_builds: result.heroesWithBuilds,
+                matched_builds: result.totalMatchedBuilds,
+                new_builds: result.totalNewBuilds,
+                updated_builds: result.totalUpdatedBuilds,
+                errors: result.errors?.length || 0
+              }
+            };
+          } catch (err) {
+            log('error', 'DISCOVER_BUILDS_VIA_HEROES: Failed', { error: err.message });
+            return { ok: false, error: err.message };
+          }
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
+
+      // ========== CATALOG MAINTENANCE ==========
+      // Maintains the catalog: selects builds, creates/updates German clones
+      case 'MAINTAIN_BUILD_CATALOG': {
+        const promise = (async () => {
+          log('info', 'MAINTAIN_BUILD_CATALOG: Starting catalog maintenance');
+
+          if (!buildCatalogManager) {
+            log('error', 'MAINTAIN_BUILD_CATALOG: BuildCatalogManager not initialized');
+            return { ok: false, error: 'BuildCatalogManager not initialized' };
+          }
+
+          try {
+            const result = await buildCatalogManager.maintainCatalog();
+            return {
+              ok: result.success,
+              data: {
+                builds_to_clone: result.buildsToClone,
+                builds_to_update: result.buildsToUpdate,
+                tasks_created: result.tasksCreated,
+                skipped_builds: result.skippedBuilds
+              }
+            };
+          } catch (err) {
+            log('error', 'MAINTAIN_BUILD_CATALOG: Failed', { error: err.message });
+            return { ok: false, error: err.message };
+          }
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
+
+      // ========== FULL CATALOG CYCLE ==========
+      // Runs discovery + maintenance in one task
+      case 'BUILD_CATALOG_CYCLE': {
+        const promise = (async () => {
+          log('info', 'BUILD_CATALOG_CYCLE: Starting full catalog cycle');
+
+          if (!deadlockGcReady) {
+            log('warn', 'BUILD_CATALOG_CYCLE: Deadlock GC not ready');
+            return { ok: false, error: 'Deadlock GC not connected. Please wait for GC connection.' };
+          }
+
+          if (!buildCatalogManager) {
+            log('error', 'BUILD_CATALOG_CYCLE: BuildCatalogManager not initialized');
+            return { ok: false, error: 'BuildCatalogManager not initialized' };
+          }
+
+          try {
+            const result = await buildCatalogManager.runFullCycle();
+            return {
+              ok: result.success,
+              data: {
+                discovery: result.discovery,
+                maintenance: result.maintenance
+              }
+            };
+          } catch (err) {
+            log('error', 'BUILD_CATALOG_CYCLE: Failed', { error: err.message });
+            return { ok: false, error: err.message };
+          }
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
+
+      // ========== GC BUILD SEARCH (manual) ==========
+      // Search for builds directly via the Deadlock Game Coordinator
+      case 'GC_SEARCH_BUILDS': {
+        const promise = (async () => {
+          log('info', 'GC_SEARCH_BUILDS: Starting In-Game build search');
+
+          if (!deadlockGcReady) {
+            log('warn', 'GC_SEARCH_BUILDS: Deadlock GC not ready');
+            return { ok: false, error: 'Deadlock GC not connected. Please wait for GC connection.' };
+          }
+
+          const searchOptions = {};
+          if (payload.author_account_id) searchOptions.authorAccountId = payload.author_account_id;
+          if (payload.hero_id) searchOptions.heroId = payload.hero_id;
+          if (payload.search_text) searchOptions.searchText = payload.search_text;
+          if (payload.hero_build_id) searchOptions.heroBuildId = payload.hero_build_id;
+          if (payload.languages) searchOptions.languages = payload.languages;
+          if (payload.tags) searchOptions.tags = payload.tags;
+
+          log('info', 'GC_SEARCH_BUILDS: Searching with options', searchOptions);
+
+          try {
+            const response = await gcBuildSearch.findBuilds(searchOptions);
+
+            const responseCode = response.response;
+            const results = response.results || [];
+
+            log('info', 'GC_SEARCH_BUILDS: Got response', {
+              responseCode,
+              resultCount: results.length
+            });
+
+            if (responseCode !== 1) { // k_eSuccess
+              return {
+                ok: false,
+                error: `GC returned error code: ${responseCode}`,
+                responseCode
+              };
+            }
+
+            // Process and store the builds
+            let newBuilds = 0;
+            let updatedBuilds = 0;
+            const buildSummaries = [];
+
+            for (const result of results) {
+              const build = result.heroBuild;
+              if (!build) continue;
+
+              const stats = gcBuildSearch.upsertBuild(build, {
+                numFavorites: result.numFavorites,
+                numWeeklyFavorites: result.numWeeklyFavorites,
+                numDailyFavorites: result.numDailyFavorites,
+                numIgnores: result.numIgnores,
+                numReports: result.numReports,
+                source: 'gc_task_search'
+              });
+
+              if (stats.inserted) newBuilds++;
+              if (stats.updated) updatedBuilds++;
+
+              buildSummaries.push({
+                id: build.heroBuildId || build.hero_build_id,
+                name: build.name,
+                heroId: build.heroId || build.hero_id,
+                authorId: build.authorAccountId || build.author_account_id,
+                favorites: result.numFavorites,
+                weeklyFavorites: result.numWeeklyFavorites
+              });
+            }
+
+            log('info', 'GC_SEARCH_BUILDS: Completed', {
+              totalResults: results.length,
+              newBuilds,
+              updatedBuilds
+            });
+
+            return {
+              ok: true,
+              data: {
+                totalResults: results.length,
+                newBuilds,
+                updatedBuilds,
+                builds: buildSummaries
+              }
+            };
+
+          } catch (err) {
+            log('error', 'GC_SEARCH_BUILDS: Failed', { error: err.message });
+            return { ok: false, error: err.message };
+          }
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
+
       default:
         throw new Error(`Unsupported task type: ${task.type}`);
     }
@@ -1885,6 +2892,12 @@ function processNextTask() {
 setInterval(() => {
   try { processNextTask(); } catch (err) { log('error', 'Task polling loop failed', { error: err.message }); }
 }, Math.max(500, TASK_POLL_INTERVAL_MS));
+
+setInterval(() => {
+  syncFriendsAndLinks('interval').catch((err) => {
+    log('warn', 'Friend sync loop failed', { error: err && err.message ? err.message : String(err) });
+  });
+}, FRIEND_SYNC_INTERVAL_MS);
 
 // ---------- Standalone Command Handling ----------
 let commandInProgress = false;
@@ -1930,6 +2943,10 @@ const COMMAND_HANDLERS = {
     });
   },
   'guard.submit': (payload) => ({ ok: true, data: handleGuardCodeTask(payload || {}) }),
+  restart: () => {
+    log('info', 'Restart command received - terminating process for restart');
+    process.exit(0);
+  },
 };
 
 function finalizeStandaloneCommand(commandId, status, resultObj, errorMessage) {
@@ -2039,6 +3056,7 @@ function markLoggedOn(details) {
   runtimeState.last_error = null;
   deadlockAppActive = false;
   deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
   deadlockGameRequestedAt = 0;
   lastGcHelloAttemptAt = 0;
 
@@ -2063,6 +3081,13 @@ function markLoggedOn(details) {
     cellId: details ? details.cellID : undefined,
     steam_id64: runtimeState.steam_id64,
   });
+
+  // Sync friends <-> DB shortly after login (wait a bit for friend list to load)
+  setTimeout(() => {
+    syncFriendsAndLinks('post-login').catch((err) => {
+      log('warn', 'Friend sync after login failed', { error: err && err.message ? err.message : String(err) });
+    });
+  }, 5000);
 
   // Direkt nach erfolgreichem Login: mind. 1 Invite sicherstellen
   if (typeof quickInvites.ensureAtLeastOne === 'function') {
@@ -2118,6 +3143,7 @@ client.on('appLaunched', (appId) => {
   log('info', 'Deadlock app launched - GC session starting');
   deadlockAppActive = true;
   deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
   requestDeadlockGcTokens('app_launch');
   
   // Wait a bit longer for GC to initialize
@@ -2133,6 +3159,7 @@ client.on('appQuit', (appId) => {
   log('info', 'Deadlock app quit – GC session ended');
   deadlockAppActive = false;
   deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
   flushDeadlockGcWaiters(new Error('Deadlock app quit'));
   flushPendingPlaytestInvites(new Error('Deadlock app quit'));
 });
@@ -2191,7 +3218,7 @@ client.on('receivedFromGC', (appId, msgType, payload) => {
   });
 
   // ENHANCED DEBUG: Log ALL GC messages for diagnosis
-  log('info', '?? GC MESSAGE RECEIVED', {
+  log('info', '🚀 GC MESSAGE RECEIVED', {
     appId,
     messageId,
     messageIdHex: messageId.toString(16),
@@ -2203,6 +3230,23 @@ client.on('receivedFromGC', (appId, msgType, payload) => {
     expectedWelcome: GC_MSG_CLIENT_WELCOME,
     expectedResponses: playtestMsgConfigs.map(p => p.response)
   });
+
+  if (messageId === GC_MSG_CLIENT_TO_GC_UPDATE_HERO_BUILD_RESPONSE && heroBuildPublishWaiter) {
+    loadHeroBuildProto()
+      .then(() => {
+        const resp = UpdateHeroBuildResponseMsg.decode(payload);
+        heroBuildPublishWaiter.resolve(resp);
+      })
+      .catch((err) => heroBuildPublishWaiter.reject(err));
+    return;
+  }
+
+  // Handle GC Build Search responses
+  if (messageId === GC_MSG_FIND_HERO_BUILDS_RESPONSE && isDeadlockApp) {
+    if (gcBuildSearch.handleGcMessage(appId, msgType, payload)) {
+      return;
+    }
+  }
 
   if (messageId === GC_MSG_CLIENT_WELCOME && isDeadlockApp) {
     log('info', '?? RECEIVED DEADLOCK GC WELCOME - GC CONNECTION ESTABLISHED!', {
@@ -2243,6 +3287,7 @@ client.on('disconnected', (eresult, msg) => {
   runtimeState.last_disconnect_eresult = eresult;
   deadlockAppActive = false;
   deadlockGcReady = false;
+  runtimeState.deadlock_gc_ready = false;
   lastLoggedGcTokenCount = 0;
   flushDeadlockGcWaiters(new Error('Steam disconnected'));
   flushPendingPlaytestInvites(new Error('Steam disconnected'));
@@ -2289,6 +3334,46 @@ if (typeof quickInvites.startAutoEnsure === 'function') {
   quickInvites.startAutoEnsure();
 }
 
+// ---------- Build Catalog Maintenance ----------
+// Periodically maintain the build catalog (discovery + cloning + updates)
+const CATALOG_MAINTENANCE_INTERVAL_MS = parseInt(process.env.CATALOG_MAINTENANCE_INTERVAL_MS || '600000', 10); // Default: 10 minutes
+
+function scheduleCatalogMaintenance() {
+  try {
+    // Check if there's already a pending or running MAINTAIN_BUILD_CATALOG task
+    const existing = db.prepare(`
+      SELECT id FROM steam_tasks
+      WHERE type = 'MAINTAIN_BUILD_CATALOG'
+        AND status IN ('PENDING', 'RUNNING')
+      LIMIT 1
+    `).get();
+
+    if (!existing) {
+      const now = Math.floor(Date.now() / 1000);
+      db.prepare(`
+        INSERT INTO steam_tasks (type, payload, status, created_at, updated_at)
+        VALUES ('MAINTAIN_BUILD_CATALOG', '{}', 'PENDING', ?, ?)
+      `).run(now, now);
+      log('info', 'Scheduled MAINTAIN_BUILD_CATALOG task');
+    } else {
+      log('debug', 'MAINTAIN_BUILD_CATALOG task already scheduled', { task_id: existing.id });
+    }
+  } catch (err) {
+    log('error', 'Failed to schedule catalog maintenance', { error: err.message });
+  }
+}
+
+// Schedule immediately on startup (after a short delay to let system stabilize)
+setTimeout(() => {
+  log('info', 'Running initial catalog maintenance');
+  scheduleCatalogMaintenance();
+}, 30000); // 30 seconds after startup
+
+// Schedule periodically
+setInterval(() => {
+  scheduleCatalogMaintenance();
+}, CATALOG_MAINTENANCE_INTERVAL_MS);
+
 function shutdown(code = 0) {
   try {
     log('info', 'Shutting down Steam bridge');
@@ -2307,5 +3392,10 @@ function shutdown(code = 0) {
 }
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
-process.on('uncaughtException', (err) => { log('error', 'Uncaught exception', { error: err && err.stack ? err.stack : err }); shutdown(1); });
+process.on('uncaughtException', (err) => {
+  // Ignore EPIPE errors (broken pipe when parent process closes stdout)
+  if (err && err.code === 'EPIPE') return;
+  log('error', 'Uncaught exception', { error: err && err.stack ? err.stack : err });
+  shutdown(1);
+});
 process.on('unhandledRejection', (err) => { log('error', 'Unhandled rejection', { error: err && err.stack ? err.stack : err }); });

@@ -1,0 +1,69 @@
+syntax = "proto2";
+
+// Minimal subset for publishing hero builds to the Deadlock GC.
+
+message CMsgHeroBuild {
+  message BuildModEntry {
+    optional uint32 ability_id = 1;
+    optional string annotation = 2;
+    optional uint32 required_flex_slots = 3;
+    optional uint32 sell_priority = 4;
+    optional uint32 imbue_target_ability_id = 5;
+  }
+
+  message BuildModCategory {
+    repeated .CMsgHeroBuild.BuildModEntry mods = 1;
+    optional string name = 2;
+    optional string description = 3;
+    optional float width = 4;
+    optional float height = 5;
+    optional bool optional = 6;
+  }
+
+  message CurrencyChange {
+    optional uint32 ability_id = 1;
+    optional int32 currency_type = 2;
+    optional int32 delta = 3;
+    optional string annotation = 4;
+  }
+
+  message AbilityOrder {
+    repeated .CMsgHeroBuild.CurrencyChange currency_changes = 1;
+  }
+
+  message Details_V0 {
+    repeated .CMsgHeroBuild.BuildModCategory mod_categories = 1;
+    optional .CMsgHeroBuild.AbilityOrder ability_order = 2;
+  }
+
+  optional uint32 hero_build_id = 1;
+  optional uint32 hero_id = 2;
+  optional uint32 author_account_id = 3;
+  optional uint32 last_updated_timestamp = 4;
+  optional string name = 5;
+  optional string description = 6;
+  optional uint32 language = 7;
+  optional uint32 version = 8;
+  optional uint32 origin_build_id = 9;
+  optional .CMsgHeroBuild.Details_V0 details = 10;
+  repeated uint32 tags = 11;
+  optional bool development_build = 12;
+  optional uint32 publish_timestamp = 13;
+}
+
+message CMsgClientToGCUpdateHeroBuild {
+  optional CMsgHeroBuild hero_build = 1;
+}
+
+message CMsgClientToGCUpdateHeroBuildResponse {
+  enum EResponse {
+    k_eInternalError = 0;
+    k_eSuccess = 1;
+  }
+  optional CMsgClientToGCUpdateHeroBuildResponse.EResponse response = 1 [default = k_eInternalError];
+  optional uint32 hero_build_id = 2;
+  optional uint32 version = 3;
+}
+
+// The message ID for UpdateHeroBuild is 9193 in EGCCitadelClientMessages.
+// We do not model the full enum here; the node code uses the numeric constant directly.

@@ -244,12 +244,17 @@ class WelcomeDM(commands.Cog):
         return bool(getattr(view, "proceed", False))
 
     @staticmethod
-    def _beta_invite_message() -> str:
-        return (
-            "🎟️ **Beta-Invite benötigt?**\n"
-            f"Schau in <{BETA_INVITE_CHANNEL_URL}> vorbei – dort bekommst du einen Beta-Invite mit `/betainvite`.\n"
+    def _beta_invite_message() -> discord.Embed:
+        description = (
+            f"Schau in {BETA_INVITE_CHANNEL_URL} vorbei – dort bekommst du einen Beta-Invite mit `/betainvite`.\n"
             f"Sollten Probleme auftreten, ping bitte {BETA_INVITE_SUPPORT_CONTACT}."
         )
+        embed = discord.Embed(
+            title="🎟️ Beta-Invite benötigt?",
+            description=description,
+            color=discord.Color.blue() # Using a standard blue color for information
+        )
+        return embed
 
     async def run_flow_in_channel(self, channel: discord.abc.Messageable, member: discord.Member) -> bool:
         """Gleicher Flow im (privaten) Thread/Channel. Zählung 1/5–5/5; Intro ohne Zählung."""
@@ -289,7 +294,7 @@ class WelcomeDM(commands.Cog):
 
             if status_choice == STATUS_NEED_BETA:
                 try:
-                    await channel.send(self._beta_invite_message())
+                    await channel.send(embed=self._beta_invite_message())
                 except Exception as exc:
                     logger.debug("Beta-Invite Hinweis im Channel konnte nicht gesendet werden: %s", exc)
                 return True
@@ -342,22 +347,36 @@ class WelcomeDM(commands.Cog):
                 return False
 
             # Abschluss-Text
-            closing_lines: list[str] = []
+            closing_embeds: list[discord.Embed] = []
             if status_choice == STATUS_NEW_PLAYER:
-                closing_lines.append(
-                    "✨ **Neu dabei?** Stell Fragen – wir helfen gern. "
-                    "Kleine Einführung? Ping **@earlysalty** oder schreibe in **#allgemein**."
+                embed = discord.Embed(
+                    title="✨ Neu dabei?",
+                    description="Stell Fragen – wir helfen gern. Kleine Einführung? Ping **@earlysalty** oder schreibe in **#allgemein**.",
+                    color=discord.Color.gold()
                 )
+                closing_embeds.append(embed)
             if status_choice == STATUS_NEED_BETA:
-                closing_lines.append(self._beta_invite_message())
+                # _beta_invite_message already returns an embed
+                closing_embeds.append(self._beta_invite_message())
             if status_choice == STATUS_RETURNING:
-                closing_lines.append("🔁 **Willkommen zurück!** Schau für Runden in LFG/Voice vorbei – viel Spaß!")
+                embed = discord.Embed(
+                    title="🔁 Willkommen zurück!",
+                    description="Schau für Runden in LFG/Voice vorbei – viel Spaß!",
+                    color=discord.Color.green()
+                )
+                closing_embeds.append(embed)
             if status_choice == STATUS_PLAYING:
-                closing_lines.append("✅ **Viel Spaß!** Check **Guides** & **Ankündigungen** – und ping uns, wenn du was brauchst.")
+                embed = discord.Embed(
+                    title="✅ Viel Spaß!",
+                    description="Check **Guides** & **Ankündigungen** – und ping uns, wenn du was brauchst.",
+                    color=discord.Color.green()
+                )
+                closing_embeds.append(embed)
 
-            if closing_lines:
+            if closing_embeds:
                 try:
-                    await channel.send("\n\n".join(closing_lines))
+                    for embed_item in closing_embeds:
+                        await channel.send(embed=embed_item)
                 except Exception as exc:
                     logger.debug("Abschlussnachricht im Channel konnte nicht gesendet werden: %s", exc)
 
