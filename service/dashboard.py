@@ -558,6 +558,21 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             gap: 0.75rem;
             margin-top: 1rem;
         }
+        .retention-meta {
+            margin-top: 0.35rem;
+            color: #adb5bd;
+            font-size: 0.9rem;
+            display: flex;
+            gap: 0.8rem;
+            flex-wrap: wrap;
+        }
+        .retention-actions {
+            margin-top: 1rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            align-items: center;
+        }
         .stat-card {
             background: #161616;
             border: 1px solid rgba(255,255,255,0.05);
@@ -842,7 +857,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="stat-item"><span class="stat-value" id="ret-sent">-</span><span class="stat-label">Nachrichten gesendet</span></div>
                 <div class="stat-item"><span class="stat-value" id="ret-feedback">-</span><span class="stat-label">Feedbacks erhalten</span></div>
             </div>
-            <div style="margin-top: 1rem;">
+            <div id="retention-config" class="retention-meta"></div>
+            <div id="retention-updated" class="retention-meta">Zuletzt aktualisiert: –</div>
+            <div class="retention-actions">
                 <button class="namespace" id="retention-refresh">Aktualisieren</button>
                 <button class="namespace" id="retention-run-check" style="background:#e67e22;">Jetzt Check ausführen</button>
             </div>
@@ -2687,6 +2704,7 @@ async function fetchStandaloneLogs(key, limit = 200) {
         authToken = tokenInput.value.trim();
         localStorage.setItem('master-dashboard-token', authToken);
         loadStatus();
+        refreshRetentionAll(true);
     });
 
     document.getElementById('reload-all').addEventListener('click', async () => {
@@ -2727,6 +2745,8 @@ async function fetchStandaloneLogs(key, limit = 200) {
     const retentionFeedbackList = document.getElementById('retention-feedback-list');
     const retentionRefreshBtn = document.getElementById('retention-refresh');
     const retentionRunCheckBtn = document.getElementById('retention-run-check');
+    const retentionConfig = document.getElementById('retention-config');
+    const retentionUpdated = document.getElementById('retention-updated');
 
     async function loadRetentionStats() {
         try {
@@ -2737,6 +2757,13 @@ async function fetchStandaloneLogs(key, limit = 200) {
             retOptout.textContent = res.opted_out || 0;
             retSent.textContent = res.messages_sent || 0;
             retFeedback.textContent = res.feedback_count || 0;
+            if (retentionConfig) {
+                const cfg = res.config || {};
+                const inactivity = cfg.inactivity_days ?? '–';
+                const minBetween = cfg.min_days_between ?? '–';
+                const maxMsgs = cfg.max_messages ?? '–';
+                retentionConfig.textContent = `Inaktivitätsschwelle: ${inactivity} Tage • Min. Abstand: ${minBetween} Tage • Max. Nachrichten: ${maxMsgs}`;
+            }
         } catch (err) {
             log('Retention stats failed: ' + err.message, 'error');
         }
@@ -2749,9 +2776,10 @@ async function fetchStandaloneLogs(key, limit = 200) {
                 retentionUsers.innerHTML = '<p style="color:#888;">Keine inaktiven User gefunden.</p>';
                 return;
             }
-            let html = '<table style="width:100%;font-size:0.9em;"><tr><th>User</th><th>Tage inaktiv</th><th>Aktion</th></tr>';
+            let html = '<table style="width:100%;font-size:0.9em;"><tr><th>Name</th><th>User ID</th><th>Tage inaktiv</th><th>Aktion</th></tr>';
             for (const u of res.users) {
-                html += '<tr><td>' + (u.display_name || u.user_id) + '</td><td>' + u.days_inactive + '</td>';
+                const name = u.display_name || 'Unbekannt';
+                html += '<tr><td style="font-weight:500;">' + name + '</td><td style="color:#888;font-size:0.85em;">' + u.user_id + '</td><td>' + u.days_inactive + '</td>';
                 html += '<td><button class="namespace" onclick="sendRetentionMsg(' + u.user_id + ',' + u.guild_id + ')">DM senden</button></td></tr>';
             }
             html += '</table>';
@@ -2781,6 +2809,20 @@ async function fetchStandaloneLogs(key, limit = 200) {
         }
     }
 
+    async function refreshRetentionAll(logMessage = false) {
+        await Promise.all([
+            loadRetentionStats(),
+            loadRetentionUsers(),
+            loadRetentionFeedback(),
+        ]);
+        if (retentionUpdated) {
+            retentionUpdated.textContent = 'Zuletzt aktualisiert: ' + new Date().toLocaleTimeString('de-DE');
+        }
+        if (logMessage) {
+            log('Retention data refreshed', 'info');
+        }
+    }
+
     window.sendRetentionMsg = async function(userId, guildId) {
         if (!confirm('Wirklich DM an User ' + userId + ' senden?')) return;
         try {
@@ -2793,18 +2835,14 @@ async function fetchStandaloneLogs(key, limit = 200) {
             } else {
                 log('DM fehlgeschlagen für User ' + userId, 'error');
             }
-            loadRetentionStats();
-            loadRetentionUsers();
+            await refreshRetentionAll();
         } catch (err) {
             log('Retention send failed: ' + err.message, 'error');
         }
     };
 
     retentionRefreshBtn?.addEventListener('click', () => {
-        loadRetentionStats();
-        loadRetentionUsers();
-        loadRetentionFeedback();
-        log('Retention data refreshed', 'info');
+        refreshRetentionAll(true);
     });
 
     retentionRunCheckBtn?.addEventListener('click', async () => {
@@ -2814,8 +2852,7 @@ async function fetchStandaloneLogs(key, limit = 200) {
         try {
             const res = await apiFetch('/api/retention/run-check', { method: 'POST' });
             log('Retention-Check: ' + res.sent + '/' + res.total_checked + ' gesendet', 'success');
-            loadRetentionStats();
-            loadRetentionUsers();
+            await refreshRetentionAll();
         } catch (err) {
             log('Retention-Check failed: ' + err.message, 'error');
         } finally {
@@ -2824,10 +2861,9 @@ async function fetchStandaloneLogs(key, limit = 200) {
         }
     });
 
-    // Initial load
-    loadRetentionStats();
-    loadRetentionUsers();
-    loadRetentionFeedback();
+    // Initial load + periodic refresh
+    refreshRetentionAll();
+    setInterval(refreshRetentionAll, 120000);
     </script>
 </body>
 </html>

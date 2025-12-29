@@ -516,7 +516,7 @@ class UserRetentionCog(commands.Cog):
             days_inactive = row[3]
 
             # Versuche Display-Name zu holen und Rollen zu prüfen
-            display_name = f"User {user_id}"
+            display_name = None
             skip_user = False
 
             try:
@@ -531,8 +531,23 @@ class UserRetentionCog(commands.Cog):
                         if member_role_ids & set(self.config.excluded_role_ids):
                             skip_user = True
                             logger.debug(f"User {user_id} übersprungen (ausgeschlossene Rolle)")
-            except Exception:
-                pass
+
+                # Wenn kein Display-Name gefunden wurde, versuche User zu fetchen
+                if not display_name:
+                    try:
+                        fetched_user = await self.bot.fetch_user(user_id)
+                        # global_name ist der Display-Name, name ist der Username
+                        display_name = fetched_user.global_name or fetched_user.name
+                    except discord.NotFound:
+                        logger.debug(f"User {user_id} nicht gefunden")
+                    except Exception as e:
+                        logger.debug(f"Konnte User {user_id} nicht fetchen: {e}")
+            except Exception as e:
+                logger.debug(f"Fehler beim Abrufen von User {user_id}: {e}")
+
+            # Fallback falls nichts funktioniert hat
+            if not display_name:
+                display_name = f"Unbekannt"
 
             if not skip_user:
                 result.append((user_id, guild_id, days_inactive, display_name))
