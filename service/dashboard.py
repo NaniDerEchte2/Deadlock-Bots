@@ -16,6 +16,8 @@ from aiohttp import ClientSession, ClientTimeout, web
 
 from service import db
 
+logger = logging.getLogger(__name__)
+
 try:
     from service.standalone_manager import (
         StandaloneAlreadyRunning,
@@ -2646,6 +2648,25 @@ async function fetchStandaloneLogs(key, limit = 200) {
 </html>
 """
 
+_DASHBOARD_HTML_PATH = Path(__file__).resolve().parent / "static" / "dashboard.html"
+
+
+def _load_index_html() -> str:
+    """
+    Lädt das Dashboard-HTML aus service/static/dashboard.html.
+    Kein Fallback, kein Caching: Fehlender/defekter File => 500.
+    """
+    try:
+        return _DASHBOARD_HTML_PATH.read_text(encoding="utf-8")
+    except Exception as exc:
+        logging.getLogger(__name__).error(
+            "Dashboard HTML konnte nicht geladen werden (%s): %s",
+            _DASHBOARD_HTML_PATH,
+            exc,
+            exc_info=True,
+        )
+        raise
+
 
 class DashboardServer:
     """Simple aiohttp based dashboard for managing the master bot."""
@@ -2760,6 +2781,7 @@ class DashboardServer:
                     web.post("/api/cogs/unblock", self._handle_unblock),
                     web.get("/api/voice-stats", self._handle_voice_stats),
                     web.get("/api/voice-history", self._handle_voice_history),
+                    web.get("/api/user-retention", self._handle_user_retention),
                     web.get("/api/member-events", self._handle_member_events),
                     web.get("/api/message-activity", self._handle_message_activity),
                     web.get("/api/server-stats", self._handle_server_stats),
@@ -3212,7 +3234,7 @@ class DashboardServer:
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
-        html_text = _HTML_TEMPLATE.replace("{{TWITCH_URL}}", self._twitch_dashboard_href)
+        html_text = _load_index_html().replace("{{TWITCH_URL}}", self._twitch_dashboard_href or "")
         return web.Response(text=html_text, content_type="text/html")
 
     def _voice_cog(self) -> Any:
@@ -3571,6 +3593,213 @@ class DashboardServer:
             "buckets": buckets,
         }
         return self._json(payload)
+
+    async def _handle_user_retention(self, request: web.Request) -> web.Response:
+        """
+        Liefert Kennzahlen für den User-Retention-Cog.
+        Nutzt die gleichen Default-Schwellen wie im Cog (siehe RetentionConfig in cogs/user_retention.py).
+        """
+        self._check_auth(request, required=bool(self.token))
+
+        # Defaults aus RetentionConfig
+        min_weekly_sessions = 0.5
+        min_total_active_days = 3
+        inactivity_threshold_days = 14
+        min_days_between_messages = 30
+        max_miss_you_per_user = 1
+
+        try:
+            # Ermittele vorhandene Spalten, um kompatibel mit evtl. aelterem Schema zu sein
+            retention_columns = set()
+            try:
+                conn = db.connect()
+                rows = conn.execute("PRAGMA table_info(user_retention_tracking)").fetchall()
+                for r in rows:
+                    # sqlite3.Row oder tuple
+                    name = r["name"] if hasattr(r, "__getitem__") else r[1]
+                    retention_columns.add(str(name))
+            except Exception:  # pragma: no cover - defensive
+                retention_columns = set()
+
+            total_tracked_row = db.query_one(
+                "SELECT COUNT(*) FROM user_retention_tracking"
+            )
+            total_tracked = total_tracked_row[0] if total_tracked_row else 0
+
+            opted_out_row = db.query_one(
+                "SELECT COUNT(*) FROM user_retention_tracking WHERE opted_out = 1"
+            )
+            opted_out = opted_out_row[0] if opted_out_row else 0
+
+            regular_active_row = db.query_one(
+                """
+                SELECT COUNT(*)
+                FROM user_retention_tracking
+                WHERE avg_weekly_sessions >= ? AND total_active_days >= ?
+                """,
+                (min_weekly_sessions, min_total_active_days),
+            )
+            regular_active = regular_active_row[0] if regular_active_row else 0
+
+            candidate_where = [
+                "avg_weekly_sessions >= ?",
+                "total_active_days >= ?",
+                "(strftime('%s','now') - last_active_at) / 86400 >= ?",
+                "opted_out = 0",
+            ]
+            candidate_params: list[Any] = [
+                min_weekly_sessions,
+                min_total_active_days,
+                inactivity_threshold_days,
+            ]
+
+            has_last_sent = "last_miss_you_sent_at" in retention_columns or "last_miss_you_at" in retention_columns
+            has_miss_count = "miss_you_count" in retention_columns or "miss_you_sent" in retention_columns
+
+            if has_last_sent:
+                candidate_where.append(
+                    "(last_miss_you_sent_at IS NULL OR (strftime('%s','now') - last_miss_you_sent_at) / 86400 >= ?)"
+                    if "last_miss_you_sent_at" in retention_columns
+                    else "(last_miss_you_at IS NULL OR (strftime('%s','now') - last_miss_you_at) / 86400 >= ?)"
+                )
+                candidate_params.append(min_days_between_messages)
+            if has_miss_count:
+                candidate_where.append(
+                    "(miss_you_count IS NULL OR miss_you_count < ?)"
+                    if "miss_you_count" in retention_columns
+                    else "(miss_you_sent IS NULL OR miss_you_sent < ?)"
+                )
+                candidate_params.append(max_miss_you_per_user)
+
+            candidate_where_sql = " AND ".join(candidate_where)
+
+            inactive_candidates_row = db.query_one(
+                "SELECT COUNT(*) FROM user_retention_tracking WHERE " + candidate_where_sql,
+                tuple(candidate_params),
+            )
+            inactive_candidates = inactive_candidates_row[0] if inactive_candidates_row else 0
+
+            miss_you_row = db.query_one(
+                "SELECT COUNT(*) FROM user_retention_messages WHERE message_type = 'miss_you'"
+            )
+            miss_you_sent = miss_you_row[0] if miss_you_row else 0
+
+            feedback_row = db.query_one(
+                "SELECT COUNT(*) FROM user_retention_messages WHERE message_type = 'feedback'"
+            )
+            feedback_received = feedback_row[0] if feedback_row else 0
+
+            select_fields = [
+                "urt.user_id",
+                "urt.guild_id",
+                "urt.last_active_at",
+                "urt.total_active_days",
+                "urt.avg_weekly_sessions",
+                "(strftime('%s','now') - urt.last_active_at) / 86400 AS days_inactive",
+                """
+                (
+                    SELECT m.delivery_status
+                    FROM user_retention_messages m
+                    WHERE m.user_id = urt.user_id AND m.message_type = 'miss_you'
+                    ORDER BY m.sent_at DESC
+                    LIMIT 1
+                ) AS last_message_status
+                """,
+                """
+                (
+                    SELECT m.sent_at
+                    FROM user_retention_messages m
+                    WHERE m.user_id = urt.user_id AND m.message_type = 'miss_you'
+                    ORDER BY m.sent_at DESC
+                    LIMIT 1
+                ) AS last_message_at
+                """,
+            ]
+
+            if "last_miss_you_sent_at" in retention_columns:
+                select_fields.append("urt.last_miss_you_sent_at")
+            elif "last_miss_you_at" in retention_columns:
+                select_fields.append("urt.last_miss_you_at AS last_miss_you_sent_at")
+            else:
+                select_fields.append("NULL AS last_miss_you_sent_at")
+
+            if "miss_you_count" in retention_columns:
+                select_fields.append("urt.miss_you_count")
+            elif "miss_you_sent" in retention_columns:
+                select_fields.append("urt.miss_you_sent AS miss_you_count")
+            else:
+                select_fields.append("NULL AS miss_you_count")
+
+            candidate_rows = db.query_all(
+                f"""
+                SELECT {", ".join(select_fields)}
+                FROM user_retention_tracking urt
+                WHERE {candidate_where_sql}
+                ORDER BY days_inactive DESC
+                LIMIT 50
+                """,
+                tuple(candidate_params),
+            )
+
+            user_ids = [row["user_id"] for row in candidate_rows if row and row["user_id"]]
+            name_map = self._resolve_display_names(user_ids)
+
+            payload = {
+                "summary": {
+                    "total_tracked": total_tracked,
+                    "opted_out": opted_out,
+                    "regular_active": regular_active,
+                    "inactive_candidates": inactive_candidates,
+                    "miss_you_sent": miss_you_sent,
+                    "feedback_received": feedback_received,
+                },
+                "candidates": [
+                    {
+                        "display_name": (
+                            name_map.get(row["user_id"])
+                            if name_map.get(row["user_id"])
+                            else f"User {row['user_id']}"
+                        ),
+                        "user_id": row["user_id"],
+                        "guild_id": row["guild_id"],
+                        "last_active_at": row["last_active_at"],
+                        "days_inactive": max(0, int(row["days_inactive"] or 0)),
+                        "total_active_days": row["total_active_days"],
+                        "avg_weekly_sessions": row["avg_weekly_sessions"],
+                        "last_miss_you_sent_at": row["last_miss_you_sent_at"],
+                        "miss_you_count": row["miss_you_count"],
+                        "last_message_status": row["last_message_status"],
+                        "last_message_at": row["last_message_at"],
+                    }
+                    for row in candidate_rows
+                ],
+                # legacy key, im UI jetzt als Kandidatenliste genutzt
+                "recent": [
+                    {
+                        "display_name": (
+                            name_map.get(row["user_id"])
+                            if name_map.get(row["user_id"])
+                            else f"User {row['user_id']}"
+                        ),
+                        "user_id": row["user_id"],
+                        "guild_id": row["guild_id"],
+                        "last_active_at": row["last_active_at"],
+                        "days_inactive": max(0, int(row["days_inactive"] or 0)),
+                        "total_active_days": row["total_active_days"],
+                        "avg_weekly_sessions": row["avg_weekly_sessions"],
+                        "last_miss_you_sent_at": row["last_miss_you_sent_at"],
+                        "miss_you_count": row["miss_you_count"],
+                        "last_message_status": row["last_message_status"],
+                        "last_message_at": row["last_message_at"],
+                    }
+                    for row in candidate_rows
+                ],
+            }
+            return self._json(payload)
+
+        except Exception as e:
+            logger.error("Error building user retention payload: %s", e, exc_info=True)
+            raise web.HTTPInternalServerError(text="Failed to load user retention data")
 
     async def _handle_member_events(self, request: web.Request) -> web.Response:
         """Handler für Member-Events (Joins, Leaves, Bans)."""
@@ -4579,4 +4808,3 @@ class DashboardServer:
 
 if TYPE_CHECKING:  # pragma: no cover - avoid runtime dependency cycle
     from main_bot import MasterBot
-

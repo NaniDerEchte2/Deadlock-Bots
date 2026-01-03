@@ -183,10 +183,10 @@ class UserRetentionCog(commands.Cog):
         # Registriere persistent View für Buttons (funktioniert nach Bot-Restart)
         self.bot.add_view(MissYouView(0, "", None, self.config.server_link, self.config.voice_link))
 
-        # DEAKTIVIERT: Automatischer Check läuft jetzt über Dashboard
-        # self.daily_retention_check.start()
+        # Automatischer Check wieder aktiv
+        self.daily_retention_check.start()
         self.sync_activity_data.start()
-        logger.info("UserRetention Background-Tasks gestartet (Auto-Check DEAKTIVIERT - Dashboard-Steuerung)")
+        logger.info("UserRetention Background-Tasks gestartet")
 
     async def cog_unload(self):
         """Stoppt Background-Tasks beim Entladen."""

@@ -26,6 +26,18 @@ class _DiscordChannelHandler(logging.Handler):
         if self.task is None:
             self.task = self.bot.loop.create_task(self._worker())
 
+    async def aclose(self) -> None:
+        """Stoppt den Worker sauber, damit beim Shutdown keine Pending-Tasks übrig bleiben."""
+        if self.task:
+            self.task.cancel()
+            try:
+                await asyncio.wait_for(self.task, timeout=5)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                LOG.debug("LogBridge handler stop wait failed", exc_info=True)
+            self.task = None
+
     async def _worker(self) -> None:
         await self.bot.wait_until_ready()
         # Channel holen
@@ -34,29 +46,34 @@ class _DiscordChannelHandler(logging.Handler):
             ch = await self.bot.fetch_channel(self.channel_id)
         # Sende-Schleife mit leichter Bündelung
         buffer: list[str] = []
-        while True:
-            msg = await self.queue.get()
-            buffer.append(msg)
-            # kurze Sammelwartezeit
-            try:
-                await asyncio.sleep(0.8)
-                while not self.queue.empty() and len("\n".join(buffer)) < 1800 and len(buffer) < 12:
-                    buffer.append(self.queue.get_nowait())
-            except Exception as exc:
-                LOG.debug("LogBridge queue bundling failed: %s", exc, exc_info=True)
-            text = "```\n" + "\n".join(buffer)
-            if len(text) > 1950:
-                text = text[-1950:]  # letzter Block
-                if not text.startswith("```"):
-                    text = "```\n" + text
-            if not text.endswith("```"):
-                text += "\n```"
-            try:
-                await ch.send(text)
-            except Exception as e:
-                # Falls der Channel weg ist o.ä., nicht craschen
-                LOG.warning("Failed to send log batch to Discord: %r", e)
+        try:
+            while True:
+                msg = await self.queue.get()
+                buffer.append(msg)
+                # kurze Sammelwartezeit
+                try:
+                    await asyncio.sleep(0.8)
+                    while not self.queue.empty() and len("\n".join(buffer)) < 1800 and len(buffer) < 12:
+                        buffer.append(self.queue.get_nowait())
+                except Exception as exc:
+                    LOG.debug("LogBridge queue bundling failed: %s", exc, exc_info=True)
+                text = "```\n" + "\n".join(buffer)
+                if len(text) > 1950:
+                    text = text[-1950:]  # letzter Block
+                    if not text.startswith("```"):
+                        text = "```\n" + text
+                if not text.endswith("```"):
+                    text += "\n```"
+                try:
+                    await ch.send(text)
+                except Exception as e:
+                    # Falls der Channel weg ist o.ä., nicht craschen
+                    LOG.warning("Failed to send log batch to Discord: %r", e)
+                buffer.clear()
+        except asyncio.CancelledError:
+            # Shutdown: verbleibende Nachrichten verwerfen und sauber beenden
             buffer.clear()
+            raise
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -102,6 +119,10 @@ class LogBridgeCog(commands.Cog):
                 logging.getLogger("steam.presence").removeHandler(self.handler)
             except Exception as exc:
                 LOG.debug("Failed to remove steam.presence handler: %s", exc, exc_info=True)
+            try:
+                await self.handler.aclose()
+            except Exception as exc:
+                LOG.debug("Failed to close LogBridge handler task: %s", exc, exc_info=True)
             self.handler = None
 
     # Optionaler Command, um ad hoc einen anderen Channel zu nutzen (nur Admins)

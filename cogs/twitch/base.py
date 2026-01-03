@@ -30,7 +30,7 @@ from .constants import (
 from .logger import log
 from .twitch_api import TwitchAPI
 from .raid_manager import RaidBot
-from .twitch_chat_bot import create_twitch_chat_bot
+from .twitch_chat_bot import TWITCHIO_AVAILABLE, create_twitch_chat_bot
 
 
 class TwitchBaseCog(commands.Cog):
@@ -230,6 +230,9 @@ class TwitchBaseCog(commands.Cog):
             if not self._raid_bot:
                 log.info("Raid-Bot nicht verfügbar, überspringe Twitch Chat Bot")
                 return
+            if not TWITCHIO_AVAILABLE:
+                log.info("twitchio nicht installiert; Twitch Chat Bot wird übersprungen.")
+                return
 
             self._twitch_chat_bot = await create_twitch_chat_bot(
                 client_id=self.client_id,
@@ -315,4 +318,3 @@ class TwitchBaseCog(commands.Cog):
             if tok not in seen:
                 seen.append(tok)
         return seen or None
-

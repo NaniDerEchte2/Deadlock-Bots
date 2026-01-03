@@ -482,6 +482,17 @@ class UserActivityAnalyzer(commands.Cog):
             if member.bot:
                 return
 
+            recent = central_db.query_one(
+                """
+                SELECT 1 FROM member_events
+                WHERE user_id = ? AND guild_id = ? AND event_type = 'leave'
+                  AND timestamp >= datetime('now', '-10 seconds')
+                """,
+                (member.id, member.guild.id),
+            )
+            if recent:
+                return
+
             # Event loggen
             central_db.execute(
                 """
@@ -547,6 +558,61 @@ class UserActivityAnalyzer(commands.Cog):
 
         except Exception as e:
             logger.error(f"Error tracking member unban: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_raw_member_remove(self, payload: discord.RawMemberRemoveEvent):
+        """
+        Fängt Leave/Kick/Ban Events auch dann ab, wenn das Member nicht im Cache ist.
+        Nutzt ein Dedupe-Fenster, um doppelte Einträge mit on_member_remove zu vermeiden.
+        """
+        try:
+            user = payload.user
+            if user and user.bot:
+                return
+
+            user_id = getattr(payload, "user_id", None) or (user.id if user else None)
+            if user_id is None:
+                logger.debug("Raw member remove ohne user_id erhalten; Event übersprungen.")
+                return
+
+            recent = central_db.query_one(
+                """
+                SELECT 1 FROM member_events
+                WHERE user_id = ? AND guild_id = ? AND event_type = 'leave'
+                  AND timestamp >= datetime('now', '-10 seconds')
+                """,
+                (user_id, payload.guild_id),
+            )
+            if recent:
+                return
+
+            display_name = user.name if user else None
+            if display_name is None:
+                try:
+                    fetched = await self.bot.fetch_user(user_id)
+                    display_name = fetched.name
+                except Exception:
+                    display_name = None
+
+            central_db.execute(
+                """
+                INSERT INTO member_events(
+                    user_id, guild_id, event_type, display_name
+                )
+                VALUES (?, ?, 'leave', ?)
+                """,
+                (user_id, payload.guild_id, display_name)
+            )
+
+            logger.info(
+                "Member leave tracked (raw): %s (%s) -> guild %s",
+                display_name or "unknown",
+                user_id,
+                payload.guild_id,
+            )
+
+        except Exception as e:
+            logger.error(f"Error tracking member leave (raw): {e}", exc_info=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):

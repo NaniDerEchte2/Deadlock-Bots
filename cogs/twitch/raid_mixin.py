@@ -33,6 +33,25 @@ class TwitchRaidMixin:
             log.debug("Raid-Bot nicht initialisiert, überspringe Auto-Raid für %s", login)
             return
 
+        # Nur wenn Streamer Auto-Raid explizit aktiviert und autorisiert hat
+        try:
+            with get_conn() as conn:
+                row = conn.execute(
+                    "SELECT raid_bot_enabled FROM twitch_streamers WHERE twitch_user_id = ?",
+                    (twitch_user_id,),
+                ).fetchone()
+            if not row or not row[0]:
+                log.debug("Auto-Raid übersprungen für %s: nicht aktiviert", login)
+                return
+        except Exception:
+            log.debug("Auto-Raid für %s übersprungen (DB-Check fehlgeschlagen)", login, exc_info=True)
+            return
+
+        auth_mgr = getattr(self._raid_bot, "auth_manager", None)
+        if not auth_mgr or not auth_mgr.has_enabled_auth(twitch_user_id):
+            log.debug("Auto-Raid übersprungen für %s: kein aktiver OAuth-Grant", login)
+            return
+
         # Stream-Dauer berechnen
         started_at_str = previous_state.get("last_started_at")
         stream_duration_sec = 0

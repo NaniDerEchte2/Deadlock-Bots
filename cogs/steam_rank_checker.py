@@ -6,17 +6,22 @@ Steam Rank Checker - LFG System
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
 import time
 from typing import Dict, List, Optional, Set, Tuple
 
-import aiohttp
 import aiosqlite
 import discord
 from discord.ext import commands
+
+try:
+    from google import genai
+    from google.genai import types as genai_types
+except Exception:  # pragma: no cover - optional dependency
+    genai = None  # type: ignore[assignment]
+    genai_types = None  # type: ignore[assignment]
 
 from service.db import db_path
 
@@ -46,9 +51,18 @@ VOICE_CATEGORIES = {
     1289721245281292290: "casual",  # Casual/Spaß Kategorie
 }
 
-# AI Configuration (Anthropic Claude)
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+# AI Configuration (Gemini)
+GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("LFG_GEMINI_MODEL", "gemini-3-pro-preview")
+GEMINI_VOICE_MODEL = os.getenv("LFG_GEMINI_VOICE_MODEL", GEMINI_MODEL)
 USE_AI_DETECTION = os.getenv("LFG_USE_AI", "true").lower() in ("true", "1", "yes")
+
+# Zusatz-Rolle für neue Spieler (\"Unbekannt\")
+UNKNOWN_ROLE_ID = int(os.getenv("LFG_UNKNOWN_ROLE_ID", "0"))
+UNKNOWN_RANK_NAME = os.getenv("LFG_UNKNOWN_RANK_NAME", "Unbekannt")
+UNKNOWN_RANK_NAME_LOWER = UNKNOWN_RANK_NAME.lower()
+# Bis zu welchem Rang sollen Unbekannte gematcht werden (Default: Emissary = 6)
+UNKNOWN_MAX_MATCH_RANK = max(1, min(11, int(os.getenv("LFG_UNKNOWN_MAX_MATCH_RANK", "6"))))
 
 # Deadlock Rank-System (muss mit rank_voice_manager.py übereinstimmen)
 DISCORD_RANK_ROLES = {
@@ -65,6 +79,9 @@ DISCORD_RANK_ROLES = {
     1331458087349129296: ("Eternus", 11),
 }
 
+if UNKNOWN_ROLE_ID:
+    DISCORD_RANK_ROLES[UNKNOWN_ROLE_ID] = (UNKNOWN_RANK_NAME, 0)
+
 
 class SteamRankChecker(commands.Cog):
     """
@@ -75,6 +92,9 @@ class SteamRankChecker(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.db: Optional[aiosqlite.Connection] = None
+
+        self._gemini_client: Optional[object] = None
+        self._gemini_init_failed = False
 
         # Rate limiting: User -> letzter LFG-Timestamp
         self.last_lfg_per_user: Dict[int, float] = {}
@@ -96,19 +116,72 @@ class SteamRankChecker(commands.Cog):
         self.db = await aiosqlite.connect(str(db_path()))
         self.db.row_factory = aiosqlite.Row
 
+    def _get_gemini_client(self) -> Optional[object]:
+        """Lazy-init Gemini Client once and reuse it."""
+        if self._gemini_init_failed:
+            return None
+
+        if not GEMINI_API_KEY:
+            return None
+
+        if genai is None or genai_types is None:
+            self._gemini_init_failed = True
+            log.warning("google-genai Paket fehlt – AI-Erkennung deaktiviert.")
+            return None
+
+        if self._gemini_client:
+            return self._gemini_client
+
+        try:
+            self._gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        except Exception:
+            self._gemini_init_failed = True
+            log.exception("Konnte Gemini Client nicht initialisieren")
+            return None
+
+        return self._gemini_client
+
+    async def _generate_gemini_text(
+        self,
+        *,
+        model: str,
+        contents: str,
+        max_output_tokens: int,
+        temperature: float
+    ) -> Optional[str]:
+        """Kapselt den Gemini-Aufruf im Threadpool, damit der Event Loop frei bleibt."""
+        client = self._get_gemini_client()
+        if not client or genai_types is None:
+            return None
+
+        def _call_model() -> Optional[str]:
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=genai_types.GenerateContentConfig(
+                        temperature=temperature,
+                        max_output_tokens=max_output_tokens,
+                    ),
+                )
+                return (getattr(response, "text", "") or "").strip()
+            except Exception as exc:
+                log.debug("Gemini Request fehlgeschlagen: %s", exc)
+                return None
+
+        return await asyncio.to_thread(_call_model)
+
     def _get_user_rank_from_roles(self, member: discord.Member) -> Tuple[str, int]:
         """Ermittelt den höchsten Rang eines Users basierend auf Discord-Rollen"""
-        highest_rank = ("Obscurus", 0)
-        highest_rank_value = 0
+        highest_rank: Optional[Tuple[str, int]] = None
 
         for role in member.roles:
             if role.id in DISCORD_RANK_ROLES:
                 rank_name, rank_value = DISCORD_RANK_ROLES[role.id]
-                if rank_value > highest_rank_value:
+                if highest_rank is None or rank_value > highest_rank[1]:
                     highest_rank = (rank_name, rank_value)
-                    highest_rank_value = rank_value
 
-        return highest_rank
+        return highest_rank or ("Obscurus", 0)
 
     def _is_lfg_message(self, content: str) -> bool:
         """Prüft ob eine Nachricht ein LFG-Trigger enthält"""
@@ -120,44 +193,29 @@ class SteamRankChecker(commands.Cog):
         Nutzt AI um zu prüfen ob jemand nach Mitspielern sucht.
         Nur wenn kein Keyword-Match gefunden wurde.
         """
-        if not ANTHROPIC_API_KEY or not USE_AI_DETECTION:
+        if not USE_AI_DETECTION:
             return False
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    "x-api-key": ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                }
-
-                # Sehr sparsames Prompt für Token-Kosten
-                payload = {
-                    "model": "claude-3-haiku-20240307",  # Günstigstes Modell
-                    "max_tokens": 10,
-                    "messages": [{
-                        "role": "user",
-                        "content": f"Sucht diese Person nach Mitspielern für ein Spiel? Antworte nur 'ja' oder 'nein':\n\n\"{message_content}\""
-                    }]
-                }
-
-                async with session.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers=headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=5)
-                ) as resp:
-                    if resp.status != 200:
-                        log.warning("AI API Fehler: %s", resp.status)
-                        return False
-
-                    data = await resp.json()
-                    answer = data.get("content", [{}])[0].get("text", "").lower().strip()
-                    return "ja" in answer or "yes" in answer
-
-        except Exception as exc:
-            log.debug("AI-Check fehlgeschlagen: %s", exc)
+        prompt = (
+            "Antwort strikt nur mit 'ja' oder 'nein'. "
+            "Sage 'ja' nur, wenn die Nachricht eindeutig Mitspieler oder ein Spiel JETZT sucht "
+            "(LFG/LF Game, will spielen, suche Team usw.). "
+            "Sage 'nein' bei Smalltalk, Witzen, Diskussionen, Meinungen, Fragen nach News/Leaks "
+            "oder allem, was nicht klar eine Spielersuche ist. "
+            "Im Zweifel immer 'nein'.\n\n"
+            f"Nachricht: \"{message_content}\""
+        )
+        answer = await self._generate_gemini_text(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            max_output_tokens=8,
+            temperature=0,
+        )
+        if not answer:
             return False
+
+        normalized = answer.lower()
+        return normalized.startswith("ja") or normalized.startswith("yes")
 
     async def _get_all_steam_links(self) -> Dict[int, List[str]]:
         """
@@ -235,7 +293,11 @@ class SteamRankChecker(commands.Cog):
     async def _find_matching_players(
         self,
         author_rank_value: int,
-        author_id: int
+        author_id: int,
+        *,
+        min_rank: Optional[int] = None,
+        max_rank: Optional[int] = None,
+        include_unknown_until: Optional[int] = None
     ) -> List[Tuple[int, str, int, str, Optional[int]]]:
         """
         Findet Discord-User die:
@@ -245,6 +307,18 @@ class SteamRankChecker(commands.Cog):
 
         Returns: [(discord_user_id, rank_name, rank_value, stage, minutes), ...]
         """
+        if min_rank is None or max_rank is None:
+            min_rank = max(1, author_rank_value - RANK_TOLERANCE)
+            max_rank = min(11, author_rank_value + RANK_TOLERANCE)
+        else:
+            min_rank = max(1, min_rank)
+            max_rank = min(11, max_rank)
+
+        allow_unknown_matches = (
+            include_unknown_until is not None
+            and author_rank_value <= include_unknown_until
+        )
+
         # Alle Steam-Links holen
         steam_links = await self._get_all_steam_links()
 
@@ -264,8 +338,6 @@ class SteamRankChecker(commands.Cog):
             return []
 
         matching_players: List[Tuple[int, str, int, str, Optional[int]]] = []
-        min_rank = max(1, author_rank_value - RANK_TOLERANCE)
-        max_rank = min(11, author_rank_value + RANK_TOLERANCE)
 
         for discord_id, steam_ids in steam_links.items():
             # Autor überspringen
@@ -290,10 +362,17 @@ class SteamRankChecker(commands.Cog):
             if not member or member.bot:
                 continue
 
+            # Wer bereits in einem Voice Channel ist, soll nicht angepingt werden
+            if member.voice and member.voice.channel:
+                continue
+
             rank_name, rank_value = self._get_user_rank_from_roles(member)
+            is_unknown_rank = rank_value == 0 and rank_name.lower() == UNKNOWN_RANK_NAME_LOWER
 
             # Rang-Matching
-            if min_rank <= rank_value <= max_rank:
+            if allow_unknown_matches and is_unknown_rank:
+                matching_players.append((discord_id, rank_name, rank_value, user_stage, user_minutes))
+            elif min_rank <= rank_value <= max_rank:
                 matching_players.append((discord_id, rank_name, rank_value, user_stage, user_minutes))
 
         return matching_players
@@ -374,60 +453,37 @@ class SteamRankChecker(commands.Cog):
         Generiert eine freundliche, menschliche Antwort für Voice Channel Vorschläge.
         Analysiert den Stil der originalen Nachricht und antwortet auf gleicher Augenhöhe.
         """
-        if not ANTHROPIC_API_KEY or not suggestions:
+        if not suggestions:
             return None
 
-        try:
-            # Context für AI vorbereiten
-            context_lines = []
-            for channel, cat_type, members, rank_diff in suggestions:
-                member_count = len(members)
-                cat_emoji = {"ranked": "🏆", "grind": "💪", "casual": "🎉"}.get(cat_type, "🎮")
-                context_lines.append(
-                    f"{cat_emoji} {channel.name} ({cat_type}) - {member_count} Spieler"
-                )
+        # Context für AI vorbereiten
+        context_lines = []
+        for channel, cat_type, members, rank_diff in suggestions:
+            member_count = len(members)
+            cat_emoji = {"ranked": "🏆", "grind": "💪", "casual": "🎉"}.get(cat_type, "🎮")
+            context_lines.append(
+                f"{cat_emoji} {channel.name} ({cat_type}) - {member_count} Spieler"
+            )
 
-            context = "\n".join(context_lines)
+        context = "\n".join(context_lines)
+        prompt = (
+            f"Angefragt von {author_name} (Rank: {author_rank}). "
+            f"Analysiere den Schreibstil (Jugendsprache/Slang/Umgangssprache/Standard) und antworte "
+            f"im EXAKT gleichen Stil. Nutze die GLEICHEN Formulierungen, gleiche Abkürzungen, "
+            f"gleiche Wörter wenn möglich. Schreibe wie ein Kumpel auf Augenhöhe.\n\n"
+            "WICHTIG: Niemals 'Sie', immer 'du'. Keine Emojis. Max 2 Sätze.\n\n"
+            f"Original: \"{original_message}\"\n\n"
+            f"Schlage diese Voice Channels vor:\n{context}"
+        )
 
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    "x-api-key": ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                }
+        suggestion = await self._generate_gemini_text(
+            model=GEMINI_VOICE_MODEL,
+            contents=prompt,
+            max_output_tokens=180,
+            temperature=0.4,
+        )
 
-                # Stil-angepasstes Prompt
-                payload = {
-                    "model": "claude-3-haiku-20240307",
-                    "max_tokens": 150,
-                    "messages": [{
-                        "role": "user",
-                        "content": (
-                            f"Analysiere den Schreibstil (Jugendsprache/Slang/Umgangssprache/Standard) und antworte "
-                            f"im EXAKT gleichen Stil. Nutze die GLEICHEN Formulierungen, gleiche Abkürzungen, "
-                            f"gleiche Wörter wenn möglich. Schreibe wie ein Kumpel auf Augenhöhe.\n\n"
-                            f"WICHTIG: Niemals 'Sie', immer 'du'. Keine Emojis. Max 2 Sätze.\n\n"
-                            f"Original: \"{original_message}\"\n\n"
-                            f"Schlage diese Voice Channels vor:\n{context}"
-                        )
-                    }]
-                }
-
-                async with session.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers=headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=5)
-                ) as resp:
-                    if resp.status != 200:
-                        return None
-
-                    data = await resp.json()
-                    return data.get("content", [{}])[0].get("text", "").strip()
-
-        except Exception as exc:
-            log.debug("AI-Response-Generation fehlgeschlagen: %s", exc)
-            return None
+        return suggestion or None
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -481,13 +537,25 @@ class SteamRankChecker(commands.Cog):
             return
 
         author_rank_name, author_rank_value = self._get_user_rank_from_roles(message.author)
+        is_unknown_rank = author_rank_value == 0 and author_rank_name.lower() == UNKNOWN_RANK_NAME_LOWER
 
-        if author_rank_value == 0:
+        if author_rank_value == 0 and not is_unknown_rank:
             await message.reply(
-                "❌ Du hast noch keine Rang-Rolle! Bitte verknüpfe deinen Account und erhalte eine Rang-Rolle.",
+                "❌ Du hast noch keine Rang-Rolle! Bitte verknüpfe deinen Account und erhalte eine Rang-Rolle. "
+                f"Falls du neu bist, nutze die Rolle \"{UNKNOWN_RANK_NAME}\" für LFG.",
                 delete_after=15
             )
             return
+
+        # Suchbereich bestimmen
+        search_min_rank = max(1, author_rank_value - RANK_TOLERANCE)
+        search_max_rank = min(11, author_rank_value + RANK_TOLERANCE)
+        if is_unknown_rank:
+            search_min_rank = 1
+            search_max_rank = UNKNOWN_MAX_MATCH_RANK
+        rank_range_desc = f"{author_rank_name} ±{RANK_TOLERANCE}"
+        if is_unknown_rank:
+            rank_range_desc = f"{author_rank_name} bis Emissary"
 
         # Nachdenk-Nachricht schicken
         thinking_msg = await message.reply("🔍 Suche nach verfügbaren Spielern...")
@@ -495,7 +563,10 @@ class SteamRankChecker(commands.Cog):
         # Passende Spieler finden
         matching_players = await self._find_matching_players(
             author_rank_value,
-            message.author.id
+            message.author.id,
+            min_rank=search_min_rank,
+            max_rank=search_max_rank,
+            include_unknown_until=UNKNOWN_MAX_MATCH_RANK
         )
 
         # Voice Channel Vorschläge holen (nur wenn User nicht in VC ist)
@@ -507,7 +578,7 @@ class SteamRankChecker(commands.Cog):
         # Antwort erstellen
         if not matching_players and not voice_suggestions:
             await thinking_msg.edit(
-                content=f"😔 Keine Spieler im Rang-Bereich **{author_rank_name} ±{RANK_TOLERANCE}** sind derzeit online in Deadlock und keine passenden Voice Channels gefunden."
+                content=f"😔 Keine Spieler im Rang-Bereich **{rank_range_desc}** sind derzeit online in Deadlock und keine passenden Voice Channels gefunden."
             )
             return
 
@@ -529,7 +600,7 @@ class SteamRankChecker(commands.Cog):
         embed_color = discord.Color.green() if matching_players else discord.Color.blue()
         embed = discord.Embed(
             title="🎮 Verfügbare Spieler gefunden!" if matching_players else "🎮 Voice Channel Vorschläge",
-            description=f"Spieler im Rang-Bereich **{author_rank_name} ±{RANK_TOLERANCE}**" if matching_players else f"Passende Voice Channels für **{author_rank_name}**",
+            description=f"Spieler im Rang-Bereich **{rank_range_desc}**" if matching_players else f"Passende Voice Channels für **{author_rank_name}**",
             color=embed_color
         )
 

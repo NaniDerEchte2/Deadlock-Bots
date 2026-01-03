@@ -1,4 +1,4 @@
-# cogs/welcome_dm/dm_main.py
+﻿# cogs/welcome_dm/dm_main.py
 from __future__ import annotations
 
 import json
@@ -257,136 +257,31 @@ class WelcomeDM(commands.Cog):
         return embed
 
     async def run_flow_in_channel(self, channel: discord.abc.Messageable, member: discord.Member) -> bool:
-        """Gleicher Flow im (privaten) Thread/Channel. Zählung 1/5–5/5; Intro ohne Zählung."""
-        try:
-            # Intro (ohne Zählung)
-            intro_desc = (
-                "👋 **Willkommen!** Ich helfe dir, dein Erlebnis hier optimal einzustellen. "
-                "Die nächsten 2–3 Minuten genügen."
-            )
-            total_steps = 5
-            ok = await self._send_step_embed_channel(
-                channel,
-                title="Willkommen 💙",
-                desc=intro_desc,
-                step=None,
-                total=3,
-                view=IntroView(allowed_user_id=member.id),
-                color=0x00AEEF,
-            )
-            if not ok:
-                return False
-
-            # 1/3 Status
-            status_view = PlayerStatusView(allowed_user_id=member.id)
-            ok = await self._send_step_embed_channel(
-                channel,
-                title="Schritt 3/5 · Dein Status",
-                desc="Sag kurz, wo du stehst – dann passen wir alles besser an.",
-                step=3,
-                total=total_steps,
-                view=status_view,
-                color=0x95A5A6,
-            )
-            if not ok:
-                return False
-            status_choice = status_view.choice or STATUS_PLAYING
-
-            if status_choice == STATUS_NEED_BETA:
-                try:
-                    await channel.send(embed=self._beta_invite_message())
-                except Exception as exc:
-                    logger.debug("Beta-Invite Hinweis im Channel konnte nicht gesendet werden: %s", exc)
-                return True
-
-            # 4/5 Steam
-            q2_desc = steam_link_dm_description()
-            ok = await self._send_step_embed_channel(
-                channel,
-                title="Schritt 4/5 · Steam verknüpfen (skippbar)",
-                desc=q2_desc,
-                step=2,
-                total=3,
-                view=SteamLinkStepView(allowed_user_id=member.id),
-                color=0x5865F2,
-            )
-            if not ok:
-                return False
-
-            # Optional: Streamer
+        """Delegiert an das KI-Onboarding (Backwards-Compat für alte Aufrufer)."""
+        ai_cog = getattr(self.bot, "get_cog", lambda name: None)("AIOnboarding")
+        if ai_cog and hasattr(ai_cog, "start_in_channel"):
             try:
-                embed = StreamerIntroView.build_embed(member)
-                view = StreamerIntroView()
-                msg = await channel.send(embed=embed, view=view)
-                await view.wait()
-                try:
-                    await msg.delete()
-                except Exception as exc:
-                    logger.debug("StreamerIntro Channel-Message nicht gelöscht: %s", exc)
-            except Exception:
-                logger.debug("StreamerIntro Schritt (Thread) übersprungen.", exc_info=True)
+                return await ai_cog.start_in_channel(channel, member)  # type: ignore
+            except Exception as exc:
+                logger.warning("AIOnboarding.start_in_channel fehlgeschlagen: %s", exc, exc_info=True)
 
-            # 5/5 Regeln
-            q3_desc = (
-                "📜 **Regelwerk**\n"
-                "✔ Respektvoller Umgang, keine Beleidigungen/Hassrede\n"
-                "✔ Keine NSFW/Explizites, keine Leaks fremder Daten\n"
-                "✔ Kein Spam/unnötige Pings, keine Fremdwerbung/Schadsoftware\n"
-                "👉 Universalregel: **Sei kein Arschloch.**"
+        # Minimaler Fallback, falls die KI nicht läuft
+        try:
+            fallback = discord.Embed(
+                title="Willkommen!",
+                description=(
+                    "Das neue Onboarding ist gerade nicht verfügbar.\n"
+                    "Schau in #ankündigungen, finde Mitspieler in #spieler-suche "
+                    "und richte dir im Temp Voice Panel eine eigene Lane ein.\n"
+                    "Fragen? Nutze /faq oder ping das Team. 😊"
+                ),
+                color=discord.Color.blue(),
             )
-            ok = await self._send_step_embed_channel(
-                channel,
-                title="Schritt 5/5 · Regeln bestätigen",
-                desc=q3_desc,
-                step=3,
-                total=3,
-                view=RulesView(allowed_user_id=member.id),
-                color=0xE67E22,
-            )
-            if not ok:
-                return False
-
-            # Abschluss-Text
-            closing_embeds: list[discord.Embed] = []
-            if status_choice == STATUS_NEW_PLAYER:
-                embed = discord.Embed(
-                    title="✨ Neu dabei?",
-                    description="Stell Fragen – wir helfen gern. Kleine Einführung? Ping **@earlysalty** oder schreibe in **#allgemein**.",
-                    color=discord.Color.gold()
-                )
-                closing_embeds.append(embed)
-            if status_choice == STATUS_NEED_BETA:
-                # _beta_invite_message already returns an embed
-                closing_embeds.append(self._beta_invite_message())
-            if status_choice == STATUS_RETURNING:
-                embed = discord.Embed(
-                    title="🔁 Willkommen zurück!",
-                    description="Schau für Runden in LFG/Voice vorbei – viel Spaß!",
-                    color=discord.Color.green()
-                )
-                closing_embeds.append(embed)
-            if status_choice == STATUS_PLAYING:
-                embed = discord.Embed(
-                    title="✅ Viel Spaß!",
-                    description="Check **Guides** & **Ankündigungen** – und ping uns, wenn du was brauchst.",
-                    color=discord.Color.green()
-                )
-                closing_embeds.append(embed)
-
-            if closing_embeds:
-                try:
-                    for embed_item in closing_embeds:
-                        await channel.send(embed=embed_item)
-                except Exception as exc:
-                    logger.debug("Abschlussnachricht im Channel konnte nicht gesendet werden: %s", exc)
-
-            return True
-
-        except Exception as e:
-            logger.error(f"run_flow_in_channel Fehler: {e}", exc_info=True)
-            return False
-
-    # ---------------- Events ----------------
+            await channel.send(embed=fallback)
+        except Exception:
+            logger.error("Fallback-Onboarding fehlgeschlagen", exc_info=True)
+        return False
+# ---------------- Events ----------------
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):

@@ -4,6 +4,7 @@ import logging
 from typing import Dict, List, Optional, Tuple, Union
 
 import aiohttp
+from service.http_client import build_resilient_connector
 
 TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 TWITCH_API_BASE = "https://api.twitch.tv/helix"
@@ -32,7 +33,13 @@ class TwitchAPI:
     # ---- Session lifecycle -------------------------------------------------
     def _ensure_session(self) -> None:
         if self._session is None:
-            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
+            connector = build_resilient_connector()
+            timeout = aiohttp.ClientTimeout(total=20)
+            self._session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector,
+                trust_env=True,
+            )
             self._own_session = True
 
     def get_http_session(self) -> aiohttp.ClientSession:
@@ -83,12 +90,26 @@ class TwitchAPI:
         self._ensure_session()
         assert self._session is not None
         url = f"{TWITCH_API_BASE}{path}"
-        async with self._session.get(url, headers=self._headers(), params=params) as r:
-            if r.status != 200:
-                txt = await r.text()
-                self._log.error("GET %s failed: HTTP %s: %s", path, r.status, txt[:300].replace("\n", " "))
-                r.raise_for_status()
-            return await r.json()
+        last_exc: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                async with self._session.get(url, headers=self._headers(), params=params) as r:
+                    if r.status != 200:
+                        txt = await r.text()
+                        self._log.error("GET %s failed: HTTP %s: %s", path, r.status, txt[:300].replace("\n", " "))
+                        r.raise_for_status()
+                    return await r.json()
+            except aiohttp.ClientResponseError:
+                raise
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+                last_exc = exc
+                if attempt < 2:
+                    delay = 0.5 * (attempt + 1)
+                    self._log.warning("GET %s retry %s/3 after %s (%s)", path, attempt + 1, delay, exc.__class__.__name__)
+                    await asyncio.sleep(delay)
+                    continue
+                self._log.error("GET %s failed after retries: %s", path, exc)
+                raise last_exc
 
     # ---- Categories --------------------------------------------------------
     async def search_category_id(self, query: str) -> Optional[str]:

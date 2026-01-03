@@ -25,6 +25,7 @@ import hashlib
 import discord
 from discord.ext import commands
 from service.config import settings
+from service.http_client import build_resilient_connector
 # --- DEBUG: Herkunft der geladenen Dateien ausgeben ---
 import re
 from service import db # Import db for worker communication
@@ -215,6 +216,8 @@ class MasterBot(commands.Bot):
         intents.voice_states = True
         intents.guilds = True
 
+        connector = build_resilient_connector()
+
         super().__init__(
             command_prefix=settings.command_prefix,
             intents=intents,
@@ -224,6 +227,7 @@ class MasterBot(commands.Bot):
             chunk_guilds_at_startup=False,
             max_messages=1000,
             member_cache_flags=discord.MemberCacheFlags.from_intents(intents),
+            connector=connector,
         )
 
         self.setup_logging()

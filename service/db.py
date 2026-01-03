@@ -17,9 +17,11 @@ import atexit
 import sqlite3
 import threading
 import logging
-from contextlib import contextmanager
+import asyncio
+import contextvars
+from contextlib import contextmanager, asynccontextmanager
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional, AsyncIterator
 
 
 log = logging.getLogger(__name__)
@@ -51,6 +53,10 @@ _LOCK = threading.RLock()
 _DB_PATH_CACHED: Optional[str] = None
 
 logger = logging.getLogger(__name__)
+Row = sqlite3.Row  # Typalias für Konsumenten
+
+# ContextVar, um festzustellen ob wir uns in einem (verschachtelten) Transaction-Block befinden
+_TX_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("deadlock_db_tx_depth", default=0)
 
 
 # ---------- Pfad-Auflösung ----------
@@ -138,6 +144,32 @@ def connect() -> sqlite3.Connection:
     return _CONN
 
 
+def is_connected() -> bool:
+    """
+    Gibt zurueck, ob bereits eine gemeinsame Verbindung initialisiert wurde.
+    Baut keine neue Verbindung auf.
+    """
+    return _CONN is not None
+
+
+def close_connection() -> None:
+    """
+    Schliesst die geteilte Verbindung und setzt den Zustand zurueck.
+    Wird genutzt, um den DB-Layer als Cog neu zu laden.
+    """
+    global _CONN
+    with _LOCK:
+        if _CONN is None:
+            return
+        try:
+            _CONN.close()
+            log.info("SQLite-Verbindung geschlossen (manual reset)")
+        except sqlite3.Error as e:
+            log.warning("Fehler beim Schliessen der DB-Verbindung: %s", e)
+        finally:
+            _CONN = None
+
+
 @contextmanager
 def get_conn() -> Iterator[sqlite3.Connection]:
     """Contextmanager, der die zentrale Verbindung thread-safe bereitstellt."""
@@ -195,6 +227,32 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               peak_users INTEGER,
               user_counts_json TEXT,
               co_player_ids TEXT
+            );
+
+            -- Voice Feedback (erste Voice-Erfahrung)
+            CREATE TABLE IF NOT EXISTS voice_feedback_requests(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              guild_id INTEGER,
+              channel_id INTEGER,
+              channel_name TEXT,
+              co_player_names TEXT,
+              duration_seconds INTEGER,
+              request_type TEXT DEFAULT 'first',
+              status TEXT,
+              error_message TEXT,
+              prompt_message_id INTEGER,
+              sent_at_ts INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS voice_feedback_responses(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              request_id INTEGER,
+              user_id INTEGER NOT NULL,
+              message_id INTEGER,
+              content TEXT,
+              received_at_ts INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              FOREIGN KEY(request_id) REFERENCES voice_feedback_requests(id)
             );
 
             -- Steam-Links (mehrere Konten pro User möglich)
@@ -416,6 +474,13 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
                 raise
         try:
             c.execute(
+                "ALTER TABLE voice_feedback_requests ADD COLUMN request_type TEXT DEFAULT 'first'"
+            )
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+        try:
+            c.execute(
                 "ALTER TABLE voice_session_log ADD COLUMN display_name TEXT"
             )
         except sqlite3.OperationalError as exc:
@@ -467,6 +532,10 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute("CREATE INDEX IF NOT EXISTS idx_voice_log_user ON voice_session_log(user_id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_voice_log_guild ON voice_session_log(guild_id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_voice_log_display_name ON voice_session_log(display_name)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_fb_req_user ON voice_feedback_requests(user_id, sent_at_ts)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_fb_req_status ON voice_feedback_requests(status, sent_at_ts)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_fb_req_type ON voice_feedback_requests(request_type, sent_at_ts)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_fb_resp_req ON voice_feedback_responses(request_id)")
 
             # Performance-Indizes für häufige Queries
             # Leaderboard-Query: ORDER BY total_points DESC, total_seconds DESC
@@ -495,6 +564,13 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
 
 # ---------- Low-Level Helpers (sicher, mit Bind-Parametern) ----------
 
+def _in_transaction_context() -> bool:
+    """Prüft, ob der aktuelle Task in einem db.transaction()-Block läuft."""
+    try:
+        return _TX_DEPTH.get() > 0
+    except LookupError:
+        return False
+
 def execute(sql: str, params: Iterable[Any] = ()) -> None:
     with _LOCK:
         connect().execute(sql, params)
@@ -522,6 +598,35 @@ def query_all(sql: str, params: Iterable[Any] = ()):  # -> list[sqlite3.Row]
         finally:
             cur.close()
 
+async def execute_async(sql: str, params: Iterable[Any] = ()) -> None:
+    """
+    Async Wrapper f�r execute(); nutzt Thread-Offloading au�erhalb von Transaktionen.
+    """
+    if _in_transaction_context():
+        return execute(sql, params)
+    await asyncio.to_thread(execute, sql, params)
+
+
+async def executemany_async(sql: str, seq_of_params: Iterable[Iterable[Any]]) -> None:
+    """Async Wrapper f�r executemany(); thread-offloaded au�erhalb von Transaktionen."""
+    if _in_transaction_context():
+        return executemany(sql, seq_of_params)
+    await asyncio.to_thread(executemany, sql, seq_of_params)
+
+
+async def query_one_async(sql: str, params: Iterable[Any] = ()):
+    """Async Wrapper f�r query_one(); thread-offloaded au�erhalb von Transaktionen."""
+    if _in_transaction_context():
+        return query_one(sql, params)
+    return await asyncio.to_thread(query_one, sql, params)
+
+
+async def query_all_async(sql: str, params: Iterable[Any] = ()):
+    """Async Wrapper f�r query_all(); thread-offloaded au�erhalb von Transaktionen."""
+    if _in_transaction_context():
+        return query_all(sql, params)
+    return await asyncio.to_thread(query_all, sql, params)
+
 
 # ---------- KV (namespaced) ----------
 
@@ -538,6 +643,44 @@ def set_kv(ns: str, k: str, v: str) -> None:
 def get_kv(ns: str, k: str) -> Optional[str]:
     row = query_one("SELECT v FROM kv_store WHERE ns=? AND k=?", (ns, k))
     return row[0] if row else None
+
+
+# ---------- Transactions (async) ----------
+
+@asynccontextmanager
+async def transaction() -> AsyncIterator[sqlite3.Connection]:
+    """
+    Einfache async Transaction (BEGIN/COMMIT/ROLLBACK) auf der gemeinsamen Verbindung.
+    - serialisiert den Zugriff �ber _LOCK
+    - verschachtelte Transaktionen werden auf die �u�erste zusammengefasst
+    """
+    depth = _TX_DEPTH.get()
+    token = _TX_DEPTH.set(depth + 1)
+    outermost = depth == 0
+
+    if outermost:
+        _LOCK.acquire()
+        conn = connect()
+        conn.execute("BEGIN;")
+
+    try:
+        yield connect()
+        if outermost:
+            connect().execute("COMMIT;")
+    except Exception:
+        if outermost:
+            try:
+                connect().execute("ROLLBACK;")
+            except Exception as exc:  # pragma: no cover - nur Logging
+                logger.error("DB rollback failed: %s", exc, exc_info=True)
+            finally:
+                _LOCK.release()
+        raise
+    else:
+        if outermost:
+            _LOCK.release()
+    finally:
+        _TX_DEPTH.reset(token)
 
 
 # ---------- Pflege ----------

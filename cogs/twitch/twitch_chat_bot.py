@@ -16,7 +16,6 @@ import os
 
 try:
     from twitchio.ext import commands as twitchio_commands
-    from twitchio import Message, Channel
     TWITCHIO_AVAILABLE = True
 except ImportError:
     TWITCHIO_AVAILABLE = False
@@ -61,7 +60,7 @@ if TWITCHIO_AVAILABLE:
             log.info("Twitch Chat Bot ready | Logged in as: %s", self.nick)
             log.info("Connected to channels: %s", ", ".join([c.name for c in self.connected_channels]))
 
-        async def event_message(self, message: Message):
+        async def event_message(self, message):
             """Wird bei jeder Chat-Nachricht aufgerufen."""
             # Ignoriere Bot-Nachrichten
             if message.echo:
@@ -381,8 +380,8 @@ else:
         pass
 
     async def create_twitch_chat_bot(*args, **kwargs):
-        log.error(
-            "TwitchIO nicht installiert. Twitch Chat Bot kann nicht erstellt werden. "
-            "Installation: pip install twitchio"
+        log.warning(
+            "TwitchIO nicht installiert – Twitch Chat Bot wird übersprungen. "
+            "Installation optional: pip install twitchio"
         )
         return None

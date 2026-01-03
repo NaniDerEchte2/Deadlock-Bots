@@ -67,7 +67,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ("manual_verified_until", "TEXT"),
         ("manual_verified_at", "TEXT"),
         ("manual_partner_opt_out", "INTEGER DEFAULT 0"),
-        ("raid_bot_enabled", "INTEGER DEFAULT 1"),  # Auto-Raid Opt-in/out
+        ("raid_bot_enabled", "INTEGER DEFAULT 0"),  # Auto-Raid Opt-in/out (default: off)
         ("created_at", "TEXT DEFAULT CURRENT_TIMESTAMP"),
     ]:
         _add_column_if_missing(conn, "twitch_streamers", col, spec)
@@ -165,6 +165,23 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_twitch_raid_auth_login ON twitch_raid_auth(twitch_login)"
     )
 
+    # Safety: Disable auto-raid for streamer entries without an active OAuth grant.
+    try:
+        conn.execute(
+            """
+            UPDATE twitch_streamers
+            SET raid_bot_enabled = 0
+            WHERE (raid_bot_enabled IS NULL OR raid_bot_enabled = 1)
+              AND twitch_user_id IS NOT NULL
+              AND twitch_user_id NOT IN (
+                  SELECT twitch_user_id FROM twitch_raid_auth WHERE raid_enabled = 1
+              )
+            """
+        )
+        conn.commit()
+    except Exception:
+        log.debug("Could not apply auto-raid safety migration", exc_info=True)
+
     # 6) Raid-History (Metadaten zu durchgeführten Raids)
     conn.execute(
         """
@@ -194,4 +211,3 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_twitch_raid_history_executed ON twitch_raid_history(executed_at)"
     )
-

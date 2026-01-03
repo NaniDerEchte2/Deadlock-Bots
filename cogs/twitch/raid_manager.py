@@ -206,6 +206,18 @@ class RaidAuthManager:
             conn.commit()
         log.info("Set raid_enabled=%s for user_id=%s", enabled, twitch_user_id)
 
+    def has_enabled_auth(self, twitch_user_id: str) -> bool:
+        """
+        True, wenn ein OAuth-Grant mit raid_enabled=1 für den Streamer existiert.
+        Nutzt DB-Check, damit wir vor Auto-Raids kurzschließen können.
+        """
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT raid_enabled FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                (twitch_user_id,),
+            ).fetchone()
+        return bool(row and row[0])
+
 
 class RaidExecutor:
     """Führt Raids aus und speichert Metadaten."""

@@ -4,6 +4,7 @@ import os
 import asyncio
 import logging
 import sqlite3
+from datetime import datetime
 from typing import Optional, Dict, Union, Tuple, Iterable
 from urllib.parse import urlparse, urlunparse
 
@@ -30,6 +31,8 @@ POLL_INTERVAL = 15              # Sekunden – Voice-Alive-Check
 DEFAULT_TEST_TARGET_ID = int(os.getenv("NUDGE_TEST_DEFAULT_ID", "0"))
 LOG_CHANNEL_ID = 1374364800817303632  # Meldungen in diesen Kanal posten
 NUDGE_VIEW_VERSION = 2          # Version der persistierten DM-View
+VOICE_NUDGE_FIRST_SEEN_NS = "voice_nudge_first_seen"
+VOICE_NUDGE_DONE_NS = "voice_nudge_done"
 
 # Rollen mit Opt-Out (werden NICHT kontaktiert)
 # Standard enthält die gewünschte English-only Rolle: 1309741866098491479
@@ -65,6 +68,38 @@ def _prefer_discord_deeplink(browser_url: Optional[str]) -> Tuple[Optional[str],
     except Exception as exc:
         log.debug("[nudge] Deeplink-Erkennung schlug fehl für %r: %s", browser_url, exc)
     return browser_url, None
+
+
+def _today_str() -> str:
+    return datetime.utcnow().date().isoformat()
+
+
+def _get_first_voice_seen(user_id: int) -> Optional[str]:
+    try:
+        return db.get_kv(VOICE_NUDGE_FIRST_SEEN_NS, str(int(user_id)))
+    except Exception:
+        return None
+
+
+def _remember_first_voice_seen(user_id: int) -> None:
+    try:
+        db.set_kv(VOICE_NUDGE_FIRST_SEEN_NS, str(int(user_id)), _today_str())
+    except Exception:
+        log.debug("[nudge] Konnte first-seen nicht speichern", exc_info=True)
+
+
+def _mark_nudge_done(user_id: int, status: str = "sent") -> None:
+    try:
+        db.set_kv(VOICE_NUDGE_DONE_NS, str(int(user_id)), status)
+    except Exception:
+        log.debug("[nudge] Konnte Nudge-Done-Flag nicht setzen", exc_info=True)
+
+
+def _is_nudge_done(user_id: int) -> bool:
+    try:
+        return bool(db.get_kv(VOICE_NUDGE_DONE_NS, str(int(user_id))))
+    except Exception:
+        return False
 
 # ---------- DB ----------
 def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: int = 0) -> None:
@@ -494,10 +529,19 @@ class SteamLinkVoiceNudge(commands.Cog):
         if not state:
             return False
 
+        try:
+            message_id = state["message_id"] if "message_id" in state.keys() else None  # type: ignore[index]
+            notified_at = state["notified_at"] if "notified_at" in state.keys() else None  # type: ignore[index]
+        except Exception:
+            message_id = None
+            notified_at = None
+
+        if not message_id:
+            return bool(notified_at)
+
         message = await self._fetch_nudge_message(member, state)
         if not message:
-            _clear_nudge_state(member.id)
-            return False
+            return bool(notified_at)
 
         try:
             stored_version = int(state.get("view_version", 0)) if hasattr(state, "get") else int(state["view_version"] or 0)
@@ -531,8 +575,22 @@ class SteamLinkVoiceNudge(commands.Cog):
                 if _has_any_steam_link(member.id):
                     log.debug("[nudge] user already linked id=%s", member.id)
                     return
+                if _is_nudge_done(member.id):
+                    log.debug("[nudge] user already nudged id=%s", member.id)
+                    return
                 if await self._has_active_nudge(member):
                     log.debug("[nudge] user already notified id=%s", member.id)
+                    return
+
+                today = _today_str()
+                first_seen = _get_first_voice_seen(member.id)
+                if not first_seen:
+                    _remember_first_voice_seen(member.id)
+                    log.debug("[nudge] first voice join recorded id=%s", member.id)
+                    return
+
+                if first_seen == today:
+                    log.debug("[nudge] same-day join, nudge postponed id=%s", member.id)
                     return
                 if member.id in self._tasks and not self._tasks[member.id].done():
                     try:
@@ -590,6 +648,7 @@ class SteamLinkVoiceNudge(commands.Cog):
                 channel_id=dm.id,
                 view_version=NUDGE_VIEW_VERSION,
             )
+            _mark_nudge_done(uid, "sent")
 
             ch = _log_chan(self.bot)
             if ch:
