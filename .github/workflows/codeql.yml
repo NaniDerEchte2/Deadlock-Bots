@@ -138,7 +138,7 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build }}
@@ -148,7 +148,7 @@ jobs:
       # Für compiled langs übernimmt CodeQL bei 'autobuild' den Versuch automatisch.
       # Fehlschläge sollen NICHT den gesamten Workflow killen.
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
           upload: true
