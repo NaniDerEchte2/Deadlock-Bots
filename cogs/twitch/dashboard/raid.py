@@ -173,7 +173,8 @@ class DashboardRaidMixin:
                 {"success": True, "message": f"Auto-Raid {'aktiviert' if enabled else 'deaktiviert'}"}
             )
         except Exception as e:
-            log.exception("Failed to toggle raid for %s", user_id)
+            safe_user_id = user_id.replace("\r", "").replace("\n", "")
+            log.exception("Failed to toggle raid for %s", safe_user_id)
             return web.json_response({"error": str(e)}, status=500)
 
     async def raid_history(self, request: web.Request) -> web.Response:
