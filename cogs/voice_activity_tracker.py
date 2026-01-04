@@ -818,6 +818,18 @@ class VoiceActivityTrackerCog(commands.Cog):
         if not user_id:
             return
 
+        # Nur fortfahren, wenn bereits eine erste Feedback-Anfrage existiert (nur neue User anfragen)
+        try:
+            had_first = central_db.query_one(
+                "SELECT 1 FROM voice_feedback_requests WHERE user_id=? AND request_type='first' LIMIT 1",
+                (user_id,),
+            )
+            if not had_first:
+                return
+        except Exception as exc:
+            logger.debug(f"Second feedback check skipped (no first request): {exc}")
+            return
+
         # schon gesendet?
         try:
             already = central_db.query_one(

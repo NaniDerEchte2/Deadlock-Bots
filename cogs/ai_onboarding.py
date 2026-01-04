@@ -15,11 +15,6 @@ from discord.ext import commands
 
 from service import db as service_db
 
-try:
-    from openai import OpenAI
-except Exception:  # pragma: no cover - optional dependency
-    OpenAI = None  # type: ignore[assignment]
-
 log = logging.getLogger(__name__)
 
 PRIMARY_MODEL = os.getenv("DEADLOCK_ONBOARD_MODEL", "gpt-5")
@@ -307,20 +302,6 @@ class AIOnboarding(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._client: Optional[OpenAI] = None
-
-        if OpenAI is None:
-            log.warning("OpenAI-Paket fehlt – AI Onboarding fällt auf statische Antworten zurück.")
-        else:
-            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("DEADLOCK_OPENAI_KEY")
-            if not api_key:
-                log.warning("Kein OPENAI_API_KEY/DEADLOCK_OPENAI_KEY gesetzt – KI-Onboarding deaktiviert.")
-            else:
-                try:
-                    self._client = OpenAI(api_key=api_key)
-                except Exception:  # pragma: no cover - defensive
-                    log.exception("OpenAI-Client konnte nicht initialisiert werden.")
-                    self._client = None
 
     async def cog_load(self):
         self._restore_persistent_views()
@@ -390,27 +371,13 @@ class AIOnboarding(commands.Cog):
             log.info("%s AI-Onboarding-Views nach Neustart reaktiviert", restored)
 
     # ---------- LLM ----------
-    def _responses_create(self, **kwargs):
-        if self._client is None:
-            raise RuntimeError("OpenAI client not initialized")
-        try:
-            return self._client.responses.create(
-                **kwargs,
-                max_output_tokens=MAX_OUTPUT_TOKENS,
-            )
-        except TypeError:
-            return self._client.responses.create(
-                **kwargs,
-                max_tokens=MAX_OUTPUT_TOKENS,
-            )
-
     async def generate_personalized_text(
         self,
         *,
         answers: UserAnswers,
         user: discord.abc.User,
     ) -> Tuple[str, Dict[str, Any]]:
-        meta: Dict[str, Any] = {"model": PRIMARY_MODEL}
+        meta: Dict[str, Any] = {}
 
         prompt = dedent(
             f"""
@@ -422,99 +389,51 @@ class AIOnboarding(commands.Cog):
             {answers.as_prompt_block()}
 
             Form:
-            - Schreibe flüssig, 8–12 Sätze, gern kurze Absätze oder Bullets.
+            - Schreibe fluessig, 8-12 Saetze, gern kurze Absaetze oder Bullets.
             - Keine doppelten Einleitungen.
-            - Nenne nur Kanäle/Features aus dem Kontext.
+            - Nenne nur Kanaele/Features aus dem Kontext.
             """
         ).strip()
 
-        if self._client is None:
-            fallback = (
-                "Hey, willkommen auf dem Server! Basierend auf deinen Antworten:\n\n"
-                f"• Interessen: {answers.interests or '–'}\n"
-                f"• Erwartungen: {answers.expectations or '–'}\n"
-                f"• Stil: {answers.style or 'locker'}\n\n"
-                "Starte gern mit #spieler-suche, schau im Temp Voice Panel vorbei und gönn dir einen Blick in #ankündigungen. "
-                "Für Fragen: /faq. Steam kannst du mit /steam link koppeln. Viel Spaß! 🚀"
-            )
-            meta["error"] = "no_client"
-            return fallback, meta
+        system_prompt = SYSTEM_PROMPT
+        ai = getattr(self.bot, "get_cog", lambda name: None)("AIConnector")
 
-        try:
-            response = await asyncio.to_thread(
-                self._responses_create,
+        if ai:
+            text, meta_resp = await ai.generate_text(
+                provider="gemini",
+                prompt=prompt,
+                system_prompt=system_prompt,
+                model=os.getenv("DEADLOCK_GEMINI_MODEL", "gemini-2.0-flash"),
+                max_output_tokens=MAX_OUTPUT_TOKENS,
+                temperature=0.45,
+            )
+            meta.update(meta_resp)
+            if text:
+                return text, meta
+
+            text, meta_resp = await ai.generate_text(
+                provider="openai",
+                prompt=prompt,
+                system_prompt=system_prompt,
                 model=PRIMARY_MODEL,
-                input=prompt,
-                instructions=SYSTEM_PROMPT,
+                max_output_tokens=MAX_OUTPUT_TOKENS,
+                temperature=0.45,
             )
-        except Exception as exc:  # pragma: no cover - defensive
-            log.warning("Model '%s' fehlgeschlagen: %s", PRIMARY_MODEL, exc)
-            meta["error"] = repr(exc)
-            fallback = (
-                "Willkommen! Ich konnte gerade keinen KI-Text erzeugen. "
-                "Schau in #ankündigungen, hol dir Mitspieler in #spieler-suche und richte dir im Temp Voice Panel deine Lane ein. "
-                "Fragen? /faq hilft. Viel Spaß! 😊"
-            )
-            return fallback, meta
+            meta.update(meta_resp)
+            if text:
+                return text, meta
 
-        # Robust extrahieren
-        content = ""
-        try:
-            output_text = getattr(response, "output_text", None)
-            if not output_text and isinstance(response, dict):
-                output_text = response.get("output_text")
-
-            if output_text:
-                content = str(output_text).strip()
-            else:
-                out = getattr(response, "output", None) or getattr(response, "outputs", None)
-                if out is None and isinstance(response, dict):
-                    out = response.get("output") or response.get("outputs")
-                fragments = []
-                for item in out or []:
-                    item_type = getattr(item, "type", None)
-                    if item_type is None and isinstance(item, dict):
-                        item_type = item.get("type")
-                    if item_type != "message":
-                        continue
-                    item_content = getattr(item, "content", None)
-                    if item_content is None and isinstance(item, dict):
-                        item_content = item.get("content")
-                    for part in item_content or []:
-                        txt = getattr(part, "text", None)
-                        if txt is None and isinstance(part, dict):
-                            txt = part.get("text")
-                        if txt:
-                            fragments.append(str(txt))
-                content = "".join(fragments).strip()
-        except Exception:
-            log.exception("Antwort-Parsing fehlgeschlagen")
-            content = ""
-
-        if not content:
-            content = (
-                "Willkommen! Hol dir Mitspieler in #spieler-suche, schau in #ankündigungen vorbei "
-                "und richte dir deine Lane im Temp Voice Panel ein. Bei Fragen: /faq."
-            )
-
-        usage = getattr(response, "usage", None)
-        if usage is None and isinstance(response, dict):
-            usage = response.get("usage")
-        if usage is not None:
-            meta["usage"] = {
-                "input_tokens": getattr(usage, "input_tokens", None),
-                "output_tokens": getattr(usage, "output_tokens", None),
-                "total_tokens": getattr(usage, "total_tokens", None),
-            }
-
-        response_model = getattr(response, "model", None)
-        if response_model is None and isinstance(response, dict):
-            response_model = response.get("model")
-        if response_model:
-            meta["model"] = response_model
-
-        return content, meta
-
+        fallback = (
+            "Hey, willkommen auf dem Server! Basierend auf deinen Antworten:\n\n"
+            f"- Interessen: {answers.interests or '-'}\n"
+            f"- Erwartungen: {answers.expectations or '-'}\n"
+            f"- Stil: {answers.style or 'locker'}\n\n"
+            "Starte gern mit #spieler-suche, schau im Temp Voice Panel vorbei und goenn dir einen Blick in #ankuendigungen. "
+            "Fuer Fragen: /faq. Steam kannst du mit /steam link koppeln. Viel Spass! :)"
+        )
+        meta.setdefault("provider", "fallback")
+        meta.setdefault("error", "no_ai_available")
+        return fallback, meta
     # ---------- Public API ----------
     async def start_in_channel(self, channel: discord.abc.Messageable, member: discord.Member) -> bool:
         """Postet den Start-Button in einen Thread/Channel und registriert Persistenz."""
@@ -541,6 +460,23 @@ class AIOnboarding(commands.Cog):
         except Exception:
             log.exception("AI Onboarding konnte nicht gestartet werden")
             return False
+
+    @commands.command(name="aiob")
+    @commands.has_permissions(administrator=True)
+    async def ai_onboarding_test(self, ctx: commands.Context):
+        """Schickt dir den AI-Onboarding Start-Button in die DMs zum Testen."""
+        try:
+            dm = ctx.author.dm_channel or await ctx.author.create_dm()
+        except Exception as exc:
+            log.warning("Konnte DM fuer aiob nicht oeffnen: %s", exc)
+            await ctx.reply("Konnte deine DMs nicht oeffnen.", mention_author=False)
+            return
+
+        ok = await self.start_in_channel(dm, ctx.author)
+        if ok:
+            await ctx.reply("AI-Onboarding Test wurde an deine DMs geschickt. Keine automatischen DMs aktiv.", mention_author=False)
+        else:
+            await ctx.reply("Konnte den AI-Onboarding Test nicht starten.", mention_author=False)
 
     async def _log_session(
         self,

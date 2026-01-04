@@ -16,13 +16,6 @@ import aiosqlite
 import discord
 from discord.ext import commands
 
-try:
-    from google import genai
-    from google.genai import types as genai_types
-except Exception:  # pragma: no cover - optional dependency
-    genai = None  # type: ignore[assignment]
-    genai_types = None  # type: ignore[assignment]
-
 from service.db import db_path
 
 log = logging.getLogger("SteamRankChecker")
@@ -52,7 +45,6 @@ VOICE_CATEGORIES = {
 }
 
 # AI Configuration (Gemini)
-GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("LFG_GEMINI_MODEL", "gemini-3-pro-preview")
 GEMINI_VOICE_MODEL = os.getenv("LFG_GEMINI_VOICE_MODEL", GEMINI_MODEL)
 USE_AI_DETECTION = os.getenv("LFG_USE_AI", "true").lower() in ("true", "1", "yes")
@@ -93,9 +85,6 @@ class SteamRankChecker(commands.Cog):
         self.bot = bot
         self.db: Optional[aiosqlite.Connection] = None
 
-        self._gemini_client: Optional[object] = None
-        self._gemini_init_failed = False
-
         # Rate limiting: User -> letzter LFG-Timestamp
         self.last_lfg_per_user: Dict[int, float] = {}
         self.lfg_cooldown_seconds = 300  # 5 Minuten Cooldown pro User
@@ -116,60 +105,27 @@ class SteamRankChecker(commands.Cog):
         self.db = await aiosqlite.connect(str(db_path()))
         self.db.row_factory = aiosqlite.Row
 
-    def _get_gemini_client(self) -> Optional[object]:
-        """Lazy-init Gemini Client once and reuse it."""
-        if self._gemini_init_failed:
-            return None
-
-        if not GEMINI_API_KEY:
-            return None
-
-        if genai is None or genai_types is None:
-            self._gemini_init_failed = True
-            log.warning("google-genai Paket fehlt – AI-Erkennung deaktiviert.")
-            return None
-
-        if self._gemini_client:
-            return self._gemini_client
-
-        try:
-            self._gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-        except Exception:
-            self._gemini_init_failed = True
-            log.exception("Konnte Gemini Client nicht initialisieren")
-            return None
-
-        return self._gemini_client
-
     async def _generate_gemini_text(
         self,
         *,
         model: str,
         contents: str,
         max_output_tokens: int,
-        temperature: float
+        temperature: float,
     ) -> Optional[str]:
-        """Kapselt den Gemini-Aufruf im Threadpool, damit der Event Loop frei bleibt."""
-        client = self._get_gemini_client()
-        if not client or genai_types is None:
+        """Routed Gemini-Aufruf über den zentralen AIConnector."""
+        ai = getattr(self.bot, "get_cog", lambda name: None)("AIConnector")
+        if not ai:
             return None
-
-        def _call_model() -> Optional[str]:
-            try:
-                response = client.models.generate_content(
-                    model=model,
-                    contents=contents,
-                    config=genai_types.GenerateContentConfig(
-                        temperature=temperature,
-                        max_output_tokens=max_output_tokens,
-                    ),
-                )
-                return (getattr(response, "text", "") or "").strip()
-            except Exception as exc:
-                log.debug("Gemini Request fehlgeschlagen: %s", exc)
-                return None
-
-        return await asyncio.to_thread(_call_model)
+        text, _meta = await ai.generate_text(
+            provider="gemini",
+            prompt=contents,
+            system_prompt=None,
+            model=model,
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+        )
+        return text
 
     def _get_user_rank_from_roles(self, member: discord.Member) -> Tuple[str, int]:
         """Ermittelt den höchsten Rang eines Users basierend auf Discord-Rollen"""

@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Tuple
@@ -24,10 +23,6 @@ from discord.ext import commands, tasks
 
 from service import db as central_db
 
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
 
 logger = logging.getLogger(__name__)
 
@@ -39,16 +34,6 @@ class UserActivityAnalyzer(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
-
-        # OpenAI Client für menschliche Nachrichten
-        self.openai_client = None
-        if OpenAI:
-            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("DEADLOCK_OPENAI_KEY")
-            if api_key:
-                self.openai_client = OpenAI(api_key=api_key)
-                logger.info("OpenAI Client initialized for Activity Analyzer")
-            else:
-                logger.warning("OpenAI API Key not found - AI messages disabled")
 
         # Cache für Co-Spieler-Daten (wird alle 30 Min refreshed)
         self._co_player_cache: Dict[int, List[Tuple[int, int]]] = {}
@@ -883,80 +868,55 @@ class UserActivityAnalyzer(commands.Cog):
     async def generate_ping_message(
         self,
         user: discord.Member,
-        reason: str = "join",
+        reason: str = 'join',
         co_players: Optional[List[discord.Member]] = None
     ) -> str:
-        """
-        Generiert eine menschlich klingende Ping-Nachricht mit KI.
+        """Generiert eine menschlich klingende Ping-Nachricht mit KI."""
+        # Kontext fuer KI aufbauen
+        context_parts = []
+        if co_players:
+            names = ', '.join([m.display_name for m in co_players[:3]])
+            if len(co_players) > 3:
+                names += f" und {len(co_players) - 3} weitere"
+            context_parts.append(f"Deine Mitspieler {names} sind gerade online")
 
-        Args:
-            user: Der zu pingende User
-            reason: Grund für den Ping ("join", "game_ready", "friends_online", etc.)
-            co_players: Optional - Liste von Mitspielern die bereits online sind
-        """
-        # Fallback ohne KI
-        if not self.openai_client:
-            return await self._generate_fallback_message(user, reason, co_players)
+        reason_texts = {
+            'join': 'zum Spielen einladen',
+            'game_ready': 'dass ein Game startet',
+            'friends_online': 'dass Freunde online sind',
+            'ranked_session': 'zu einer Ranked Session einladen',
+        }
+        reason_text = reason_texts.get(reason, 'zum Spielen einladen')
 
-        try:
-            # Kontext für KI aufbauen
-            context_parts = []
+        system_prompt = 'Du bist ein freundlicher Discord-Bot der Spieler zum Gaming einlaedt.\n\nSchreibe eine kurze, lockere Nachricht auf Deutsch die:\n- Natuerlich und menschlich klingt (keine AI-Sprache!)\n- Freundlich und einladend ist\n- Nicht nach Bot klingt\n- Umgangssprache nutzt (z.B. "Bock auf ne Runde?", "Hey, Zeit fuer Deadlock?")\n- Maximal 1-2 Saetze lang ist\n- Keine Emojis enthaelt (ausser hoechstens 1-2 am Anfang)\n\nSchreibe NUR die Nachricht, nichts anderes.'
 
-            # Co-Spieler erwähnen
-            if co_players:
-                names = ", ".join([m.display_name for m in co_players[:3]])
-                if len(co_players) > 3:
-                    names += f" und {len(co_players) - 3} weitere"
-                context_parts.append(f"Deine Mitspieler {names} sind gerade online")
-
-            # Grund
-            reason_texts = {
-                "join": "zum Spielen einladen",
-                "game_ready": "dass ein Game startet",
-                "friends_online": "dass Freunde online sind",
-                "ranked_session": "zu einer Ranked Session einladen",
-            }
-            reason_text = reason_texts.get(reason, "zum Spielen einladen")
-
-            # Prompt für GPT
-            system_prompt = """Du bist ein freundlicher Discord-Bot der Spieler zum Gaming einlädt.
-
-Schreibe eine kurze, lockere Nachricht auf Deutsch die:
-- Natürlich und menschlich klingt (keine AI-Sprache!)
-- Freundlich und einladend ist
-- Nicht nach Bot klingt
-- Umgangssprache nutzt (z.B. "Bock auf ne Runde?", "Hey, Zeit für Deadlock?")
-- Maximal 1-2 Sätze lang ist
-- Keine Emojis enthält (außer höchstens 1-2 am Anfang)
-
-Schreibe NUR die Nachricht, nichts anderes."""
-
-            user_prompt = f"""Schreib eine Ping-Nachricht um {user.display_name} {reason_text}.
+        user_prompt = f"Schreib eine Ping-Nachricht um {user.display_name} {reason_text}.
 
 Kontext:
 {chr(10).join(context_parts) if context_parts else 'Keine besonderen Infos'}
 
-Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie von einem Bot!"""
+Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie von einem Bot!"
 
-            # API Call
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",  # Schnell & günstig
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=100,
-                temperature=0.9,  # Kreativ für Varianz
+        ai = getattr(self.bot, 'get_cog', lambda name: None)('AIConnector')
+        if not ai:
+            return await self._generate_fallback_message(user, reason, co_players)
+
+        try:
+            text, _meta = await ai.generate_text(
+                provider='openai',
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                model='gpt-4o-mini',
+                max_output_tokens=100,
+                temperature=0.9,
             )
-
-            message = response.choices[0].message.content.strip()
-
-            # Ping hinzufügen
-            return f"{user.mention} {message}"
-
+            if not text:
+                return await self._generate_fallback_message(user, reason, co_players)
+            return f"{user.mention} {text.strip()}"
         except Exception as e:
             logger.error(f"Error generating AI message: {e}", exc_info=True)
             return await self._generate_fallback_message(user, reason, co_players)
+
 
     async def _generate_fallback_message(
         self,

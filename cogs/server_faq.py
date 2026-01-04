@@ -14,11 +14,6 @@ from discord.ext import commands
 
 from service import faq_logs, changelogs
 
-try:
-    from openai import OpenAI
-except ImportError:  # pragma: no cover - optional dependency
-    OpenAI = None  # type: ignore[assignment]
-
 log = logging.getLogger(__name__)
 
 # --- Konfiguration ------------------------------------------------------------
@@ -242,46 +237,7 @@ class ServerFAQ(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self._client: Optional[OpenAI] = None
 
-        if OpenAI is None:
-            log.warning("OpenAI-Paket nicht installiert – Server FAQ nutzt Fallback.")
-            return
-
-        _ensure_central_env_loaded()
-        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("DEADLOCK_OPENAI_KEY")
-        if not api_key:
-            log.warning("Kein OpenAI API Key (OPENAI_API_KEY/DEADLOCK_OPENAI_KEY) gesetzt – Fallback aktiv.")
-            return
-
-        try:
-            self._client = OpenAI(api_key=api_key)
-        except Exception:
-            log.exception("Konnte OpenAI-Client nicht initialisieren")
-            self._client = None
-
-    # ---- Low-level Call mit Token-Param-Kompatibilität ----------------------
-
-    def _responses_create(self, **kwargs):
-        """
-        Ruft responses.create auf und ist kompatibel zu SDKs mit
-        max_output_tokens ODER max_tokens.
-        """
-        if self._client is None:
-            raise RuntimeError("OpenAI client not initialized")
-
-        # Erster Versuch: moderne Param-Namen
-        try:
-            return self._client.responses.create(
-                **kwargs,
-                max_output_tokens=MAX_OUTPUT_TOKENS,
-            )
-        except TypeError:
-            # Fallback für ältere SDKs
-            return self._client.responses.create(
-                **kwargs,
-                max_tokens=MAX_OUTPUT_TOKENS,
-            )
 
     # ---- Antwort erzeugen ----------------------------------------------------
 
@@ -295,21 +251,12 @@ class ServerFAQ(commands.Cog):
         """Fragt das Sprachmodell an und gibt Antwort + Metadaten zurück."""
 
         metadata: Dict[str, Any] = {
-            "model": PRIMARY_MODEL,
             "user_id": getattr(user, "id", None),
             "channel_id": getattr(channel, "id", None),
             "guild_id": getattr(getattr(channel, "guild", None), "id", None)
             if channel is not None
             else getattr(getattr(user, "guild", None), "id", None),
         }
-
-        if self._client is None:
-            fallback = (
-                "Der FAQ-Bot steht aktuell nicht zur Verfügung. "
-                "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
-            )
-            metadata["error"] = "no_client"
-            return fallback, metadata
 
         patchnote_context = changelogs.get_context_for_question(question)
 
@@ -319,91 +266,33 @@ class ServerFAQ(commands.Cog):
 
         composed_user_prompt = "Kontext:\n" + "\n\n".join(context_parts) + f"\n\nFrage:\n{question.strip()}"
 
-        # Nur ein einziges, festes Modell ohne Fallbacks.
-        try:
-            response = await asyncio.to_thread(
-                self._responses_create,
-                model=PRIMARY_MODEL,
-                input=composed_user_prompt,
-                instructions=FAQ_SYSTEM_PROMPT,
+        ai = getattr(self.bot, 'get_cog', lambda name: None)("AIConnector")
+        if not ai:
+            fallback = (
+                "Der FAQ-Bot steht aktuell nicht zur Verfügung. "
+                "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
             )
-        except Exception as exc:  # pragma: no cover
-            log.warning("Model '%s' fehlgeschlagen (%s).", PRIMARY_MODEL, exc)
+            metadata["error"] = "no_ai_connector"
+            return fallback, metadata
+
+        answer_text, meta_resp = await ai.generate_text(
+            provider="openai",
+            prompt=composed_user_prompt,
+            system_prompt=FAQ_SYSTEM_PROMPT,
+            model=PRIMARY_MODEL,
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            temperature=0.3,
+        )
+        metadata.update(meta_resp)
+
+        if not answer_text:
             fallback = (
                 "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
             )
-            metadata["error"] = repr(exc)
+            metadata.setdefault("error", "no_response")
             return fallback, metadata
 
-        incomplete = getattr(response, "incomplete_details", None)
-        if incomplete is None and isinstance(response, dict):  # pragma: no cover - defensive
-            incomplete = response.get("incomplete_details")
-        reason = getattr(incomplete, "reason", None) if incomplete is not None else None
-        if reason:
-            metadata["incomplete_reason"] = reason
-
-        # ---- Content-Extraction robust ----
-        content = ""
-        try:
-            output_text = getattr(response, "output_text", None)
-            if not output_text and isinstance(response, dict):  # pragma: no cover - defensive
-                output_text = response.get("output_text")
-
-            if output_text:
-                content = output_text.strip()
-            else:
-                if isinstance(response, dict):  # pragma: no cover - defensive
-                    out = response.get("output") or response.get("outputs")
-                else:
-                    out = getattr(response, "output", None) or getattr(response, "outputs", None)
-
-                if out:
-                    fragments: List[str] = []
-                    for item in out:
-                        item_type = getattr(item, "type", None)
-                        if item_type is None and isinstance(item, dict):
-                            item_type = item.get("type")
-
-                        if item_type != "message":
-                            continue
-
-                        item_content = getattr(item, "content", None)
-                        if item_content is None and isinstance(item, dict):
-                            item_content = item.get("content")
-
-                        for part in item_content or []:
-                            txt = getattr(part, "text", None)
-                            if txt is None and isinstance(part, dict):
-                                txt = part.get("text")
-                            if txt:
-                                fragments.append(txt)
-
-                    content = "".join(fragments).strip()
-        except Exception:
-            log.exception("Antwort-Parsing fehlgeschlagen")
-            content = ""
-
-        if not content:
-            content = (
-                "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
-            )
-
-        usage = getattr(response, "usage", None)
-        if usage is None and isinstance(response, dict):  # pragma: no cover - defensive
-            usage = response.get("usage")
-        if usage is not None:
-            metadata["usage"] = {
-                "input_tokens": getattr(usage, "input_tokens", None),
-                "output_tokens": getattr(usage, "output_tokens", None),
-                "total_tokens": getattr(usage, "total_tokens", None),
-            }
-
-        response_model = getattr(response, "model", None)
-        if response_model is None and isinstance(response, dict):  # pragma: no cover - defensive
-            response_model = response.get("model")
-
-        metadata["model"] = response_model or PRIMARY_MODEL
-        return content, metadata
+        return answer_text, metadata
 
     # ---- Handling der Interaktion -------------------------------------------
 
