@@ -30,7 +30,7 @@ from .constants import (
 from .logger import log
 from .twitch_api import TwitchAPI
 from .raid_manager import RaidBot
-from .twitch_chat_bot import TWITCHIO_AVAILABLE, create_twitch_chat_bot
+from .twitch_chat_bot import TWITCHIO_AVAILABLE, create_twitch_chat_bot, load_bot_token
 
 
 class TwitchBaseCog(commands.Cog):
@@ -87,6 +87,7 @@ class TwitchBaseCog(commands.Cog):
         # Raid-Bot initialisieren
         self._raid_bot: Optional[RaidBot] = None
         self._twitch_chat_bot = None
+        self._twitch_bot_token: Optional[str] = load_bot_token(log_missing=False)
         redirect_uri = os.getenv("TWITCH_RAID_REDIRECT_URI", "").strip()
         if not redirect_uri:
             # Fallback: Dashboard-URL verwenden
@@ -103,8 +104,14 @@ class TwitchBaseCog(commands.Cog):
             )
             log.info("Raid-Bot initialisiert (redirect_uri: %s)", redirect_uri)
 
-            # Twitch Chat Bot starten
-            self._spawn_bg_task(self._init_twitch_chat_bot(), "twitch.chat_bot")
+            # Twitch Chat Bot starten (falls Token vorhanden)
+            if self._twitch_bot_token:
+                self._spawn_bg_task(self._init_twitch_chat_bot(), "twitch.chat_bot")
+            else:
+                log.info(
+                    "Twitch Chat Bot nicht verfuegbar (kein Token gesetzt). "
+                    "Setze TWITCH_BOT_TOKEN oder TWITCH_BOT_TOKEN_FILE, um den Chat-Bot zu aktivieren."
+                )
         except Exception:
             log.exception("Fehler beim Initialisieren des Raid-Bots")
             self._raid_bot = None
@@ -234,11 +241,22 @@ class TwitchBaseCog(commands.Cog):
                 log.info("twitchio nicht installiert; Twitch Chat Bot wird übersprungen.")
                 return
 
+            token = self._twitch_bot_token or load_bot_token(log_missing=False)
+            if not token:
+                log.info(
+                    "Twitch Chat Bot nicht verfuegbar (kein Token gesetzt). "
+                    "Setze TWITCH_BOT_TOKEN oder TWITCH_BOT_TOKEN_FILE, um den Chat-Bot zu aktivieren."
+                )
+                return
+            self._twitch_bot_token = token
+
             self._twitch_chat_bot = await create_twitch_chat_bot(
                 client_id=self.client_id,
                 client_secret=self.client_secret,
                 redirect_uri=self._raid_redirect_uri,
                 raid_bot=self._raid_bot,
+                bot_token=token,
+                log_missing=False,
             )
 
             if self._twitch_chat_bot:
@@ -253,8 +271,6 @@ class TwitchBaseCog(commands.Cog):
 
                 # Periodisch neue Partner-Channels joinen
                 asyncio.create_task(self._periodic_channel_join(), name="twitch.chat_bot.join_channels")
-            else:
-                log.info("Twitch Chat Bot nicht verfügbar (kein Token gesetzt)")
 
         except Exception:
             log.exception("Fehler beim Initialisieren des Twitch Chat Bots")

@@ -10,9 +10,10 @@ Streamer können den Raid-Bot direkt über Twitch-Chat-Commands steuern:
 """
 import asyncio
 import logging
-import re
-from typing import Optional, Set
 import os
+import re
+from pathlib import Path
+from typing import Optional, Set
 
 try:
     from twitchio.ext import commands as twitchio_commands
@@ -327,61 +328,99 @@ if TWITCHIO_AVAILABLE:
                         log.exception("Failed to join channel %s: %s", channel, e)
 
 
-    async def create_twitch_chat_bot(
-        client_id: str,
-        client_secret: str,
-        redirect_uri: str,
-        raid_bot = None,
-    ) -> Optional[RaidChatBot]:
-        """
-        Erstellt einen Twitch Chat Bot mit Bot-Account-Token.
+def load_bot_token(*, log_missing: bool = True) -> Optional[str]:
+    """
+    Load the Twitch bot OAuth token from the environment or an optional file.
 
-        Env-Variablen:
-        - TWITCH_BOT_TOKEN: OAuth-Token für den Bot-Account
-        - TWITCH_BOT_NAME: Name des Bot-Accounts (optional)
-        """
-        bot_token = os.getenv("TWITCH_BOT_TOKEN", "").strip()
-        if not bot_token:
-            log.warning(
-                "TWITCH_BOT_TOKEN nicht gesetzt. Twitch Chat Bot wird nicht gestartet. "
-                "Bitte setze ein OAuth-Token für den Bot-Account."
-            )
-            return None
+    Returns:
+        The trimmed token string if present, otherwise None.
+    """
+    raw_env = os.getenv("TWITCH_BOT_TOKEN", "") or ""
+    token = raw_env.strip()
+    if token:
+        return token
 
-        # Partner-Channels abrufen
-        with get_conn() as conn:
-            partners = conn.execute(
-                """
-                SELECT DISTINCT twitch_login
-                FROM twitch_streamers
-                WHERE (manual_verified_permanent = 1
-                       OR manual_verified_until IS NOT NULL
-                       OR manual_verified_at IS NOT NULL)
-                  AND manual_partner_opt_out = 0
-                """
-            ).fetchall()
+    token_file = (os.getenv("TWITCH_BOT_TOKEN_FILE") or "").strip()
+    if token_file:
+        try:
+            candidate = Path(token_file).read_text(encoding="utf-8").strip()
+            if candidate:
+                return candidate
+            if log_missing:
+                log.warning("TWITCH_BOT_TOKEN_FILE gesetzt (%s), aber leer", token_file)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            if log_missing:
+                log.warning("TWITCH_BOT_TOKEN_FILE konnte nicht gelesen werden (%s): %s", token_file, exc)
 
-        initial_channels = [row[0] for row in partners if row[0]]
-        log.info("Creating Twitch Chat Bot for %d partner channels", len(initial_channels))
-
-        bot = RaidChatBot(
-            token=bot_token,
-            client_id=client_id,
-            prefix="!",
-            initial_channels=initial_channels,
+    if log_missing:
+        log.warning(
+            "TWITCH_BOT_TOKEN nicht gesetzt. Twitch Chat Bot wird nicht gestartet. "
+            "Bitte setze ein OAuth-Token fuer den Bot-Account."
         )
-        bot.set_raid_bot(raid_bot)
+    return None
 
-        return bot
 
-else:
-    # Fallback wenn twitchio nicht installiert ist
-    class RaidChatBot:
+if not TWITCHIO_AVAILABLE:
+    class RaidChatBot:  # type: ignore[redefined-outer-name]
+        """Stub, damit Import-Caller nicht crashen, wenn twitchio fehlt."""
         pass
 
-    async def create_twitch_chat_bot(*args, **kwargs):
+    async def create_twitch_chat_bot(*args, **kwargs):  # type: ignore[redefinition]
         log.warning(
             "TwitchIO nicht installiert – Twitch Chat Bot wird übersprungen. "
             "Installation optional: pip install twitchio"
         )
         return None
+
+async def create_twitch_chat_bot(
+    client_id: str,
+    client_secret: str,
+    redirect_uri: str,
+    raid_bot = None,
+    bot_token: Optional[str] = None,
+    log_missing: bool = True,
+) -> Optional[RaidChatBot]:
+    """
+    Erstellt einen Twitch Chat Bot mit Bot-Account-Token.
+
+    Env-Variablen:
+    - TWITCH_BOT_TOKEN: OAuth-Token für den Bot-Account
+    - TWITCH_BOT_TOKEN_FILE: Optionaler Dateipfad, der das OAuth-Token enthaelt
+    - TWITCH_BOT_NAME: Name des Bot-Accounts (optional)
+    """
+    if not TWITCHIO_AVAILABLE:
+        log.warning(
+            "TwitchIO nicht installiert – Twitch Chat Bot wird übersprungen. "
+            "Installation optional: pip install twitchio"
+        )
+        return None
+
+    token = bot_token or load_bot_token(log_missing=log_missing)
+    if not token:
+        return None
+
+    # Partner-Channels abrufen
+    with get_conn() as conn:
+        partners = conn.execute(
+            """
+            SELECT DISTINCT twitch_login
+            FROM twitch_streamers
+            WHERE (manual_verified_permanent = 1
+                   OR manual_verified_until IS NOT NULL
+                   OR manual_verified_at IS NOT NULL)
+              AND manual_partner_opt_out = 0
+            """
+        ).fetchall()
+
+    initial_channels = [row[0] for row in partners if row[0]]
+    log.info("Creating Twitch Chat Bot for %d partner channels", len(initial_channels))
+
+    bot = RaidChatBot(
+        token=token,
+        client_id=client_id,
+        prefix="!",
+        initial_channels=initial_channels,
+    )
+    bot.set_raid_bot(raid_bot)
+
+    return bot

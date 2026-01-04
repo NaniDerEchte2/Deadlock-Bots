@@ -631,6 +631,8 @@ class MasterBot(commands.Bot):
         secret_mode = (os.getenv("SECRET_LOG_MODE") or "off").lower()
         _log_secret_present("Steam API Key", ["STEAM_API_KEY", "STEAM_WEB_API_KEY"], mode=secret_mode)
         _log_secret_present("Discord Token (Master)", ["DISCORD_TOKEN", "BOT_TOKEN"], mode="off")
+        _log_secret_present("Twitch Client Credentials", ["TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET"], mode=secret_mode)
+        _log_secret_present("Twitch Chat Token", ["TWITCH_BOT_TOKEN", "TWITCH_BOT_TOKEN_FILE"], mode=secret_mode)
 
         _init_db_if_available()
         await self.load_all_cogs()
