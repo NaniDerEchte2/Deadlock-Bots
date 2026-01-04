@@ -1096,7 +1096,7 @@ ORDER BY updated_at DESC
    LIMIT 10
 `);
 const steamLinksForSyncStmt = db.prepare(`
-  SELECT steam_id, user_id, verified
+  SELECT steam_id, user_id, name, verified
     FROM steam_links
    WHERE steam_id IS NOT NULL
      AND steam_id != ''
@@ -1136,8 +1136,13 @@ const markFriendRequestFailedStmt = db.prepare(`
 `);
 const upsertFriendSteamLinkStmt = db.prepare(`
   INSERT INTO steam_links(user_id, steam_id, name, verified)
-  VALUES(0, ?, '', 1)
+  VALUES(0, @steam_id, @name, 1)
   ON CONFLICT(user_id, steam_id) DO UPDATE SET
+    name = CASE
+      WHEN (steam_links.name IS NULL OR steam_links.name = '')
+           AND excluded.name IS NOT NULL AND excluded.name != '' THEN excluded.name
+      ELSE steam_links.name
+    END,
     verified=1,
     updated_at=CURRENT_TIMESTAMP
 `);
@@ -1716,6 +1721,75 @@ async function collectKnownFriendIds() {
   return { ids, clientCount, webCount };
 }
 
+function resolveCachedPersonaName(steamId64) {
+  const sid = normalizeSteamId64(steamId64);
+  if (!sid || !client || !client.users) return '';
+  try {
+    const cached = client.users[sid];
+    if (cached && cached.player_name) {
+      return String(cached.player_name).trim();
+    }
+  } catch (_) {}
+  return '';
+}
+
+async function fetchPersonaNames(steamIds) {
+  const result = new Map();
+  const normalized = Array.from(new Set(
+    Array.from(steamIds || []).map((sid) => normalizeSteamId64(sid)).filter(Boolean)
+  ));
+  if (!normalized.length) return result;
+
+  // Try cached names first to avoid extra network calls
+  for (const sid of normalized) {
+    const cached = resolveCachedPersonaName(sid);
+    if (cached) result.set(sid, cached);
+  }
+
+  const remaining = normalized.filter((sid) => !result.has(sid));
+  if (!remaining.length || !client || typeof client.getPersonas !== 'function') {
+    return result;
+  }
+
+  try {
+    const personaArgs = remaining.map((sid) => {
+      try { return new SteamID(sid); } catch (_) { return sid; }
+    });
+    const personas = await client.getPersonas(personaArgs);
+    if (personas && typeof personas === 'object') {
+      for (const [sidKey, persona] of Object.entries(personas)) {
+        const sid = normalizeSteamId64(sidKey);
+        const name = persona && persona.player_name ? String(persona.player_name).trim() : '';
+        if (sid && name) {
+          result.set(sid, name);
+        }
+      }
+    }
+  } catch (err) {
+    log('debug', 'Friend sync: failed to load persona names', {
+      error: err && err.message ? err.message : String(err),
+    });
+  }
+
+  return result;
+}
+
+function upsertSteamFriendLink(steamId64, displayName) {
+  const sid = normalizeSteamId64(steamId64);
+  if (!sid) return false;
+  const name = displayName ? String(displayName).trim() : '';
+  try {
+    upsertFriendSteamLinkStmt.run({ steam_id: sid, name });
+    return true;
+  } catch (err) {
+    log('warn', 'Failed to persist Steam friend into steam_links', {
+      steam_id64: sid,
+      error: err && err.message ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
 async function processFriendRequestQueue(currentFriends, reason) {
   const outcome = { sent: 0, failed: 0, skipped: 0 };
   if (!runtimeState.logged_on) return outcome;
@@ -1784,39 +1858,57 @@ async function syncFriendsAndLinks(reason = 'interval') {
 
     const dbRows = steamLinksForSyncStmt.all();
     const dbSteamIds = new Set();
+    const missingNameIds = new Set();
     let queued = 0;
 
     for (const row of dbRows) {
       const sid = normalizeSteamId64(row.steam_id);
       if (!sid || (ownSid && sid === ownSid)) continue;
       dbSteamIds.add(sid);
+      if (Number(row.user_id) === 0) {
+        const nameRaw = typeof row.name === 'string' ? row.name : '';
+        if (!nameRaw || !String(nameRaw).trim()) {
+          missingNameIds.add(sid);
+        }
+      }
       if (!friendIds.has(sid)) {
         if (queueFriendRequestForId(sid)) queued += 1;
       }
     }
 
-    let inserted = 0;
+    const idsNeedingName = new Set();
     for (const sid of friendIds) {
       if (ownSid && sid === ownSid) continue;
-      if (dbSteamIds.has(sid)) continue;
-      try {
-        upsertFriendSteamLinkStmt.run(sid);
-        inserted += 1;
-      } catch (err) {
-        log('warn', 'Failed to persist Steam friend into steam_links', {
-          steam_id64: sid,
-          error: err && err.message ? err.message : String(err),
-        });
+      if (!dbSteamIds.has(sid) || missingNameIds.has(sid)) {
+        idsNeedingName.add(sid);
+      }
+    }
+    const personaNames = await fetchPersonaNames(idsNeedingName);
+
+    let inserted = 0;
+    let nameUpdates = 0;
+    for (const sid of friendIds) {
+      if (ownSid && sid === ownSid) continue;
+      const needsInsert = !dbSteamIds.has(sid);
+      const needsName = missingNameIds.has(sid);
+      const name = personaNames.get(sid) || '';
+      const shouldUpsert = needsInsert || (needsName && name);
+      if (!shouldUpsert) continue;
+
+      if (upsertSteamFriendLink(sid, name)) {
+        if (needsInsert) inserted += 1;
+        else if (needsName && name) nameUpdates += 1;
       }
     }
 
     const requestOutcome = await processFriendRequestQueue(friendIds, reason);
 
-    if (queued || inserted || requestOutcome.sent || requestOutcome.failed) {
+    if (queued || inserted || nameUpdates || requestOutcome.sent || requestOutcome.failed) {
       log('info', 'Friend/DB sync completed', {
         reason,
         queued_requests: queued,
         inserted_links: inserted,
+        name_updates: nameUpdates,
         friend_requests_sent: requestOutcome.sent,
         friend_requests_failed: requestOutcome.failed,
         friends_known: friendIds.size,
@@ -3180,25 +3272,25 @@ client.on('friendRelationship', (steamId, relationship) => {
   if (Number(relationship) === Number(EFriendRelationship.Friend)) {
     log('info', 'New friend confirmed, saving to steam_links', { steam_id64: sid64 });
 
-    // Save to database
-    try {
-      const stmt = db.prepare(`
-        INSERT INTO steam_links(user_id, steam_id, name, verified)
-        VALUES(?, ?, ?, ?)
-        ON CONFLICT(user_id, steam_id) DO UPDATE SET
-          verified=1,
-          updated_at=CURRENT_TIMESTAMP
-      `);
-
-      // Use steam_id64 as both user_id and steam_id since we don't have Discord ID yet
-      // This will be updated later when the user links via Discord
-      stmt.run(0, sid64, '', 1);
-
-      log('info', 'Saved new friend to steam_links', { steam_id64: sid64 });
-    } catch (err) {
-      log('error', 'Failed to save friend to steam_links', {
+    const cachedName = resolveCachedPersonaName(sid64);
+    if (upsertSteamFriendLink(sid64, cachedName)) {
+      log('info', 'Saved new friend to steam_links', {
         steam_id64: sid64,
-        error: err && err.message ? err.message : String(err),
+        name: cachedName || undefined,
+      });
+    }
+
+    // Fetch name asynchronously if it was not available in cache yet
+    if (!cachedName) {
+      fetchPersonaNames([sid64]).then((map) => {
+        const normalized = normalizeSteamId64(sid64);
+        const fetchedName = normalized ? map.get(normalized) : null;
+        if (fetchedName) upsertSteamFriendLink(sid64, fetchedName);
+      }).catch((err) => {
+        log('debug', 'Failed to fetch persona for new friend', {
+          steam_id64: sid64,
+          error: err && err.message ? err.message : String(err),
+        });
       });
     }
   }

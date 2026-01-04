@@ -461,23 +461,6 @@ class AIOnboarding(commands.Cog):
             log.exception("AI Onboarding konnte nicht gestartet werden")
             return False
 
-    @commands.command(name="aiob")
-    @commands.has_permissions(administrator=True)
-    async def ai_onboarding_test(self, ctx: commands.Context):
-        """Schickt dir den AI-Onboarding Start-Button in die DMs zum Testen."""
-        try:
-            dm = ctx.author.dm_channel or await ctx.author.create_dm()
-        except Exception as exc:
-            log.warning("Konnte DM fuer aiob nicht oeffnen: %s", exc)
-            await ctx.reply("Konnte deine DMs nicht oeffnen.", mention_author=False)
-            return
-
-        ok = await self.start_in_channel(dm, ctx.author)
-        if ok:
-            await ctx.reply("AI-Onboarding Test wurde an deine DMs geschickt. Keine automatischen DMs aktiv.", mention_author=False)
-        else:
-            await ctx.reply("Konnte den AI-Onboarding Test nicht starten.", mention_author=False)
-
     async def _log_session(
         self,
         *,
