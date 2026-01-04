@@ -138,12 +138,12 @@ class DashboardRaidMixin:
         except Exception as e:
             log.exception("OAuth callback error for %s", login)
             return web.Response(
-                text=f"""
+                text="""
                 <html>
                 <head><title>Fehler</title></head>
                 <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto;">
                     <h1>❌ Fehler bei der Autorisierung</h1>
-                    <p>Ein Fehler ist aufgetreten: {str(e)}</p>
+                    <p>Ein interner Fehler ist aufgetreten. Bitte versuche es später erneut.</p>
                     <p><a href="/twitch/raids">Zurück</a></p>
                 </body>
                 </html>
