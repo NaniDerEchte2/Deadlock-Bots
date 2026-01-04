@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from aiohttp import web
-
+import html
 if TYPE_CHECKING:
     from ..raid_manager import RaidBot
 
@@ -65,7 +65,7 @@ class DashboardRaidMixin:
                 <head><title>Autorisierung fehlgeschlagen</title></head>
                 <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto;">
                     <h1>❌ Autorisierung fehlgeschlagen</h1>
-                    <p>Fehler: {error}</p>
+                    <p>Fehler: {html.escape(error, quote=True)}</p>
                     <p><a href="/twitch/raids">Zurück</a></p>
                 </body>
                 </html>
