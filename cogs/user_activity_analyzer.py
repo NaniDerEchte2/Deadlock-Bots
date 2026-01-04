@@ -890,12 +890,12 @@ class UserActivityAnalyzer(commands.Cog):
 
         system_prompt = 'Du bist ein freundlicher Discord-Bot der Spieler zum Gaming einlaedt.\n\nSchreibe eine kurze, lockere Nachricht auf Deutsch die:\n- Natuerlich und menschlich klingt (keine AI-Sprache!)\n- Freundlich und einladend ist\n- Nicht nach Bot klingt\n- Umgangssprache nutzt (z.B. "Bock auf ne Runde?", "Hey, Zeit fuer Deadlock?")\n- Maximal 1-2 Saetze lang ist\n- Keine Emojis enthaelt (ausser hoechstens 1-2 am Anfang)\n\nSchreibe NUR die Nachricht, nichts anderes.'
 
-        user_prompt = f"Schreib eine Ping-Nachricht um {user.display_name} {reason_text}.
+        user_prompt = f"""Schreib eine Ping-Nachricht, um {user.display_name} {reason_text}.
 
 Kontext:
 {chr(10).join(context_parts) if context_parts else 'Keine besonderen Infos'}
 
-Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie von einem Bot!"
+Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie von einem Bot!"""
 
         ai = getattr(self.bot, 'get_cog', lambda name: None)('AIConnector')
         if not ai:
