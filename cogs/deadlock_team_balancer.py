@@ -383,7 +383,7 @@ class DeadlockTeamBalancer(commands.Cog):
         role_nm, role_val = _rank_from_roles(member)
         db_nm, db_val = ("Obscurus", 0)
         if self.db:
-            db_nm, db_val = await _fetch_rank_from_db(self.db, member.id)
+            db_nm, db_val = await _fetch_rank_from_db(member.id)
         emb = discord.Embed(title=f"📊 Rank-Status: {member.display_name}", color=discord.Color.blue())
         emb.add_field(name="🎯 Aktueller Rank", value=f"**{nm}** ({val})", inline=True)
         emb.add_field(name="🎭 Discord-Rollen", value=f"{role_nm} ({role_val})" if role_val else "Keine Rank-Rolle", inline=True)
