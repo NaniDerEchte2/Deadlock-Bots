@@ -40,7 +40,7 @@ class DashboardRaidMixin:
             <head><title>Raid Bot Autorisierung</title></head>
             <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto;">
                 <h1>🎯 Raid Bot Autorisierung</h1>
-                <p>Streamer: <strong>{login}</strong></p>
+                <p>Streamer: <strong>{html.escape(login, quote=True)}</strong></p>
                 <p>Klicke auf den Link unten, um den Raid Bot zu autorisieren:</p>
                 <p><a href="{auth_url}" style="padding: 10px 20px; background: #9146FF; color: white; text-decoration: none; border-radius: 5px;">Auf Twitch autorisieren</a></p>
                 <p style="color: #666; font-size: 0.9em;">
