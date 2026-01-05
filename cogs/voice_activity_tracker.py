@@ -462,7 +462,6 @@ class VoiceActivityTrackerCog(commands.Cog):
         message_text = "\n\n".join(lines)
 
 
-        status = "error"
         error_message = None
         prompt_message_id = None
         try:
