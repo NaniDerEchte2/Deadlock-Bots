@@ -365,13 +365,6 @@ if not TWITCHIO_AVAILABLE:
         """Stub, damit Import-Caller nicht crashen, wenn twitchio fehlt."""
         pass
 
-    async def create_twitch_chat_bot(*args, **kwargs):  # type: ignore[redefinition]
-        log.warning(
-            "TwitchIO nicht installiert – Twitch Chat Bot wird übersprungen. "
-            "Installation optional: pip install twitchio"
-        )
-        return None
-
 async def create_twitch_chat_bot(
     client_id: str,
     client_secret: str,
@@ -383,6 +376,17 @@ async def create_twitch_chat_bot(
     """
     Erstellt einen Twitch Chat Bot mit Bot-Account-Token.
 
+    Env-Variablen:
+    - TWITCH_BOT_TOKEN: OAuth-Token für den Bot-Account
+    """
+    if not TWITCHIO_AVAILABLE:
+        log.warning(
+            "TwitchIO nicht installiert – Twitch Chat Bot wird übersprungen. "
+            "Installation optional: pip install twitchio"
+        )
+        return None
+
+    """
     Env-Variablen:
     - TWITCH_BOT_TOKEN: OAuth-Token für den Bot-Account
     - TWITCH_BOT_TOKEN_FILE: Optionaler Dateipfad, der das OAuth-Token enthaelt
