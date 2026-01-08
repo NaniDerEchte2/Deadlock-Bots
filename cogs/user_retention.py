@@ -18,7 +18,7 @@ from discord import app_commands
 import logging
 import time
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional, List, Tuple
 from dataclasses import dataclass
 

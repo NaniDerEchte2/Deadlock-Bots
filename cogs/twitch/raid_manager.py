@@ -8,7 +8,6 @@ Verwaltet:
 - Partner-Auswahl (kürzeste Stream-Zeit)
 - Raid-Metadaten und History
 """
-import asyncio
 import logging
 import time
 import secrets

@@ -16,7 +16,7 @@ import json
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import discord
 from discord.ext import commands, tasks
@@ -139,9 +139,6 @@ class UserActivityAnalyzer(commands.Cog):
 
             total_minutes = 0
             last_active = None
-
-            # === Co-Spieler-Tracking aus Session-Logs ===
-            co_player_minutes = defaultdict(int)  # co_player_id -> total minutes together
 
             for session in sessions:
                 started_at = session.get('started_at')

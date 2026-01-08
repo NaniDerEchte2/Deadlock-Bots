@@ -2,7 +2,6 @@
 """Discord Commands für Raid-Bot-Steuerung durch Streamer."""
 
 import logging
-from typing import Optional
 
 import discord
 from discord.ext import commands

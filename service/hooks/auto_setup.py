@@ -3,7 +3,6 @@ Auto-Setup für Git Pre-Commit Hook
 Aktiviert automatisch beim Bot-Start, ohne manuelle Intervention
 Windows-kompatibel mit .cmd/.bat Hooks
 """
-import os
 import sys
 import stat
 import logging
