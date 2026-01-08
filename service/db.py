@@ -357,6 +357,15 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               UNIQUE(steam_id64)
             );
 
+
+            -- Intent-Gate fuer den Beta-Invite-Flow (einmalige Entscheidung)
+            CREATE TABLE IF NOT EXISTS beta_invite_intent(
+              discord_id INTEGER PRIMARY KEY,
+              intent TEXT NOT NULL,
+              decided_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              locked INTEGER NOT NULL DEFAULT 1
+            );
+
             -- Steuer-Tabelle für den Steam-Task-Consumer
             CREATE TABLE IF NOT EXISTS steam_tasks(
               id INTEGER PRIMARY KEY AUTOINCREMENT,

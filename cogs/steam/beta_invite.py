@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -175,6 +176,63 @@ def _lookup_primary_steam_id(discord_id: int) -> Optional[str]:
         return None
     steam_id = str(row["steam_id"] or "").strip()
     return steam_id or None
+
+
+INTENT_COMMUNITY = "community"
+INTENT_INVITE_ONLY = "invite_only"
+
+
+@dataclass(slots=True)
+class BetaIntentDecision:
+    discord_id: int
+    intent: str
+    decided_at: int
+    locked: bool
+
+
+def _intent_row_to_record(row: Optional[db.sqlite3.Row]) -> Optional[BetaIntentDecision]:  # type: ignore[attr-defined]
+    if row is None:
+        return None
+    return BetaIntentDecision(
+        discord_id=int(row["discord_id"]),
+        intent=str(row["intent"]),
+        decided_at=int(row["decided_at"]),
+        locked=bool(row["locked"]),
+    )
+
+
+def _get_intent_record(discord_id: int) -> Optional[BetaIntentDecision]:
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT discord_id, intent, decided_at, locked FROM beta_invite_intent WHERE discord_id = ?",
+            (int(discord_id),),
+        ).fetchone()
+    return _intent_row_to_record(row)
+
+
+def _persist_intent_once(discord_id: int, intent: str) -> BetaIntentDecision:
+    existing = _get_intent_record(discord_id)
+    if existing:
+        return existing
+
+    now_ts = int(time.time())
+    with db.get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO beta_invite_intent(discord_id, intent, decided_at, locked)
+            VALUES (?, ?, ?, 1)
+            """,
+            (int(discord_id), str(intent), now_ts),
+        )
+        row = conn.execute(
+            "SELECT discord_id, intent, decided_at, locked FROM beta_invite_intent WHERE discord_id = ?",
+            (int(discord_id),),
+        ).fetchone()
+
+    record = _intent_row_to_record(row)
+    if record is None:  # pragma: no cover - defensive
+        raise RuntimeError("Konnte beta_invite_intent-Eintrag nicht erstellen")
+    return record
 
 
 @dataclass(slots=True)
@@ -351,6 +409,30 @@ def steam64_to_account_id(steam_id64: str) -> int:
     return account_id
 
 
+class BetaIntentGateView(discord.ui.View):
+    def __init__(self, cog: "BetaInviteFlow", requester_id: int) -> None:
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.requester_id = requester_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "Nur der ursprngliche Nutzer kann diese Auswahl treffen.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Ich will mitspielen/aktiv sein", style=discord.ButtonStyle.success)
+    async def choose_join(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.cog.handle_intent_selection(interaction, INTENT_COMMUNITY)
+
+    @discord.ui.button(label="Nur schnell den Invite abholen", style=discord.ButtonStyle.secondary)
+    async def choose_invite_only(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.cog.handle_intent_selection(interaction, INTENT_INVITE_ONLY)
+
+
 class BetaInviteConfirmView(discord.ui.View):
     def __init__(self, cog: "BetaInviteFlow", record_id: int, discord_id: int, steam_id64: str) -> None:
         super().__init__(timeout=600)
@@ -375,6 +457,86 @@ class BetaInviteFlow(commands.Cog):
         self.bot = bot
         self.tasks = SteamTaskClient(poll_interval=0.5, default_timeout=30.0)
         _ensure_invite_audit_table()
+
+    async def _reply_no_invites(self, interaction: discord.Interaction) -> None:
+        _trace("betainvite_unavailable_start", discord_id=getattr(interaction.user, "id", None))
+        await asyncio.sleep(10)
+        message = (
+            "Sorry, aktuell sind keine Deadlock-Einladungen verfgbar. "
+            "Wir melden uns, sobald wieder Pl„tze frei sind."
+        )
+        try:
+            await interaction.followup.send(message, ephemeral=True)
+        except Exception:
+            log.debug("Konnte Unavailable-Antwort nicht senden", exc_info=True)
+        _trace("betainvite_unavailable_done", discord_id=getattr(interaction.user, "id", None))
+
+    async def _prompt_intent_gate(self, interaction: discord.Interaction) -> None:
+        prompt = (
+            "Kurze Frage bevor wir loslegen: Willst du wirklich mitspielen bzw. aktiv in der Community sein "
+            "oder nur schnell einen Steam-Invite abholen? Deine Antwort wird gespeichert und kann nicht umgeschaltet werden."
+        )
+        view = BetaIntentGateView(self, interaction.user.id)
+        _trace("betainvite_intent_prompt", discord_id=interaction.user.id)
+        await interaction.followup.send(prompt, view=view, ephemeral=True)
+
+    async def handle_intent_selection(self, interaction: discord.Interaction, intent_choice: str) -> None:
+        if intent_choice not in (INTENT_COMMUNITY, INTENT_INVITE_ONLY):
+            await interaction.response.send_message(
+                "Ungltige Auswahl.",
+                ephemeral=True,
+            )
+            return
+
+        existing = _get_intent_record(interaction.user.id)
+        if existing and existing.intent != intent_choice and existing.locked:
+            await interaction.response.send_message(
+                "Deine Entscheidung ist bereits gespeichert. Falls das ein Fehler ist, melde dich bei einem Mod.",
+                ephemeral=True,
+            )
+            _trace(
+                "betainvite_intent_locked",
+                discord_id=interaction.user.id,
+                intent=existing.intent,
+            )
+            return
+
+        record = existing or _persist_intent_once(interaction.user.id, intent_choice)
+        _trace(
+            "betainvite_intent_saved",
+            discord_id=interaction.user.id,
+            intent=record.intent,
+            locked=record.locked,
+        )
+
+        if intent_choice == INTENT_INVITE_ONLY:
+            await interaction.response.edit_message(
+                content=(
+                    "Verstanden – aktuell geben wir Einladungen nur an Leute raus, die wirklich mitspielen wollen. "
+                    "Deine Antwort ist gespeichert."
+                ),
+                view=None,
+            )
+            return
+
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.errors.NotFound:
+            await interaction.followup.send(
+                "Die Auswahl ist abgelaufen. Bitte starte `/betainvite` erneut.",
+                ephemeral=True,
+            )
+            return
+        except Exception as exc:
+            log.error("Failed to defer intent interaction: %s", exc)
+            return
+
+        try:
+            await interaction.message.edit(view=None)
+        except Exception:
+            log.debug("Konnte Intent-View nicht entfernen", exc_info=True)
+
+        await self._reply_no_invites(interaction)
 
     def _build_link_prompt_view(self, user: discord.abc.User) -> discord.ui.View:
         login_url: Optional[str] = None
@@ -443,6 +605,303 @@ class BetaInviteFlow(commands.Cog):
 
         view.add_item(SchnellLinkButton(row=1, source="beta_invite_prompt"))
         return view
+
+    async def _process_invite_request(self, interaction: discord.Interaction) -> None:
+        try:
+            existing = _fetch_invite_by_discord(interaction.user.id)
+            primary_link = _lookup_primary_steam_id(interaction.user.id)
+            resolved = primary_link or (existing.steam_id64 if existing else None)
+        except Exception as e:
+            log.error(f"Database lookup failed: {e}")
+            _trace(
+                "betainvite_db_error",
+                discord_id=getattr(interaction.user, "id", None),
+                error=str(e),
+            )
+            await interaction.followup.send(
+                "? Datenbankfehler beim Abrufen der Steam-Verknpfung. Bitte versuche es erneut.",
+                ephemeral=True
+            )
+            return
+
+        if not resolved:
+            view = self._build_link_prompt_view(interaction.user)
+            prompt = (
+                "?? Es ist noch kein Steam-Account mit deinem Discord verknpft.\n"
+                "Melde dich mit den unten verfgbaren Optionen bei Steam an, und nachdem du dies getan hast fhre /betainvite erneut aus."
+            )
+            if SCHNELL_LINK_AVAILABLE:
+                prompt += ""
+            else:
+                prompt += "Der Schnell-Link ist derzeit nicht verfgbar"
+            prompt += ""
+            _trace(
+                "betainvite_no_link",
+                discord_id=interaction.user.id,
+            )
+
+            await interaction.followup.send(
+                prompt,
+                view=view,
+                ephemeral=True,
+            )
+            return
+
+        try:
+            account_id = steam64_to_account_id(resolved)
+        except ValueError as exc:
+            log.warning("Gespeicherte SteamID ungltig", exc_info=True)
+            _trace(
+                "betainvite_invalid_steamid",
+                discord_id=interaction.user.id,
+                steam_id=resolved,
+                error=str(exc),
+            )
+            await interaction.followup.send(
+                f"? Gespeicherte SteamID ist ungltig: {exc}. Bitte verknpfe deinen Account erneut.",
+                ephemeral=True,
+            )
+            return
+
+        if existing and existing.status == STATUS_INVITE_SENT and existing.steam_id64 == resolved:
+            await interaction.followup.send(
+                "? Du bist bereits eingeladen. Prfe unter https://store.steampowered.com/account/playtestinvites .",
+                ephemeral=True,
+            )
+            _trace(
+                "betainvite_already_invited",
+                discord_id=interaction.user.id,
+                steam_id64=resolved,
+            )
+            return
+
+        if not existing or existing.steam_id64 != resolved:
+            record = _create_or_reset_invite(interaction.user.id, resolved, account_id)
+            _trace(
+                "betainvite_record_created",
+                discord_id=interaction.user.id,
+                steam_id64=resolved,
+                account_id=account_id,
+            )
+        else:
+            record = existing
+            if record.account_id != account_id:
+                record = _update_invite(record.id, account_id=account_id) or record
+
+        if record.status == STATUS_INVITE_SENT and record.steam_id64 == resolved:
+            await interaction.followup.send(
+                "? Du bist bereits eingeladen. Prfe unter https://store.steampowered.com/account/playtestinvites .",
+                ephemeral=True,
+            )
+            _trace(
+                "betainvite_already_invited_existing",
+                discord_id=interaction.user.id,
+                steam_id64=resolved,
+            )
+            return
+
+        friend_ok = False
+        account_id_from_friend: Optional[int] = None
+        try:
+            precheck_outcome = await self.tasks.run(
+                "AUTH_CHECK_FRIENDSHIP",
+                {"steam_id": resolved},
+                timeout=15.0,
+            )
+            if precheck_outcome.ok and isinstance(precheck_outcome.result, dict):
+                data = precheck_outcome.result.get("data") if isinstance(precheck_outcome.result, dict) else None
+                if isinstance(data, dict):
+                    try:
+                        if data.get("account_id") is not None:
+                            account_id_from_friend = int(data["account_id"])
+                    except Exception:
+                        account_id_from_friend = None
+                    if account_id_from_friend is not None and account_id_from_friend != record.account_id:
+                        record = _update_invite(record.id, account_id=account_id_from_friend) or record
+                    friend_ok = bool(data.get("friend"))
+            _trace(
+                "betainvite_friend_precheck",
+                discord_id=interaction.user.id,
+                steam_id64=resolved,
+                ok=precheck_outcome.ok if "precheck_outcome" in locals() else None,
+                status=getattr(precheck_outcome, "status", None),
+                friend=friend_ok,
+                account_id=account_id_from_friend,
+                error=getattr(precheck_outcome, "error", None),
+            )
+        except Exception:
+            log.exception(
+                "Friendship pre-check fr betainvite fehlgeschlagen",
+                extra={"discord_id": interaction.user.id, "steam_id": resolved},
+            )
+            _trace(
+                "betainvite_friend_precheck_error",
+                discord_id=interaction.user.id,
+                steam_id64=resolved,
+            )
+
+        if friend_ok:
+            await self._send_invite_after_friend(
+                interaction,
+                record,
+                account_id_hint=account_id_from_friend,
+            )
+            _trace(
+                "betainvite_friend_ok_direct_invite",
+                discord_id=interaction.user.id,
+                steam_id64=resolved,
+                account_id=account_id_from_friend,
+            )
+            return
+
+        try:
+            fr_outcome = await self.tasks.run(
+                "AUTH_SEND_FRIEND_REQUEST",
+                {"steam_id": resolved},
+                timeout=20.0,
+            )
+        except Exception as exc:
+            log.exception("Konnte Steam-Freundschaftsanfrage nicht senden")
+            _trace(
+                "friend_request_exception",
+                discord_id=interaction.user.id,
+                steam_id64=resolved,
+                error=str(exc),
+            )
+            _update_invite(
+                record.id,
+                status=STATUS_ERROR,
+                last_error=f"Freundschaftsanfrage fehlgeschlagen: {exc}",
+            )
+            await interaction.followup.send(
+                "? Konnte die Freundschaftsanfrage nicht senden. Bitte versuche es sp„ter erneut.",
+                ephemeral=True,
+            )
+            return
+
+        if not fr_outcome.ok:
+            error_msg = fr_outcome.error or "Unbekannter Fehler beim Senden der Freundschaftsanfrage"
+            error_lower = str(error_msg).lower()
+            duplicate_request = any(
+                token in error_lower
+                for token in (
+                    "duplicatename",
+                    "duplicate name",
+                    "already friend",
+                    "already friends",
+                    "already on your friend",
+                    "already in your friend",
+                )
+            )
+
+            if duplicate_request:
+                friend_ok = False
+                friendship_details = {}
+                try:
+                    friend_outcome = await self.tasks.run(
+                        "AUTH_CHECK_FRIENDSHIP",
+                        {"steam_id": resolved},
+                        timeout=15.0,
+                    )
+                    if friend_outcome.ok and isinstance(friend_outcome.result, dict):
+                        data = friend_outcome.result.get("data") if isinstance(friend_outcome.result, dict) else None
+                        if isinstance(data, dict):
+                            friendship_details = data
+                            friend_ok = bool(data.get("friend"))
+                            if data.get("account_id") is not None and data.get("account_id") != record.account_id:
+                                record = _update_invite(record.id, account_id=int(data["account_id"])) or record
+                except Exception:
+                    log.exception(
+                        "Friendship re-check nach DuplicateName fehlgeschlagen: discord_id=%s, steam_id=%s",
+                        interaction.user.id,
+                        resolved,
+                    )
+                    _trace(
+                        "friend_request_duplicate_check_failed",
+                        discord_id=interaction.user.id,
+                        steam_id64=resolved,
+                    )
+
+                log.info(
+                    "Freundschaftsanfrage bereits vorhanden oder Freundschaft besteht: discord_id=%s, steam_id=%s, error=%s, friend_ok=%s, details=%s",
+                    interaction.user.id,
+                    resolved,
+                    error_msg,
+                    friend_ok,
+                    friendship_details,
+                )
+                _trace(
+                    "friend_request_duplicate",
+                    discord_id=interaction.user.id,
+                    steam_id64=resolved,
+                    error=error_msg,
+                    friend_ok=friend_ok,
+                    details=friendship_details,
+                )
+
+                now_ts = int(time.time())
+                record = _update_invite(
+                    record.id,
+                    status=STATUS_WAITING,
+                    account_id=account_id,
+                    friend_requested_at=now_ts,
+                    last_error=None,
+                ) or record
+
+                status_line = "? Wir sind laut Steam schon befreundet." if friend_ok else "?? Die Steam-Anfrage scheint bereits zu bestehen."
+                message = (
+                    f"{status_line}\n"
+                    "Klicke unten auf \"Freundschaft best„tigt\", dann schicken wir dir den Deadlock-Invite."
+                )
+                view = BetaInviteConfirmView(self, record.id, interaction.user.id, resolved)
+                await interaction.followup.send(message, view=view, ephemeral=True)
+                return
+
+            log.warning(
+                "Freundschaftsanfrage fehlgeschlagen: discord_id=%s, steam_id=%s, error=%s",
+                interaction.user.id,
+                resolved,
+                error_msg,
+            )
+            _trace(
+                "friend_request_failed",
+                discord_id=interaction.user.id,
+                steam_id64=resolved,
+                error=error_msg,
+            )
+            _update_invite(
+                record.id,
+                status=STATUS_ERROR,
+                last_error=f"Freundschaftsanfrage fehlgeschlagen: {error_msg}",
+            )
+            await interaction.followup.send(
+                "? Konnte die Freundschaftsanfrage nicht senden. Bitte prfe deine Steam-Privatsph„reeinstellungen und versuche es erneut.",
+                ephemeral=True,
+            )
+            return
+
+        now_ts = int(time.time())
+        record = _update_invite(
+            record.id,
+            status=STATUS_WAITING,
+            account_id=account_id,
+            friend_requested_at=now_ts,
+            last_error=None,
+        ) or record
+        _trace(
+            "friend_request_sent",
+            discord_id=interaction.user.id,
+            steam_id64=resolved,
+            account_id=account_id,
+            record_id=record.id,
+        )
+
+        message = (
+            "? Freundschaftsanfrage verschickt!\n"
+            "Sobald du die Anfrage angenommen hast, klicke unten auf \"Freundschaft best„tigt\", damit wir die Einladung senden k”nnen."
+        )
+        view = BetaInviteConfirmView(self, record.id, interaction.user.id, resolved)
+        await interaction.followup.send(message, view=view, ephemeral=True)
 
     def _record_successful_invite(
         self,
@@ -783,11 +1242,10 @@ class BetaInviteFlow(commands.Cog):
         try:
             await interaction.response.defer(ephemeral=True, thinking=True)
         except discord.errors.NotFound:
-            # Interaction already expired, try to respond with followup
             log.warning("Interaction expired before defer, using followup")
             _trace("betainvite_defer_expired", discord_id=interaction.user.id)
             await interaction.followup.send(
-                "⏱️ Die Anfrage hat zu lange gedauert. Bitte versuche `/betainvite` erneut.",
+                "?? Die Anfrage hat zu lange gedauert. Bitte versuche `/betainvite` erneut.",
                 ephemeral=True
             )
             return
@@ -796,301 +1254,28 @@ class BetaInviteFlow(commands.Cog):
             _trace("betainvite_defer_error", discord_id=getattr(interaction.user, "id", None), error=str(e))
             return
 
-        try:
-            existing = _fetch_invite_by_discord(interaction.user.id)
-            primary_link = _lookup_primary_steam_id(interaction.user.id)
-            resolved = primary_link or (existing.steam_id64 if existing else None)
-        except Exception as e:
-            log.error(f"Database lookup failed: {e}")
-            _trace(
-                "betainvite_db_error",
-                discord_id=getattr(interaction.user, "id", None),
-                error=str(e),
-            )
-            await interaction.followup.send(
-                "❌ Datenbankfehler beim Abrufen der Steam-Verknüpfung. Bitte versuche es erneut.",
-                ephemeral=True
-            )
+        intent_record = _get_intent_record(interaction.user.id)
+        if intent_record is None:
+            await self._prompt_intent_gate(interaction)
             return
-
-        if not resolved:
-            view = self._build_link_prompt_view(interaction.user)
-            prompt = (
-                "ℹ️ Es ist noch kein Steam-Account mit deinem Discord verknüpft.\n"
-                "Melde dich mit den unten verfügbaren Optionen bei Steam an, und nachdem du dies getan hast führe /betainvite erneut aus."
-            )
-            if SCHNELL_LINK_AVAILABLE:
-                prompt += ""
-            else:
-                prompt += "Der Schnell-Link ist derzeit nicht verfügbar"
-            prompt += ""
-            _trace(
-                "betainvite_no_link",
-                discord_id=interaction.user.id,
-            )
-
+        if intent_record.intent == INTENT_INVITE_ONLY:
             await interaction.followup.send(
-                prompt,
-                view=view,
-                ephemeral=True,
-            )
-            return
-
-        try:
-            account_id = steam64_to_account_id(resolved)
-        except ValueError as exc:
-            log.warning("Gespeicherte SteamID ungültig", exc_info=True)
-            _trace(
-                "betainvite_invalid_steamid",
-                discord_id=interaction.user.id,
-                steam_id=resolved,
-                error=str(exc),
-            )
-            await interaction.followup.send(
-                f"❌ Gespeicherte SteamID ist ungültig: {exc}. Bitte verknüpfe deinen Account erneut.",
-                ephemeral=True,
-            )
-            return
-
-        if existing and existing.status == STATUS_INVITE_SENT and existing.steam_id64 == resolved:
-            await interaction.followup.send(
-                "✅ Du bist bereits eingeladen. Prüfe unter https://store.steampowered.com/account/playtestinvites .",
+                "Du hattest angegeben, nur den Invite abholen zu wollen. Aktuell vergeben wir Einladungen nur an Leute, die mitspielen wollen.",
                 ephemeral=True,
             )
             _trace(
-                "betainvite_already_invited",
+                "betainvite_intent_blocked",
                 discord_id=interaction.user.id,
-                steam_id64=resolved,
+                intent=intent_record.intent,
             )
             return
 
-        if not existing or existing.steam_id64 != resolved:
-            record = _create_or_reset_invite(interaction.user.id, resolved, account_id)
-            _trace(
-                "betainvite_record_created",
-                discord_id=interaction.user.id,
-                steam_id64=resolved,
-                account_id=account_id,
-            )
-        else:
-            record = existing
-            if record.account_id != account_id:
-                record = _update_invite(record.id, account_id=account_id) or record
-
-        if record.status == STATUS_INVITE_SENT and record.steam_id64 == resolved:
-            await interaction.followup.send(
-                "✅ Du bist bereits eingeladen. Prüfe unter https://store.steampowered.com/account/playtestinvites .",
-                ephemeral=True,
-            )
-            _trace(
-                "betainvite_already_invited_existing",
-                discord_id=interaction.user.id,
-                steam_id64=resolved,
-            )
-            return
-
-        friend_ok = False
-        account_id_from_friend: Optional[int] = None
-        try:
-            precheck_outcome = await self.tasks.run(
-                "AUTH_CHECK_FRIENDSHIP",
-                {"steam_id": resolved},
-                timeout=15.0,
-            )
-            if precheck_outcome.ok and isinstance(precheck_outcome.result, dict):
-                data = precheck_outcome.result.get("data") if isinstance(precheck_outcome.result, dict) else None
-                if isinstance(data, dict):
-                    try:
-                        if data.get("account_id") is not None:
-                            account_id_from_friend = int(data["account_id"])
-                    except Exception:
-                        account_id_from_friend = None
-                    if account_id_from_friend is not None and account_id_from_friend != record.account_id:
-                        record = _update_invite(record.id, account_id=account_id_from_friend) or record
-                    friend_ok = bool(data.get("friend"))
-            _trace(
-                "betainvite_friend_precheck",
-                discord_id=interaction.user.id,
-                steam_id64=resolved,
-                ok=precheck_outcome.ok if "precheck_outcome" in locals() else None,
-                status=getattr(precheck_outcome, "status", None),
-                friend=friend_ok,
-                account_id=account_id_from_friend,
-                error=getattr(precheck_outcome, "error", None),
-            )
-        except Exception:
-            log.exception(
-                "Friendship pre-check für betainvite fehlgeschlagen",
-                extra={"discord_id": interaction.user.id, "steam_id": resolved},
-            )
-            _trace(
-                "betainvite_friend_precheck_error",
-                discord_id=interaction.user.id,
-                steam_id64=resolved,
-            )
-
-        if friend_ok:
-            await self._send_invite_after_friend(
-                interaction,
-                record,
-                account_id_hint=account_id_from_friend,
-            )
-            _trace(
-                "betainvite_friend_ok_direct_invite",
-                discord_id=interaction.user.id,
-                steam_id64=resolved,
-                account_id=account_id_from_friend,
-            )
-            return
-
-        try:
-            fr_outcome = await self.tasks.run(
-                "AUTH_SEND_FRIEND_REQUEST",
-                {"steam_id": resolved},
-                timeout=20.0,
-            )
-        except Exception as exc:
-            log.exception("Konnte Steam-Freundschaftsanfrage nicht senden")
-            _trace(
-                "friend_request_exception",
-                discord_id=interaction.user.id,
-                steam_id64=resolved,
-                error=str(exc),
-            )
-            _update_invite(
-                record.id,
-                status=STATUS_ERROR,
-                last_error=f"Freundschaftsanfrage fehlgeschlagen: {exc}",
-            )
-            await interaction.followup.send(
-                "❌ Konnte die Freundschaftsanfrage nicht senden. Bitte versuche es später erneut.",
-                ephemeral=True,
-            )
-            return
-
-        if not fr_outcome.ok:
-            error_msg = fr_outcome.error or "Unbekannter Fehler beim Senden der Freundschaftsanfrage"
-            error_lower = str(error_msg).lower()
-            duplicate_request = any(
-                token in error_lower
-                for token in (
-                    "duplicatename",
-                    "duplicate name",
-                    "already friend",
-                    "already friends",
-                    "already on your friend",
-                    "already in your friend",
-                )
-            )
-
-            if duplicate_request:
-                friend_ok = False
-                friendship_details = {}
-                try:
-                    friend_outcome = await self.tasks.run(
-                        "AUTH_CHECK_FRIENDSHIP",
-                        {"steam_id": resolved},
-                        timeout=15.0,
-                    )
-                    if friend_outcome.ok and isinstance(friend_outcome.result, dict):
-                        data = friend_outcome.result.get("data") if isinstance(friend_outcome.result, dict) else None
-                        if isinstance(data, dict):
-                            friendship_details = data
-                            friend_ok = bool(data.get("friend"))
-                            if data.get("account_id") is not None and data.get("account_id") != record.account_id:
-                                record = _update_invite(record.id, account_id=int(data["account_id"])) or record
-                except Exception:
-                    log.exception(
-                        "Friendship re-check nach DuplicateName fehlgeschlagen: discord_id=%s, steam_id=%s",
-                        interaction.user.id,
-                        resolved,
-                    )
-                    _trace(
-                        "friend_request_duplicate_check_failed",
-                        discord_id=interaction.user.id,
-                        steam_id64=resolved,
-                    )
-
-                log.info(
-                    "Freundschaftsanfrage bereits vorhanden oder Freundschaft besteht: discord_id=%s, steam_id=%s, error=%s, friend_ok=%s, details=%s",
-                    interaction.user.id,
-                    resolved,
-                    error_msg,
-                    friend_ok,
-                    friendship_details,
-                )
-                _trace(
-                    "friend_request_duplicate",
-                    discord_id=interaction.user.id,
-                    steam_id64=resolved,
-                    error=error_msg,
-                    friend_ok=friend_ok,
-                    details=friendship_details,
-                )
-
-                now_ts = int(time.time())
-                record = _update_invite(
-                    record.id,
-                    status=STATUS_WAITING,
-                    account_id=account_id,
-                    friend_requested_at=now_ts,
-                    last_error=None,
-                ) or record
-
-                status_line = "✅ Wir sind laut Steam schon befreundet." if friend_ok else "ℹ️ Die Steam-Anfrage scheint bereits zu bestehen."
-                message = (
-                    f"{status_line}\n"
-                    "Klicke unten auf „Freundschaft bestätigt“, dann schicken wir dir den Deadlock-Invite."
-                )
-                view = BetaInviteConfirmView(self, record.id, interaction.user.id, resolved)
-                await interaction.followup.send(message, view=view, ephemeral=True)
-                return
-
-            log.warning(
-                "Freundschaftsanfrage fehlgeschlagen: discord_id=%s, steam_id=%s, error=%s",
-                interaction.user.id,
-                resolved,
-                error_msg,
-            )
-            _trace(
-                "friend_request_failed",
-                discord_id=interaction.user.id,
-                steam_id64=resolved,
-                error=error_msg,
-            )
-            _update_invite(
-                record.id,
-                status=STATUS_ERROR,
-                last_error=f"Freundschaftsanfrage fehlgeschlagen: {error_msg}",
-            )
-            await interaction.followup.send(
-                "❌ Konnte die Freundschaftsanfrage nicht senden. Bitte prüfe deine Steam-Privatsphäreeinstellungen und versuche es erneut.",
-                ephemeral=True,
-            )
-            return
-
-        now_ts = int(time.time())
-        record = _update_invite(
-            record.id,
-            status=STATUS_WAITING,
-            account_id=account_id,
-            friend_requested_at=now_ts,
-            last_error=None,
-        ) or record
         _trace(
-            "friend_request_sent",
+            "betainvite_intent_ok",
             discord_id=interaction.user.id,
-            steam_id64=resolved,
-            account_id=account_id,
-            record_id=record.id,
+            intent=intent_record.intent,
         )
-
-        message = (
-            "✅ Freundschaftsanfrage verschickt!\n"
-            "Sobald du die Anfrage angenommen hast, klicke unten auf „Freundschaft bestätigt“, damit wir die Einladung senden können."
-        )
-        view = BetaInviteConfirmView(self, record.id, interaction.user.id, resolved)
-        await interaction.followup.send(message, view=view, ephemeral=True)
+        await self._reply_no_invites(interaction)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
