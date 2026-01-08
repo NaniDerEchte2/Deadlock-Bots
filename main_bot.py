@@ -323,6 +323,8 @@ class MasterBot(commands.Bot):
                             env=steam_env,
                             autostart=True,
                             restart_on_crash=True,
+                            daily_restart_at="05:00",
+                            max_uptime_seconds=24 * 3600,
                             tags=["steam", "node", "presence"],
                             command_namespace="steam",
                             max_log_lines=400,

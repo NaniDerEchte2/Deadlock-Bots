@@ -7,7 +7,7 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional
 
@@ -53,6 +53,8 @@ class StandaloneBotConfig:
     python: Optional[str] = None
     autostart: bool = False
     restart_on_crash: bool = True
+    daily_restart_at: Optional[str] = None  # format: "HH:MM" (local time)
+    max_uptime_seconds: Optional[float] = None
     max_log_lines: int = 200
     metrics_provider: Optional[Callable[[], Awaitable[Dict[str, Any]]]] = None
     tags: List[str] = field(default_factory=list)
@@ -75,6 +77,7 @@ class _RuntimeState:
     stop_requested: bool = False
     reader_tasks: List[asyncio.Task] = field(default_factory=list)
     log_buffer: Deque[Dict[str, Any]] = field(init=False)
+    last_scheduled_restart_day: Optional[date] = None
 
     def __post_init__(self) -> None:
         self.log_buffer = deque(maxlen=self.config.max_log_lines)
@@ -214,12 +217,85 @@ class StandaloneBotManager:
 
     async def ensure_autostart(self) -> None:
         for config in self.all_configs():
+            await self._maybe_restart_on_daily_schedule(config)
+            await self._maybe_restart_on_max_uptime(config)
             if not config.autostart:
                 continue
             try:
                 await self.ensure_running(config.key)
             except StandaloneManagerError as exc:
                 log.error("Failed to autostart %s: %s", config.key, exc)
+
+    async def _maybe_restart_on_daily_schedule(self, config: StandaloneBotConfig) -> None:
+        schedule = config.daily_restart_at
+        if not schedule:
+            return
+        try:
+            hour_str, minute_str = schedule.split(":")
+            hour = int(hour_str)
+            minute = int(minute_str)
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError
+        except ValueError:
+            log.warning("Invalid daily_restart_at for %s: %s", config.key, schedule)
+            return
+
+        now = datetime.now()
+        today = now.date()
+        target_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+        async with self._lock:
+            state = self._states.get(config.key)
+            if not state:
+                return
+            if state.last_scheduled_restart_day == today:
+                return
+            should_restart = now >= target_today
+
+        if not should_restart:
+            return
+
+        log.info("Scheduled daily restart for %s at %s -> restart now", config.key, schedule)
+        try:
+            await self.restart(config.key)
+        except StandaloneManagerError as exc:
+            log.warning("Daily restart for %s failed: %s", config.key, exc)
+            return
+
+        async with self._lock:
+            state = self._states.get(config.key)
+            if state:
+                state.last_scheduled_restart_day = today
+
+    async def _maybe_restart_on_max_uptime(self, config: StandaloneBotConfig) -> None:
+        max_uptime = config.max_uptime_seconds
+        if not max_uptime:
+            return
+
+        restart_needed = False
+        uptime = None
+
+        async with self._lock:
+            state = self._states.get(config.key)
+            if state and state.running:
+                started_wall = state.started_wall or _ts_from_monotonic(state.started_at_monotonic, None)
+                if started_wall is not None:
+                    uptime = time.time() - started_wall
+                    restart_needed = uptime >= max_uptime
+
+        if not restart_needed:
+            return
+
+        log.info(
+            "Standalone bot %s exceeded max uptime %.0fs (uptime %.0fs) -> restart",
+            config.key,
+            max_uptime,
+            uptime or 0.0,
+        )
+        try:
+            await self.restart(config.key)
+        except StandaloneManagerError as exc:
+            log.warning("Max-uptime restart for %s failed: %s", config.key, exc)
 
     async def set_autostart(self, key: str, enabled: bool) -> Dict[str, Any]:
         async with self._lock:
@@ -379,4 +455,3 @@ class StandaloneBotManager:
             "restart_attempts": state.restart_attempts,
             "autostart": state.config.autostart,
         }
-
