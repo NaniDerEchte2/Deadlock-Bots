@@ -4,12 +4,9 @@ import asyncio
 import importlib
 import logging
 import time
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import Callable, Optional
 
 from bot_core.bootstrap import _load_env_robust
-
-if TYPE_CHECKING:
-    from bot_core.master_bot import MasterBot
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +23,7 @@ class BotLifecycle:
         self._token_loader = token_loader
         self._restart_event = asyncio.Event()
         self._stop_event = asyncio.Event()
-        self._current_bot: Optional[MasterBot] = None
+        self._current_bot: Optional["MasterBot"] = None
         self._restart_requested_at: float | None = None
         self._last_restart_at: float | None = None
         self._restart_reason: str | None = None

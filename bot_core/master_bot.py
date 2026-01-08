@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
 import datetime as _dt
 import pytz
@@ -26,9 +26,6 @@ except Exception as _dashboard_import_error:
     logging.getLogger(__name__).warning(
         "Dashboard module unavailable: %s", _dashboard_import_error
     )
-
-if TYPE_CHECKING:
-    from bot_core.lifecycle import BotLifecycle
 
 __all__ = ["MasterBot"]
 

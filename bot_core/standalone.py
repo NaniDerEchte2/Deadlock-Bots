@@ -4,8 +4,7 @@ import asyncio
 import json
 import logging
 import os
-from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional
 
 try:
     from service.standalone_manager import StandaloneBotConfig, StandaloneBotManager
@@ -15,9 +14,7 @@ except Exception as _standalone_import_error:
     logging.getLogger(__name__).warning(
         "Standalone manager unavailable: %s", _standalone_import_error
     )
-
-if TYPE_CHECKING:
-    from bot_core.master_bot import MasterBot
+    # TYPE_CHECKING import removed to avoid module-level cycles; use forward refs instead.
 
 
 class StandaloneMixin:

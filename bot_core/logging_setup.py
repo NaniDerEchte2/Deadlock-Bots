@@ -4,7 +4,6 @@ import logging
 import logging.handlers
 import os
 import sys
-from pathlib import Path
 from typing import List
 
 from bot_core.bootstrap import _RedactSecretsFilter
