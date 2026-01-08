@@ -105,8 +105,10 @@ class RaidAuthManager:
         scopes: List[str],
     ) -> None:
         """Speichert OAuth-Tokens in der Datenbank."""
-        expires_at = datetime.now(timezone.utc).timestamp() + expires_in
+        now = datetime.now(timezone.utc)
+        expires_at = now.timestamp() + expires_in
         expires_at_iso = datetime.fromtimestamp(expires_at, timezone.utc).isoformat()
+        authorized_at = now.isoformat()
 
         with get_conn() as conn:
             conn.execute(
@@ -123,6 +125,7 @@ class RaidAuthManager:
                     refresh_token,
                     expires_at_iso,
                     " ".join(scopes),
+                    authorized_at,
                 ),
             )
             conn.commit()

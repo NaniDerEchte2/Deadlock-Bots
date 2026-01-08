@@ -718,6 +718,10 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                     </div>
                     <div class=\"dashboard-row\">
                         <button class=\"namespace\" id=\"dashboard-restart\">Dashboard neu starten</button>
+                        <button class=\"namespace\" id=\"bot-restart\">Bot neu starten</button>
+                    </div>
+                    <div class=\"dashboard-row\">
+                        <span class=\"dashboard-last\" id=\"bot-restart-info\">Bot Restart: \u2013</span>
                     </div>
                 </div>
             </div>
@@ -847,6 +851,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const dashboardRestartInfo = document.getElementById('dashboard-restart-info');
     const dashboardListen = document.getElementById('dashboard-listen');
     const dashboardPublic = document.getElementById('dashboard-public');
+    const botRestartBtn = document.getElementById('bot-restart');
+    const botRestartInfo = document.getElementById('bot-restart-info');
     let currentVoiceMode = 'hour';
     let currentVoiceUser = '';
     const STANDALONE_COMMANDS = {
@@ -950,6 +956,24 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
                 setTimeout(() => {
                     dashboardRestartBtn.disabled = false;
                     dashboardRestartBtn.textContent = 'Dashboard neu starten';
+                }, 1200);
+            }
+        });
+    }
+    if (botRestartBtn) {
+        botRestartBtn.addEventListener('click', async () => {
+            botRestartBtn.disabled = true;
+            botRestartBtn.textContent = 'Restart angefordert...';
+            try {
+                await fetchJSON('/api/bot/restart', { method: 'POST', body: JSON.stringify({}) });
+                log('Bot-Restart ausgel\u00f6st', 'success');
+                setTimeout(loadStatus, 1200);
+            } catch (err) {
+                log('Bot-Restart fehlgeschlagen: ' + err.message, 'error');
+            } finally {
+                setTimeout(() => {
+                    botRestartBtn.disabled = false;
+                    botRestartBtn.textContent = 'Bot neu starten';
                 }, 1200);
             }
         });
@@ -1068,7 +1092,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('bot-guilds').textContent = 'Guilds: ' + data.bot.guilds;
             document.getElementById('bot-latency').textContent = 'Latency: ' + formatLatency(data.bot.latency_ms);
 
-            renderDashboard(data.dashboard || {});
+            renderDashboard(data.dashboard || {}, data.lifecycle || {});
 
             const healthChecks = data.health || [];
             renderHealth(healthChecks);
@@ -1083,9 +1107,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         }
     }
 
-    function renderDashboard(info = {}) {
+    function renderDashboard(info = {}, lifecycle = {}) {
         const restarting = Boolean(info.restart_in_progress);
         const running = info.running === undefined ? true : Boolean(info.running);
+        const restartAvailable = lifecycle.enabled !== false;
+        const restartPending = Boolean(lifecycle.restart_requested);
 
         if (dashboardStatusPill) {
             let cls = 'status-pill ';
@@ -1109,6 +1135,19 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             dashboardRestartBtn.textContent = restarting ? 'Restart l\u00e4uft...' : 'Dashboard neu starten';
         }
 
+        if (botRestartBtn) {
+            if (!restartAvailable) {
+                botRestartBtn.disabled = true;
+                botRestartBtn.textContent = 'Restart nicht verf\u00fcgbar';
+            } else if (restartPending) {
+                botRestartBtn.disabled = true;
+                botRestartBtn.textContent = 'Restart angefordert...';
+            } else {
+                botRestartBtn.disabled = false;
+                botRestartBtn.textContent = 'Bot neu starten';
+            }
+        }
+
         if (dashboardRestartInfo) {
             const last = info.last_restart || {};
             const when = last.at || last.time || last.timestamp;
@@ -1116,6 +1155,17 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             const whenLabel = when ? formatTimestamp(when) : '\u2013';
             const errText = last.error ? ' (' + last.error + ')' : '';
             dashboardRestartInfo.textContent = statusLabel + ': ' + whenLabel + errText;
+        }
+
+        if (botRestartInfo) {
+            const requestedAt = lifecycle.restart_requested_at ? formatTimestamp(lifecycle.restart_requested_at) : null;
+            const lastRestart = lifecycle.last_restart_at ? formatTimestamp(lifecycle.last_restart_at) : '\u2013';
+            const reason = lifecycle.restart_reason ? ' (' + lifecycle.restart_reason + ')' : '';
+            let label = 'Bot Restart: ' + lastRestart;
+            if (requestedAt) {
+                label += ' \u2022 Angefragt: ' + requestedAt + reason;
+            }
+            botRestartInfo.textContent = label;
         }
 
         if (dashboardListen) {
@@ -2690,6 +2740,7 @@ class DashboardServer:
         self._restart_lock = asyncio.Lock()
         self._restart_task: Optional[asyncio.Task] = None
         self._last_restart: Dict[str, Any] = {"at": None, "ok": None, "error": None}
+        self._lifecycle = getattr(bot, "lifecycle", None)
         scheme_env = (os.getenv("MASTER_DASHBOARD_SCHEME") or "").strip().lower()
         self._scheme = scheme_env or "http"
         self._listen_base_url = self._format_base_url(self.host, self.port, self._scheme)
@@ -2771,6 +2822,7 @@ class DashboardServer:
                     web.get("/", self._handle_index),
                     web.get("/admin", self._handle_index),
                     web.get("/api/status", self._handle_status),
+                    web.post("/api/bot/restart", self._handle_bot_restart),
                     web.post("/api/dashboard/restart", self._handle_dashboard_restart),
                     web.post("/api/cogs/reload", self._handle_reload),
                     web.post("/api/cogs/load", self._handle_load),
@@ -4120,6 +4172,15 @@ class DashboardServer:
         else:
             latency_ms = None
 
+        lifecycle_state: Dict[str, Any] | None = None
+        lifecycle = self._lifecycle or getattr(bot, "lifecycle", None)
+        if lifecycle:
+            try:
+                lifecycle_state = lifecycle.snapshot()
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Lifecycle snapshot fehlgeschlagen: %s", exc)
+                lifecycle_state = {"enabled": True, "error": str(exc)}
+
         restart_in_progress = bool(self._restart_task and not self._restart_task.done())
         last_restart = self._last_restart if any(self._last_restart.values()) else None
 
@@ -4146,6 +4207,7 @@ class DashboardServer:
                 "restart_in_progress": restart_in_progress,
                 "last_restart": last_restart,
             },
+            "lifecycle": lifecycle_state or {"enabled": False},
             "settings": {
                 "per_cog_unload_timeout": bot.per_cog_unload_timeout,
             },
@@ -4153,6 +4215,17 @@ class DashboardServer:
             "standalone": await self._collect_standalone_snapshot(),
         }
         return self._json(payload)
+
+    async def _handle_bot_restart(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        lifecycle = self._lifecycle or getattr(self.bot, "lifecycle", None)
+        if not lifecycle:
+            return self._json({"ok": False, "message": "Restart nicht verfügbar (kein Lifecycle angebunden)"})
+
+        scheduled = await lifecycle.request_restart(reason="dashboard")
+        if scheduled:
+            return self._json({"ok": True, "message": "Bot restart scheduled"})
+        return self._json({"ok": False, "message": "Restart bereits angefordert"})
 
     async def _handle_dashboard_restart(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))

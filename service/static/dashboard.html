@@ -699,6 +699,10 @@
                     </div>
                     <div class="dashboard-row">
                         <button class="namespace" id="dashboard-restart">Dashboard neu starten</button>
+                        <button class="namespace" id="bot-restart">Bot neu starten</button>
+                    </div>
+                    <div class="dashboard-row">
+                        <span class="dashboard-last" id="bot-restart-info">Bot Restart: –</span>
                     </div>
                 </div>
             </div>
@@ -854,6 +858,8 @@
     const dashboardRestartInfo = document.getElementById('dashboard-restart-info');
     const dashboardListen = document.getElementById('dashboard-listen');
     const dashboardPublic = document.getElementById('dashboard-public');
+    const botRestartBtn = document.getElementById('bot-restart');
+    const botRestartInfo = document.getElementById('bot-restart-info');
     let currentVoiceMode = 'hour';
     let currentVoiceUser = '';
     const STANDALONE_COMMANDS = {
@@ -962,6 +968,24 @@
                 setTimeout(() => {
                     dashboardRestartBtn.disabled = false;
                     dashboardRestartBtn.textContent = 'Dashboard neu starten';
+                }, 1200);
+            }
+        });
+    }
+    if (botRestartBtn) {
+        botRestartBtn.addEventListener('click', async () => {
+            botRestartBtn.disabled = true;
+            botRestartBtn.textContent = 'Restart angefordert...';
+            try {
+                await fetchJSON('/api/bot/restart', { method: 'POST', body: JSON.stringify({}) });
+                log('Bot-Restart ausgelöst', 'success');
+                setTimeout(loadStatus, 1200);
+            } catch (err) {
+                log('Bot-Restart fehlgeschlagen: ' + err.message, 'error');
+            } finally {
+                setTimeout(() => {
+                    botRestartBtn.disabled = false;
+                    botRestartBtn.textContent = 'Bot neu starten';
                 }, 1200);
             }
         });
@@ -1080,7 +1104,7 @@
             document.getElementById('bot-guilds').textContent = 'Guilds: ' + data.bot.guilds;
             document.getElementById('bot-latency').textContent = 'Latency: ' + formatLatency(data.bot.latency_ms);
 
-            renderDashboard(data.dashboard || {});
+            renderDashboard(data.dashboard || {}, data.lifecycle || {});
 
             const healthChecks = data.health || [];
             renderHealth(healthChecks);
@@ -1095,9 +1119,11 @@
         }
     }
 
-    function renderDashboard(info = {}) {
+    function renderDashboard(info = {}, lifecycle = {}) {
         const restarting = Boolean(info.restart_in_progress);
         const running = info.running === undefined ? true : Boolean(info.running);
+        const restartAvailable = lifecycle.enabled !== false;
+        const restartPending = Boolean(lifecycle.restart_requested);
 
         if (dashboardStatusPill) {
             let cls = 'status-pill ';
@@ -1121,6 +1147,19 @@
             dashboardRestartBtn.textContent = restarting ? 'Restart läuft...' : 'Dashboard neu starten';
         }
 
+        if (botRestartBtn) {
+            if (!restartAvailable) {
+                botRestartBtn.disabled = true;
+                botRestartBtn.textContent = 'Restart nicht verfügbar';
+            } else if (restartPending) {
+                botRestartBtn.disabled = true;
+                botRestartBtn.textContent = 'Restart angefordert...';
+            } else {
+                botRestartBtn.disabled = false;
+                botRestartBtn.textContent = 'Bot neu starten';
+            }
+        }
+
         if (dashboardRestartInfo) {
             const last = info.last_restart || {};
             const when = last.at || last.time || last.timestamp;
@@ -1128,6 +1167,17 @@
             const whenLabel = when ? formatTimestamp(when) : '–';
             const errText = last.error ? ' (' + last.error + ')' : '';
             dashboardRestartInfo.textContent = statusLabel + ': ' + whenLabel + errText;
+        }
+
+        if (botRestartInfo) {
+            const requestedAt = lifecycle.restart_requested_at ? formatTimestamp(lifecycle.restart_requested_at) : null;
+            const lastRestart = lifecycle.last_restart_at ? formatTimestamp(lifecycle.last_restart_at) : '–';
+            const reason = lifecycle.restart_reason ? ' (' + lifecycle.restart_reason + ')' : '';
+            let label = 'Bot Restart: ' + lastRestart;
+            if (requestedAt) {
+                label += ' • Angefragt: ' + requestedAt + reason;
+            }
+            botRestartInfo.textContent = label;
         }
 
         if (dashboardListen) {
