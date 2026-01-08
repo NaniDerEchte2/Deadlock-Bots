@@ -1127,7 +1127,7 @@
 
         if (dashboardStatusPill) {
             let cls = 'status-pill ';
-            let label = 'Status unbekannt';
+            let label;
             if (restarting) {
                 cls += 'status-running';
                 label = 'Restart läuft';
@@ -1139,7 +1139,7 @@
                 label = 'Gestoppt';
             }
             dashboardStatusPill.className = cls;
-            dashboardStatusPill.textContent = label;
+            dashboardStatusPill.textContent = label || 'Status unbekannt';
         }
 
         if (dashboardRestartBtn) {

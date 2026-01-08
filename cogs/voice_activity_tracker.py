@@ -343,7 +343,6 @@ class VoiceActivityTrackerCog(commands.Cog):
                 task.cancel()
 
         # Warte auf sauberen Task-Shutdown (Race-Safe!)
-        import asyncio
         await asyncio.gather(*[
             task.wait_for_cancel() if hasattr(task, 'wait_for_cancel') else asyncio.sleep(0)
             for task in tasks_to_cancel if task.is_running()

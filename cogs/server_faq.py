@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Tuple, Optional, List
+from typing import Any, Dict, Tuple, Optional
 
 import discord
 from discord import app_commands

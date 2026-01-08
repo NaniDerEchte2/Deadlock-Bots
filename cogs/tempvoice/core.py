@@ -676,6 +676,7 @@ class TempVoiceCore(commands.Cog):
         async with lock:
             kwargs: Dict[str, Any] = {}
             now = time.time()
+            may_rename = False
 
             # ===== Name bearbeiten? Nur beim Erstellen & wenn KEIN Live-Match-Suffix vorhanden ist =====
             if desired_name is not None and lane.name != desired_name:
@@ -692,13 +693,11 @@ class TempVoiceCore(commands.Cog):
                         last_ts = self._last_name_patch_ts.get(lane.id, 0.0)
                         if now - last_ts >= NAME_EDIT_COOLDOWN_SEC:
                             await self.bot.queue_channel_rename(lane.id, desired_name, reason=reason or "TempVoice: Name Update")
-                            if "name" in kwargs: # This check is for the old implementation. It's safe to remove it or modify it
-                                self._last_name_patch_ts[lane.id] = now
+                            self._last_name_patch_ts[lane.id] = now
                             return # Exit as rename is queued
                     else:
                         await self.bot.queue_channel_rename(lane.id, desired_name, reason=reason or "TempVoice: Name Update")
-                        if "name" in kwargs: # This check is for the old implementation. It's safe to remove it or modify it
-                            self._last_name_patch_ts[lane.id] = now
+                        self._last_name_patch_ts[lane.id] = now
                         return # Exit as rename is queued
                 # sonst: Name bleibt in Ruhe
 
@@ -712,8 +711,7 @@ class TempVoiceCore(commands.Cog):
                     # Non-name edits still go directly, or if forced name edit but not handled by queue
                     if "name" in kwargs and (not may_rename or force_name): # Handle forced renames explicitly here if needed
                         await self.bot.queue_channel_rename(lane.id, kwargs["name"], reason=reason or "TempVoice: Update")
-                        if "name" in kwargs:
-                            self._last_name_patch_ts[lane.id] = now
+                        self._last_name_patch_ts[lane.id] = now
                     else:
                         await lane.edit(**kwargs, reason=reason or "TempVoice: Update")
                         if "name" in kwargs:

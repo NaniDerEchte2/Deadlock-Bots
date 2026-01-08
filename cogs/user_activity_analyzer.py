@@ -993,7 +993,6 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
             typical_hours = json.loads(row[0]) if row[0] else []
             typical_days = json.loads(row[1]) if row[1] else []
             activity_score = row[2] or 0
-            sessions_count = row[3] or 0
             total_minutes = row[4] or 0
             last_active_str = row[5]
             ping_count = row[6] or 0
@@ -1033,6 +1032,8 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
 
             # Ping Stats
             embed.add_field(name="📬 Pings (30d)", value=f"{ping_count}/3", inline=True)
+            if last_pinged_str:
+                embed.add_field(name="📬 Zuletzt gepingt", value=last_pinged_str, inline=True)
 
             # Co-Spieler
             co_players = await self.get_top_co_players(target.id, limit=5)
