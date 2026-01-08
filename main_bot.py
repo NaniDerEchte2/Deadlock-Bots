@@ -1,23 +1,36 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import os
 import signal
 import threading
+from typing import Callable
 
-from bot_core.bootstrap import bootstrap_runtime
+from bot_core.bootstrap import _load_env_robust, bootstrap_runtime
 
 # Frühe Initialisierung, damit .env/Logging bereitstehen bevor Settings geladen werden.
 bootstrap_runtime()
 
 from bot_core import BotLifecycle, MasterBot, MasterControlCog  # noqa: E402
-from service.config import settings  # noqa: E402
 
 __all__ = ["MasterBot", "MasterControlCog", "BotLifecycle"]
 
 
-def _install_signal_handlers(loop: asyncio.AbstractEventLoop, lifecycle: BotLifecycle) -> None:
+def _load_fresh_token() -> str:
+    """
+    Reload settings (and .env) so restarts pick up a rotated Discord token.
+    """
+    _load_env_robust()
+    config_module = importlib.reload(importlib.import_module("service.config"))
+    token = config_module.settings.discord_token.get_secret_value()
+    if not token:
+        raise SystemExit("DISCORD_TOKEN fehlt in ENV/.env")
+    return token
+
+
+def _install_signal_handlers(loop: asyncio.AbstractEventLoop, lifecycle: BotLifecycle) -> Callable[[], None]:
     shutdown_started = False
     kill_timer: threading.Timer | None = None
 
@@ -40,6 +53,16 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop, lifecycle: BotLife
             kill_timer.start()
         except Exception as exc:  # pragma: no cover - defensive
             logging.getLogger(__name__).debug("Kill-Timer konnte nicht gestartet werden: %r", exc)
+
+    def _cancel_kill_timer() -> None:
+        nonlocal kill_timer
+        if not kill_timer:
+            return
+        try:
+            kill_timer.cancel()
+        except Exception as exc:  # pragma: no cover - defensive
+            logging.getLogger(__name__).debug("Kill-Timer konnte nicht gestoppt werden: %r", exc)
+        kill_timer = None
 
     def _handle(signum, frame) -> None:  # pragma: no cover - system dependent
         nonlocal shutdown_started
@@ -66,19 +89,18 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop, lifecycle: BotLife
             "Signal-Handler Registrierung teilweise fehlgeschlagen (OS?): %r", exc
         )
 
+    return _cancel_kill_timer
+
 
 async def main() -> None:
-    token = settings.discord_token.get_secret_value()
-    if not token:
-        raise SystemExit("DISCORD_TOKEN fehlt in ENV/.env")
-
-    lifecycle = BotLifecycle(token=token)
+    lifecycle = BotLifecycle(token_loader=_load_fresh_token)
     loop = asyncio.get_running_loop()
-    _install_signal_handlers(loop, lifecycle)
+    cancel_watchdog = _install_signal_handlers(loop, lifecycle)
 
     try:
         await lifecycle.run_forever()
     finally:
+        cancel_watchdog()
         logging.info("Lifecycle beendet")
 
 

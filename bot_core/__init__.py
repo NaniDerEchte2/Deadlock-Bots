@@ -11,13 +11,11 @@ from .bootstrap import (
 from .control import MasterControlCog, is_bot_owner
 from .lifecycle import BotLifecycle
 from .master_bot import MasterBot
-from .shutdown import graceful_shutdown
 
 __all__ = [
     "BotLifecycle",
     "MasterBot",
     "MasterControlCog",
-    "graceful_shutdown",
     "_RedactSecretsFilter",
     "_init_db_if_available",
     "_load_env_robust",

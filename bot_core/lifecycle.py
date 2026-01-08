@@ -4,7 +4,9 @@ import asyncio
 import importlib
 import logging
 import time
-from typing import Optional, TYPE_CHECKING
+from typing import Callable, Optional, TYPE_CHECKING
+
+from bot_core.bootstrap import _load_env_robust
 
 if TYPE_CHECKING:
     from bot_core.master_bot import MasterBot
@@ -17,14 +19,24 @@ class BotLifecycle:
     Kleiner Supervisor, der den Bot-Prozess im selben Interpreter neustarten kann.
     """
 
-    def __init__(self, token: str):
+    def __init__(self, token: str | None = None, token_loader: Callable[[], str] | None = None):
+        if token_loader is None and not token:
+            raise ValueError("BotLifecycle benötigt entweder token oder token_loader")
         self.token = token
+        self._token_loader = token_loader
         self._restart_event = asyncio.Event()
         self._stop_event = asyncio.Event()
         self._current_bot: Optional[MasterBot] = None
         self._restart_requested_at: float | None = None
         self._last_restart_at: float | None = None
         self._restart_reason: str | None = None
+
+    def _resolve_token(self) -> str:
+        if self._token_loader is not None:
+            return self._token_loader()
+        if not self.token:
+            raise RuntimeError("Kein Discord-Token verfügbar")
+        return self.token
 
     # ------------------ Public API ------------------
     async def request_restart(self, reason: str = "manual") -> bool:
@@ -75,6 +87,7 @@ class BotLifecycle:
         """
         Lädt die relevanten Module neu, damit Code-Änderungen beim Restart greifen.
         """
+        importlib.reload(importlib.import_module("service.config"))
         master_module = importlib.reload(importlib.import_module("bot_core.master_bot"))
         control_module = importlib.reload(importlib.import_module("bot_core.control"))
 
@@ -88,12 +101,20 @@ class BotLifecycle:
         wenn ein Stop angefordert wird oder kein Restart mehr pending ist.
         """
         while not self._stop_event.is_set():
+            _load_env_robust()
+            try:
+                token = self._resolve_token()
+            except Exception as exc:
+                logger.critical("Discord-Token konnte nicht bestimmt werden: %s", exc)
+                self._stop_event.set()
+                break
+
             bot, control_cog_cls = self._build_bot()
             self._current_bot = bot
 
             try:
                 await bot.add_cog(control_cog_cls(bot))  # type: ignore[arg-type]
-                await bot.start(self.token)
+                await bot.start(token)
             except KeyboardInterrupt:
                 logger.info("Keyboard interrupt received, shutting down lifecycle ...")
                 await self.request_stop("keyboard")
