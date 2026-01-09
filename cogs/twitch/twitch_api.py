@@ -291,3 +291,15 @@ class TwitchAPI:
             return None
         thumb = thumb.replace("{width}", "1280").replace("{height}", "720")
         return f"{thumb}?rand={int(time.time())}"
+
+    async def get_followers_total(self, user_id: str) -> Optional[int]:
+        """Liefert die Follower-Gesamtzahl fr einen Broadcaster (best-effort, App-Token ausreichend)."""
+        if not user_id:
+            return None
+        try:
+            js = await self._get("/users/follows", params={"to_id": user_id, "first": "1"})
+            total = js.get("total")
+            return int(total) if total is not None else None
+        except Exception:
+            self._log.debug("get_followers_total failed for %s", user_id, exc_info=True)
+            return None

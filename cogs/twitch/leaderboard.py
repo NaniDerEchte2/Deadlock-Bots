@@ -856,6 +856,170 @@ class TwitchLeaderboardMixin:
                     user_entry["had_results"] = True
             out["streamer"] = user_entry
 
+        try:
+            with storage.get_conn() as c:
+                session_rows = c.execute(
+                    """
+                    SELECT id, streamer_login, started_at, duration_seconds, start_viewers, peak_viewers,
+                           end_viewers, avg_viewers, samples, retention_5m, retention_10m, retention_20m,
+                           dropoff_pct, dropoff_label, unique_chatters, first_time_chatters,
+                           returning_chatters, follower_delta, followers_start, followers_end
+                      FROM twitch_stream_sessions
+                     WHERE started_at >= datetime('now', '-30 days')
+                       AND ended_at IS NOT NULL
+                     ORDER BY started_at DESC
+                     LIMIT 400
+                    """
+                ).fetchall()
+
+                chat_peak_rows = c.execute(
+                    """
+                    SELECT cm.session_id,
+                           s.streamer_login,
+                           s.started_at,
+                           strftime('%Y-%m-%dT%H:%M:00Z', cm.message_ts) AS minute_bucket,
+                           COUNT(*) AS messages
+                      FROM twitch_chat_messages cm
+                      JOIN twitch_stream_sessions s ON s.id = cm.session_id
+                     WHERE cm.message_ts >= datetime('now', '-30 days')
+                     GROUP BY cm.session_id, minute_bucket
+                     ORDER BY messages DESC
+                     LIMIT 5
+                    """
+                ).fetchall()
+
+                active_7_row = c.execute(
+                    "SELECT COUNT(*) FROM twitch_chatter_rollup WHERE last_seen_at >= datetime('now','-7 days')"
+                ).fetchone()
+                returning_7_row = c.execute(
+                    """
+                    SELECT COUNT(*)
+                      FROM twitch_chatter_rollup
+                     WHERE first_seen_at < datetime('now','-7 days')
+                       AND last_seen_at >= datetime('now','-7 days')
+                    """
+                ).fetchone()
+                active_30_row = c.execute(
+                    "SELECT COUNT(*) FROM twitch_chatter_rollup WHERE last_seen_at >= datetime('now','-30 days')"
+                ).fetchone()
+                returning_30_row = c.execute(
+                    """
+                    SELECT COUNT(*)
+                      FROM twitch_chatter_rollup
+                     WHERE first_seen_at < datetime('now','-30 days')
+                       AND last_seen_at >= datetime('now','-30 days')
+                    """
+                ).fetchone()
+        except Exception:
+            log.debug("Konnte erweiterte Twitch-Metriken nicht berechnen", exc_info=True)
+        else:
+            sessions_count = len(session_rows)
+
+            def _num(row, key, default=0):
+                try:
+                    return row[key] if row[key] is not None else default
+                except Exception:
+                    return default
+
+            ret5_vals = [float(_num(row, "retention_5m")) for row in session_rows if row["retention_5m"] is not None]
+            ret10_vals = [float(_num(row, "retention_10m")) for row in session_rows if row["retention_10m"] is not None]
+            ret20_vals = [float(_num(row, "retention_20m")) for row in session_rows if row["retention_20m"] is not None]
+            drop_vals = [float(_num(row, "dropoff_pct")) for row in session_rows if row["dropoff_pct"] is not None]
+
+            def _avg(values: List[float]) -> Optional[float]:
+                return sum(values) / len(values) if values else None
+
+            dropoff_examples = []
+            for row in session_rows:
+                pct = row["dropoff_pct"]
+                if pct is None:
+                    continue
+                dropoff_examples.append(
+                    {
+                        "streamer": _num(row, "streamer_login", ""),
+                        "started_at": _num(row, "started_at", ""),
+                        "dropoff_pct": float(pct),
+                        "label": row["dropoff_label"] or "",
+                        "start_viewers": _num(row, "start_viewers", 0),
+                        "peak_viewers": _num(row, "peak_viewers", 0),
+                    }
+                )
+            dropoff_examples.sort(key=lambda r: r.get("dropoff_pct", 0.0), reverse=True)
+            dropoff_examples = dropoff_examples[:5]
+
+            retention_payload = {
+                "sessions": sessions_count,
+                "ret5": _avg(ret5_vals),
+                "ret10": _avg(ret10_vals),
+                "ret20": _avg(ret20_vals),
+                "avg_drop": _avg(drop_vals),
+                "examples": dropoff_examples,
+            }
+
+            peak_vals = [int(_num(row, "peak_viewers", 0)) for row in session_rows]
+            follower_deltas = [int(row["follower_delta"]) for row in session_rows if row["follower_delta"] is not None]
+            follower_per_hour: List[float] = []
+            for row in session_rows:
+                delta = row["follower_delta"]
+                duration = _num(row, "duration_seconds", 0)
+                if delta is None or not duration:
+                    continue
+                hours = max(0.1, duration / 3600.0)
+                follower_per_hour.append(float(delta) / hours)
+
+            unique_chat_sessions = [row for row in session_rows if _num(row, "unique_chatters", 0) > 0]
+            total_unique_chatters = sum(_num(row, "unique_chatters", 0) for row in unique_chat_sessions)
+            total_first_chatters = sum(_num(row, "first_time_chatters", 0) for row in unique_chat_sessions)
+            total_returning_chatters = sum(_num(row, "returning_chatters", 0) for row in unique_chat_sessions)
+
+            unique_per_100: Optional[float] = None
+            if unique_chat_sessions:
+                ratios: List[float] = []
+                for row in unique_chat_sessions:
+                    viewers_base = _num(row, "avg_viewers", 0.0) or _num(row, "start_viewers", 1)
+                    ratios.append((_num(row, "unique_chatters", 0) / max(1, viewers_base)) * 100.0)
+                unique_per_100 = _avg(ratios)
+
+            chat_peaks = []
+            for row in chat_peak_rows:
+                chat_peaks.append(
+                    {
+                        "session_id": _num(row, "session_id", 0),
+                        "streamer": _num(row, "streamer_login", ""),
+                        "minute": row["minute_bucket"] if hasattr(row, "__getitem__") else "",
+                        "messages": _num(row, "messages", 0),
+                        "started_at": _num(row, "started_at", ""),
+                    }
+                )
+
+            chat_payload = {
+                "unique_per_100": unique_per_100,
+                "first_share": (total_first_chatters / total_unique_chatters) if total_unique_chatters else None,
+                "returning_share": (total_returning_chatters / total_unique_chatters) if total_unique_chatters else None,
+                "peaks": chat_peaks,
+                "total_unique": total_unique_chatters,
+            }
+
+            discovery_payload = {
+                "sessions": sessions_count,
+                "unique_viewers_estimate": _avg(peak_vals) if peak_vals else None,
+                "followers_total_delta": sum(follower_deltas) if follower_deltas else 0,
+                "followers_per_session": _avg(follower_deltas),
+                "followers_per_hour": _avg(follower_per_hour),
+                "returning_7d": {
+                    "total": int(active_7_row[0]) if active_7_row else 0,
+                    "returning": int(returning_7_row[0]) if returning_7_row else 0,
+                },
+                "returning_30d": {
+                    "total": int(active_30_row[0]) if active_30_row else 0,
+                    "returning": int(returning_30_row[0]) if returning_30_row else 0,
+                },
+            }
+
+            out["retention"] = retention_payload
+            out["chat"] = chat_payload
+            out["discovery"] = discovery_payload
+
         return out
 
     @staticmethod

@@ -97,6 +97,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "twitch_live_state", "last_game", "TEXT")
     _add_column_if_missing(conn, "twitch_live_state", "last_viewer_count", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_live_state", "last_tracking_token", "TEXT")
+    _add_column_if_missing(conn, "twitch_live_state", "active_session_id", "INTEGER")
 
     # 3) Stats-Logs
     conn.execute(
@@ -144,7 +145,108 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_twitch_link_clicks_streamer ON twitch_link_clicks(streamer_login)"
     )
 
-    # 5) Raid-Autorisierung (OAuth User Access Tokens)
+    # 5) Stream Sessions & Engagement
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_stream_sessions (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            streamer_login     TEXT NOT NULL,
+            stream_id          TEXT,
+            started_at         TEXT NOT NULL,
+            ended_at           TEXT,
+            duration_seconds   INTEGER DEFAULT 0,
+            start_viewers      INTEGER DEFAULT 0,
+            peak_viewers       INTEGER DEFAULT 0,
+            end_viewers        INTEGER DEFAULT 0,
+            avg_viewers        REAL    DEFAULT 0,
+            samples            INTEGER DEFAULT 0,
+            retention_5m       REAL,
+            retention_10m      REAL,
+            retention_20m      REAL,
+            dropoff_pct        REAL,
+            dropoff_label      TEXT,
+            unique_chatters    INTEGER DEFAULT 0,
+            first_time_chatters INTEGER DEFAULT 0,
+            returning_chatters INTEGER DEFAULT 0,
+            followers_start    INTEGER,
+            followers_end      INTEGER,
+            follower_delta     INTEGER,
+            notes              TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_sessions_login ON twitch_stream_sessions(streamer_login, started_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_sessions_open ON twitch_stream_sessions(streamer_login) WHERE ended_at IS NULL"
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_session_viewers (
+            session_id        INTEGER NOT NULL,
+            ts_utc            TEXT    NOT NULL,
+            minutes_from_start INTEGER,
+            viewer_count      INTEGER NOT NULL,
+            PRIMARY KEY (session_id, ts_utc)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_session_viewers_session ON twitch_session_viewers(session_id)"
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_session_chatters (
+            session_id          INTEGER NOT NULL,
+            streamer_login      TEXT    NOT NULL,
+            chatter_login       TEXT    NOT NULL,
+            chatter_id          TEXT,
+            first_message_at    TEXT    NOT NULL,
+            messages            INTEGER DEFAULT 0,
+            is_first_time_global INTEGER DEFAULT 0,
+            PRIMARY KEY (session_id, chatter_login)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_session_chatters_login ON twitch_session_chatters(streamer_login, session_id)"
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_chatter_rollup (
+            streamer_login   TEXT NOT NULL,
+            chatter_login    TEXT NOT NULL,
+            chatter_id       TEXT,
+            first_seen_at    TEXT NOT NULL,
+            last_seen_at     TEXT NOT NULL,
+            total_messages   INTEGER DEFAULT 0,
+            total_sessions   INTEGER DEFAULT 0,
+            PRIMARY KEY (streamer_login, chatter_login)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_chat_messages (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id      INTEGER NOT NULL,
+            streamer_login  TEXT NOT NULL,
+            chatter_login   TEXT,
+            message_ts      TEXT NOT NULL,
+            is_command      INTEGER DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_chat_messages_session ON twitch_chat_messages(session_id, message_ts)"
+    )
+
+    # 6) Raid-Autorisierung (OAuth User Access Tokens)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS twitch_raid_auth (
@@ -182,7 +284,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     except Exception:
         log.debug("Could not apply auto-raid safety migration", exc_info=True)
 
-    # 6) Raid-History (Metadaten zu durchgeführten Raids)
+    # 7) Raid-History (Metadaten zu durchgeführten Raids)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS twitch_raid_history (

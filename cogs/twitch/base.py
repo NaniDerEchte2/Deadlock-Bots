@@ -53,6 +53,7 @@ class TwitchBaseCog(commands.Cog):
         self._tick_count = 0
         self._log_every_n = max(1, int(TWITCH_LOG_EVERY_N_TICKS or 5))
         self._category_sample_limit = max(50, int(TWITCH_CATEGORY_SAMPLE_LIMIT or 400))
+        self._active_sessions: Dict[str, int] = {}
         self._notify_channel_id = int(TWITCH_NOTIFY_CHANNEL_ID or 0)
         self._alert_channel_id = int(TWITCH_ALERT_CHANNEL_ID or 0)
         self._alert_mention = TWITCH_ALERT_MENTION or ""
@@ -83,6 +84,11 @@ class TwitchBaseCog(commands.Cog):
             return
 
         self.api = TwitchAPI(self.client_id, self.client_secret)
+        # Rehydrate offene Streams/Sessions nach einem Neustart
+        try:
+            self._rehydrate_active_sessions()
+        except Exception:
+            log.debug("Konnte aktive Twitch-Sessions nicht rehydrieren", exc_info=True)
 
         # Raid-Bot initialisieren
         self._raid_bot: Optional[RaidBot] = None
