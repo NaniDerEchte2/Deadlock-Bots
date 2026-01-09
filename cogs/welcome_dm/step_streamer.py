@@ -62,6 +62,36 @@ MAIN_GUILD_ID = int(os.getenv("MAIN_GUILD_ID", "0"))  # DM-Fallback, falls inter
 # ------------------------------
 # Utilities
 # ------------------------------
+def _find_raid_bot(client: discord.Client) -> Optional[object]:
+    """
+    Versucht den Raid-Bot aus den geladenen Cogs zu ermitteln.
+    Nutzt bekannte Cog-Namen und f„llt auf eine generische Suche zur■ck.
+    """
+    known_names = ("TwitchStreamCog", "TwitchStreams", "Twitch", "TwitchBot", "TwitchDeadlock")
+
+    # Erst bekannte Namen abfragen (schnellster Weg)
+    for name in known_names:
+        try:
+            cog = client.get_cog(name)  # type: ignore[arg-type]
+        except Exception as exc:
+            log.debug("get_cog(%s) failed: %r", name, exc)
+            continue
+        raid_bot = getattr(cog, "_raid_bot", None)
+        if raid_bot:
+            return raid_bot
+
+    # Fallback: durch alle Cogs iterieren
+    try:
+        for cog in getattr(client, "cogs", {}).values():  # type: ignore[attr-defined]
+            raid_bot = getattr(cog, "_raid_bot", None)
+            if raid_bot:
+                return raid_bot
+    except Exception as exc:
+        log.debug("Fallback Raid-Bot lookup fehlgeschlagen: %r", exc)
+
+    return None
+
+
 async def _resolve_guild_and_member(
     interaction: discord.Interaction
 ) -> Tuple[Optional[discord.Guild], Optional[discord.Member]]:
@@ -740,15 +770,10 @@ class StreamerRequirementsView(StepView):
 
         # Twitch Cog finden und OAuth-URL generieren
         try:
-            possible_cogs = ("TwitchDeadlock", "TwitchBot", "Twitch")
-            raid_bot = None
-            for name in possible_cogs:
-                cog = interaction.client.get_cog(name)  # type: ignore
-                if cog and hasattr(cog, "_raid_bot"):
-                    raid_bot = cog._raid_bot  # type: ignore
-                    break
+            raid_bot = _find_raid_bot(interaction.client)
+            auth_mgr = getattr(raid_bot, "auth_manager", None) if raid_bot else None
 
-            if not raid_bot:
+            if not raid_bot or not auth_mgr:
                 await _safe_send(
                     interaction,
                     content="⚠️ Raid-Bot ist derzeit nicht verfügbar. Bitte informiere einen Admin.",
@@ -757,7 +782,7 @@ class StreamerRequirementsView(StepView):
                 return
 
             # OAuth-URL generieren
-            auth_url = raid_bot.auth_manager.generate_auth_url(self.twitch_login)
+            auth_url = auth_mgr.generate_auth_url(self.twitch_login)
 
             # View mit Link-Button erstellen
             view = discord.ui.View()

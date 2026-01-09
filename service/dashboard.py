@@ -341,6 +341,21 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         .health-url:hover {
             text-decoration: underline;
         }
+        .health-tags {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+            margin: 0.1rem 0 0.25rem 0;
+        }
+        .tag.method {
+            background: rgba(112, 72, 232, 0.2);
+            color: #d0bfff;
+        }
+        .tag.status {
+            background: rgba(64, 192, 87, 0.18);
+            color: #c0ffc0;
+        }
         .health-meta {
             font-size: 0.8rem;
             color: #adb5bd;
@@ -528,6 +543,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         .tag.partial { background: rgba(250, 176, 5, 0.25); color: #ffd43b; }
         .tag.package { background: rgba(112, 72, 232, 0.2); color: #d0bfff; }
         .tag.managed { background: rgba(51, 154, 240, 0.22); color: #74c0fc; }
+        .tag.raid { background: rgba(255, 159, 64, 0.22); color: #ffd8a8; }
+        .tag.twitch { background: rgba(116, 192, 252, 0.22); color: #a5d8ff; }
+        .tag.steam { background: rgba(64, 192, 87, 0.18); color: #c0ffc0; }
         .error { color: #ff8787; }
         .success { color: #69db7c; }
         .selection-info {
@@ -1254,6 +1272,23 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             }
 
             card.appendChild(statusRow);
+
+            const tagRow = document.createElement('div');
+            tagRow.className = 'health-tags';
+            const methodLabel = (item && item.method) ? item.method.toUpperCase() : 'GET';
+            tagRow.appendChild(createTag(methodLabel, 'method'));
+            const keyLabel = (item && item.key) ? String(item.key).toLowerCase() : '';
+            if (keyLabel.includes('raid')) {
+                tagRow.appendChild(createTag('Raid', 'raid'));
+            } else if (keyLabel.includes('twitch')) {
+                tagRow.appendChild(createTag('Twitch', 'twitch'));
+            } else if (keyLabel.includes('steam')) {
+                tagRow.appendChild(createTag('Steam', 'steam'));
+            }
+            if (item && item.status !== undefined && item.status !== null) {
+                tagRow.appendChild(createTag(String(item.status), item.ok ? 'status' : 'blocked'));
+            }
+            card.appendChild(tagRow);
 
             if (item && item.url) {
                 const urlLink = document.createElement('a');
@@ -2753,7 +2788,7 @@ class DashboardServer:
                 )
             except Exception as exc:
                 logging.warning(
-                    "MASTER_DASHBOARD_PUBLIC_URL '%s' invalid (%s) – falling back to listen URL",
+                    "MASTER_DASHBOARD_PUBLIC_URL '%s' invalid (%s) - falling back to listen URL",
                     public_env,
                     exc,
                 )
@@ -2763,6 +2798,7 @@ class DashboardServer:
 
         self._twitch_dashboard_href = self._resolve_twitch_dashboard_href()
         self._steam_return_url = self._derive_steam_return_url()
+        self._raid_health_url = self._derive_raid_health_url()
         self._health_cache: List[Dict[str, Any]] = []
         self._health_cache_expiry = 0.0
         self._health_cache_lock = asyncio.Lock()
@@ -3145,6 +3181,21 @@ class DashboardServer:
         path = "/" + path.lstrip("/")
         return f"{base}{path}"
 
+    def _derive_raid_health_url(self) -> Optional[str]:
+        redirect = (os.getenv("TWITCH_RAID_REDIRECT_URI") or "").strip()
+        if not redirect:
+            return None
+        try:
+            parsed = urlparse(redirect if "://" in redirect else f"{self._scheme}://{redirect}")
+        except Exception as exc:
+            logging.warning("TWITCH_RAID_REDIRECT_URI '%s' invalid (%s) - skipping raid health target", redirect, exc)
+            return None
+        if not parsed.netloc:
+            return None
+        scheme = parsed.scheme or self._scheme
+        base = f"{scheme}://{parsed.netloc}"
+        return f"{base}/health"
+
     def _build_health_targets(self) -> List[Dict[str, Any]]:
         targets: List[Dict[str, Any]] = []
         seen_keys: set[str] = set()
@@ -3199,6 +3250,8 @@ class DashboardServer:
         if self._steam_return_url:
             steam_health_url = _append_query_param(self._steam_return_url, "healthcheck", "1")
             _add_target("Steam OAuth Callback", steam_health_url, key="steam-oauth-callback")
+        if self._raid_health_url:
+            _add_target("Raid Callback Host", self._raid_health_url, key="raid-callback-host")
 
         extra_raw = (
             os.getenv("DASHBOARD_HEALTHCHECKS")
@@ -3572,6 +3625,8 @@ class DashboardServer:
                 uid = None
             if uid:
                 user_ids.add(uid)
+        if user_id:
+            user_ids.add(user_id)
         name_map = self._resolve_display_names(user_ids)
 
         def _map_top_user(row: Any) -> Dict[str, Any]:
@@ -3636,13 +3691,91 @@ class DashboardServer:
                     "avg_peak": data.get("avg_peak", 0),
                 })
 
+        user_summary: Optional[Dict[str, Any]] = None
+        if user_id is not None:
+            try:
+                range_stats = db.query_one(
+                    """
+                    SELECT SUM(duration_seconds) AS total_seconds,
+                           SUM(points) AS total_points,
+                           COUNT(*) AS sessions,
+                           SUM(COALESCE(peak_users, 0)) AS sum_peak,
+                           COUNT(DISTINCT date(started_at)) AS active_days,
+                           MAX(ended_at) AS last_session
+                    FROM voice_session_log
+                    WHERE """ + where_sql + """
+                    """,
+                    tuple(params),
+                )
+                lifetime_stats = db.query_one(
+                    """
+                    SELECT total_seconds, total_points, last_update
+                    FROM voice_stats
+                    WHERE user_id = ?
+                    """,
+                    (user_id,),
+                )
+                lifetime_sessions_row = db.query_one(
+                    """
+                    SELECT COUNT(*) AS sessions, MAX(ended_at) AS last_session
+                    FROM voice_session_log
+                    WHERE user_id = ?
+                    """,
+                    (user_id,),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logging.exception("Failed to build user voice summary: %s", exc)
+                raise web.HTTPInternalServerError(text="Voice history unavailable") from exc
+
+            range_seconds = int(range_stats["total_seconds"] or 0) if range_stats else 0
+            range_points = int(range_stats["total_points"] or 0) if range_stats else 0
+            range_sessions = int(range_stats["sessions"] or 0) if range_stats else 0
+            range_avg_session = (range_seconds / range_sessions) if range_sessions else 0
+            range_avg_peak = (
+                (int(range_stats["sum_peak"] or 0) / range_sessions) if range_sessions else 0
+            )
+            range_days = int(range_stats["active_days"] or 0) if range_stats else 0
+
+            lifetime_seconds = int(lifetime_stats["total_seconds"] or 0) if lifetime_stats else 0
+            lifetime_points = int(lifetime_stats["total_points"] or 0) if lifetime_stats else 0
+            lifetime_last_update = lifetime_stats["last_update"] if lifetime_stats else None
+            lifetime_sessions = (
+                int(lifetime_sessions_row["sessions"] or 0) if lifetime_sessions_row else 0
+            )
+            last_session = None
+            if range_stats:
+                last_session = range_stats["last_session"]
+            if not last_session and lifetime_sessions_row:
+                last_session = lifetime_sessions_row["last_session"]
+
+            user_summary = {
+                "user_id": user_id,
+                "display_name": name_map.get(user_id, f"User {user_id}"),
+                "range_seconds": range_seconds,
+                "range_points": range_points,
+                "range_sessions": range_sessions,
+                "range_days": range_days,
+                "range_avg_session_seconds": range_avg_session,
+                "range_avg_peak": range_avg_peak,
+                "lifetime_seconds": lifetime_seconds,
+                "lifetime_points": lifetime_points,
+                "lifetime_sessions": lifetime_sessions,
+                "lifetime_last_update": lifetime_last_update,
+                "last_session": last_session,
+            }
+
         payload = {
             "range_days": days,
             "mode": mode,
-            "user": ({"user_id": user_id, "display_name": name_map.get(user_id)} if user_id else None),
+            "user": (
+                {"user_id": user_id, "display_name": name_map.get(user_id, f"User {user_id}")}
+                if user_id
+                else None
+            ),
             "daily": daily,
             "top_users": [_map_top_user(r) for r in top_users_rows],
             "buckets": buckets,
+            "user_summary": user_summary,
         }
         return self._json(payload)
 

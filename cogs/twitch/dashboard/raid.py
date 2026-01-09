@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import html
 import logging
 from typing import TYPE_CHECKING, Optional
 
 from aiohttp import web
-import html
+
 if TYPE_CHECKING:
     from ..raid_manager import RaidBot
 
@@ -14,14 +15,14 @@ log = logging.getLogger("TwitchStreams.Dashboard")
 
 
 class DashboardRaidMixin:
-    """Dashboard endpoints für Raid-Bot-Verwaltung."""
+    """Dashboard endpoints fuer Raid-Bot-Verwaltung."""
 
     # Wird vom Cog gesetzt
     _raid_bot: Optional[RaidBot] = None
     _redirect_uri: str = ""
 
     async def raid_auth_start(self, request: web.Request) -> web.Response:
-        """Initiiert OAuth-Flow für einen Streamer."""
+        """Initiiert OAuth-Flow fuer einen Streamer."""
         token = request.query.get("token", "")
         if not self._check_token(token):
             return web.Response(text="Unauthorized", status=401)
@@ -39,7 +40,7 @@ class DashboardRaidMixin:
             <html>
             <head><title>Raid Bot Autorisierung</title></head>
             <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto;">
-                <h1>🎯 Raid Bot Autorisierung</h1>
+                <h1>Raid Bot Autorisierung</h1>
                 <p>Streamer: <strong>{html.escape(login, quote=True)}</strong></p>
                 <p>Klicke auf den Link unten, um den Raid Bot zu autorisieren:</p>
                 <p><a href="{auth_url}" style="padding: 10px 20px; background: #9146FF; color: white; text-decoration: none; border-radius: 5px;">Auf Twitch autorisieren</a></p>
@@ -53,7 +54,7 @@ class DashboardRaidMixin:
         )
 
     async def raid_oauth_callback(self, request: web.Request) -> web.Response:
-        """OAuth Callback für Twitch-Autorisierung."""
+        """OAuth Callback fuer Twitch-Autorisierung."""
         code = request.query.get("code")
         state = request.query.get("state")
         error = request.query.get("error")
@@ -64,9 +65,9 @@ class DashboardRaidMixin:
                 <html>
                 <head><title>Autorisierung fehlgeschlagen</title></head>
                 <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto;">
-                    <h1>❌ Autorisierung fehlgeschlagen</h1>
+                    <h1>Autorisierung fehlgeschlagen</h1>
                     <p>Fehler: {html.escape(error, quote=True)}</p>
-                    <p><a href="/twitch/raids">Zurück</a></p>
+                    <p>Bitte schliesse dieses Fenster und starte den Vorgang erneut.</p>
                 </body>
                 </html>
                 """,
@@ -91,7 +92,7 @@ class DashboardRaidMixin:
                 code, session
             )
 
-            # User-Info holen (für twitch_user_id)
+            # User-Info holen (fuer twitch_user_id)
             access_token = token_data["access_token"]
             headers = {
                 "Client-ID": self._raid_bot.auth_manager.client_id,
@@ -124,27 +125,27 @@ class DashboardRaidMixin:
                 <html>
                 <head><title>Autorisierung erfolgreich</title></head>
                 <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto;">
-                    <h1>✅ Autorisierung erfolgreich!</h1>
-                    <p>Der Raid Bot wurde erfolgreich für <strong>{twitch_login}</strong> autorisiert.</p>
+                    <h1>Autorisierung erfolgreich!</h1>
+                    <p>Der Raid Bot wurde erfolgreich fuer <strong>{twitch_login}</strong> autorisiert.</p>
                     <p>Auto-Raids sind jetzt aktiviert. Wenn du offline gehst, wird der Bot automatisch
                        einen anderen Online-Partner raiden.</p>
-                    <p><a href="/twitch/raids">Zu den Raid-Einstellungen</a></p>
+                    <p>Du kannst dieses Fenster schliessen.</p>
                 </body>
                 </html>
                 """,
                 content_type="text/html",
             )
 
-        except Exception as e:
+        except Exception:
             log.exception("OAuth callback error for %s", login)
             return web.Response(
                 text="""
                 <html>
                 <head><title>Fehler</title></head>
                 <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto;">
-                    <h1>❌ Fehler bei der Autorisierung</h1>
-                    <p>Ein interner Fehler ist aufgetreten. Bitte versuche es später erneut.</p>
-                    <p><a href="/twitch/raids">Zurück</a></p>
+                    <h1>Fehler bei der Autorisierung</h1>
+                    <p>Ein interner Fehler ist aufgetreten. Bitte versuche es spaeter erneut.</p>
+                    <p>Bitte schliesse dieses Fenster und versuche es spaeter erneut.</p>
                 </body>
                 </html>
                 """,
@@ -152,7 +153,7 @@ class DashboardRaidMixin:
             )
 
     async def raid_toggle(self, request: web.Request) -> web.Response:
-        """Aktiviert/Deaktiviert Auto-Raid für einen Streamer."""
+        """Aktiviert/Deaktiviert Auto-Raid fuer einen Streamer."""
         token = (await request.post()).get("token", "")
         if not self._check_token(token):
             return web.json_response({"error": "Unauthorized"}, status=401)
@@ -172,10 +173,10 @@ class DashboardRaidMixin:
             return web.json_response(
                 {"success": True, "message": f"Auto-Raid {'aktiviert' if enabled else 'deaktiviert'}"}
             )
-        except Exception as e:
+        except Exception as exc:
             safe_user_id = user_id.replace("\r", "").replace("\n", "")
             log.exception("Failed to toggle raid for %s", safe_user_id)
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": str(exc)}, status=500)
 
     async def raid_history(self, request: web.Request) -> web.Response:
         """Zeigt Raid-History an."""
@@ -194,8 +195,8 @@ class DashboardRaidMixin:
         # HTML-Tabelle generieren
         rows_html = ""
         for entry in history:
-            success_icon = "✅" if entry.get("success") else "❌"
-            executed_at = entry.get("executed_at", "")[:19]  # Timestamp kürzen
+            success_icon = "OK" if entry.get("success") else "X"
+            executed_at = entry.get("executed_at", "")[:19]  # Timestamp kuerzen
             rows_html += f"""
                 <tr>
                     <td>{success_icon}</td>
@@ -223,8 +224,8 @@ class DashboardRaidMixin:
                 </style>
             </head>
             <body>
-                <h1>🎯 Raid History</h1>
-                <p><a href="/twitch">← Zurück zum Dashboard</a></p>
+                <h1>Raid History</h1>
+                <p><a href="/twitch">Zurueck zum Dashboard</a></p>
                 <table>
                     <thead>
                         <tr>

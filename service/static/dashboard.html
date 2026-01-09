@@ -311,6 +311,33 @@
         .health-url:hover {
             text-decoration: underline;
         }
+        .health-tags {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+            margin: 0.1rem 0 0.25rem 0;
+        }
+        .tag.method {
+            background: rgba(112, 72, 232, 0.2);
+            color: #d0bfff;
+        }
+        .tag.status {
+            background: rgba(64, 192, 87, 0.18);
+            color: #c0ffc0;
+        }
+        .tag.raid {
+            background: rgba(255, 159, 64, 0.22);
+            color: #ffd8a8;
+        }
+        .tag.twitch {
+            background: rgba(116, 192, 252, 0.22);
+            color: #a5d8ff;
+        }
+        .tag.steam {
+            background: rgba(64, 192, 87, 0.18);
+            color: #c0ffc0;
+        }
         .health-meta {
             font-size: 0.8rem;
             color: #adb5bd;
@@ -555,6 +582,12 @@
             gap: 1rem;
             margin-top: 1rem;
         }
+        .voice-user-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.75rem;
+            margin-top: 0.25rem;
+        }
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
@@ -737,6 +770,7 @@
                     <input id="voice-history-user" type="text" placeholder="User ID (optional)" />
                     <button class="reload" id="voice-user-apply">Anzeigen</button>
                 </div>
+                <div id="voice-user-summary" class="voice-user-grid" style="display:none;"></div>
                 <div class="chart-container">
                     <canvas id="voice-hourly-chart"></canvas>
                 </div>
@@ -838,6 +872,7 @@
     const voiceHistoryRefreshButton = document.getElementById('voice-history-refresh');
     const voiceHistoryUser = document.getElementById('voice-history-user');
     const voiceUserApply = document.getElementById('voice-user-apply');
+    const voiceUserSummary = document.getElementById('voice-user-summary');
     const voiceModeButtons = document.querySelectorAll('.voice-mode-btn');
 
     // Server Stats & User Activity
@@ -1267,6 +1302,23 @@
 
             card.appendChild(statusRow);
 
+            const tagRow = document.createElement('div');
+            tagRow.className = 'health-tags';
+            const methodLabel = (item && item.method) ? item.method.toUpperCase() : 'GET';
+            tagRow.appendChild(createTag(methodLabel, 'method'));
+            const keyLabel = (item && item.key) ? String(item.key).toLowerCase() : '';
+            if (keyLabel.includes('raid')) {
+                tagRow.appendChild(createTag('Raid', 'raid'));
+            } else if (keyLabel.includes('twitch')) {
+                tagRow.appendChild(createTag('Twitch', 'twitch'));
+            } else if (keyLabel.includes('steam')) {
+                tagRow.appendChild(createTag('Steam', 'steam'));
+            }
+            if (item && item.status !== undefined && item.status !== null) {
+                tagRow.appendChild(createTag(String(item.status), item.ok ? 'status' : 'blocked'));
+            }
+            card.appendChild(tagRow);
+
             if (item && item.url) {
                 const urlLink = document.createElement('a');
                 urlLink.className = 'health-url';
@@ -1622,14 +1674,74 @@ function renderVoiceHourlyChart(rows, mode, userInfo) {
     });
 }
 
+function renderVoiceUserSummary(summary) {
+    if (!voiceUserSummary) {
+        return;
+    }
+    voiceUserSummary.innerHTML = '';
+    if (!summary || !summary.user_id) {
+        voiceUserSummary.style.display = 'none';
+        return;
+    }
+    voiceUserSummary.style.display = 'grid';
+    const cards = [
+        {
+            label: 'User',
+            value: summary.display_name || `User ${summary.user_id}`,
+            sub: `ID: ${summary.user_id}`,
+        },
+        {
+            label: 'Zeitraum: Zeit',
+            value: formatSeconds(summary.range_seconds),
+            sub: `${safeNumber(summary.range_sessions)} Sessions • ${safeNumber(summary.range_days)} Tage`,
+        },
+        {
+            label: 'Zeitraum: Punkte',
+            value: safeNumber(summary.range_points).toLocaleString('de-DE'),
+            sub: `Ø Peak: ${safeNumber(summary.range_avg_peak).toFixed(1)} | Ø Session: ${formatSeconds(summary.range_avg_session_seconds)}`,
+        },
+        {
+            label: 'All-time Zeit',
+            value: formatSeconds(summary.lifetime_seconds),
+            sub: `${safeNumber(summary.lifetime_points).toLocaleString('de-DE')} Punkte`,
+        },
+        {
+            label: 'All-time Sessions',
+            value: safeNumber(summary.lifetime_sessions).toLocaleString('de-DE'),
+            sub: 'Letzte Session: ' + formatTimestamp(summary.last_session || summary.lifetime_last_update),
+        },
+    ];
+    cards.forEach((card) => {
+        const el = document.createElement('div');
+        el.className = 'stat-card';
+        const label = document.createElement('div');
+        label.className = 'stat-label';
+        label.textContent = card.label;
+        const value = document.createElement('div');
+        value.className = 'stat-value';
+        value.textContent = card.value;
+        const sub = document.createElement('div');
+        sub.className = 'stat-sub';
+        sub.textContent = card.sub;
+        el.appendChild(label);
+        el.appendChild(value);
+        el.appendChild(sub);
+        voiceUserSummary.appendChild(el);
+    });
+}
+
 function renderVoiceHistory(data) {
     if (!data) {
         return;
     }
+    renderVoiceUserSummary(data.user_summary || null);
     renderVoiceHourlyChart(data.buckets || [], data.mode || 'hour', data.user || null);
     if (voiceHistoryUpdated) {
         const now = new Date().toLocaleTimeString();
-        voiceHistoryUpdated.textContent = 'Letzte Aktualisierung: ' + now + ` (letzte ${data.range_days || 0} Tage)`;
+        const userLabel = data.user && (data.user.display_name || data.user.user_id)
+            ? ` • ${data.user.display_name || `User ${data.user.user_id}`}`
+            : '';
+        voiceHistoryUpdated.textContent = 'Letzte Aktualisierung: ' + now + ` (letzte ${data.range_days || 0} Tage${userLabel ? userLabel : ''})`;
     }
 }
 
