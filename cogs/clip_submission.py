@@ -372,8 +372,14 @@ class ClipSubmissionCog(commands.Cog):
             return f"🏁 **Teilnahmefenster aktiv**: { _format_ts(s,'f') } – { _format_ts(e,'f') } (endet { _format_ts(e,'R') })"
         return f"🗓️ Nächstes Fenster: { _format_ts(s,'f') } – { _format_ts(e,'f') } (startet { _format_ts(s,'R') })"
 
+    def _http_session_closed(self) -> bool:
+        session = getattr(self.bot.http, "_HTTPClient__session", None)
+        return bool(session is None or session.closed)
+
     async def _find_existing_interface_message(self, channel: discord.TextChannel) -> Optional[discord.Message]:
         """Fallback: Suche vorhandene Interface-Nachricht, falls persistent_views leer ist."""
+        if self.bot.is_closed() or self._http_session_closed():
+            return None
         bot_user = self.bot.user
         if bot_user is None:
             return None
@@ -390,6 +396,9 @@ class ClipSubmissionCog(commands.Cog):
             log.warning('Clip Interface: Keine Berechtigung, Verlauf von %s zu lesen.', channel.id)
         except discord.HTTPException as exc:
             log.warning('Clip Interface: HTTP-Fehler beim Durchsuchen von %s: %s', channel.id, exc)
+        except RuntimeError as exc:
+            # Happens during shutdown when the HTTP session is already closed
+            log.debug('Clip Interface: Session geschlossen beim Lesen von %s: %s', channel.id, exc)
         return None
 
     async def upsert_interface(self, guild: discord.Guild) -> Optional[int]:
@@ -472,6 +481,10 @@ class ClipSubmissionCog(commands.Cog):
     async def interface_refresher(self):
         """Alle 5 Minuten Embed updaten (Countdown/Zeitraum)."""
         try:
+            if self.bot.is_closed() or self._http_session_closed():
+                # Bot fährt herunter -> Loop stoppen, bevor HTTP-Session geschlossen ist
+                self.interface_refresher.cancel()
+                return
             if GUILD_ID is not None:
                 g = self.bot.get_guild(GUILD_ID)
                 if g:
@@ -494,6 +507,9 @@ class ClipSubmissionCog(commands.Cog):
         if not WEEKLY_WINDOW_ENABLED:
             return
         try:
+            if self.bot.is_closed() or self._http_session_closed():
+                self.weekly_window_manager.cancel()
+                return
             targets = []
             if GUILD_ID is not None:
                 g = self.bot.get_guild(GUILD_ID)
@@ -567,6 +583,13 @@ class ClipSubmissionCog(commands.Cog):
                     await ch.send(content="📦 **Wochen-Dump (Clips)**", file=file)
 
     # ---------- Lifecycle ----------
+
+    def cog_unload(self):
+        """Stop background loops cleanly to avoid running on closed sessions."""
+        loops = [self.interface_refresher, self.weekly_window_manager]
+        for loop in loops:
+            if loop.is_running():
+                loop.cancel()
 
     @commands.Cog.listener()
     async def on_ready(self):
