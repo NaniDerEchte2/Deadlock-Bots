@@ -14,6 +14,61 @@ log = logging.getLogger("TwitchStreams.RaidCommands")
 class RaidCommandsMixin:
     """Discord-Commands für Raid-Bot-Verwaltung durch Streamer."""
 
+    @commands.hybrid_command(name="traid", aliases=["twitch_raid_auth"])
+    async def cmd_twitch_raid_auth(self, ctx: commands.Context):
+        """Sende den Twitch-OAuth-Link für Raid/Follower/Chat-Scopes."""
+        discord_user_id = str(ctx.author.id)
+
+        with get_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT twitch_login, twitch_user_id
+                FROM twitch_streamers
+                WHERE discord_user_id = ?
+                """,
+                (discord_user_id,),
+            ).fetchone()
+
+        if not row:
+            await ctx.send(
+                "❌ Du bist nicht als Streamer-Partner registriert. Bitte zuerst verifizieren (z. B. `/streamer`).",
+                ephemeral=True,
+            )
+            return
+
+        twitch_login, twitch_user_id = row
+
+        if not hasattr(self, "_raid_bot") or not self._raid_bot:
+            await ctx.send(
+                "⚠️ Der Raid-Bot ist derzeit nicht verfügbar. Bitte Admin pingen.",
+                ephemeral=True,
+            )
+            return
+
+        auth_url = self._raid_bot.auth_manager.generate_auth_url(twitch_login)
+        scope_list = ", ".join(getattr(self._raid_bot.auth_manager, "RAID_SCOPES", []))
+
+        embed = discord.Embed(
+            title="🔐 Twitch Autorisierung",
+            description=(
+                f"Hallo **{twitch_login}**!\n\n"
+                "Bitte autorisiere den Bot mit den neuen Rechten für Auto-Raids, Follower-Zahlen und Chat-Events.\n"
+                f"Scopes: `{scope_list}`\n\n"
+                "Klicke auf den Button unten, um Twitch zu öffnen."
+            ),
+            color=0x9146FF,
+        )
+        view = discord.ui.View()
+        view.add_item(
+            discord.ui.Button(
+                label="Twitch autorisieren",
+                url=auth_url,
+                style=discord.ButtonStyle.link,
+            )
+        )
+        await ctx.send(embed=embed, view=view, ephemeral=True)
+        log.info("Sent traid auth link to %s (discord_id=%s)", twitch_login, discord_user_id)
+
     @commands.hybrid_command(name="raid_enable", aliases=["raidbot"])
     async def cmd_raid_enable(self, ctx: commands.Context):
         """Aktiviere den Auto-Raid-Bot für deinen Twitch-Kanal."""

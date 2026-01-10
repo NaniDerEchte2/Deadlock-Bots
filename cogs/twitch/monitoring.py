@@ -918,10 +918,23 @@ class TwitchMonitoringMixin:
         user_id = twitch_user_id
         if not user_id and stream:
             user_id = stream.get("user_id")
+
+        user_token: Optional[str] = None
+        try:
+            if hasattr(self, "_raid_bot") and self._raid_bot and self.api is not None:
+                session = self.api.get_http_session()
+                result = await self._raid_bot.auth_manager.get_valid_token_for_login(login, session)
+                if result:
+                    auth_user_id, token = result
+                    user_id = user_id or auth_user_id
+                    user_token = token
+        except Exception:
+            log.debug("Konnte OAuth-Token fuer Follower-Check nicht laden: %s", login, exc_info=True)
+
         if not user_id:
             return None
         try:
-            return await self.api.get_followers_total(str(user_id))
+            return await self.api.get_followers_total(str(user_id), user_token=user_token)
         except Exception:
             log.debug("Follower-Abfrage fehlgeschlagen fuer %s", login, exc_info=True)
             return None
