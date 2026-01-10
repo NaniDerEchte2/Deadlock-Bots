@@ -227,9 +227,14 @@ class SteamVerifiedRole(commands.Cog):
             self._task = self.bot.loop.create_task(loop_body())
             log.info("Periodischer Verified-Checker gestartet (alle %ss).", self._interval_seconds)
 
+    async def cog_load(self):
+        # Bei Reloads startet on_ready nicht erneut; daher hier sicherstellen, dass die Loop loslaeuft.
+        if not self._start_loop_once_ready.is_running():
+            self._start_loop_once_ready.start()
+
     @commands.Cog.listener()
     async def on_ready(self):
-        if self._task is None:
+        if self._task is None and not self._start_loop_once_ready.is_running():
             self._start_loop_once_ready.start()
 
     # ---------- Commands ----------
