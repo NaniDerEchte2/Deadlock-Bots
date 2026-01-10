@@ -398,9 +398,11 @@ class RegionDEButton(discord.ui.Button):
         if not (owner_id == m.id or perms.manage_channels or perms.administrator):
             await itx.response.send_message("Nur Owner/Mods dürfen den Sprachfilter ändern.", ephemeral=True)
             return
+        # Interaction sofort bestätigen, damit das Token nicht abläuft
+        await itx.response.defer(ephemeral=True)
         await self.core.set_owner_region(owner_id, "DE")
         await self.core.apply_owner_region_to_lane(lane, owner_id)
-        await itx.response.send_message("Deutsch-Only aktiv.", ephemeral=True)
+        await itx.followup.send("Deutsch-Only aktiv.", ephemeral=True)
 
 class RegionEUButton(discord.ui.Button):
     def __init__(self, core):
@@ -417,9 +419,11 @@ class RegionEUButton(discord.ui.Button):
         if not (owner_id == m.id or perms.manage_channels or perms.administrator):
             await itx.response.send_message("Nur Owner/Mods dürfen den Sprachfilter ändern.", ephemeral=True)
             return
+        # Interaction sofort bestätigen, damit das Token nicht abläuft
+        await itx.response.defer(ephemeral=True)
         await self.core.set_owner_region(owner_id, "EU")
         await self.core.apply_owner_region_to_lane(lane, owner_id)
-        await itx.response.send_message("Sprachfilter aufgehoben (EU).", ephemeral=True)
+        await itx.followup.send("Sprachfilter aufgehoben (EU).", ephemeral=True)
 
 class OwnerClaimButton(discord.ui.Button):
     def __init__(self, core):
@@ -723,6 +727,5 @@ class LurkerButton(discord.ui.Button):
         await itx.response.defer(ephemeral=True, thinking=False)
         ok, msg = await self.util.toggle_lurker(lane, m)
         await itx.followup.send(msg, ephemeral=True)
-
 
 

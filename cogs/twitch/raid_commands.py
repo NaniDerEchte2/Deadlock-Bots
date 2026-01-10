@@ -46,14 +46,12 @@ class RaidCommandsMixin:
             return
 
         auth_url = self._raid_bot.auth_manager.generate_auth_url(twitch_login)
-        scope_list = ", ".join(getattr(self._raid_bot.auth_manager, "RAID_SCOPES", []))
 
         embed = discord.Embed(
             title="🔐 Twitch Autorisierung",
             description=(
                 f"Hallo **{twitch_login}**!\n\n"
-                "Bitte autorisiere den Bot mit den neuen Rechten für Auto-Raids, Follower-Zahlen und Chat-Events.\n"
-                f"Scopes: `{scope_list}`\n\n"
+                "Bitte autorisiere den Bot mit den neuen Rechten für Auto-Raids, Follower-Zahlen und Chat-Events.\n\n"
                 "Klicke auf den Button unten, um Twitch zu öffnen."
             ),
             color=0x9146FF,

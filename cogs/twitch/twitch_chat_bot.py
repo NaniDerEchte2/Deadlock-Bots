@@ -492,7 +492,7 @@ def load_bot_token(*, log_missing: bool = True) -> Optional[str]:
     if log_missing:
         log.warning(
             "TWITCH_BOT_TOKEN nicht gesetzt. Twitch Chat Bot wird nicht gestartet. "
-            "Bitte setze ein OAuth-Token fuer den Bot-Account."
+            "Bitte setze ein OAuth-Token für den Bot-Account."
         )
     return None
 

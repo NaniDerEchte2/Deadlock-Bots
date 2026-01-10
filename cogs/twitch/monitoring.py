@@ -228,6 +228,7 @@ class TwitchMonitoringMixin:
                 Optional[str],
                 Optional[str],
                 Optional[str],
+                int,
                 Optional[int],
             ]
         ] = []
@@ -260,9 +261,11 @@ class TwitchMonitoringMixin:
             was_deadlock = previous_game_lower == target_game_lower
             twitch_user_id = str(entry.get("twitch_user_id") or "").strip() or None
             stream_started_at_value = self._extract_stream_start(stream, previous_state)
-            stream_id_value = (
-                str(stream.get("id") or previous_state.get("last_stream_id") or "").strip() if stream else ""
-            ) or None
+            previous_stream_id = (previous_state.get("last_stream_id") or "").strip()
+            current_stream_id_raw = stream.get("id") if stream else ""
+            current_stream_id = str(current_stream_id_raw or "").strip()
+            stream_id_value = current_stream_id or previous_stream_id or None
+            had_deadlock_prev = bool(int(previous_state.get("had_deadlock_in_session", 0) or 0))
             active_session_id: Optional[int] = None
 
             if is_live and stream:
@@ -286,6 +289,11 @@ class TwitchMonitoringMixin:
                 except Exception:
                     log.debug("Konnte alte Session nicht bereinigen: %s", login, exc_info=True)
 
+            if not was_live:
+                had_deadlock_prev = False
+            elif is_live and previous_stream_id and current_stream_id and previous_stream_id != current_stream_id:
+                had_deadlock_prev = False
+
             message_id_previous = str(previous_state.get("last_discord_message_id") or "").strip() or None
             message_id_to_store = message_id_previous
             tracking_token_previous = (
@@ -299,6 +307,8 @@ class TwitchMonitoringMixin:
             game_name = (stream.get("game_name") or "").strip() if stream else ""
             game_name_lower = game_name.lower()
             is_deadlock = is_live and bool(target_game_lower) and game_name_lower == target_game_lower
+            had_deadlock_in_session = had_deadlock_prev or is_deadlock
+            had_deadlock_to_store = had_deadlock_in_session if is_live else False
             last_title_value = (stream.get("title") if stream else previous_state.get("last_title")) or None
             last_game_value = (game_name or previous_state.get("last_game") or "").strip() or None
             last_viewer_count_value = (
@@ -350,14 +360,20 @@ class TwitchMonitoringMixin:
                             message_id=message.id,
                         )
 
-            ended_deadlock = (
+            ended_deadlock_posting = (
                 notify_ch is not None
                 and message_id_previous
                 and (not is_live or not is_deadlock)
             )
+            should_auto_raid = (
+                notify_ch is not None
+                and was_live
+                and not is_live
+                and had_deadlock_in_session
+            )
 
             # Auto-Raid beim Offline-Gehen
-            if ended_deadlock and was_live and not is_live:
+            if should_auto_raid:
                 await self._handle_auto_raid_on_offline(
                     login=login,
                     twitch_user_id=twitch_user_id or previous_state.get("twitch_user_id"),
@@ -365,7 +381,7 @@ class TwitchMonitoringMixin:
                     streams_by_login=streams_by_login,
                 )
 
-            if ended_deadlock:
+            if ended_deadlock_posting:
                 display_name = (
                     (stream.get("user_name") if stream else previous_state.get("streamer_login"))
                     or login
@@ -435,6 +451,7 @@ class TwitchMonitoringMixin:
                     tracking_token_to_store,
                     stream_id_value,
                     stream_started_at_value,
+                    int(had_deadlock_to_store),
                     active_session_id,
                 )
             )
@@ -460,6 +477,7 @@ class TwitchMonitoringMixin:
                 Optional[str],
                 Optional[str],
                 Optional[str],
+                int,
                 Optional[int],
             ]
         ],
@@ -476,9 +494,9 @@ class TwitchMonitoringMixin:
                         "("
                         "twitch_user_id, streamer_login, is_live, last_seen_at, last_title, last_game, "
                         "last_viewer_count, last_discord_message_id, last_tracking_token, last_stream_id, "
-                        "last_started_at, active_session_id"
+                        "last_started_at, had_deadlock_in_session, active_session_id"
                         ") "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         rows,
                     )
                 return

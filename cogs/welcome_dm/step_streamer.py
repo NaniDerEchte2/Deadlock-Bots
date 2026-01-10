@@ -597,32 +597,37 @@ class StreamerRequirementsView(StepView):
              Rechtsklick auf den Server -> *Leute einladen* -> **"Einladungslink bearbeiten"**
              Stelle ein: `Läuft ab: Nie` · `Kein Limit`
 
-            **2) Discord-Link sichtbar machen (Social-Media-Links)**
-             Kanal-Einstellungen -> "Kanal und Videos" -> Abschnitt "Social-Media-Links"
-             Klick auf "Link hinzufügen" / "+"; Plattform "Discord" (oder "Benutzerdefiniert/Custom", falls nicht gelistet)
-             Anzeigename z. B. "Discord" oder "Join our Discord" (erscheint direkt neben deiner Beschreibung)
-             Link: deinen dauerhaften Invite, z. B. `https://discord.gg/DEINCODE`
-             Du kannst dort auch andere Netzwerke (z. B. Twitter, Instagram, Facebook) verlinken und pro Link einen eigenen Anzeigenamen setzen.
+            **2) Discord-Link in die Social Media Links einfügen:**
+             Auf Twitch gehen, Creator-Dashboad -> Einstellungen -> Kanal -> Abschnitt "Social-Media-Links"
+             Hier bei **Titel verlinken` Deutsche Deadlock Community `**eintragen, 
+             und unter **URL verlinken** den eben generierten **Discord Link z. B. `https://discord.gg/DEINCODE `** einfügen und speichern (hinzufügen) nicht vergessen.
+             
+             Falls du bei Social Media Links keinen Platz mehr hast, kannst du den Link auch alternativ als Panel hinzufügen.
+           
 
-            **3) Twitch-Bio anpassen**
-             Füge den Server-Link in deine Bio ein, z. B.:
-             > *"Deutscher Deadlock Community Server"*
-
-            **4) Raid-Bot aktivieren (PFLICHT)**
-             **Unterstütze andere Partner beim Wachsen - und profitiere selbst davon!**
+            **3) Raid-Bot aktivieren:**
 
              So funktioniert's:
-             - Wenn du offline gehst, raidest du automatisch einen unserer Partner
-             - Das gleiche passiert für dich - andere Partner raiden dich, wenn sie offline gehen
-             - Der Bot wählt für dich das beste Raid-Ziel (nach Fairness)
-             - Ist kein Partner online? Dann raiden wir einen deutschen Deadlock-Streamer und laden ihn zur Community ein
-             - Du kannst es jederzeit mit `!raid_disable` in deinem Chat pausieren
+             - Wenn du offline gehst, raidest du automatisch einen anderen Streamer-Partner, sofern deine letzte Kategorie Deadlock war.
+             - Das gleiche passiert auch für dich - andere Partner raiden dich, wenn sie offline gehen.
+             - Der Bot wählt für dich das beste Raid-Ziel (mit einem Fairness System).
+             - Ist kein Partner online? Dann raiden wir einen deutschen Deadlock-Streamer und laden ihn zur Community ein.
+             - Manuelle Raids sind weiterhin möglich.
 
              **Einrichtung:**
-             Klick auf den Button unten, autorisier den Bot auf Twitch, fertig.
-             Er kann nur raiden, sonst nichts.
+             Klick auf den Button unten, autorisier den Bot auf Twitch, 
+             Hier hast du nochmal einen Überblick was der Bot für berechtigungen hat:
+             
+             `Authorizing will allow Deutsche Deadlock Community to:`
+             `Manage raids on your channel`
+             `Send live Stream Chat and Rooms messages`
+             `Read the list of followers in channels where you are a moderator.`
+             `View live Stream Chat and Rooms messages`
+             
+             Fertig. :tada:
+             
 
-            **5) Unterstützung & Promo**
+            **4) Unterstützung & Promo**
              - Wenn du Deadlock streamst oder Content erstellst, kannst du gern in den Promo-Kanälen posten.
              - Erwähne den Server in Stream oder Chat und lade interessierte Zuschauer oder Mitspieler ein.
              - Je mehr aktive Spieler zusammenkommen, desto stärker wächst die Community -

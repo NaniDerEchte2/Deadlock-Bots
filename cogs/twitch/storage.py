@@ -98,6 +98,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "twitch_live_state", "last_viewer_count", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_live_state", "last_tracking_token", "TEXT")
     _add_column_if_missing(conn, "twitch_live_state", "active_session_id", "INTEGER")
+    _add_column_if_missing(conn, "twitch_live_state", "had_deadlock_in_session", "INTEGER DEFAULT 0")
 
     # 3) Stats-Logs
     conn.execute(
