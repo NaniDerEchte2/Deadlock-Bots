@@ -45,3 +45,4 @@ CON
 *.log
 service/logs/rename_worker.log
 /service/logs
+*.PNG
