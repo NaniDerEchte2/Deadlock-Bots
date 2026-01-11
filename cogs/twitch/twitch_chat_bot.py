@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
 try:
+    import twitchio
+    from twitchio import eventsub
     from twitchio.ext import commands as twitchio_commands
     TWITCHIO_AVAILABLE = True
 except ImportError:
@@ -64,11 +66,55 @@ if TWITCHIO_AVAILABLE:
 
         async def event_ready(self):
             """Wird aufgerufen, wenn der Bot verbunden ist."""
-            log.info("Twitch Chat Bot ready | Logged in as: %s", self.nick)
-            log.info("Connected to channels: %s", ", ".join([c.name for c in self.connected_channels]))
+            name = self.user.name if self.user else "Unknown"
+            log.info("Twitch Chat Bot ready | Logged in as: %s", name)
+            # In 3.x gibt es connected_channels nicht mehr so einfach
+            monitored = ", ".join(list(self._monitored_streamers)[:10])
+            log.info("Monitored streamers: %s", monitored)
+
+        async def join(self, channel_login: str, channel_id: Optional[str] = None):
+            """Joint einen Channel via EventSub (TwitchIO 3.x)."""
+            try:
+                if not channel_id:
+                    user = await self.fetch_user(login=channel_login.lstrip("#"))
+                    if not user:
+                        log.error("Could not find user ID for channel %s", channel_login)
+                        return
+                    channel_id = str(user.id)
+
+                payload = eventsub.ChatMessageSubscription(
+                    broadcaster_user_id=str(channel_id), 
+                    user_id=str(self.bot_id)
+                )
+                await self.subscribe_websocket(payload=payload)
+                self._monitored_streamers.add(channel_login.lower().lstrip("#"))
+                return True
+            except Exception as e:
+                log.error("Failed to join channel %s: %s", channel_login, e)
+                return False
 
         async def event_message(self, message):
             """Wird bei jeder Chat-Nachricht aufgerufen."""
+            # Compatibility layer for TwitchIO 3.x
+            if not hasattr(message, "echo"):
+                # In EventSub messages, we check if the chatter is the bot
+                message.echo = str(message.chatter.id) == str(self.bot_id)
+            
+            if not hasattr(message, "content"):
+                message.content = message.text
+            
+            if not hasattr(message, "author"):
+                message.author = message.chatter
+                
+            if not hasattr(message, "channel"):
+                # Mock channel object for backward compatibility
+                class MockChannel:
+                    def __init__(self, login):
+                        self.name = login
+                    def __str__(self):
+                        return self.name
+                message.channel = MockChannel(message.broadcaster.login)
+
             # Ignoriere Bot-Nachrichten
             if message.echo:
                 return
@@ -446,7 +492,7 @@ if TWITCHIO_AVAILABLE:
             with get_conn() as conn:
                 partners = conn.execute(
                     """
-                    SELECT DISTINCT twitch_login
+                    SELECT DISTINCT twitch_login, twitch_user_id
                     FROM twitch_streamers
                     WHERE (manual_verified_permanent = 1
                            OR manual_verified_until IS NOT NULL
@@ -455,18 +501,19 @@ if TWITCHIO_AVAILABLE:
                     """
                 ).fetchall()
 
-            channels_to_join = [row[0] for row in partners if row[0]]
-            new_channels = [c for c in channels_to_join if c.lower() not in self._monitored_streamers]
+            channels_to_join = [(row[0], row[1]) for row in partners if row[0]]
+            new_channels = [(login, uid) for login, uid in channels_to_join if login.lower() not in self._monitored_streamers]
 
             if new_channels:
-                log.info("Joining %d new partner channels: %s", len(new_channels), ", ".join(new_channels[:10]))
-                for channel in new_channels:
+                log.info("Joining %d new partner channels: %s", len(new_channels), ", ".join([c[0] for c in new_channels[:10]]))
+                for login, uid in new_channels:
                     try:
-                        await self.join_channels([channel])
-                        self._monitored_streamers.add(channel.lower())
-                        await asyncio.sleep(0.5)  # Rate limiting
+                        # Wir übergeben ID falls vorhanden, sonst wird sie in join() gefetched
+                        success = await self.join(login, channel_id=uid)
+                        if success:
+                            await asyncio.sleep(0.2)  # Rate limiting
                     except Exception as e:
-                        log.exception("Failed to join channel %s: %s", channel, e)
+                        log.exception("Unexpected error joining channel %s: %s", login, e)
 
 
 def load_bot_token(*, log_missing: bool = True) -> Optional[str]:
