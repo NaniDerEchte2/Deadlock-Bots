@@ -389,7 +389,7 @@ class StandaloneBotManager:
                 if not state:
                     continue
                 state.log_buffer.append({"ts": timestamp, "stream": label, "line": text})
-            log.debug("[%s][%s] %s", key, label, text)
+            # log.debug("[%s][%s] %s", key, label, text)  <-- SPAM VERHINDERN
 
     async def _wait_for_exit(self, key: str, process: asyncio.subprocess.Process) -> None:
         returncode = await process.wait()

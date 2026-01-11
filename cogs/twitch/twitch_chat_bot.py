@@ -40,12 +40,16 @@ if TWITCHIO_AVAILABLE:
             self,
             token: str,
             client_id: str,
+            client_secret: str,
+            bot_id: Optional[str] = None,
             prefix: str = "!",
             initial_channels: Optional[list] = None,
         ):
             super().__init__(
                 token=token,
                 client_id=client_id,
+                client_secret=client_secret,
+                bot_id=bot_id,
                 prefix=prefix,
                 initial_channels=initial_channels or [],
             )
@@ -556,9 +560,37 @@ async def create_twitch_chat_bot(
     initial_channels = [row[0] for row in partners if row[0]]
     log.info("Creating Twitch Chat Bot for %d partner channels", len(initial_channels))
 
+    # Bot-ID via API abrufen (TwitchIO braucht diese zwingend bei user:bot Scope)
+    bot_id = None
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            # Bearer Token ohne "oauth:" Prefix für API
+            api_token = token.replace("oauth:", "")
+            headers = {
+                "Client-ID": client_id,
+                "Authorization": f"Bearer {api_token}"
+            }
+            async with session.get("https://api.twitch.tv/helix/users", headers=headers) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    if data.get("data"):
+                        bot_id = data["data"][0]["id"]
+                        log.info("Fetched Bot ID: %s", bot_id)
+                else:
+                    log.warning("Could not fetch Bot ID: HTTP %s", r.status)
+    except Exception as e:
+        log.warning("Failed to fetch Bot ID: %s", e)
+
+    # Fallback: Wenn Fetch fehlschlägt, aber Token existiert, versuchen wir es ohne ID (könnte failen)
+    # oder übergeben einen Dummy, falls TwitchIO das schluckt.
+    # Besser: Wir übergeben was wir haben.
+
     bot = RaidChatBot(
         token=token,
         client_id=client_id,
+        client_secret=client_secret,
+        bot_id=bot_id,
         prefix="!",
         initial_channels=initial_channels,
     )

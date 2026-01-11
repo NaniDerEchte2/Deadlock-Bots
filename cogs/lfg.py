@@ -6,7 +6,6 @@ Steam Rank Checker - LFG System
 from __future__ import annotations
 
 import logging
-import os
 import time
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -18,15 +17,15 @@ from service.db import db_path
 
 log = logging.getLogger("SteamRankChecker")
 
-# Kanal-ID aus der Discord-URL: https://discord.com/channels/1289721245281292288/1376335502919335936
-LFG_CHANNEL_ID = int(os.getenv("LFG_CHANNEL_ID", "1376335502919335936"))
-GUILD_ID = int(os.getenv("LFG_GUILD_ID", "1289721245281292288"))
+# Kanal-ID aus der Discord-URL: https://discord.com/channels/1289721245281292288/1374364800817303632
+LFG_CHANNEL_ID = 1374364800817303632
+GUILD_ID = 1289721245281292288
 
 # Steam presence freshness (wie lange die Daten maximal alt sein dürfen)
 PRESENCE_STALE_SECONDS = 300  # 5 Minuten
 
 # Rank-Matching: wie viele Ränge Unterschied sind erlaubt?
-RANK_TOLERANCE = int(os.getenv("LFG_RANK_TOLERANCE", "2"))  # +/- 2 Ränge (Grind-Modus)
+RANK_TOLERANCE = 2  # +/- 2 Ränge (Grind-Modus)
 
 # LFG Trigger-Wörter (case-insensitive)
 LFG_TRIGGERS = [
@@ -37,22 +36,26 @@ LFG_TRIGGERS = [
 
 # Voice Channel Kategorien (aus deadlock_voice_status.py und rank_voice_manager.py)
 VOICE_CATEGORIES = {
-    1357422957017698478: "ranked",  # Ranked Kategorie
     1412804540994162789: "grind",   # Grind Kategorie
     1289721245281292290: "casual",  # Casual/Spaß Kategorie
 }
+CASUAL_CATEGORY_ID = 1289721245281292290
+VOICE_CATEGORY_TOLERANCE = {
+    "grind": 2.5,
+    "casual": 4.5,
+}
 
 # AI Configuration (Gemini)
-GEMINI_MODEL = os.getenv("LFG_GEMINI_MODEL", "gemini-3-pro-preview")
-GEMINI_VOICE_MODEL = os.getenv("LFG_GEMINI_VOICE_MODEL", GEMINI_MODEL)
-USE_AI_DETECTION = os.getenv("LFG_USE_AI", "true").lower() in ("true", "1", "yes")
+GEMINI_MODEL = "gemini-3-pro-preview"
+GEMINI_VOICE_MODEL = GEMINI_MODEL
+USE_AI_DETECTION = True
 
-# Zusatz-Rolle für neue Spieler (\"Unbekannt\")
-UNKNOWN_ROLE_ID = int(os.getenv("LFG_UNKNOWN_ROLE_ID", "0"))
-UNKNOWN_RANK_NAME = os.getenv("LFG_UNKNOWN_RANK_NAME", "Unbekannt")
+# Zusatz-Rolle für neue Spieler ("Unbekannt")
+UNKNOWN_ROLE_ID = 1397687886580547745  # feste Rolle für unbekannten Rang
+UNKNOWN_RANK_NAME = "Unbekannt"
 UNKNOWN_RANK_NAME_LOWER = UNKNOWN_RANK_NAME.lower()
 # Bis zu welchem Rang sollen Unbekannte gematcht werden (Default: Emissary = 6)
-UNKNOWN_MAX_MATCH_RANK = max(1, min(11, int(os.getenv("LFG_UNKNOWN_MAX_MATCH_RANK", "6"))))
+UNKNOWN_MAX_MATCH_RANK = 6
 
 # Deadlock Rank-System (muss mit rank_voice_manager.py übereinstimmen)
 DISCORD_RANK_ROLES = {
@@ -67,10 +70,8 @@ DISCORD_RANK_ROLES = {
     1331458016356208680: ("Phantom", 9),
     1331458049637875785: ("Ascendant", 10),
     1331458087349129296: ("Eternus", 11),
+    1397687886580547745: ("Unbekannt", 0),  # Standard-Rolle für Spieler ohne Rang
 }
-
-if UNKNOWN_ROLE_ID:
-    DISCORD_RANK_ROLES[UNKNOWN_ROLE_ID] = (UNKNOWN_RANK_NAME, 0)
 
 
 class SteamRankChecker(commands.Cog):
@@ -150,6 +151,11 @@ class SteamRankChecker(commands.Cog):
         if not USE_AI_DETECTION:
             return False
 
+        ai = getattr(self.bot, "get_cog", lambda name: None)("AIConnector")
+        if not ai:
+            log.warning("AIConnector nicht geladen - fallback auf Keyword-Check")
+            return self._is_lfg_message(message_content)
+
         prompt = (
             "Antwort strikt nur mit 'ja' oder 'nein'. "
             "Sage 'ja' nur, wenn die Nachricht eindeutig Mitspieler oder ein Spiel JETZT sucht "
@@ -159,17 +165,34 @@ class SteamRankChecker(commands.Cog):
             "Im Zweifel immer 'nein'.\n\n"
             f"Nachricht: \"{message_content}\""
         )
-        answer = await self._generate_gemini_text(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            max_output_tokens=8,
-            temperature=0,
-        )
-        if not answer:
+        try:
+            answer_text, _meta = await ai.generate_text(  # direkt, da AIConnector garantiert vorhanden
+                provider="gemini",
+                prompt=prompt,
+                system_prompt=None,
+                model=GEMINI_MODEL,
+                max_output_tokens=8,
+                temperature=0,
+            )
+        except Exception as exc:
+            log.warning("AI Intent-Check fehlgeschlagen (%s) - fallback Keywords", exc)
+            return self._is_lfg_message(message_content)
+
+        if not answer_text:
+            log.warning("AI gab keine Antwort zurück - fallback auf Keyword-Check")
+            return self._is_lfg_message(message_content)
+
+        normalized = str(answer_text).strip().lower()
+        if normalized.startswith("ja") or normalized.startswith("yes"):
+            log.debug("AI intent Antwort: %s -> %s", normalized, True)
+            return True
+        if normalized.startswith("nein") or normalized.startswith("no"):
+            log.debug("AI intent Antwort: %s -> %s", normalized, False)
             return False
 
-        normalized = answer.lower()
-        return normalized.startswith("ja") or normalized.startswith("yes")
+        fallback = self._is_lfg_message(message_content)
+        log.debug("AI intent unklar (%s) -> Keyword-Fallback=%s", normalized, fallback)
+        return fallback
 
     async def _get_all_steam_links(self) -> Dict[int, List[str]]:
         """
@@ -355,6 +378,8 @@ class SteamRankChecker(commands.Cog):
             if not category or not isinstance(category, discord.CategoryChannel):
                 continue
 
+            is_casual_category = category_type == "casual" or category_id == CASUAL_CATEGORY_ID
+
             for channel in category.voice_channels:
                 # Channel muss Mitglieder haben
                 if not channel.members:
@@ -381,14 +406,12 @@ class SteamRankChecker(commands.Cog):
                 rank_diff = abs(avg_rank - author_rank_value)
 
                 # Ranked: ±1, Grind: ±2, Casual: ±4
-                tolerance = {
-                    "ranked": 1.5,
-                    "grind": 2.5,
-                    "casual": 4.5
-                }.get(category_type, 3.0)
+                tolerance = VOICE_CATEGORY_TOLERANCE.get(category_type, 3.0)
+                within_tolerance = rank_diff <= tolerance
+                allow_high_gap_casual = is_casual_category and not within_tolerance  # Casual immer anzeigen, Warnung später
 
                 # Nur Channels im Toleranzbereich vorschlagen
-                if rank_diff <= tolerance:
+                if within_tolerance or allow_high_gap_casual:
                     suggestions.append((channel, category_type, member_ranks, rank_diff))
 
         # Sortiere nach Rank-Diff (beste Matches zuerst)
@@ -401,39 +424,61 @@ class SteamRankChecker(commands.Cog):
         author_name: str,
         author_rank: str,
         original_message: str,
-        suggestions: List[Tuple[discord.VoiceChannel, str, List[Tuple[str, int]], float]]
+        suggestions: List[Tuple[discord.VoiceChannel, str, List[Tuple[str, int]], float]],
+        *,
+        lobby_count: int,
+        match_count: int,
+        best_vc_url: Optional[str] = None,
     ) -> Optional[str]:
         """
-        Generiert eine freundliche, menschliche Antwort für Voice Channel Vorschläge.
-        Analysiert den Stil der originalen Nachricht und antwortet auf gleicher Augenhöhe.
+        Generiert eine kurze, personalisierte Antwort (ähnlich AI-Onboarding)
+        und spiegelt den Stil der Original-Nachricht.
         """
-        if not suggestions:
-            return None
+        tolerance_map = VOICE_CATEGORY_TOLERANCE
 
-        # Context für AI vorbereiten
-        context_lines = []
+        voice_lines = []
+        has_high_gap_casual = False
         for channel, cat_type, members, rank_diff in suggestions:
-            member_count = len(members)
-            cat_emoji = {"ranked": "🏆", "grind": "💪", "casual": "🎉"}.get(cat_type, "🎮")
-            context_lines.append(
-                f"{cat_emoji} {channel.name} ({cat_type}) - {member_count} Spieler"
-            )
+            tolerance = tolerance_map.get(cat_type, 3.0)
+            if cat_type == "casual" and rank_diff > tolerance:
+                has_high_gap_casual = True
 
-        context = "\n".join(context_lines)
+            member_names = ", ".join(name for name, _ in members[:3]) or "Spieler"
+            extra = len(members) - 3
+            if extra > 0:
+                member_names += f" +{extra}"
+
+            fit = "nah dran" if rank_diff <= tolerance else f"weiter weg (Δ~{rank_diff:.1f})"
+            cat_label = {"ranked": "Ranked", "grind": "Grind", "casual": "Casual"}.get(cat_type, cat_type)
+            voice_lines.append(f"- {channel.name} ({cat_label}, {member_names}, {fit})")
+
+        voice_context = "\n".join(voice_lines) if voice_lines else "Keine Voice Channels offen."
+        counts_line = f"{lobby_count} in Lobby, {match_count} im Match"
+
         prompt = (
-            f"Angefragt von {author_name} (Rank: {author_rank}). "
-            f"Analysiere den Schreibstil (Jugendsprache/Slang/Umgangssprache/Standard) und antworte "
-            f"im EXAKT gleichen Stil. Nutze die GLEICHEN Formulierungen, gleiche Abkürzungen, "
-            f"gleiche Wörter wenn möglich. Schreibe wie ein Kumpel auf Augenhöhe.\n\n"
-            "WICHTIG: Niemals 'Sie', immer 'du'. Keine Emojis. Max 2 Sätze.\n\n"
-            f"Original: \"{original_message}\"\n\n"
-            f"Schlage diese Voice Channels vor:\n{context}"
+            "Du bist der LFG-Buddy der Deutschen Deadlock Community. Antworte immer auf Deutsch und wie ein Kumpel.\n"
+            "Passe Tonfall an den Stil der Original-Nachricht an (Slang/kurz/Emojis nur wenn der User so schreibt).\n"
+            "Schreibe 2-4 Sätze, keine Listen, kein Markdown, maximal 1 Emoji nur wenn es passt.\n"
+            "Sag kurz, was du gefunden hast, empfiehl den besten Voice (Link wenn vorhanden) oder nenne die beste Option. "
+            "Kling locker und einladend, kein Bot-Ton.\n"
+            f"User: {author_name} (Rank: {author_rank})\n"
+            f"Original: \"{original_message}\"\n"
+            f"Gefundene Spieler: {counts_line}\n"
+            f"Voice-Optionen:\n{voice_context}\n"
         )
+
+        if has_high_gap_casual:
+            prompt += "Weise freundlich darauf hin, dass Casual evtl. ein höheres Skill-Gap hat und rough sein kann, aber er willkommen ist.\n"
+        else:
+            prompt += "Kein Warnhinweis nötig.\n"
+
+        if best_vc_url:
+            prompt += f"Direkt-Link zum besten Voice: {best_vc_url}\n"
 
         suggestion = await self._generate_gemini_text(
             model=GEMINI_VOICE_MODEL,
             contents=prompt,
-            max_output_tokens=180,
+            max_output_tokens=220,
             temperature=0.4,
         )
 
@@ -450,16 +495,23 @@ class SteamRankChecker(commands.Cog):
         if message.channel.id != LFG_CHANNEL_ID:
             return
 
-        # Prüfe ob Nachricht LFG-Trigger enthält
-        is_lfg = self._is_lfg_message(message.content)
+        content_preview = message.content.replace("\n", " ")[:180]
+        log.debug(
+            "on_message LFG channel=%s author=%s content='%s'",
+            message.channel.id,
+            message.author.id,
+            content_preview,
+        )
 
-        # Falls kein Keyword-Match: AI-basierte Erkennung
-        if not is_lfg and USE_AI_DETECTION:
+        # AI entscheidet bei jeder Nachricht, ob es LFG ist (keine Keyword-Liste mehr)
+        if USE_AI_DETECTION:
             is_lfg = await self._ai_check_lfg_intent(message.content)
-            if is_lfg:
-                log.info("AI erkannte LFG-Intent von %s: %s", message.author.display_name, message.content[:50])
+            log.debug("AI intent result for %s: %s", message.author.id, is_lfg)
+        else:
+            is_lfg = self._is_lfg_message(message.content)
 
         if not is_lfg:
+            log.debug("Nachricht nicht als LFG erkannt (author=%s)", message.author.id)
             return
 
         # Rate limiting
@@ -476,6 +528,7 @@ class SteamRankChecker(commands.Cog):
         self.last_lfg_per_user[message.author.id] = now
 
         try:
+            log.debug("Starte LFG-Handling für author=%s", message.author.id)
             await self._handle_lfg_request(message)
         except Exception as exc:
             log.exception("Fehler beim Verarbeiten der LFG-Anfrage: %s", exc)
@@ -531,6 +584,11 @@ class SteamRankChecker(commands.Cog):
 
         # Antwort erstellen
         if not matching_players and not voice_suggestions:
+            log.info(
+                "Keine Spieler/VCs gefunden für %s (range=%s)",
+                message.author.id,
+                rank_range_desc,
+            )
             await thinking_msg.edit(
                 content=f"😔 Keine Spieler im Rang-Bereich **{rank_range_desc}** sind derzeit online in Deadlock und keine passenden Voice Channels gefunden."
             )
@@ -587,23 +645,16 @@ class SteamRankChecker(commands.Cog):
 
         # Voice Channel Vorschläge hinzufügen
         if voice_suggestions:
-            # AI-generierte Nachricht für Voice Channels (im Stil der Original-Nachricht)
-            ai_suggestion_text = await self._generate_ai_voice_suggestion(
-                message.author.display_name,
-                author_rank_name,
-                message.content,  # Original-Nachricht für Stil-Analyse
-                voice_suggestions
-            )
-
             vc_lines = []
             for channel, cat_type, members, rank_diff in voice_suggestions:
                 cat_emoji = {"ranked": "🏆", "grind": "💪", "casual": "🎉"}.get(cat_type, "🎮")
                 member_count = len(members)
+                tolerance = VOICE_CATEGORY_TOLERANCE.get(cat_type, 3.0)
 
                 # Warnung bei Casual Lanes
                 warning = ""
-                if cat_type == "casual" and rank_diff > 2:
-                    warning = " ⚠️ (größere Rank-Diff)"
+                if cat_type == "casual" and rank_diff > tolerance:
+                    warning = " ⚠️ (hohes Skill-Gap, kann rough sein, bist trotzdem willkommen)"
 
                 # Klickbarer Voice Channel Link (Discord URL) - Discord zeigt das automatisch richtig an
                 vc_url = f"https://discord.com/channels/{GUILD_ID}/{channel.id}"
@@ -617,13 +668,6 @@ class SteamRankChecker(commands.Cog):
                 inline=False
             )
 
-            if ai_suggestion_text:
-                embed.add_field(
-                    name="💬 Tipp",
-                    value=ai_suggestion_text,
-                    inline=False
-                )
-
         embed.set_footer(text=f"Angefordert von {message.author.display_name}")
         embed.timestamp = message.created_at
 
@@ -636,6 +680,26 @@ class SteamRankChecker(commands.Cog):
             response_parts.append(f"{message.author.mention} sucht Mitspieler!\n{mention_text}")
         else:
             response_parts.append(f"{message.author.mention}")
+
+        best_vc_url = None
+        if voice_suggestions:
+            best_vc_url = f"https://discord.com/channels/{GUILD_ID}/{voice_suggestions[0][0].id}"
+
+        ai_suggestion_text = await self._generate_ai_voice_suggestion(
+            message.author.display_name,
+            author_rank_name,
+            message.content,  # Original-Nachricht für Stil-Analyse
+            voice_suggestions,
+            lobby_count=len(in_lobby),
+            match_count=len(in_match),
+            best_vc_url=best_vc_url,
+        )
+
+        if ai_suggestion_text:
+            ai_block = ai_suggestion_text
+            if best_vc_url:
+                ai_block += f"\n🔊 Direkt joinen: {best_vc_url}"
+            response_parts.append(ai_block)
 
         await thinking_msg.edit(
             content="\n".join(response_parts),

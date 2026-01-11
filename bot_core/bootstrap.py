@@ -23,9 +23,51 @@ def _log_src(modname: str) -> None:
         logging.getLogger().error("SRC %s -> %r", modname, exc)
 
 
+def _load_secrets_from_keyring() -> None:
+    """
+    Versucht, sensitive Geheimnisse aus dem Windows Credential Manager (Tresor) zu laden
+    und in os.environ zu injizieren.
+    Service Name: 'DeadlockBot'
+    """
+    try:
+        import keyring
+    except ImportError:
+        logging.getLogger().debug("keyring nicht installiert, überspringe Tresor-Check.")
+        return
+
+    service_name = "DeadlockBot"
+    # Liste der Schlüssel, die wir im Tresor erwarten
+    keys_to_check = [
+        "DISCORD_TOKEN", "DISCORD_TOKEN_WORKER", "DISCORD_TOKEN_RANKED", "DISCORD_TOKEN_PATCHNOTES",
+        "DISCORD_OAUTH_CLIENT_ID", "DISCORD_OAUTH_CLIENT_SECRET",
+        "STEAM_API_KEY", "STEAM_BOT_PASSWORD",
+        "TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET", "TWITCH_BOT_TOKEN", "TWITCH_BOT_REFRESH_TOKEN",
+        "OPENAI_API_KEY", "GEMINI_API_KEY", "PERPLEXITY_API_KEY", "GITHUB_TOKEN", "PPLX_API_KEY",
+        "aws_access_key_id", "aws_secret_access_key", "DEADLOCK_API_KEY", "BOT_TOKEN"
+    ]
+    
+    loaded_count = 0
+    for key in keys_to_check:
+        # Nur laden, wenn nicht schon (z.B. durch .env) gesetzt? 
+        # Nein, Tresor soll Vorrang haben (sicherer), daher überschreiben wir.
+        try:
+            val = keyring.get_password(service_name, key)
+            if val:
+                os.environ[key] = val
+                loaded_count += 1
+        except Exception:
+            pass  # Ignorieren, wenn Key nicht im Tresor
+            
+    if loaded_count > 0:
+        logging.getLogger().info("🔐 %d Secrets aus Windows Tresor (DeadlockBot) geladen.", loaded_count)
+
+
 def _load_env_robust() -> str | None:
     try:
         from dotenv import load_dotenv
+    except Exception as exc:
+        logging.getLogger().debug("dotenv nicht verfügbar/fehlgeschlagen: %r", exc)
+        return None
     except Exception as exc:
         logging.getLogger().debug("dotenv nicht verfügbar/fehlgeschlagen: %r", exc)
         return None
@@ -47,6 +89,9 @@ def _load_env_robust() -> str | None:
                 return str(path)
         except Exception as exc:
             logging.getLogger().debug("Konnte .env nicht laden (%s): %r", path, exc)
+    
+    # NACH dem Laden der Datei: Tresor checken und ggf. überschreiben
+    _load_secrets_from_keyring()
     return None
 
 
@@ -82,14 +127,21 @@ class _RedactSecretsFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
+            # getMessage() formatiert msg % args
             msg = str(record.getMessage())
             redacted = msg
             for secret in self.secrets:
                 if secret and secret in redacted:
                     redacted = redacted.replace(secret, "***REDACTED***")
+            
+            # Da wir die Nachricht jetzt fertig formatiert haben (getMessage),
+            # müssen wir record.args leeren. Sonst versucht der Formatter später
+            # erneut, args in den String einzufügen, was zum TypeError führt.
             record.msg = redacted
-        except Exception as exc:
-            logging.getLogger().debug("RedactSecretsFilter Fehler (ignoriert): %r", exc)
+            record.args = ()
+        except Exception:
+            # NIEMALS im Filter loggen -> Endlosschleife!
+            pass
         return True
 
 
