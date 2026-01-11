@@ -47,22 +47,34 @@ if TWITCHIO_AVAILABLE:
             prefix: str = "!",
             initial_channels: Optional[list] = None,
         ):
+            # In 3.x ist bot_id ein positionales/keyword Argument in Client, aber REQUIRED in Bot
             super().__init__(
-                token=token,
                 client_id=client_id,
                 client_secret=client_secret,
-                bot_id=bot_id,
+                bot_id=bot_id or "", # Fallback auf leeren String falls None
                 prefix=prefix,
-                initial_channels=initial_channels or [],
             )
+            self._bot_token = token
             self._raid_bot = None  # Wird später gesetzt
+            self._initial_channels = initial_channels or []
             self._monitored_streamers: Set[str] = set()
             self._session_cache: Dict[str, Tuple[int, datetime]] = {}
-            log.info("Twitch Chat Bot initialized with %d channels", len(initial_channels or []))
+            log.info("Twitch Chat Bot initialized with %d initial channels", len(self._initial_channels))
 
         def set_raid_bot(self, raid_bot):
             """Setzt die RaidBot-Instanz für OAuth-URLs."""
             self._raid_bot = raid_bot
+
+        async def setup_hook(self):
+            """Wird beim Starten aufgerufen, um initiales Setup zu machen."""
+            # Token registrieren, damit TwitchIO ihn nutzt
+            await self.add_token(self._bot_token.replace("oauth:", ""), "")
+            
+            # Initial channels beitreten
+            if self._initial_channels:
+                log.info("Joining %d initial channels...", len(self._initial_channels))
+                for channel in self._initial_channels:
+                    await self.join(channel)
 
         async def event_ready(self):
             """Wird aufgerufen, wenn der Bot verbunden ist."""
@@ -612,20 +624,33 @@ async def create_twitch_chat_bot(
     try:
         import aiohttp
         async with aiohttp.ClientSession() as session:
-            # Bearer Token ohne "oauth:" Prefix für API
             api_token = token.replace("oauth:", "")
-            headers = {
-                "Client-ID": client_id,
-                "Authorization": f"Bearer {api_token}"
-            }
-            async with session.get("https://api.twitch.tv/helix/users", headers=headers) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    if data.get("data"):
-                        bot_id = data["data"][0]["id"]
-                        log.info("Fetched Bot ID: %s", bot_id)
-                else:
-                    log.warning("Could not fetch Bot ID: HTTP %s", r.status)
+            
+            # 1. Versuch: id.twitch.tv/oauth2/validate (oft am tolerantesten für User-IDs)
+            # Wir probieren beide Header-Varianten
+            for auth_header in [f"OAuth {api_token}", f"Bearer {api_token}"]:
+                async with session.get("https://id.twitch.tv/oauth2/validate", headers={"Authorization": auth_header}) as r:
+                    if r.status == 200:
+                        val_data = await r.json()
+                        bot_id = val_data.get("user_id")
+                        if bot_id:
+                            log.info("Validated Bot ID: %s", bot_id)
+                            break
+                
+            # 2. Versuch: Helix users (falls validate fehlschlug)
+            if not bot_id:
+                headers = {
+                    "Client-ID": client_id,
+                    "Authorization": f"Bearer {api_token}"
+                }
+                async with session.get("https://api.twitch.tv/helix/users", headers=headers) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        if data.get("data"):
+                            bot_id = data["data"][0]["id"]
+                            log.info("Fetched Bot ID via Helix: %s", bot_id)
+                    else:
+                        log.warning("Could not fetch Bot ID: HTTP %s", r.status)
     except Exception as e:
         log.warning("Failed to fetch Bot ID: %s", e)
 
