@@ -110,7 +110,7 @@ class DeadlockPresenceLogger {
     }
 
     try {
-      this.log('info', 'Requesting personas for presence snapshot', { count: steamIds.length });
+      this.log('debug', 'Requesting personas for presence snapshot', { count: steamIds.length });
       this.client.getPersonas(steamIds, (err) => {
         if (err) {
           this.log('warn', 'getPersonas failed', { error: err.message || String(err) });
@@ -126,7 +126,7 @@ class DeadlockPresenceLogger {
   fetchAndWriteRichPresence(ids) {
     if (!ids.length) return;
     try {
-      this.log('info', 'Fetching Deadlock rich presence', { count: ids.length });
+      this.log('debug', 'Fetching Deadlock rich presence', { count: ids.length });
       const args = [this.appId, ids];
       if (this.language) {
         args.push(this.language);
@@ -144,8 +144,7 @@ class DeadlockPresenceLogger {
             const playingAppId = this.toInt(persona && (persona.gameid || persona.game_id));
             return playingAppId === this.appId ? count + 1 : count;
           }, 0);
-          const level = inDeadlockCount > 0 ? 'info' : 'debug';
-          this.log(level, 'No Deadlock rich presence returned', {
+          this.log('debug', 'No Deadlock rich presence returned', {
             requested: ids.length,
             in_deadlock: inDeadlockCount,
           });
