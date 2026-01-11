@@ -1,7 +1,34 @@
+import os
+import logging
 from typing import Optional
 from pathlib import Path
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+def _load_vault_secrets():
+    """Injiziert Secrets aus dem Windows Tresor in os.environ."""
+    try:
+        import keyring
+        service_name = "DeadlockBot"
+        keys = [
+            "DISCORD_TOKEN", "OWNER_ID", "COMMAND_PREFIX", "STEAM_API_KEY",
+            "TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET", "TWITCH_BOT_TOKEN",
+            "OPENAI_API_KEY", "GEMINI_API_KEY"
+        ]
+        count = 0
+        for key in keys:
+            # IMMER aus Tresor laden und überschreiben, das ist die sicherste Quelle
+            val = keyring.get_password(service_name, key)
+            if val:
+                os.environ[key] = val
+                count += 1
+        # print(f"DEBUG: Config injizierte {count} Secrets aus Tresor.")
+    except Exception as e:
+        print(f"DEBUG: Fehler beim Laden aus Tresor: {e}")
+        pass
+
+# Vor der Klassen-Definition aufrufen!
+_load_vault_secrets()
 
 class Settings(BaseSettings):
     # --- Bot Core ---

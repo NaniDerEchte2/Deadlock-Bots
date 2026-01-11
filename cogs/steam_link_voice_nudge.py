@@ -142,7 +142,9 @@ def _ensure_schema():
         try:
             db.execute(sql)
         except sqlite3.OperationalError as exc:
-            log.debug("[nudge] Konnte Schema-Änderung nicht anwenden (%s): %s", sql, exc)
+            # Nur loggen, wenn es NICHT "duplicate column" ist (das ist erwartet)
+            if "duplicate column" not in str(exc).lower():
+                log.debug("[nudge] Konnte Schema-Änderung nicht anwenden (%s): %s", sql, exc)
     db.execute("""
         CREATE TABLE IF NOT EXISTS steam_links(
           user_id         INTEGER NOT NULL,
@@ -157,12 +159,12 @@ def _ensure_schema():
     """)
 
 def _has_any_steam_link(user_id: int) -> bool:
-    _ensure_schema()
+    # _ensure_schema() -> moved to cog_load
     row = db.query_one("SELECT 1 FROM steam_links WHERE user_id=? LIMIT 1", (int(user_id),))
     return bool(row)
 
 def _load_nudge_state(user_id: int) -> Optional[sqlite3.Row]:
-    _ensure_schema()
+    # _ensure_schema() -> moved to cog_load
     return db.query_one(
         "SELECT user_id, notified_at, first_seen, message_id, channel_id, view_version FROM steam_nudge_state WHERE user_id=?",
         (int(user_id),),
@@ -170,7 +172,7 @@ def _load_nudge_state(user_id: int) -> Optional[sqlite3.Row]:
 
 
 def _iter_nudge_states() -> Iterable[sqlite3.Row]:
-    _ensure_schema()
+    # _ensure_schema() -> moved to cog_load
     return db.query_all(
         "SELECT user_id, notified_at, first_seen, message_id, channel_id, view_version FROM steam_nudge_state",
     )
@@ -183,7 +185,7 @@ def _mark_notified(
     channel_id: Optional[int],
     view_version: int = NUDGE_VIEW_VERSION,
 ) -> None:
-    _ensure_schema()
+    # _ensure_schema() -> moved to cog_load
     db.execute(
         """
         INSERT INTO steam_nudge_state(user_id, notified_at, message_id, channel_id, view_version)
@@ -199,7 +201,7 @@ def _mark_notified(
 
 
 def _clear_nudge_state(user_id: int) -> None:
-    _ensure_schema()
+    # _ensure_schema() -> moved to cog_load
     db.execute(
         "UPDATE steam_nudge_state SET message_id=NULL, channel_id=NULL, view_version=0 WHERE user_id=?",
         (int(user_id),),
@@ -390,6 +392,12 @@ class SteamLinkVoiceNudge(commands.Cog):
         self._restore_task: Optional[asyncio.Task] = None
 
     async def cog_load(self):
+        # Schema einmalig beim Start sicherstellen (Performance & Spam-Vermeidung)
+        try:
+            _ensure_schema()
+        except Exception:
+            log.exception("[nudge] Schema-Init fehlgeschlagen")
+
         self.bot.add_view(_PersistentRegistryView())
         try:
             self._restore_task = asyncio.create_task(self._restore_persistent_messages())

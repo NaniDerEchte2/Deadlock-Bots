@@ -53,6 +53,12 @@ class SteamVerifiedRole(commands.Cog):
         session = getattr(http, "_HTTPClient__session", None)
         return session is None or getattr(session, "closed", False)
 
+    def _is_session_closed_error(self, exc: BaseException) -> bool:
+        if not isinstance(exc, RuntimeError):
+            return False
+        text = str(exc)
+        return "Session is closed" in text or "ClientSession is closed" in text
+
     async def _resolve_guild_and_role(self) -> Tuple[discord.Guild, discord.Role]:
         if not self.guild_id:
             log.error("GUILD_ID ist nicht konfiguriert.")
@@ -116,6 +122,11 @@ class SteamVerifiedRole(commands.Cog):
         if not me:
             try:
                 me = await guild.fetch_member(self.bot.user.id)
+            except RuntimeError as exc:
+                if self._is_session_closed_error(exc):
+                    log.info("HTTP-Session geschlossen beim Bot-Member-Lookup.")
+                    return 0
+                raise
             except discord.HTTPException as exc:
                 log.warning("Konnte Bot-Member nicht abrufen (%s): %s", self.bot.user.id if self.bot.user else "?", exc)
         if not me:
@@ -138,12 +149,20 @@ class SteamVerifiedRole(commands.Cog):
         changes, lines = 0, []
         not_found = 0
         for uid in verified_ids:
+            if self.bot.is_closed() or self._http_session_closed():
+                log.info("HTTP-Session oder Bot geschlossen waehrend Lauf -> Abbruch.")
+                break
             member = guild.get_member(uid)
             if member is None:
                 try: member = await guild.fetch_member(uid)
                 except discord.NotFound:
                     not_found += 1
                     continue
+                except RuntimeError as exc:
+                    if self._is_session_closed_error(exc):
+                        log.info("HTTP-Session geschlossen beim fetch_member (%s) -> Abbruch Lauf.", uid)
+                        break
+                    raise
                 except discord.HTTPException:
                     continue
             if role in member.roles:
@@ -155,15 +174,20 @@ class SteamVerifiedRole(commands.Cog):
             try:
                 await member.add_roles(role, reason="Steam verified = 1 (automatisch)")
                 changes += 1
-                lines.append(f"✅ <@{uid}> ({member.display_name}) ist jetzt **Verified** – Rolle zugewiesen.")
+                lines.append(f"✅ <@{uid}> ({member.display_name}) ist jetzt **Verified** - Rolle zugewiesen.")
                 await asyncio.sleep(0.25)
+            except RuntimeError as exc:
+                if self._is_session_closed_error(exc):
+                    log.info("HTTP-Session geschlossen beim add_roles -> Abbruch Lauf.")
+                    break
+                raise
             except discord.Forbidden:
-                log.error("Forbidden: Rolle %s an %s (%s) – Hierarchie/Berechtigung?",
+                log.error("Forbidden: Rolle %s an %s (%s) - Hierarchie/Berechtigung?",
                           role.id, uid, getattr(member, 'display_name', '?'))
             except discord.HTTPException as e:
                 log.warning("HTTP-Fehler bei %s: %s", uid, e)
 
-        if lines:
+        if lines and not self._http_session_closed():
             await self._announce_assignments(guild, lines)
         log.info("Verified-Check: %s Rollen vergeben, %s IDs nicht auf Server.", changes, not_found)
         return changes
@@ -184,12 +208,15 @@ class SteamVerifiedRole(commands.Cog):
                     except asyncio.CancelledError:
                         raise
                     except RuntimeError as exc:
-                        if "Session is closed" in str(exc):
+                        if self._is_session_closed_error(exc):
                             log.info("HTTP-Session geschlossen -> Loop endet sauber.")
                             break
                         log.exception("Unerwarteter Fehler im Verified-Rollenlauf.")
                     except Exception:
                         log.exception("Unerwarteter Fehler im Verified-Rollenlauf.")
+                    if self.bot.is_closed() or self._http_session_closed():
+                        log.info("Beende Verified-Loop (Bot/Session geschlossen).")
+                        break
                     await asyncio.sleep(self._interval_seconds)
             except asyncio.CancelledError:
                 log.info("Verified-Loop wurde abgebrochen.")
@@ -200,9 +227,14 @@ class SteamVerifiedRole(commands.Cog):
             self._task = self.bot.loop.create_task(loop_body())
             log.info("Periodischer Verified-Checker gestartet (alle %ss).", self._interval_seconds)
 
+    async def cog_load(self):
+        # Bei Reloads startet on_ready nicht erneut; daher hier sicherstellen, dass die Loop loslaeuft.
+        if not self._start_loop_once_ready.is_running():
+            self._start_loop_once_ready.start()
+
     @commands.Cog.listener()
     async def on_ready(self):
-        if self._task is None:
+        if self._task is None and not self._start_loop_once_ready.is_running():
             self._start_loop_once_ready.start()
 
     # ---------- Commands ----------

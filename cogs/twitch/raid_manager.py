@@ -23,8 +23,14 @@ TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 TWITCH_AUTHORIZE_URL = "https://id.twitch.tv/oauth2/authorize"
 TWITCH_API_BASE = "https://api.twitch.tv/helix"
 
-# Erforderliche Scopes für Raid-Funktionalität
-RAID_SCOPES = ["channel:manage:raids"]
+# Erforderliche Scopes für Raid-Funktionalität + Zusatz-Metriken (Follower/Chat)
+# Hinweis: Re-Auth notwendig, falls bisher nur channel:manage:raids erteilt war.
+RAID_SCOPES = [
+    "channel:manage:raids",
+    "moderator:read:followers",
+    "chat:read",
+    "chat:edit",
+]
 
 log = logging.getLogger("TwitchStreams.RaidManager")
 
@@ -187,6 +193,28 @@ class RaidAuthManager:
         except Exception:
             log.exception("Failed to refresh token for %s", twitch_login)
             return None
+
+    async def get_valid_token_for_login(
+        self, twitch_login: str, session: aiohttp.ClientSession
+    ) -> Optional[tuple[str, str]]:
+        """
+        Liefert (twitch_user_id, access_token) für einen Login, falls autorisiert.
+        """
+        login = (twitch_login or "").strip().lower()
+        if not login:
+            return None
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT twitch_user_id FROM twitch_streamers WHERE LOWER(twitch_login) = ?",
+                (login,),
+            ).fetchone()
+        if not row:
+            return None
+        twitch_user_id = row[0] if not hasattr(row, "keys") else row["twitch_user_id"]
+        token = await self.get_valid_token(str(twitch_user_id), session)
+        if token:
+            return str(twitch_user_id), token
+        return None
 
     def revoke_auth(self, twitch_user_id: str) -> None:
         """Entfernt die Raid-Autorisierung für einen Streamer."""

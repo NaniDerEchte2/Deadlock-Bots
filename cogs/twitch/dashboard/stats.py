@@ -85,6 +85,9 @@ class DashboardStatsMixin:
         )
         tracked = stats.get("tracked", {}) or {}
         category = stats.get("category", {}) or {}
+        retention_stats = stats.get("retention") or {}
+        discovery_stats = stats.get("discovery") or {}
+        chat_stats = stats.get("chat") or {}
 
         min_samples = _parse_int("min_samples", "samples")
         min_avg = _parse_float("min_avg", "avg")
@@ -1137,6 +1140,132 @@ class DashboardStatsMixin:
 
         discord_header_html = '<th data-sort-type="number">Auf Discord?</th>' if show_discord_private else ""
 
+        def _fmt_pct(value) -> str:
+            try:
+                return f"{float(value) * 100:.0f}%"
+            except (TypeError, ValueError):
+                return "-"
+
+        def _fmt_int(value) -> str:
+            try:
+                return f"{int(value):,}".replace(",", ".")
+            except (TypeError, ValueError):
+                return "-"
+
+        def _fmt_float(value, *, digits: int = 1) -> str:
+            try:
+                return f"{float(value):.{digits}f}"
+            except (TypeError, ValueError):
+                return "-"
+
+        ret_sessions = int(retention_stats.get("sessions") or 0)
+        retention_tiles = "".join(
+            f"<div class='user-summary-item'><span class='label'>{html.escape(label)}</span><span class='value'>{value}</span></div>"
+            for label, value in [
+                ("5 Min", _fmt_pct(retention_stats.get("ret5"))),
+                ("10 Min", _fmt_pct(retention_stats.get("ret10"))),
+                ("20 Min", _fmt_pct(retention_stats.get("ret20"))),
+                ("Avg Drop-Off", _fmt_pct(retention_stats.get("avg_drop"))),
+            ]
+        )
+        drop_rows = retention_stats.get("examples") or []
+        if drop_rows:
+            drop_table_rows = "".join(
+                "<tr>"
+                f"<td>{html.escape(str(row.get('streamer', '')))}</td>"
+                f"<td>{html.escape(str(row.get('started_at', '')))}</td>"
+                f"<td data-sort-type='number' data-value='{row.get('dropoff_pct', 0)}'>{_fmt_pct(row.get('dropoff_pct'))}</td>"
+                f"<td>{html.escape(str(row.get('label') or '-'))}</td>"
+                "</tr>"
+                for row in drop_rows
+            )
+        else:
+            drop_table_rows = "<tr><td colspan=4><i>Keine markanten Drop-Offs.</i></td></tr>"
+
+        retention_card = f"""
+<div class="card" style="margin-top:1.2rem;">
+  <div class="card-header">
+    <h2>Retention & Drop-Off</h2>
+    <div class="status-meta">Letzte 30 Tage • Sessions: {ret_sessions}</div>
+  </div>
+  <div class="user-summary">{retention_tiles}</div>
+  <table class="sortable-table" style="margin-top:1rem;">
+    <thead>
+      <tr>
+        <th data-sort-type="string">Streamer</th>
+        <th data-sort-type="string">Start</th>
+        <th data-sort-type="number">Größter Drop</th>
+        <th data-sort-type="string">Hinweis</th>
+      </tr>
+    </thead>
+    <tbody>{drop_table_rows}</tbody>
+  </table>
+</div>
+"""
+
+        disc = discovery_stats or {}
+        disc_ret7 = disc.get("returning_7d") or {}
+        disc_ret30 = disc.get("returning_30d") or {}
+        discovery_tiles = "".join(
+            f"<div class='user-summary-item'><span class='label'>{html.escape(label)}</span><span class='value'>{value}</span></div>"
+            for label, value in [
+                ("Avg Peak Viewer", _fmt_float(disc.get("unique_viewers_estimate"), digits=1)),
+                ("Follower Δ (30d)", _fmt_int(disc.get("followers_total_delta"))),
+                ("Avg Follower/Session", _fmt_float(disc.get("followers_per_session"), digits=2)),
+                ("Avg Follower/Stunde", _fmt_float(disc.get("followers_per_hour"), digits=2)),
+            ]
+        )
+        discovery_meta = (
+            f"7d Returning: {_fmt_int(disc_ret7.get('returning'))}/{_fmt_int(disc_ret7.get('total'))} • "
+            f"30d Returning: {_fmt_int(disc_ret30.get('returning'))}/{_fmt_int(disc_ret30.get('total'))}"
+        )
+        discovery_card = f"""
+<div class="card" style="margin-top:1.0rem;">
+  <div class="card-header">
+    <h2>Discovery Funnel</h2>
+    <div class="status-meta">{discovery_meta}</div>
+  </div>
+  <div class="user-summary">{discovery_tiles}</div>
+</div>
+"""
+
+        chat = chat_stats or {}
+        chat_tiles = "".join(
+            f"<div class='user-summary-item'><span class='label'>{html.escape(label)}</span><span class='value'>{value}</span></div>"
+            for label, value in [
+                ("Unique Chat/100 Viewer", _fmt_float(chat.get("unique_per_100"), digits=1)),
+                ("First-Time Anteil", _fmt_pct(chat.get("first_share"))),
+                ("Returning Anteil", _fmt_pct(chat.get("returning_share"))),
+                ("Total Unique (30d)", _fmt_int(chat.get("total_unique"))),
+            ]
+        )
+        peak_rows = chat.get("peaks") or []
+        if peak_rows:
+            peak_html = "".join(
+                "<li>"
+                f"<strong>{html.escape(str(row.get('streamer', '')))}</strong> – "
+                f"{html.escape(str(row.get('minute', '')))} "
+                f"({html.escape(str(row.get('messages', 0)))} Messages)"
+                "</li>"
+                for row in peak_rows
+            )
+            peak_list = f"<ul class='status-meta' style='margin:.6rem 0 0 .2rem; padding-left:1rem;'>{peak_html}</ul>"
+        else:
+            peak_list = "<div class='status-meta' style='margin-top:.4rem;'>Keine Chat-Peaks in den letzten 30 Tagen.</div>"
+
+        chat_card = f"""
+<div class="card" style="margin-top:1.0rem;">
+  <div class="card-header">
+    <h2>Chat-Gesundheit</h2>
+    <div class="status-meta">Engagement pro Session</div>
+  </div>
+  <div class="user-summary">{chat_tiles}</div>
+  {peak_list}
+</div>
+"""
+
+        insights_html = f"{retention_card}{discovery_card}{chat_card}"
+
         body = f"""
 <h1 style="margin:.2rem 0 1rem 0;">Twitch Stats</h1>
 
@@ -1188,6 +1317,8 @@ class DashboardStatsMixin:
   <div class="status-meta" style="margin-top:.4rem;">Hinweis: Stundenangaben beziehen sich auf UTC.</div>
   <div class="status-meta" style="margin-top:.8rem;">Aktive Filter: {' • '.join(filter_descriptions)}</div>
 </div>
+
+{insights_html}
 
 <div class="card" style="margin-top:1.2rem;">
   <div class="card-header">

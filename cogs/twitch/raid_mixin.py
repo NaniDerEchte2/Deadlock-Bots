@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+from .constants import TWITCH_TARGET_GAME_NAME
 from .storage import get_conn
 
 log = logging.getLogger("TwitchStreams.RaidMixin")
@@ -50,6 +51,30 @@ class TwitchRaidMixin:
         auth_mgr = getattr(self._raid_bot, "auth_manager", None)
         if not auth_mgr or not auth_mgr.has_enabled_auth(twitch_user_id):
             log.debug("Auto-Raid übersprungen für %s: kein aktiver OAuth-Grant", login)
+            return
+
+        get_target_lower = getattr(self, "_get_target_game_lower", None)
+        target_game_lower = get_target_lower() if callable(get_target_lower) else ""
+        if not target_game_lower:
+            target_game_lower = (TWITCH_TARGET_GAME_NAME or "").strip().lower()
+
+        last_game = (previous_state.get("last_game") or "").strip()
+        last_game_lower = last_game.lower()
+        had_deadlock_session = bool(int(previous_state.get("had_deadlock_in_session", 0) or 0))
+        allow_auto_raid = False
+        if target_game_lower:
+            if last_game_lower == target_game_lower:
+                allow_auto_raid = True
+            elif last_game_lower == "just chatting" and had_deadlock_session:
+                allow_auto_raid = True
+
+        if not allow_auto_raid:
+            log.info(
+                "Auto-Raid ausgelassen für %s: letzte Kategorie '%s' (had_deadlock_session=%s)",
+                login,
+                last_game or "unbekannt",
+                had_deadlock_session,
+            )
             return
 
         # Stream-Dauer berechnen

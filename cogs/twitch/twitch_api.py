@@ -85,7 +85,13 @@ class TwitchAPI:
         return {"Client-ID": self.client_id, "Authorization": f"Bearer {self._token}"}
 
     # ---- Core GET ----------------------------------------------------------
-    async def _get(self, path: str, params: Optional[Union[Dict[str, str], List[Tuple[str, str]]]] = None) -> Dict:
+    async def _get(
+        self,
+        path: str,
+        params: Optional[Union[Dict[str, str], List[Tuple[str, str]]]] = None,
+        *,
+        log_on_error: bool = True,
+    ) -> Dict:
         await self._ensure_token()
         self._ensure_session()
         assert self._session is not None
@@ -96,7 +102,14 @@ class TwitchAPI:
                 async with self._session.get(url, headers=self._headers(), params=params) as r:
                     if r.status != 200:
                         txt = await r.text()
-                        self._log.error("GET %s failed: HTTP %s: %s", path, r.status, txt[:300].replace("\n", " "))
+                        if log_on_error:
+                            self._log.error(
+                                "GET %s failed: HTTP %s: %s", path, r.status, txt[:300].replace("\n", " ")
+                            )
+                        else:
+                            self._log.debug(
+                                "GET %s failed (quiet): HTTP %s: %s", path, r.status, txt[:180].replace("\n", " ")
+                            )
                         r.raise_for_status()
                     return await r.json()
             except aiohttp.ClientResponseError:
@@ -291,3 +304,46 @@ class TwitchAPI:
             return None
         thumb = thumb.replace("{width}", "1280").replace("{height}", "720")
         return f"{thumb}?rand={int(time.time())}"
+
+    async def get_followers_total(self, user_id: str, user_token: Optional[str] = None) -> Optional[int]:
+        """Liefert die Follower-Gesamtzahl für einen Broadcaster (best-effort, via /channels/followers)."""
+        if not user_id:
+            return None
+        try:
+            if user_token:
+                self._ensure_session()
+                assert self._session is not None
+                url = f"{TWITCH_API_BASE}/channels/followers"
+                async with self._session.get(
+                    url,
+                    headers={"Client-ID": self.client_id, "Authorization": f"Bearer {user_token}"},
+                    params={"broadcaster_id": user_id, "first": "1"},
+                ) as r:
+                    if r.status != 200:
+                        txt = await r.text()
+                        self._log.debug(
+                            "GET /channels/followers (user) failed: HTTP %s: %s",
+                            r.status,
+                            txt[:180].replace("\n", " "),
+                        )
+                        r.raise_for_status()
+                    js = await r.json()
+            else:
+                js = await self._get(
+                    "/channels/followers",
+                    params={"broadcaster_id": user_id, "first": "1"},
+                    log_on_error=False,
+                )
+            if not isinstance(js, dict):
+                return None
+            total = js.get("total")
+            return int(total) if total is not None else None
+        except aiohttp.ClientResponseError as exc:
+            if exc.status in {401, 403, 404, 410}:
+                self._log.debug("Follower-API nicht verfuegbar (%s) fuer %s", exc.status, user_id)
+                return None
+            self._log.debug("Follower-API Fehler fuer %s: %s", user_id, exc)
+            return None
+        except Exception:
+            self._log.debug("get_followers_total failed for %s", user_id, exc_info=True)
+            return None

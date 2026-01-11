@@ -18,6 +18,11 @@ from service import db
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_RETENTION_EXCLUDED_ROLE_IDS = {
+    1304416311383818240,
+    1309741866098491479,
+}
+
 try:
     from service.standalone_manager import (
         StandaloneAlreadyRunning,
@@ -3379,6 +3384,53 @@ class DashboardServer:
             names[uid] = display_name or f"User {uid}"
         return names
 
+    def _retention_excluded_roles(self) -> set[int]:
+        try:
+            cog = self.bot.get_cog("UserRetentionCog")
+            cfg = getattr(cog, "config", None) if cog else None
+            roles = getattr(cfg, "excluded_role_ids", None)
+            resolved = {int(r) for r in roles if r} if roles else set()
+            if resolved:
+                return resolved
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("Could not resolve retention exclusion roles from cog", exc_info=True)
+        return set(DEFAULT_RETENTION_EXCLUDED_ROLE_IDS)
+
+    def _has_retention_excluded_role(
+        self,
+        user_id: Optional[int],
+        guild_id: Optional[int],
+        excluded: set[int],
+    ) -> bool:
+        if not user_id or not excluded:
+            return False
+
+        guilds: List[Any] = []
+        if guild_id:
+            try:
+                guild = self.bot.get_guild(int(guild_id))
+            except Exception:
+                guild = None
+            if guild:
+                guilds.append(guild)
+        if not guilds:
+            guilds = list(self.bot.guilds)
+
+        for guild in guilds:
+            try:
+                member = guild.get_member(int(user_id))
+            except Exception:
+                member = None
+            if not member:
+                continue
+            try:
+                member_roles = {r.id for r in getattr(member, "roles", []) or []}
+            except Exception:
+                member_roles = set()
+            if member_roles and member_roles & excluded:
+                return True
+        return False
+
     async def _collect_live_voice_sessions(self) -> List[Dict[str, Any]]:
         cog = self._voice_cog()
         if not cog:
@@ -3792,6 +3844,7 @@ class DashboardServer:
         inactivity_threshold_days = 14
         min_days_between_messages = 30
         max_miss_you_per_user = 1
+        excluded_roles = self._retention_excluded_roles()
 
         try:
             # Ermittele vorhandene Spalten, um kompatibel mit evtl. aelterem Schema zu sein
@@ -3858,12 +3911,6 @@ class DashboardServer:
 
             candidate_where_sql = " AND ".join(candidate_where)
 
-            inactive_candidates_row = db.query_one(
-                "SELECT COUNT(*) FROM user_retention_tracking WHERE " + candidate_where_sql,
-                tuple(candidate_params),
-            )
-            inactive_candidates = inactive_candidates_row[0] if inactive_candidates_row else 0
-
             miss_you_row = db.query_one(
                 "SELECT COUNT(*) FROM user_retention_messages WHERE message_type = 'miss_you'"
             )
@@ -3915,16 +3962,27 @@ class DashboardServer:
             else:
                 select_fields.append("NULL AS miss_you_count")
 
-            candidate_rows = db.query_all(
+            candidate_rows_raw = db.query_all(
                 f"""
                 SELECT {", ".join(select_fields)}
                 FROM user_retention_tracking urt
                 WHERE {candidate_where_sql}
                 ORDER BY days_inactive DESC
-                LIMIT 50
                 """,
                 tuple(candidate_params),
             )
+
+            filtered_rows = [
+                row
+                for row in candidate_rows_raw
+                if not self._has_retention_excluded_role(
+                    row["user_id"],
+                    row["guild_id"],
+                    excluded_roles,
+                )
+            ]
+            inactive_candidates = len(filtered_rows)
+            candidate_rows = filtered_rows[:50]
 
             user_ids = [row["user_id"] for row in candidate_rows if row and row["user_id"]]
             name_map = self._resolve_display_names(user_ids)

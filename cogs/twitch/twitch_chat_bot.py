@@ -12,8 +12,9 @@ import asyncio
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Set
+from typing import Dict, Optional, Set, Tuple
 
 try:
     from twitchio.ext import commands as twitchio_commands
@@ -39,17 +40,22 @@ if TWITCHIO_AVAILABLE:
             self,
             token: str,
             client_id: str,
+            client_secret: str,
+            bot_id: Optional[str] = None,
             prefix: str = "!",
             initial_channels: Optional[list] = None,
         ):
             super().__init__(
                 token=token,
                 client_id=client_id,
+                client_secret=client_secret,
+                bot_id=bot_id,
                 prefix=prefix,
                 initial_channels=initial_channels or [],
             )
             self._raid_bot = None  # Wird später gesetzt
             self._monitored_streamers: Set[str] = set()
+            self._session_cache: Dict[str, Tuple[int, datetime]] = {}
             log.info("Twitch Chat Bot initialized with %d channels", len(initial_channels or []))
 
         def set_raid_bot(self, raid_bot):
@@ -67,6 +73,11 @@ if TWITCHIO_AVAILABLE:
             if message.echo:
                 return
 
+            try:
+                await self._track_chat_health(message)
+            except Exception:
+                log.debug("Konnte Chat-Health nicht loggen", exc_info=True)
+
             # Verarbeite Commands
             await self.handle_commands(message)
 
@@ -83,6 +94,136 @@ if TWITCHIO_AVAILABLE:
                     (normalized,),
                 ).fetchone()
             return row
+
+        def _resolve_session_id(self, login: str) -> Optional[int]:
+            """Best-effort Mapping von Channel zu offener Twitch-Session."""
+            cache_key = login.lower()
+            cached = self._session_cache.get(cache_key)
+            now_ts = datetime.now(timezone.utc)
+            if cached:
+                cached_id, cached_at = cached
+                if (now_ts - cached_at).total_seconds() < 60:
+                    return cached_id
+
+            with get_conn() as conn:
+                row = conn.execute(
+                    """
+                    SELECT id FROM twitch_stream_sessions
+                     WHERE streamer_login = ? AND ended_at IS NULL
+                     ORDER BY started_at DESC
+                     LIMIT 1
+                    """,
+                    (cache_key,),
+                ).fetchone()
+            if not row:
+                return None
+
+            session_id = int(row["id"] if hasattr(row, "keys") else row[0])
+            self._session_cache[cache_key] = (session_id, now_ts)
+            return session_id
+
+        async def _track_chat_health(self, message) -> None:
+            """Loggt Chat-Events für Chat-Gesundheit und Retention-Metriken."""
+            channel_name = getattr(message.channel, "name", "") or ""
+            login = channel_name.lstrip("#").lower()
+            if not login:
+                return
+
+            author = getattr(message, "author", None)
+            chatter_login = (getattr(author, "name", "") or "").lower()
+            if not chatter_login:
+                return
+            chatter_id = str(getattr(author, "id", "") or "") or None
+            content = message.content or ""
+            is_command = content.strip().startswith(self.prefix or "!")
+
+            session_id = self._resolve_session_id(login)
+            if session_id is None:
+                return
+
+            ts_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+            with get_conn() as conn:
+                # Rohes Chat-Event (ohne Nachrichtentext)
+                conn.execute(
+                    """
+                    INSERT INTO twitch_chat_messages (session_id, streamer_login, chatter_login, message_ts, is_command)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (session_id, login, chatter_login, ts_iso, 1 if is_command else 0),
+                )
+
+                # Rollup pro Session
+                existing = conn.execute(
+                    """
+                    SELECT messages, is_first_time_global
+                      FROM twitch_session_chatters
+                     WHERE session_id = ? AND chatter_login = ?
+                    """,
+                    (session_id, chatter_login),
+                ).fetchone()
+
+                rollup = conn.execute(
+                    """
+                    SELECT total_messages, total_sessions
+                      FROM twitch_chatter_rollup
+                     WHERE streamer_login = ? AND chatter_login = ?
+                    """,
+                    (login, chatter_login),
+                ).fetchone()
+
+                is_first_global = 0 if rollup else 1
+                if rollup:
+                    total_sessions_inc = 1 if existing is None else 0
+                    conn.execute(
+                        """
+                        UPDATE twitch_chatter_rollup
+                           SET total_messages = total_messages + 1,
+                               total_sessions = total_sessions + ?,
+                               last_seen_at = ?,
+                               chatter_id = COALESCE(chatter_id, ?)
+                         WHERE streamer_login = ? AND chatter_login = ?
+                        """,
+                        (total_sessions_inc, ts_iso, chatter_id, login, chatter_login),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO twitch_chatter_rollup (
+                            streamer_login, chatter_login, chatter_id, first_seen_at, last_seen_at,
+                            total_messages, total_sessions
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (login, chatter_login, chatter_id, ts_iso, ts_iso, 1, 1),
+                    )
+
+                if existing:
+                    conn.execute(
+                        """
+                        UPDATE twitch_session_chatters
+                           SET messages = messages + 1
+                         WHERE session_id = ? AND chatter_login = ?
+                        """,
+                        (session_id, chatter_login),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO twitch_session_chatters (
+                            session_id, streamer_login, chatter_login, chatter_id, first_message_at,
+                            messages, is_first_time_global
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            session_id,
+                            login,
+                            chatter_login,
+                            chatter_id,
+                            ts_iso,
+                            1,
+                            is_first_global,
+                        ),
+                    )
 
         @twitchio_commands.command(name="raid_enable", aliases=["raidbot"])
         async def cmd_raid_enable(self, ctx: twitchio_commands.Context):
@@ -355,7 +496,7 @@ def load_bot_token(*, log_missing: bool = True) -> Optional[str]:
     if log_missing:
         log.warning(
             "TWITCH_BOT_TOKEN nicht gesetzt. Twitch Chat Bot wird nicht gestartet. "
-            "Bitte setze ein OAuth-Token fuer den Bot-Account."
+            "Bitte setze ein OAuth-Token für den Bot-Account."
         )
     return None
 
@@ -419,9 +560,37 @@ async def create_twitch_chat_bot(
     initial_channels = [row[0] for row in partners if row[0]]
     log.info("Creating Twitch Chat Bot for %d partner channels", len(initial_channels))
 
+    # Bot-ID via API abrufen (TwitchIO braucht diese zwingend bei user:bot Scope)
+    bot_id = None
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            # Bearer Token ohne "oauth:" Prefix für API
+            api_token = token.replace("oauth:", "")
+            headers = {
+                "Client-ID": client_id,
+                "Authorization": f"Bearer {api_token}"
+            }
+            async with session.get("https://api.twitch.tv/helix/users", headers=headers) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    if data.get("data"):
+                        bot_id = data["data"][0]["id"]
+                        log.info("Fetched Bot ID: %s", bot_id)
+                else:
+                    log.warning("Could not fetch Bot ID: HTTP %s", r.status)
+    except Exception as e:
+        log.warning("Failed to fetch Bot ID: %s", e)
+
+    # Fallback: Wenn Fetch fehlschlägt, aber Token existiert, versuchen wir es ohne ID (könnte failen)
+    # oder übergeben einen Dummy, falls TwitchIO das schluckt.
+    # Besser: Wir übergeben was wir haben.
+
     bot = RaidChatBot(
         token=token,
         client_id=client_id,
+        client_secret=client_secret,
+        bot_id=bot_id,
         prefix="!",
         initial_channels=initial_channels,
     )
