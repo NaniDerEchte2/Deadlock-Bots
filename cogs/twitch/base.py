@@ -24,6 +24,7 @@ from .constants import (
     TWITCH_LANGUAGE,
     TWITCH_LOG_EVERY_N_TICKS,
     TWITCH_NOTIFY_CHANNEL_ID,
+    TWITCH_RAID_REDIRECT_URI,
     TWITCH_REQUIRED_DISCORD_MARKER,
     TWITCH_TARGET_GAME_NAME,
 )
@@ -40,9 +41,26 @@ class TwitchBaseCog(commands.Cog):
         super().__init__()
         self.bot = bot
 
+        # Diagnose: Welche Keys sind da?
+        twitch_keys = [k for k in os.environ.keys() if k.startswith("TWITCH_")]
+        log.debug("Detected Twitch Keys in ENV: %s", ", ".join(twitch_keys))
+
         # 🔒 Secrets nur aus ENV (nicht hardcoden!)
+        # TWITCH_CLIENT_ID/SECRET sind für die Haupt-App (Raids, Dashboard)
         self.client_id = os.getenv("TWITCH_CLIENT_ID") or ""
         self.client_secret = os.getenv("TWITCH_CLIENT_SECRET")
+        
+        # TWITCH_BOT_CLIENT_ID ist speziell für den Chat-Bot (Fallback auf Haupt-App)
+        self._twitch_bot_client_id: str = os.getenv("TWITCH_BOT_CLIENT_ID", "").strip() or self.client_id
+        
+        # Bot-Secret laden: 1. Spezieller Key, 2. Fallback auf Haupt-Secret (wenn ID identisch)
+        bot_secret_env = os.getenv("TWITCH_BOT_CLIENT_SECRET", "").strip()
+        if bot_secret_env:
+            self._twitch_bot_secret = bot_secret_env
+        elif self._twitch_bot_client_id == self.client_id:
+            self._twitch_bot_secret = self.client_secret
+        else:
+            self._twitch_bot_secret = ""
 
         # Runtime attributes initialised even if the cog is disabled
         self.api: Optional[TwitchAPI]
@@ -78,49 +96,60 @@ class TwitchBaseCog(commands.Cog):
         self._partner_dashboard_token = os.getenv("TWITCH_PARTNER_TOKEN") or None
         self._required_marker_default = TWITCH_REQUIRED_DISCORD_MARKER or None
 
-        if not self.client_id or not self.client_secret:
-            log.error("TWITCH_CLIENT_ID/SECRET not configured; cog disabled")
+        if not self.client_id:
+            log.error("TWITCH_CLIENT_ID not configured; Twitch features will be limited or disabled.")
             self.api = None
-            return
+            # Wir machen hier nicht 'return', damit der Chat-Bot (der seine eigene ID hat) evtl. trotzdem starten kann.
+        else:
+            if not self.client_secret:
+                log.warning("TWITCH_CLIENT_SECRET missing. API calls and Raids will fail, but Chat Bot might work.")
+                self.api = None
+            else:
+                self.api = TwitchAPI(self.client_id, self.client_secret)
 
-        self.api = TwitchAPI(self.client_id, self.client_secret)
-        # Rehydrate offene Streams/Sessions nach einem Neustart
-        try:
-            self._rehydrate_active_sessions()
-        except Exception:
-            log.debug("Konnte aktive Twitch-Sessions nicht rehydrieren", exc_info=True)
+        if self.api:
+            # Rehydrate offene Streams/Sessions nach einem Neustart
+            try:
+                self._rehydrate_active_sessions()
+            except Exception:
+                log.debug("Konnte aktive Twitch-Sessions nicht rehydrieren", exc_info=True)
 
         # Raid-Bot initialisieren
         self._raid_bot: Optional[RaidBot] = None
         self._twitch_chat_bot = None
         self._twitch_bot_token: Optional[str] = load_bot_token(log_missing=False)
-        redirect_uri = os.getenv("TWITCH_RAID_REDIRECT_URI", "").strip()
-        if not redirect_uri:
-            # Fallback: Dashboard-URL verwenden
-            redirect_uri = f"http://{self._dashboard_host}:{self._dashboard_port}/twitch/raid/callback"
+        self._twitch_bot_client_id: str = os.getenv("TWITCH_BOT_CLIENT_ID", "").strip() or self.client_id
+        # Secret nur nutzen, wenn es zur ID passt (also wenn Bot-ID == App-ID)
+        self._twitch_bot_secret: Optional[str] = self.client_secret if self._twitch_bot_client_id == self.client_id else None
+        
+        # Redirect-URL: Priorität 1: ENV/Tresor, Priorität 2: Constant
+        redirect_uri = os.getenv("TWITCH_RAID_REDIRECT_URI", "").strip() or TWITCH_RAID_REDIRECT_URI
         self._raid_redirect_uri = redirect_uri
 
-        try:
-            session = self.api.get_http_session()
-            self._raid_bot = RaidBot(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                redirect_uri=redirect_uri,
-                session=session,
-            )
-            log.info("Raid-Bot initialisiert (redirect_uri: %s)", redirect_uri)
-
-            # Twitch Chat Bot starten (falls Token vorhanden)
-            if self._twitch_bot_token:
-                self._spawn_bg_task(self._init_twitch_chat_bot(), "twitch.chat_bot")
-            else:
-                log.info(
-                    "Twitch Chat Bot nicht verfuegbar (kein Token gesetzt). "
-                    "Setze TWITCH_BOT_TOKEN oder TWITCH_BOT_TOKEN_FILE, um den Chat-Bot zu aktivieren."
+        if self.api:
+            try:
+                session = self.api.get_http_session()
+                self._raid_bot = RaidBot(
+                    client_id=self.client_id,
+                    client_secret=self.client_secret,
+                    redirect_uri=redirect_uri,
+                    session=session,
                 )
-        except Exception:
-            log.exception("Fehler beim Initialisieren des Raid-Bots")
-            self._raid_bot = None
+                log.info("Raid-Bot initialisiert (redirect_uri: %s)", redirect_uri)
+
+                # Twitch Chat Bot starten (falls Token vorhanden)
+                if self._twitch_bot_token:
+                    self._spawn_bg_task(self._init_twitch_chat_bot(), "twitch.chat_bot")
+                else:
+                    log.info(
+                        "Twitch Chat Bot nicht verfuegbar (kein Token gesetzt). "
+                        "Setze TWITCH_BOT_TOKEN oder TWITCH_BOT_TOKEN_FILE, um den Chat-Bot zu aktivieren."
+                    )
+            except Exception:
+                log.exception("Fehler beim Initialisieren des Raid-Bots")
+                self._raid_bot = None
+        else:
+            log.warning("Raid-Bot und Chat-Bot deaktiviert, da TWITCH_CLIENT_ID/SECRET fehlen.")
 
         # Background tasks
         self.poll_streams.start()
@@ -248,6 +277,8 @@ class TwitchBaseCog(commands.Cog):
                 return
 
             token = self._twitch_bot_token or load_bot_token(log_missing=False)
+            refresh_token = os.getenv("TWITCH_BOT_REFRESH_TOKEN", "").strip() or None
+            
             if not token:
                 log.info(
                     "Twitch Chat Bot nicht verfuegbar (kein Token gesetzt). "
@@ -257,11 +288,12 @@ class TwitchBaseCog(commands.Cog):
             self._twitch_bot_token = token
 
             self._twitch_chat_bot = await create_twitch_chat_bot(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
+                client_id=self._twitch_bot_client_id,
+                client_secret=self._twitch_bot_secret or "",  # TwitchIO mag None manchmal nicht, Empty String ist sicherer
                 redirect_uri=self._raid_redirect_uri,
                 raid_bot=self._raid_bot,
                 bot_token=token,
+                bot_refresh_token=refresh_token,
                 log_missing=False,
             )
 

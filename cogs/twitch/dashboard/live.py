@@ -438,7 +438,12 @@ class DashboardLiveMixin:
         )
 
         body = f"""
-<h1 style="margin:.2rem 0 1rem 0;">Deadlock Twitch Posting – Admin</h1>
+<div style="display:flex; justify-content:space-between; align-items:center;">
+  <h1 style="margin:.2rem 0 1rem 0;">Deadlock Twitch Posting – Admin</h1>
+  <form method="post" action="/twitch/reload" style="margin:0;">
+    <button class="btn btn-warn">Reload Twitch Cog</button>
+  </form>
+</div>
 
 {add_streamer_card_html}
 

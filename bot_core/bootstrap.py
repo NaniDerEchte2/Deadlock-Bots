@@ -41,25 +41,30 @@ def _load_secrets_from_keyring() -> None:
         "DISCORD_TOKEN", "DISCORD_TOKEN_WORKER", "DISCORD_TOKEN_RANKED", "DISCORD_TOKEN_PATCHNOTES",
         "DISCORD_OAUTH_CLIENT_ID", "DISCORD_OAUTH_CLIENT_SECRET",
         "STEAM_API_KEY", "STEAM_BOT_PASSWORD",
-        "TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET", "TWITCH_BOT_TOKEN", "TWITCH_BOT_REFRESH_TOKEN",
+        "TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET", "TWITCH_BOT_CLIENT_ID", "TWITCH_BOT_CLIENT_SECRET", "TWITCH_BOT_TOKEN", "TWITCH_BOT_REFRESH_TOKEN",
+        "TWITCH_RAID_REDIRECT_URI",
         "OPENAI_API_KEY", "GEMINI_API_KEY", "PERPLEXITY_API_KEY", "GITHUB_TOKEN", "PPLX_API_KEY",
         "aws_access_key_id", "aws_secret_access_key", "DEADLOCK_API_KEY", "BOT_TOKEN"
     ]
     
-    loaded_count = 0
+    loaded_keys = []
     for key in keys_to_check:
-        # Nur laden, wenn nicht schon (z.B. durch .env) gesetzt? 
-        # Nein, Tresor soll Vorrang haben (sicherer), daher überschreiben wir.
         try:
+            # Variante 1: Adresse=DeadlockBot, Benutzer=KEY
             val = keyring.get_password(service_name, key)
+            
+            # Variante 2: Adresse=KEY@DeadlockBot, Benutzer=KEY (deine übersichtliche Variante)
+            if not val:
+                val = keyring.get_password(f"{key}@{service_name}", key)
+            
             if val:
                 os.environ[key] = val
-                loaded_count += 1
+                loaded_keys.append(key)
         except Exception:
             pass  # Ignorieren, wenn Key nicht im Tresor
             
-    if loaded_count > 0:
-        logging.getLogger().info("🔐 %d Secrets aus Windows Tresor (DeadlockBot) geladen.", loaded_count)
+    if loaded_keys:
+        logging.getLogger().info("🔐 %d Secrets aus Windows Tresor (%s) geladen: %s", len(loaded_keys), service_name, ", ".join(loaded_keys))
 
 
 def _load_env_robust() -> str | None:

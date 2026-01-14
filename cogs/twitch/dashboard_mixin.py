@@ -461,6 +461,16 @@ class TwitchDashboardMixin:
             )
         return "Unbekannter Modus"
 
+    async def _reload_twitch_cog(self) -> str:
+        """Hot reload the entire Twitch cog."""
+        try:
+            await self.bot.reload_extension("cogs.twitch")
+            log.info("Twitch cog hot reloaded via dashboard")
+            return "Twitch-Modul erfolgreich neu geladen"
+        except Exception as e:
+            log.exception("Twitch cog hot reload failed")
+            return f"Fehler beim Neuladen: {e}"
+
     async def _start_dashboard(self):
         if not getattr(self, "_dashboard_embedded", True):
             log.debug("Twitch dashboard embedded server disabled; skipping _start_dashboard")
@@ -479,6 +489,7 @@ class TwitchDashboardMixin:
                 discord_profile_cb=self._dashboard_save_discord_profile,
                 raid_history_cb=self._dashboard_raid_history if hasattr(self, "_dashboard_raid_history") else None,
                 raid_bot=getattr(self, "_raid_bot", None),
+                reload_cb=self._reload_twitch_cog,
                 http_session=self.api.get_http_session() if self.api else None,
                 redirect_uri=getattr(self, "_raid_redirect_uri", ""),
             )

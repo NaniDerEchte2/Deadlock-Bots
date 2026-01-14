@@ -156,11 +156,11 @@ class CogLoaderMixin:
                 rel = init_file.relative_to(self.cogs_dir.parent)
                 module_path = ".".join(rel.parts[:-1])
                 if self._should_exclude(module_path):
-                    logging.info(f"🚫 Excluded cog (package): {module_path}")
+                    logging.debug(f"🚫 Excluded cog (package): {module_path}")
                     continue
                 discovered.append(module_path)
                 pkg_dirs_with_setup.append(init_file.parent)
-                logging.info(f"🔍 Auto-discovered package cog: {module_path}")
+                logging.debug(f"🔍 Auto-discovered package cog: {module_path}")
 
             # Pass 2: Einzelne .py
             for cog_file in self.cogs_dir.rglob("*.py"):
@@ -177,15 +177,15 @@ class CogLoaderMixin:
                     continue
                 has_setup = ("async def setup(" in content) or ("def setup(" in content)
                 if not has_setup:
-                    logging.info(f"⏭️ Skipped {cog_file}: no setup() found")
+                    logging.debug(f"⏭️ Skipped {cog_file}: no setup() found")
                     continue
                 rel = cog_file.relative_to(self.cogs_dir.parent)
                 module_path = ".".join(rel.with_suffix("").parts)
                 if self._should_exclude(module_path):
-                    logging.info(f"🚫 Excluded cog: {module_path}")
+                    logging.debug(f"🚫 Excluded cog: {module_path}")
                     continue
                 discovered.append(module_path)
-                logging.info(f"🔍 Auto-discovered cog: {module_path}")
+                logging.debug(f"🔍 Auto-discovered cog: {module_path}")
 
             self.cogs_list = sorted(set(discovered))
             logging.info(f"✅ Auto-discovery complete: {len(self.cogs_list)} cogs found")

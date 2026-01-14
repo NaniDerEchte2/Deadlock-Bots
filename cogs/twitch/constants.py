@@ -7,6 +7,7 @@
 TWITCH_DASHBOARD_NOAUTH = True                     # ohne Token (nur lokal empfohlen)
 TWITCH_DASHBOARD_HOST = "127.0.0.1"
 TWITCH_DASHBOARD_PORT = 8765
+TWITCH_RAID_REDIRECT_URI = "https://raid.earlysalty.com/twitch/raid/callback"
 
 TWITCH_LANGUAGE = "de de-de de-at de-ch"          # Mehrere Varianten via Komma/Leerzeichen (z. B. "de de-at de-ch")
 TWITCH_TARGET_GAME_NAME = "Deadlock"

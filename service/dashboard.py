@@ -3258,6 +3258,12 @@ class DashboardServer:
         if self._raid_health_url:
             _add_target("Raid Callback Host", self._raid_health_url, key="raid-callback-host")
 
+        # Explicit Health Checks for Core Domains
+        _add_target("Main Site", "https://earlysalty.de/health", key="main-site")
+        _add_target("Steam Link Service", "https://link.earlysalty.com/health", key="steam-link-service")
+        _add_target("Raid Service", "https://raid.earlysalty.com/health", key="raid-service")
+        _add_target("Twitch Stats", "https://twitch.earlysalty.com/twitch/stats", key="twitch-stats")
+
         extra_raw = (
             os.getenv("DASHBOARD_HEALTHCHECKS")
             or os.getenv("DASHBOARD_HEALTHCHECK_URLS")

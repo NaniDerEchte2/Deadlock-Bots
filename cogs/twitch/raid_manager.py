@@ -11,6 +11,7 @@ Verwaltet:
 import logging
 import time
 import secrets
+import asyncio
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlencode
@@ -30,6 +31,9 @@ RAID_SCOPES = [
     "moderator:read:followers",
     "chat:read",
     "chat:edit",
+    "user:read:chat",
+    "moderator:manage:banned_users",
+    "moderator:manage:chat_messages",
 ]
 
 log = logging.getLogger("TwitchStreams.RaidManager")
@@ -42,12 +46,12 @@ class RaidAuthManager:
         self.client_id = client_id
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
-        self._state_tokens: Dict[str, str] = {}  # state -> twitch_login (für OAuth-Flow)
+        self._state_tokens: Dict[str, Tuple[str, float]] = {}  # state -> (twitch_login, timestamp)
 
     def generate_auth_url(self, twitch_login: str) -> str:
         """Generiert eine OAuth-URL für Streamer-Autorisierung."""
         state = secrets.token_urlsafe(32)
-        self._state_tokens[state] = twitch_login
+        self._state_tokens[state] = (twitch_login, time.time())
 
         params = {
             "client_id": self.client_id,
@@ -60,8 +64,26 @@ class RaidAuthManager:
         return f"{TWITCH_AUTHORIZE_URL}?{urlencode(params)}"
 
     def verify_state(self, state: str) -> Optional[str]:
-        """Verifiziert State-Token und gibt den zugehörigen Login zurück."""
-        return self._state_tokens.pop(state, None)
+        """Verifiziert State-Token und gibt den zugehörigen Login zurück (max 10 Min alt)."""
+        data = self._state_tokens.pop(state, None)
+        if not data:
+            return None
+        
+        login, timestamp = data
+        if time.time() - timestamp > 600:  # 10 Minuten TTL
+            log.warning("State token for %s expired", login)
+            return None
+            
+        return login
+
+    def cleanup_states(self) -> None:
+        """Entfernt abgelaufene State-Tokens aus dem Speicher."""
+        now = time.time()
+        expired = [s for s, (_, ts) in self._state_tokens.items() if now - ts > 600]
+        for s in expired:
+            del self._state_tokens[s]
+        if expired:
+            log.debug("Cleaned up %d expired auth states", len(expired))
 
     async def exchange_code_for_token(
         self, code: str, session: aiohttp.ClientSession
@@ -135,6 +157,64 @@ class RaidAuthManager:
             )
             conn.commit()
         log.info("Saved raid auth for %s (user_id=%s)", twitch_login, twitch_user_id)
+
+    async def get_tokens_for_user(
+        self, twitch_user_id: str, session: aiohttp.ClientSession
+    ) -> Optional[Tuple[str, str]]:
+        """
+        Holt Access- UND Refresh-Token für einen User.
+        Erneuert den Token automatisch, falls abgelaufen.
+        """
+        with get_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT access_token, refresh_token, token_expires_at, twitch_login
+                FROM twitch_raid_auth
+                WHERE twitch_user_id = ? AND raid_enabled = 1
+                """,
+                (twitch_user_id,),
+            ).fetchone()
+
+        if not row:
+            return None
+
+        access_token, refresh_token, expires_at_iso, twitch_login = row
+        expires_at = datetime.fromisoformat(expires_at_iso).timestamp()
+
+        # Token noch gültig? (5 Minuten Puffer)
+        if time.time() < expires_at - 300:
+            return access_token, refresh_token
+
+        # Token abgelaufen -> refresh
+        log.info("Refreshing token for %s (get_tokens)", twitch_login)
+        try:
+            token_data = await self.refresh_token(refresh_token, session)
+            new_access_token = token_data["access_token"]
+            new_refresh_token = token_data.get("refresh_token", refresh_token)
+            expires_in = token_data.get("expires_in", 3600)
+
+            # Token in DB aktualisieren
+            new_expires_at = datetime.now(timezone.utc).timestamp() + expires_in
+            new_expires_at_iso = datetime.fromtimestamp(
+                new_expires_at, timezone.utc
+            ).isoformat()
+
+            with get_conn() as conn:
+                conn.execute(
+                    """
+                    UPDATE twitch_raid_auth
+                    SET access_token = ?, refresh_token = ?,
+                        token_expires_at = ?, last_refreshed_at = CURRENT_TIMESTAMP
+                    WHERE twitch_user_id = ?
+                    """,
+                    (new_access_token, new_refresh_token, new_expires_at_iso, twitch_user_id),
+                )
+                conn.commit()
+
+            return new_access_token, new_refresh_token
+        except Exception:
+            log.exception("Failed to refresh token for %s", twitch_login)
+            return None
 
     async def get_valid_token(
         self, twitch_user_id: str, session: aiohttp.ClientSession
@@ -426,6 +506,18 @@ class RaidBot:
         self.raid_executor = RaidExecutor(client_id, self.auth_manager)
         self.session = session
         self.chat_bot = None  # Wird später gesetzt
+        
+        # Cleanup-Task starten
+        self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
+
+    async def _periodic_cleanup(self):
+        """Bereinigt periodisch abgelaufene Auth-States."""
+        while True:
+            await asyncio.sleep(1800)  # Alle 30 Minuten
+            try:
+                self.auth_manager.cleanup_states()
+            except Exception:
+                log.exception("Error during auth state cleanup")
 
     def set_chat_bot(self, chat_bot):
         """Setzt den Twitch Chat Bot für Recruitment-Nachrichten."""

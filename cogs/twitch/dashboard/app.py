@@ -20,6 +20,20 @@ class Dashboard(
     DashboardTemplateMixin,
     DashboardBase,
 ):
+    # Callback für Cog-Reload
+    _reload_cb = None
+
+    async def reload_cog(self, request: web.Request) -> web.Response:
+        """Handler für den Cog-Reload."""
+        token = (await request.post()).get("token", "")
+        if not self._check_token(token):
+            return web.Response(text="Unauthorized", status=401)
+
+        if self._reload_cb:
+            msg = await self._reload_cb()
+            return web.Response(text=msg)
+        return web.Response(text="Kein Reload-Handler definiert", status=501)
+
     def attach(self, app: web.Application):
         app.add_routes([
             web.get("/twitch", self.index),
@@ -38,6 +52,8 @@ class Dashboard(
             web.get("/twitch/raid/callback", self.raid_oauth_callback),
             web.post("/twitch/raid/toggle", self.raid_toggle),
             web.get("/twitch/raid/history", self.raid_history),
+            # Reload
+            web.post("/twitch/reload", self.reload_cog),
         ])
 
 
@@ -55,6 +71,7 @@ def build_app(
     discord_profile_cb=None,
     raid_history_cb=None,
     raid_bot=None,
+    reload_cb=None,
     http_session=None,
     redirect_uri: str = "",
 ) -> web.Application:
@@ -94,6 +111,7 @@ def build_app(
         ui._raid_bot = raid_bot
         ui._redirect_uri = redirect_uri
         ui._raid_history_cb = raid_history_cb
+        ui._reload_cb = reload_cb
         ui.attach(app)
     else:
         async def index(request: web.Request):

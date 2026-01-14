@@ -37,6 +37,12 @@ class LoggingMixin:
 
         logging.getLogger("discord").setLevel(logging.WARNING)
         logging.getLogger("discord.http").setLevel(logging.WARNING)
+        
+        # Suppress noisy library logs (security & clutter)
+        logging.getLogger("twitchio").setLevel(logging.INFO)
+        logging.getLogger("twitchio.http").setLevel(logging.INFO)
+        logging.getLogger("twitchio.websocket").setLevel(logging.INFO)
+        logging.getLogger("aiohttp").setLevel(logging.INFO)
 
         # Immer Secrets redaktieren, ohne ENV-Flag
         redact_keys = [

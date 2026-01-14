@@ -46,6 +46,7 @@ if TWITCHIO_AVAILABLE:
             bot_id: Optional[str] = None,
             prefix: str = "!",
             initial_channels: Optional[list] = None,
+            refresh_token: Optional[str] = None,
         ):
             # In 3.x ist bot_id ein positionales/keyword Argument in Client, aber REQUIRED in Bot
             super().__init__(
@@ -55,6 +56,7 @@ if TWITCHIO_AVAILABLE:
                 prefix=prefix,
             )
             self._bot_token = token
+            self._bot_refresh_token = refresh_token
             self._raid_bot = None  # Wird später gesetzt
             self._initial_channels = initial_channels or []
             self._monitored_streamers: Set[str] = set()
@@ -68,13 +70,29 @@ if TWITCHIO_AVAILABLE:
         async def setup_hook(self):
             """Wird beim Starten aufgerufen, um initiales Setup zu machen."""
             # Token registrieren, damit TwitchIO ihn nutzt
-            await self.add_token(self._bot_token.replace("oauth:", ""), "")
+            try:
+                api_token = self._bot_token.replace("oauth:", "").strip()
+                if api_token:
+                    # Wir fügen den Token hinzu. Refresh-Token ist bei TMI-Tokens meist nicht vorhanden (None).
+                    # ABER: Wenn wir einen haben (aus ENV/Tresor), übergeben wir ihn, damit TwitchIO refreshen kann.
+                    await self.add_token(api_token, self._bot_refresh_token)
+                    log.info("Bot user token added (Refresh-Token: %s).", "Yes" if self._bot_refresh_token else "No")
+                else:
+                    log.warning("Kein gültiger TWITCH_BOT_TOKEN gefunden.")
+            except Exception as e:
+                log.error("Der TWITCH_BOT_TOKEN ist ungültig oder abgelaufen (401). "
+                          "Bitte generiere einen neuen Token unter https://twitchapps.com/tmi/ "
+                          "Fehler: %s", e)
+                # Wir machen weiter, damit der Bot zumindest "ready" wird und andere Cogs nicht blockiert
             
             # Initial channels beitreten
             if self._initial_channels:
                 log.info("Joining %d initial channels...", len(self._initial_channels))
                 for channel in self._initial_channels:
-                    await self.join(channel)
+                    try:
+                        await self.join(channel)
+                    except Exception as e:
+                        log.debug("Konnte initialem Channel %s nicht beitreten: %s", channel, e)
 
         async def event_ready(self):
             """Wird aufgerufen, wenn der Bot verbunden ist."""
@@ -94,15 +112,51 @@ if TWITCHIO_AVAILABLE:
                         return
                     channel_id = str(user.id)
 
-                payload = eventsub.ChatMessageSubscription(
-                    broadcaster_user_id=str(channel_id), 
-                    user_id=str(self.bot_id)
-                )
-                await self.subscribe_websocket(payload=payload)
+                # STRATEGIE: Wir versuchen, den Token des Streamers zu nutzen.
+                # Wenn wir den Token haben, abonnieren wir als "Streamer hört Streamer".
+                # Das umgeht die Notwendigkeit, dass der Bot Moderator sein muss.
+                use_streamer_auth = False
+                
+                if self._raid_bot:
+                    # Session holen (TwitchIO intern)
+                    http_session = self._http._session
+                    tokens = await self._raid_bot.auth_manager.get_tokens_for_user(channel_id, http_session)
+                    
+                    if tokens:
+                        access_token, refresh_token = tokens
+                        # Token im Client registrieren, damit 'token_for' funktioniert
+                        await self.add_token(access_token, refresh_token)
+                        use_streamer_auth = True
+                        log.info("Using streamer auth for channel %s (No Mod required)", channel_login)
+
+                if use_streamer_auth:
+                    # User ID = Broadcaster ID -> Streamer hört sich selbst zu
+                    payload = eventsub.ChatMessageSubscription(
+                        broadcaster_user_id=str(channel_id), 
+                        user_id=str(channel_id)
+                    )
+                    # Wir zwingen die Nutzung des Streamer-Tokens
+                    await self.subscribe_websocket(payload=payload, token_for=str(channel_id))
+                else:
+                    # Fallback: Bot hört zu (braucht Mod-Rechte)
+                    payload = eventsub.ChatMessageSubscription(
+                        broadcaster_user_id=str(channel_id), 
+                        user_id=str(self.bot_id)
+                    )
+                    await self.subscribe_websocket(payload=payload)
+
                 self._monitored_streamers.add(channel_login.lower().lstrip("#"))
                 return True
             except Exception as e:
-                log.error("Failed to join channel %s: %s", channel_login, e)
+                msg = str(e)
+                if "403" in msg and "subscription missing proper authorization" in msg:
+                    log.warning(
+                        "Cannot join chat for %s. Reasons: Missing 'user:read:chat' scope (re-auth needed) "
+                        "OR Bot is not a Moderator in the channel (please /mod bot).",
+                        channel_login
+                    )
+                else:
+                    log.error("Failed to join channel %s: %s", channel_login, e)
                 return False
 
         async def event_message(self, message):
@@ -504,12 +558,14 @@ if TWITCHIO_AVAILABLE:
             with get_conn() as conn:
                 partners = conn.execute(
                     """
-                    SELECT DISTINCT twitch_login, twitch_user_id
-                    FROM twitch_streamers
-                    WHERE (manual_verified_permanent = 1
-                           OR manual_verified_until IS NOT NULL
-                           OR manual_verified_at IS NOT NULL)
-                      AND manual_partner_opt_out = 0
+                    SELECT DISTINCT s.twitch_login, s.twitch_user_id
+                    FROM twitch_streamers s
+                    JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
+                    WHERE (s.manual_verified_permanent = 1
+                           OR s.manual_verified_until IS NOT NULL
+                           OR s.manual_verified_at IS NOT NULL)
+                      AND s.manual_partner_opt_out = 0
+                      AND a.raid_enabled = 1
                     """
                 ).fetchall()
 
@@ -571,6 +627,7 @@ async def create_twitch_chat_bot(
     redirect_uri: str,
     raid_bot = None,
     bot_token: Optional[str] = None,
+    bot_refresh_token: Optional[str] = None,
     log_missing: bool = True,
 ) -> Optional[RaidChatBot]:
     """
@@ -607,12 +664,14 @@ async def create_twitch_chat_bot(
     with get_conn() as conn:
         partners = conn.execute(
             """
-            SELECT DISTINCT twitch_login
-            FROM twitch_streamers
-            WHERE (manual_verified_permanent = 1
-                   OR manual_verified_until IS NOT NULL
-                   OR manual_verified_at IS NOT NULL)
-              AND manual_partner_opt_out = 0
+            SELECT DISTINCT s.twitch_login
+            FROM twitch_streamers s
+            JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
+            WHERE (s.manual_verified_permanent = 1
+                   OR s.manual_verified_until IS NOT NULL
+                   OR s.manual_verified_at IS NOT NULL)
+              AND s.manual_partner_opt_out = 0
+              AND a.raid_enabled = 1
             """
         ).fetchall()
 
@@ -649,6 +708,8 @@ async def create_twitch_chat_bot(
                         if data.get("data"):
                             bot_id = data["data"][0]["id"]
                             log.info("Fetched Bot ID via Helix: %s", bot_id)
+                    elif r.status == 401:
+                        log.warning("Twitch API 401 Unauthorized: Der TWITCH_BOT_TOKEN scheint ungültig zu sein.")
                     else:
                         log.warning("Could not fetch Bot ID: HTTP %s", r.status)
     except Exception as e:
@@ -665,6 +726,7 @@ async def create_twitch_chat_bot(
         bot_id=bot_id,
         prefix="!",
         initial_channels=initial_channels,
+        refresh_token=bot_refresh_token,
     )
     bot.set_raid_bot(raid_bot)
 
