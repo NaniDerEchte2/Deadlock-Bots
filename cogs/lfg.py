@@ -27,13 +27,6 @@ PRESENCE_STALE_SECONDS = 300  # 5 Minuten
 # Rank-Matching: wie viele Ränge Unterschied sind erlaubt?
 RANK_TOLERANCE = 2  # +/- 2 Ränge (Grind-Modus)
 
-# LFG Trigger-Wörter (case-insensitive)
-LFG_TRIGGERS = [
-    "lfg", "lf game", "looking for game", "suche mitspieler",
-    "suche spieler", "wer will spielen", "jemand bock", "jmd bock",
-    "zu zocken", "suche noch", "wer hat lust", "wer zockt"
-]
-
 # Voice Channel Kategorien (aus deadlock_voice_status.py und rank_voice_manager.py)
 VOICE_CATEGORIES = {
     1412804540994162789: "grind",   # Grind Kategorie
@@ -138,23 +131,16 @@ class SteamRankChecker(commands.Cog):
 
         return highest_rank or ("Obscurus", 0)
 
-    def _is_lfg_message(self, content: str) -> bool:
-        """Prüft ob eine Nachricht ein LFG-Trigger enthält"""
-        content_lower = content.lower()
-        return any(trigger in content_lower for trigger in LFG_TRIGGERS)
-
     async def _ai_check_lfg_intent(self, message_content: str) -> bool:
-        """
-        Nutzt AI um zu prüfen ob jemand nach Mitspielern sucht.
-        Nur wenn kein Keyword-Match gefunden wurde.
-        """
+        """Nutzt nur AI um zu prüfen, ob jemand nach Mitspielern sucht."""
         if not USE_AI_DETECTION:
+            log.debug("AI-Detection deaktiviert - kein LFG erkannt")
             return False
 
         ai = getattr(self.bot, "get_cog", lambda name: None)("AIConnector")
         if not ai:
-            log.warning("AIConnector nicht geladen - fallback auf Keyword-Check")
-            return self._is_lfg_message(message_content)
+            log.warning("AIConnector nicht geladen - AI-Only Modus, daher kein LFG erkannt")
+            return False
 
         prompt = (
             "Antwort strikt nur mit 'ja' oder 'nein'. "
@@ -166,7 +152,7 @@ class SteamRankChecker(commands.Cog):
             f"Nachricht: \"{message_content}\""
         )
         try:
-            answer_text, _meta = await ai.generate_text(  # direkt, da AIConnector garantiert vorhanden
+            answer_text, _meta = await ai.generate_text(
                 provider="gemini",
                 prompt=prompt,
                 system_prompt=None,
@@ -175,12 +161,12 @@ class SteamRankChecker(commands.Cog):
                 temperature=0,
             )
         except Exception as exc:
-            log.warning("AI Intent-Check fehlgeschlagen (%s) - fallback Keywords", exc)
-            return self._is_lfg_message(message_content)
+            log.warning("AI Intent-Check fehlgeschlagen (%s) - kein LFG erkannt", exc)
+            return False
 
         if not answer_text:
-            log.warning("AI gab keine Antwort zurück - fallback auf Keyword-Check")
-            return self._is_lfg_message(message_content)
+            log.warning("AI gab keine Antwort zurück - kein LFG erkannt")
+            return False
 
         normalized = str(answer_text).strip().lower()
         if normalized.startswith("ja") or normalized.startswith("yes"):
@@ -190,9 +176,8 @@ class SteamRankChecker(commands.Cog):
             log.debug("AI intent Antwort: %s -> %s", normalized, False)
             return False
 
-        fallback = self._is_lfg_message(message_content)
-        log.debug("AI intent unklar (%s) -> Keyword-Fallback=%s", normalized, fallback)
-        return fallback
+        log.debug("AI intent unklar (%s) -> kein LFG erkannt", normalized)
+        return False
 
     async def _get_all_steam_links(self) -> Dict[int, List[str]]:
         """
@@ -504,11 +489,8 @@ class SteamRankChecker(commands.Cog):
         )
 
         # AI entscheidet bei jeder Nachricht, ob es LFG ist (keine Keyword-Liste mehr)
-        if USE_AI_DETECTION:
-            is_lfg = await self._ai_check_lfg_intent(message.content)
-            log.debug("AI intent result for %s: %s", message.author.id, is_lfg)
-        else:
-            is_lfg = self._is_lfg_message(message.content)
+        is_lfg = await self._ai_check_lfg_intent(message.content)
+        log.debug("AI intent result for %s: %s", message.author.id, is_lfg)
 
         if not is_lfg:
             log.debug("Nachricht nicht als LFG erkannt (author=%s)", message.author.id)
