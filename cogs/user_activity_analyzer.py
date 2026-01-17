@@ -22,6 +22,7 @@ import discord
 from discord.ext import commands, tasks
 
 from service import db as central_db
+from cogs import privacy_core as privacy
 
 
 logger = logging.getLogger(__name__)
@@ -427,6 +428,8 @@ class UserActivityAnalyzer(commands.Cog):
         try:
             if member.bot:
                 return
+            if privacy.is_opted_out(member.id):
+                return
 
             # Berechne Join-Position (wievielter Member ist das?)
             join_position = len(member.guild.members)
@@ -462,6 +465,8 @@ class UserActivityAnalyzer(commands.Cog):
         """Trackt wenn ein Member den Server verlässt UND erstellt automatisch eine Analyse."""
         try:
             if member.bot:
+                return
+            if privacy.is_opted_out(member.id):
                 return
 
             recent = central_db.query_one(
@@ -501,6 +506,8 @@ class UserActivityAnalyzer(commands.Cog):
         try:
             if user.bot:
                 return
+            if privacy.is_opted_out(user.id):
+                return
 
             # Ban-Event loggen
             central_db.execute(
@@ -523,6 +530,8 @@ class UserActivityAnalyzer(commands.Cog):
         """Trackt wenn ein Member entbannt wird."""
         try:
             if user.bot:
+                return
+            if privacy.is_opted_out(user.id):
                 return
 
             # Unban-Event loggen
@@ -555,6 +564,8 @@ class UserActivityAnalyzer(commands.Cog):
             user_id = getattr(payload, "user_id", None) or (user.id if user else None)
             if user_id is None:
                 logger.debug("Raw member remove ohne user_id erhalten; Event übersprungen.")
+                return
+            if privacy.is_opted_out(int(user_id)):
                 return
 
             recent = central_db.query_one(
@@ -602,6 +613,8 @@ class UserActivityAnalyzer(commands.Cog):
         try:
             # Ignore Bots & DMs
             if not message.guild or message.author.bot:
+                return
+            if privacy.is_opted_out(message.author.id):
                 return
 
             # Update/Insert Message Activity

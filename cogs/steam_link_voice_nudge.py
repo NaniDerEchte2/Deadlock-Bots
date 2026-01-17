@@ -12,6 +12,7 @@ import discord
 from discord.ext import commands
 
 from service import db
+from cogs import privacy_core as privacy
 
 from cogs.steam import (
     SCHNELL_LINK_CUSTOM_ID,
@@ -577,6 +578,8 @@ class SteamLinkVoiceNudge(commands.Cog):
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         try:
             if (before.channel is None) and (after.channel is not None):
+                if privacy.is_opted_out(member.id):
+                    return
                 if _member_has_exempt_role(member):
                     log.debug("[nudge] skip exempt member id=%s", member.id)
                     return
@@ -611,6 +614,8 @@ class SteamLinkVoiceNudge(commands.Cog):
 
     async def _send_dm_nudge(self, user: Union[discord.User, discord.Member], *, force: bool = False) -> bool:
         uid = int(user.id)
+        if privacy.is_opted_out(uid):
+            return False
         if not force and _has_any_steam_link(uid):
             return False
 
@@ -684,6 +689,8 @@ class SteamLinkVoiceNudge(commands.Cog):
                 if ch:
                     await ch.send(f"ℹ️ Übersprungen (Exempt): **{member}** ({member.id})")
                 return
+            if privacy.is_opted_out(member.id):
+                return
 
             ok = await _count_voice_minutes(member, MIN_VOICE_MINUTES)
             if not ok:
@@ -715,6 +722,10 @@ class SteamLinkVoiceNudge(commands.Cog):
         target = await self._resolve_test_target(ctx, target)
         if not target:
             await ctx.reply("Bitte Ziel angeben: `!nudgesend @user`", mention_author=False)
+            return
+
+        if privacy.is_opted_out(target.id):
+            await ctx.reply("⚠️ Nutzer hat ein Opt-out aktiviert; keine Nudge-DM gesendet.", mention_author=False)
             return
 
         if isinstance(target, discord.Member) and _member_has_exempt_role(target):

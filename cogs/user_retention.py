@@ -23,6 +23,7 @@ from typing import Optional, List, Tuple
 from dataclasses import dataclass
 
 from service import db as central_db
+from cogs import privacy_core as privacy
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,8 @@ class UserRetentionCog(commands.Cog):
         """
         if member.bot:
             return
+        if privacy.is_opted_out(member.id):
+            return
 
         # User ist einem Voice-Channel beigetreten (nicht nur gewechselt)
         if after.channel and (not before.channel or before.channel != after.channel):
@@ -215,6 +218,8 @@ class UserRetentionCog(commands.Cog):
         today = datetime.utcnow().strftime("%Y-%m-%d")
 
         try:
+            if privacy.is_opted_out(member.id):
+                return
             # Prüfe ob User heute schon getrackt wurde
             row = central_db.query_one(
                 "SELECT last_active_at, total_active_days FROM user_retention_tracking WHERE user_id = ?",
@@ -562,6 +567,8 @@ class UserRetentionCog(commands.Cog):
         now = int(time.time())
 
         try:
+            if privacy.is_opted_out(user_id):
+                return False
             user = await self.bot.fetch_user(user_id)
             guild = self.bot.get_guild(guild_id)
             guild_name = guild.name if guild else "unserem Server"

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 # zentrale DB-API (synchron, mit internem Lock), KEINE eigenen Tabellen-Anlagen hier!
 from service import db as central_db
+from cogs import privacy_core as privacy
 
 logger = logging.getLogger(__name__)
 
@@ -309,8 +310,19 @@ class VoiceActivityTrackerCog(commands.Cog):
 
         logger.info("Enhanced Voice Activity Tracker initializing (DB-centralized)")
 
+    def _drop_runtime_state(self, user_id: int) -> None:
+        """Remove in-memory tracking state for an opted-out user."""
+        key_prefix = f"{int(user_id)}:"
+        for key in list(self.voice_sessions.keys()):
+            if key.startswith(key_prefix):
+                self.voice_sessions.pop(key, None)
+        for key in list(self.grace_period_users.keys()):
+            if key.startswith(key_prefix):
+                self.grace_period_users.pop(key, None)
+        self._display_name_cache.pop(int(user_id), None)
+
     async def cog_load(self):
-        # shared.db initialisiert Schema beim connect() selbst – hier nur Smoke-Test:
+        # shared.db initialisiert Schema beim connect() selbst - hier nur Smoke-Test:
         try:
             _ = central_db.query_one("SELECT 1")
         except Exception as e:
@@ -1048,6 +1060,9 @@ class VoiceActivityTrackerCog(commands.Cog):
         try:
             if member.bot:
                 return
+            if privacy.is_opted_out(member.id):
+                self._drop_runtime_state(member.id)
+                return
 
             # Logik für Grace-Start/-Ende bei (Un)Mute
             if (before.channel and after.channel and before.channel == after.channel):
@@ -1126,6 +1141,8 @@ class VoiceActivityTrackerCog(commands.Cog):
         if message.author.bot or not VOICE_FEEDBACK_ENABLED:
             return
         if not isinstance(message.channel, discord.DMChannel):
+            return
+        if privacy.is_opted_out(message.author.id):
             return
         content = (message.content or "").strip()
         if not content:

@@ -14,6 +14,7 @@ import discord
 from discord.ext import commands
 
 from service import db as service_db
+from cogs import privacy_core as privacy
 
 log = logging.getLogger(__name__)
 
@@ -48,9 +49,9 @@ SERVER_CONTEXT = dedent(
     Wichtige Bereiche:
     - #ankündigungen: Updates & News.
     - #spieler-suche (LFG): Leute für Runden finden.
-    - Temp Voice Panel: eigene Lanes erstellen & verwalten.
+    - #🚧sprach-kanal-verwalten: eigene Lanes erstellen & verwalten (lanes=sprachkanal).
     - #rank-auswahl: Rang-Rolle wählen (hilft beim Matchmaking).
-    - #coaching: Hilfe/Coaching anfragen.
+    - #🛠️ich-brauch-einen-coach: Hilfe/Coaching anfragen.
     - #clip-submission: Highlights teilen.
     - #feedback-hub: anonym oder offen Feedback geben.
     - #live-on-twitch & Streamer-Partner-Bereich.
@@ -238,12 +239,13 @@ class OnboardingQuestionsModal(discord.ui.Modal):
             user=interaction.user,
         )
 
-        await self.cog._log_session(
-            user_id=interaction.user.id,
-            thread_id=self.thread_id,
-            answers=answers,
-            llm_meta=meta,
-        )
+        if not privacy.is_opted_out(interaction.user.id):
+            await self.cog._log_session(
+                user_id=interaction.user.id,
+                thread_id=self.thread_id,
+                answers=answers,
+                llm_meta=meta,
+            )
 
         embed = discord.Embed(
             title="Dein persönlicher Einstieg",
@@ -455,7 +457,8 @@ class AIOnboarding(commands.Cog):
             view.message_id = msg.id
             # Persistenz für Reboots
             self.bot.add_view(view, message_id=msg.id)
-            self._persist_view(msg.id, member.id, getattr(channel, "id", None))
+            if not privacy.is_opted_out(member.id):
+                self._persist_view(msg.id, member.id, getattr(channel, "id", None))
             return True
         except Exception:
             log.exception("AI Onboarding konnte nicht gestartet werden")
@@ -469,6 +472,8 @@ class AIOnboarding(commands.Cog):
         answers: UserAnswers,
         llm_meta: Dict[str, Any],
     ) -> None:
+        if privacy.is_opted_out(user_id):
+            return
         try:
             payload = {
                 "user_id": user_id,

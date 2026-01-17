@@ -471,6 +471,15 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               PRIMARY KEY(user_id, guild_id)
             );
 
+            -- Datenschutz-/Opt-out-Status je User
+            CREATE TABLE IF NOT EXISTS user_privacy(
+              user_id    INTEGER PRIMARY KEY,
+              opted_out  INTEGER NOT NULL DEFAULT 0,
+              deleted_at INTEGER,
+              reason     TEXT,
+              updated_at INTEGER DEFAULT (strftime('%s','now'))
+            );
+
             """
         )
         # Nachträglich hinzugefügte Spalten idempotent sicherstellen
@@ -567,6 +576,7 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             # Message Activity: User & Guild Lookups
             c.execute("CREATE INDEX IF NOT EXISTS idx_message_activity_user ON message_activity(user_id, message_count DESC)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_message_activity_guild ON message_activity(guild_id, message_count DESC)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_user_privacy_opted ON user_privacy(opted_out)")
         except sqlite3.Error as e:
             logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)
 
