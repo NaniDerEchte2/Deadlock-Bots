@@ -47,6 +47,7 @@ class RaidAuthManager:
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
         self._state_tokens: Dict[str, Tuple[str, float]] = {}  # state -> (twitch_login, timestamp)
+        self._lock = asyncio.Lock()
 
     def generate_auth_url(self, twitch_login: str) -> str:
         """Generiert eine OAuth-URL für Streamer-Autorisierung."""
@@ -122,6 +123,95 @@ class RaidAuthManager:
                 r.raise_for_status()
             return await r.json()
 
+    async def refresh_all_tokens(self, session: aiohttp.ClientSession) -> int:
+        """
+        Refreshes tokens for all authorized users if they are close to expiry (< 2 hours).
+        Returns the number of refreshed tokens.
+        """
+        refreshed_count = 0
+        with get_conn() as conn:
+            # Hole alle User mit raid_enabled=1
+            rows = conn.execute(
+                """
+                SELECT twitch_user_id, twitch_login, refresh_token, token_expires_at
+                FROM twitch_raid_auth
+                WHERE raid_enabled = 1
+                """
+            ).fetchall()
+
+        if not rows:
+            return 0
+
+        now_ts = time.time()
+        
+        # Parallelisierung möglich, aber hier sequenziell zur Sicherheit (Rate Limits)
+        for row in rows:
+            user_id = row[0] if not hasattr(row, "keys") else row["twitch_user_id"]
+            login = row[1] if not hasattr(row, "keys") else row["twitch_login"]
+            refresh_tok = row[2] if not hasattr(row, "keys") else row["refresh_token"]
+            expires_iso = row[3] if not hasattr(row, "keys") else row["token_expires_at"]
+
+            try:
+                expires_dt = datetime.fromisoformat(expires_iso.replace("Z", "+00:00"))
+                expires_ts = expires_dt.timestamp()
+            except Exception:
+                log.warning("Invalid expiry date for %s, forcing refresh", login)
+                expires_ts = 0
+
+            # Refresh wenn weniger als 2 Stunden (7200s) gültig
+            if now_ts < expires_ts - 7200:
+                continue
+
+            async with self._lock:
+                # Double-Check im Lock, falls parallel ein Raid lief und refresht hat
+                with get_conn() as conn:
+                    current = conn.execute(
+                        "SELECT token_expires_at FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                        (user_id,)
+                    ).fetchone()
+                
+                if current:
+                    curr_iso = current[0]
+                    try:
+                        curr_ts = datetime.fromisoformat(curr_iso.replace("Z", "+00:00")).timestamp()
+                        if now_ts < curr_ts - 7200:
+                            continue # Wurde bereits refresht
+                    except Exception:
+                        pass
+
+                log.info("Auto-refreshing token for %s (background maintenance)", login)
+                try:
+                    token_data = await self.refresh_token(refresh_tok, session)
+                    new_access = token_data["access_token"]
+                    new_refresh = token_data.get("refresh_token", refresh_tok)
+                    expires_in = token_data.get("expires_in", 3600)
+                    
+                    new_expires_at = datetime.now(timezone.utc).timestamp() + expires_in
+                    new_expires_iso = datetime.fromtimestamp(new_expires_at, timezone.utc).isoformat()
+
+                    with get_conn() as conn:
+                        conn.execute(
+                            """
+                            UPDATE twitch_raid_auth
+                            SET access_token = ?, refresh_token = ?,
+                                token_expires_at = ?, last_refreshed_at = CURRENT_TIMESTAMP
+                            WHERE twitch_user_id = ?
+                            """,
+                            (new_access, new_refresh, new_expires_iso, user_id),
+                        )
+                        conn.commit()
+                    refreshed_count += 1
+                    # Kleines Delay um API Spikes zu vermeiden
+                    await asyncio.sleep(0.5)
+
+                except Exception:
+                    log.error("Background refresh failed for %s", login) # Log & Continue
+                    
+        if refreshed_count > 0:
+            log.info("Maintenance: Refreshed %d user tokens", refreshed_count)
+            
+        return refreshed_count
+
     def save_auth(
         self,
         twitch_user_id: str,
@@ -155,6 +245,16 @@ class RaidAuthManager:
                     authorized_at,
                 ),
             )
+            # Aktivieren, damit Auto-Raid unmittelbar nach OAuth freigeschaltet ist
+            conn.execute(
+                """
+                UPDATE twitch_streamers
+                   SET raid_bot_enabled = 1
+                 WHERE twitch_user_id = ?
+                    OR lower(twitch_login) = lower(?)
+                """,
+                (twitch_user_id, twitch_login),
+            )
             conn.commit()
         log.info("Saved raid auth for %s (user_id=%s)", twitch_login, twitch_user_id)
 
@@ -186,35 +286,49 @@ class RaidAuthManager:
             return access_token, refresh_token
 
         # Token abgelaufen -> refresh
-        log.info("Refreshing token for %s (get_tokens)", twitch_login)
-        try:
-            token_data = await self.refresh_token(refresh_token, session)
-            new_access_token = token_data["access_token"]
-            new_refresh_token = token_data.get("refresh_token", refresh_token)
-            expires_in = token_data.get("expires_in", 3600)
-
-            # Token in DB aktualisieren
-            new_expires_at = datetime.now(timezone.utc).timestamp() + expires_in
-            new_expires_at_iso = datetime.fromtimestamp(
-                new_expires_at, timezone.utc
-            ).isoformat()
-
+        async with self._lock:
+            # Erneuter Check innerhalb des Locks (Double-Check Locking Pattern)
             with get_conn() as conn:
-                conn.execute(
-                    """
-                    UPDATE twitch_raid_auth
-                    SET access_token = ?, refresh_token = ?,
-                        token_expires_at = ?, last_refreshed_at = CURRENT_TIMESTAMP
-                    WHERE twitch_user_id = ?
-                    """,
-                    (new_access_token, new_refresh_token, new_expires_at_iso, twitch_user_id),
-                )
-                conn.commit()
+                row_check = conn.execute(
+                    "SELECT token_expires_at, access_token, refresh_token FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                    (twitch_user_id,),
+                ).fetchone()
+            
+            if row_check:
+                curr_expires_iso, curr_access, curr_refresh = row_check
+                curr_expires = datetime.fromisoformat(curr_expires_iso).timestamp()
+                if time.time() < curr_expires - 300:
+                    return curr_access, curr_refresh
 
-            return new_access_token, new_refresh_token
-        except Exception:
-            log.exception("Failed to refresh token for %s", twitch_login)
-            return None
+            log.info("Refreshing token for %s (get_tokens)", twitch_login)
+            try:
+                token_data = await self.refresh_token(refresh_token, session)
+                new_access_token = token_data["access_token"]
+                new_refresh_token = token_data.get("refresh_token", refresh_token)
+                expires_in = token_data.get("expires_in", 3600)
+
+                # Token in DB aktualisieren
+                new_expires_at = datetime.now(timezone.utc).timestamp() + expires_in
+                new_expires_at_iso = datetime.fromtimestamp(
+                    new_expires_at, timezone.utc
+                ).isoformat()
+
+                with get_conn() as conn:
+                    conn.execute(
+                        """
+                        UPDATE twitch_raid_auth
+                        SET access_token = ?, refresh_token = ?,
+                            token_expires_at = ?, last_refreshed_at = CURRENT_TIMESTAMP
+                        WHERE twitch_user_id = ?
+                        """,
+                        (new_access_token, new_refresh_token, new_expires_at_iso, twitch_user_id),
+                    )
+                    conn.commit()
+
+                return new_access_token, new_refresh_token
+            except Exception:
+                log.exception("Failed to refresh token for %s", twitch_login)
+                return None
 
     async def get_valid_token(
         self, twitch_user_id: str, session: aiohttp.ClientSession
@@ -244,35 +358,49 @@ class RaidAuthManager:
             return access_token
 
         # Token abgelaufen -> refresh
-        log.info("Refreshing token for %s", twitch_login)
-        try:
-            token_data = await self.refresh_token(refresh_token, session)
-            new_access_token = token_data["access_token"]
-            new_refresh_token = token_data.get("refresh_token", refresh_token)
-            expires_in = token_data.get("expires_in", 3600)
-
-            # Token in DB aktualisieren
-            new_expires_at = datetime.now(timezone.utc).timestamp() + expires_in
-            new_expires_at_iso = datetime.fromtimestamp(
-                new_expires_at, timezone.utc
-            ).isoformat()
-
+        async with self._lock:
+            # Double-Check Locking
             with get_conn() as conn:
-                conn.execute(
-                    """
-                    UPDATE twitch_raid_auth
-                    SET access_token = ?, refresh_token = ?,
-                        token_expires_at = ?, last_refreshed_at = CURRENT_TIMESTAMP
-                    WHERE twitch_user_id = ?
-                    """,
-                    (new_access_token, new_refresh_token, new_expires_at_iso, twitch_user_id),
-                )
-                conn.commit()
+                row_check = conn.execute(
+                    "SELECT token_expires_at, access_token FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                    (twitch_user_id,),
+                ).fetchone()
+            
+            if row_check:
+                curr_expires_iso, curr_access = row_check
+                curr_expires = datetime.fromisoformat(curr_expires_iso).timestamp()
+                if time.time() < curr_expires - 300:
+                    return curr_access
 
-            return new_access_token
-        except Exception:
-            log.exception("Failed to refresh token for %s", twitch_login)
-            return None
+            log.info("Refreshing token for %s", twitch_login)
+            try:
+                token_data = await self.refresh_token(refresh_token, session)
+                new_access_token = token_data["access_token"]
+                new_refresh_token = token_data.get("refresh_token", refresh_token)
+                expires_in = token_data.get("expires_in", 3600)
+
+                # Token in DB aktualisieren
+                new_expires_at = datetime.now(timezone.utc).timestamp() + expires_in
+                new_expires_at_iso = datetime.fromtimestamp(
+                    new_expires_at, timezone.utc
+                ).isoformat()
+
+                with get_conn() as conn:
+                    conn.execute(
+                        """
+                        UPDATE twitch_raid_auth
+                        SET access_token = ?, refresh_token = ?,
+                            token_expires_at = ?, last_refreshed_at = CURRENT_TIMESTAMP
+                        WHERE twitch_user_id = ?
+                        """,
+                        (new_access_token, new_refresh_token, new_expires_at_iso, twitch_user_id),
+                    )
+                    conn.commit()
+
+                return new_access_token
+            except Exception:
+                log.exception("Failed to refresh token for %s", twitch_login)
+                return None
 
     async def get_valid_token_for_login(
         self, twitch_login: str, session: aiohttp.ClientSession
@@ -313,6 +441,11 @@ class RaidAuthManager:
                 "UPDATE twitch_raid_auth SET raid_enabled = ? WHERE twitch_user_id = ?",
                 (1 if enabled else 0, twitch_user_id),
             )
+            # Flag im Streamer-Datensatz spiegeln, damit der Auto-Raid-Check konsistent bleibt
+            conn.execute(
+                "UPDATE twitch_streamers SET raid_bot_enabled = ? WHERE twitch_user_id = ?",
+                (1 if enabled else 0, twitch_user_id),
+            )
             conn.commit()
         log.info("Set raid_enabled=%s for user_id=%s", enabled, twitch_user_id)
 
@@ -327,6 +460,21 @@ class RaidAuthManager:
                 (twitch_user_id,),
             ).fetchone()
         return bool(row and row[0])
+
+    def get_scopes(self, twitch_user_id: str) -> list[str]:
+        """Liefert die gespeicherten OAuth-Scopes für einen Streamer (lowercased)."""
+        try:
+            with get_conn() as conn:
+                row = conn.execute(
+                    "SELECT scopes FROM twitch_raid_auth WHERE twitch_user_id = ? AND raid_enabled = 1",
+                    (twitch_user_id,),
+                ).fetchone()
+            scopes_raw = (row[0] if row else "") or ""
+            scopes = [s.strip().lower() for s in scopes_raw.split() if s.strip()]
+            return scopes
+        except Exception:
+            log.debug("get_scopes failed for %s", twitch_user_id, exc_info=True)
+            return []
 
 
 class RaidExecutor:
@@ -510,14 +658,36 @@ class RaidBot:
         # Cleanup-Task starten
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
 
+    async def cleanup(self):
+        """Stoppt Hintergrund-Tasks."""
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+
     async def _periodic_cleanup(self):
-        """Bereinigt periodisch abgelaufene Auth-States."""
+        """
+        Periodische Wartung:
+        1. Cleanup abgelaufener Auth-States (alle 30min)
+        2. Proaktiver Refresh von User-Tokens (alle 60min)
+        """
         while True:
             await asyncio.sleep(1800)  # Alle 30 Minuten
             try:
+                # 1. State Cleanup
                 self.auth_manager.cleanup_states()
+                
+                # 2. Token Maintenance (nur bei jedem 2. Durchlauf = alle 60min)
+                # Einfache Implementierung: Wir machen es einfach alle 30min,
+                # die refresh_all_tokens Methode prüft ja die Expiry (2h Buffer).
+                # Das schadet nicht und hält die Tokens frisch.
+                if self.session:
+                    await self.auth_manager.refresh_all_tokens(self.session)
+                    
             except Exception:
-                log.exception("Error during auth state cleanup")
+                log.exception("Error during periodic raid bot maintenance")
 
     def set_chat_bot(self, chat_bot):
         """Setzt den Twitch Chat Bot für Recruitment-Nachrichten."""

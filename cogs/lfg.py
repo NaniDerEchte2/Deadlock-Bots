@@ -18,7 +18,7 @@ from service.db import db_path
 log = logging.getLogger("SteamRankChecker")
 
 # Kanal-ID aus der Discord-URL: https://discord.com/channels/1289721245281292288/1374364800817303632
-LFG_CHANNEL_ID = 1374364800817303632
+LFG_CHANNEL_ID = 1376335502919335936
 GUILD_ID = 1289721245281292288
 
 # Steam presence freshness (wie lange die Daten maximal alt sein dürfen)

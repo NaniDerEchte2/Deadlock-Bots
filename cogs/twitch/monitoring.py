@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 import sqlite3
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -22,6 +23,7 @@ from .constants import (
     TWITCH_VOD_BUTTON_LABEL,
     TWITCH_TARGET_GAME_NAME,
 )
+from .eventsub_offline import EventSubOfflineListener
 from .logger import log
 
 
@@ -57,6 +59,159 @@ class TwitchMonitoringMixin:
                 continue
             seen.append(normalized)
         return [*seen] or [None]
+
+    def _get_raid_enabled_streamers_for_eventsub(self) -> List[Dict[str, str]]:
+        """Broadcaster-Liste für EventSub stream.offline (nur raid_bot_enabled=1)."""
+        try:
+            with storage.get_conn() as c:
+                rows = c.execute(
+                    """
+                    SELECT twitch_user_id, twitch_login
+                      FROM twitch_streamers
+                     WHERE raid_bot_enabled = 1
+                       AND twitch_user_id IS NOT NULL
+                       AND twitch_login IS NOT NULL
+                    """
+                ).fetchall()
+            return [
+                {
+                    "twitch_user_id": str(r["twitch_user_id"] if hasattr(r, "keys") else r[0]),
+                    "twitch_login": str(r["twitch_login"] if hasattr(r, "keys") else r[1]).lower(),
+                }
+                for r in rows
+            ]
+        except Exception:
+            log.debug("EventSub: konnte raid_enabled Streamer nicht laden", exc_info=True)
+            return []
+
+    def _get_tracked_logins_for_eventsub(self) -> List[str]:
+        """Alle bekannten Streamer-Logins (für Online-Status der Partner bei EventSub)."""
+        try:
+            with storage.get_conn() as c:
+                rows = c.execute(
+                    "SELECT twitch_login FROM twitch_streamers WHERE twitch_login IS NOT NULL"
+                ).fetchall()
+            return [str(r["twitch_login"] if hasattr(r, "keys") else r[0]).lower() for r in rows]
+        except Exception:
+            log.debug("EventSub: konnte tracked Logins nicht laden", exc_info=True)
+            return []
+
+    async def _fetch_streams_by_logins_quick(self, logins: List[str]) -> Dict[str, dict]:
+        """Hol Live-Streams fœr angegebene Logins (reduziert auf einmal pro EventSub-Offline)."""
+        if not getattr(self, "api", None):
+            return {}
+        streams_by_login: Dict[str, dict] = {}
+        logins = [lg for lg in logins if lg]
+        if not logins:
+            return {}
+        for language in self._language_filter_values():
+            try:
+                streams = await self.api.get_streams_by_logins(logins, language=language)
+            except Exception:
+                label = language or "any"
+                log.debug("EventSub: Streams fetch failed (language=%s)", label, exc_info=True)
+                continue
+            for stream in streams:
+                login = (stream.get("user_login") or "").lower()
+                if login:
+                    streams_by_login[login] = stream
+        return streams_by_login
+
+    def _load_live_state_row(self, login_lower: str) -> Dict:
+        """Lädt letzten Live-State aus DB, damit EventSub-Offlines sofort Daten haben."""
+        if not login_lower:
+            return {}
+        try:
+            with storage.get_conn() as c:
+                row = c.execute(
+                    """
+                    SELECT is_live, last_seen_at, last_title, last_game, last_viewer_count,
+                           last_stream_id, last_started_at, had_deadlock_in_session
+                      FROM twitch_live_state
+                     WHERE streamer_login = ?
+                    """,
+                    (login_lower,),
+                ).fetchone()
+            return dict(row) if row else {}
+        except Exception:
+            log.debug("EventSub: konnte live_state für %s nicht laden", login_lower, exc_info=True)
+            return {}
+
+    async def _on_eventsub_stream_offline(self, broadcaster_id: str, broadcaster_login: Optional[str]) -> None:
+        """Direkter Auto-Raid-Trigger bei stream.offline EventSub."""
+        if not broadcaster_id:
+            return
+        login_lower = (broadcaster_login or "").lower()
+        # Doppel-Trigger (Polling + EventSub) vermeiden
+        throttle = getattr(self, "_eventsub_offline_throttle", None)
+        if throttle is None:
+            throttle = {}
+            setattr(self, "_eventsub_offline_throttle", throttle)
+        now = time.time()
+        last_ts = throttle.get(broadcaster_id)
+        if last_ts and now - last_ts < 90:
+            return
+        throttle[broadcaster_id] = now
+
+        previous_state = self._load_live_state_row(login_lower)
+
+        # Frische Online-Streams sammeln, damit Auto-Raid Partner erkennen kann
+        tracked_logins = self._get_tracked_logins_for_eventsub()
+        streams_by_login = await self._fetch_streams_by_logins_quick(tracked_logins)
+
+        try:
+            await self._handle_auto_raid_on_offline(
+                login=login_lower or broadcaster_login or "",
+                twitch_user_id=broadcaster_id,
+                previous_state=previous_state,
+                streams_by_login=streams_by_login,
+            )
+        except Exception:
+            log.exception("EventSub: Auto-Raid offline handling failed for %s", broadcaster_login or broadcaster_id)
+
+    async def _start_eventsub_offline_listener(self):
+        """Startet EventSub WebSocket für stream.offline (raid_bot_enabled Streamer)."""
+        if getattr(self, "_eventsub_offline_started", False):
+            return
+        setattr(self, "_eventsub_offline_started", True)
+        if not getattr(self, "api", None):
+            return
+        try:
+            await self.bot.wait_until_ready()
+        except Exception:
+            log.exception("EventSub: wait_until_ready fehlgeschlagen")
+            return
+
+        streamers = self._get_raid_enabled_streamers_for_eventsub()
+        broadcaster_ids = [entry["twitch_user_id"] for entry in streamers if entry.get("twitch_user_id")]
+        if not broadcaster_ids:
+            log.info("EventSub: keine raid-enabled Streamer gefunden, Listener nicht gestartet")
+            return
+
+        token_resolver = None
+        # Wir nutzen das Bot-User-Token für den EventSub WebSocket, 
+        # da alle Subs auf einem Socket vom selben User stammen müssen.
+        bot_token_mgr = getattr(self, "_bot_token_manager", None)
+
+        if bot_token_mgr:
+            async def _resolve_bot_token(_user_id: str) -> Optional[str]:
+                try:
+                    token, _ = await bot_token_mgr.get_valid_token()
+                    return token
+                except Exception:
+                    log.debug("EventSub: konnte Bot-Token nicht laden", exc_info=True)
+                    return None
+
+            token_resolver = _resolve_bot_token
+
+        listener = EventSubOfflineListener(self.api, log, token_resolver=token_resolver)
+        setattr(self, "_eventsub_offline_listener", listener)
+        try:
+            await listener.run(broadcaster_ids, self._on_eventsub_stream_offline)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("EventSub offline listener beendet")
 
     @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
     async def poll_streams(self):
@@ -1198,10 +1353,14 @@ class TwitchMonitoringMixin:
         view = registry.pop(tracking_token, None)
         if view is None:
             return
-        try:
-            self.bot.remove_view(view)
-        except Exception:
-            log.debug("Konnte View nicht deregistrieren: %s", tracking_token, exc_info=True)
+        remover = getattr(self.bot, "remove_view", None)
+        if callable(remover):
+            try:
+                remover(view)
+            except Exception:
+                log.debug("Konnte View nicht deregistrieren: %s", tracking_token, exc_info=True)
+        else:
+            log.debug("Bot unterstuetzt remove_view nicht, ｜erspringe Deregistrierung f〉 %s", tracking_token)
         view.stop()
 
     def _log_link_click(

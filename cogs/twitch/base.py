@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import socket
 from typing import Any, Coroutine, Dict, List, Optional, Set
 
 from urllib.parse import urlparse
@@ -31,7 +32,8 @@ from .constants import (
 from .logger import log
 from .twitch_api import TwitchAPI
 from .raid_manager import RaidBot
-from .twitch_chat_bot import TWITCHIO_AVAILABLE, create_twitch_chat_bot, load_bot_token
+from .twitch_chat_bot import TWITCHIO_AVAILABLE, create_twitch_chat_bot, load_bot_tokens
+from .token_manager import TwitchBotTokenManager
 
 
 class TwitchBaseCog(commands.Cog):
@@ -117,10 +119,25 @@ class TwitchBaseCog(commands.Cog):
         # Raid-Bot initialisieren
         self._raid_bot: Optional[RaidBot] = None
         self._twitch_chat_bot = None
-        self._twitch_bot_token: Optional[str] = load_bot_token(log_missing=False)
-        self._twitch_bot_client_id: str = os.getenv("TWITCH_BOT_CLIENT_ID", "").strip() or self.client_id
-        # Secret nur nutzen, wenn es zur ID passt (also wenn Bot-ID == App-ID)
-        self._twitch_bot_secret: Optional[str] = self.client_secret if self._twitch_bot_client_id == self.client_id else None
+        bot_token, bot_refresh_token, _ = load_bot_tokens(log_missing=False)
+        self._twitch_bot_token: Optional[str] = bot_token
+        self._twitch_bot_refresh_token: Optional[str] = bot_refresh_token
+        env_bot_client_id = os.getenv("TWITCH_BOT_CLIENT_ID", "").strip()
+        self._twitch_bot_client_id = env_bot_client_id or self._twitch_bot_client_id or self.client_id
+        if not self._twitch_bot_secret:
+            env_bot_secret = os.getenv("TWITCH_BOT_CLIENT_SECRET", "").strip()
+            if env_bot_secret:
+                self._twitch_bot_secret = env_bot_secret
+            elif self._twitch_bot_client_id == self.client_id:
+                self._twitch_bot_secret = self.client_secret
+            else:
+                self._twitch_bot_secret = None
+        self._bot_token_manager: Optional[TwitchBotTokenManager] = None
+        if self._twitch_bot_client_id:
+            self._bot_token_manager = TwitchBotTokenManager(
+                self._twitch_bot_client_id,
+                (self._twitch_bot_secret or self.client_secret or ""),
+            )
         
         # Redirect-URL: Priorität 1: ENV/Tresor, Priorität 2: Constant
         redirect_uri = os.getenv("TWITCH_RAID_REDIRECT_URI", "").strip() or TWITCH_RAID_REDIRECT_URI
@@ -160,6 +177,7 @@ class TwitchBaseCog(commands.Cog):
         else:
             log.info("Skipping internal Twitch dashboard server startup")
         self._spawn_bg_task(self._refresh_all_invites(), "twitch.refresh_all_invites")
+        self._spawn_bg_task(self._start_eventsub_offline_listener(), "twitch.eventsub.offline")
 
     # -------------------------------------------------------
     # Lifecycle
@@ -175,6 +193,19 @@ class TwitchBaseCog(commands.Cog):
                         lp.cancel()
                 except Exception:
                     log.exception("Konnte Loop nicht canceln: %r", lp)
+            
+            # EventSub Listener stoppen
+            es_listener = getattr(self, "_eventsub_offline_listener", None)
+            if es_listener and hasattr(es_listener, "stop"):
+                es_listener.stop()
+
+            # RaidBot Cleanup
+            if self._raid_bot:
+                try:
+                    await self._raid_bot.cleanup()
+                except Exception:
+                    log.exception("RaidBot cleanup fehlgeschlagen")
+
             await asyncio.sleep(0)
 
             # Twitch Chat Bot stoppen
@@ -184,6 +215,11 @@ class TwitchBaseCog(commands.Cog):
                         await self._twitch_chat_bot.close()
                 except Exception:
                     log.exception("Twitch Chat Bot shutdown fehlgeschlagen")
+            if self._bot_token_manager:
+                try:
+                    await self._bot_token_manager.cleanup()
+                except Exception:
+                    log.exception("Twitch Bot Token Manager shutdown fehlgeschlagen")
 
             if self._web:
                 try:
@@ -276,8 +312,16 @@ class TwitchBaseCog(commands.Cog):
                 log.info("twitchio nicht installiert; Twitch Chat Bot wird übersprungen.")
                 return
 
-            token = self._twitch_bot_token or load_bot_token(log_missing=False)
-            refresh_token = os.getenv("TWITCH_BOT_REFRESH_TOKEN", "").strip() or None
+            token = self._twitch_bot_token
+            refresh_token = self._twitch_bot_refresh_token
+
+            if not token:
+                token, refresh_from_store, _ = load_bot_tokens(log_missing=False)
+                refresh_token = refresh_token or refresh_from_store
+
+            refresh_env = os.getenv("TWITCH_BOT_REFRESH_TOKEN", "").strip() or None
+            if refresh_env:
+                refresh_token = refresh_env
             
             if not token:
                 log.info(
@@ -286,6 +330,12 @@ class TwitchBaseCog(commands.Cog):
                 )
                 return
             self._twitch_bot_token = token
+            self._twitch_bot_refresh_token = refresh_token
+            if self._bot_token_manager is None and self._twitch_bot_client_id:
+                self._bot_token_manager = TwitchBotTokenManager(
+                    self._twitch_bot_client_id,
+                    (self._twitch_bot_secret or self.client_secret or ""),
+                )
 
             self._twitch_chat_bot = await create_twitch_chat_bot(
                 client_id=self._twitch_bot_client_id,
@@ -295,12 +345,27 @@ class TwitchBaseCog(commands.Cog):
                 bot_token=token,
                 bot_refresh_token=refresh_token,
                 log_missing=False,
+                token_manager=self._bot_token_manager,
             )
 
             if self._twitch_chat_bot:
+                if self._bot_token_manager:
+                    self._twitch_bot_token = self._bot_token_manager.access_token or self._twitch_bot_token
+                    self._twitch_bot_refresh_token = self._bot_token_manager.refresh_token or self._twitch_bot_refresh_token
                 # Bot im Hintergrund laufen lassen
-                asyncio.create_task(self._twitch_chat_bot.start(), name="twitch.chat_bot.start")
-                log.info("Twitch Chat Bot gestartet")
+                start_with_adapter = self._should_start_chat_adapter()
+                asyncio.create_task(
+                    self._twitch_chat_bot.start(
+                        with_adapter=start_with_adapter,
+                        load_tokens=False,  # vermeidet kaputte .tio.tokens.json ohne scope
+                        save_tokens=False,
+                    ),
+                    name="twitch.chat_bot.start",
+                )
+                log.info(
+                    "Twitch Chat Bot gestartet (Web Adapter: %s)",
+                    "on" if start_with_adapter else "off",
+                )
 
                 # Verknüpfe Chat-Bot mit Raid-Bot für Recruitment-Messages
                 if self._raid_bot:
@@ -329,6 +394,61 @@ class TwitchBaseCog(commands.Cog):
                 log.exception("Fehler beim Joinen von Partner-Channels")
 
             await asyncio.sleep(3600)  # Alle Stunde prüfen
+
+    def _should_start_chat_adapter(self) -> bool:
+        """Decide whether to start the TwitchIO web adapter (avoids port collisions)."""
+        override = (os.getenv("TWITCH_CHAT_ADAPTER") or "").strip().lower()
+        if override in {"0", "false", "off", "no"}:
+            log.info("Twitch Chat Web Adapter deaktiviert per TWITCH_CHAT_ADAPTER.")
+            return False
+
+        bot = self._twitch_chat_bot
+        adapter = getattr(bot, "adapter", None)
+        if adapter is None:
+            return False
+
+        host = getattr(adapter, "_host", "localhost")
+        port_raw = getattr(adapter, "_port", 4343)
+        try:
+            port = int(port_raw)
+        except Exception:
+            port = 4343
+
+        can_bind, error = self._can_bind_port(host, port)
+        if not can_bind:
+            log.warning(
+                "Twitch Chat Web Adapter Port %s auf %s bereits belegt (%s) - starte ohne Adapter (Webhooks/OAuth ausgeschaltet).",
+                port,
+                host,
+                error or "address already in use",
+            )
+        return can_bind
+
+    @staticmethod
+    def _can_bind_port(host: str, port: int) -> tuple[bool, Optional[str]]:
+        """Try binding to the given host/port; return False if something is already listening."""
+        last_error: Optional[str] = None
+        try:
+            families = [info[0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
+        except Exception as exc:  # socket.gaierror or OSError
+            families = [socket.AF_INET]
+            last_error = str(exc)
+
+        seen = set()
+        for family in families or [socket.AF_INET]:
+            if family in seen:
+                continue
+            seen.add(family)
+            try:
+                with socket.socket(family, socket.SOCK_STREAM) as sock:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    sock.bind((host, port))
+                return True, None
+            except OSError as exc:
+                last_error = str(exc)
+                continue
+
+        return False, last_error
 
     # -------------------------------------------------------
     # Utils

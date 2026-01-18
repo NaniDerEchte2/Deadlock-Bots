@@ -12,13 +12,14 @@ import asyncio
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
 try:
     import twitchio
     from twitchio import eventsub
+    from twitchio import web as twitchio_web
     from twitchio.ext import commands as twitchio_commands
     TWITCHIO_AVAILABLE = True
 except ImportError:
@@ -30,8 +31,10 @@ except ImportError:
     )
 
 from .storage import get_conn
+from .token_manager import TwitchBotTokenManager
 
 log = logging.getLogger("TwitchStreams.ChatBot")
+_KEYRING_SERVICE = "DeadlockBot"
 
 
 if TWITCHIO_AVAILABLE:
@@ -47,16 +50,23 @@ if TWITCHIO_AVAILABLE:
             prefix: str = "!",
             initial_channels: Optional[list] = None,
             refresh_token: Optional[str] = None,
+            web_adapter: Optional[object] = None,
+            token_manager: Optional[TwitchBotTokenManager] = None,
         ):
             # In 3.x ist bot_id ein positionales/keyword Argument in Client, aber REQUIRED in Bot
+            base_kwargs = {"adapter": web_adapter} if web_adapter is not None else {}
             super().__init__(
                 client_id=client_id,
                 client_secret=client_secret,
                 bot_id=bot_id or "", # Fallback auf leeren String falls None
                 prefix=prefix,
+                **base_kwargs,
             )
             self._bot_token = token
             self._bot_refresh_token = refresh_token
+            self._token_manager = token_manager
+            if self._token_manager:
+                self._token_manager.set_refresh_callback(self._on_token_manager_refresh)
             self._raid_bot = None  # Wird später gesetzt
             self._initial_channels = initial_channels or []
             self._monitored_streamers: Set[str] = set()
@@ -71,18 +81,35 @@ if TWITCHIO_AVAILABLE:
             """Wird beim Starten aufgerufen, um initiales Setup zu machen."""
             # Token registrieren, damit TwitchIO ihn nutzt
             try:
-                api_token = self._bot_token.replace("oauth:", "").strip()
+                if self._token_manager:
+                    access_token, bot_id = await self._token_manager.get_valid_token()
+                    if access_token:
+                        self._bot_token = access_token
+                    # bot_id wird bereits im __init__ oder via add_token gehandelt
+                    self._bot_refresh_token = self._token_manager.refresh_token or self._bot_refresh_token
+
+                api_token = (self._bot_token or "").replace("oauth:", "").strip()
                 if api_token:
                     # Wir fügen den Token hinzu. Refresh-Token ist bei TMI-Tokens meist nicht vorhanden (None).
                     # ABER: Wenn wir einen haben (aus ENV/Tresor), übergeben wir ihn, damit TwitchIO refreshen kann.
                     await self.add_token(api_token, self._bot_refresh_token)
                     log.info("Bot user token added (Refresh-Token: %s).", "Yes" if self._bot_refresh_token else "No")
+                    await self._persist_bot_tokens(
+                        access_token=self._bot_token,
+                        refresh_token=self._bot_refresh_token,
+                        expires_in=None,
+                        scopes=None,
+                        user_id=self.bot_id,
+                    )
                 else:
                     log.warning("Kein gültiger TWITCH_BOT_TOKEN gefunden.")
             except Exception as e:
-                log.error("Der TWITCH_BOT_TOKEN ist ungültig oder abgelaufen (401). "
-                          "Bitte generiere einen neuen Token unter https://twitchapps.com/tmi/ "
-                          "Fehler: %s", e)
+                log.error(
+                    "Der TWITCH_BOT_TOKEN ist ungültig oder abgelaufen. "
+                    "Bitte führe den OAuth-Flow für den Bot aus (Client-ID/Secret + Redirect), "
+                    "um Access- und Refresh-Token zu erhalten. Fehler: %s",
+                    e,
+                )
                 # Wir machen weiter, damit der Bot zumindest "ready" wird und andere Cogs nicht blockiert
             
             # Initial channels beitreten
@@ -101,6 +128,46 @@ if TWITCHIO_AVAILABLE:
             # In 3.x gibt es connected_channels nicht mehr so einfach
             monitored = ", ".join(list(self._monitored_streamers)[:10])
             log.info("Monitored streamers: %s", monitored)
+
+        async def event_token_refreshed(self, payload):
+            """Persistiert erneuerte Bot-Tokens, sobald TwitchIO sie refreshed."""
+            try:
+                # Wir speichern die ID intern, falls wir sie brauchen, 
+                # aber vermeiden das Setzen der read-only Property bot_id
+                if payload.user_id:
+                    pass 
+                if self.bot_id and str(payload.user_id) != str(self.bot_id):
+                    return  # Nur den Bot-Token persistieren, nicht Streamer-Tokens
+                self._bot_token = f"oauth:{payload.token}" if not payload.token.startswith("oauth:") else payload.token
+                self._bot_refresh_token = payload.refresh_token
+            except Exception:
+                return
+            try:
+                await self._persist_bot_tokens(
+                    access_token=self._bot_token or payload.token,
+                    refresh_token=self._bot_refresh_token or payload.refresh_token,
+                    expires_in=payload.expires_in,
+                    scopes=list(payload.scopes.selected),
+                    user_id=payload.user_id,
+                )
+            except Exception:
+                log.debug("Konnte refreshed Bot-Token nicht persistieren", exc_info=True)
+
+        async def _on_token_manager_refresh(
+            self,
+            access_token: str,
+            refresh_token: Optional[str],
+            _expires_at: Optional[datetime],
+        ) -> None:
+                    """Registriert neue Tokens aus dem Token Manager und updated TwitchIO."""
+                    self._bot_token = access_token
+                    self._bot_refresh_token = refresh_token
+                    api_token = (access_token or "").replace("oauth:", "").strip()
+                    if not api_token:
+                        return            try:
+                await self.add_token(api_token, refresh_token)
+            except Exception:
+                log.debug("Konnte refreshed Bot-Token nicht in TwitchIO registrieren", exc_info=True)
 
         async def join(self, channel_login: str, channel_id: Optional[str] = None):
             """Joint einen Channel via EventSub (TwitchIO 3.x)."""
@@ -121,13 +188,19 @@ if TWITCHIO_AVAILABLE:
                     # Session holen (TwitchIO intern)
                     http_session = self._http._session
                     tokens = await self._raid_bot.auth_manager.get_tokens_for_user(channel_id, http_session)
-                    
-                    if tokens:
+                    scopes = self._raid_bot.auth_manager.get_scopes(channel_id) if hasattr(self._raid_bot, "auth_manager") else []
+                    scopes_lower = [s.lower() for s in scopes]
+                    has_chat_scope = any(s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"} for s in scopes_lower)
+
+                    if tokens and has_chat_scope:
                         access_token, refresh_token = tokens
                         # Token im Client registrieren, damit 'token_for' funktioniert
                         await self.add_token(access_token, refresh_token)
                         use_streamer_auth = True
                         log.info("Using streamer auth for channel %s (No Mod required)", channel_login)
+                    elif tokens and not has_chat_scope:
+                        log.info("Streamer auth fehlt Chat-Scope für %s -> kein Join", channel_login)
+                        return False
 
                 if use_streamer_auth:
                     # User ID = Broadcaster ID -> Streamer hört sich selbst zu
@@ -553,6 +626,144 @@ if TWITCHIO_AVAILABLE:
 
             await ctx.send(f"@{ctx.author.name} Letzte Raids: {raids_text}")
 
+        @twitchio_commands.command(name="raid")
+        async def cmd_raid(self, ctx: twitchio_commands.Context):
+            """!raid - Startet sofort einen Raid auf den bestmöglichen Partner (wie Auto-Raid)."""
+            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
+                await ctx.send(f"@{ctx.author.name} Nur Broadcaster oder Mods können !raid benutzen.")
+                return
+
+            channel_name = ctx.channel.name
+            streamer_data = self._get_streamer_by_channel(channel_name)
+            if not streamer_data:
+                return
+
+            twitch_login, twitch_user_id, _ = streamer_data
+
+            if not self._raid_bot or not self._raid_bot.auth_manager.has_enabled_auth(twitch_user_id):
+                await ctx.send(f"@{ctx.author.name} Bitte zuerst autorisieren/aktivieren: !raid_enable")
+                return
+
+            api_session = getattr(self._raid_bot, "session", None)
+            executor = getattr(self._raid_bot, "raid_executor", None)
+            if not api_session or not executor:
+                await ctx.send(f"@{ctx.author.name} Raid-Bot nicht verfügbar.")
+                return
+
+            # Partner-Kandidaten laden (verifizierte Partner, Opt-out respektieren)
+            with get_conn() as conn:
+                partners = conn.execute(
+                    """
+                    SELECT twitch_login, twitch_user_id
+                      FROM twitch_streamers
+                     WHERE (manual_verified_permanent = 1
+                            OR manual_verified_until IS NOT NULL
+                            OR manual_verified_at IS NOT NULL)
+                       AND manual_partner_opt_out = 0
+                       AND twitch_user_id IS NOT NULL
+                       AND twitch_login IS NOT NULL
+                       AND twitch_user_id != ?
+                    """,
+                    (twitch_user_id,),
+                ).fetchall()
+
+            partner_logins = [str(r[0]).lower() for r in partners]
+
+            # Live-Streams holen
+            candidates = []
+            try:
+                from .twitch_api import TwitchAPI  # lokal importieren, um Zyklus zu vermeiden
+                api = TwitchAPI(self._raid_bot.auth_manager.client_id, self._raid_bot.auth_manager.client_secret, session=api_session)
+                streams = await api.get_streams_by_logins(partner_logins, language=None)
+                for stream in streams:
+                    user_id = str(stream.get("user_id") or "")
+                    user_login = (stream.get("user_login") or "").lower()
+                    started_at = stream.get("started_at") or ""
+                    candidates.append({
+                        "user_id": user_id,
+                        "user_login": user_login,
+                        "started_at": started_at,
+                        "viewer_count": int(stream.get("viewer_count") or 0),
+                    })
+            except Exception:
+                log.exception("Manual raid: konnte Streams nicht abrufen")
+
+            if not candidates:
+                await ctx.send(f"@{ctx.author.name} Kein passender Partner gerade live. Versuch es später erneut.")
+                return
+
+            # Fairness-Auswahl wiederverwenden
+            target = self._raid_bot._select_fairest_candidate(candidates, broadcaster_id=twitch_user_id)  # type: ignore[attr-defined]
+            if not target:
+                await ctx.send(f"@{ctx.author.name} Kein Ziel gefunden.")
+                return
+
+            target_id = target.get("user_id") or ""
+            target_login = target.get("user_login") or ""
+            target_started_at = target.get("started_at", "")
+            viewer_count = int(target.get("viewer_count") or 0)
+
+            # Streamdauer best-effort
+            stream_duration_sec = 0
+            try:
+                if target_started_at:
+                    from datetime import datetime, timezone
+                    started_dt = datetime.fromisoformat(target_started_at.replace("Z", "+00:00"))
+                    stream_duration_sec = int((datetime.now(timezone.utc) - started_dt).total_seconds())
+            except Exception:
+                pass
+
+            try:
+                success, error = await executor.start_raid(
+                    from_broadcaster_id=twitch_user_id,
+                    from_broadcaster_login=twitch_login,
+                    to_broadcaster_id=target_id,
+                    to_broadcaster_login=target_login,
+                    viewer_count=viewer_count,
+                    stream_duration_sec=stream_duration_sec,
+                    target_stream_started_at=target_started_at,
+                    candidates_count=len(candidates),
+                    session=api_session,
+                )
+            except Exception as exc:
+                log.exception("Manual raid failed for %s -> %s", twitch_login, target_login)
+                await ctx.send(f"@{ctx.author.name} Raid fehlgeschlagen: {exc}")
+                return
+
+            if success:
+                await ctx.send(f"@{ctx.author.name} Raid auf {target_login} gestartet! (Twitch-Countdown ~90s)")
+            else:
+                await ctx.send(f"@{ctx.author.name} Raid fehlgeschlagen: {error or 'unbekannter Fehler'}")
+
+        async def _persist_bot_tokens(
+            self,
+            *,
+            access_token: str,
+            refresh_token: Optional[str],
+            expires_in: Optional[int],
+            scopes: Optional[list] = None,
+            user_id: Optional[str] = None,
+        ) -> None:
+            """Persist bot tokens in Windows Credential Manager (keyring)."""
+            if not access_token:
+                return
+
+            if self._token_manager:
+                self._token_manager.access_token = access_token
+                if refresh_token:
+                    self._token_manager.refresh_token = refresh_token
+                if user_id:
+                    self._token_manager.bot_id = str(user_id)
+                if expires_in:
+                    self._token_manager.expires_at = datetime.now() + timedelta(seconds=int(expires_in))
+                await self._token_manager._save_tokens()
+                return
+
+            await _save_bot_tokens_to_keyring(
+                access_token=access_token,
+                refresh_token=refresh_token,
+            )
+
         async def join_partner_channels(self):
             """Joint alle Partner-Channels."""
             with get_conn() as conn:
@@ -584,36 +795,91 @@ if TWITCHIO_AVAILABLE:
                         log.exception("Unexpected error joining channel %s: %s", login, e)
 
 
-def load_bot_token(*, log_missing: bool = True) -> Optional[str]:
+def _read_keyring_secret(key: str) -> Optional[str]:
+    """Read a secret from Windows Credential Manager."""
+    try:
+        import keyring  # type: ignore
+    except Exception:
+        return None
+
+    for service in (_KEYRING_SERVICE, f"{key}@{_KEYRING_SERVICE}"):
+        try:
+            val = keyring.get_password(service, key)
+            if val:
+                return val
+        except Exception:
+            continue
+    return None
+
+
+async def _save_bot_tokens_to_keyring(*, access_token: str, refresh_token: Optional[str]) -> None:
+    """Persist access/refresh tokens to Windows Credential Manager."""
+    try:
+        import keyring  # type: ignore
+    except Exception:
+        log.debug("keyring nicht verfügbar – Tokens können nicht persistiert werden.")
+        return
+
+    async def _save_one(service: str, name: str, value: str) -> None:
+        await asyncio.to_thread(keyring.set_password, service, name, value)
+
+    tasks = []
+    if access_token:
+        tasks.append(_save_one(_KEYRING_SERVICE, "TWITCH_BOT_TOKEN", access_token))
+        tasks.append(_save_one(f"TWITCH_BOT_TOKEN@{_KEYRING_SERVICE}", "TWITCH_BOT_TOKEN", access_token))
+    if refresh_token:
+        tasks.append(_save_one(_KEYRING_SERVICE, "TWITCH_BOT_REFRESH_TOKEN", refresh_token))
+        tasks.append(_save_one(f"TWITCH_BOT_REFRESH_TOKEN@{_KEYRING_SERVICE}", "TWITCH_BOT_REFRESH_TOKEN", refresh_token))
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+        log.info("Twitch Bot Token im Windows Credential Manager gespeichert.")
+
+
+def load_bot_tokens(*, log_missing: bool = True) -> Tuple[Optional[str], Optional[str], Optional[int]]:
     """
-    Load the Twitch bot OAuth token from the environment or an optional file.
+    Load the Twitch bot OAuth token and refresh token from env/file/Windows keyring.
 
     Returns:
-        The trimmed token string if present, otherwise None.
+        (access_token, refresh_token, expiry_ts_utc)
     """
     raw_env = os.getenv("TWITCH_BOT_TOKEN", "") or ""
+    raw_refresh = os.getenv("TWITCH_BOT_REFRESH_TOKEN", "") or ""
     token = raw_env.strip()
+    refresh = raw_refresh.strip() or None
+    expiry_ts: Optional[int] = None
+
     if token:
-        return token
+        return token, refresh, expiry_ts
 
     token_file = (os.getenv("TWITCH_BOT_TOKEN_FILE") or "").strip()
     if token_file:
         try:
             candidate = Path(token_file).read_text(encoding="utf-8").strip()
             if candidate:
-                return candidate
+                return candidate, refresh, expiry_ts
             if log_missing:
                 log.warning("TWITCH_BOT_TOKEN_FILE gesetzt (%s), aber leer", token_file)
         except Exception as exc:  # pragma: no cover - defensive logging
             if log_missing:
                 log.warning("TWITCH_BOT_TOKEN_FILE konnte nicht gelesen werden (%s): %s", token_file, exc)
 
+    keyring_token = _read_keyring_secret("TWITCH_BOT_TOKEN")
+    keyring_refresh = _read_keyring_secret("TWITCH_BOT_REFRESH_TOKEN")
+    if keyring_token:
+        return keyring_token, keyring_refresh or refresh, expiry_ts
+
     if log_missing:
         log.warning(
             "TWITCH_BOT_TOKEN nicht gesetzt. Twitch Chat Bot wird nicht gestartet. "
             "Bitte setze ein OAuth-Token für den Bot-Account."
         )
-    return None
+    return None, None, None
+
+
+def load_bot_token(*, log_missing: bool = True) -> Optional[str]:
+    token, _, _ = load_bot_tokens(log_missing=log_missing)
+    return token
 
 
 if not TWITCHIO_AVAILABLE:
@@ -629,6 +895,7 @@ async def create_twitch_chat_bot(
     bot_token: Optional[str] = None,
     bot_refresh_token: Optional[str] = None,
     log_missing: bool = True,
+    token_manager: Optional[TwitchBotTokenManager] = None,
 ) -> Optional[RaidChatBot]:
     """
     Erstellt einen Twitch Chat Bot mit Bot-Account-Token.
@@ -656,68 +923,128 @@ async def create_twitch_chat_bot(
         )
         return None
 
-    token = bot_token or load_bot_token(log_missing=log_missing)
+    token = bot_token
+    refresh_token = bot_refresh_token
+
+    if not token:
+        token, refresh_from_store, _ = load_bot_tokens(log_missing=log_missing)
+        refresh_token = refresh_token or refresh_from_store
+    else:
+        _, refresh_from_store, _ = load_bot_tokens(log_missing=False)
+        refresh_token = refresh_token or refresh_from_store
+
     if not token:
         return None
 
-    # Partner-Channels abrufen
+    token_mgr = token_manager
+    token_mgr_created = False
+    if token_mgr is None and client_id:
+        token_mgr = TwitchBotTokenManager(client_id, client_secret or "", keyring_service=_KEYRING_SERVICE)
+        token_mgr_created = True
+
+    bot_id = None
+    if token_mgr:
+        initialised = await token_mgr.initialize(access_token=token, refresh_token=refresh_token)
+        if not initialised:
+            log.error("Twitch Bot Token Manager konnte nicht initialisiert werden (kein Refresh-Token?).")
+            if token_mgr_created:
+                await token_mgr.cleanup()
+            return None
+        token = token_mgr.access_token or token
+        refresh_token = token_mgr.refresh_token or refresh_token
+        bot_id = token_mgr.bot_id
+
+    # Partner-Channels abrufen (nur wenn Raid-Auth + Chat-Scopes + aktuell live)
     with get_conn() as conn:
         partners = conn.execute(
             """
-            SELECT DISTINCT s.twitch_login
-            FROM twitch_streamers s
-            JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
-            WHERE (s.manual_verified_permanent = 1
-                   OR s.manual_verified_until IS NOT NULL
-                   OR s.manual_verified_at IS NOT NULL)
-              AND s.manual_partner_opt_out = 0
-              AND a.raid_enabled = 1
+            SELECT DISTINCT s.twitch_login, s.twitch_user_id, a.scopes, l.is_live
+              FROM twitch_streamers s
+              JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
+              LEFT JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
+             WHERE (s.manual_verified_permanent = 1
+                    OR s.manual_verified_until IS NOT NULL
+                    OR s.manual_verified_at IS NOT NULL)
+               AND s.manual_partner_opt_out = 0
+               AND a.raid_enabled = 1
             """
         ).fetchall()
 
-    initial_channels = [row[0] for row in partners if row[0]]
-    log.info("Creating Twitch Chat Bot for %d partner channels", len(initial_channels))
+    initial_channels = []
+    for login, user_id, scopes_raw, is_live in partners:
+        scopes = [s.strip().lower() for s in (scopes_raw or "").split() if s.strip()]
+        has_chat_scope = any(
+            s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"} for s in scopes
+        )
+        if not has_chat_scope:
+            continue
+        if is_live is not None and not bool(is_live):
+            # Nur live Channels joinen, um unnötige Joins zu vermeiden
+            continue
+        initial_channels.append(login)
+
+    log.info("Creating Twitch Chat Bot for %d partner channels (live + chat scope)", len(initial_channels))
 
     # Bot-ID via API abrufen (TwitchIO braucht diese zwingend bei user:bot Scope)
-    bot_id = None
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            api_token = token.replace("oauth:", "")
-            
-            # 1. Versuch: id.twitch.tv/oauth2/validate (oft am tolerantesten für User-IDs)
-            # Wir probieren beide Header-Varianten
-            for auth_header in [f"OAuth {api_token}", f"Bearer {api_token}"]:
-                async with session.get("https://id.twitch.tv/oauth2/validate", headers={"Authorization": auth_header}) as r:
-                    if r.status == 200:
-                        val_data = await r.json()
-                        bot_id = val_data.get("user_id")
-                        if bot_id:
-                            log.info("Validated Bot ID: %s", bot_id)
-                            break
+    if bot_id is None:
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                api_token = token.replace("oauth:", "")
                 
-            # 2. Versuch: Helix users (falls validate fehlschlug)
-            if not bot_id:
-                headers = {
-                    "Client-ID": client_id,
-                    "Authorization": f"Bearer {api_token}"
-                }
-                async with session.get("https://api.twitch.tv/helix/users", headers=headers) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        if data.get("data"):
-                            bot_id = data["data"][0]["id"]
-                            log.info("Fetched Bot ID via Helix: %s", bot_id)
-                    elif r.status == 401:
-                        log.warning("Twitch API 401 Unauthorized: Der TWITCH_BOT_TOKEN scheint ungültig zu sein.")
-                    else:
-                        log.warning("Could not fetch Bot ID: HTTP %s", r.status)
-    except Exception as e:
-        log.warning("Failed to fetch Bot ID: %s", e)
+                # 1. Versuch: id.twitch.tv/oauth2/validate (oft am tolerantesten für User-IDs)
+                # Wir probieren beide Header-Varianten
+                for auth_header in [f"OAuth {api_token}", f"Bearer {api_token}"]:
+                    async with session.get("https://id.twitch.tv/oauth2/validate", headers={"Authorization": auth_header}) as r:
+                        if r.status == 200:
+                            val_data = await r.json()
+                            bot_id = val_data.get("user_id")
+                            if bot_id:
+                                log.info("Validated Bot ID: %s", bot_id)
+                                break
+                    
+                # 2. Versuch: Helix users (falls validate fehlschlug)
+                if not bot_id:
+                    headers = {
+                        "Client-ID": client_id,
+                        "Authorization": f"Bearer {api_token}"
+                    }
+                    async with session.get("https://api.twitch.tv/helix/users", headers=headers) as r:
+                        if r.status == 200:
+                            data = await r.json()
+                            if data.get("data"):
+                                bot_id = data["data"][0]["id"]
+                                log.info("Fetched Bot ID via Helix: %s", bot_id)
+                        elif r.status == 401:
+                            log.warning("Twitch API 401 Unauthorized: Der TWITCH_BOT_TOKEN scheint ungültig zu sein.")
+                        else:
+                            log.warning("Could not fetch Bot ID: HTTP %s", r.status)
+        except Exception as e:
+            log.warning("Failed to fetch Bot ID: %s", e)
 
     # Fallback: Wenn Fetch fehlschlägt, aber Token existiert, versuchen wir es ohne ID (könnte failen)
     # oder übergeben einen Dummy, falls TwitchIO das schluckt.
     # Besser: Wir übergeben was wir haben.
+
+    adapter_host = (os.getenv("TWITCH_CHAT_ADAPTER_HOST") or "").strip()
+    adapter_port_raw = (os.getenv("TWITCH_CHAT_ADAPTER_PORT") or "").strip()
+    adapter_port = None
+    if adapter_port_raw:
+        try:
+            adapter_port = int(adapter_port_raw)
+        except ValueError:
+            log.warning(
+                "TWITCH_CHAT_ADAPTER_PORT '%s' ist ungueltig - es wird der Standardport 4343 genutzt",
+                adapter_port_raw,
+            )
+            adapter_port = None
+
+    web_adapter = None
+    if adapter_host or adapter_port_raw:
+        web_adapter = twitchio_web.AiohttpAdapter(
+            host=adapter_host or None,
+            port=adapter_port,
+        )
 
     bot = RaidChatBot(
         token=token,
@@ -726,7 +1053,9 @@ async def create_twitch_chat_bot(
         bot_id=bot_id,
         prefix="!",
         initial_channels=initial_channels,
-        refresh_token=bot_refresh_token,
+        refresh_token=refresh_token,
+        web_adapter=web_adapter,
+        token_manager=token_mgr,
     )
     bot.set_raid_bot(raid_bot)
 

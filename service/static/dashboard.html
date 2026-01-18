@@ -739,6 +739,18 @@
                     </div>
                 </div>
             </div>
+            <div class="card">
+                <h2>Twitch Module</h2>
+                <p>Steuerung für Twitch-Integration.</p>
+                <div class="dashboard-meta">
+                    <div class="dashboard-row">
+                        <button class="reload" id="twitch-reload">Twitch neu laden</button>
+                    </div>
+                    <div class="dashboard-row">
+                        <span class="dashboard-last" id="twitch-reload-info">Status: Bereit</span>
+                    </div>
+                </div>
+            </div>
         </div>
     </section>
 
@@ -988,7 +1000,33 @@
         retentionRefreshButton.addEventListener('click', () => {
             loadUserRetention();
         });
+    const twitchReloadBtn = document.getElementById('twitch-reload');
+    const twitchReloadInfo = document.getElementById('twitch-reload-info');
+
+    if (twitchReloadBtn) {
+        twitchReloadBtn.addEventListener('click', async () => {
+            twitchReloadBtn.disabled = true;
+            twitchReloadBtn.textContent = 'Lade neu...';
+            twitchReloadInfo.textContent = 'Status: Wird neu geladen...';
+            
+            try {
+                const data = await fetchJSON('/api/twitch/reload', { method: 'POST', body: JSON.stringify({}) });
+                if (data.ok) {
+                    log('Twitch Modul erfolgreich neu geladen', 'success');
+                    twitchReloadInfo.textContent = 'Status: Erfolgreich geladen (' + new Date().toLocaleTimeString() + ')';
+                } else {
+                    throw new Error(data.error || 'Unbekannter Fehler');
+                }
+            } catch (err) {
+                log('Twitch Reload fehlgeschlagen: ' + err.message, 'error');
+                twitchReloadInfo.textContent = 'Status: Fehler (' + err.message + ')';
+            } finally {
+                twitchReloadBtn.disabled = false;
+                twitchReloadBtn.textContent = 'Twitch neu laden';
+            }
+        });
     }
+
     if (dashboardRestartBtn) {
         dashboardRestartBtn.addEventListener('click', async () => {
             dashboardRestartBtn.disabled = true;

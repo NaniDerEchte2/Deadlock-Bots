@@ -35,4 +35,5 @@ TWITCH_CATEGORY_SAMPLE_LIMIT = 400
 INVITES_REFRESH_INTERVAL_HOURS = 12
 
 # Poll-Intervall (Sekunden)
-POLL_INTERVAL_SECONDS = 60
+# Kürzer setzen, damit Auto-Raids/offline-Erkennung nahezu sofort reagiert.
+POLL_INTERVAL_SECONDS = 15

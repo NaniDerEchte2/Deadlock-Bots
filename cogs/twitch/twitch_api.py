@@ -84,6 +84,55 @@ class TwitchAPI:
     def _headers(self) -> Dict[str, str]:
         return {"Client-ID": self.client_id, "Authorization": f"Bearer {self._token}"}
 
+    async def _post(
+        self,
+        path: str,
+        json: Optional[dict] = None,
+        *,
+        log_on_error: bool = True,
+        oauth_token: Optional[str] = None,
+    ) -> Dict:
+        # Allow caller to override the auth token (e.g. EventSub with user tokens)
+        token_override = (oauth_token or "").strip()
+        if token_override.lower().startswith("oauth:"):
+            token_override = token_override.split(":", 1)[1]
+
+        if not token_override:
+            await self._ensure_token()
+            token_override = self._token or ""
+
+        self._ensure_session()
+        assert self._session is not None
+        url = f"{TWITCH_API_BASE}{path}"
+        last_exc: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                headers = {"Client-ID": self.client_id, "Authorization": f"Bearer {token_override}"}
+                async with self._session.post(url, headers=headers, json=json) as r:
+                    if r.status not in {200, 202}:
+                        txt = await r.text()
+                        if log_on_error:
+                            self._log.error(
+                                "POST %s failed: HTTP %s: %s", path, r.status, txt[:300].replace("\n", " ")
+                            )
+                        else:
+                            self._log.debug(
+                                "POST %s failed (quiet): HTTP %s: %s", path, r.status, txt[:180].replace("\n", " ")
+                            )
+                        r.raise_for_status()
+                    return await r.json()
+            except aiohttp.ClientResponseError:
+                raise
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+                last_exc = exc
+                if attempt < 2:
+                    delay = 0.5 * (attempt + 1)
+                    self._log.warning("POST %s retry %s/3 after %s (%s)", path, attempt + 1, delay, exc.__class__.__name__)
+                    await asyncio.sleep(delay)
+                    continue
+                self._log.error("POST %s failed after retries: %s", path, exc)
+                raise last_exc
+
     # ---- Core GET ----------------------------------------------------------
     async def _get(
         self,
@@ -347,3 +396,21 @@ class TwitchAPI:
         except Exception:
             self._log.debug("get_followers_total failed for %s", user_id, exc_info=True)
             return None
+
+    async def subscribe_eventsub_websocket(
+        self,
+        *,
+        session_id: str,
+        sub_type: str,
+        condition: Dict[str, str],
+        version: str = "1",
+        oauth_token: Optional[str] = None,
+    ) -> Dict:
+        """Register a WebSocket EventSub subscription (e.g. stream.offline)."""
+        payload = {
+            "type": sub_type,
+            "version": version,
+            "condition": condition,
+            "transport": {"method": "websocket", "session_id": session_id},
+        }
+        return await self._post("/eventsub/subscriptions", json=payload, oauth_token=oauth_token)

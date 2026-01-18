@@ -2864,6 +2864,7 @@ class DashboardServer:
                     web.get("/admin", self._handle_index),
                     web.get("/api/status", self._handle_status),
                     web.post("/api/bot/restart", self._handle_bot_restart),
+                    web.post("/api/twitch/reload", self._handle_twitch_reload),
                     web.post("/api/dashboard/restart", self._handle_dashboard_restart),
                     web.post("/api/cogs/reload", self._handle_reload),
                     web.post("/api/cogs/load", self._handle_load),
@@ -3481,7 +3482,22 @@ class DashboardServer:
                 }
             )
         sessions.sort(key=lambda s: s.get("duration_seconds", 0), reverse=True)
-        return sessions
+    async def _handle_twitch_reload(self, request: web.Request) -> web.Response:
+        self._check_auth(request)
+        if hasattr(self.bot, "reload_cog"):
+            # MasterBot mit CogLoaderMixin -> nutzt _purge_namespace_modules
+            success, msg = await self.bot.reload_cog("cogs.twitch")
+            if success:
+                return web.json_response({"ok": True, "message": msg})
+            else:
+                return web.json_response({"ok": False, "error": msg}, status=500)
+        else:
+            try:
+                await self.bot.reload_extension("cogs.twitch")
+                return web.json_response({"ok": True, "message": "Twitch module reloaded (no purge)"})
+            except Exception as e:
+                logger.exception("Failed to reload Twitch module via dashboard")
+                return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     async def _handle_voice_stats(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
@@ -4335,6 +4351,15 @@ class DashboardServer:
         except Exception as exc:
             logging.exception("Failed to load server stats: %s", exc)
             raise web.HTTPInternalServerError(text="Server stats unavailable") from exc
+
+    async def _handle_twitch_reload(self, request: web.Request) -> web.Response:
+        self._check_auth(request)
+        try:
+            await self.bot.reload_extension("cogs.twitch")
+            return web.json_response({"ok": True, "message": "Twitch module reloaded successfully"})
+        except Exception as e:
+            logger.exception("Failed to reload Twitch module via dashboard")
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
