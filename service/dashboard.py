@@ -3482,6 +3482,7 @@ class DashboardServer:
                 }
             )
         sessions.sort(key=lambda s: s.get("duration_seconds", 0), reverse=True)
+        return sessions
     async def _handle_twitch_reload(self, request: web.Request) -> web.Response:
         self._check_auth(request)
         if hasattr(self.bot, "reload_cog"):

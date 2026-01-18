@@ -159,12 +159,13 @@ if TWITCHIO_AVAILABLE:
             refresh_token: Optional[str],
             _expires_at: Optional[datetime],
         ) -> None:
-                    """Registriert neue Tokens aus dem Token Manager und updated TwitchIO."""
-                    self._bot_token = access_token
-                    self._bot_refresh_token = refresh_token
-                    api_token = (access_token or "").replace("oauth:", "").strip()
-                    if not api_token:
-                        return            try:
+            """Registriert neue Tokens aus dem Token Manager und updated TwitchIO."""
+            self._bot_token = access_token
+            self._bot_refresh_token = refresh_token
+            api_token = (access_token or "").replace("oauth:", "").strip()
+            if not api_token:
+                return
+            try:
                 await self.add_token(api_token, refresh_token)
             except Exception:
                 log.debug("Konnte refreshed Bot-Token nicht in TwitchIO registrieren", exc_info=True)
