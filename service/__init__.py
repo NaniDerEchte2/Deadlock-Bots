@@ -12,12 +12,12 @@ log = logging.getLogger(__name__)
 
 @overload
 def _load_submodule(name: str, *, required: Literal[True]) -> ModuleType:
-    ...
+    pass
 
 
 @overload
 def _load_submodule(name: str, *, required: bool = False) -> Optional[ModuleType]:
-    ...
+    pass
 
 
 def _load_submodule(name: str, *, required: bool = False) -> Optional[ModuleType]:
