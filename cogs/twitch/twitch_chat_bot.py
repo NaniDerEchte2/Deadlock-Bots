@@ -35,6 +35,24 @@ from .token_manager import TwitchBotTokenManager
 
 log = logging.getLogger("TwitchStreams.ChatBot")
 _KEYRING_SERVICE = "DeadlockBot"
+_SPAM_PHRASES = (
+    "Best viewers streamboo.com",
+    "Best viewers streamboo .com",
+    "Best viewers on",
+    "Best viewers",
+    "B̟est viewers",
+    "Cheap Viewers",
+    "Ch͟eap viewers",
+)
+_SPAM_FRAGMENTS = (
+    "best viewers",
+    "cheap viewers",
+    "viewers",
+    "streamboo.com",
+    "streamboo com",
+    "streamboo",
+)
+_SPAM_MIN_MATCHES = 2
 
 
 if TWITCHIO_AVAILABLE:
@@ -62,6 +80,7 @@ if TWITCHIO_AVAILABLE:
                 prefix=prefix,
                 **base_kwargs,
             )
+            self._client_id = client_id
             self._bot_token = token
             self._bot_refresh_token = refresh_token
             self._token_manager = token_manager
@@ -260,6 +279,15 @@ if TWITCHIO_AVAILABLE:
                 return
 
             try:
+                if self._should_autoban_message(message.content or ""):
+                    enforced = await self._auto_ban_and_cleanup(message)
+                    if not enforced:
+                        log.warning("Spam erkannt, aber Auto-Ban konnte nicht durchgesetzt werden.")
+                    return
+            except Exception:
+                log.debug("Auto-Ban Prüfung fehlgeschlagen", exc_info=True)
+
+            try:
                 await self._track_chat_health(message)
             except Exception:
                 log.debug("Konnte Chat-Health nicht loggen", exc_info=True)
@@ -307,6 +335,137 @@ if TWITCHIO_AVAILABLE:
             session_id = int(row["id"] if hasattr(row, "keys") else row[0])
             self._session_cache[cache_key] = (session_id, now_ts)
             return session_id
+
+        def _should_autoban_message(self, content: str) -> bool:
+            """Prüft, ob eine Chat-Nachricht klaren Bot-Spam enthält."""
+            if not content:
+                return False
+
+            raw = content.strip()
+            if any(phrase in raw for phrase in _SPAM_PHRASES):
+                return True
+
+            lowered = raw.casefold()
+            if any(phrase.casefold() in lowered for phrase in _SPAM_PHRASES):
+                return True
+
+            hits = sum(1 for frag in _SPAM_FRAGMENTS if frag in lowered)
+
+            compact = re.sub(r"[^a-z0-9]", "", lowered)
+            if "streamboocom" in compact:
+                hits += 1
+
+            return hits >= _SPAM_MIN_MATCHES
+
+        @staticmethod
+        def _extract_message_id(message) -> Optional[str]:
+            """Best-effort message_id Extraktion für Moderations-APIs."""
+            for attr in ("id", "message_id"):
+                msg_id = str(getattr(message, attr, "") or "").strip()
+                if msg_id:
+                    return msg_id
+            try:
+                tags = getattr(message, "tags", None)
+                if isinstance(tags, dict):
+                    msg_id = str(tags.get("id") or tags.get("message-id") or "").strip()
+                    if msg_id:
+                        return msg_id
+            except Exception:
+                pass
+            return None
+
+        async def _auto_ban_and_cleanup(self, message) -> bool:
+            """Bannt erkannte Spam-Bots und löscht die Nachricht."""
+            channel_name = getattr(message.channel, "name", "") or ""
+            streamer_data = self._get_streamer_by_channel(channel_name)
+            if not streamer_data:
+                return False
+
+            twitch_login, twitch_user_id, _raid_enabled = streamer_data
+            author = getattr(message, "author", None)
+            chatter_login = getattr(author, "name", "") if author else ""
+            chatter_id = str(getattr(author, "id", "") or "")
+
+            if not chatter_id:
+                return False
+            if chatter_id == str(twitch_user_id):
+                return False
+            if getattr(author, "is_mod", False) or getattr(author, "is_broadcaster", False):
+                return False
+
+            auth_mgr = getattr(self._raid_bot, "auth_manager", None) if self._raid_bot else None
+            http_session = getattr(self._raid_bot, "session", None) if self._raid_bot else None
+            access_token = None
+
+            if auth_mgr and http_session:
+                try:
+                    tokens = await auth_mgr.get_tokens_for_user(str(twitch_user_id), http_session)
+                    if tokens:
+                        access_token = tokens[0]
+                except Exception:
+                    log.debug("Konnte Token für Auto-Ban nicht laden (%s)", twitch_login, exc_info=True)
+
+            if not access_token:
+                log.warning("Spam erkannt in %s, aber kein gültiger Token für Moderation verfügbar.", channel_name)
+                return False
+
+            session = http_session or getattr(self._http, "_session", None)
+            if session is None:
+                log.warning("Keine HTTP-Session für Auto-Ban verfügbar (%s).", channel_name)
+                return False
+
+            headers = {
+                "Client-ID": self._client_id,
+                "Authorization": f"Bearer {access_token}",
+            }
+
+            message_id = self._extract_message_id(message)
+            if message_id:
+                try:
+                    async with session.delete(
+                        "https://api.twitch.tv/helix/moderation/chat",
+                        headers=headers,
+                        params={
+                            "broadcaster_id": twitch_user_id,
+                            "moderator_id": twitch_user_id,
+                            "message_id": message_id,
+                        },
+                    ) as resp:
+                        if resp.status not in {200, 204}:
+                            txt = await resp.text()
+                            log.debug(
+                                "Konnte Nachricht nicht löschen (%s/%s): HTTP %s %s",
+                                channel_name,
+                                message_id,
+                                resp.status,
+                                txt[:180].replace("\n", " "),
+                            )
+                except Exception:
+                    log.debug("Auto-Delete fehlgeschlagen (%s)", channel_name, exc_info=True)
+
+            try:
+                payload = {"data": {"user_id": chatter_id, "reason": "Automatischer Spam-Ban (Bot-Phrase)"}}
+                async with session.post(
+                    "https://api.twitch.tv/helix/moderation/bans",
+                    headers=headers,
+                    params={"broadcaster_id": twitch_user_id, "moderator_id": twitch_user_id},
+                    json=payload,
+                ) as resp:
+                    if resp.status in {200, 201, 202}:
+                        log.info("Auto-Ban ausgelöst in %s für %s", channel_name, chatter_login or chatter_id)
+                        return True
+                    txt = await resp.text()
+                    log.warning(
+                        "Auto-Ban fehlgeschlagen in %s (user=%s): HTTP %s %s",
+                        channel_name,
+                        chatter_id,
+                        resp.status,
+                        txt[:180].replace("\n", " "),
+                    )
+            except Exception:
+                log.debug("Auto-Ban Exception in %s", channel_name, exc_info=True)
+
+            return False
 
         async def _track_chat_health(self, message) -> None:
             """Loggt Chat-Events für Chat-Gesundheit und Retention-Metriken."""
