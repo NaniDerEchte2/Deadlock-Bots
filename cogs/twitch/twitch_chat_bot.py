@@ -38,11 +38,13 @@ _KEYRING_SERVICE = "DeadlockBot"
 _SPAM_PHRASES = (
     "Best viewers streamboo.com",
     "Best viewers streamboo .com",
+    "Best viewers streamboo com",
     "Best viewers on",
     "Best viewers",
     "B̟est viewers",
     "Cheap Viewers",
     "Ch͟eap viewers",
+    "(remove the space)",
 )
 _SPAM_FRAGMENTS = (
     "best viewers",
@@ -50,8 +52,10 @@ _SPAM_FRAGMENTS = (
     "viewers",
     "viewer",
     "streamboo.com",
+    "streamboo .com",
     "streamboo com",
     "streamboo",
+    "(remove the space)",
 )
 _SPAM_MIN_MATCHES = 2
 
