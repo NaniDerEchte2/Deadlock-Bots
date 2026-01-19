@@ -48,6 +48,7 @@ _SPAM_FRAGMENTS = (
     "best viewers",
     "cheap viewers",
     "viewers",
+    "viewer",
     "streamboo.com",
     "streamboo com",
     "streamboo",
@@ -90,6 +91,8 @@ if TWITCHIO_AVAILABLE:
             self._initial_channels = initial_channels or []
             self._monitored_streamers: Set[str] = set()
             self._session_cache: Dict[str, Tuple[int, datetime]] = {}
+            self._last_autoban: Dict[str, Dict[str, str]] = {}
+            self._autoban_log = Path("logs") / "twitch_autobans.log"
             log.info("Twitch Chat Bot initialized with %d initial channels", len(self._initial_channels))
 
         def set_raid_bot(self, raid_bot):
@@ -279,11 +282,49 @@ if TWITCHIO_AVAILABLE:
                 return
 
             try:
-                if self._should_autoban_message(message.content or ""):
+                spam_score = self._calculate_spam_score(message.content or "")
+
+                # 2. Faktor: Account-Alter prüfen, wenn Verdacht besteht (Score 1)
+                # Wenn Keyword matcht UND Account < 6 Monate -> Ban (Score >= 2)
+                if 0 < spam_score < _SPAM_MIN_MATCHES:
+                    try:
+                        author_id = getattr(message.author, "id", None)
+                        if author_id:
+                            # fetch_users benötigt IDs. Twitch IDs sind numerisch.
+                            users = await self.fetch_users(ids=[int(author_id)])
+                            if users and users[0].created_at:
+                                created_at = users[0].created_at
+                                if created_at.tzinfo is None:
+                                    created_at = created_at.replace(tzinfo=timezone.utc)
+                                
+                                age = datetime.now(timezone.utc) - created_at
+                                if age.days < 180: # Jünger als 6 Monate
+                                    spam_score += 1
+                                    # Info-Log für interne Feinabstimmung (wie gewünscht)
+                                    # Broadcaster sieht davon nichts (außer Bann-Nachricht falls Score >= 2)
+                    except Exception:
+                        log.debug("Konnte User-Alter für Spam-Check nicht laden", exc_info=True)
+
+                if spam_score >= _SPAM_MIN_MATCHES:
                     enforced = await self._auto_ban_and_cleanup(message)
                     if not enforced:
-                        log.warning("Spam erkannt, aber Auto-Ban konnte nicht durchgesetzt werden.")
+                        log.warning("Spam erkannt (Score: %d), aber Auto-Ban konnte nicht durchgesetzt werden.", spam_score)
                     return
+                elif spam_score == 1:
+                    channel_name = getattr(message.channel, "name", "unknown")
+                    author_name = getattr(message.author, "name", "unknown")
+                    author_id = str(getattr(message.author, "id", ""))
+                    
+                    # Logge Verdacht in Datei für Feinabstimmung
+                    self._record_autoban(
+                        channel_name=channel_name,
+                        chatter_login=author_name,
+                        chatter_id=author_id,
+                        content=message.content or "",
+                        status="SUSPICIOUS"
+                    )
+                    
+                    log.info("Verdächtige Nachricht (1 Hit, Account > 6 Monate) in %s von %s: %s", channel_name, author_name, message.content)
             except Exception:
                 log.debug("Auto-Ban Prüfung fehlgeschlagen", exc_info=True)
 
@@ -336,26 +377,73 @@ if TWITCHIO_AVAILABLE:
             self._session_cache[cache_key] = (session_id, now_ts)
             return session_id
 
-        def _should_autoban_message(self, content: str) -> bool:
-            """Prüft, ob eine Chat-Nachricht klaren Bot-Spam enthält."""
+        def _calculate_spam_score(self, content: str) -> int:
+            """Berechnet einen Spam-Score. >= _SPAM_MIN_MATCHES ist ein Ban."""
             if not content:
-                return False
+                return 0
 
             raw = content.strip()
+            # Direkte Phrasen sind sofortiger Ban -> hoher Score
             if any(phrase in raw for phrase in _SPAM_PHRASES):
-                return True
+                return 999
 
             lowered = raw.casefold()
             if any(phrase.casefold() in lowered for phrase in _SPAM_PHRASES):
-                return True
+                return 999
 
             hits = sum(1 for frag in _SPAM_FRAGMENTS if frag in lowered)
+
+            # Muster: "viewer [name]" (oft ein Merkmal von Bots)
+            if re.search(r"viewer\s+\w+", lowered):
+                hits += 1
 
             compact = re.sub(r"[^a-z0-9]", "", lowered)
             if "streamboocom" in compact:
                 hits += 1
 
-            return hits >= _SPAM_MIN_MATCHES
+            return hits
+
+        async def _get_moderation_context(self, twitch_user_id: str) -> tuple[Optional[object], Optional[dict]]:
+            """Holt Session + Auth-Header für Moderationscalls."""
+            auth_mgr = getattr(self._raid_bot, "auth_manager", None) if self._raid_bot else None
+            http_session = getattr(self._raid_bot, "session", None) if self._raid_bot else None
+            if not auth_mgr or not http_session:
+                return None, None
+            try:
+                tokens = await auth_mgr.get_tokens_for_user(str(twitch_user_id), http_session)
+                if not tokens:
+                    return None, None
+                access_token = tokens[0]
+                headers = {
+                    "Client-ID": self._client_id,
+                    "Authorization": f"Bearer {access_token}",
+                }
+                return http_session, headers
+            except Exception:
+                log.debug("Konnte Moderations-Kontext nicht laden (%s)", twitch_user_id, exc_info=True)
+                return None, None
+
+        def _record_autoban(self, *, channel_name: str, chatter_login: str, chatter_id: str, content: str, status: str = "BANNED") -> None:
+            """Persistiert Auto-Ban-Ereignis oder Verdacht für spätere Review."""
+            try:
+                self._autoban_log.parent.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now(timezone.utc).isoformat()
+                safe_content = content.replace("\n", " ")[:500]
+                line = f"{ts}\t[{status}]\t{channel_name}\t{chatter_login or '-'}\t{chatter_id}\t{safe_content}\n"
+                with self._autoban_log.open("a", encoding="utf-8") as f:
+                    f.write(line)
+            except Exception:
+                log.debug("Konnte Auto-Ban Review-Log nicht schreiben", exc_info=True)
+
+        async def _send_chat_message(self, channel, text: str) -> bool:
+            """Best-effort Chat-Nachricht senden (EventSub-kompatibel)."""
+            try:
+                if channel and hasattr(channel, "send"):
+                    await channel.send(text)
+                    return True
+            except Exception:
+                log.debug("Konnte Chat-Nachricht nicht senden", exc_info=True)
+            return False
 
         @staticmethod
         def _extract_message_id(message) -> Optional[str]:
@@ -385,6 +473,7 @@ if TWITCHIO_AVAILABLE:
             author = getattr(message, "author", None)
             chatter_login = getattr(author, "name", "") if author else ""
             chatter_id = str(getattr(author, "id", "") or "")
+            original_content = message.content or ""
 
             if not chatter_id:
                 return False
@@ -393,31 +482,14 @@ if TWITCHIO_AVAILABLE:
             if getattr(author, "is_mod", False) or getattr(author, "is_broadcaster", False):
                 return False
 
-            auth_mgr = getattr(self._raid_bot, "auth_manager", None) if self._raid_bot else None
-            http_session = getattr(self._raid_bot, "session", None) if self._raid_bot else None
-            access_token = None
-
-            if auth_mgr and http_session:
-                try:
-                    tokens = await auth_mgr.get_tokens_for_user(str(twitch_user_id), http_session)
-                    if tokens:
-                        access_token = tokens[0]
-                except Exception:
-                    log.debug("Konnte Token für Auto-Ban nicht laden (%s)", twitch_login, exc_info=True)
-
-            if not access_token:
+            session, headers = await self._get_moderation_context(str(twitch_user_id))
+            if not session or not headers:
                 log.warning("Spam erkannt in %s, aber kein gültiger Token für Moderation verfügbar.", channel_name)
                 return False
 
-            session = http_session or getattr(self._http, "_session", None)
             if session is None:
                 log.warning("Keine HTTP-Session für Auto-Ban verfügbar (%s).", channel_name)
                 return False
-
-            headers = {
-                "Client-ID": self._client_id,
-                "Authorization": f"Bearer {access_token}",
-            }
 
             message_id = self._extract_message_id(message)
             if message_id:
@@ -453,6 +525,23 @@ if TWITCHIO_AVAILABLE:
                 ) as resp:
                     if resp.status in {200, 201, 202}:
                         log.info("Auto-Ban ausgelöst in %s für %s", channel_name, chatter_login or chatter_id)
+                        self._last_autoban[channel_name.lower()] = {
+                            "user_id": chatter_id,
+                            "login": chatter_login,
+                            "content": original_content,
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                        }
+                        self._record_autoban(
+                            channel_name=channel_name,
+                            chatter_login=chatter_login,
+                            chatter_id=chatter_id,
+                            content=original_content,
+                            status="BANNED"
+                        )
+                        await self._send_chat_message(
+                            message.channel,
+                            f"Nachricht gelöscht und Nutzer gebannt: {chatter_login or chatter_id}. Original: {original_content}",
+                        )
                         return True
                     txt = await resp.text()
                     log.warning(
@@ -465,6 +554,38 @@ if TWITCHIO_AVAILABLE:
             except Exception:
                 log.debug("Auto-Ban Exception in %s", channel_name, exc_info=True)
 
+            # Wenn wir hier sind, ist Ban fehlgeschlagen
+            return False
+
+        async def _unban_user(self, *, broadcaster_id: str, target_user_id: str, channel_name: str, login_hint: str = "") -> bool:
+            """Hebt einen Ban auf (z. B. per !uban nach Fehlalarm)."""
+            session, headers = await self._get_moderation_context(broadcaster_id)
+            if not session or not headers:
+                log.warning("Unban nicht möglich (kein Token) in %s", channel_name)
+                return False
+            try:
+                async with session.delete(
+                    "https://api.twitch.tv/helix/moderation/bans",
+                    headers=headers,
+                    params={
+                        "broadcaster_id": broadcaster_id,
+                        "moderator_id": broadcaster_id,
+                        "user_id": target_user_id,
+                    },
+                ) as resp:
+                    if resp.status in {200, 204}:
+                        log.info("Unban ausgeführt in %s für %s", channel_name, login_hint or target_user_id)
+                        return True
+                    txt = await resp.text()
+                    log.warning(
+                        "Unban fehlgeschlagen in %s (user=%s): HTTP %s %s",
+                        channel_name,
+                        target_user_id,
+                        resp.status,
+                        txt[:180].replace("\n", " "),
+                    )
+            except Exception:
+                log.debug("Unban Exception in %s", channel_name, exc_info=True)
             return False
 
         async def _track_chat_health(self, message) -> None:
@@ -567,8 +688,8 @@ if TWITCHIO_AVAILABLE:
                             ts_iso,
                             1,
                             is_first_global,
-                        ),
-                    )
+                ),
+            )
 
         @twitchio_commands.command(name="raid_enable", aliases=["raidbot"])
         async def cmd_raid_enable(self, ctx: twitchio_commands.Context):
@@ -751,6 +872,42 @@ if TWITCHIO_AVAILABLE:
                 message += f" | Letzter Raid {icon}: {to_login} ({viewers} Viewer) am {time_str}"
 
             await ctx.send(message)
+
+        @twitchio_commands.command(name="uban")
+        async def cmd_uban(self, ctx: twitchio_commands.Context):
+            """!uban - hebt den letzten Auto-Ban im aktuellen Channel auf."""
+            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
+                await ctx.send(f"@{ctx.author.name} Nur der Broadcaster oder Mods.")
+                return
+
+            channel_name = ctx.channel.name
+            streamer_data = self._get_streamer_by_channel(channel_name)
+            if not streamer_data:
+                await ctx.send(f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert.")
+                return
+
+            twitch_login, twitch_user_id, _ = streamer_data
+            last = self._last_autoban.get(channel_name.lower())
+            if not last:
+                await ctx.send(f"@{ctx.author.name} Kein Auto-Ban-Eintrag zum Aufheben gefunden.")
+                return
+
+            target_user_id = last.get("user_id", "")
+            target_login = last.get("login") or target_user_id
+            if not target_user_id:
+                await ctx.send(f"@{ctx.author.name} Kein Nutzer gespeichert für Unban.")
+                return
+
+            success = await self._unban_user(
+                broadcaster_id=str(twitch_user_id),
+                target_user_id=str(target_user_id),
+                channel_name=channel_name,
+                login_hint=target_login,
+            )
+            if success:
+                await ctx.send(f"@{ctx.author.name} Unban ausgeführt für {target_login}.")
+            else:
+                await ctx.send(f"@{ctx.author.name} Unban fehlgeschlagen für {target_login}.")
 
         @twitchio_commands.command(name="raid_history", aliases=["raidbot_history"])
         async def cmd_raid_history(self, ctx: twitchio_commands.Context):
