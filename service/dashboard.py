@@ -4353,15 +4353,6 @@ class DashboardServer:
             logging.exception("Failed to load server stats: %s", exc)
             raise web.HTTPInternalServerError(text="Server stats unavailable") from exc
 
-    async def _handle_twitch_reload(self, request: web.Request) -> web.Response:
-        self._check_auth(request)
-        try:
-            await self.bot.reload_extension("cogs.twitch")
-            return web.json_response({"ok": True, "message": "Twitch module reloaded successfully"})
-        except Exception as e:
-            logger.exception("Failed to reload Twitch module via dashboard")
-            return web.json_response({"ok": False, "error": str(e)}, status=500)
-
     async def _handle_status(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
 

@@ -216,6 +216,8 @@ class TwitchBotTokenManager:
         refresh = (os.getenv("TWITCH_BOT_REFRESH_TOKEN") or "").strip()
 
         if access:
+            if not refresh:
+                log.warning("Access token found but no refresh token; automatic refresh not possible.")
             return access, refresh or None
 
         token_file = (os.getenv("TWITCH_BOT_TOKEN_FILE") or "").strip()
@@ -240,10 +242,6 @@ class TwitchBotTokenManager:
             log.debug("keyring not available; skipping credential manager.")
         except Exception as exc:
             log.debug("keyring lookup failed: %s", exc)
-
-        if access:
-            log.warning("Access token found but no refresh token; automatic refresh not possible.")
-            return access, None
 
         return None, None
 

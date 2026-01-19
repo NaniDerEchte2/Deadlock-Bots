@@ -25,7 +25,6 @@ def _load_vault_secrets():
         # print(f"DEBUG: Config injizierte {count} Secrets aus Tresor.")
     except Exception as e:
         print(f"DEBUG: Fehler beim Laden aus Tresor: {e}")
-        pass
 
 # Vor der Klassen-Definition aufrufen!
 _load_vault_secrets()

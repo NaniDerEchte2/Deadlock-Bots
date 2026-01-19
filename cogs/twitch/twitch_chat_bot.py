@@ -487,7 +487,7 @@ if TWITCHIO_AVAILABLE:
                 return False
 
             session, headers = await self._get_moderation_context(str(twitch_user_id))
-            if not session or not headers:
+            if not headers:
                 log.warning("Spam erkannt in %s, aber kein gültiger Token für Moderation verfügbar.", channel_name)
                 return False
 
