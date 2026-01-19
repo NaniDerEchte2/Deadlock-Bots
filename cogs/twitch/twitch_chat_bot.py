@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
 try:
-    import twitchio
     from twitchio import eventsub
     from twitchio import web as twitchio_web
     from twitchio.ext import commands as twitchio_commands
@@ -462,8 +461,8 @@ if TWITCHIO_AVAILABLE:
                     msg_id = str(tags.get("id") or tags.get("message-id") or "").strip()
                     if msg_id:
                         return msg_id
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Konnte message-id aus Tags nicht lesen", exc_info=exc)
             return None
 
         async def _auto_ban_and_cleanup(self, message) -> bool:
@@ -1031,8 +1030,8 @@ if TWITCHIO_AVAILABLE:
                     from datetime import datetime, timezone
                     started_dt = datetime.fromisoformat(target_started_at.replace("Z", "+00:00"))
                     stream_duration_sec = int((datetime.now(timezone.utc) - started_dt).total_seconds())
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Konnte Stream-Dauer nicht berechnen für %s", target_login, exc_info=exc)
 
             try:
                 success, error = await executor.start_raid(

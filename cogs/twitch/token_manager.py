@@ -288,7 +288,7 @@ class TwitchBotTokenManager:
             try:
                 await self._refresh_task
             except asyncio.CancelledError:
-                pass
+                log.debug("Auto-refresh task cancelled during cleanup")
 
 
 async def generate_oauth_tokens(client_id: str, client_secret: str, authorization_code: str, redirect_uri: str) -> dict:

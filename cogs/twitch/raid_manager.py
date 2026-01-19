@@ -176,8 +176,8 @@ class RaidAuthManager:
                         curr_ts = datetime.fromisoformat(curr_iso.replace("Z", "+00:00")).timestamp()
                         if now_ts < curr_ts - 7200:
                             continue # Wurde bereits refresht
-                    except Exception:
-                        pass
+            except Exception as exc:
+                log.debug("Konnte expires_at nicht parsen für %s", login, exc_info=exc)
 
                 log.info("Auto-refreshing token for %s (background maintenance)", login)
                 try:
@@ -665,7 +665,7 @@ class RaidBot:
             try:
                 await self._cleanup_task
             except asyncio.CancelledError:
-                pass
+                log.debug("Cleanup task cancelled")
 
     async def _periodic_cleanup(self):
         """
