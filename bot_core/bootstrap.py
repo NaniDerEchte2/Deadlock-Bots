@@ -70,11 +70,11 @@ def _load_secrets_from_keyring() -> None:
 def _load_env_robust() -> str | None:
     try:
         from dotenv import load_dotenv
-    except Exception as exc:
-        logging.getLogger().debug("dotenv nicht verfügbar/fehlgeschlagen: %r", exc)
+    except ImportError as exc:
+        logging.getLogger().debug("dotenv nicht installiert: %r", exc)
         return None
     except Exception as exc:
-        logging.getLogger().debug("dotenv nicht verfügbar/fehlgeschlagen: %r", exc)
+        logging.getLogger().debug("dotenv Import-Fehler: %r", exc)
         return None
 
     candidates: List[Path] = []
