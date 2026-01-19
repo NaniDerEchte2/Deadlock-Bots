@@ -29,7 +29,7 @@ STEAM_OPENID_ENDPOINT = "https://steamcommunity.com/openid/login"
 OPENID_NS = "http://specs.openid.net/auth/2.0"
 IDENTIFIER_SELECT = "http://specs.openid.net/auth/2.0/identifier_select"
 
-PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "https://link.earlysalty.com").rstrip("/")
 STEAM_RETURN_PATH = os.getenv("STEAM_RETURN_PATH", "/steam/return")
 STEAM_RETURN_URL = (
     urljoin(PUBLIC_BASE_URL + "/", STEAM_RETURN_PATH.lstrip("/"))

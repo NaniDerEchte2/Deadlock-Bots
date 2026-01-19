@@ -15,7 +15,7 @@ def _load_vault_secrets():
         keys = [
             "DISCORD_TOKEN", "OWNER_ID", "COMMAND_PREFIX", "STEAM_API_KEY",
             "TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET", "TWITCH_BOT_TOKEN",
-            "OPENAI_API_KEY", "GEMINI_API_KEY"
+            "OPENAI_API_KEY", "GEMINI_API_KEY", "PUBLIC_BASE_URL"
         ]
         count = 0
         for key in keys:
@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     # --- Steam / Deadlock Integration ---
     steam_api_key: Optional[SecretStr] = Field(None, alias="STEAM_API_KEY")
     steam_web_api_key: Optional[SecretStr] = Field(None, alias="STEAM_WEB_API_KEY")
+    public_base_url: str = Field("https://link.earlysalty.com", alias="PUBLIC_BASE_URL")
     
     # --- TempVoice IDs ---
     # TODO: Move hardcoded sets from cogs/tempvoice/core.py here eventually

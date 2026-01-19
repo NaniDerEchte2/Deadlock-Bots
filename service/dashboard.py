@@ -80,7 +80,7 @@ class DashboardServer:
         scheme_env = (os.getenv("MASTER_DASHBOARD_SCHEME") or "").strip().lower()
         self._scheme = scheme_env or "http"
         self._listen_base_url = self._format_base_url(self.host, self.port, self._scheme)
-        public_env = (os.getenv("MASTER_DASHBOARD_PUBLIC_URL") or "").strip()
+        public_env = (os.getenv("MASTER_DASHBOARD_PUBLIC_URL") or os.getenv("PUBLIC_BASE_URL") or "https://link.earlysalty.com").strip()
         if public_env:
             try:
                 self._public_base_url = self._normalize_public_url(
