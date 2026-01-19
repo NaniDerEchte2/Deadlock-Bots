@@ -257,8 +257,6 @@ if TWITCHIO_AVAILABLE:
                 else:
                     log.error("Failed to join channel %s: %s", channel_login, e)
                 return False
-            return False
-            return False
 
         async def event_message(self, message):
             """Wird bei jeder Chat-Nachricht aufgerufen."""

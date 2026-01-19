@@ -99,9 +99,4 @@ def get_guild_config() -> GuildIDs:
     if _guild_ids is None:
         _guild_ids = GuildIDs()
 
-        # Optional: ENV overrides (für Multi-Guild-Support in Zukunft)
-        # Example:
-        # if override := os.getenv("STEAM_VERIFIED_GUILD_ID"):
-        #     _guild_ids.STEAM_VERIFIED_GUILD_ID = int(override)
-
     return _guild_ids

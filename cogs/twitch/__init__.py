@@ -4,17 +4,19 @@
 """Package entry point for the Twitch stream monitor cog."""
 
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from discord.ext import commands
 
-from .cog import TwitchStreamCog
+if TYPE_CHECKING:
+    from .cog import TwitchStreamCog
 
 log = logging.getLogger("TwitchStreams")
 
 
 async def setup(bot: commands.Bot):
     """Add the Twitch stream cog to the master bot, and register the !twl proxy command exactly once."""
+    from .cog import TwitchStreamCog  # Local import to avoid self-import warnings during extension discovery
 
     # 1) Stale/alte Command-Objekte vorab entfernen
     existing = bot.get_command("twl")

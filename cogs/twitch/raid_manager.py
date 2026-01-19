@@ -163,21 +163,21 @@ class RaidAuthManager:
                 continue
 
             async with self._lock:
-                # Double-Check im Lock, falls parallel ein Raid lief und refresht hat
-                with get_conn() as conn:
-                    current = conn.execute(
-                        "SELECT token_expires_at FROM twitch_raid_auth WHERE twitch_user_id = ?",
-                        (user_id,)
-                    ).fetchone()
-                
-                if current:
-                    curr_iso = current[0]
-                    try:
+                try:
+                    # Double-Check im Lock, falls parallel ein Raid lief und refresht hat
+                    with get_conn() as conn:
+                        current = conn.execute(
+                            "SELECT token_expires_at FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                            (user_id,)
+                        ).fetchone()
+                    
+                    if current:
+                        curr_iso = current[0]
                         curr_ts = datetime.fromisoformat(curr_iso.replace("Z", "+00:00")).timestamp()
                         if now_ts < curr_ts - 7200:
                             continue # Wurde bereits refresht
-            except Exception as exc:
-                log.debug("Konnte expires_at nicht parsen für %s", login, exc_info=exc)
+                except Exception as exc:
+                    log.debug("Konnte expires_at nicht parsen für %s", login, exc_info=exc)
 
                 log.info("Auto-refreshing token for %s (background maintenance)", login)
                 try:

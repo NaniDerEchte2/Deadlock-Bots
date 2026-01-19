@@ -69,7 +69,7 @@ class DashboardCog(commands.Cog):
             try:
                 await self._start_task
             except asyncio.CancelledError:
-                pass
+                log.debug("Dashboard start task cancelled during unload")
 
         if self.dashboard:
             log.info("Stopping dashboard HTTP server...")

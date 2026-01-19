@@ -452,7 +452,7 @@ class SecurityGuard(commands.Cog):
                 await msg.message.delete(reason=f"[SecurityGuard] {reason}")
                 deleted += 1
             except discord.NotFound:
-                pass
+                log.debug("Message %s already removed before deletion step", msg.message.id)
             except discord.HTTPException as exc:
                 log.warning("Failed to delete message %s: %s", msg.message.id, exc)
             await asyncio.sleep(0.2)
@@ -554,8 +554,8 @@ class SecurityGuard(commands.Cog):
 
         try:
             await interaction.response.send_message("Your appeal was sent to the moderators.")
-        except discord.HTTPException:
-            pass
+        except discord.HTTPException as exc:
+            log.debug("Could not send appeal ack to user %s: %s", user.id, exc)
 
     async def handle_unban_request(
         self,
@@ -591,8 +591,8 @@ class SecurityGuard(commands.Cog):
             button.disabled = True
             try:
                 await interaction.message.edit(view=view)
-            except discord.HTTPException:
-                pass
+            except discord.HTTPException as exc:
+                log.debug("Unable to update unban message view for case %s: %s", case_id, exc)
             await interaction.followup.send("Unban completed.", ephemeral=True)
         except discord.NotFound:
             await interaction.followup.send("User is not banned.", ephemeral=True)
