@@ -172,6 +172,8 @@ class TwitchAPI:
                     continue
                 self._log.error("GET %s failed after retries: %s", path, exc)
                 raise last_exc
+        # Sollte nie erreicht werden; defensive Absicherung gegen implizites None
+        raise last_exc or RuntimeError(f"GET {path} failed without raising")
 
     # ---- Categories --------------------------------------------------------
     async def search_category_id(self, query: str) -> Optional[str]:

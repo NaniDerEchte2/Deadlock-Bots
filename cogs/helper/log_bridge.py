@@ -33,7 +33,7 @@ class _DiscordChannelHandler(logging.Handler):
             try:
                 await asyncio.wait_for(self.task, timeout=5)
             except asyncio.CancelledError:
-                pass
+                LOG.debug("LogBridge handler stop cancelled")
             except Exception:
                 LOG.debug("LogBridge handler stop wait failed", exc_info=True)
             self.task = None

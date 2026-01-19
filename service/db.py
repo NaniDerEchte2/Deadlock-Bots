@@ -624,6 +624,7 @@ async def execute_async(sql: str, params: Iterable[Any] = ()) -> None:
     if _in_transaction_context():
         return execute(sql, params)
     await asyncio.to_thread(execute, sql, params)
+    return None
 
 
 async def executemany_async(sql: str, seq_of_params: Iterable[Iterable[Any]]) -> None:
@@ -631,6 +632,7 @@ async def executemany_async(sql: str, seq_of_params: Iterable[Iterable[Any]]) ->
     if _in_transaction_context():
         return executemany(sql, seq_of_params)
     await asyncio.to_thread(executemany, sql, seq_of_params)
+    return None
 
 
 async def query_one_async(sql: str, params: Iterable[Any] = ()):

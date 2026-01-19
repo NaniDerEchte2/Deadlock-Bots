@@ -12,9 +12,6 @@ from datetime import datetime
 import discord
 from discord.ext import commands
 from service import db
-from service.db import db_path
-from pathlib import Path
-DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
 
 
 log = logging.getLogger("TempVoiceCore")

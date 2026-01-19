@@ -1,8 +1,11 @@
+import logging
 import os
 from typing import Optional
 from pathlib import Path
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = logging.getLogger(__name__)
 
 def _load_vault_secrets():
     """Injiziert Secrets aus dem Windows Tresor in os.environ."""
@@ -23,7 +26,7 @@ def _load_vault_secrets():
                 count += 1
         # print(f"DEBUG: Config injizierte {count} Secrets aus Tresor.")
     except Exception as e:
-        print(f"DEBUG: Fehler beim Laden aus Tresor: {e}")
+        log.warning("Fehler beim Laden aus Tresor: %s", e)
 
 # Vor der Klassen-Definition aufrufen!
 _load_vault_secrets()
@@ -74,7 +77,7 @@ try:
     settings = Settings()
 except Exception as e:
     # Fallback for first-time setup or missing env
-    print(f"⚠️ Config loading warning: {e}")
+    log.warning("Config loading warning: %s", e)
     # Create a dummy instance to prevent import errors during setup
     # Real validation happens when the bot starts properly
     class DummySettings(Settings):

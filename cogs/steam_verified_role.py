@@ -43,7 +43,8 @@ class SteamVerifiedRole(commands.Cog):
                 val = int(r["user_id"])
                 if val >= 10_000_000_000_000_000:  # 1e16 ~ 17 Stellen
                     ids.add(val)
-            except Exception:
+            except (TypeError, ValueError) as exc:
+                log.debug("Kann user_id nicht in int wandeln: %r (%s)", r.get("user_id"), exc)
                 continue
         return ids
 
@@ -274,8 +275,8 @@ class SteamVerifiedRole(commands.Cog):
             self._task = None
         try:
             self._start_loop_once_ready.cancel()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Konnte start_loop_once_ready nicht abbrechen: %s", exc)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SteamVerifiedRole(bot))
