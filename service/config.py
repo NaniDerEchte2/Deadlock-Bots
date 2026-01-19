@@ -83,3 +83,14 @@ except Exception as e:
     class DummySettings(Settings):
         discord_token: SecretStr = SecretStr("dummy")
     settings = DummySettings()
+
+# Touch the singleton once locally so static analysis knows it is intentional.
+log.debug("Config loaded; dashboard=%s", getattr(settings, "master_dashboard_enabled", None))
+
+
+def get_settings() -> Settings:
+    """Return the shared settings instance used across the bot."""
+    return settings
+
+
+__all__ = ["Settings", "settings", "get_settings"]

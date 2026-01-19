@@ -16,8 +16,6 @@
  * - Builds der letzten 45 Tage berücksichtigen
  */
 
-const path = require('path');
-
 // Config
 const MAX_BUILDS_PER_HERO = 3;
 const BUILD_AGE_DAYS = 45;

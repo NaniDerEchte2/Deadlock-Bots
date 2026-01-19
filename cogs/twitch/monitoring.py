@@ -906,11 +906,11 @@ class TwitchMonitoringMixin:
             return
 
         def _row_val(row, key, idx, default=None):
-            try:
-                if hasattr(row, "keys"):
+            if hasattr(row, "keys"):
+                try:
                     return row[key]
-            except Exception:
-                pass
+                except Exception:
+                    return default
             try:
                 return row[idx]
             except Exception:
@@ -956,16 +956,16 @@ class TwitchMonitoringMixin:
         avg_viewers = float(_row_val(session_row, "avg_viewers", 9, 0.0) or 0.0)
         samples = int(_row_val(session_row, "samples", 10, 0) or 0)
 
-            if viewer_rows:
-                end_viewers = int(_row_val(viewer_rows[-1], "viewer_count", 1, end_viewers) or end_viewers)
-                peak_viewers = max(peak_viewers, *(int(_row_val(vr, "viewer_count", 1, 0) or 0) for vr in viewer_rows))
-                samples = max(samples, len(viewer_rows))
-                try:
-                    avg_viewers = sum(int(_row_val(vr, "viewer_count", 1, 0) or 0) for vr in viewer_rows) / max(
-                        1, len(viewer_rows)
-                    )
-                except Exception as exc:
-                    log.debug("Konnte Durchschnitts-Viewerzahl nicht berechnen", exc_info=exc)
+        if viewer_rows:
+            end_viewers = int(_row_val(viewer_rows[-1], "viewer_count", 1, end_viewers) or end_viewers)
+            peak_viewers = max(peak_viewers, *(int(_row_val(vr, "viewer_count", 1, 0) or 0) for vr in viewer_rows))
+            samples = max(samples, len(viewer_rows))
+            try:
+                avg_viewers = sum(int(_row_val(vr, "viewer_count", 1, 0) or 0) for vr in viewer_rows) / max(
+                    1, len(viewer_rows)
+                )
+            except Exception as exc:
+                log.debug("Konnte Durchschnitts-Viewerzahl nicht berechnen", exc_info=exc)
 
         retention_5 = _retention_at(5, start_viewers)
         retention_10 = _retention_at(10, start_viewers)

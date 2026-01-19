@@ -132,6 +132,8 @@ class TwitchAPI:
                     continue
                 self._log.error("POST %s failed after retries: %s", path, exc)
                 raise last_exc
+        # Defensive guard to avoid an implicit None on unexpected fallthrough
+        raise last_exc or RuntimeError(f"POST {path} failed without raising")
 
     # ---- Core GET ----------------------------------------------------------
     async def _get(

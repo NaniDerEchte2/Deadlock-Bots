@@ -3,7 +3,6 @@ import logging
 import os
 from typing import Any, Dict, Optional, Tuple
 
-import discord
 from discord.ext import commands
 
 try:

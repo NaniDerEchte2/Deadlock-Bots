@@ -14,9 +14,8 @@ from service import db as service_db
 from . import base as base_module
 from .step_intro import IntroView  # Intro info/weiter Button (persistente Steuerung)
 from .step_status import PlayerStatusView
-from .step_steam_link import SteamLinkStepView, steam_link_dm_description
+from .step_steam_link import SteamLinkStepView
 from .step_rules import RulesView
-from .step_streamer import StreamerIntroView  # Optionaler Schritt
 
 
 def _fallback_build_step_embed(title, desc, step, total, color=0x5865F2):

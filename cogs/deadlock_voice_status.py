@@ -14,7 +14,6 @@ import discord
 from discord.ext import commands
 
 from service import db
-from service.db import db_path
 from service.config import settings
 
 log = logging.getLogger("DeadlockVoiceStatus")

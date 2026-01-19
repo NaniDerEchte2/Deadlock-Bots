@@ -44,8 +44,8 @@ class PrivacyConfirmView(discord.ui.View):
     ) -> None:
         try:
             await interaction.response.defer(thinking=True, ephemeral=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Konnte Export-Response nicht deferen", exc_info=exc)
 
         try:
             data = privacy.export_user_data(self.user_id)
@@ -64,8 +64,8 @@ class PrivacyConfirmView(discord.ui.View):
                     f"⚠️ Konnte die Daten nicht exportieren: {exc}",
                     ephemeral=True,
                 )
-            except Exception:
-                pass
+            except Exception as inner_exc:
+                log.debug("Followup für fehlgeschlagenen Export scheiterte", exc_info=inner_exc)
 
     @discord.ui.button(
         label="Schritt 1/2: Bestätigen",
@@ -97,8 +97,8 @@ class PrivacyConfirmView(discord.ui.View):
         self.disable_all_items()
         try:
             await interaction.response.defer(thinking=True, ephemeral=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Konnte Bestätigungs-Response nicht deferen", exc_info=exc)
 
         try:
             summary = await privacy.delete_user_data(

@@ -512,7 +512,7 @@ class GcBuildSearch {
    * Clear pending searches (e.g., on disconnect)
    */
   flushPendingSearches(error) {
-    for (const [searchId, waiter] of this.pendingSearches) {
+    for (const waiter of this.pendingSearches.values()) {
       waiter.reject(error || new Error('Search cancelled'));
     }
     this.pendingSearches.clear();

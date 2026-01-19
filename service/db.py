@@ -622,16 +622,18 @@ async def execute_async(sql: str, params: Iterable[Any] = ()) -> None:
     Async Wrapper f�r execute(); nutzt Thread-Offloading au�erhalb von Transaktionen.
     """
     if _in_transaction_context():
-        return execute(sql, params)
-    await asyncio.to_thread(execute, sql, params)
+        execute(sql, params)
+    else:
+        await asyncio.to_thread(execute, sql, params)
     return None
 
 
 async def executemany_async(sql: str, seq_of_params: Iterable[Iterable[Any]]) -> None:
     """Async Wrapper f�r executemany(); thread-offloaded au�erhalb von Transaktionen."""
     if _in_transaction_context():
-        return executemany(sql, seq_of_params)
-    await asyncio.to_thread(executemany, sql, seq_of_params)
+        executemany(sql, seq_of_params)
+    else:
+        await asyncio.to_thread(executemany, sql, seq_of_params)
     return None
 
 

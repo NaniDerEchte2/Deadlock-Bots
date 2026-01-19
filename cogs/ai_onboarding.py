@@ -2,7 +2,6 @@
 """AI-gestütztes Onboarding mit kurzen Fragen und personalisierter Tour."""
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os

@@ -112,8 +112,8 @@ class VoiceFeedbackModal(discord.ui.Modal):
                 "Wenn sonst irgendwas sein sollte, kannst du dich jederzeit an unser Team wenden – hier beißt keiner und jeder hilft gerne! :) Falls es doch mal ein Problem geben sollte, wende dich bitte direkt an einen Community Moderator (bei kleineren Dingen), einen Moderator oder an den Owner. ❤️",
                 ephemeral=True
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Konnte Feedback-Modal-Antwort nicht senden: %s", exc, exc_info=True)
 
         try:
             req_row = central_db.query_one(
@@ -699,8 +699,8 @@ class VoiceActivityTrackerCog(commands.Cog):
         for rid, msg_id in rows or []:
             try:
                 await self._delete_old_prompt(user_id, msg_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Konnte alten Feedback-Prompt %s für %s nicht löschen: %s", msg_id, user_id, exc)
             try:
                 central_db.execute("DELETE FROM voice_feedback_responses WHERE request_id=?", (rid,))
                 central_db.execute("DELETE FROM voice_feedback_requests WHERE id=?", (rid,))
@@ -887,8 +887,8 @@ class VoiceActivityTrackerCog(commands.Cog):
                 )
                 if row and row[0]:
                     co_player_names = row[0]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Konnte Co-Player für Feedback-Forward nicht laden: %s", exc, exc_info=True)
         try:
             target = self.bot.get_user(self._feedback_forward_user_id) or await self.bot.fetch_user(self._feedback_forward_user_id)
         except Exception as exc:
@@ -1187,8 +1187,8 @@ class VoiceActivityTrackerCog(commands.Cog):
                         "Danke für dein Feedback! 🙌\n\n"
                         "Wenn sonst irgendwas sein sollte, kannst du dich jederzeit an unser Team wenden – hier beißt keiner und jeder hilft gerne! :) Falls es doch mal ein Problem geben sollte, wende dich bitte direkt an einen Community Moderator (bei kleineren Dingen), einen Moderator oder an den Owner. ❤️"
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Konnte Feedback-Acknowledgement nicht senden: %s", exc, exc_info=True)
             if self._feedback_forward_user_id:
                 asyncio.create_task(
                     self._forward_feedback(

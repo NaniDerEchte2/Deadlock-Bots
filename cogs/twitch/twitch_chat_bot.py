@@ -202,7 +202,7 @@ if TWITCHIO_AVAILABLE:
                     user = await self.fetch_user(login=channel_login.lstrip("#"))
                     if not user:
                         log.error("Could not find user ID for channel %s", channel_login)
-                        return
+                        return False
                     channel_id = str(user.id)
 
                 # STRATEGIE: Wir versuchen, den Token des Streamers zu nutzen.
@@ -257,6 +257,8 @@ if TWITCHIO_AVAILABLE:
                 else:
                     log.error("Failed to join channel %s: %s", channel_login, e)
                 return False
+            return False
+            return False
 
         async def event_message(self, message):
             """Wird bei jeder Chat-Nachricht aufgerufen."""

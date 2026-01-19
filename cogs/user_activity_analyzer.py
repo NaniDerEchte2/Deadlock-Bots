@@ -1249,8 +1249,8 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
                     days = max(1, (last - first).days)
                     avg_per_day = msg_count / days
                     embed.add_field(name="📈 Durchschnitt/Tag", value=f"{avg_per_day:.1f}", inline=True)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Konnte Durchschnitt/Tag nicht berechnen: %s", exc, exc_info=True)
 
             embed.set_thumbnail(url=target.display_avatar.url)
             await ctx.send(embed=embed)

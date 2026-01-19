@@ -971,27 +971,6 @@ const selectHeroBuildCloneMetaStmt = db.prepare(`
    WHERE origin_hero_build_id = ?
 `);
 
-const upsertHeroBuildSourceStmt = db.prepare(`
-  INSERT INTO hero_build_sources (
-    hero_build_id, origin_build_id, author_account_id, hero_id, language, version,
-    name, description, tags_json, details_json, publish_ts, last_updated_ts,
-    fetched_at, last_seen_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT(hero_build_id) DO UPDATE SET
-    origin_build_id = excluded.origin_build_id,
-    author_account_id = excluded.author_account_id,
-    hero_id = excluded.hero_id,
-    language = excluded.language,
-    version = excluded.version,
-    name = excluded.name,
-    description = excluded.description,
-    tags_json = excluded.tags_json,
-    details_json = excluded.details_json,
-    publish_ts = excluded.publish_ts,
-    last_updated_ts = excluded.last_updated_ts,
-    last_seen_at = excluded.last_seen_at
-`);
-
 // NOTE: selectWatchedAuthorsStmt and updateWatchedAuthorMetadataStmt moved to BuildCatalogManager
 
 // ---------- Standalone Dashboard Tables ----------
