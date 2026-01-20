@@ -264,13 +264,14 @@ class RaidAuthManager:
         """
         Holt Access- UND Refresh-Token für einen User.
         Erneuert den Token automatisch, falls abgelaufen.
+        Wird bewusst auch genutzt, wenn raid_enabled=0 (Chat-Bot/Moderation).
         """
         with get_conn() as conn:
             row = conn.execute(
                 """
                 SELECT access_token, refresh_token, token_expires_at, twitch_login
                 FROM twitch_raid_auth
-                WHERE twitch_user_id = ? AND raid_enabled = 1
+                WHERE twitch_user_id = ?
                 """,
                 (twitch_user_id,),
             ).fetchone()
@@ -462,11 +463,11 @@ class RaidAuthManager:
         return bool(row and row[0])
 
     def get_scopes(self, twitch_user_id: str) -> list[str]:
-        """Liefert die gespeicherten OAuth-Scopes für einen Streamer (lowercased)."""
+        """Liefert die gespeicherten OAuth-Scopes für einen Streamer (lowercased, unabhängig von raid_enabled)."""
         try:
             with get_conn() as conn:
                 row = conn.execute(
-                    "SELECT scopes FROM twitch_raid_auth WHERE twitch_user_id = ? AND raid_enabled = 1",
+                    "SELECT scopes FROM twitch_raid_auth WHERE twitch_user_id = ?",
                     (twitch_user_id,),
                 ).fetchone()
             scopes_raw = (row[0] if row else "") or ""

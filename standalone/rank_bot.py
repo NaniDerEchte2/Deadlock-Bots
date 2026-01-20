@@ -33,13 +33,19 @@ REPO_ROOT = _add_repo_root_for_imports()
 from service import db as central_db
 DB_FILE = str(Path(central_db.db_path()))
 
-# .env laden (fixer Pfad)
-from dotenv import load_dotenv
-load_dotenv(r"C:\Users\Nani-Admin\Documents\.env")
-
 # Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('StandaloneRankBot')
+
+# Load secrets from Windows Vault
+try:
+    import keyring
+    service_name = "DeadlockBot"
+    token_val = keyring.get_password(service_name, "DISCORD_TOKEN_RANKED")
+    if token_val:
+        os.environ["DISCORD_TOKEN_RANKED"] = token_val
+except Exception as e:
+    logger.warning(f"Fehler beim Laden aus Tresor: {e}")
 
 # Bot setup
 intents = discord.Intents.default()

@@ -178,6 +178,7 @@ class TwitchBaseCog(commands.Cog):
             log.info("Skipping internal Twitch dashboard server startup")
         self._spawn_bg_task(self._refresh_all_invites(), "twitch.refresh_all_invites")
         self._spawn_bg_task(self._start_eventsub_offline_listener(), "twitch.eventsub.offline")
+        self._spawn_bg_task(self._start_eventsub_online_listener(), "twitch.eventsub.online")
 
     # -------------------------------------------------------
     # Lifecycle
@@ -198,6 +199,9 @@ class TwitchBaseCog(commands.Cog):
             es_listener = getattr(self, "_eventsub_offline_listener", None)
             if es_listener and hasattr(es_listener, "stop"):
                 es_listener.stop()
+            es_online_listener = getattr(self, "_eventsub_online_listener", None)
+            if es_online_listener and hasattr(es_online_listener, "stop"):
+                es_online_listener.stop()
 
             # RaidBot Cleanup
             if self._raid_bot:
@@ -379,7 +383,7 @@ class TwitchBaseCog(commands.Cog):
             log.exception("Fehler beim Initialisieren des Twitch Chat Bots")
 
     async def _periodic_channel_join(self):
-        """Joint periodisch neue Partner-Channels."""
+        """Joint periodisch neue Partner-Channels und räumt Offline-Channels auf."""
         if not self._twitch_chat_bot:
             return
 
@@ -390,10 +394,108 @@ class TwitchBaseCog(commands.Cog):
             try:
                 if hasattr(self._twitch_chat_bot, "join_partner_channels"):
                     await self._twitch_chat_bot.join_partner_channels()
+                await self._cleanup_offline_channels()
             except Exception:
-                log.exception("Fehler beim Joinen von Partner-Channels")
+                log.exception("Fehler in periodic channel maintenance")
 
-            await asyncio.sleep(3600)  # Alle Stunde prüfen
+            await asyncio.sleep(1800)  # Alle 30 Minuten prüfen
+
+    async def _cleanup_offline_channels(self):
+        """Verlässt Channels von Partnern, die offline sind."""
+        chat_bot = getattr(self, "_twitch_chat_bot", None)
+        if not chat_bot:
+            return
+
+        monitored = {login.lower() for login in getattr(chat_bot, "_monitored_streamers", set())}
+        if not monitored:
+            return
+
+        placeholders = ",".join("?" for _ in monitored)
+        offline_logins: list[str] = []
+        offline_ids: dict[str, str] = {}
+
+        try:
+            with storage.get_conn() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT s.twitch_login, l.is_live, s.twitch_user_id
+                      FROM twitch_streamers s
+                      LEFT JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
+                     WHERE LOWER(s.twitch_login) IN ({placeholders})
+                    """,
+                    tuple(monitored),
+                ).fetchall()
+
+            for row in rows:
+                login = str(row["twitch_login"] if hasattr(row, "keys") else row[0]).strip().lower()
+                is_live = row["is_live"] if hasattr(row, "keys") else row[1]
+                user_id = str(row["twitch_user_id"] if hasattr(row, "keys") else row[2]).strip()
+                if not login:
+                    continue
+                if bool(is_live):
+                    continue
+                offline_logins.append(login)
+                if user_id:
+                    offline_ids[login] = user_id
+        except Exception:
+            log.debug("Cleanup: konnte Live-Status nicht laden", exc_info=True)
+            return
+
+        if not offline_logins:
+            return
+
+        offline_id_set = set(offline_ids.values())
+        unsubscribed = 0
+
+        try:
+            subs = await chat_bot.fetch_eventsub_subscriptions()
+            for sub in subs or []:
+                try:
+                    sub_type = getattr(sub, "type", "") or getattr(sub, "subscription_type", "")
+                    if sub_type != "channel.chat.message":
+                        continue
+                    condition = getattr(sub, "condition", None)
+                    broadcaster_id = ""
+                    if isinstance(condition, dict):
+                        broadcaster_id = str(
+                            condition.get("broadcaster_user_id")
+                            or condition.get("broadcaster_id")
+                            or ""
+                        ).strip()
+                    else:
+                        broadcaster_id = str(
+                            getattr(condition, "broadcaster_user_id", "")
+                            or getattr(condition, "broadcaster_id", "")
+                            or ""
+                        ).strip()
+
+                    if not broadcaster_id or broadcaster_id not in offline_id_set:
+                        continue
+
+                    sub_id = (
+                        getattr(sub, "id", None)
+                        or getattr(sub, "subscription_id", None)
+                        or getattr(sub, "uuid", None)
+                    )
+                    if sub_id:
+                        try:
+                            await chat_bot.delete_eventsub_subscription(sub_id)
+                            unsubscribed += 1
+                        except Exception:
+                            log.debug("Cleanup: konnte EventSub-Subscription %s nicht löschen", sub_id, exc_info=True)
+                except Exception:
+                    log.debug("Cleanup: Fehler beim Prüfen von EventSub-Subscriptions", exc_info=True)
+        except Exception:
+            log.debug("Cleanup: konnte EventSub-Subscriptions nicht abrufen", exc_info=True)
+
+        for login in offline_logins:
+            chat_bot._monitored_streamers.discard(login)
+
+        log.info(
+            "Cleanup: %d offline Channels entfernt (unsubscribed: %d)",
+            len(offline_logins),
+            unsubscribed,
+        )
 
     def _should_start_chat_adapter(self) -> bool:
         """Decide whether to start the TwitchIO web adapter (avoids port collisions)."""

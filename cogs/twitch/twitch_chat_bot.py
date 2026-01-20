@@ -1085,27 +1085,45 @@ if TWITCHIO_AVAILABLE:
             )
 
         async def join_partner_channels(self):
-            """Joint alle Partner-Channels."""
+            """Joint alle Partner-Channels, die live sind und Chat-Scopes besitzen."""
             with get_conn() as conn:
                 partners = conn.execute(
                     """
-                    SELECT DISTINCT s.twitch_login, s.twitch_user_id
+                    SELECT DISTINCT s.twitch_login, s.twitch_user_id, a.scopes, l.is_live
                     FROM twitch_streamers s
                     JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
+                    LEFT JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
                     WHERE (s.manual_verified_permanent = 1
                            OR s.manual_verified_until IS NOT NULL
                            OR s.manual_verified_at IS NOT NULL)
                       AND s.manual_partner_opt_out = 0
-                      AND a.raid_enabled = 1
                     """
                 ).fetchall()
 
-            channels_to_join = [(row[0], row[1]) for row in partners if row[0]]
-            new_channels = [(login, uid) for login, uid in channels_to_join if login.lower() not in self._monitored_streamers]
+            channels_to_join = []
+            for login, uid, scopes_raw, is_live in partners:
+                login_norm = (login or "").strip()
+                if not login_norm:
+                    continue
+                scopes = [s.strip().lower() for s in (scopes_raw or "").split() if s.strip()]
+                has_chat_scope = any(
+                    s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"} for s in scopes
+                )
+                if not has_chat_scope:
+                    continue
+                if is_live is None or not bool(is_live):
+                    continue
+                if login_norm.lower() in self._monitored_streamers:
+                    continue
+                channels_to_join.append((login_norm, uid))
 
-            if new_channels:
-                log.info("Joining %d new partner channels: %s", len(new_channels), ", ".join([c[0] for c in new_channels[:10]]))
-                for login, uid in new_channels:
+            if channels_to_join:
+                log.info(
+                    "Joining %d new LIVE partner channels: %s",
+                    len(channels_to_join),
+                    ", ".join([c[0] for c in channels_to_join[:10]]),
+                )
+                for login, uid in channels_to_join:
                     try:
                         # Wir übergeben ID falls vorhanden, sonst wird sie in join() gefetched
                         success = await self.join(login, channel_id=uid)
@@ -1286,22 +1304,24 @@ async def create_twitch_chat_bot(
                     OR s.manual_verified_until IS NOT NULL
                     OR s.manual_verified_at IS NOT NULL)
                AND s.manual_partner_opt_out = 0
-               AND a.raid_enabled = 1
             """
         ).fetchall()
 
     initial_channels = []
     for login, user_id, scopes_raw, is_live in partners:
+        login_norm = (login or "").strip()
+        if not login_norm:
+            continue
         scopes = [s.strip().lower() for s in (scopes_raw or "").split() if s.strip()]
         has_chat_scope = any(
             s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"} for s in scopes
         )
         if not has_chat_scope:
             continue
-        if is_live is not None and not bool(is_live):
+        if is_live is None or not bool(is_live):
             # Nur live Channels joinen, um unnötige Joins zu vermeiden
             continue
-        initial_channels.append(login)
+        initial_channels.append(login_norm)
 
     log.info("Creating Twitch Chat Bot for %d partner channels (live + chat scope)", len(initial_channels))
 

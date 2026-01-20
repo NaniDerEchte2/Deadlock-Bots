@@ -24,6 +24,7 @@ from .constants import (
     TWITCH_TARGET_GAME_NAME,
 )
 from .eventsub_offline import EventSubOfflineListener
+from .eventsub_online import EventSubOnlineListener
 from .logger import log
 
 
@@ -82,6 +83,45 @@ class TwitchMonitoringMixin:
             ]
         except Exception:
             log.debug("EventSub: konnte raid_enabled Streamer nicht laden", exc_info=True)
+            return []
+
+    def _get_chat_scope_streamers_for_eventsub(self) -> List[Dict[str, str]]:
+        """Broadcaster mit OAuth + Chat-Scopes (für stream.online Listener)."""
+        try:
+            with storage.get_conn() as c:
+                rows = c.execute(
+                    """
+                    SELECT s.twitch_user_id, s.twitch_login, a.scopes
+                      FROM twitch_streamers s
+                      JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
+                     WHERE (s.manual_verified_permanent = 1
+                            OR s.manual_verified_until IS NOT NULL
+                            OR s.manual_verified_at IS NOT NULL)
+                       AND s.manual_partner_opt_out = 0
+                       AND s.twitch_user_id IS NOT NULL
+                       AND s.twitch_login IS NOT NULL
+                    """
+                ).fetchall()
+            out: List[Dict[str, str]] = []
+            seen: set[str] = set()
+            for row in rows:
+                user_id = str(row["twitch_user_id"] if hasattr(row, "keys") else row[0]).strip()
+                login = str(row["twitch_login"] if hasattr(row, "keys") else row[1]).strip().lower()
+                scopes_raw = row["scopes"] if hasattr(row, "keys") else row[2]
+                scopes = [s.strip().lower() for s in (scopes_raw or "").split() if s.strip()]
+                has_chat_scope = any(
+                    s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"} for s in scopes
+                )
+                if not has_chat_scope or not user_id or not login:
+                    continue
+                key = f"{user_id}:{login}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"twitch_user_id": user_id, "twitch_login": login})
+            return out
+        except Exception:
+            log.debug("EventSub online: konnte Streamer-Liste nicht laden", exc_info=True)
             return []
 
     def _get_tracked_logins_for_eventsub(self) -> List[str]:
@@ -212,6 +252,80 @@ class TwitchMonitoringMixin:
             raise
         except Exception:
             log.exception("EventSub offline listener beendet")
+
+    async def _start_eventsub_online_listener(self):
+        """Startet EventSub WebSocket für stream.online (Chat-Join bei Go-Live)."""
+        if getattr(self, "_eventsub_online_started", False):
+            return
+        setattr(self, "_eventsub_online_started", True)
+        if not getattr(self, "api", None):
+            return
+        try:
+            await self.bot.wait_until_ready()
+        except Exception:
+            log.exception("EventSub online: wait_until_ready fehlgeschlagen")
+            return
+
+        streamers = self._get_chat_scope_streamers_for_eventsub()
+        broadcaster_ids = list({entry["twitch_user_id"] for entry in streamers if entry.get("twitch_user_id")})
+        if not broadcaster_ids:
+            log.info("EventSub online: keine Streamer mit Chat-Scopes gefunden, Listener nicht gestartet")
+            return
+
+        token_resolver = None
+        bot_token_mgr = getattr(self, "_bot_token_manager", None)
+        if bot_token_mgr:
+            async def _resolve_bot_token(_user_id: str) -> Optional[str]:
+                try:
+                    token, _ = await bot_token_mgr.get_valid_token()
+                    return token
+                except Exception:
+                    log.debug("EventSub online: konnte Bot-Token nicht laden", exc_info=True)
+                    return None
+
+            token_resolver = _resolve_bot_token
+
+        listener = EventSubOnlineListener(self.api, log, token_resolver=token_resolver)
+        setattr(self, "_eventsub_online_listener", listener)
+
+        async def _on_stream_online(broadcaster_id: str, broadcaster_login: Optional[str]) -> None:
+            chat_bot = getattr(self, "_twitch_chat_bot", None)
+            if not chat_bot:
+                return
+
+            login = (broadcaster_login or "").strip().lower()
+            if not login:
+                try:
+                    with storage.get_conn() as c:
+                        row = c.execute(
+                            "SELECT twitch_login FROM twitch_streamers WHERE twitch_user_id = ?",
+                            (broadcaster_id,),
+                        ).fetchone()
+                    if row:
+                        login = str(row["twitch_login"] if hasattr(row, "keys") else row[0]).strip().lower()
+                except Exception:
+                    log.debug("EventSub online: konnte Login nicht auflösen für %s", broadcaster_id, exc_info=True)
+
+            if not login:
+                return
+
+            monitored = getattr(chat_bot, "_monitored_streamers", set())
+            if login in monitored:
+                return
+
+            try:
+                success = await chat_bot.join(login, channel_id=broadcaster_id)
+                if success:
+                    log.info("EventSub online: Chat-Bot joined %s (%s)", login, broadcaster_id)
+            except Exception:
+                log.exception("EventSub online: Join fehlgeschlagen für %s", login)
+
+        try:
+            await listener.run(broadcaster_ids, _on_stream_online)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("EventSub online listener beendet")
 
     @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
     async def poll_streams(self):
