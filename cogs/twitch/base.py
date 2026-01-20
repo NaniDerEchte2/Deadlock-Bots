@@ -34,6 +34,7 @@ from .twitch_api import TwitchAPI
 from .raid_manager import RaidBot
 from .twitch_chat_bot import TWITCHIO_AVAILABLE, create_twitch_chat_bot, load_bot_tokens
 from .token_manager import TwitchBotTokenManager
+from .eventsub_online import EventSubOnlineListener  # explicitly referenced via mixin start helper
 
 
 class TwitchBaseCog(commands.Cog):

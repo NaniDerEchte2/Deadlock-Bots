@@ -1318,8 +1318,8 @@ async def create_twitch_chat_bot(
         )
         if not has_chat_scope:
             continue
+        # Nur live Channels beim Start; Offline-Partner joinen später via EventSub stream.online
         if is_live is None or not bool(is_live):
-            # Nur live Channels joinen, um unnötige Joins zu vermeiden
             continue
         initial_channels.append(login_norm)
 
