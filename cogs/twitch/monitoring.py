@@ -499,6 +499,7 @@ class TwitchMonitoringMixin:
                 Optional[str],
                 int,
                 Optional[int],
+                Optional[str],
             ]
         ] = []
 
@@ -536,6 +537,7 @@ class TwitchMonitoringMixin:
             stream_id_value = current_stream_id or previous_stream_id or None
             had_deadlock_prev = bool(int(previous_state.get("had_deadlock_in_session", 0) or 0))
             active_session_id: Optional[int] = None
+            previous_last_deadlock_seen = (previous_state.get("last_deadlock_seen_at") or "").strip() or None
 
             if is_live and stream:
                 try:
@@ -585,6 +587,11 @@ class TwitchMonitoringMixin:
                 if stream
                 else int(previous_state.get("last_viewer_count") or 0)
             )
+            last_deadlock_seen_at_value: Optional[str] = None
+            if is_deadlock:
+                last_deadlock_seen_at_value = now_iso
+            elif had_deadlock_to_store and previous_last_deadlock_seen:
+                last_deadlock_seen_at_value = previous_last_deadlock_seen
 
             should_post = (
                 notify_ch is not None
@@ -722,6 +729,7 @@ class TwitchMonitoringMixin:
                     stream_started_at_value,
                     int(had_deadlock_to_store),
                     active_session_id,
+                    last_deadlock_seen_at_value,
                 )
             )
 
@@ -763,9 +771,9 @@ class TwitchMonitoringMixin:
                         "("
                         "twitch_user_id, streamer_login, is_live, last_seen_at, last_title, last_game, "
                         "last_viewer_count, last_discord_message_id, last_tracking_token, last_stream_id, "
-                        "last_started_at, had_deadlock_in_session, active_session_id"
+                        "last_started_at, had_deadlock_in_session, active_session_id, last_deadlock_seen_at"
                         ") "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         rows,
                     )
                 return
