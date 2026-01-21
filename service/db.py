@@ -46,6 +46,8 @@ def _default_dir() -> str:
 
 DEFAULT_DIR = _default_dir()
 DB_NAME     = "deadlock.sqlite3"
+# Maximal zugelassene Zeilen in der steam_tasks-Tabelle (älteste werden gekappt)
+STEAM_TASKS_MAX_ROWS = int(os.environ.get("STEAM_TASKS_MAX_ROWS", "1000"))
 
 # ---- Modulweiter Zustand ----
 _CONN: Optional[sqlite3.Connection] = None
@@ -168,6 +170,69 @@ def close_connection() -> None:
             log.warning("Fehler beim Schliessen der DB-Verbindung: %s", e)
         finally:
             _CONN = None
+
+
+def _ensure_steam_tasks_cap_trigger(conn: sqlite3.Connection, max_rows: int) -> None:
+    """
+    Creates an AFTER INSERT trigger that trims steam_tasks to the newest N rows.
+    Older rows (preferring finished ones) are deleted to keep the table bounded.
+    """
+    if max_rows <= 0:
+        log.warning("Steam task cap disabled because max_rows=%s <= 0", max_rows)
+        return
+
+    conn.execute(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS trg_cap_steam_tasks
+        AFTER INSERT ON steam_tasks
+        BEGIN
+          DELETE FROM steam_tasks
+          WHERE id IN (
+            SELECT id FROM steam_tasks
+            WHERE status NOT IN ('PENDING','RUNNING')
+            ORDER BY created_at ASC, id ASC
+            LIMIT (
+              SELECT CASE WHEN total > {max_rows} THEN total - {max_rows} ELSE 0 END
+              FROM (SELECT COUNT(*) AS total FROM steam_tasks)
+            )
+          );
+        END;
+        """
+    )
+
+
+def prune_steam_tasks(limit: Optional[int] = None, *, conn: Optional[sqlite3.Connection] = None) -> int:
+    """
+    Trims the steam_tasks table to the newest ``limit`` rows (defaults to STEAM_TASKS_MAX_ROWS).
+    Prefers deleting finished tasks; pending/running are kept whenever possible.
+    Returns the number of rows deleted.
+    """
+    max_rows = int(limit or STEAM_TASKS_MAX_ROWS)
+    if max_rows <= 0:
+        return 0
+
+    c = conn or connect()
+    with _LOCK:
+        cur = c.execute(
+            """
+            DELETE FROM steam_tasks
+            WHERE id IN (
+              SELECT id FROM steam_tasks
+              WHERE status NOT IN ('PENDING','RUNNING')
+              ORDER BY created_at ASC, id ASC
+              LIMIT (
+                SELECT CASE WHEN total > ? THEN total - ? ELSE 0 END
+                FROM (SELECT COUNT(*) AS total FROM steam_tasks)
+              )
+            )
+            """,
+            (max_rows, max_rows),
+        )
+        deleted = cur.rowcount if cur.rowcount is not None else 0
+
+    if deleted:
+        log.info("Pruned %s rows from steam_tasks (max_rows=%s)", deleted, max_rows)
+    return deleted
 
 
 @contextmanager
@@ -482,6 +547,9 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
 
             """
         )
+        # Steam-Task-Retention: Trigger + initial Cleanup
+        _ensure_steam_tasks_cap_trigger(c, STEAM_TASKS_MAX_ROWS)
+        prune_steam_tasks(conn=c, limit=STEAM_TASKS_MAX_ROWS)
         # Nachträglich hinzugefügte Spalten idempotent sicherstellen
         try:
             c.execute(

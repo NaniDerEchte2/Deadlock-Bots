@@ -863,6 +863,7 @@ const DB_BUSY_TIMEOUT_MS = Math.max(5000, parseInt(process.env.DEADLOCK_DB_BUSY_
 const FRIEND_SYNC_INTERVAL_MS = Math.max(60000, parseInt(process.env.STEAM_FRIEND_SYNC_MS || '300000', 10));
 const FRIEND_REQUEST_BATCH_SIZE = Math.max(1, parseInt(process.env.STEAM_FRIEND_REQUEST_BATCH || '10', 10));
 const FRIEND_REQUEST_RETRY_SECONDS = Math.max(60, parseInt(process.env.STEAM_FRIEND_REQUEST_RETRY_SEC || '900', 10));
+const STEAM_TASKS_MAX_ROWS = Math.max(1, parseInt(process.env.STEAM_TASKS_MAX_ROWS || '1000', 10));
 
 const dbPath = resolveDbPath();
 ensureDir(path.dirname(dbPath));
@@ -871,6 +872,58 @@ const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 db.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
+
+function installSteamTaskCapTrigger() {
+  try {
+    db.prepare(`
+      CREATE TRIGGER IF NOT EXISTS trg_cap_steam_tasks
+      AFTER INSERT ON steam_tasks
+      BEGIN
+        DELETE FROM steam_tasks
+        WHERE id IN (
+          SELECT id FROM steam_tasks
+          WHERE status NOT IN ('PENDING','RUNNING')
+          ORDER BY created_at ASC, id ASC
+          LIMIT (
+            SELECT CASE WHEN total > ${STEAM_TASKS_MAX_ROWS} THEN total - ${STEAM_TASKS_MAX_ROWS} ELSE 0 END
+            FROM (SELECT COUNT(*) AS total FROM steam_tasks)
+          )
+        );
+      END;
+    `).run();
+  } catch (err) {
+    log('warn', 'Failed to ensure steam_tasks cap trigger', { error: err && err.message ? err.message : err });
+  }
+}
+
+function pruneSteamTasks(reason = 'startup') {
+  try {
+    const row = db.prepare(`
+      SELECT CASE WHEN COUNT(*) > @limit THEN COUNT(*) - @limit ELSE 0 END AS excess
+      FROM steam_tasks
+    `).get({ limit: STEAM_TASKS_MAX_ROWS });
+    const excess = row && Number.isFinite(row.excess) ? row.excess : 0;
+    if (!excess) return 0;
+
+    const info = db.prepare(`
+      DELETE FROM steam_tasks
+      WHERE id IN (
+        SELECT id FROM steam_tasks
+        WHERE status NOT IN ('PENDING','RUNNING')
+        ORDER BY created_at ASC, id ASC
+        LIMIT @toDelete
+      )
+    `).run({ toDelete: excess });
+
+    if (info && info.changes > 0) {
+      log('info', 'Pruned steam_tasks rows', { deleted: info.changes, max_rows: STEAM_TASKS_MAX_ROWS, reason });
+    }
+    return info && info.changes ? info.changes : 0;
+  } catch (err) {
+    log('warn', 'Failed to prune steam_tasks', { error: err && err.message ? err.message : err, reason });
+    return 0;
+  }
+}
 
 // ---------- Protobuf (Hero Builds) ----------
 const HERO_BUILD_PROTO_PATH = path.join(__dirname, 'protos', 'hero_build.proto');
@@ -904,6 +957,8 @@ db.prepare(`
 
 db.prepare(`CREATE INDEX IF NOT EXISTS idx_steam_tasks_status ON steam_tasks(status, id)`).run();
 db.prepare(`CREATE INDEX IF NOT EXISTS idx_steam_tasks_updated ON steam_tasks(updated_at)`).run();
+installSteamTaskCapTrigger();
+pruneSteamTasks('startup');
 
 // Steam links + friend requests (keeps DB in sync with actual Steam friends)
 db.prepare(`
