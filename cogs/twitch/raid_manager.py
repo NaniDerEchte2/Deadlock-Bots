@@ -34,6 +34,9 @@ RAID_SCOPES = [
     "user:read:chat",
     "moderator:manage:banned_users",
     "moderator:manage:chat_messages",
+    "channel:read:subscriptions",
+    "analytics:read:games",
+    "analytics:read:extensions",
 ]
 
 log = logging.getLogger("TwitchStreams.RaidManager")

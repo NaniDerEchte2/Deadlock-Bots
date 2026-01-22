@@ -177,6 +177,15 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    _add_column_if_missing(conn, "twitch_stream_sessions", "stream_title", "TEXT")
+    _add_column_if_missing(conn, "twitch_stream_sessions", "notification_text", "TEXT")
+    _add_column_if_missing(conn, "twitch_stream_sessions", "language", "TEXT")
+    _add_column_if_missing(conn, "twitch_stream_sessions", "is_mature", "INTEGER DEFAULT 0")
+    _add_column_if_missing(conn, "twitch_stream_sessions", "tags", "TEXT")
+    _add_column_if_missing(conn, "twitch_stream_sessions", "followers_start", "INTEGER")
+    _add_column_if_missing(conn, "twitch_stream_sessions", "followers_end", "INTEGER")
+    _add_column_if_missing(conn, "twitch_stream_sessions", "follower_delta", "INTEGER")
+
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_twitch_sessions_login ON twitch_stream_sessions(streamer_login, started_at)"
     )
@@ -314,4 +323,24 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_twitch_raid_history_executed ON twitch_raid_history(executed_at)"
+    )
+
+    # 8) Subscription Snapshots
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_subscriptions_snapshot (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            twitch_user_id    TEXT NOT NULL,
+            twitch_login      TEXT,
+            total             INTEGER DEFAULT 0,
+            tier1             INTEGER DEFAULT 0,
+            tier2             INTEGER DEFAULT 0,
+            tier3             INTEGER DEFAULT 0,
+            points            INTEGER DEFAULT 0,
+            snapshot_at       TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_subs_user_ts ON twitch_subscriptions_snapshot(twitch_user_id, snapshot_at)"
     )

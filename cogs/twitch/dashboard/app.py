@@ -11,10 +11,12 @@ from .live import DashboardLiveMixin
 from .stats import DashboardStatsMixin
 from .templates import DashboardTemplateMixin
 from .raid import DashboardRaidMixin
+from .analyse import DashboardAnalyseMixin
 
 
 class Dashboard(
     DashboardRaidMixin,
+    DashboardAnalyseMixin,
     DashboardStatsMixin,
     DashboardLiveMixin,
     DashboardTemplateMixin,
@@ -46,6 +48,7 @@ class Dashboard(
             web.post("/twitch/discord_flag", self.discord_flag),
             web.post("/twitch/discord_link", self.discord_link),
             web.get("/twitch/stats", self.stats),
+            web.get("/twitch/analyse", self.analyse),
             web.get("/twitch/partners", self.partner_stats),
             # Raid Bot Routes
             web.get("/twitch/raid/auth", self.raid_auth_start),

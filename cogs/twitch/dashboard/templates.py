@@ -16,6 +16,7 @@ class DashboardTemplateMixin:
             '<nav class="tabs">'
             f'{anchor("/twitch", "Live", "live")}'
             f'{anchor("/twitch/stats", "Stats", "stats")}'
+            f'{anchor("/twitch/analyse", "Analyse", "analyse")}'
             f'<a class="tab tab-admin" href="{self._master_dashboard_href}">Admin</a>'
             "</nav>"
         )

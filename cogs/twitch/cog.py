@@ -9,6 +9,7 @@ from .leaderboard import LeaderboardOptions, TwitchLeaderboardMixin, TwitchLeade
 from .monitoring import TwitchMonitoringMixin
 from .raid_mixin import TwitchRaidMixin
 from .raid_commands import RaidCommandsMixin
+from .analytics_mixin import TwitchAnalyticsMixin
 
 __all__ = [
     "TwitchStreamCog",
@@ -18,6 +19,7 @@ __all__ = [
 
 
 class TwitchStreamCog(
+    TwitchAnalyticsMixin,
     TwitchRaidMixin,
     RaidCommandsMixin,
     TwitchDashboardMixin,

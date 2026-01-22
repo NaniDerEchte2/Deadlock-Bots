@@ -782,6 +782,41 @@ class TwitchLeaderboardMixin:
                 user_entry["discord_display_name"] = discord_display_name
                 user_entry["is_on_discord"] = 1 if is_member else 0
 
+                try:
+                    with storage.get_conn() as c:
+                        # Subs
+                        sub_row = c.execute(
+                            "SELECT total, points, snapshot_at FROM twitch_subscriptions_snapshot WHERE twitch_login = ? ORDER BY snapshot_at DESC LIMIT 1",
+                            (normalized_login,)
+                        ).fetchone()
+                        if sub_row:
+                            user_entry["subs"] = {
+                                "total": sub_row[0],
+                                "points": sub_row[1],
+                                "updated_at": sub_row[2]
+                            }
+                        
+                        # Shared Audience
+                        shared_rows = c.execute(
+                            """
+                            SELECT other.streamer_login, COUNT(DISTINCT t1.chatter_login) as overlap
+                            FROM twitch_chatter_rollup t1
+                            JOIN twitch_chatter_rollup other ON t1.chatter_login = other.chatter_login
+                            WHERE t1.streamer_login = ? 
+                              AND other.streamer_login != ?
+                              AND t1.last_seen_at >= datetime('now', '-30 days')
+                            GROUP BY other.streamer_login
+                            ORDER BY overlap DESC
+                            LIMIT 10
+                            """,
+                            (normalized_login, normalized_login)
+                        ).fetchall()
+                        user_entry["shared_audience"] = [
+                            {"streamer": r[0], "overlap": r[1]} for r in shared_rows
+                        ]
+                except Exception:
+                    log.exception("Failed to fetch extended user stats (subs/shared)")
+
                 sources = (
                     ("tracked", "twitch_stats_tracked"),
                     ("category", "twitch_stats_category"),
@@ -863,7 +898,8 @@ class TwitchLeaderboardMixin:
                     SELECT id, streamer_login, started_at, duration_seconds, start_viewers, peak_viewers,
                            end_viewers, avg_viewers, samples, retention_5m, retention_10m, retention_20m,
                            dropoff_pct, dropoff_label, unique_chatters, first_time_chatters,
-                           returning_chatters, follower_delta, followers_start, followers_end
+                           returning_chatters, follower_delta, followers_start, followers_end,
+                           stream_title, notification_text
                       FROM twitch_stream_sessions
                      WHERE started_at >= datetime('now', '-30 days')
                        AND ended_at IS NOT NULL
@@ -1016,9 +1052,41 @@ class TwitchLeaderboardMixin:
                 },
             }
 
+            # Content Performance (Titles & Notifications)
+            content_performance = []
+            for row in session_rows:
+                title = _num(row, "stream_title", "")
+                notify = _num(row, "notification_text", "")
+                if not title and not notify:
+                    continue
+                
+                followers_start = _num(row, "followers_start", 0)
+                peak = _num(row, "peak_viewers", 0)
+                avg = _num(row, "avg_viewers", 0.0)
+                
+                engagement_ratio = None
+                if followers_start > 0:
+                    engagement_ratio = (peak / followers_start) * 100.0
+
+                content_performance.append({
+                    "streamer": _num(row, "streamer_login", ""),
+                    "started_at": _num(row, "started_at", ""),
+                    "title": title,
+                    "notification": notify,
+                    "peak_viewers": peak,
+                    "avg_viewers": avg,
+                    "followers_start": followers_start,
+                    "engagement_ratio": engagement_ratio
+                })
+            
+            # Sort by peak viewers to show best performing content first
+            content_performance.sort(key=lambda x: x["peak_viewers"], reverse=True)
+            content_performance = content_performance[:20]  # Top 20
+
             out["retention"] = retention_payload
             out["chat"] = chat_payload
             out["discovery"] = discovery_payload
+            out["content_performance"] = content_performance
 
         return out
 

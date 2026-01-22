@@ -635,6 +635,16 @@ class TwitchMonitoringMixin:
                             view=view,
                             message_id=message.id,
                         )
+                    # Store notification text if we have an active session
+                    if active_session_id:
+                        try:
+                            with storage.get_conn() as c:
+                                c.execute(
+                                    "UPDATE twitch_stream_sessions SET notification_text = ? WHERE id = ?",
+                                    (content or "", active_session_id),
+                                )
+                        except Exception:
+                            log.debug("Could not save notification text for %s", login, exc_info=True)
 
             ended_deadlock_posting = (
                 notify_ch is not None
@@ -898,12 +908,22 @@ class TwitchMonitoringMixin:
             stream=stream,
         )
         started_at_iso = self._extract_stream_start(stream, previous_state)
+        stream_title = str(stream.get("title") or "").strip()
+        language = str(stream.get("language") or "").strip()
+        is_mature = bool(stream.get("is_mature"))
+        tags_list = stream.get("tags") or []
+        tags_str = ",".join(tags_list) if isinstance(tags_list, list) else ""
+
         return self._start_stream_session(
             login=login_lower,
             stream=stream,
             started_at_iso=started_at_iso,
             twitch_user_id=twitch_user_id,
             followers_start=followers_start,
+            title=stream_title,
+            language=language,
+            is_mature=is_mature,
+            tags=tags_str,
         )
 
     def _start_stream_session(
@@ -914,6 +934,10 @@ class TwitchMonitoringMixin:
         started_at_iso: Optional[str],
         twitch_user_id: Optional[str],
         followers_start: Optional[int],
+        title: str = "",
+        language: str = "",
+        is_mature: bool = False,
+        tags: str = "",
     ) -> Optional[int]:
         start_ts = started_at_iso or datetime.now(timezone.utc).isoformat(timespec="seconds")
         viewer_count = int(stream.get("viewer_count") or 0)
@@ -925,8 +949,9 @@ class TwitchMonitoringMixin:
                     """
                     INSERT INTO twitch_stream_sessions (
                         streamer_login, stream_id, started_at, start_viewers, peak_viewers,
-                        end_viewers, avg_viewers, samples, followers_start
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        end_viewers, avg_viewers, samples, followers_start, stream_title,
+                        language, is_mature, tags
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         login,
@@ -938,6 +963,10 @@ class TwitchMonitoringMixin:
                         float(viewer_count),
                         0,
                         followers_start,
+                        title,
+                        language,
+                        1 if is_mature else 0,
+                        tags,
                     ),
                 )
                 session_id = int(c.execute("SELECT last_insert_rowid()").fetchone()[0])

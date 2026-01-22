@@ -401,6 +401,36 @@ class TwitchAPI:
             self._log.debug("get_followers_total failed for %s", user_id, exc_info=True)
             return None
 
+    async def get_broadcaster_subscriptions(self, user_id: str, user_token: str) -> Optional[Dict]:
+        """
+        Liefert Subscription-Daten für einen Broadcaster.
+        Benötigt Scope: channel:read:subscriptions
+        """
+        if not user_id or not user_token:
+            return None
+        try:
+            self._ensure_session()
+            assert self._session is not None
+            url = f"{TWITCH_API_BASE}/subscriptions"
+            async with self._session.get(
+                url,
+                headers={"Client-ID": self.client_id, "Authorization": f"Bearer {user_token}"},
+                params={"broadcaster_id": user_id, "first": "1"},
+            ) as r:
+                if r.status != 200:
+                    txt = await r.text()
+                    self._log.debug(
+                        "GET /subscriptions failed: HTTP %s: %s",
+                        r.status,
+                        txt[:180].replace("\n", " "),
+                    )
+                    return None
+                js = await r.json()
+                return js
+        except Exception:
+            self._log.debug("get_broadcaster_subscriptions failed for %s", user_id, exc_info=True)
+            return None
+
     async def subscribe_eventsub_websocket(
         self,
         *,

@@ -762,10 +762,19 @@ class DashboardStatsMixin:
             max_viewers = int(streamer_summary.get("max_viewers") or 0)
             partner_text = "Ja" if bool(streamer_summary.get("is_partner")) else "Nein"
             discord_text = "Ja" if streamer_is_on_discord else "Nein"
+
+            subs_data = streamer_stats.get("subs") or {}
+            sub_total = subs_data.get("total")
+            sub_points = subs_data.get("points")
+            sub_text = "-"
+            if sub_total is not None:
+                sub_text = f"{sub_total} (P: {sub_points})"
+
             summary_items = [
                 ("Stichproben", f"{samples}"),
                 ("Ø Viewer", f"{avg_viewers:.1f}"),
                 ("Peak Viewer", f"{max_viewers}"),
+                ("Subs", sub_text),
                 ("Partner", partner_text),
             ]
             if show_discord_private:
@@ -774,7 +783,17 @@ class DashboardStatsMixin:
                 f"<div class='user-summary-item'><span class='label'>{html.escape(label)}</span><span class='value'>{html.escape(value)}</span></div>"
                 for label, value in summary_items
             )
-            user_summary_html = f"<div class='user-summary'>{summary_cells}</div>"
+
+            shared_audience = streamer_stats.get("shared_audience") or []
+            shared_html = ""
+            if shared_audience:
+                shared_rows = "".join(
+                    f"<li>{html.escape(entry.get('streamer', ''))}: {entry.get('overlap', 0)} gemeinsame Chatter</li>"
+                    for entry in shared_audience[:5]
+                )
+                shared_html = f"<div class='status-meta' style='margin-top:0.8rem;'><strong>Shared Audience (Top 5):</strong><ul style='margin:0.2rem 0 0 1.2rem; padding:0;'>{shared_rows}</ul></div>"
+
+            user_summary_html = f"<div class='user-summary'>{summary_cells}</div>{shared_html}"
 
         user_meta_html = ""
         if streamer_has_data or streamer_is_tracked or streamer_discord_name or streamer_discord_id:
@@ -1264,7 +1283,40 @@ class DashboardStatsMixin:
 </div>
 """
 
-        insights_html = f"{retention_card}{discovery_card}{chat_card}"
+        content_perf = stats.get("content_performance") or []
+        if content_perf:
+            perf_rows = "".join(
+                "<tr>"
+                f"<td>{html.escape(str(row.get('streamer', '')))}</td>"
+                f"<td><div style='font-weight:bold;'>{html.escape(str(row.get('title', '')))}</div><div style='font-size:0.85em; color:var(--muted);'>{html.escape(str(row.get('notification', '')))}</div></td>"
+                f"<td data-sort-type='number' data-value='{row.get('peak_viewers', 0)}'>{row.get('peak_viewers')}</td>"
+                f"<td data-sort-type='number' data-value='{row.get('engagement_ratio', 0) or 0}'>{_fmt_pct((row.get('engagement_ratio') or 0)/100.0)}</td>"
+                "</tr>"
+                for row in content_perf
+            )
+            content_card = f"""
+<div class="card" style="margin-top:1.0rem;">
+  <div class="card-header">
+    <h2>Content Performance (Top 20 Sessions)</h2>
+    <div class="status-meta">Titel & Benachrichtigungen vs. Peak Viewer & Engagement (Peak/Follower)</div>
+  </div>
+  <table class="sortable-table" style="margin-top:1rem;">
+    <thead>
+      <tr>
+        <th data-sort-type="string">Streamer</th>
+        <th data-sort-type="string">Titel / Notification</th>
+        <th data-sort-type="number">Peak</th>
+        <th data-sort-type="number">Eng.%</th>
+      </tr>
+    </thead>
+    <tbody>{perf_rows}</tbody>
+  </table>
+</div>
+"""
+        else:
+            content_card = ""
+
+        insights_html = f"{retention_card}{discovery_card}{content_card}{chat_card}"
 
         body = f"""
 <h1 style="margin:.2rem 0 1rem 0;">Twitch Stats</h1>
