@@ -10,6 +10,11 @@ import aiohttp
 EventCallback = Callable[[str, Optional[str]], Awaitable[None]]
 
 
+class EventSubReconnect(Exception):
+    """Signalisiert, dass Twitch einen Reconnect auf eine neue URL anfordert."""
+    pass
+
+
 class EventSubOfflineListener:
     """Minimal EventSub WebSocket Client für stream.offline Benachrichtigungen."""
 
@@ -37,16 +42,29 @@ class EventSubOfflineListener:
             self.log.debug("EventSub: keine Broadcaster IDs zum Subscriben – Listener gestoppt")
             return
 
+        is_reconnect = False
         while not self._stop:
             try:
-                await self._run_once(ids, on_offline)
+                await self._run_once(ids, on_offline, is_reconnect=is_reconnect)
+                # Normales Ende (z.B. Close), kein Reconnect
+                is_reconnect = False
+            except EventSubReconnect as exc:
+                new_url = exc.args[0]
+                self.log.info("EventSub offline: Reconnect requested. Neue URL: %s", new_url)
+                if new_url:
+                    self._ws_url = new_url
+                is_reconnect = True
+                continue
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self.log.exception("EventSub offline listener abgestürzt – Reconnect in 10s")
                 await asyncio.sleep(10)
+                # Reset auf Default-URL nach Crash
+                self._ws_url = "wss://eventsub.wss.twitch.tv/ws"
+                is_reconnect = False
 
-    async def _run_once(self, broadcaster_ids: List[str], on_offline: EventCallback) -> None:
+    async def _run_once(self, broadcaster_ids: List[str], on_offline: EventCallback, is_reconnect: bool = False) -> None:
         session = self.api.get_http_session()
         ws_url = self._ws_url
         async with session.ws_connect(ws_url, heartbeat=20) as ws:
@@ -55,7 +73,10 @@ class EventSubOfflineListener:
                 self.log.error("EventSub: keine session_id erhalten, breche ab")
                 return
 
-            await self._subscribe_offline(session_id, broadcaster_ids)
+            if not is_reconnect:
+                await self._subscribe_offline(session_id, broadcaster_ids)
+            else:
+                self.log.info("EventSub offline: Reconnect erfolgreich - Subscriptions werden von Twitch migriert.")
 
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
@@ -122,7 +143,7 @@ class EventSubOfflineListener:
             target = data.get("payload", {}).get("session", {}).get("reconnect_url")
             self.log.info("EventSub: reconnect requested to %s", target)
             # Wir beenden run_once, outer loop reconnectet.
-            raise RuntimeError("EventSub reconnect requested")
+            raise EventSubReconnect(target)
         if mtype != "notification":
             return
 
