@@ -942,6 +942,7 @@ class TwitchMonitoringMixin:
         start_ts = started_at_iso or datetime.now(timezone.utc).isoformat(timespec="seconds")
         viewer_count = int(stream.get("viewer_count") or 0)
         stream_id = str(stream.get("id") or "").strip() or None
+        game_name = (stream.get("game_name") or "").strip() or None
         session_id: Optional[int] = None
         try:
             with storage.get_conn() as c:
@@ -950,8 +951,8 @@ class TwitchMonitoringMixin:
                     INSERT INTO twitch_stream_sessions (
                         streamer_login, stream_id, started_at, start_viewers, peak_viewers,
                         end_viewers, avg_viewers, samples, followers_start, stream_title,
-                        language, is_mature, tags
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        language, is_mature, tags, game_name
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         login,
@@ -967,6 +968,7 @@ class TwitchMonitoringMixin:
                         language,
                         1 if is_mature else 0,
                         tags,
+                        game_name,
                     ),
                 )
                 session_id = int(c.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -1159,12 +1161,16 @@ class TwitchMonitoringMixin:
         try:
             with storage.get_conn() as c:
                 state_row = c.execute(
-                    "SELECT twitch_user_id FROM twitch_live_state WHERE streamer_login = ?",
+                    "SELECT twitch_user_id, last_game FROM twitch_live_state WHERE streamer_login = ?",
                     (login_lower,),
                 ).fetchone()
             if state_row is not None:
                 twitch_user_id = _row_val(state_row, "twitch_user_id", 0, None)
+                last_game_value = _row_val(state_row, "last_game", 1, None)
+            else:
+                last_game_value = None
         except Exception:
+            last_game_value = None
             twitch_user_id = None
 
         followers_end = await self._fetch_followers_total_safe(
@@ -1197,7 +1203,8 @@ class TwitchMonitoringMixin:
                            returning_chatters = ?,
                            followers_end = ?,
                            follower_delta = ?,
-                           notes = ?
+                           notes = ?,
+                           game_name = COALESCE(game_name, ?)
                      WHERE id = ?
                     """,
                     (
@@ -1218,6 +1225,7 @@ class TwitchMonitoringMixin:
                         followers_end,
                         follower_delta,
                         reason,
+                        last_game_value,
                         session_id,
                     ),
                 )

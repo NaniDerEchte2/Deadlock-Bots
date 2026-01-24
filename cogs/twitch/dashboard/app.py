@@ -12,10 +12,12 @@ from .stats import DashboardStatsMixin
 from .templates import DashboardTemplateMixin
 from .raid import DashboardRaidMixin
 from .analyse import DashboardAnalyseMixin
+from .analytics import DashboardAnalyticsMixin
 
 
 class Dashboard(
     DashboardRaidMixin,
+    DashboardAnalyticsMixin,
     DashboardAnalyseMixin,
     DashboardStatsMixin,
     DashboardLiveMixin,
@@ -50,6 +52,13 @@ class Dashboard(
             web.get("/twitch/stats", self.stats),
             web.get("/twitch/analyse", self.analyse),
             web.get("/twitch/partners", self.partner_stats),
+            # Modern Analytics Dashboard
+            web.get("/twitch/analytics", self.analytics_dashboard),
+            web.get("/twitch/api/analytics", self.analytics_data_api),
+            # Analytics Deep Dives
+            web.get("/twitch/streamer/{login}", self.streamer_detail),
+            web.get("/twitch/session/{id}", self.session_detail),
+            web.get("/twitch/compare", self.compare_stats_page),
             # Raid Bot Routes
             web.get("/twitch/raid/auth", self.raid_auth_start),
             web.get("/twitch/raid/callback", self.raid_oauth_callback),
@@ -73,6 +82,10 @@ def build_app(
     discord_flag_cb=None,
     discord_profile_cb=None,
     raid_history_cb=None,
+    streamer_overview_cb=None,
+    session_detail_cb=None,
+    comparison_stats_cb=None,
+    streamer_analytics_data_cb=None,
     raid_bot=None,
     reload_cb=None,
     http_session=None,
@@ -109,6 +122,10 @@ def build_app(
             verify_cb=verify_cb,
             discord_flag_cb=discord_flag_cb,
             discord_profile_cb=discord_profile_cb,
+            streamer_overview_cb=streamer_overview_cb,
+            session_detail_cb=session_detail_cb,
+            comparison_stats_cb=comparison_stats_cb,
+            streamer_analytics_data_cb=streamer_analytics_data_cb,
         )
         # Raid-Bot Attribute setzen
         ui._raid_bot = raid_bot

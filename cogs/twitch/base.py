@@ -183,64 +183,62 @@ class TwitchBaseCog(commands.Cog):
     # -------------------------------------------------------
     # Lifecycle
     # -------------------------------------------------------
-    def cog_unload(self):
+    async def cog_unload(self):
         """Ensure background resources are torn down when the cog is removed."""
         loops = (self.poll_streams, self.invites_refresh)
 
-        async def _graceful_shutdown():
-            for lp in loops:
-                try:
-                    if lp.is_running():
-                        lp.cancel()
-                except Exception:
-                    log.exception("Konnte Loop nicht canceln: %r", lp)
-            
-            # EventSub Listener stoppen
-            es_listener = getattr(self, "_eventsub_offline_listener", None)
-            if es_listener and hasattr(es_listener, "stop"):
-                es_listener.stop()
-            es_online_listener = getattr(self, "_eventsub_online_listener", None)
-            if es_online_listener and hasattr(es_online_listener, "stop"):
-                es_online_listener.stop()
+        for lp in loops:
+            try:
+                if lp.is_running():
+                    lp.cancel()
+            except Exception:
+                log.exception("Konnte Loop nicht canceln: %r", lp)
+        
+        # EventSub Listener stoppen
+        es_offline_listener = getattr(self, "_eventsub_offline_listener", None)
+        if es_offline_listener and hasattr(es_offline_listener, "stop"):
+            es_offline_listener.stop()
+        es_online_listener = getattr(self, "_eventsub_online_listener", None)
+        if es_online_listener and hasattr(es_online_listener, "stop"):
+            es_online_listener.stop()
 
-            # RaidBot Cleanup
-            if self._raid_bot:
-                try:
-                    await self._raid_bot.cleanup()
-                except Exception:
-                    log.exception("RaidBot cleanup fehlgeschlagen")
+        # RaidBot Cleanup
+        if self._raid_bot:
+            try:
+                await self._raid_bot.cleanup()
+            except Exception:
+                log.exception("RaidBot cleanup fehlgeschlagen")
 
-            await asyncio.sleep(0)
+        await asyncio.sleep(0.1)  # Give event loop a moment
 
-            # Twitch Chat Bot stoppen
-            if self._twitch_chat_bot:
-                try:
-                    if hasattr(self._twitch_chat_bot, "close"):
-                        await self._twitch_chat_bot.close()
-                except Exception:
-                    log.exception("Twitch Chat Bot shutdown fehlgeschlagen")
-            if self._bot_token_manager:
-                try:
-                    await self._bot_token_manager.cleanup()
-                except Exception:
-                    log.exception("Twitch Bot Token Manager shutdown fehlgeschlagen")
+        # Twitch Chat Bot stoppen
+        if self._twitch_chat_bot:
+            try:
+                if hasattr(self._twitch_chat_bot, "close"):
+                    await self._twitch_chat_bot.close()
+            except Exception:
+                log.exception("Twitch Chat Bot shutdown fehlgeschlagen")
+        if self._bot_token_manager:
+            try:
+                await self._bot_token_manager.cleanup()
+            except Exception:
+                log.exception("Twitch Bot Token Manager shutdown fehlgeschlagen")
 
-            if self._web:
-                try:
-                    await self._stop_dashboard()
-                except Exception:
-                    log.exception("Dashboard shutdown fehlgeschlagen")
+        if self._web:
+            try:
+                await self._stop_dashboard()
+                log.info("Twitch dashboard stopped during unload.")
+            except Exception:
+                log.exception("Dashboard shutdown fehlgeschlagen")
 
-            if self.api is not None:
-                try:
-                    await self.api.aclose()
-                except asyncio.CancelledError as exc:
-                    log.debug("Schließen der TwitchAPI-Session abgebrochen: %s", exc)
-                    raise
-                except Exception:
-                    log.exception("TwitchAPI-Session konnte nicht geschlossen werden")
-
-        self._spawn_bg_task(_graceful_shutdown(), "twitch.shutdown")
+        if self.api is not None:
+            try:
+                await self.api.aclose()
+            except asyncio.CancelledError as exc:
+                log.debug("Schließen der TwitchAPI-Session abgebrochen: %s", exc)
+                raise
+            except Exception:
+                log.exception("TwitchAPI-Session konnte nicht geschlossen werden")
 
         try:
             if self._twl_command is not None:

@@ -29,14 +29,14 @@ TWITCH_API_BASE = "https://api.twitch.tv/helix"
 RAID_SCOPES = [
     "channel:manage:raids",
     "moderator:read:followers",
-    "chat:read",
-    "chat:edit",
-    "user:read:chat",
     "moderator:manage:banned_users",
     "moderator:manage:chat_messages",
     "channel:read:subscriptions",
     "analytics:read:games",
     "analytics:read:extensions",
+    "channel:manage:moderators",
+    "chat:read",
+    "chat:edit",
 ]
 
 log = logging.getLogger("TwitchStreams.RaidManager")
@@ -697,6 +697,72 @@ class RaidBot:
         """Setzt den Twitch Chat Bot für Recruitment-Nachrichten."""
         self.chat_bot = chat_bot
 
+    async def complete_setup_for_streamer(self, twitch_user_id: str, twitch_login: str):
+        """
+        Führt Aktionen nach erfolgreicher OAuth-Autorisierung aus:
+        1. Bot als Moderator setzen
+        2. Bestätigungsnachricht im Chat senden
+        """
+        log.info("Completing setup for streamer %s (%s)", twitch_login, twitch_user_id)
+        
+        # 1. Tokens holen
+        tokens = await self.auth_manager.get_tokens_for_user(twitch_user_id, self.session)
+        if not tokens:
+            log.warning("Could not get tokens for %s to complete setup", twitch_login)
+            return
+
+        access_token, _ = tokens
+        bot_id = getattr(self.chat_bot, "bot_id", None)
+        
+        # 2. Bot als Moderator setzen
+        if bot_id:
+            try:
+                url = f"{TWITCH_API_BASE}/moderation/moderators"
+                params = {
+                    "broadcaster_id": twitch_user_id,
+                    "user_id": bot_id,
+                }
+                headers = {
+                    "Client-ID": self.auth_manager.client_id,
+                    "Authorization": f"Bearer {access_token}",
+                }
+                async with self.session.post(url, headers=headers, params=params) as r:
+                    if r.status in {200, 204}:
+                        log.info("Bot is now moderator in %s's channel", twitch_login)
+                    elif r.status == 422:
+                        log.info("Bot is already moderator in %s's channel", twitch_login)
+                    else:
+                        txt = await r.text()
+                        log.warning("Failed to add bot as moderator in %s: HTTP %s: %s", twitch_login, r.status, txt)
+            except Exception:
+                log.exception("Error adding bot as moderator for %s", twitch_login)
+
+        # 3. Bestätigungsnachricht senden
+        if self.chat_bot:
+            try:
+                # Sicherstellen, dass der Bot im Channel ist
+                await self.chat_bot.join(twitch_login, channel_id=twitch_user_id)
+                await asyncio.sleep(2) # Etwas mehr Zeit geben, damit der Mod-Status im Chat "ankommt"
+                
+                # Nachricht im Stil des Screenshots
+                message = f"Deadlock Chatbot verbunden! Hallo! 🎮 deadlock.de"
+                
+                # Sende Nachricht (EventSub kompatibel via ChatBot Methode)
+                if hasattr(self.chat_bot, "_send_chat_message"):
+                    # Mock Channel-Objekt für die interne Methode
+                    class MockChannel:
+                        def __init__(self, login, uid):
+                            self.name = login
+                            self.id = uid
+                    
+                    await self.chat_bot._send_chat_message(MockChannel(twitch_login, twitch_user_id), message)
+                elif hasattr(self.chat_bot, "send_message") and bot_id:
+                    await self.chat_bot.send_message(str(twitch_user_id), str(bot_id), message)
+                
+                log.info("Sent auth success message to %s", twitch_login)
+            except Exception:
+                log.exception("Error sending auth success message to %s", twitch_login)
+
     async def _send_recruitment_message(
         self,
         from_broadcaster_login: str,
@@ -716,58 +782,119 @@ class RaidBot:
             return
 
         try:
-            # Nachricht mit Discord-Link (ENV-Variable oder hardcoded)
+            # 1. Target ID auflösen
+            target_id = None
+            if target_stream_data:
+                target_id = target_stream_data.get("user_id")
+            
+            if not target_id:
+                # Fallback: ID über Login-Namen auflösen
+                users = await self.chat_bot.fetch_users(names=[to_broadcaster_login])
+                if users:
+                    target_id = str(users[0].id)
+
+            if not target_id:
+                log.warning("Could not resolve user ID for recruitment message to %s", to_broadcaster_login)
+                return
+
+            # 2. Anti-Spam Check: Haben wir diesen Streamer schon "kürzlich" geraidet?
+            # Wir prüfen, ob es mehr als 1 erfolgreichen Raid in den letzten 14 Tagen gab.
+            with get_conn() as conn:
+                raid_check = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM twitch_raid_history
+                    WHERE to_broadcaster_id = ?
+                      AND success = 1
+                      AND executed_at > datetime('now', '-14 days')
+                    """,
+                    (target_id,),
+                ).fetchone()
+                recent_raids = raid_check[0] if raid_check else 0
+            
+            if recent_raids > 1:
+                log.info(
+                    "Skipping recruitment message to %s (Anti-Spam: %d raids in last 14 days)", 
+                    to_broadcaster_login, recent_raids
+                )
+                return
+
+            # 3. Nachricht vorbereiten (mit Stats Teaser)
             discord_invite = "discord.gg/deadlock-de"  # TODO: Aus ENV holen
 
-            # Stats aus DB holen als Teaser
             stats_teaser = ""
-            if target_stream_data:
-                user_id = target_stream_data.get("user_id")
-                if user_id:
-                    try:
-                        with get_conn() as conn:
-                            # Hole Average Viewer + Peak für Deadlock
-                            stats = conn.execute(
-                                """
-                                SELECT
-                                    ROUND(AVG(last_viewer_count)) as avg_viewers,
-                                    MAX(last_viewer_count) as peak_viewers
-                                FROM twitch_stream_history
-                                WHERE twitch_user_id = ?
-                                  AND last_viewer_count > 0
-                                """,
-                                (user_id,),
-                            ).fetchone()
+            try:
+                with get_conn() as conn:
+                    stats = conn.execute(
+                        """
+                        SELECT
+                            ROUND(AVG(last_viewer_count)) as avg_viewers,
+                            MAX(last_viewer_count) as peak_viewers
+                        FROM twitch_stream_history
+                        WHERE twitch_user_id = ?
+                          AND last_viewer_count > 0
+                        """,
+                        (target_id,),
+                    ).fetchone()
 
-                        if stats and stats[0]:
-                            avg_viewers = int(stats[0])
-                            peak_viewers = int(stats[1]) if stats[1] else 0
-                            if peak_viewers > 0:
-                                stats_teaser = f"Übrigens: Du hattest im Schnitt {avg_viewers} Viewer bei Deadlock, dein Peak war {peak_viewers}. Weitere Details haben wir auch – "
-                    except Exception:
-                        log.debug("Could not fetch stats for %s", to_broadcaster_login, exc_info=True)
+                if stats and stats[0]:
+                    avg_viewers = int(stats[0])
+                    peak_viewers = int(stats[1]) if stats[1] else 0
+                    if peak_viewers > 0:
+                        stats_teaser = f"Übrigens: Du hattest im Schnitt {avg_viewers} Viewer bei Deadlock, dein Peak war {peak_viewers}. Weitere Details haben wir auch – "
+            except Exception:
+                log.debug("Could not fetch stats for %s", to_broadcaster_login, exc_info=True)
 
             message = (
-                f"Hey @{to_broadcaster_login}! 👋 Dieser RAID kommt von der deutschen Deadlock Community! "
-                f"{from_broadcaster_login} ist bei uns Partner und supportet damit andere deutsche Deadlock-Streamer. "
+                f"Hey @{to_broadcaster_login}! "
+                f"Du wurdest gerade von @{from_broadcaster_login} geraidet, einem unserer Deadlock Streamer-Partner! 🚀 "
                 f"{stats_teaser}"
-                f"Falls du auch Bock hast, Teil der Community zu werden – "
+                f"Falls du Lust hast, Teil der Community zu werden und auch Support zu erhalten – "
                 f"schau gerne mal auf unserem Discord vorbei: {discord_invite} "
-                f"Als Partner kriegst du automatisch Raids, wenn andere Partner offline gehen – "
-                f"und du supportest andere, wenn du selbst offline gehst. Win-Win für alle! 🎮"
+                f"Win-Win für alle Deadlock-Streamer! 🎮"
             )
 
-            # Sende Nachricht im Chat des geraideten Streamers
-            channel = await self.chat_bot.fetch_channel(to_broadcaster_login)
-            if channel:
-                await channel.send(message)
+            # 4. Sende Nachricht
+            # Wir stellen sicher, dass der Bot dem Channel beitritt (via EventSub Chat)
+            await self.chat_bot.join(to_broadcaster_login, channel_id=target_id)
+            
+            # Kurze Pause damit Join verarbeitet wird
+            await asyncio.sleep(0.5)
+
+            # TwitchIO 3.x Fix: get_channel returns ChannelInfo which has no .send()
+            # We use send_message instead (EventSub-compatible)
+            sent = False
+            try:
+                # In 3.x haben wir meist self.chat_bot.bot_id und self.chat_bot.send_message
+                bot_id = getattr(self.chat_bot, "bot_id", None)
+                if target_id and bot_id and hasattr(self.chat_bot, "send_message"):
+                    await self.chat_bot.send_message(str(target_id), str(bot_id), message)
+                    sent = True
+                else:
+                    # Fallback für 2.x oder unvollständiges 3.x Setup
+                    channel = self.chat_bot.get_channel(to_broadcaster_login)
+                    if channel and hasattr(channel, "send"):
+                        await channel.send(message)
+                        sent = True
+            except Exception as e:
+                log.debug("Primary send method failed, trying fallback for %s: %s", to_broadcaster_login, e)
+                # Letzter Versuch über get_channel falls oben was schief ging
+                channel = self.chat_bot.get_channel(to_broadcaster_login)
+                if channel and hasattr(channel, "send"):
+                    await channel.send(message)
+                    sent = True
+
+            if sent:
                 log.info(
-                    "Sent recruitment message in %s's chat (raided by %s)",
+                    "Sent bot recruitment message in %s's chat (raided by %s)",
                     to_broadcaster_login,
                     from_broadcaster_login,
                 )
             else:
-                log.warning("Could not join channel %s for recruitment message", to_broadcaster_login)
+                log.warning(
+                    "Could not send recruitment message to %s (ID: %s) - No send method worked", 
+                    to_broadcaster_login, 
+                    target_id
+                )
 
         except Exception:
             log.exception(

@@ -36,6 +36,10 @@ class DashboardBase:
         verify_cb: Callable[[str, str], Awaitable[str]],
         discord_flag_cb: Callable[[str, bool], Awaitable[str]],
         discord_profile_cb: Callable[[str, Optional[str], Optional[str], bool], Awaitable[str]],
+        streamer_overview_cb: Optional[Callable[[str], Awaitable[dict]]] = None,
+        session_detail_cb: Optional[Callable[[int], Awaitable[dict]]] = None,
+        comparison_stats_cb: Optional[Callable[..., Awaitable[dict]]] = None,
+        streamer_analytics_data_cb: Optional[Callable[[str, int], Awaitable[dict]]] = None,
     ):
         self._token = app_token
         self._noauth = noauth
@@ -47,6 +51,10 @@ class DashboardBase:
         self._verify = verify_cb
         self._discord_flag = discord_flag_cb
         self._discord_profile = discord_profile_cb
+        self._streamer_overview = streamer_overview_cb
+        self._session_detail = session_detail_cb
+        self._comparison_stats = comparison_stats_cb
+        self._streamer_analytics_data = streamer_analytics_data_cb
         self._master_dashboard_url = self._resolve_master_dashboard_url()
         self._master_dashboard_href = html_escape(self._master_dashboard_url, quote=True)
 
@@ -132,11 +140,16 @@ class DashboardBase:
         return self._format_url(host, port, "/admin")
 
     # ---------- Auth ----------
-    def _require_token(self, request: web.Request):
+    def _check_token(self, token: Optional[str]) -> bool:
         if self._noauth:
-            return
+            return True
+        if not token or not self._token:
+            return False
+        return token == self._token
+
+    def _require_token(self, request: web.Request):
         token = request.headers.get("X-Admin-Token") or request.query.get("token")
-        if not token or not self._token or token != self._token:
+        if not self._check_token(token):
             raise web.HTTPUnauthorized(text="missing or invalid token")
 
     def _require_partner_token(self, request: web.Request):

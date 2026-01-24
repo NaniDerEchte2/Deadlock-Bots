@@ -16,7 +16,9 @@ class DashboardTemplateMixin:
             '<nav class="tabs">'
             f'{anchor("/twitch", "Live", "live")}'
             f'{anchor("/twitch/stats", "Stats", "stats")}'
+            f'{anchor("/twitch/analytics", "Analytics", "analytics")}'
             f'{anchor("/twitch/analyse", "Analyse", "analyse")}'
+            f'{anchor("/twitch/compare", "Compare", "compare")}'
             f'<a class="tab tab-admin" href="{self._master_dashboard_href}">Admin</a>'
             "</nav>"
         )
@@ -39,6 +41,7 @@ class DashboardTemplateMixin:
 <!doctype html>
 <meta charset="utf-8">
 <title>Deadlock Twitch Posting – Admin</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
   :root {{
     --bg:#0f0f23; --card:#151a28; --bd:#2a3044; --text:#eeeeee; --muted:#9aa4b2;
@@ -209,4 +212,349 @@ class DashboardTemplateMixin:
 """
 
 
-__all__ = ["DashboardTemplateMixin"]
+    def _streamer_detail_view(self, data: dict, active: str) -> str:
+        login = data["login"]
+        meta = data.get("meta", {})
+        stats = data.get("stats_30d", {})
+        sessions = data.get("recent_sessions", [])
+
+        # Prepare chart data for recent sessions (reversed to show chronological order in chart)
+        chart_labels = [s["started_at"][5:16] for s in reversed(sessions)]
+        chart_viewers = [s["avg_viewers"] for s in reversed(sessions)]
+        chart_peaks = [s["peak_viewers"] for s in reversed(sessions)]
+
+        body = f"""
+        <div class="card-header">
+            <h1>Analytics: {login}</h1>
+            <a href="/twitch/stats" class="btn btn-secondary btn-small">← Back to List</a>
+        </div>
+
+        <div class="user-summary">
+            <div class="user-summary-item">
+                <span class="label">Total Streams (30d)</span>
+                <span class="value">{stats.get("total_streams", 0)}</span>
+            </div>
+            <div class="user-summary-item">
+                <span class="label">Avg Viewers</span>
+                <span class="value">{int(stats.get("avg_avg_viewers") or 0)}</span>
+            </div>
+            <div class="user-summary-item">
+                <span class="label">Peak Viewers</span>
+                <span class="value">{stats.get("max_peak", 0)}</span>
+            </div>
+             <div class="user-summary-item">
+                <span class="label">New Followers</span>
+                <span class="value">{stats.get("total_follower_delta", 0)}</span>
+            </div>
+            <div class="user-summary-item">
+                <span class="label">Unique Chatters</span>
+                <span class="value">{stats.get("total_unique_chatters", 0)}</span>
+            </div>
+        </div>
+
+        <div class="chart-panel">
+            <h3>Viewer Trends (Recent Sessions)</h3>
+            <canvas id="streamerChart"></canvas>
+        </div>
+
+        <div class="card" style="margin-top: 1rem;">
+            <h3>Recent Sessions</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Title</th>
+                        <th>Duration</th>
+                        <th>Avg Viewers</th>
+                        <th>Peak</th>
+                        <th>Followers</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+        """
+        for s in sessions:
+            dur_min = (s["duration_seconds"] or 0) // 60
+            body += f"""
+                    <tr>
+                        <td>{s["started_at"]}</td>
+                        <td><small>{html.escape(s["stream_title"] or "")}</small></td>
+                        <td>{dur_min} min</td>
+                        <td>{s["avg_viewers"]}</td>
+                        <td>{s["peak_viewers"]}</td>
+                        <td>{s["follower_delta"] or 0}</td>
+                        <td><a href="/twitch/session/{s['id']}" class="btn btn-small">Analysis</a></td>
+                    </tr>
+            """
+        body += """
+                </tbody>
+            </table>
+        </div>
+
+        <script>
+            const ctx = document.getElementById('streamerChart');
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: """ + str(chart_labels) + """,
+                    datasets: [{
+                        label: 'Avg Viewers',
+                        data: """ + str(chart_viewers) + """,
+                        borderColor: '#6d4aff',
+                        backgroundColor: 'rgba(109, 74, 255, 0.1)',
+                        tension: 0.3,
+                        fill: true
+                    }, {
+                        label: 'Peak Viewers',
+                        data: """ + str(chart_peaks) + """,
+                        borderColor: '#9bb0ff',
+                        borderDash: [5, 5],
+                        tension: 0.3
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { color: '#eeeeee' } }
+                    },
+                    scales: {
+                        y: { 
+                            beginAtZero: true, 
+                            grid: { color: '#2a3044' },
+                            ticks: { color: '#9aa4b2' }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#9aa4b2' }
+                        }
+                    }
+                }
+            });
+        </script>
+        """
+        return self._html(body, active)
+
+    def _session_detail_view(self, data: dict, active: str) -> str:
+        s = data["session"]
+        timeline = data.get("timeline", [])
+        top_chatters = data.get("top_chatters", [])
+
+        t_labels = [f"{t['minutes_from_start']}m" for t in timeline]
+        t_values = [t["viewer_count"] for t in timeline]
+
+        body = f"""
+        <div class="card-header">
+            <h1>Session Analysis</h1>
+            <a href="/twitch/streamer/{s['streamer_login']}" class="btn btn-secondary btn-small">← Back to Streamer</a>
+        </div>
+        <div class="card" style="margin-top: 1rem;">
+             <div class="row">
+                <div class="discord-cell">
+                    <span class="label" style="color:var(--muted)">Streamer</span>
+                    <strong>{s['streamer_login']}</strong>
+                </div>
+                <div class="discord-cell">
+                    <span class="label" style="color:var(--muted)">Date</span>
+                    <strong>{s['started_at']}</strong>
+                </div>
+                 <div class="discord-cell">
+                    <span class="label" style="color:var(--muted)">Duration</span>
+                    <strong>{(s['duration_seconds'] or 0)//60} min</strong>
+                </div>
+                 <div class="discord-cell">
+                    <span class="label" style="color:var(--muted)">Avg Viewers</span>
+                    <strong>{s['avg_viewers']}</strong>
+                </div>
+                 <div class="discord-cell">
+                    <span class="label" style="color:var(--muted)">Max Peak</span>
+                    <strong>{s['peak_viewers']}</strong>
+                </div>
+            </div>
+            <div style="margin-top: 1rem; color: var(--accent-2);">
+                {html.escape(s['stream_title'] or "")}
+            </div>
+        </div>
+
+        <div class="chart-panel">
+            <h3>Viewer Retention (Timeline)</h3>
+            <canvas id="sessionChart"></canvas>
+        </div>
+
+        <div class="row" style="align-items: flex-start; margin-top: 1rem;">
+            <div class="card" style="flex: 1;">
+                <h3>Engagement Metrics</h3>
+                <ul>
+                    <li><strong>Retention 5m:</strong> {s.get('retention_5m') or '-'}%</li>
+                    <li><strong>Retention 10m:</strong> {s.get('retention_10m') or '-'}%</li>
+                    <li><strong>Dropoff:</strong> {s.get('dropoff_pct') or '-'}% ({s.get('dropoff_label') or 'N/A'})</li>
+                    <li><strong>Unique Chatters:</strong> {s.get('unique_chatters')}</li>
+                    <li><strong>New Chatters:</strong> {s.get('first_time_chatters')}</li>
+                    <li><strong>Returning Chatters:</strong> {s.get('returning_chatters')}</li>
+                </ul>
+            </div>
+            <div class="card" style="flex: 1;">
+                <h3>Top Chatters</h3>
+                <table>
+                    <thead><tr><th>User</th><th>Messages</th></tr></thead>
+                    <tbody>
+        """
+        for c in top_chatters:
+            body += f"<tr><td>{c['chatter_login']}</td><td>{c['messages']}</td></tr>"
+        
+        body += """
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <script>
+            const ctx = document.getElementById('sessionChart');
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: """ + str(t_labels) + """,
+                    datasets: [{
+                        label: 'Viewers',
+                        data: """ + str(t_values) + """,
+                        borderColor: '#6d4aff',
+                        backgroundColor: 'rgba(109, 74, 255, 0.2)',
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 0,
+                        pointHoverRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        y: { 
+                            beginAtZero: true, 
+                            grid: { color: '#2a3044' },
+                            ticks: { color: '#9aa4b2' }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { maxTicksLimit: 20, color: '#9aa4b2' }
+                        }
+                    }
+                }
+            });
+        </script>
+        """
+        return self._html(body, active)
+
+    def _comparison_view(self, data: dict, active: str) -> str:
+        cat = data.get("category", {})
+        track = data.get("tracked_avg", {})
+        top = data.get("top_streamers", [])
+
+        body = f"""
+        <div class="card-header">
+            <h1>Market Analysis (Last 30 Days)</h1>
+        </div>
+        
+        <div class="user-summary">
+            <div class="user-summary-item" style="border-color: var(--accent);">
+                <span class="label">Tracked Avg Viewers</span>
+                <span class="value">{int(track.get("avg_viewers") or 0)}</span>
+            </div>
+            <div class="user-summary-item" style="border-color: var(--muted);">
+                <span class="label">Deadlock Category Avg</span>
+                <span class="value">{int(cat.get("avg_viewers") or 0)}</span>
+            </div>
+             <div class="user-summary-item">
+                <span class="label">Category Peak</span>
+                <span class="value">{cat.get("peak_viewers") or 0}</span>
+            </div>
+        </div>
+
+        <div class="chart-panel">
+            <h3>Top 5 Performers (Avg Viewers)</h3>
+            <canvas id="topChart"></canvas>
+        </div>
+
+        <div class="card" style="margin-top: 1rem;">
+            <h3>Top Streamers Table</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Rank</th>
+                        <th>Streamer</th>
+                        <th>Avg Viewers</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+        """
+        
+        chart_labels = []
+        chart_data = []
+
+        for i, s in enumerate(top, 1):
+            chart_labels.append(s["streamer_login"])
+            chart_data.append(s["val"])
+            body += f"""
+                    <tr>
+                        <td>#{i}</td>
+                        <td>{s['streamer_login']}</td>
+                        <td>{int(s['val'])}</td>
+                        <td><a href="/twitch/streamer/{s['streamer_login']}" class="btn btn-small">Stats</a></td>
+                    </tr>
+            """
+        
+        body += """
+                </tbody>
+            </table>
+        </div>
+
+        <script>
+            const ctx = document.getElementById('topChart');
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: """ + str(chart_labels) + """,
+                    datasets: [{
+                        label: 'Avg Viewers',
+                        data: """ + str(chart_data) + """,
+                        backgroundColor: [
+                            'rgba(109, 74, 255, 0.8)',
+                            'rgba(109, 74, 255, 0.6)',
+                            'rgba(109, 74, 255, 0.4)',
+                            'rgba(109, 74, 255, 0.3)',
+                            'rgba(109, 74, 255, 0.2)'
+                        ],
+                        borderColor: '#6d4aff',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        y: { 
+                            beginAtZero: true, 
+                            grid: { color: '#2a3044' },
+                            ticks: { color: '#9aa4b2' }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#eeeeee' }
+                        }
+                    }
+                }
+            });
+        </script>
+        """
+        return self._html(body, active)

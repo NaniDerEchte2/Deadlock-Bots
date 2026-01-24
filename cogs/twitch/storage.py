@@ -185,6 +185,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "twitch_stream_sessions", "followers_start", "INTEGER")
     _add_column_if_missing(conn, "twitch_stream_sessions", "followers_end", "INTEGER")
     _add_column_if_missing(conn, "twitch_stream_sessions", "follower_delta", "INTEGER")
+    _add_column_if_missing(conn, "twitch_stream_sessions", "game_name", "TEXT")
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_twitch_sessions_login ON twitch_stream_sessions(streamer_login, started_at)"

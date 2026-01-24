@@ -24,8 +24,8 @@ class TwitchAnalyticsMixin:
         super().__init__(*args, **kwargs)
         self._analytics_task = self.collect_analytics_data.start()
 
-    def cog_unload(self):
-        super().cog_unload()
+    async def cog_unload(self):
+        await super().cog_unload()
         self.collect_analytics_data.cancel()
 
     @tasks.loop(hours=6)
