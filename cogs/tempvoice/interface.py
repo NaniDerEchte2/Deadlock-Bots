@@ -471,16 +471,24 @@ class LimitModal(discord.ui.Modal, title="Limit setzen"):
         if val < 0 or val > 99:
             await itx.response.send_message("Limit muss 0-99 sein.", ephemeral=True)
             return
+        enforced_val = val
+        try:
+            enforced_val = self.core.enforce_limit(self.lane, val)  # type: ignore[attr-defined]
+        except Exception:
+            enforced_val = val
         try:
             await itx.response.defer(ephemeral=True, thinking=False)
         except discord.HTTPException as e:
             logger.debug("LimitModal: defer fehlgeschlagen: %r", e)
         except Exception as e:
             logger.debug("LimitModal: unerwarteter defer-Fehler: %r", e)
-        await self.core.safe_edit_channel(self.lane, desired_limit=val, reason="TempVoice: Limit gesetzt")
+        await self.core.safe_edit_channel(self.lane, desired_limit=enforced_val, reason="TempVoice: Limit gesetzt")
         await self.core.refresh_name(self.lane)
+        msg = f"Limit auf {enforced_val} gesetzt."
+        if enforced_val != val:
+            msg += " (Maximal 4 in Street Brawl Lanes.)"
         try:
-            await itx.followup.send(f"Limit auf {val} gesetzt.", ephemeral=True)
+            await itx.followup.send(msg, ephemeral=True)
         except discord.HTTPException as e:
             logger.debug("LimitModal: followup.send fehlgeschlagen: %r", e)
         except Exception as e:
@@ -557,6 +565,9 @@ class MinRankSelect(discord.ui.Select):
             await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
             return
         lane: discord.VoiceChannel = m.voice.channel
+        if getattr(self.core, "is_min_rank_blocked", None) and self.core.is_min_rank_blocked(lane):  # type: ignore[attr-defined]
+            await itx.response.send_message("Mindest-Rang ist hier deaktiviert.", ephemeral=True)
+            return
         if lane.category_id not in MINRANK_CATEGORY_IDS:
             await itx.response.send_message("Mindest-Rang ist hier deaktiviert.", ephemeral=True)
             return

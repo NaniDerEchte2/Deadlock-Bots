@@ -19,13 +19,23 @@ log = logging.getLogger("TempVoiceCore")
 # --------- IDs / Konfiguration ---------
 STAGING_CHANNEL_IDS: Set[int] = {
     1330278323145801758,  # Casual Staging
-    1357422958544420944,  # Ranked Staging
+    1357422958544420944,  # Street Brawl Staging
     1412804671432818890,  # Spezial Staging
 }
 MINRANK_CATEGORY_IDS: Set[int] = {
     1412804540994162789,  # Grind Lanes
     1289721245281292290,  # Normal Lanes (MinRank freigeschaltet)
     1357422957017698478,  # Ranked Lanes
+}
+# Per-Staging-Speziallogik
+STAGING_RULES: Dict[int, Dict[str, Any]] = {
+    1357422958544420944: {  # Street Brawl
+        "prefix": "Lane Street Brawl",
+        "user_limit": 4,
+        "max_limit": 4,
+        "disable_rank_caps": True,
+        "disable_min_rank": True,
+    },
 }
 # Legacy-Alias für ältere Imports, zeigt weiterhin auf die ursprüngliche Grind-ID
 MINRANK_CATEGORY_ID: int = 1412804540994162789
@@ -214,6 +224,117 @@ class TempVoiceCore(commands.Cog):
         # Performance: Role-Caching (5min TTL)
         self._rank_roles_cache: Dict[int, Dict[str, discord.Role]] = {}
         self._cache_timestamp: Dict[int, float] = {}
+        self.lane_rules: Dict[int, Dict[str, Any]] = {}
+        self.minrank_blocked_lanes: Set[int] = set()
+
+    def _rules_for_staging(self, staging: discord.abc.GuildChannel) -> Dict[str, Any]:
+        try:
+            sid = int(getattr(staging, "id", 0))
+        except Exception:
+            return {}
+        return STAGING_RULES.get(sid, {})
+
+    def _rules_from_base(self, base_name: str) -> Tuple[Dict[str, Any], Optional[int]]:
+        base_lower = base_name.lower()
+        for sid, rule in STAGING_RULES.items():
+            prefix = str(rule.get("prefix") or "Lane").lower()
+            if base_lower.startswith(prefix):
+                return rule, sid
+        return {}, None
+
+    def _store_lane_rules(self, lane_id: int, rules: Dict[str, Any]):
+        if rules:
+            self.lane_rules[lane_id] = rules
+        else:
+            self.lane_rules.pop(lane_id, None)
+
+    def is_min_rank_blocked(self, lane: discord.VoiceChannel) -> bool:
+        return lane.id in self.minrank_blocked_lanes
+
+    def _enforce_limit(self, lane_id: int, desired_limit: int) -> int:
+        rules = self.lane_rules.get(lane_id)
+        if not rules:
+            return desired_limit
+        max_limit = rules.get("max_limit")
+        if max_limit is None:
+            return desired_limit
+        try:
+            max_limit_int = int(max_limit)
+        except (TypeError, ValueError):
+            return desired_limit
+        return max(1, min(max_limit_int, int(desired_limit)))
+
+    def _default_limit_for_lane(self, lane: discord.abc.GuildChannel) -> int:
+        rules = self.lane_rules.get(getattr(lane, "id", 0))
+        if rules and "user_limit" in rules:
+            try:
+                return int(rules["user_limit"])
+            except (TypeError, ValueError):
+                pass
+        return _default_cap(lane)
+
+    def enforce_limit(self, lane: discord.VoiceChannel, requested: int) -> int:
+        return self._enforce_limit(lane.id, requested)
+
+    async def _disable_rank_caps(self, lane: discord.VoiceChannel):
+        mgr = self.bot.get_cog("RolePermissionVoiceManager")
+        if mgr is None:
+            try:
+                await db.execute_async(
+                    """
+                    CREATE TABLE IF NOT EXISTS voice_channel_settings (
+                        channel_id  INTEGER PRIMARY KEY,
+                        guild_id    INTEGER NOT NULL,
+                        enabled     INTEGER NOT NULL DEFAULT 1,
+                        created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+                        updated_at  TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                await db.execute_async(
+                    """
+                    INSERT INTO voice_channel_settings(channel_id, guild_id, enabled)
+                    VALUES(?,?,0)
+                    ON CONFLICT(channel_id) DO UPDATE SET
+                        enabled=0,
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (int(lane.id), int(getattr(lane.guild, "id", 0)))
+                )
+            except Exception as e:
+                log.debug("disable_rank_caps: direct DB toggle failed for %s: %r", getattr(lane, "id", "?"), e)
+            return
+        try:
+            await mgr.set_channel_system_enabled(lane, False)
+        except Exception as e:
+            log.debug("disable_rank_caps: toggle failed for %s: %r", getattr(lane, "id", "?"), e)
+        try:
+            await mgr.remove_channel_anchor(lane)
+        except Exception as e:
+            log.debug("disable_rank_caps: remove anchor failed for %s: %r", getattr(lane, "id", "?"), e)
+        try:
+            await mgr.clear_role_permissions(lane)
+        except Exception as e:
+            log.debug("disable_rank_caps: clear perms failed for %s: %r", getattr(lane, "id", "?"), e)
+
+    async def _apply_lane_rules(self, lane: discord.VoiceChannel, rules: Dict[str, Any]):
+        if not rules:
+            self._store_lane_rules(lane.id, {})
+            self.minrank_blocked_lanes.discard(lane.id)
+            return
+        self._store_lane_rules(lane.id, rules)
+        if rules.get("disable_min_rank"):
+            self.minrank_blocked_lanes.discard(lane.id)
+            self.lane_min_rank[lane.id] = "unknown"
+            try:
+                await self._apply_min_rank(lane, "unknown")
+            except Exception as e:
+                log.debug("apply_lane_rules: reset min rank failed for %s: %r", lane.id, e)
+            self.minrank_blocked_lanes.add(lane.id)
+        else:
+            self.minrank_blocked_lanes.discard(lane.id)
+        if rules.get("disable_rank_caps"):
+            await self._disable_rank_caps(lane)
 
     # --------- Lifecycle ---------
     async def cog_load(self):
@@ -249,9 +370,17 @@ class TempVoiceCore(commands.Cog):
                 owner_id    INTEGER NOT NULL,
                 base_name   TEXT NOT NULL,
                 category_id INTEGER NOT NULL,
+                source_staging_id INTEGER,
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        try:
+            cols = await db.query_all_async("PRAGMA table_info(tempvoice_lanes)")
+            col_names = {str(c["name"]) for c in cols}
+            if "source_staging_id" not in col_names:
+                await db.execute_async("ALTER TABLE tempvoice_lanes ADD COLUMN source_staging_id INTEGER")
+        except Exception as e:
+            log.debug("tempvoice_lanes schema check failed: %r", e)
         await db.execute_async("""
             CREATE TABLE IF NOT EXISTS tempvoice_owner_prefs (
                 owner_id    INTEGER PRIMARY KEY,
@@ -369,7 +498,7 @@ class TempVoiceCore(commands.Cog):
             return
         try:
             rows = await db.query_all_async(
-                "SELECT channel_id, owner_id, base_name, category_id FROM tempvoice_lanes WHERE guild_id=?",
+                "SELECT channel_id, owner_id, base_name, category_id, source_staging_id FROM tempvoice_lanes WHERE guild_id=?",
                 (int(guild.id),)
             )
         except Exception as e:
@@ -391,6 +520,29 @@ class TempVoiceCore(commands.Cog):
             self.lane_base[lane.id] = str(r["base_name"])
             self.lane_min_rank.setdefault(lane.id, "unknown")
             self.join_time.setdefault(lane.id, {})
+            rules: Dict[str, Any] = {}
+            source_id: Optional[int] = None
+            try:
+                if r.get("source_staging_id"):
+                    rules = STAGING_RULES.get(int(r["source_staging_id"]), {})
+                    source_id = int(r["source_staging_id"])
+            except Exception as e:
+                log.debug("rehydrate: staging lookup failed for lane %s: %r", lane.id, e)
+            if not rules:
+                rules, source_id = self._rules_from_base(self.lane_base[lane.id])
+            if rules:
+                try:
+                    await self._apply_lane_rules(lane, rules)
+                except Exception as e:
+                    log.debug("rehydrate: apply lane rules failed for %s: %r", lane.id, e)
+                if source_id and not r.get("source_staging_id"):
+                    try:
+                        await db.execute_async(
+                            "UPDATE tempvoice_lanes SET source_staging_id=? WHERE channel_id=?",
+                            (int(source_id), int(lane.id)),
+                        )
+                    except Exception as e:
+                        log.debug("rehydrate: persist source_staging_id failed for %s: %r", lane.id, e)
 
             await self._apply_owner_settings(lane, self.lane_owner[lane.id])
             # KEIN aggressives Rename hier – _refresh_name() prüft Schutzbedingungen
@@ -484,6 +636,8 @@ class TempVoiceCore(commands.Cog):
             self._last_name_patch_ts,
         ):
             mapping.pop(lane_id, None)
+        self.lane_rules.pop(lane_id, None)
+        self.minrank_blocked_lanes.discard(lane_id)
         self._edit_locks.pop(lane_id, None)
         try:
             self.bot.dispatch("tempvoice_lane_deleted", lane_id)
@@ -698,6 +852,9 @@ class TempVoiceCore(commands.Cog):
                         return # Exit as rename is queued
                 # sonst: Name bleibt in Ruhe
 
+            if desired_limit is not None:
+                desired_limit = self._enforce_limit(lane.id, int(desired_limit))
+
             if desired_limit is not None and desired_limit != lane.user_limit:
                 kwargs["user_limit"] = max(0, min(99, desired_limit))
 
@@ -727,10 +884,11 @@ class TempVoiceCore(commands.Cog):
         if not base:
             return
         await self._persist_lane_base(lane.id, base)
+        enforced_limit = self._enforce_limit(lane.id, max(0, min(99, limit)))
         await self.safe_edit_channel(
             lane,
             desired_name=base,
-            desired_limit=max(0, min(99, limit)),
+            desired_limit=enforced_limit,
             reason=f"TempVoice: Template {base}",
             force_name=True,
         )
@@ -741,10 +899,12 @@ class TempVoiceCore(commands.Cog):
         - Name: n�chste freie "Lane X" in der Kategorie (oder vorhandene Lane-Basis, falls schon Lane).
         - Limit: Standard-Cap je nach Kategorie (Ranked/Casual).
         """
+        rules = self.lane_rules.get(lane.id, {})
         base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
-        if not base.startswith("Lane "):
-            base = await self._next_name(lane.category, "Lane")
-        limit = _default_cap(lane)
+        prefix = str(rules.get("prefix") or "Lane")
+        if not base.startswith("Lane ") or (rules and not base.lower().startswith(prefix.lower())):
+            base = await self._next_name(lane.category, prefix)
+        limit = self._default_limit_for_lane(lane)
         await self.set_lane_template(lane, base_name=base, limit=limit)
         return base, limit
 
@@ -876,6 +1036,8 @@ class TempVoiceCore(commands.Cog):
         return out
 
     async def _apply_min_rank(self, lane: discord.VoiceChannel, min_rank: str):
+        if lane.id in self.minrank_blocked_lanes:
+            return
         if lane.category_id not in MINRANK_CATEGORY_IDS:
             return
         guild = lane.guild
@@ -929,10 +1091,15 @@ class TempVoiceCore(commands.Cog):
                     return
                 member = fresh_member
 
+                rules = self._rules_for_staging(staging)
+                prefix = str(rules.get("prefix") or "Lane")
                 cat = staging.category
-                base = await self._next_name(cat, "Lane")
+                base = await self._next_name(cat, prefix)
                 bitrate = getattr(guild, "bitrate_limit", None) or 256000
-                cap = _default_cap(staging)
+                try:
+                    cap = int(rules.get("user_limit", _default_cap(staging)))
+                except (TypeError, ValueError):
+                    cap = _default_cap(staging)
                 try:
                     lane = await guild.create_voice_channel(
                         name=base,
@@ -954,12 +1121,24 @@ class TempVoiceCore(commands.Cog):
                 self.lane_base[lane.id] = base
                 self.lane_min_rank[lane.id] = "unknown"
                 self.join_time.setdefault(lane.id, {})
+                if rules:
+                    try:
+                        await self._apply_lane_rules(lane, rules)
+                    except Exception as e:
+                        log.debug("create_lane: apply lane rules failed for %s: %r", lane.id, e)
 
                 try:
                     await db.execute_async(
-                        "INSERT OR REPLACE INTO tempvoice_lanes(channel_id, guild_id, owner_id, base_name, category_id) "
-                        "VALUES(?,?,?,?,?)",
-                        (int(lane.id), int(guild.id), int(member.id), base, int(cat.id) if cat else 0)
+                        "INSERT OR REPLACE INTO tempvoice_lanes(channel_id, guild_id, owner_id, base_name, category_id, source_staging_id) "
+                        "VALUES(?,?,?,?,?,?)",
+                        (
+                            int(lane.id),
+                            int(guild.id),
+                            int(member.id),
+                            base,
+                            int(cat.id) if cat else 0,
+                            int(staging.id) if staging else None,
+                        )
                     )
                 except Exception as e:
                     log.warning(
@@ -1138,15 +1317,25 @@ class TempVoiceCore(commands.Cog):
                     self.lane_owner[ch.id] = member.id
                     self.lane_base[ch.id] = base_name
                     self.created_channels.add(ch.id)
+                    self.lane_min_rank.setdefault(ch.id, "unknown")
+                    rules: Dict[str, Any] = {}
+                    source_id: Optional[int] = None
+                    try:
+                        rules, source_id = self._rules_from_base(base_name)
+                        if rules:
+                            await self._apply_lane_rules(ch, rules)
+                    except Exception as e:
+                        log.debug("lane owner backfill apply rules failed for %s: %r", ch.id, e)
                     try:
                         await db.execute_async(
                             """
-                            INSERT INTO tempvoice_lanes(channel_id, guild_id, owner_id, base_name, category_id)
-                            VALUES(?,?,?,?,?)
+                            INSERT INTO tempvoice_lanes(channel_id, guild_id, owner_id, base_name, category_id, source_staging_id)
+                            VALUES(?,?,?,?,?,?)
                             ON CONFLICT(channel_id) DO UPDATE SET
                                 owner_id=excluded.owner_id,
                                 base_name=excluded.base_name,
-                                category_id=excluded.category_id
+                                category_id=excluded.category_id,
+                                source_staging_id=COALESCE(tempvoice_lanes.source_staging_id, excluded.source_staging_id)
                             """,
                             (
                                 int(ch.id),
@@ -1154,6 +1343,7 @@ class TempVoiceCore(commands.Cog):
                                 int(member.id),
                                 base_name,
                                 int(ch.category_id) if ch.category_id else 0,
+                                int(source_id) if source_id else None,
                             )
                         )
                     except Exception as e:
