@@ -120,6 +120,10 @@ class DashboardRaidMixin:
 
             log.info("Raid auth successful for %s", twitch_login)
 
+            # Post-Auth Aktionen (Mod + Nachricht) - Hintergrund-Task um Response nicht zu blockieren
+            import asyncio
+            asyncio.create_task(self._raid_bot.complete_setup_for_streamer(twitch_user_id, twitch_login))
+
             return web.Response(
                 text=f"""
                 <html>
