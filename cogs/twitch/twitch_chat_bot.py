@@ -38,12 +38,18 @@ _SPAM_PHRASES = (
     "Best viewers streamboo.com",
     "Best viewers streamboo .com",
     "Best viewers streamboo com",
+    "Best viewers smmtop32.online",
+    "Best viewers smmtop32 .online",
+    "Best viewers smmtop32 online",
     "Best viewers on",
     "Best viewers",
     "B̟est viewers",
     "Cheap Viewers",
     "Ch͟eap viewers",
     "(remove the space)",
+    "Cool overlay \N{THUMBS UP SIGN} Honestly, it\N{RIGHT SINGLE QUOTATION MARK}s so hard to get found on the directory lately. I have small tips on beating the algorithm. Mind if I send you an share?",
+    "Mind if I send you an share"
+    
 )
 _SPAM_FRAGMENTS = (
     "best viewers",
@@ -54,7 +60,15 @@ _SPAM_FRAGMENTS = (
     "streamboo .com",
     "streamboo com",
     "streamboo",
+    "smmtop32.online",
+    "smmtop32 .online",
+    "smmtop32 online",
+    "smmtop32",
     "(remove the space)",
+    "cool overlay",
+    "get found on the directory",
+    "beating the algorithm",
+    "d!sc",
 )
 _SPAM_MIN_MATCHES = 2
 
@@ -441,9 +455,28 @@ if TWITCHIO_AVAILABLE:
         async def _send_chat_message(self, channel, text: str) -> bool:
             """Best-effort Chat-Nachricht senden (EventSub-kompatibel)."""
             try:
+                # 1. Direktes .send() (z.B. Context, 2.x Channel oder 3.x Broadcaster)
                 if channel and hasattr(channel, "send"):
                     await channel.send(text)
                     return True
+                
+                # 2. TwitchIO 3.x Fallback: send_message via Bot
+                b_id = None
+                if hasattr(channel, "id"):
+                    b_id = str(channel.id)
+                elif hasattr(channel, "broadcaster") and hasattr(channel.broadcaster, "id"):
+                    b_id = str(channel.broadcaster.id)
+                
+                # Wenn wir keine ID haben, aber einen Namen (MockChannel), fetch_user
+                if not b_id and hasattr(channel, "name"):
+                    user = await self.fetch_user(login=channel.name.lstrip("#"))
+                    if user:
+                        b_id = str(user.id)
+
+                if b_id and self.bot_id:
+                    await self.send_message(str(b_id), str(self.bot_id), text)
+                    return True
+
             except Exception:
                 log.debug("Konnte Chat-Nachricht nicht senden", exc_info=True)
             return False
@@ -1008,15 +1041,38 @@ if TWITCHIO_AVAILABLE:
             except Exception:
                 log.exception("Manual raid: konnte Streams nicht abrufen")
 
-            if not candidates:
-                await ctx.send(f"@{ctx.author.name} Kein passender Partner gerade live. Versuch es später erneut.")
-                return
-
-            # Fairness-Auswahl wiederverwenden
-            target = self._raid_bot._select_fairest_candidate(candidates, broadcaster_id=twitch_user_id)  # type: ignore[attr-defined]
+            is_partner_raid = True
+            target = None
+            
+            if candidates:
+                # Fairness-Auswahl wiederverwenden
+                target = self._raid_bot._select_fairest_candidate(candidates, broadcaster_id=twitch_user_id)  # type: ignore[attr-defined]
+            
             if not target:
-                await ctx.send(f"@{ctx.author.name} Kein Ziel gefunden.")
-                return
+                # Fallback auf DE Deadlock-Streamer
+                try:
+                    from .constants import TWITCH_TARGET_GAME_NAME
+                    category_id = await api.get_category_id(TWITCH_TARGET_GAME_NAME)
+                    if category_id:
+                        de_streams = await api.get_streams_by_category(category_id, language="de", limit=50)
+                        # Filter out self
+                        de_streams = [s for s in de_streams if str(s.get("user_id")) != str(twitch_user_id)]
+                        if de_streams:
+                            is_partner_raid = False
+                            target = de_streams[0]
+                            # Normalisieren für executor
+                            if "user_login" not in target and "user_name" in target:
+                                target["user_login"] = target["user_name"].lower()
+                        else:
+                            await ctx.send(f"@{ctx.author.name} Weder Partner noch andere deutsche Deadlock-Streamer live.")
+                            return
+                    else:
+                        await ctx.send(f"@{ctx.author.name} Kein Partner live (Kategorie-ID nicht gefunden).")
+                        return
+                except Exception:
+                    log.exception("Manual raid fallback failed")
+                    await ctx.send(f"@{ctx.author.name} Kein Partner live und Fallback fehlgeschlagen.")
+                    return
 
             target_id = target.get("user_id") or ""
             target_login = target.get("user_login") or ""
@@ -1042,7 +1098,7 @@ if TWITCHIO_AVAILABLE:
                     viewer_count=viewer_count,
                     stream_duration_sec=stream_duration_sec,
                     target_stream_started_at=target_started_at,
-                    candidates_count=len(candidates),
+                    candidates_count=len(candidates) if is_partner_raid else 0,
                     session=api_session,
                 )
             except Exception as exc:
@@ -1052,6 +1108,14 @@ if TWITCHIO_AVAILABLE:
 
             if success:
                 await ctx.send(f"@{ctx.author.name} Raid auf {target_login} gestartet! (Twitch-Countdown ~90s)")
+                
+                # Bei Nicht-Partner-Raid: Chat-Nachricht senden
+                if not is_partner_raid and hasattr(self._raid_bot, "_send_recruitment_message"):
+                    await self._raid_bot._send_recruitment_message(
+                        from_broadcaster_login=twitch_login,
+                        to_broadcaster_login=target_login,
+                        target_stream_data=target,
+                    )
             else:
                 await ctx.send(f"@{ctx.author.name} Raid fehlgeschlagen: {error or 'unbekannter Fehler'}")
 
