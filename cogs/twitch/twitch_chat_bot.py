@@ -64,7 +64,7 @@ _SPAM_FRAGMENTS = (
     "smmtop32 .online",
     "smmtop32 online",
     "smmtop32",
-    "(remove the space)",
+    "remove the space",
     "cool overlay",
     "get found on the directory",
     "beating the algorithm",
