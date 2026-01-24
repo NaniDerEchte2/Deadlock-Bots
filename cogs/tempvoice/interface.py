@@ -76,15 +76,20 @@ class TempVoiceInterface(commands.Cog):
             return None  # Muss mit einem Textkanal aufgerufen werden
 
         embed = discord.Embed(
-            title="TempVoice Interface",
+            title="🚧 Sprachkanal verwalten",
             description=(
-                "• Geh in einen **(+) Channel** → deine Lane wird sofort erstellt.\n"
-                "• **Einstellungen für deine Lane**:\n"
-                "  - 🇩🇪/🇪🇺 Sprachfilter (Rolle „English Only“)\n"
-                "  - 👑 Owner Claim (übernimm die Lane)\n"
-                "  - 🎚️ Limit setzen (0–99)\n"
-                "  - 👢 Kick / 🚫 Ban / ♻️ Unban\n"
-                "  - 🪪 Mindest-Rang (Grind & Ranked)"
+                "So funktioniert Temp Voice:\n"
+                "• Betritt einen **(+) Sprachkanal**, deine eigene Lane wird automatisch erstellt.\n"
+                "• Passe deine Lane hier an; die Buttons wirken sofort, wenn du Owner bist.\n\n"
+                "Was ihr hier machen könnt:\n"
+                "• **Kick:** Jemand AFK oder stört? Entferne die Person, wenn Reden nicht reicht.\n"
+                "• **Ban:** Sperre jemanden dauerhaft aus deinem Kanal, solange du Owner bist.\n"
+                "• **Unban:** Hebe die Sperre wieder auf.\n"
+                "• **Duo/Trio Call:** Stelle 2er/3er-Runden ein; andere können (fast) nicht beitreten.\n"
+                "• **Normale Lane:** Setzt die Berechtigungen wieder auf offen.\n"
+                "• **Lurker-Rolle:** Für Zuhörer; schafft einen zusätzlichen Platz für Mitspieler.\n"
+                "• **Limit & Sprache:** Setze Teilnehmerlimit (0–99) und Deutsch/Offen-Filter.\n"
+                "• **Owner Claim & Mindest-Rang:** Übernimm die Lane und lege optional einen Mindest-Rang fest."
             ),
             color=0x2ecc71
         )
@@ -178,7 +183,7 @@ class TempVoiceInterface(commands.Cog):
             description=(
                 f"Owner: {owner_display}\n"
                 "• Buttons funktionieren nur, wenn du in dieser Lane bist.\n"
-                "• 🇩🇪/🇪🇺 Sprachfilter, Limit, Kick/Ban & Owner Claim direkt hier nutzen."
+                "• Kick/Ban/Unban, Duo/Trio/Normale Lane, Lurker, Limit, Sprachfilter, Owner Claim und Mindest-Rang direkt hier steuern."
             ),
             color=0x2ecc71,
         )
