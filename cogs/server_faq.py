@@ -142,7 +142,7 @@ Kategorie "Grind Lanes":
 Kategorie "Ranked Lanes":
 - low-elo-ranked, mid-elo-ranked, high-elo-ranked: Text-Kanäle für koordinierte Spiele innerhalb derselben Elo.
 - High Elo Podium: Rückzugsort für High-Elo-Spieler, inkl. Streaming-Möglichkeit ohne Störung.
-- Rank Lane: Voice-Kanal für Rang-Spiele.
+- Street Brawl Lane: Voice-Kanal ohne Rang-Limit (max. 4 Slots).
 
 Kategorie "AFK":
 - AFK: automatischer Voice-Kanal für abwesende Nutzer.
@@ -150,6 +150,7 @@ Kategorie "AFK":
 
 Weiteres:
 - Unterschied Spaß / Grind / Ranked: Spaß = Casual ohne Ranglimit; Grind = fokussiertes Spielen mit Gewinnabsicht; Ranked = explizites Ranglisten-Spiel mit Spielern ähnlicher Wertung.
+- Street Brawl: 4er Lane ohne Rang-Cap, erstellt über den Street-Brawl-(+) Channel.
 - TempVoice-Lanes können über das Panel konfiguriert werden (Owner Claim, Kick/Ban, User-Limit, Regionenfilter, Mindest-Rang usw.).
 - Clip Submission hat Cooldown und sammelt Einreichungen pro Woche.
 - Deadlock Coaching: private Threads führen durch Rang-, Subrang- und Heldenauswahl; informiert Coaching-Team.
@@ -430,3 +431,4 @@ async def setup(bot: commands.Bot) -> None:
             type=discord.AppCommandType.chat_input,
         )
         bot.tree.add_command(faq_cog.faq)
+
