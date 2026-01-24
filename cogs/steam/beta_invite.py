@@ -6,7 +6,7 @@ from logging.handlers import RotatingFileHandler
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Union
 
 import asyncio
 import discord
@@ -28,6 +28,8 @@ BETA_INVITE_SUPPORT_CONTACT = getattr(
     "BETA_INVITE_SUPPORT_CONTACT",
     "@earlysalty",
 )
+BETA_MAIN_GUILD_ID = getattr(welcome_base, "MAIN_GUILD_ID", None)
+BETA_INVITE_PANEL_CUSTOM_ID = "betainvite:panel:start"
 
 log = logging.getLogger(__name__)
 
@@ -452,11 +454,47 @@ class BetaInviteConfirmView(discord.ui.View):
         await self.cog.handle_confirmation(interaction, self.record_id)
 
 
+class BetaInvitePanelView(discord.ui.View):
+    def __init__(self, cog: "BetaInviteFlow") -> None:
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Invite starten",
+        style=discord.ButtonStyle.primary,
+        emoji="🎟️",
+        custom_id=BETA_INVITE_PANEL_CUSTOM_ID,
+    )
+    async def start_invite(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.cog.start_invite_from_panel(interaction)
+
+
 class BetaInviteFlow(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.tasks = SteamTaskClient(poll_interval=0.5, default_timeout=30.0)
         _ensure_invite_audit_table()
+
+    async def cog_load(self) -> None:
+        self.bot.add_view(BetaInvitePanelView(self))
+        if BETA_MAIN_GUILD_ID:
+            try:
+                guild_obj = discord.Object(id=int(BETA_MAIN_GUILD_ID))
+                synced = await self.bot.tree.sync(guild=guild_obj)
+                log.info(
+                    "BetaInvite: Commands für Guild %s synchronisiert (%s)",
+                    BETA_MAIN_GUILD_ID,
+                    len(synced),
+                )
+            except Exception as exc:
+                log.warning(
+                    "BetaInvite: Command-Sync für Guild %s fehlgeschlagen: %s",
+                    BETA_MAIN_GUILD_ID,
+                    exc,
+                )
+        else:
+            log.info("BetaInvite: MAIN_GUILD_ID nicht gesetzt, kein Guild-Sync durchgeführt")
+        log.info("BetaInvite: Panel-View registriert")
 
     async def _reply_no_invites(self, interaction: discord.Interaction) -> None:
         _trace("betainvite_unavailable_start", discord_id=getattr(interaction.user, "id", None))
@@ -1236,9 +1274,22 @@ class BetaInviteFlow(commands.Cog):
             account_id_hint=account_id_from_friend,
         )
 
-    @app_commands.command(name="betainvite", description="Automatisiert eine Deadlock-Playtest-Einladung anfordern.")
-    async def betainvite(self, interaction: discord.Interaction) -> None:
-        # Quick initial response to prevent timeout
+    def _build_panel_embed(self) -> discord.Embed:
+        description = (
+            "Klick auf **Invite starten**, um den `/betainvite`-Ablauf zu beginnen.\n"
+            "Der Bot führt dich durch die Steam-Verknüpfung und holt den Invite ab.\n"
+            f"Fragen? Ping {BETA_INVITE_SUPPORT_CONTACT}."
+        )
+        return discord.Embed(
+            title="🎟️ Deadlock Beta-Invite abholen",
+            description=description,
+            color=discord.Color.blurple(),
+        )
+
+    async def start_invite_from_panel(self, interaction: discord.Interaction) -> None:
+        await self._start_betainvite_flow(interaction)
+
+    async def _start_betainvite_flow(self, interaction: discord.Interaction) -> None:
         try:
             await interaction.response.defer(ephemeral=True, thinking=True)
         except discord.errors.NotFound:
@@ -1277,6 +1328,45 @@ class BetaInviteFlow(commands.Cog):
         )
         await self._reply_no_invites(interaction)
 
+    @app_commands.command(name="betainvite", description="Automatisiert eine Deadlock-Playtest-Einladung anfordern.")
+    async def betainvite(self, interaction: discord.Interaction) -> None:
+        await self._start_betainvite_flow(interaction)
+
+    @app_commands.command(
+        name="publish_betainvite_panel",
+        description="(Admin) Beta-Invite-Panel im aktuellen oder angegebenen Kanal posten.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def publish_betainvite_panel(
+        self,
+        interaction: discord.Interaction,
+        channel: Optional[Union[discord.TextChannel, discord.Thread]] = None,
+    ) -> None:
+        target_channel = channel or interaction.channel
+        if not isinstance(target_channel, (discord.TextChannel, discord.Thread)):
+            await interaction.response.send_message(
+                "❌ Bitte führe den Befehl in einem Textkanal aus oder gib einen Textkanal an.",
+                ephemeral=True,
+            )
+            return
+
+        embed = self._build_panel_embed()
+        view = BetaInvitePanelView(self)
+        try:
+            await target_channel.send(embed=embed, view=view)
+        except Exception as exc:  # pragma: no cover - nur Laufzeit-Rechtefehler
+            log.warning("Konnte Beta-Invite-Panel nicht senden: %s", exc)
+            await interaction.response.send_message(
+                "❌ Panel konnte nicht gesendet werden (fehlende Rechte?).",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            f"✅ Panel in {target_channel.mention} gesendet.",
+            ephemeral=True,
+        )
+
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
         try:
@@ -1299,11 +1389,15 @@ async def setup(bot: commands.Bot) -> None:
     beta_invite_cog = BetaInviteFlow(bot)
     await bot.add_cog(beta_invite_cog)
 
-    try:
-        bot.tree.add_command(beta_invite_cog.betainvite)
-    except app_commands.CommandAlreadyRegistered:
-        bot.tree.remove_command(
-            beta_invite_cog.betainvite.name,
-            type=discord.AppCommandType.chat_input,
-        )
-        bot.tree.add_command(beta_invite_cog.betainvite)
+    for command in (
+        beta_invite_cog.betainvite,
+        beta_invite_cog.publish_betainvite_panel,
+    ):
+        try:
+            bot.tree.add_command(command)
+        except app_commands.CommandAlreadyRegistered:
+            bot.tree.remove_command(
+                command.name,
+                type=discord.AppCommandType.chat_input,
+            )
+            bot.tree.add_command(command)
