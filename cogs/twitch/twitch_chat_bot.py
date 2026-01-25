@@ -561,7 +561,7 @@ if TWITCHIO_AVAILABLE:
                         )
                         await self._send_chat_message(
                             message.channel,
-                            f"Nachricht gelöscht und Nutzer gebannt: {chatter_login or chatter_id}. Original: {original_content}",
+                            f"Nachricht gelöscht und Nutzer gebannt: {chatter_login or chatter_id}. Original Nachricht: {original_content}",
                         )
                         return True
                     txt = await resp.text()
