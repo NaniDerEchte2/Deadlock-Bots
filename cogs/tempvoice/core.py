@@ -30,7 +30,7 @@ MINRANK_CATEGORY_IDS: Set[int] = {
 # Per-Staging-Speziallogik
 STAGING_RULES: Dict[int, Dict[str, Any]] = {
     1357422958544420944: {  # Street Brawl
-        "prefix": "Lane Street Brawl",
+        "prefix": "Street Brawl",
         "user_limit": 4,
         "max_limit": 4,
         "disable_rank_caps": True,
