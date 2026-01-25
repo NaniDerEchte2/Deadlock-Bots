@@ -233,8 +233,15 @@ class TwitchBotTokenManager:
         try:
             import keyring  # type: ignore
 
-            access_keyring = keyring.get_password(self.keyring_service, "TWITCH_BOT_TOKEN")
-            refresh_keyring = keyring.get_password(self.keyring_service, "TWITCH_BOT_REFRESH_TOKEN")
+            # Wir suchen primär nach dem Format ZWECK@DeadlockBot
+            access_keyring = keyring.get_password(f"TWITCH_BOT_TOKEN@{self.keyring_service}", "TWITCH_BOT_TOKEN")
+            if not access_keyring:
+                access_keyring = keyring.get_password(self.keyring_service, "TWITCH_BOT_TOKEN")
+
+            refresh_keyring = keyring.get_password(f"TWITCH_BOT_REFRESH_TOKEN@{self.keyring_service}", "TWITCH_BOT_REFRESH_TOKEN")
+            if not refresh_keyring:
+                refresh_keyring = keyring.get_password(self.keyring_service, "TWITCH_BOT_REFRESH_TOKEN")
+
             if access_keyring:
                 log.info("Loaded Twitch bot tokens from Windows Credential Manager.")
                 return access_keyring, refresh_keyring or refresh or None
@@ -253,31 +260,28 @@ class TwitchBotTokenManager:
             log.debug("keyring not available; cannot persist Twitch bot tokens: %s", exc)
             return
 
+        saved_types = []
         try:
             if self.access_token:
-                await asyncio.to_thread(keyring.set_password, self.keyring_service, "TWITCH_BOT_TOKEN", self.access_token)
                 await asyncio.to_thread(
                     keyring.set_password,
                     f"TWITCH_BOT_TOKEN@{self.keyring_service}",
                     "TWITCH_BOT_TOKEN",
                     self.access_token,
                 )
+                saved_types.append("ACCESS_TOKEN")
 
             if self.refresh_token:
-                await asyncio.to_thread(
-                    keyring.set_password,
-                    self.keyring_service,
-                    "TWITCH_BOT_REFRESH_TOKEN",
-                    self.refresh_token,
-                )
                 await asyncio.to_thread(
                     keyring.set_password,
                     f"TWITCH_BOT_REFRESH_TOKEN@{self.keyring_service}",
                     "TWITCH_BOT_REFRESH_TOKEN",
                     self.refresh_token,
                 )
+                saved_types.append("REFRESH_TOKEN")
 
-            log.info("Twitch bot tokens saved to Windows Credential Manager.")
+            if saved_types:
+                log.info("Twitch Bot Tokens (%s) im Windows Credential Manager gespeichert (Dienst: %s).", "+".join(saved_types), self.keyring_service)
         except Exception as exc:
             log.error("Could not persist Twitch bot tokens: %s", exc)
 
