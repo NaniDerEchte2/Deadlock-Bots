@@ -1127,18 +1127,20 @@ if TWITCHIO_AVAILABLE:
             )
 
         async def join_partner_channels(self):
-            """Joint alle Partner-Channels, die live sind und Chat-Scopes besitzen."""
+            """Joint alle Kanäle, die live sind und den Bot autorisiert haben (Partner oder !traid)."""
             with get_conn() as conn:
+                # Wir holen alle Partner ODER jeden, der raid_enabled = 1 in twitch_raid_auth hat
                 partners = conn.execute(
                     """
                     SELECT DISTINCT s.twitch_login, s.twitch_user_id, a.scopes, l.is_live
                     FROM twitch_streamers s
                     JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
                     LEFT JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
-                    WHERE (s.manual_verified_permanent = 1
-                           OR s.manual_verified_until IS NOT NULL
-                           OR s.manual_verified_at IS NOT NULL)
-                      AND s.manual_partner_opt_out = 0
+                    WHERE (
+                        (s.manual_verified_permanent = 1 OR s.manual_verified_until IS NOT NULL OR s.manual_verified_at IS NOT NULL)
+                        OR a.raid_enabled = 1
+                    )
+                    AND s.manual_partner_opt_out = 0
                     """
                 ).fetchall()
 

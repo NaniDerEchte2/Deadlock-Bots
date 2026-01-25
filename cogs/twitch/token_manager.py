@@ -119,6 +119,9 @@ class TwitchBotTokenManager:
 
                     data = await resp.json()
                     self.bot_id = data.get("user_id") or self.bot_id
+                    
+                    scopes = data.get("scopes", [])
+                    log.info("Bot token validated. ID: %s, Scopes: %s", self.bot_id, scopes)
 
                     expires_in = data.get("expires_in", 0)
                     if expires_in:

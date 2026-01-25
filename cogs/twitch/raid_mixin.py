@@ -40,20 +40,24 @@ class TwitchRaidMixin:
         # Nur wenn Streamer Auto-Raid explizit aktiviert und autorisiert hat
         try:
             with get_conn() as conn:
+                # Wir prüfen: Ist der Streamer in twitch_streamers ODER hat er einfach nur auth gegeben?
+                # Wichtig ist vor allem der Check in twitch_raid_auth via has_enabled_auth
                 row = conn.execute(
                     "SELECT raid_bot_enabled FROM twitch_streamers WHERE twitch_user_id = ?",
                     (twitch_user_id,),
                 ).fetchone()
-            if not row or not row[0]:
-                log.debug("Auto-Raid übersprungen für %s: nicht aktiviert", login)
+            
+            # Falls er nicht in twitch_streamers steht (noch kein Partner), 
+            # gehen wir davon aus, dass er den Bot via !traid aktiviert hat.
+            if row and not row[0]:
+                log.debug("Auto-Raid übersprungen für %s: deaktiviert in twitch_streamers", login)
                 return
         except Exception:
-            log.debug("Auto-Raid für %s übersprungen (DB-Check fehlgeschlagen)", login, exc_info=True)
-            return
+            log.debug("Auto-Raid DB-Check für %s fehlgeschlagen, fahre mit Auth-Check fort", login)
 
         auth_mgr = getattr(self._raid_bot, "auth_manager", None)
         if not auth_mgr or not auth_mgr.has_enabled_auth(twitch_user_id):
-            log.debug("Auto-Raid übersprungen für %s: kein aktiver OAuth-Grant", login)
+            log.debug("Auto-Raid übersprungen für %s: kein aktiver OAuth-Grant (!traid fehlt)", login)
             return
 
         get_target_lower = getattr(self, "_get_target_game_lower", None)

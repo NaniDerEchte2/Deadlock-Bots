@@ -33,7 +33,6 @@ RAID_SCOPES = [
     "moderator:manage:chat_messages",
     "channel:read:subscriptions",
     "analytics:read:games",
-    "analytics:read:extensions",
     "channel:manage:moderators",
     "channel:bot",
     "chat:read",
@@ -55,7 +54,8 @@ class RaidAuthManager:
 
     def generate_auth_url(self, twitch_login: str) -> str:
         """Generiert eine OAuth-URL für Streamer-Autorisierung."""
-        state = secrets.token_urlsafe(32)
+        # State kürzen auf 16 chars um URL-Länge für Discord Buttons (max 512) zu sparen
+        state = secrets.token_urlsafe(16)
         self._state_tokens[state] = (twitch_login, time.time())
 
         params = {
@@ -729,12 +729,12 @@ class RaidBot:
                 }
                 async with self.session.post(url, headers=headers, params=params) as r:
                     if r.status in {200, 204}:
-                        log.info("Bot is now moderator in %s's channel", twitch_login)
+                        log.info("Bot (ID: %s) is now moderator in %s's channel (ID: %s)", bot_id, twitch_login, twitch_user_id)
                     elif r.status == 422:
-                        log.info("Bot is already moderator in %s's channel", twitch_login)
+                        log.info("Bot (ID: %s) is already moderator in %s's channel", bot_id, twitch_login)
                     else:
                         txt = await r.text()
-                        log.warning("Failed to add bot as moderator in %s: HTTP %s: %s", twitch_login, r.status, txt)
+                        log.warning("Failed to add bot as moderator in %s: HTTP %s: %s (used broadcaster token)", twitch_login, r.status, txt)
             except Exception:
                 log.exception("Error adding bot as moderator for %s", twitch_login)
 
