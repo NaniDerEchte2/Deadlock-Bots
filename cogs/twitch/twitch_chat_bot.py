@@ -252,27 +252,32 @@ if TWITCHIO_AVAILABLE:
 
         async def event_message(self, message):
             """Wird bei jeder Chat-Nachricht aufgerufen."""
-            # Compatibility layer for TwitchIO 3.x
+            # Compatibility layer for TwitchIO 3.x EventSub
             if not hasattr(message, "echo"):
-                # In EventSub messages, we check if the chatter is the bot
-                message.echo = str(message.chatter.id) == str(self.bot_id)
+                message.echo = str(getattr(message.chatter, "id", "")) == str(self.bot_id)
             
             if not hasattr(message, "content"):
-                message.content = message.text
+                message.content = getattr(message, "text", "")
             
             if not hasattr(message, "author"):
                 message.author = message.chatter
-                
+            
+            # Mock channel object mit allen benötigten Attributen
             if not hasattr(message, "channel"):
-                # Mock channel object for backward compatibility
+                broadcaster_login = getattr(message.broadcaster, "login", None) or getattr(message.broadcaster, "name", "unknown")
+                broadcaster_id = getattr(message.broadcaster, "id", None)
+                
                 class MockChannel:
-                    def __init__(self, login):
+                    def __init__(self, login, channel_id=None):
                         self.name = login
+                        self.id = channel_id
                     def __str__(self):
                         return self.name
-                # PartialUser kann login oder name haben
-                broadcaster_login = getattr(message.broadcaster, "login", None) or getattr(message.broadcaster, "name", "unknown")
-                message.channel = MockChannel(broadcaster_login)
+                    async def send(self, content):
+                        # Fallback send method
+                        pass
+                
+                message.channel = MockChannel(broadcaster_login, broadcaster_id)
 
             # Ignoriere Bot-Nachrichten
             if message.echo:
