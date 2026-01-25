@@ -975,6 +975,44 @@ class RaidBot:
 
         return selected["candidate"]
 
+    def _is_blacklisted(self, target_id: str, target_login: str) -> bool:
+        """Prüft, ob ein Ziel auf der Blacklist steht."""
+        try:
+            with get_conn() as conn:
+                row = conn.execute(
+                    """
+                    SELECT 1 FROM twitch_raid_blacklist
+                    WHERE (target_id IS NOT NULL AND target_id = ?)
+                       OR lower(target_login) = lower(?)
+                    """,
+                    (target_id, target_login),
+                ).fetchone()
+                return bool(row)
+        except Exception:
+            log.error("Error checking blacklist", exc_info=True)
+            return False
+
+    def _add_to_blacklist(self, target_id: str, target_login: str, reason: str):
+        """Fügt ein Ziel zur Blacklist hinzu."""
+        try:
+            with get_conn() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO twitch_raid_blacklist (target_id, target_login, reason)
+                    VALUES (?, ?, ?)
+                    """,
+                    (target_id, target_login, reason),
+                )
+                conn.commit()
+            log.info(
+                "Added %s (ID: %s) to raid blacklist. Reason: %s",
+                target_login,
+                target_id,
+                reason,
+            )
+        except Exception:
+            log.error("Error adding to blacklist", exc_info=True)
+
     async def handle_streamer_offline(
         self,
         broadcaster_id: str,
@@ -989,15 +1027,9 @@ class RaidBot:
         Wird aufgerufen, wenn ein Streamer offline geht.
         Versucht automatisch zu raiden, falls möglich.
 
-        Args:
-            broadcaster_id: Twitch User ID des Offline-Gehenden
-            broadcaster_login: Twitch Login des Offline-Gehenden
-            viewer_count: Letzte Viewer-Anzahl
-            stream_duration_sec: Stream-Dauer in Sekunden
-            online_partners: Liste von Online-Partnern (Stream-Daten)
-
-        Returns:
-            Login des geraideten Streamers, oder None
+        Features:
+        - Auto-Retry bei Fehlern (z.B. Ziel hat Raids deaktiviert)
+        - Blacklist-Management für nicht raidbare Kanäle
         """
         # Prüfen, ob Streamer Auto-Raid aktiviert hat
         with get_conn() as conn:
@@ -1023,99 +1055,125 @@ class RaidBot:
             log.debug("Raid bot disabled for %s (no auth)", broadcaster_login)
             return None
 
-        # Kandidaten filtern (nur andere Streamer, nicht sich selbst)
-        candidates = [
-            s for s in online_partners
-            if s.get("user_id") != broadcaster_id
-        ]
+        # Retry-Loop Setup
+        max_attempts = 3
+        exclude_ids = {broadcaster_id}
+        cached_de_streams = None  # Cache für Fallback-Streams um API zu schonen
 
-        is_partner_raid = False
-        target = None
-        target_id = None
-        target_login = None
-        target_started_at = ""
+        for attempt in range(max_attempts):
+            target = None
+            is_partner_raid = False
+            candidates_count = 0
 
-        if candidates:
-            # Partner vorhanden -> Fairness-basierte Auswahl
-            is_partner_raid = True
-            target = self._select_fairest_candidate(candidates, broadcaster_id)
+            # 1. Partner-Kandidaten filtern
+            # Wir prüfen Blacklist und bereits versuchte IDs
+            partner_candidates = [
+                s
+                for s in online_partners
+                if s.get("user_id") not in exclude_ids
+                and not self._is_blacklisted(s.get("user_id"), s.get("user_login"))
+            ]
+
+            if partner_candidates:
+                # Partner vorhanden -> Fairness-basierte Auswahl
+                is_partner_raid = True
+                target = self._select_fairest_candidate(partner_candidates, broadcaster_id)
+                candidates_count = len(partner_candidates)
+
+            # 2. Fallback (Deadlock-DE), falls kein Partner gefunden
+            if not target and api and category_id:
+                if cached_de_streams is None:
+                    try:
+                        log.info(
+                            "No partners online for %s, fetching Deadlock-DE fallback",
+                            broadcaster_login,
+                        )
+                        cached_de_streams = await api.get_streams_by_category(
+                            category_id, language="de", limit=50
+                        )
+                    except Exception:
+                        log.exception("Failed to get Deadlock-DE streams for fallback raid")
+                        cached_de_streams = []
+
+                # Fallback-Kandidaten filtern
+                fallback_candidates = [
+                    s
+                    for s in cached_de_streams
+                    if s.get("user_id") not in exclude_ids
+                    and not self._is_blacklisted(s.get("user_id"), s.get("user_login"))
+                ]
+
+                if fallback_candidates:
+                    # Sortiere nach kürzester Stream-Zeit
+                    fallback_candidates.sort(key=lambda s: s.get("started_at", "9999"))
+                    target = fallback_candidates[0]
+                    candidates_count = len(fallback_candidates)
+                    log.info(
+                        "Selected fallback target: %s (from %d candidates)",
+                        target["user_login"],
+                        candidates_count,
+                    )
+
             if not target:
-                log.warning("Could not select raid target for %s", broadcaster_login)
+                log.info(
+                    "No valid raid target found for %s (Attempt %d/%d)",
+                    broadcaster_login,
+                    attempt + 1,
+                    max_attempts,
+                )
                 return None
 
+            # 3. Raid ausführen
             target_id = target["user_id"]
             target_login = target["user_login"]
             target_started_at = target.get("started_at", "")
 
             log.info(
-                "Executing partner raid: %s -> %s (%d partner candidates)",
+                "Executing raid attempt %d/%d: %s -> %s",
+                attempt + 1,
+                max_attempts,
                 broadcaster_login,
                 target_login,
-                len(candidates),
             )
-        else:
-            # Keine Partner online -> Fallback auf deutsche Deadlock-Streamer
-            log.info("No partners online for %s, trying Deadlock-DE fallback", broadcaster_login)
 
-            if not api or not category_id:
-                log.warning("Cannot fallback to Deadlock-DE (no API or category_id)")
-                return None
-
-            try:
-                # Hole deutsche Deadlock-Streamer
-                de_streams = await api.get_streams_by_category(
-                    category_id,
-                    language="de",
-                    limit=50
-                )
-
-                # Filtere eigenen Stream raus
-                de_streams = [
-                    s for s in de_streams
-                    if s.get("user_id") != broadcaster_id
-                ]
-
-                if not de_streams:
-                    log.info("No German Deadlock streamers found for fallback raid")
-                    return None
-
-                # Sortiere nach kürzester Stream-Zeit
-                de_streams.sort(key=lambda s: s.get("started_at", "9999-99-99"))
-                target = de_streams[0]
-
-                target_id = target["user_id"]
-                target_login = target["user_login"]
-                target_started_at = target.get("started_at", "")
-
-                log.info(
-                    "Executing Deadlock-DE fallback raid: %s -> %s (non-partner, %d DE streamers found)",
-                    broadcaster_login,
-                    target_login,
-                    len(de_streams),
-                )
-            except Exception:
-                log.exception("Failed to get Deadlock-DE streams for fallback raid")
-                return None
-
-        # Raid ausführen
-        success, error = await self.raid_executor.start_raid(
-            from_broadcaster_id=broadcaster_id,
-            from_broadcaster_login=broadcaster_login,
-            to_broadcaster_id=target_id,
-            to_broadcaster_login=target_login,
-            viewer_count=viewer_count,
-            stream_duration_sec=stream_duration_sec,
-            target_stream_started_at=target_started_at,
-            candidates_count=len(candidates) if is_partner_raid else len(de_streams) if 'de_streams' in locals() else 0,
-            session=self.session,
-        )
-
-        # Bei Nicht-Partner-Raid: Chat-Nachricht senden
-        if success and not is_partner_raid:
-            await self._send_recruitment_message(
+            success, error = await self.raid_executor.start_raid(
+                from_broadcaster_id=broadcaster_id,
                 from_broadcaster_login=broadcaster_login,
+                to_broadcaster_id=target_id,
                 to_broadcaster_login=target_login,
-                target_stream_data=target,
+                viewer_count=viewer_count,
+                stream_duration_sec=stream_duration_sec,
+                target_stream_started_at=target_started_at,
+                candidates_count=candidates_count,
+                session=self.session,
             )
 
-        return target_login if success else None
+            if success:
+                # Bei Nicht-Partner-Raid: Chat-Nachricht senden
+                if not is_partner_raid:
+                    await self._send_recruitment_message(
+                        from_broadcaster_login=broadcaster_login,
+                        to_broadcaster_login=target_login,
+                        target_stream_data=target,
+                    )
+                return target_login
+
+            # Fehler-Behandlung
+            exclude_ids.add(target_id)  # Diesen Kandidaten nicht nochmal versuchen
+
+            # Check auf "Cannot be raided" (HTTP 400)
+            if error and "cannot be raided" in error:
+                log.warning(
+                    "Raid failed: Target %s does not allow raids. Blacklisting and retrying.",
+                    target_login,
+                )
+                self._add_to_blacklist(target_id, target_login, error)
+                continue  # Nächster Versuch
+
+            # Bei anderen Fehlern (z.B. API Down, Auth Error) brechen wir ab
+            log.error(
+                "Raid failed with non-retriable error: %s. Aborting.", error
+            )
+            return None
+
+        return None
