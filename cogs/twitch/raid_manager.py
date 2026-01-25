@@ -35,6 +35,7 @@ RAID_SCOPES = [
     "analytics:read:games",
     "analytics:read:extensions",
     "channel:manage:moderators",
+    "channel:bot",
     "chat:read",
     "chat:edit",
 ]
