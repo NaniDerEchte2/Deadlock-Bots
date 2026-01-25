@@ -820,7 +820,7 @@ class RaidBot:
                 return
 
             # 3. Nachricht vorbereiten (mit Stats Teaser)
-            discord_invite = "discord.gg/deadlock-de"  # TODO: Aus ENV holen
+            discord_invite = "discord.gg/z5TfVHuQq2"  # TODO: Aus ENV holen
 
             stats_teaser = ""
             try:
@@ -847,7 +847,7 @@ class RaidBot:
 
             message = (
                 f"Hey @{to_broadcaster_login}! "
-                f"Du wurdest gerade von @{from_broadcaster_login} geraidet, einem unserer Deadlock Streamer-Partner! 🚀 "
+                f"Du wurdest gerade von @{from_broadcaster_login} geraidet, einem unserer Deadlock Streamer-Partner! <3 "
                 f"{stats_teaser}"
                 f"Falls du Lust hast, Teil der Community zu werden und auch Support zu erhalten – "
                 f"schau gerne mal auf unserem Discord vorbei: {discord_invite} "
