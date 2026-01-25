@@ -331,7 +331,7 @@ if TWITCHIO_AVAILABLE:
                 log.debug("Konnte Chat-Health nicht loggen", exc_info=True)
 
             # Verarbeite Commands
-            await self.handle_commands(message)
+            await self.process_commands(message)
 
         def _get_streamer_by_channel(self, channel_name: str) -> Optional[tuple]:
             """Findet Streamer-Daten anhand des Channel-Namens."""
