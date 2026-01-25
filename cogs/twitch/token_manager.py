@@ -237,11 +237,14 @@ class TwitchBotTokenManager:
             import keyring  # type: ignore
 
             # Wir suchen primär nach dem Format ZWECK@DeadlockBot
-            access_keyring = keyring.get_password(f"TWITCH_BOT_TOKEN@{self.keyring_service}", "TWITCH_BOT_TOKEN")
+            # Prevent double-prefixing if self.keyring_service already contains the prefix
+            service_access = self.keyring_service if self.keyring_service.startswith("TWITCH_BOT_TOKEN@") else f"TWITCH_BOT_TOKEN@{self.keyring_service}"
+            access_keyring = keyring.get_password(service_access, "TWITCH_BOT_TOKEN")
             if not access_keyring:
                 access_keyring = keyring.get_password(self.keyring_service, "TWITCH_BOT_TOKEN")
 
-            refresh_keyring = keyring.get_password(f"TWITCH_BOT_REFRESH_TOKEN@{self.keyring_service}", "TWITCH_BOT_REFRESH_TOKEN")
+            service_refresh = self.keyring_service if self.keyring_service.startswith("TWITCH_BOT_REFRESH_TOKEN@") else f"TWITCH_BOT_REFRESH_TOKEN@{self.keyring_service}"
+            refresh_keyring = keyring.get_password(service_refresh, "TWITCH_BOT_REFRESH_TOKEN")
             if not refresh_keyring:
                 refresh_keyring = keyring.get_password(self.keyring_service, "TWITCH_BOT_REFRESH_TOKEN")
 
@@ -266,18 +269,20 @@ class TwitchBotTokenManager:
         saved_types = []
         try:
             if self.access_token:
+                service_access = self.keyring_service if self.keyring_service.startswith("TWITCH_BOT_TOKEN@") else f"TWITCH_BOT_TOKEN@{self.keyring_service}"
                 await asyncio.to_thread(
                     keyring.set_password,
-                    f"TWITCH_BOT_TOKEN@{self.keyring_service}",
+                    service_access,
                     "TWITCH_BOT_TOKEN",
                     self.access_token,
                 )
                 saved_types.append("ACCESS_TOKEN")
 
             if self.refresh_token:
+                service_refresh = self.keyring_service if self.keyring_service.startswith("TWITCH_BOT_REFRESH_TOKEN@") else f"TWITCH_BOT_REFRESH_TOKEN@{self.keyring_service}"
                 await asyncio.to_thread(
                     keyring.set_password,
-                    f"TWITCH_BOT_REFRESH_TOKEN@{self.keyring_service}",
+                    service_refresh,
                     "TWITCH_BOT_REFRESH_TOKEN",
                     self.refresh_token,
                 )

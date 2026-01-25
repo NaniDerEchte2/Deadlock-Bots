@@ -1216,11 +1216,13 @@ async def _save_bot_tokens_to_keyring(*, access_token: str, refresh_token: Optio
     saved_types = []
     if access_token:
         # Wir speichern nur noch im Format ZWECK@DeadlockBot
-        tasks.append(_save_one(f"TWITCH_BOT_TOKEN@{_KEYRING_SERVICE}", "TWITCH_BOT_TOKEN", access_token))
+        service_access = _KEYRING_SERVICE if _KEYRING_SERVICE.startswith("TWITCH_BOT_TOKEN@") else f"TWITCH_BOT_TOKEN@{_KEYRING_SERVICE}"
+        tasks.append(_save_one(service_access, "TWITCH_BOT_TOKEN", access_token))
         saved_types.append("ACCESS_TOKEN")
     if refresh_token:
         # Wir speichern nur noch im Format ZWECK@DeadlockBot
-        tasks.append(_save_one(f"TWITCH_BOT_REFRESH_TOKEN@{_KEYRING_SERVICE}", "TWITCH_BOT_REFRESH_TOKEN", refresh_token))
+        service_refresh = _KEYRING_SERVICE if _KEYRING_SERVICE.startswith("TWITCH_BOT_REFRESH_TOKEN@") else f"TWITCH_BOT_REFRESH_TOKEN@{_KEYRING_SERVICE}"
+        tasks.append(_save_one(service_refresh, "TWITCH_BOT_REFRESH_TOKEN", refresh_token))
         saved_types.append("REFRESH_TOKEN")
 
     if tasks:

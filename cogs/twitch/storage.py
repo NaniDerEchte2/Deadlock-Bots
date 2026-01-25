@@ -326,6 +326,18 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_twitch_raid_history_executed ON twitch_raid_history(executed_at)"
     )
 
+    # 7b) Raid-Blacklist (Channels, die keine Raids zulassen)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_raid_blacklist (
+            target_id       TEXT,
+            target_login    TEXT NOT NULL PRIMARY KEY,
+            reason          TEXT,
+            added_at        TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
     # 8) Subscription Snapshots
     conn.execute(
         """
