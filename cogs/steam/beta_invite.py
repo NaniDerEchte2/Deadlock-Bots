@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional, Union
+from urllib.parse import parse_qs
 
 import asyncio
 import discord
@@ -17,12 +19,9 @@ from service import db
 from cogs.steam import SCHNELL_LINK_AVAILABLE, SchnellLinkButton
 from cogs.steam.steam_master import SteamTaskClient
 from cogs.welcome_dm import base as welcome_base
+SUPPORT_CHANNEL = "https://discord.com/channels/1289721245281292288/1459628609705738539"
+BETA_INVITE_CHANNEL_URL = "https://discord.com/channels/1289721245281292288/1464736918951432222"
 
-BETA_INVITE_CHANNEL_URL = getattr(
-    welcome_base,
-    "BETA_INVITE_CHANNEL_URL",
-    "https://discord.com/channels/1289721245281292288/1428745737323155679",
-)
 BETA_INVITE_SUPPORT_CONTACT = getattr(
     welcome_base,
     "BETA_INVITE_SUPPORT_CONTACT",
@@ -30,6 +29,29 @@ BETA_INVITE_SUPPORT_CONTACT = getattr(
 )
 BETA_MAIN_GUILD_ID = getattr(welcome_base, "MAIN_GUILD_ID", None)
 BETA_INVITE_PANEL_CUSTOM_ID = "betainvite:panel:start"
+KOFI_VERIFICATION_TOKEN = os.getenv("KOFI_VERIFICATION_TOKEN")
+
+EXPRESS_SUCCESS_DM = "Vielen Dank für deinen Support! 🚑 Dein Deadlock-Invite wird jetzt verarbeitet."
+STEAM_LINK_REQUIRED_DM = "Zahlung erhalten! Aber du musst erst deinen Steam-Account verknüpfen. Nutze danach /betainvite."
+INVITE_ONLY_PAYMENT_MESSAGE = (
+'''
+Damit wir dir den Invite schicken können, brauchen wir deine Hilfe!
+
+Um unseren Server werbefrei und technisch auf dem neuesten Stand zu halten, erheben wir einen kleinen Infrastruktur-Beitrag. Ohne diesen können wir den Service und die Bot-Entwicklung leider nicht dauerhaft anbieten.
+
+Wichtig: Nutze deinen Discord USER-Namen (@deinname) im Nachrichtentext der Zahlung, damit wir dich zuordnen können.
+
+Nachdem du deinen Beitrag geleistet hast, wird der Invite automatisch per DM an dich verschickt.'''
+)
+KOFI_PAYMENT_URL = "ko-fi.com/deutschedeadlockcommunity"
+_raw_log_channel_id = os.getenv("BETA_INVITE_LOG_CHANNEL_ID", "1234567890")
+try:
+    BETA_INVITE_LOG_CHANNEL_ID = int(_raw_log_channel_id)
+except (TypeError, ValueError):
+    BETA_INVITE_LOG_CHANNEL_ID = None
+KOFI_WEBHOOK_HOST = os.getenv("KOFI_WEBHOOK_HOST", "127.0.0.1")
+KOFI_WEBHOOK_PORT = int(os.getenv("KOFI_WEBHOOK_PORT", "8791"))
+KOFI_WEBHOOK_PATH = "/kofi-webhook"
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +96,44 @@ def _trace(event: str, **fields: Any) -> None:
         _trace_log.info(json.dumps(payload, ensure_ascii=False, default=str))
     except Exception:
         log.debug("Trace log failed", exc_info=True)
+
+
+class _WebhookFollowup:
+    def __init__(
+        self,
+        user: discord.abc.User,
+        log_channel: Optional[discord.abc.Messageable],
+    ) -> None:
+        self.user = user
+        self.log_channel = log_channel
+
+    async def send(self, content: str, **kwargs: Any) -> None:
+        try:
+            await self.user.send(content)
+            return
+        except Exception:
+            log.debug(
+                "Ko-fi followup DM fehlgeschlagen f\u00fcr %s",
+                getattr(self.user, "id", None),
+                exc_info=True,
+            )
+        if self.log_channel:
+            try:
+                await self.log_channel.send(content)
+            except Exception:
+                log.debug("Ko-fi Followup-Log fehlgeschlagen", exc_info=True)
+
+
+class _WebhookInteractionProxy:
+    def __init__(
+        self,
+        user: discord.abc.User,
+        guild: Optional[discord.Guild],
+        log_channel: Optional[discord.abc.Messageable],
+    ) -> None:
+        self.user = user
+        self.guild = guild
+        self.followup = _WebhookFollowup(user, log_channel)
 
 STEAM64_BASE = 76561197960265728
 
@@ -435,6 +495,19 @@ class BetaIntentGateView(discord.ui.View):
         await self.cog.handle_intent_selection(interaction, INTENT_INVITE_ONLY)
 
 
+class InviteOnlyPaymentView(discord.ui.View):
+    def __init__(self, kofi_url: str) -> None:
+        super().__init__(timeout=300)
+        self.add_item(
+            discord.ui.Button(
+                label="Ko-fi Beitrag zahlen",
+                style=discord.ButtonStyle.link,
+                url=kofi_url,
+                emoji="💙",
+            )
+        )
+
+
 class BetaInviteConfirmView(discord.ui.View):
     def __init__(self, cog: "BetaInviteFlow", record_id: int, discord_id: int, steam_id64: str) -> None:
         super().__init__(timeout=600)
@@ -473,6 +546,9 @@ class BetaInviteFlow(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.tasks = SteamTaskClient(poll_interval=0.5, default_timeout=30.0)
+        self._kofi_webhook_task: Optional[asyncio.Task] = None
+        self._kofi_server = None
+        self._log_channel_cache: Optional[discord.abc.Messageable] = None
         _ensure_invite_audit_table()
 
     async def cog_load(self) -> None:
@@ -496,6 +572,209 @@ class BetaInviteFlow(commands.Cog):
             log.info("BetaInvite: MAIN_GUILD_ID nicht gesetzt, kein Guild-Sync durchgeführt")
         log.info("BetaInvite: Panel-View registriert")
 
+    def cog_unload(self) -> None:
+        if self._kofi_server is not None:
+            try:
+                self._kofi_server.should_exit = True
+            except Exception:
+                log.debug("Konnte Ko-fi Server nicht zum Stoppen markieren", exc_info=True)
+        if self._kofi_webhook_task and not self._kofi_webhook_task.done():
+            try:
+                self._kofi_webhook_task.cancel()
+            except Exception:
+                log.debug("Konnte Ko-fi Webhook Task nicht abbrechen", exc_info=True)
+
+    def _main_guild(self) -> Optional[discord.Guild]:
+        try:
+            guild_id = int(BETA_MAIN_GUILD_ID) if BETA_MAIN_GUILD_ID else None
+        except (TypeError, ValueError):
+            return None
+        return self.bot.get_guild(guild_id) if guild_id else None
+
+    async def _get_log_channel(self) -> Optional[discord.abc.Messageable]:
+        if self._log_channel_cache:
+            return self._log_channel_cache
+        if not BETA_INVITE_LOG_CHANNEL_ID:
+            return None
+
+        channel = self.bot.get_channel(BETA_INVITE_LOG_CHANNEL_ID)
+        if channel:
+            self._log_channel_cache = channel  # type: ignore[assignment]
+            return channel
+        try:
+            fetched = await self.bot.fetch_channel(BETA_INVITE_LOG_CHANNEL_ID)
+        except Exception:
+            log.debug("Konnte Beta-Invite-Log-Channel nicht abrufen", exc_info=True)
+            return None
+        self._log_channel_cache = fetched  # type: ignore[assignment]
+        return fetched
+
+    async def _notify_log_channel(self, message: str) -> None:
+        channel = await self._get_log_channel()
+        if channel is None:
+            log.warning("BetaInvite-Log (Fallback): %s", message)
+            return
+        try:
+            await channel.send(message)
+        except Exception:
+            log.debug("Senden an BetaInvite-Log-Channel fehlgeschlagen", exc_info=True)
+
+    @staticmethod
+    def _extract_discord_username(message: str) -> Optional[str]:
+        text = (message or "").strip()
+        if not text:
+            return None
+        parts = text.split()
+        for part in parts:
+            if part.startswith("@") and len(part) > 1:
+                candidate = part.lstrip("@").strip()
+                if candidate:
+                    return candidate
+        return text.lstrip("@").strip() or None
+
+    async def _find_member_by_username(self, guild: discord.Guild, username: str) -> Optional[discord.Member]:
+        clean = username.strip().lstrip("@")
+        if not clean:
+            return None
+        member = guild.get_member_named(clean)
+        if member:
+            return member
+
+        clean_lower = clean.lower()
+        for candidate in getattr(guild, "members", []):
+            names = [
+                str(getattr(candidate, "name", "")).lower(),
+                str(getattr(candidate, "global_name", "") or "").lower(),
+                str(getattr(candidate, "display_name", "") or "").lower(),
+            ]
+            if clean_lower in names:
+                return candidate
+
+        search_members = getattr(guild, "search_members", None)
+        if callable(search_members):
+            try:
+                matches = await search_members(clean, limit=5)
+                for match in matches:
+                    names = [
+                        str(getattr(match, "name", "")).lower(),
+                        str(getattr(match, "global_name", "") or "").lower(),
+                        str(getattr(match, "display_name", "") or "").lower(),
+                    ]
+                    if clean_lower in names:
+                        return match
+                if matches:
+                    return matches[0]
+            except Exception:
+                log.debug("Ko-fi Member-Suche via search_members fehlgeschlagen", exc_info=True)
+        return None
+
+    async def _safe_dm(self, user: discord.abc.User, content: str) -> bool:
+        try:
+            await user.send(content)
+            return True
+        except Exception:
+            log.debug("DM konnte nicht gesendet werden an %s", getattr(user, "id", None), exc_info=True)
+            return False
+
+    async def handle_kofi_webhook(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        raw_message = str(data.get("message") or "").strip()
+        username = self._extract_discord_username(raw_message)
+
+        _trace(
+            "kofi_webhook_received",
+            raw_message=raw_message,
+            username=username,
+            payload_keys=list(data.keys()) if isinstance(data, Mapping) else None,
+        )
+
+        guild = self._main_guild()
+        if guild is None:
+            await self._notify_log_channel("Ko-fi Webhook: MAIN_GUILD_ID ist nicht gesetzt oder Guild nicht im Cache.")
+            return {"ok": False, "reason": "guild_unavailable"}
+
+        if not username:
+            await self._notify_log_channel("Ko-fi Webhook: message-Feld leer, kein Discord-Nutzer angegeben.")
+            return {"ok": False, "reason": "missing_username"}
+
+        member = await self._find_member_by_username(guild, username)
+        if member is None:
+            await self._notify_log_channel(
+                f"Ko-fi Webhook: Nutzer '{username}' konnte in Guild {guild.id} nicht gefunden werden. Raw message: {raw_message!r}"
+            )
+            _trace(
+                "kofi_member_not_found",
+                username=username,
+                raw_message=raw_message,
+                guild_id=getattr(guild, "id", None),
+            )
+            return {"ok": False, "reason": "user_not_found", "username": username}
+
+        steam_id = _lookup_primary_steam_id(member.id)
+        if not steam_id:
+            dm_ok = await self._safe_dm(member, STEAM_LINK_REQUIRED_DM)
+            if not dm_ok:
+                await self._notify_log_channel(
+                    f"Ko-fi Webhook: DM an {getattr(member, 'mention', member.id)} konnte nicht zugestellt werden (Steam-Link fehlt)."
+                )
+            _trace(
+                "kofi_missing_steam_link",
+                discord_id=member.id,
+                username=username,
+                raw_message=raw_message,
+            )
+            return {"ok": False, "reason": "missing_steam_link", "user_id": member.id}
+
+        try:
+            account_id = steam64_to_account_id(steam_id)
+        except ValueError as exc:
+            await self._notify_log_channel(
+                f"Ko-fi Webhook: Ungültige SteamID {steam_id} für {getattr(member, 'mention', member.id)} ({exc})."
+            )
+            _trace(
+                "kofi_invalid_steam_id",
+                discord_id=member.id,
+                steam_id64=steam_id,
+                error=str(exc),
+            )
+            return {"ok": False, "reason": "invalid_steam_id", "user_id": member.id}
+
+        record = _create_or_reset_invite(member.id, steam_id, account_id)
+        log_channel = await self._get_log_channel()
+        interaction = _WebhookInteractionProxy(member, guild, log_channel)
+        await interaction.followup.send(EXPRESS_SUCCESS_DM)
+
+        try:
+            ok = await self._send_invite_after_friend(
+                interaction,
+                record,
+                account_id_hint=account_id,
+            )
+        except Exception as exc:
+            log.exception("Ko-fi Invite-Flow fehlgeschlagen", exc_info=True)
+            await self._notify_log_channel(
+                f"Ko-fi Webhook: Invite für {getattr(member, 'mention', member.id)} (Steam: {steam_id}) fehlgeschlagen: {exc}"
+            )
+            _trace(
+                "kofi_invite_exception",
+                discord_id=member.id,
+                steam_id64=steam_id,
+                error=str(exc),
+            )
+            return {"ok": False, "reason": "invite_exception", "user_id": member.id}
+
+        _trace(
+            "kofi_invite_result",
+            discord_id=member.id,
+            steam_id64=steam_id,
+            ok=ok,
+        )
+        return {
+            "ok": bool(ok),
+            "user_id": member.id,
+            "steam_id64": steam_id,
+        }
+
     async def _reply_no_invites(self, interaction: discord.Interaction) -> None:
         _trace("betainvite_unavailable_start", discord_id=getattr(interaction.user, "id", None))
         await asyncio.sleep(10)
@@ -511,8 +790,8 @@ class BetaInviteFlow(commands.Cog):
 
     async def _prompt_intent_gate(self, interaction: discord.Interaction) -> None:
         prompt = (
-            "Kurze Frage bevor wir loslegen: Willst du wirklich mitspielen bzw. aktiv in der Community sein "
-            "oder nur schnell einen Steam-Invite abholen? Deine Antwort wird gespeichert und kann nicht umgeschaltet werden."
+            "Kurze Frage bevor wir loslegen: Willst du hier aktiv mitspielen bzw. aktiv in der Community sein "
+            "oder nur schnell einen Invite abholen?"
         )
         view = BetaIntentGateView(self, interaction.user.id)
         _trace("betainvite_intent_prompt", discord_id=interaction.user.id)
@@ -548,13 +827,18 @@ class BetaInviteFlow(commands.Cog):
         )
 
         if intent_choice == INTENT_INVITE_ONLY:
-            await interaction.response.edit_message(
-                content=(
-                    "Verstanden – aktuell geben wir Einladungen nur an Leute raus, die wirklich mitspielen wollen. "
-                    "Deine Antwort ist gespeichert."
-                ),
-                view=None,
-            )
+            view = InviteOnlyPaymentView(KOFI_PAYMENT_URL)
+            try:
+                await interaction.response.edit_message(
+                    content=INVITE_ONLY_PAYMENT_MESSAGE,
+                    view=view,
+                )
+            except Exception:
+                await interaction.followup.send(
+                    INVITE_ONLY_PAYMENT_MESSAGE,
+                    view=view,
+                    ephemeral=True,
+                )
             return
 
         try:
@@ -1153,7 +1437,7 @@ class BetaInviteFlow(commands.Cog):
             "✅ Einladung verschickt!\n"
             "Bitte schaue in 1-2 Stunden unter https://store.steampowered.com/account/playtestinvites "
             "und nimm die Einladung dort an. Danach erscheint Deadlock automatisch in deiner Bibliothek.\n"
-            f"Alle weiteren Infos findest du in <{BETA_INVITE_CHANNEL_URL}> - bei Problemen ping bitte {BETA_INVITE_SUPPORT_CONTACT}.\n"
+            f"Alle weiteren Infos findest du in <{BETA_INVITE_CHANNEL_URL}> - bei Problemen melde dich bitte <{SUPPORT_CHANNEL}.\n"
             "⚠️ Verlässt du den Server wird der Invite ungültig, egal ob dein Invite noch aussteht oder du Deadlock schon hast."
         )
         await interaction.followup.send(message, ephemeral=True)
@@ -1310,8 +1594,10 @@ class BetaInviteFlow(commands.Cog):
             await self._prompt_intent_gate(interaction)
             return
         if intent_record.intent == INTENT_INVITE_ONLY:
+            view = InviteOnlyPaymentView(KOFI_PAYMENT_URL)
             await interaction.followup.send(
-                "Du hattest angegeben, nur den Invite abholen zu wollen. Aktuell vergeben wir Einladungen nur an Leute, die mitspielen wollen.",
+                INVITE_ONLY_PAYMENT_MESSAGE,
+                view=view,
                 ephemeral=True,
             )
             _trace(
@@ -1385,9 +1671,132 @@ class BetaInviteFlow(commands.Cog):
             log.warning("BetaInvite: HTTP-Fehler beim Bannen von %s: %s", member.id, exc)
 
 
+def _extract_kofi_token(payload: Mapping[str, Any], headers: Mapping[str, Any]) -> str:
+    candidates: list[str] = []
+    for source in (
+        payload,
+        payload.get("data") if isinstance(payload.get("data"), Mapping) else {},
+    ):
+        if not isinstance(source, Mapping):
+            continue
+        for key in ("verification_token", "verificationToken"):
+            value = source.get(key)
+            if value:
+                candidates.append(str(value).strip())
+
+    for header_key in ("X-Verification-Token", "X-Kofi-Token"):
+        header_value = headers.get(header_key) if hasattr(headers, "get") else None
+        if header_value:
+            candidates.append(str(header_value).strip())
+
+    return next((candidate for candidate in candidates if candidate), "")
+
+
+async def _parse_kofi_request_payload(request: Any) -> Mapping[str, Any]:
+    try:
+        raw_body = await request.body()
+    except Exception:
+        return {}
+
+    text = raw_body.decode("utf-8", errors="ignore").strip()
+    if not text:
+        return {}
+
+    parsed: Any
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        qs_payload = parse_qs(text)
+        if "data" in qs_payload and qs_payload.get("data"):
+            data_field = qs_payload.get("data", [""])[0]
+            try:
+                parsed = json.loads(data_field)
+            except json.JSONDecodeError:
+                parsed = {"data": data_field}
+        else:
+            parsed = {key: values[0] if len(values) == 1 else values for key, values in qs_payload.items()}
+
+    if not isinstance(parsed, Mapping):
+        return {}
+
+    data_field = parsed.get("data")
+    if isinstance(data_field, str):
+        try:
+            parsed["data"] = json.loads(data_field)
+        except Exception:
+            pass
+    return parsed
+
+
+async def _start_kofi_webhook_server(beta_invite: BetaInviteFlow) -> None:
+    try:
+        from fastapi import FastAPI, HTTPException, Request
+        import uvicorn
+    except ImportError as exc:
+        log.warning("Ko-fi Webhook deaktiviert (fastapi/uvicorn fehlt): %s", exc)
+        beta_invite._kofi_webhook_task = None
+        return
+
+    app = FastAPI(
+        title="Deadlock Ko-fi Webhook",
+        docs_url=None,
+        redoc_url=None,
+    )
+
+    @app.get("/kofi-health")
+    async def kofi_health() -> Mapping[str, Any]:
+        return {"ok": True}
+
+    @app.post(KOFI_WEBHOOK_PATH)
+    async def kofi_webhook(request: Request) -> Mapping[str, Any]:
+        payload = await _parse_kofi_request_payload(request)
+        if not payload:
+            raise HTTPException(status_code=400, detail="Invalid payload")
+
+        token = _extract_kofi_token(payload, request.headers)
+        expected = str(KOFI_VERIFICATION_TOKEN or "").strip()
+        if expected and token != expected:
+            raise HTTPException(status_code=401, detail="Invalid verification token")
+
+        asyncio.create_task(beta_invite.handle_kofi_webhook(payload))
+        return {"ok": True, "queued": True}
+
+    config = uvicorn.Config(
+        app=app,
+        host=KOFI_WEBHOOK_HOST,
+        port=int(KOFI_WEBHOOK_PORT),
+        log_level="info",
+        loop="asyncio",
+    )
+    server = uvicorn.Server(config=config)
+    beta_invite._kofi_server = server
+    _trace(
+        "kofi_webhook_server_start",
+        host=KOFI_WEBHOOK_HOST,
+        port=KOFI_WEBHOOK_PORT,
+        path=KOFI_WEBHOOK_PATH,
+    )
+    try:
+        await server.serve()
+    except asyncio.CancelledError:
+        server.should_exit = True
+        raise
+    except Exception as exc:  # pragma: no cover - runtime network errors
+        log.exception("Ko-fi Webhook-Server gestoppt aufgrund eines Fehlers", exc_info=True)
+        await beta_invite._notify_log_channel(f"Ko-fi Webhook-Server gestoppt: {exc}")
+    finally:
+        beta_invite._kofi_server = None
+        beta_invite._kofi_webhook_task = None
+        _trace("kofi_webhook_server_stopped")
+
+
 async def setup(bot: commands.Bot) -> None:
     beta_invite_cog = BetaInviteFlow(bot)
     await bot.add_cog(beta_invite_cog)
+    if not beta_invite_cog._kofi_webhook_task:
+        beta_invite_cog._kofi_webhook_task = asyncio.create_task(
+            _start_kofi_webhook_server(beta_invite_cog)
+        )
 
     for command in (
         beta_invite_cog.betainvite,
