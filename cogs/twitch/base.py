@@ -195,12 +195,9 @@ class TwitchBaseCog(commands.Cog):
                 log.exception("Konnte Loop nicht canceln: %r", lp)
         
         # EventSub Listener stoppen
-        es_offline_listener = getattr(self, "_eventsub_offline_listener", None)
-        if es_offline_listener and hasattr(es_offline_listener, "stop"):
-            es_offline_listener.stop()
-        es_online_listener = getattr(self, "_eventsub_online_listener", None)
-        if es_online_listener and hasattr(es_online_listener, "stop"):
-            es_online_listener.stop()
+        es_ws_listener = getattr(self, "_eventsub_ws_listener", None)
+        if es_ws_listener and hasattr(es_ws_listener, "stop"):
+            es_ws_listener.stop()
 
         # RaidBot Cleanup
         if self._raid_bot:

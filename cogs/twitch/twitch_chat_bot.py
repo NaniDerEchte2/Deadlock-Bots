@@ -219,44 +219,16 @@ if TWITCHIO_AVAILABLE:
                         return False
                     channel_id = str(user.id)
 
-                # STRATEGIE: Wir versuchen, den Token des Streamers zu nutzen.
-                # Wenn wir den Token haben, abonnieren wir als "Streamer hört Streamer".
-                # Das umgeht die Notwendigkeit, dass der Bot Moderator sein muss.
-                use_streamer_auth = False
+                # Wir nutzen IMMER den Bot-Token für alle Channels.
+                # Das hält die Anzahl der WebSocket-Verbindungen auf 1 (Limit bei Twitch ist 3 pro Client ID).
+                # Voraussetzung: Der Bot muss Moderator im Ziel-Kanal sein.
+                payload = eventsub.ChatMessageSubscription(
+                    broadcaster_user_id=str(channel_id), 
+                    user_id=str(self.bot_id)
+                )
                 
-                if self._raid_bot:
-                    # Session holen (TwitchIO intern)
-                    http_session = self._http._session
-                    tokens = await self._raid_bot.auth_manager.get_tokens_for_user(channel_id, http_session)
-                    scopes = self._raid_bot.auth_manager.get_scopes(channel_id) if hasattr(self._raid_bot, "auth_manager") else []
-                    scopes_lower = [s.lower() for s in scopes]
-                    has_chat_scope = any(s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"} for s in scopes_lower)
-
-                    if tokens and has_chat_scope:
-                        access_token, refresh_token = tokens
-                        # Token im Client registrieren, damit 'token_for' funktioniert
-                        await self.add_token(access_token, refresh_token)
-                        use_streamer_auth = True
-                        log.info("Using streamer auth for channel %s (No Mod required)", channel_login)
-                    elif tokens and not has_chat_scope:
-                        log.info("Streamer auth fehlt Chat-Scope für %s -> kein Join", channel_login)
-                        return False
-
-                if use_streamer_auth:
-                    # User ID = Broadcaster ID -> Streamer hört sich selbst zu
-                    payload = eventsub.ChatMessageSubscription(
-                        broadcaster_user_id=str(channel_id), 
-                        user_id=str(channel_id)
-                    )
-                    # Wir zwingen die Nutzung des Streamer-Tokens
-                    await self.subscribe_websocket(payload=payload, token_for=str(channel_id))
-                else:
-                    # Fallback: Bot hört zu (braucht Mod-Rechte)
-                    payload = eventsub.ChatMessageSubscription(
-                        broadcaster_user_id=str(channel_id), 
-                        user_id=str(self.bot_id)
-                    )
-                    await self.subscribe_websocket(payload=payload)
+                # Wir abonnieren über den Standard-WebSocket des Bots
+                await self.subscribe_websocket(payload=payload)
 
                 self._monitored_streamers.add(channel_login.lower().lstrip("#"))
                 return True
@@ -264,8 +236,14 @@ if TWITCHIO_AVAILABLE:
                 msg = str(e)
                 if "403" in msg and "subscription missing proper authorization" in msg:
                     log.warning(
-                        "Cannot join chat for %s. Reasons: Missing 'user:read:chat' scope (re-auth needed) "
+                        "Cannot join chat for %s. Reasons: Bot account missing 'user:read:chat' scope "
                         "OR Bot is not a Moderator in the channel (please /mod bot).",
+                        channel_login
+                    )
+                elif "429" in msg or "transport limit exceeded" in msg.lower():
+                    log.error(
+                        "Cannot join chat for %s: WebSocket Transport Limit (429) reached. "
+                        "Ensure the bot uses only one WebSocket connection.",
                         channel_login
                     )
                 else:

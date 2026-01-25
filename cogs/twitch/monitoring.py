@@ -23,8 +23,6 @@ from .constants import (
     TWITCH_VOD_BUTTON_LABEL,
     TWITCH_TARGET_GAME_NAME,
 )
-from .eventsub_offline import EventSubOfflineListener
-from .eventsub_online import EventSubOnlineListener
 from .logger import log
 
 
@@ -209,69 +207,24 @@ class TwitchMonitoringMixin:
         except Exception:
             log.exception("EventSub: Auto-Raid offline handling failed for %s", broadcaster_login or broadcaster_id)
 
-    async def _start_eventsub_offline_listener(self):
-        """Startet EventSub WebSocket für stream.offline (raid_bot_enabled Streamer)."""
-        if getattr(self, "_eventsub_offline_started", False):
+    async def _start_eventsub_listener(self):
+        """Startet einen konsolidierten EventSub WebSocket Listener (Offline + Online)."""
+        if getattr(self, "_eventsub_ws_started", False):
             return
-        setattr(self, "_eventsub_offline_started", True)
+        setattr(self, "_eventsub_ws_started", True)
         if not getattr(self, "api", None):
             return
         try:
             await self.bot.wait_until_ready()
         except Exception:
-            log.exception("EventSub: wait_until_ready fehlgeschlagen")
+            log.exception("EventSub WS: wait_until_ready fehlgeschlagen")
             return
 
-        streamers = self._get_raid_enabled_streamers_for_eventsub()
-        broadcaster_ids = [entry["twitch_user_id"] for entry in streamers if entry.get("twitch_user_id")]
-        if not broadcaster_ids:
-            log.info("EventSub: keine raid-enabled Streamer gefunden, Listener nicht gestartet")
-            return
-
-        token_resolver = None
-        # Wir nutzen das Bot-User-Token für den EventSub WebSocket, 
-        # da alle Subs auf einem Socket vom selben User stammen müssen.
-        bot_token_mgr = getattr(self, "_bot_token_manager", None)
-
-        if bot_token_mgr:
-            async def _resolve_bot_token(_user_id: str) -> Optional[str]:
-                try:
-                    token, _ = await bot_token_mgr.get_valid_token()
-                    return token
-                except Exception:
-                    log.debug("EventSub: konnte Bot-Token nicht laden", exc_info=True)
-                    return None
-
-            token_resolver = _resolve_bot_token
-
-        listener = EventSubOfflineListener(self.api, log, token_resolver=token_resolver)
-        setattr(self, "_eventsub_offline_listener", listener)
-        try:
-            await listener.run(broadcaster_ids, self._on_eventsub_stream_offline)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            log.exception("EventSub offline listener beendet")
-
-    async def _start_eventsub_online_listener(self):
-        """Startet EventSub WebSocket für stream.online (Chat-Join bei Go-Live)."""
-        if getattr(self, "_eventsub_online_started", False):
-            return
-        setattr(self, "_eventsub_online_started", True)
-        if not getattr(self, "api", None):
-            return
-        try:
-            await self.bot.wait_until_ready()
-        except Exception:
-            log.exception("EventSub online: wait_until_ready fehlgeschlagen")
-            return
-
-        streamers = self._get_chat_scope_streamers_for_eventsub()
-        broadcaster_ids = list({entry["twitch_user_id"] for entry in streamers if entry.get("twitch_user_id")})
-        if not broadcaster_ids:
-            log.info("EventSub online: keine Streamer mit Chat-Scopes gefunden, Listener nicht gestartet")
-            return
-
+        # 1. Broadcaster sammeln
+        offline_streamers = self._get_raid_enabled_streamers_for_eventsub()
+        online_streamers = self._get_chat_scope_streamers_for_eventsub()
+        
+        # 2. Token Resolver vorbereiten
         token_resolver = None
         bot_token_mgr = getattr(self, "_bot_token_manager", None)
         if bot_token_mgr:
@@ -280,52 +233,74 @@ class TwitchMonitoringMixin:
                     token, _ = await bot_token_mgr.get_valid_token()
                     return token
                 except Exception:
-                    log.debug("EventSub online: konnte Bot-Token nicht laden", exc_info=True)
+                    log.debug("EventSub WS: konnte Bot-Token nicht laden", exc_info=True)
                     return None
-
             token_resolver = _resolve_bot_token
 
-        listener = EventSubOnlineListener(self.api, log, token_resolver=token_resolver)
-        setattr(self, "_eventsub_online_listener", listener)
+        from .eventsub_ws import EventSubWSListener
+        listener = EventSubWSListener(self.api, log, token_resolver=token_resolver)
+        setattr(self, "_eventsub_ws_listener", listener)
 
-        async def _on_stream_online(broadcaster_id: str, broadcaster_login: Optional[str]) -> None:
+        # 3. Subscriptions hinzufügen
+        for entry in offline_streamers:
+            bid = entry.get("twitch_user_id")
+            if bid:
+                listener.add_subscription("stream.offline", str(bid))
+
+        for entry in online_streamers:
+            bid = entry.get("twitch_user_id")
+            if bid:
+                listener.add_subscription("stream.online", str(bid))
+
+        # 4. Callbacks setzen
+        async def _offline_cb(bid: str, login: str, _event: dict):
+            await self._on_eventsub_stream_offline(bid, login)
+
+        async def _online_cb(bid: str, login: str, _event: dict):
             chat_bot = getattr(self, "_twitch_chat_bot", None)
             if not chat_bot:
                 return
-
-            login = (broadcaster_login or "").strip().lower()
-            if not login:
+            login_norm = login or ""
+            if not login_norm:
+                # Fallback: DB lookup
                 try:
                     with storage.get_conn() as c:
-                        row = c.execute(
-                            "SELECT twitch_login FROM twitch_streamers WHERE twitch_user_id = ?",
-                            (broadcaster_id,),
-                        ).fetchone()
+                        row = c.execute("SELECT twitch_login FROM twitch_streamers WHERE twitch_user_id = ?", (bid,)).fetchone()
                     if row:
-                        login = str(row["twitch_login"] if hasattr(row, "keys") else row[0]).strip().lower()
-                except Exception:
-                    log.debug("EventSub online: konnte Login nicht auflösen für %s", broadcaster_id, exc_info=True)
-
-            if not login:
-                return
-
+                        login_norm = str(row[0]).lower()
+                except Exception: pass
+            
+            if not login_norm: return
+            
             monitored = getattr(chat_bot, "_monitored_streamers", set())
-            if login in monitored:
+            if login_norm in monitored:
                 return
 
             try:
-                success = await chat_bot.join(login, channel_id=broadcaster_id)
+                success = await chat_bot.join(login_norm, channel_id=bid)
                 if success:
-                    log.info("EventSub online: Chat-Bot joined %s (%s)", login, broadcaster_id)
+                    log.info("EventSub WS: Chat-Bot joined %s (%s) after Go-Live", login_norm, bid)
             except Exception:
-                log.exception("EventSub online: Join fehlgeschlagen für %s", login)
+                log.exception("EventSub WS: Join fehlgeschlagen für %s", login_norm)
 
+        listener.set_callback("stream.offline", _offline_cb)
+        listener.set_callback("stream.online", _online_cb)
+
+        # 5. Listener starten
         try:
-            await listener.run(broadcaster_ids, _on_stream_online)
+            await listener.run()
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("EventSub online listener beendet")
+            log.exception("EventSub WS listener beendet")
+
+    async def _start_eventsub_offline_listener(self):
+        """Kompatibilitäts-Stub (wird nun über _start_eventsub_listener erledigt)."""
+        await self._start_eventsub_listener()
+
+    async def _start_eventsub_online_listener(self):
+        """Kompatibilitäts-Stub (wird nun über _start_eventsub_listener erledigt)."""
+        pass
 
     @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
     async def poll_streams(self):
