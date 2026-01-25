@@ -1708,6 +1708,18 @@ class BetaInviteFlow(commands.Cog):
             # Merke uns den Nutzer für den Webhook (24h)
             _register_pending_payment(interaction.user.id, interaction.user.name)
             
+            # Backup Benachrichtigung für Admin (DM)
+            admin_id = 662995601738170389
+            try:
+                admin_user = self.bot.get_user(admin_id) or await self.bot.fetch_user(admin_id)
+                if admin_user:
+                    await admin_user.send(
+                        f"ℹ️ **Zahlungs-Backup**: {interaction.user.mention} (`{interaction.user.name}`) "
+                        "hat gerade die Bezahl-Info angefordert und könnte jetzt bezahlen."
+                    )
+            except Exception as e:
+                log.debug(f"Konnte Admin-Backup-DM nicht senden: {e}")
+            
             view = InviteOnlyPaymentView(KOFI_PAYMENT_URL)
             await interaction.followup.send(
                 INVITE_ONLY_PAYMENT_MESSAGE,
