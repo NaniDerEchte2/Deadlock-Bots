@@ -4,6 +4,7 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,7 +44,7 @@ Wichtig: Nutze deinen Discord USER-Namen (@deinname) im Nachrichtentext der Zahl
 
 Nachdem du deinen Beitrag geleistet hast, wird der Invite automatisch per DM an dich verschickt.'''
 )
-KOFI_PAYMENT_URL = "ko-fi.com/deutschedeadlockcommunity"
+KOFI_PAYMENT_URL = "https://ko-fi.com/deutschedeadlockcommunity"
 _raw_log_channel_id = os.getenv("BETA_INVITE_LOG_CHANNEL_ID", "1234567890")
 try:
     BETA_INVITE_LOG_CHANNEL_ID = int(_raw_log_channel_id)
@@ -96,6 +97,15 @@ def _trace(event: str, **fields: Any) -> None:
         _trace_log.info(json.dumps(payload, ensure_ascii=False, default=str))
     except Exception:
         log.debug("Trace log failed", exc_info=True)
+
+
+def _can_bind_port(host: str, port: int) -> tuple[bool, Optional[str]]:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind((host, port))
+        return True, None
+    except OSError as exc:
+        return False, str(exc)
 
 
 class _WebhookFollowup:
@@ -500,7 +510,7 @@ class InviteOnlyPaymentView(discord.ui.View):
         super().__init__(timeout=300)
         self.add_item(
             discord.ui.Button(
-                label="Ko-fi Beitrag zahlen",
+                label="Supporten & Invite abholen :)",
                 style=discord.ButtonStyle.link,
                 url=kofi_url,
                 emoji="💙",
@@ -539,7 +549,23 @@ class BetaInvitePanelView(discord.ui.View):
         custom_id=BETA_INVITE_PANEL_CUSTOM_ID,
     )
     async def start_invite(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await self.cog.start_invite_from_panel(interaction)
+        try:
+            await self.cog.start_invite_from_panel(interaction)
+        except Exception:
+            log.exception("Start Invite aus Panel fehlgeschlagen", exc_info=True)
+            try:
+                await interaction.response.send_message(
+                    "❌ Diese Interaktion ist fehlgeschlagen. Bitte versuche es erneut.",
+                    ephemeral=True,
+                )
+            except Exception:
+                try:
+                    await interaction.followup.send(
+                        "❌ Diese Interaktion ist fehlgeschlagen. Bitte versuche es erneut.",
+                        ephemeral=True,
+                    )
+                except Exception:
+                    pass
 
 
 class BetaInviteFlow(commands.Cog):
@@ -1560,9 +1586,9 @@ class BetaInviteFlow(commands.Cog):
 
     def _build_panel_embed(self) -> discord.Embed:
         description = (
-            "Klick auf **Invite starten**, um den `/betainvite`-Ablauf zu beginnen.\n"
-            "Der Bot führt dich durch die Steam-Verknüpfung und holt den Invite ab.\n"
-            f"Fragen? Ping {BETA_INVITE_SUPPORT_CONTACT}."
+            "Klick auf **Invite starten**, um den eine Deadlock einladung zu erhalten.\n"
+            "\n"
+            f"Fragen? {SUPPORT_CHANNEL}."
         )
         return discord.Embed(
             title="🎟️ Deadlock Beta-Invite abholen",
@@ -1576,14 +1602,6 @@ class BetaInviteFlow(commands.Cog):
     async def _start_betainvite_flow(self, interaction: discord.Interaction) -> None:
         try:
             await interaction.response.defer(ephemeral=True, thinking=True)
-        except discord.errors.NotFound:
-            log.warning("Interaction expired before defer, using followup")
-            _trace("betainvite_defer_expired", discord_id=interaction.user.id)
-            await interaction.followup.send(
-                "?? Die Anfrage hat zu lange gedauert. Bitte versuche `/betainvite` erneut.",
-                ephemeral=True
-            )
-            return
         except Exception as e:
             log.error(f"Failed to defer interaction: {e}")
             _trace("betainvite_defer_error", discord_id=getattr(interaction.user, "id", None), error=str(e))
@@ -1737,6 +1755,18 @@ async def _start_kofi_webhook_server(beta_invite: BetaInviteFlow) -> None:
         beta_invite._kofi_webhook_task = None
         return
 
+    port_available, port_error = _can_bind_port(KOFI_WEBHOOK_HOST, int(KOFI_WEBHOOK_PORT))
+    if not port_available:
+        message = (
+            f"Ko-fi Webhook-Server konnte nicht starten: "
+            f"Port {KOFI_WEBHOOK_HOST}:{KOFI_WEBHOOK_PORT} belegt ({port_error})"
+        )
+        log.error(message)
+        await beta_invite._notify_log_channel(message)
+        beta_invite._kofi_server = None
+        beta_invite._kofi_webhook_task = None
+        return
+
     app = FastAPI(
         title="Deadlock Ko-fi Webhook",
         docs_url=None,
@@ -1781,6 +1811,13 @@ async def _start_kofi_webhook_server(beta_invite: BetaInviteFlow) -> None:
     except asyncio.CancelledError:
         server.should_exit = True
         raise
+    except SystemExit as exc:  # pragma: no cover - uvicorn exits with SystemExit on startup errors
+        message = (
+            "Ko-fi Webhook-Server gestoppt: Start fehlgeschlagen "
+            f"(Port {KOFI_WEBHOOK_HOST}:{KOFI_WEBHOOK_PORT} bereits belegt?)."
+        )
+        log.error(message, exc_info=True)
+        await beta_invite._notify_log_channel(message)
     except Exception as exc:  # pragma: no cover - runtime network errors
         log.exception("Ko-fi Webhook-Server gestoppt aufgrund eines Fehlers", exc_info=True)
         await beta_invite._notify_log_channel(f"Ko-fi Webhook-Server gestoppt: {exc}")
