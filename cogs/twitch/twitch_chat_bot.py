@@ -270,7 +270,9 @@ if TWITCHIO_AVAILABLE:
                         self.name = login
                     def __str__(self):
                         return self.name
-                message.channel = MockChannel(message.broadcaster.login)
+                # PartialUser kann login oder name haben
+                broadcaster_login = getattr(message.broadcaster, "login", None) or getattr(message.broadcaster, "name", "unknown")
+                message.channel = MockChannel(broadcaster_login)
 
             # Ignoriere Bot-Nachrichten
             if message.echo:
