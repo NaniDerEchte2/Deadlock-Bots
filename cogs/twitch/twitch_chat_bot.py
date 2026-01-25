@@ -1204,16 +1204,19 @@ async def _save_bot_tokens_to_keyring(*, access_token: str, refresh_token: Optio
         await asyncio.to_thread(keyring.set_password, service, name, value)
 
     tasks = []
+    saved_types = []
     if access_token:
-        tasks.append(_save_one(_KEYRING_SERVICE, "TWITCH_BOT_TOKEN", access_token))
+        # Wir speichern nur noch im Format ZWECK@DeadlockBot
         tasks.append(_save_one(f"TWITCH_BOT_TOKEN@{_KEYRING_SERVICE}", "TWITCH_BOT_TOKEN", access_token))
+        saved_types.append("ACCESS_TOKEN")
     if refresh_token:
-        tasks.append(_save_one(_KEYRING_SERVICE, "TWITCH_BOT_REFRESH_TOKEN", refresh_token))
+        # Wir speichern nur noch im Format ZWECK@DeadlockBot
         tasks.append(_save_one(f"TWITCH_BOT_REFRESH_TOKEN@{_KEYRING_SERVICE}", "TWITCH_BOT_REFRESH_TOKEN", refresh_token))
+        saved_types.append("REFRESH_TOKEN")
 
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
-        log.info("Twitch Bot Token im Windows Credential Manager gespeichert.")
+        log.info("Twitch Bot Tokens (%s) im Windows Credential Manager gespeichert (Dienst: %s).", "+".join(saved_types), _KEYRING_SERVICE)
 
 
 def load_bot_tokens(*, log_missing: bool = True) -> Tuple[Optional[str], Optional[str], Optional[int]]:
