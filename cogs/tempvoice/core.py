@@ -523,7 +523,7 @@ class TempVoiceCore(commands.Cog):
             rules: Dict[str, Any] = {}
             source_id: Optional[int] = None
             try:
-                if r.get("source_staging_id"):
+                if r["source_staging_id"]:
                     rules = STAGING_RULES.get(int(r["source_staging_id"]), {})
                     source_id = int(r["source_staging_id"])
             except Exception as e:
@@ -535,7 +535,7 @@ class TempVoiceCore(commands.Cog):
                     await self._apply_lane_rules(lane, rules)
                 except Exception as e:
                     log.debug("rehydrate: apply lane rules failed for %s: %r", lane.id, e)
-                if source_id and not r.get("source_staging_id"):
+                if source_id and not r["source_staging_id"]:
                     try:
                         await db.execute_async(
                             "UPDATE tempvoice_lanes SET source_staging_id=? WHERE channel_id=?",
