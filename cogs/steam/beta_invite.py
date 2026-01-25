@@ -51,7 +51,7 @@ try:
 except (TypeError, ValueError):
     BETA_INVITE_LOG_CHANNEL_ID = None
 KOFI_WEBHOOK_HOST = os.getenv("KOFI_WEBHOOK_HOST", "127.0.0.1")
-KOFI_WEBHOOK_PORT = int(os.getenv("KOFI_WEBHOOK_PORT", "8791"))
+KOFI_WEBHOOK_PORT = int(os.getenv("KOFI_WEBHOOK_PORT", "8932"))
 KOFI_WEBHOOK_PATH = "/kofi-webhook"
 
 log = logging.getLogger(__name__)
@@ -305,6 +305,58 @@ def _persist_intent_once(discord_id: int, intent: str) -> BetaIntentDecision:
     if record is None:  # pragma: no cover - defensive
         raise RuntimeError("Konnte beta_invite_intent-Eintrag nicht erstellen")
     return record
+
+
+def _register_pending_payment(discord_id: int, discord_name: str) -> None:
+    now_ts = int(time.time())
+    with db.get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO beta_invite_pending_payments(discord_id, discord_name, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(discord_id) DO UPDATE SET
+                discord_name=excluded.discord_name,
+                created_at=excluded.created_at
+            """,
+            (int(discord_id), str(discord_name), now_ts),
+        )
+
+
+def _get_pending_payment(username_or_id: Union[str, int]) -> Optional[int]:
+    """Sucht nach einer offenen Zahlung via ID oder Name (Username-Case-Insensitive)."""
+    with db.get_conn() as conn:
+        # Erst nach ID suchen
+        try:
+            d_id = int(username_or_id)
+            row = conn.execute(
+                "SELECT discord_id FROM beta_invite_pending_payments WHERE discord_id = ?",
+                (d_id,),
+            ).fetchone()
+            if row:
+                return int(row["discord_id"])
+        except (ValueError, TypeError):
+            pass
+
+        # Dann nach Name suchen (Case-Insensitive)
+        name_clean = str(username_or_id).strip().lstrip("@").lower()
+        row = conn.execute(
+            "SELECT discord_id FROM beta_invite_pending_payments WHERE LOWER(discord_name) = ?",
+            (name_clean,),
+        ).fetchone()
+        if row:
+            return int(row["discord_id"])
+    return None
+
+
+def _cleanup_pending_payments() -> int:
+    """Entfernt Einträge, die älter als 24 Stunden sind."""
+    expiry = int(time.time()) - (24 * 3600)
+    with db.get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM beta_invite_pending_payments WHERE created_at < ?",
+            (expiry,),
+        )
+        return cur.rowcount
 
 
 @dataclass(slots=True)
@@ -579,6 +631,14 @@ class BetaInviteFlow(commands.Cog):
 
     async def cog_load(self) -> None:
         self.bot.add_view(BetaInvitePanelView(self))
+        # Cleanup expired pending payments (older than 24h)
+        try:
+            removed = _cleanup_pending_payments()
+            if removed > 0:
+                log.info("BetaInvite: %s abgelaufene ausstehende Zahlungen bereinigt", removed)
+        except Exception:
+            log.debug("Cleanup of pending payments failed", exc_info=True)
+
         if BETA_MAIN_GUILD_ID:
             try:
                 guild_obj = discord.Object(id=int(BETA_MAIN_GUILD_ID))
@@ -662,12 +722,15 @@ class BetaInviteFlow(commands.Cog):
         clean = username.strip().lstrip("@")
         if not clean:
             return None
+
+        # 1. Lokaler Cache
         member = guild.get_member_named(clean)
         if member:
             return member
 
+        # 2. Case-insensitive Cache Suche
         clean_lower = clean.lower()
-        for candidate in getattr(guild, "members", []):
+        for candidate in guild.members:
             names = [
                 str(getattr(candidate, "name", "")).lower(),
                 str(getattr(candidate, "global_name", "") or "").lower(),
@@ -676,22 +739,16 @@ class BetaInviteFlow(commands.Cog):
             if clean_lower in names:
                 return candidate
 
-        search_members = getattr(guild, "search_members", None)
-        if callable(search_members):
-            try:
-                matches = await search_members(clean, limit=5)
-                for match in matches:
-                    names = [
-                        str(getattr(match, "name", "")).lower(),
-                        str(getattr(match, "global_name", "") or "").lower(),
-                        str(getattr(match, "display_name", "") or "").lower(),
-                    ]
-                    if clean_lower in names:
-                        return match
-                if matches:
-                    return matches[0]
-            except Exception:
-                log.debug("Ko-fi Member-Suche via search_members fehlgeschlagen", exc_info=True)
+        # 3. API Query (Smarter Fallback)
+        try:
+            # Suche nach exaktem Namen via API
+            found = await guild.query_members(query=clean, limit=5)
+            for m in found:
+                if m.name.lower() == clean_lower or (m.global_name and m.global_name.lower() == clean_lower):
+                    return m
+        except Exception:
+            log.debug("API member query failed", exc_info=True)
+
         return None
 
     async def _safe_dm(self, user: discord.abc.User, content: str) -> bool:
@@ -705,12 +762,12 @@ class BetaInviteFlow(commands.Cog):
     async def handle_kofi_webhook(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
         raw_message = str(data.get("message") or "").strip()
-        username = self._extract_discord_username(raw_message)
+        username_candidate = self._extract_discord_username(raw_message)
 
         _trace(
             "kofi_webhook_received",
             raw_message=raw_message,
-            username=username,
+            username=username_candidate,
             payload_keys=list(data.keys()) if isinstance(data, Mapping) else None,
         )
 
@@ -719,34 +776,50 @@ class BetaInviteFlow(commands.Cog):
             await self._notify_log_channel("Ko-fi Webhook: MAIN_GUILD_ID ist nicht gesetzt oder Guild nicht im Cache.")
             return {"ok": False, "reason": "guild_unavailable"}
 
-        if not username:
+        if not username_candidate:
             await self._notify_log_channel("Ko-fi Webhook: message-Feld leer, kein Discord-Nutzer angegeben.")
             return {"ok": False, "reason": "missing_username"}
 
-        member = await self._find_member_by_username(guild, username)
+        # Smarter Check: Haben wir eine ID für diesen Namen in den letzten 24h getrackt?
+        member = None
+        pending_id = _get_pending_payment(username_candidate)
+        if pending_id:
+            member = guild.get_member(pending_id)
+            if not member:
+                try:
+                    member = await guild.fetch_member(pending_id)
+                except Exception:
+                    log.debug("Could not fetch member from pending_id %s", pending_id)
+
+        # Fallback: Namenssuche
+        if member is None:
+            member = await self._find_member_by_username(guild, username_candidate)
+
         if member is None:
             await self._notify_log_channel(
-                f"Ko-fi Webhook: Nutzer '{username}' konnte in Guild {guild.id} nicht gefunden werden. Raw message: {raw_message!r}"
+                f"?? Ko-fi Webhook: Nutzer '{username_candidate}' konnte nicht gefunden werden. Raw message: {raw_message!r}"
             )
             _trace(
                 "kofi_member_not_found",
-                username=username,
+                username=username_candidate,
                 raw_message=raw_message,
                 guild_id=getattr(guild, "id", None),
             )
-            return {"ok": False, "reason": "user_not_found", "username": username}
+            return {"ok": False, "reason": "user_not_found", "username": username_candidate}
 
         steam_id = _lookup_primary_steam_id(member.id)
         if not steam_id:
+            # Das sollte eigentlich durch den neuen Flow (Steam First) kaum noch passieren,
+            # außer der Nutzer entkoppelt seinen Account genau zwischen Klick und Zahlung.
             dm_ok = await self._safe_dm(member, STEAM_LINK_REQUIRED_DM)
             if not dm_ok:
                 await self._notify_log_channel(
-                    f"Ko-fi Webhook: DM an {getattr(member, 'mention', member.id)} konnte nicht zugestellt werden (Steam-Link fehlt)."
+                    f"?? Ko-fi Webhook: DM an {member.mention} fehlgeschlagen (Steam-Link fehlt)."
                 )
             _trace(
                 "kofi_missing_steam_link",
                 discord_id=member.id,
-                username=username,
+                username=username_candidate,
                 raw_message=raw_message,
             )
             return {"ok": False, "reason": "missing_steam_link", "user_id": member.id}
@@ -755,7 +828,7 @@ class BetaInviteFlow(commands.Cog):
             account_id = steam64_to_account_id(steam_id)
         except ValueError as exc:
             await self._notify_log_channel(
-                f"Ko-fi Webhook: Ungültige SteamID {steam_id} für {getattr(member, 'mention', member.id)} ({exc})."
+                f"?? Ko-fi Webhook: Ungültige SteamID {steam_id} für {member.mention} ({exc})."
             )
             _trace(
                 "kofi_invalid_steam_id",
@@ -768,6 +841,9 @@ class BetaInviteFlow(commands.Cog):
         record = _create_or_reset_invite(member.id, steam_id, account_id)
         log_channel = await self._get_log_channel()
         interaction = _WebhookInteractionProxy(member, guild, log_channel)
+        
+        # Info-Log
+        await self._notify_log_channel(f"?? Zahlung von {member.mention} erhalten. Starte Beta-Invite...")
         await interaction.followup.send(EXPRESS_SUCCESS_DM)
 
         try:
@@ -779,7 +855,7 @@ class BetaInviteFlow(commands.Cog):
         except Exception as exc:
             log.exception("Ko-fi Invite-Flow fehlgeschlagen", exc_info=True)
             await self._notify_log_channel(
-                f"Ko-fi Webhook: Invite für {getattr(member, 'mention', member.id)} (Steam: {steam_id}) fehlgeschlagen: {exc}"
+                f"?? Ko-fi Webhook: Invite für {member.mention} (Steam: {steam_id}) fehlgeschlagen: {exc}"
             )
             _trace(
                 "kofi_invite_exception",
@@ -1607,11 +1683,31 @@ class BetaInviteFlow(commands.Cog):
             _trace("betainvite_defer_error", discord_id=getattr(interaction.user, "id", None), error=str(e))
             return
 
+        # 1. Zuerst Steam-Verknüpfung prüfen (Wunsch des Nutzers)
+        steam_id = _lookup_primary_steam_id(interaction.user.id)
+        if not steam_id:
+            view = discord.ui.View()
+            view.add_item(SchnellLinkButton())
+            await interaction.followup.send(
+                "Bevor wir fortfahren können, musst du deinen Steam-Account verknüpfen.\n"
+                "Klicke auf den Button unten, um die Verknüpfung zu starten. Führe danach `/betainvite` erneut aus.",
+                view=view,
+                ephemeral=True
+            )
+            _trace("betainvite_no_link", discord_id=interaction.user.id)
+            return
+
+        # 2. Intent prüfen / abfragen
         intent_record = _get_intent_record(interaction.user.id)
         if intent_record is None:
             await self._prompt_intent_gate(interaction)
             return
+
+        # 3. Wenn Invite-Only, Zahlung tracken und Info senden
         if intent_record.intent == INTENT_INVITE_ONLY:
+            # Merke uns den Nutzer für den Webhook (24h)
+            _register_pending_payment(interaction.user.id, interaction.user.name)
+            
             view = InviteOnlyPaymentView(KOFI_PAYMENT_URL)
             await interaction.followup.send(
                 INVITE_ONLY_PAYMENT_MESSAGE,

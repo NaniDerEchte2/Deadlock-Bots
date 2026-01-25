@@ -431,6 +431,13 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               locked INTEGER NOT NULL DEFAULT 1
             );
 
+            -- Pending payments for Ko-fi tracking
+            CREATE TABLE IF NOT EXISTS beta_invite_pending_payments(
+              discord_id INTEGER PRIMARY KEY,
+              discord_name TEXT NOT NULL,
+              created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
             -- Steuer-Tabelle für den Steam-Task-Consumer
             CREATE TABLE IF NOT EXISTS steam_tasks(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
