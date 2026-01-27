@@ -71,16 +71,8 @@ def _env_client_id(bot: commands.Bot) -> str:
 
 
 def _env_redirect() -> str:
-    explicit = (os.getenv("DISCORD_OAUTH_REDIRECT") or "").strip()
-    if explicit:
-        return explicit
-    public_base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
-    if public_base:
-        return f"{public_base}/discord/callback"
-    host = os.getenv("HTTP_HOST", "127.0.0.1").strip()
-    port = int(os.getenv("STEAM_OAUTH_PORT", os.getenv("HTTP_PORT", "8888")))
-    scheme = "http" if host.startswith(("127.", "0.", "localhost")) else "https"
-    return f"{scheme}://{host}:{port}/discord/callback"
+    # Hardcoded Discord OAuth Redirect URI (muss mit Discord Developer Portal übereinstimmen)
+    return "https://link.earlysalty.com/discord/callback"
 
 
 def get_public_urls() -> dict:
