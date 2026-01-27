@@ -250,12 +250,36 @@ class SteamLink(commands.Cog):
 
         self._runner = web.AppRunner(self.app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, host=HTTP_HOST, port=HTTP_PORT)
-        await site.start()
-        log.info(
-            "OAuth/OpenID Callback-Server läuft auf %s:%s (Discord redirect=%s, STATE_TTL_SEC=%ss)",
-            HTTP_HOST, HTTP_PORT, _env_redirect(), STATE_TTL_SEC
-        )
+        
+        # Retry logic for port availability during reloads
+        max_retries = 5
+        retry_delay = 0.5
+        
+        for attempt in range(max_retries):
+            try:
+                site = web.TCPSite(self._runner, host=HTTP_HOST, port=HTTP_PORT)
+                await site.start()
+                log.info(
+                    "OAuth/OpenID Callback-Server läuft auf %s:%s (Discord redirect=%s, STATE_TTL_SEC=%ss)",
+                    HTTP_HOST, HTTP_PORT, _env_redirect(), STATE_TTL_SEC
+                )
+                return
+            except OSError as e:
+                # Check for address in use (WinError 10048 or EADDRINUSE)
+                import errno
+                is_addr_in_use = e.errno == 10048 or e.errno == errno.EADDRINUSE
+                
+                if is_addr_in_use and attempt < max_retries - 1:
+                    log.debug("Steam OAuth port %s belegt, versuche es erneut in %ss... (Versuch %s/%s)", 
+                              HTTP_PORT, retry_delay, attempt + 1, max_retries)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                log.exception("Konnte OAuth Callback-Server nicht starten (Port belegt oder anderer Fehler)")
+                break
+            except Exception:
+                log.exception("Konnte OAuth Callback-Server nicht starten")
+                break
 
     async def cog_unload(self) -> None:
         if self._runner:

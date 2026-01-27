@@ -718,17 +718,28 @@ class BetaInviteFlow(commands.Cog):
             log.info("BetaInvite: MAIN_GUILD_ID nicht gesetzt, kein Guild-Sync durchgeführt")
         log.info("BetaInvite: Panel-View registriert")
 
-    def cog_unload(self) -> None:
+    async def cog_unload(self) -> None:
+        log.info("BetaInvite: Unloading cog, stopping Ko-fi webhook server...")
         if self._kofi_server is not None:
             try:
                 self._kofi_server.should_exit = True
             except Exception:
                 log.debug("Konnte Ko-fi Server nicht zum Stoppen markieren", exc_info=True)
+
         if self._kofi_webhook_task and not self._kofi_webhook_task.done():
             try:
                 self._kofi_webhook_task.cancel()
+                # Wait for the task to actually finish to release the port
+                try:
+                    await asyncio.wait_for(self._kofi_webhook_task, timeout=5.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
             except Exception:
-                log.debug("Konnte Ko-fi Webhook Task nicht abbrechen", exc_info=True)
+                log.debug("Fehler beim Warten auf Ko-fi Webhook Task", exc_info=True)
+
+        self._kofi_server = None
+        self._kofi_webhook_task = None
+        log.info("BetaInvite: Cog unloaded and server task cleaned up.")
 
     def _main_guild(self) -> Optional[discord.Guild]:
         try:
@@ -1901,7 +1912,22 @@ async def _start_kofi_webhook_server(beta_invite: BetaInviteFlow) -> None:
         beta_invite._kofi_webhook_task = None
         return
 
-    port_available, port_error = _can_bind_port(KOFI_WEBHOOK_HOST, int(KOFI_WEBHOOK_PORT))
+    # Retry logic for port availability during reloads
+    max_retries = 5
+    retry_delay = 0.5
+    port_available = False
+    port_error = None
+
+    for attempt in range(max_retries):
+        port_available, port_error = _can_bind_port(KOFI_WEBHOOK_HOST, int(KOFI_WEBHOOK_PORT))
+        if port_available:
+            break
+        if attempt < max_retries - 1:
+            log.debug("Port %s:%s belegt, versuche es erneut in %ss... (Versuch %s/%s)", 
+                      KOFI_WEBHOOK_HOST, KOFI_WEBHOOK_PORT, retry_delay, attempt + 1, max_retries)
+            await asyncio.sleep(retry_delay)
+            retry_delay *= 2  # Exponential backoff
+
     if not port_available:
         message = (
             f"Ko-fi Webhook-Server konnte nicht starten: "

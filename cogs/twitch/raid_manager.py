@@ -800,7 +800,12 @@ class RaidBot:
             return
 
         access_token, _ = tokens
-        bot_id = getattr(self.chat_bot, "bot_id", None)
+        # Verwende bot_id_safe Property für sicheren Zugriff
+        bot_id = getattr(self.chat_bot, "bot_id_safe", None)
+        if bot_id is None:
+            # Fallback auf alte Methode
+            bot_id_raw = getattr(self.chat_bot, "bot_id", None)
+            bot_id = str(bot_id_raw).strip() if bot_id_raw and str(bot_id_raw).strip() else None
         
         # 2. Bot als Moderator setzen
         if bot_id:
@@ -946,7 +951,13 @@ class RaidBot:
             await asyncio.sleep(0.5)  # Warte bis Join verarbeitet ist
 
             # TwitchIO 3.x: Nutze send_message() direkt
-            bot_id = getattr(self.chat_bot, "bot_id", None)
+            # Verwende bot_id_safe Property statt direktem Attribut-Zugriff
+            bot_id = getattr(self.chat_bot, "bot_id_safe", None)
+            if bot_id is None:
+                # Fallback auf alte Methode falls bot_id_safe nicht existiert
+                bot_id_raw = getattr(self.chat_bot, "bot_id", None)
+                bot_id = str(bot_id_raw).strip() if bot_id_raw and str(bot_id_raw).strip() else None
+            
             if target_id and bot_id and hasattr(self.chat_bot, "send_message"):
                 try:
                     await self.chat_bot.send_message(str(target_id), str(bot_id), message)
@@ -963,8 +974,10 @@ class RaidBot:
                     )
             else:
                 log.warning(
-                    "Could not send recruitment message to %s - bot_id or send_message unavailable",
+                    "Could not send recruitment message to %s - bot_id=%s, send_message=%s",
                     to_broadcaster_login,
+                    bot_id or "None",
+                    "available" if hasattr(self.chat_bot, "send_message") else "unavailable",
                 )
 
         except Exception:

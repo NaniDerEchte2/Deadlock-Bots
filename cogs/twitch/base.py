@@ -353,7 +353,7 @@ class TwitchBaseCog(commands.Cog):
                     self._twitch_bot_token = self._bot_token_manager.access_token or self._twitch_bot_token
                     self._twitch_bot_refresh_token = self._bot_token_manager.refresh_token or self._twitch_bot_refresh_token
                 # Bot im Hintergrund laufen lassen
-                start_with_adapter = self._should_start_chat_adapter()
+                start_with_adapter = await self._should_start_chat_adapter()
                 asyncio.create_task(
                     self._twitch_chat_bot.start(
                         with_adapter=start_with_adapter,
@@ -493,7 +493,7 @@ class TwitchBaseCog(commands.Cog):
             unsubscribed,
         )
 
-    def _should_start_chat_adapter(self) -> bool:
+    async def _should_start_chat_adapter(self) -> bool:
         """Decide whether to start the TwitchIO web adapter (avoids port collisions)."""
         override = (os.getenv("TWITCH_CHAT_ADAPTER") or "").strip().lower()
         if override in {"0", "false", "off", "no"}:
@@ -512,7 +512,7 @@ class TwitchBaseCog(commands.Cog):
         except Exception:
             port = 4343
 
-        can_bind, error = self._can_bind_port(host, port)
+        can_bind, error = await self._can_bind_port_async(host, port)
         if not can_bind:
             log.warning(
                 "Twitch Chat Web Adapter Port %s auf %s bereits belegt (%s) - starte ohne Adapter (Webhooks/OAuth ausgeschaltet).",
@@ -523,12 +523,55 @@ class TwitchBaseCog(commands.Cog):
         return can_bind
 
     @staticmethod
-    def _can_bind_port(host: str, port: int) -> tuple[bool, Optional[str]]:
-        """Try binding to the given host/port; return False if something is already listening."""
+    async def _can_bind_port_async(host: str, port: int) -> tuple[bool, Optional[str]]:
+        """Try binding to the given host/port with retries; return False if something is already listening."""
+        max_retries = 5
+        retry_delay = 0.5
         last_error: Optional[str] = None
+
+        for attempt in range(max_retries):
+            try:
+                families = [info[0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
+            except Exception as exc:
+                families = [socket.AF_INET]
+                last_error = str(exc)
+
+            success = False
+            seen = set()
+            for family in families or [socket.AF_INET]:
+                if family in seen:
+                    continue
+                seen.add(family)
+                try:
+                    with socket.socket(family, socket.SOCK_STREAM) as sock:
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        sock.bind((host, port))
+                    success = True
+                    break
+                except OSError as exc:
+                    last_error = str(exc)
+                    continue
+            
+            if success:
+                return True, None
+            
+            if attempt < max_retries - 1:
+                log.debug("Port %s:%s belegt, versuche es erneut in %ss... (Versuch %s/%s)", 
+                          host, port, retry_delay, attempt + 1, max_retries)
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+            else:
+                break
+
+        return False, last_error
+
+    @staticmethod
+    def _can_bind_port(host: str, port: int) -> tuple[bool, Optional[str]]:
+        """Synchronous version for compatibility (if needed), but prefers async version."""
+        # For compatibility we keep the sync one but the async one should be used where possible
         try:
             families = [info[0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
-        except Exception as exc:  # socket.gaierror or OSError
+        except Exception as exc:
             families = [socket.AF_INET]
             last_error = str(exc)
 
@@ -545,7 +588,6 @@ class TwitchBaseCog(commands.Cog):
             except OSError as exc:
                 last_error = str(exc)
                 continue
-
         return False, last_error
 
     # -------------------------------------------------------

@@ -94,10 +94,12 @@ if TWITCHIO_AVAILABLE:
         ):
             # In 3.x ist bot_id ein positionales/keyword Argument in Client, aber REQUIRED in Bot
             base_kwargs = {"adapter": web_adapter} if web_adapter is not None else {}
+            # Speichere bot_id als Instanzvariable BEVOR wir super().__init__ aufrufen
+            self._bot_id_stored = bot_id
             super().__init__(
                 client_id=client_id,
                 client_secret=client_secret,
-                bot_id=bot_id or "", # Fallback auf leeren String falls None
+                bot_id=bot_id or "", # Fallback auf leeren String falls None (für TwitchIO Kompatibilität)
                 prefix=prefix,
                 **base_kwargs,
             )
@@ -114,6 +116,18 @@ if TWITCHIO_AVAILABLE:
             self._last_autoban: Dict[str, Dict[str, str]] = {}
             self._autoban_log = Path("logs") / "twitch_autobans.log"
             log.info("Twitch Chat Bot initialized with %d initial channels", len(self._initial_channels))
+
+        @property
+        def bot_id_safe(self) -> Optional[str]:
+            """Gibt eine sichere bot_id zurück (None statt leerer String)."""
+            # Prüfe zuerst die gespeicherte ID
+            if self._bot_id_stored and str(self._bot_id_stored).strip():
+                return str(self._bot_id_stored)
+            # Fallback auf die TwitchIO bot_id Property
+            bot_id = getattr(self, 'bot_id', None)
+            if bot_id and str(bot_id).strip():
+                return str(bot_id)
+            return None
 
         def set_raid_bot(self, raid_bot):
             """Setzt die RaidBot-Instanz für OAuth-URLs."""
@@ -225,9 +239,10 @@ if TWITCHIO_AVAILABLE:
                 # Wir nutzen IMMER den Bot-Token für alle Channels.
                 # Das hält die Anzahl der WebSocket-Verbindungen auf 1 (Limit bei Twitch ist 3 pro Client ID).
                 # Voraussetzung: Der Bot muss Moderator im Ziel-Kanal sein.
+                safe_bot_id = self.bot_id_safe or self.bot_id or ""
                 payload = eventsub.ChatMessageSubscription(
                     broadcaster_user_id=str(channel_id), 
-                    user_id=str(self.bot_id)
+                    user_id=str(safe_bot_id)
                 )
                 
                 # Wir abonnieren über den Standard-WebSocket des Bots
@@ -257,7 +272,8 @@ if TWITCHIO_AVAILABLE:
             """Wird bei jeder Chat-Nachricht aufgerufen."""
             # Compatibility layer for TwitchIO 3.x EventSub
             if not hasattr(message, "echo"):
-                message.echo = str(getattr(message.chatter, "id", "")) == str(self.bot_id)
+                safe_bot_id = self.bot_id_safe or self.bot_id or ""
+                message.echo = str(getattr(message.chatter, "id", "")) == str(safe_bot_id)
             
             if not hasattr(message, "content"):
                 message.content = getattr(message, "text", "")
@@ -461,8 +477,9 @@ if TWITCHIO_AVAILABLE:
                     if user:
                         b_id = str(user.id)
 
-                if b_id and self.bot_id:
-                    await self.send_message(str(b_id), str(self.bot_id), text)
+                safe_bot_id = self.bot_id_safe or self.bot_id
+                if b_id and safe_bot_id:
+                    await self.send_message(str(b_id), str(safe_bot_id), text)
                     return True
 
             except Exception:

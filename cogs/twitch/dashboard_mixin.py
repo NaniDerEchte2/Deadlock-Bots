@@ -1282,37 +1282,64 @@ class TwitchDashboardMixin:
         if not getattr(self, "_dashboard_embedded", True):
             log.debug("Twitch dashboard embedded server disabled; skipping _start_dashboard")
             return
-        try:
-            app = Dashboard.build_app(
-                noauth=self._dashboard_noauth,
-                token=self._dashboard_token,
-                partner_token=self._partner_dashboard_token,
-                add_cb=self._dashboard_add,
-                remove_cb=self._dashboard_remove,
-                list_cb=self._dashboard_list,
-                stats_cb=self._dashboard_stats,
-                verify_cb=self._dashboard_verify,
-                discord_flag_cb=self._dashboard_set_discord_flag,
-                discord_profile_cb=self._dashboard_save_discord_profile,
-                raid_history_cb=self._dashboard_raid_history if hasattr(self, "_dashboard_raid_history") else None,
-                streamer_overview_cb=self._dashboard_streamer_overview,
-                session_detail_cb=self._dashboard_session_detail,
-                comparison_stats_cb=self._dashboard_comparison_stats,
-                streamer_analytics_data_cb=self._dashboard_streamer_analytics_data,
-                raid_bot=getattr(self, "_raid_bot", None),
-                reload_cb=self._reload_twitch_cog,
-                http_session=self.api.get_http_session() if self.api else None,
-                redirect_uri=getattr(self, "_raid_redirect_uri", ""),
-            )
-            runner = web.AppRunner(app)
-            await runner.setup()
-            site = web.TCPSite(runner, host=self._dashboard_host, port=self._dashboard_port)
-            await site.start()
-            self._web = runner
-            self._web_app = app
-            log.info("Twitch dashboard running on http://%s:%s/twitch", self._dashboard_host, self._dashboard_port)
-        except Exception:
-            log.exception("Konnte Dashboard nicht starten")
+        
+        # Retry logic for port availability during reloads
+        max_retries = 5
+        retry_delay = 0.5
+        app = None
+        runner = None
+        
+        for attempt in range(max_retries):
+            try:
+                app = Dashboard.build_app(
+                    noauth=self._dashboard_noauth,
+                    token=self._dashboard_token,
+                    partner_token=self._partner_dashboard_token,
+                    add_cb=self._dashboard_add,
+                    remove_cb=self._dashboard_remove,
+                    list_cb=self._dashboard_list,
+                    stats_cb=self._dashboard_stats,
+                    verify_cb=self._dashboard_verify,
+                    discord_flag_cb=self._dashboard_set_discord_flag,
+                    discord_profile_cb=self._dashboard_save_discord_profile,
+                    raid_history_cb=self._dashboard_raid_history if hasattr(self, "_dashboard_raid_history") else None,
+                    streamer_overview_cb=self._dashboard_streamer_overview,
+                    session_detail_cb=self._dashboard_session_detail,
+                    comparison_stats_cb=self._dashboard_comparison_stats,
+                    streamer_analytics_data_cb=self._dashboard_streamer_analytics_data,
+                    raid_bot=getattr(self, "_raid_bot", None),
+                    reload_cb=self._reload_twitch_cog,
+                    http_session=self.api.get_http_session() if self.api else None,
+                    redirect_uri=getattr(self, "_raid_redirect_uri", ""),
+                )
+                runner = web.AppRunner(app)
+                await runner.setup()
+                site = web.TCPSite(runner, host=self._dashboard_host, port=self._dashboard_port)
+                await site.start()
+                self._web = runner
+                self._web_app = app
+                log.info("Twitch dashboard running on http://%s:%s/twitch", self._dashboard_host, self._dashboard_port)
+                return
+            except OSError as e:
+                if runner:
+                    await runner.cleanup()
+                
+                # Check for address in use (WinError 10048 or EADDRINUSE)
+                is_addr_in_use = e.errno == 10048 or (hasattr(importlib.import_module("errno"), "EADDRINUSE") and e.errno == importlib.import_module("errno").EADDRINUSE)
+                
+                if is_addr_in_use and attempt < max_retries - 1:
+                    log.debug("Twitch dashboard port %s belegt, versuche es erneut in %ss... (Versuch %s/%s)", 
+                              self._dashboard_port, retry_delay, attempt + 1, max_retries)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                log.exception("Konnte Dashboard nicht starten (Port belegt oder anderer Fehler)")
+                break
+            except Exception:
+                if runner:
+                    await runner.cleanup()
+                log.exception("Konnte Dashboard nicht starten")
+                break
 
     async def _stop_dashboard(self):
         if self._web:
