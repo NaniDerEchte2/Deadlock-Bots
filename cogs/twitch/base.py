@@ -177,8 +177,8 @@ class TwitchBaseCog(commands.Cog):
         else:
             log.info("Skipping internal Twitch dashboard server startup")
         self._spawn_bg_task(self._refresh_all_invites(), "twitch.refresh_all_invites")
-        self._spawn_bg_task(self._start_eventsub_offline_listener(), "twitch.eventsub.offline")
-        self._spawn_bg_task(self._start_eventsub_online_listener(), "twitch.eventsub.online")
+        # NUR EINEN EventSub Listener starten (konsolidiert stream.online + stream.offline)
+        self._spawn_bg_task(self._start_eventsub_listener(), "twitch.eventsub")
 
     # -------------------------------------------------------
     # Lifecycle

@@ -48,3 +48,4 @@ service/logs/rename_worker.log
 *.PNG
 C:\Users\Nani-Admin\Documents\Deadlock\.claude\claude-code-chat-images\*
 Gemini.ps1
+/test-scripts
