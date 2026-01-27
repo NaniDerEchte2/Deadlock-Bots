@@ -1170,7 +1170,7 @@ const markFriendRequestFailedStmt = db.prepare(`
 `);
 const upsertFriendSteamLinkStmt = db.prepare(`
   INSERT INTO steam_links(user_id, steam_id, name, verified)
-  VALUES(0, @steam_id, @name, 1)
+  VALUES(@user_id, @steam_id, @name, 1)
   ON CONFLICT(user_id, steam_id) DO UPDATE SET
     name = CASE
       WHEN (steam_links.name IS NULL OR steam_links.name = '')
@@ -1179,6 +1179,16 @@ const upsertFriendSteamLinkStmt = db.prepare(`
     END,
     verified=1,
     updated_at=CURRENT_TIMESTAMP
+`);
+
+const selectRecentQuickInviteUserStmt = db.prepare(`
+  SELECT reserved_by
+  FROM steam_quick_invites
+  WHERE status IN ('reserved', 'used')
+    AND reserved_by IS NOT NULL
+    AND reserved_at >= (strftime('%s','now') - 600)
+  ORDER BY reserved_at DESC
+  LIMIT 1
 `);
 
 // ---------- Steam State ----------
@@ -1808,12 +1818,12 @@ async function fetchPersonaNames(steamIds) {
   return result;
 }
 
-function upsertSteamFriendLink(steamId64, displayName) {
+function upsertSteamFriendLink(steamId64, displayName, userId = 0) {
   const sid = normalizeSteamId64(steamId64);
   if (!sid) return false;
   const name = displayName ? String(displayName).trim() : '';
   try {
-    upsertFriendSteamLinkStmt.run({ steam_id: sid, name });
+    upsertFriendSteamLinkStmt.run({ steam_id: sid, name, user_id: Number(userId) || 0 });
     return true;
   } catch (err) {
     log('warn', 'Failed to persist Steam friend into steam_links', {
@@ -3306,11 +3316,27 @@ client.on('friendRelationship', (steamId, relationship) => {
   if (Number(relationship) === Number(EFriendRelationship.Friend)) {
     log('info', 'New friend confirmed, saving to steam_links', { steam_id64: sid64 });
 
+    // HEURISTIC: Find the Discord user who most recently clicked "Schnell Link" (last 10 mins)
+    let candidateUserId = 0;
+    try {
+      const row = selectRecentQuickInviteUserStmt.get();
+      if (row && row.reserved_by) {
+        candidateUserId = Number(row.reserved_by);
+        log('info', 'Heuristically matched new friend to Discord user', {
+          steam_id64: sid64,
+          discord_user_id: candidateUserId
+        });
+      }
+    } catch (err) {
+      log('warn', 'Failed to lookup recent quick invite user', { error: err.message });
+    }
+
     const cachedName = resolveCachedPersonaName(sid64);
-    if (upsertSteamFriendLink(sid64, cachedName)) {
+    if (upsertSteamFriendLink(sid64, cachedName, candidateUserId)) {
       log('info', 'Saved new friend to steam_links', {
         steam_id64: sid64,
         name: cachedName || undefined,
+        linked_user: candidateUserId
       });
     }
 
@@ -3319,7 +3345,7 @@ client.on('friendRelationship', (steamId, relationship) => {
       fetchPersonaNames([sid64]).then((map) => {
         const normalized = normalizeSteamId64(sid64);
         const fetchedName = normalized ? map.get(normalized) : null;
-        if (fetchedName) upsertSteamFriendLink(sid64, fetchedName);
+        if (fetchedName) upsertSteamFriendLink(sid64, fetchedName, candidateUserId);
       }).catch((err) => {
         log('debug', 'Failed to fetch persona for new friend', {
           steam_id64: sid64,
