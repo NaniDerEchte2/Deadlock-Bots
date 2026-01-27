@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Awaitable, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
 import aiohttp
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 import json
-from typing import Any, Dict, List
+from typing import List
 
 from aiohttp import web
 

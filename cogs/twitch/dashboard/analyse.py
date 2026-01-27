@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import html
-from typing import Optional
 
 from aiohttp import web
 
