@@ -65,7 +65,7 @@ MAIN_GUILD_ID = int(os.getenv("MAIN_GUILD_ID", "0"))  # DM-Fallback, falls inter
 def _find_raid_bot(client: discord.Client) -> Optional[object]:
     """
     Versucht den Raid-Bot aus den geladenen Cogs zu ermitteln.
-    Nutzt bekannte Cog-Namen und f„llt auf eine generische Suche zur■ck.
+    Nutzt bekannte Cog-Namen und fällt auf eine generische Suche zurück.
     """
     known_names = ("TwitchStreamCog", "TwitchStreams", "Twitch", "TwitchBot", "TwitchDeadlock")
 
@@ -465,16 +465,45 @@ class StreamerIntroView(StepView):
     @staticmethod
     def build_embed(user: discord.abc.User) -> discord.Embed:
         e = discord.Embed(
-            title="Streamst du Deadlock?",
+            title="🎮 Streamst du Deadlock?",
             description=(
-                "Wir haben einen **Streamer-Bereich**. Wenn du möchtest, kannst du "
-                "**Partner** werden – Das sind deine Benefits:\n\n"
-                "• **Auto-Promo** in `#live-on-twitch`, sobald du *Deadlock* streamst\n"
-                "• **Mehr Sichtbarkeit** in der deutschsprachigen Deadlock-Community\n"
+                "Wir haben einen **exklusiven Streamer-Bereich** mit automatisierten Tools, "
+                "die dir als Partner das Leben leichter machen.\n\n"
+                "**Was kannst du als Streamer-Partner erwarten?**\n\n"
+                
+                "**1️⃣ Auto-Raid Manager**\n"
+                "Schluss mit manuellem Raid-Suchen! Der Bot übernimmt das automatisch:\n"
+                "• Sobald dein Stream offline geht, prüft der Bot, welche Partner live sind\n"
+                "• Automatischer Raid zu einem passenden Partner-Streamer und von einem Partner-Streamer\n"
+                
+                "**2️⃣ Chat Guard – Schutz vor Spam**\n"
+                "Dein Chat bleibt sauber, ohne ständiges Moderieren:\n"
+                "• **Spam-Filter:** Blockiert automatisch Viewer-Bots und bekannte Spam-Muster\n"
+                "• Schützt vor Nachrichten wie „Best viewers, streamboo.com etc.\n"
+                
+                "**3️⃣ Discord Live-Stream Auto-Post**\n"
+                "• Sobald du Deadlock streamst, wird dein Stream automatisch im Discord gepostet\n"
+                "• Mehr Sichtbarkeit in der Community – ohne dass du selbst was posten musst\n"
+                "• Direkter Traffic von der Community zu deinem Stream\n\n"
+                
+                "**4️⃣ Analytics Dashboard** *(Work in Progress für 03-05/26)*\n"
+                "Geplante Features, die dir echte Einblicke geben:\n"
+                "• **Retention-Analyse:** Wann droppen Zuschauer? (nach 5, 10, 20 Min.)\n"
+                "• **Unique Chatters:** Wie viele verschiedene Menschen interagieren wirklich?\n"
+                "• **Kategorie-Vergleich (DE):** Datenanalyse für die deutsche Deadlock-Szene\n"
+                "• Vergleiche deine Performance mit anderen Streamern\n\n"
+                
+                "**Deine Vorteile auf einen Blick:**\n"
+                "✅ Automatisierte Raids → Mehr Networking, weniger Arbeit\n"
+                "✅ Spam-Schutz → Sauberer Chat ohne Aufwand\n"
+                "✅ Auto-Promo → Mehr Reichweite in der DE-Community\n"
+                "✅ Analytics → Verstehe deine Viewer & optimiere deinen Content\n\n"
+                
+                "**Bereit, Partner zu werden?**"
             ),
-            color=0x8A2BE2
+            color=0x9146FF  # Twitch-Lila
         )
-        e.set_footer(text="Schritt 1/2")
+        e.set_footer(text="Schritt 1/2 • Streamer-Partner werden")
         return e
 
     @discord.ui.button(
@@ -591,90 +620,86 @@ class StreamerRequirementsView(StepView):
 
         requirement_text = textwrap.dedent(
             """
-            **Voraussetzungen:**
-
-            **1) Invite-Link erstellen**
-             Rechtsklick auf den Server -> *Leute einladen* -> **"Einladungslink bearbeiten"**
-             Stelle ein: `Läuft ab: Nie` · `Kein Limit`
-
-            **2) Discord-Link in die Social Media Links einfügen:**
-             Auf Twitch gehen, Creator-Dashboad -> Einstellungen -> Kanal -> Abschnitt "Social-Media-Links"
-             Hier bei **Titel verlinken` Deutsche Deadlock Community `**eintragen, 
-             und unter **URL verlinken** den eben generierten **Discord Link z. B. `https://discord.gg/DEINCODE `** einfügen und speichern (hinzufügen) nicht vergessen.
-             
-             Falls du bei Social Media Links keinen Platz mehr hast, kannst du den Link auch alternativ als Panel hinzufügen.
-           
-
-            **3) Raid-Bot aktivieren:**
-
-             So funktioniert's:
-             - Wenn du offline gehst, raidest du automatisch einen anderen Streamer-Partner, sofern deine letzte Kategorie Deadlock war.
-             - Das gleiche passiert auch für dich - andere Partner raiden dich, wenn sie offline gehen.
-             - Der Bot wählt für dich das beste Raid-Ziel (mit einem Fairness System).
-             - Ist kein Partner online? Dann raiden wir einen deutschen Deadlock-Streamer und laden ihn zur Community ein.
-             - Manuelle Raids sind weiterhin möglich.
-
-             **Einrichtung:**
-             Klick auf den Button unten, autorisier den Bot auf Twitch, 
-             Hier hast du nochmal einen Überblick was der Bot für berechtigungen hat:
-             
-             `Authorizing will allow Deutsche Deadlock Community to:`
-             `Manage raids on your channel`
-             `Send live Stream Chat and Rooms messages`
-             `Read the list of followers in channels where you are a moderator.`
-             `View live Stream Chat and Rooms messages`
-             
-             Fertig. :tada:
-             
-
-            **4) Unterstützung & Promo**
-             - Wenn du Deadlock streamst oder Content erstellst, kannst du gern in den Promo-Kanälen posten.
-             - Erwähne den Server in Stream oder Chat und lade interessierte Zuschauer oder Mitspieler ein.
-             - Je mehr aktive Spieler zusammenkommen, desto stärker wächst die Community -
-               *eine Hand wäscht die andere.*
-
-            ------------------------------
-            **Eigener Discord? Kein Problem!**
-             - Du kannst natürlich weiterhin deinen eigenen Server führen - wir sehen uns nicht als Konkurrenz,
-               sondern als zentralen Treffpunkt für deutschsprachige Deadlock-Spieler.
-             - Schau gerne hin und wieder bei uns vorbei - je mehr du mit anderen spielst, desto sichtbarer wirst du,
-               und die Community lernt dich als Teil von uns kennen - nicht nur als jemand, der streamt.
-
-            Wir prüfen selbstverständlich, ob du alle Voraussetzungen erfüllst.
+            **📋 Voraussetzungen für Streamer-Partner:**
+            
+            **1️⃣ Discord-Invite erstellen**
+            So geht's:
+            • Rechtsklick auf den Server → *Leute einladen*
+            • **"Einladungslink bearbeiten"** anklicken
+            • Wichtig: `Läuft ab: Nie` · `Kein Limit`
+            
+            **2️⃣ Discord-Link auf Twitch eintragen**
+            Wo? Creator-Dashboard → Einstellungen → Kanal → Social-Media-Links
+            • **Titel:** `Deutsche Deadlock Community`
+            • **URL:** Dein Discord-Invite (z.B. `https://discord.gg/DEINCODE`)
+            • Nicht vergessen: **Speichern/Hinzufügen** klicken!
+            
+            *Alternative:* Wenn kein Platz mehr bei Social-Links → Als Panel hinzufügen
+            
+            **3️⃣ Raid-Bot aktivieren** 🎯
+            **Was macht der Raid-Bot?**
+            • Wenn du offline gehst, raidet der Bot automatisch einen Partner
+            • Andere Partner raiden auch dich – gegenseitige Unterstützung!
+            • Fairness-System wählt das beste Raid-Ziel
+            • Kein Partner online? → Raid zu deutschen Deadlock-Streamern
+            • Manuelle Raids bleiben möglich!
+            
+            **Wie aktivieren?**
+            Klick auf den Button unten → Autorisiere auf Twitch → Fertig! 🎉
+            
+            **Berechtigungen des Bots:**
+            ✓ Raids in deinem Namen starten
+            ✓ Chat-Nachrichten lesen/senden (für Spam-Schutz)
+            ✓ Follower-Liste einsehen (als Moderator)
+            
+            **4️⃣ Community-Support**
+            • Post deine Streams/Content gerne in den Promo-Kanälen
+            • Erwähne den Server in deinem Stream/Chat
+            • Lade interessierte Zuschauer ein
+            *Eine Hand wäscht die andere – je aktiver die Community, desto mehr profitieren alle!*
+            
+            ━━━━━━━━━━━━━━━━━━━━━━━━
+            **💬 Eigener Discord? Kein Problem!**
+            • Wir sehen uns nicht als Konkurrenz, sondern als zentralen Treffpunkt
+            • Behalte deinen eigenen Server – schau einfach ab und zu bei uns vorbei
+            • Spiele mit anderen aus der Community → mehr Sichtbarkeit für dich!
+            • Die Leute lernen dich als aktiven Teil der Community kennen
+            
+            **⚠️ Wir prüfen alle Voraussetzungen manuell, bevor du freigeschaltet wirst.**
             """
         ).strip()
 
-
-
-
         if twitch_login:
             requirement_text = (
-                f"Wir haben dein Twitch-Profil **{twitch_login}** gespeichert. "
-                "Ein Team-Mitglied prüft es manuell und schaltet dich nach erfolgreicher Kontrolle frei.\n\n"
+                f"✅ **Twitch-Profil gespeichert:** **{twitch_login}**\n"
+                "Ein Team-Mitglied prüft dein Profil und schaltet dich nach erfolgreicher Kontrolle frei.\n\n"
                 f"{requirement_text}"
             )
 
-        embed_description = f"{checklist_text}\n\n{requirement_text}" if checklist_text else requirement_text
+        embed_description = f"**📊 Fortschritt:**\n{checklist_text}\n\n{requirement_text}"
 
         if verification_started:
             followup = (
                 verification_message
-                or "Danke! Wir prüfen jetzt alles und melden uns, sobald die manuelle Kontrolle abgeschlossen ist."
+                or "✅ **Danke!** Wir prüfen jetzt alles und melden uns, sobald die Kontrolle abgeschlossen ist."
             )
             embed_description += f"\n\n{followup}"
         else:
             embed_description += (
-                "\n\nNutze die Buttons unten, um zuerst die Voraussetzungen zu bestätigen, danach deinen Twitch-Link "
-                "anzugeben und im letzten Schritt die Verifizierung anzustoßen."
+                "\n\n**🎯 Nächste Schritte:**\n"
+                "Nutze die Buttons unten, um:\n"
+                "1️⃣ Voraussetzungen bestätigen\n"
+                "2️⃣ Twitch-Link angeben\n"
+                "3️⃣ Raid-Bot autorisieren\n"
+                "4️⃣ Verifizierung starten"
             )
 
-
         e = discord.Embed(
-            title="Partner-Voraussetzungen",
+            title="📝 Partner-Voraussetzungen & Setup",
             description=embed_description,
             color=0x32CD32,
         )
-        e.set_footer(text="Schritt 2/2")
+        e.set_footer(text="Schritt 2/2 • Alle Schritte abarbeiten")
         return e
 
     def _sync_button_states(self) -> None:
@@ -720,7 +745,7 @@ class StreamerRequirementsView(StepView):
             log.debug("Failed to update requirements message: %r", exc)
 
     @discord.ui.button(
-        label="Voraussetzungen bestätigen",
+        label="1️⃣ Voraussetzungen bestätigen",
         style=discord.ButtonStyle.primary,
         custom_id="wdm:streamer:req_ack",
     )
@@ -728,7 +753,7 @@ class StreamerRequirementsView(StepView):
         if self.acknowledged:
             await _safe_send(
                 interaction,
-                content="Du hast die Voraussetzungen bereits bestätigt.",
+                content="✅ Du hast die Voraussetzungen bereits bestätigt.",
                 ephemeral=True,
             )
             return
@@ -736,15 +761,15 @@ class StreamerRequirementsView(StepView):
         await interaction.response.send_modal(StreamerRequirementsAcknowledgementModal(self))
 
     @discord.ui.button(
-        label="Twitch-Link angeben",
-        style=discord.ButtonStyle.secondary,
+        label="2️⃣ Twitch-Link angeben",
+        style=discord.ButtonStyle.primary,
         custom_id="wdm:streamer:req_twitch",
     )
     async def btn_twitch(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.acknowledged:
             await _safe_send(
                 interaction,
-                content="Bitte bestätige zuerst, dass du die Voraussetzungen gelesen hast.",
+                content="⚠️ Bitte bestätige zuerst die Voraussetzungen (Button 1️⃣).",
                 ephemeral=True,
             )
             return
@@ -752,7 +777,7 @@ class StreamerRequirementsView(StepView):
         await interaction.response.send_modal(StreamerTwitchProfileModal(self))
 
     @discord.ui.button(
-        label="🎯 Raid-Bot autorisieren",
+        label="3️⃣ Raid-Bot autorisieren",
         style=discord.ButtonStyle.primary,
         custom_id="wdm:streamer:req_raid_bot",
     )
@@ -760,7 +785,7 @@ class StreamerRequirementsView(StepView):
         if not self.twitch_login:
             await _safe_send(
                 interaction,
-                content="Bitte gib zuerst deinen Twitch-Link an, bevor du den Raid-Bot autorisierst.",
+                content="⚠️ Bitte gib zuerst deinen Twitch-Link an (Button 2️⃣).",
                 ephemeral=True,
             )
             return
@@ -768,7 +793,7 @@ class StreamerRequirementsView(StepView):
         if self.raid_bot_authorized:
             await _safe_send(
                 interaction,
-                content="Du hast den Raid-Bot bereits autorisiert.",
+                content="✅ Du hast den Raid-Bot bereits autorisiert.",
                 ephemeral=True,
             )
             return
@@ -793,7 +818,7 @@ class StreamerRequirementsView(StepView):
             view = discord.ui.View()
             view.add_item(
                 discord.ui.Button(
-                    label="Auf Twitch autorisieren",
+                    label="🔗 Auf Twitch autorisieren",
                     url=auth_url,
                     style=discord.ButtonStyle.link,
                 )
@@ -802,14 +827,21 @@ class StreamerRequirementsView(StepView):
             await _safe_send(
                 interaction,
                 content=(
-                    f"**Raid-Bot autorisieren für {self.twitch_login}**\n\n"
-                    "Klick auf den Button unten, um den Bot auf Twitch zu autorisieren.\n\n"
-                    "**Was passiert danach?**\n"
-                    "• Der Bot kann in deinem Namen raiden (NUR raiden, nichts anderes)\n"
-                    "• Wenn du offline gehst, raidet er automatisch einen Partner\n"
-                    "• Du kannst es jederzeit mit `!raid_disable` in deinem Chat ausschalten\n\n"
-                    "**Nachdem du autorisiert hast:**\n"
-                    "Komm zurück und klick unten auf **'Ich habe autorisiert'**, damit wir das abhaken können."
+                    f"**🎯 Raid-Bot autorisieren für {self.twitch_login}**\n\n"
+                    "**Was passiert jetzt?**\n"
+                    "1. Klick auf den Button unten\n"
+                    "2. Du wirst zu Twitch weitergeleitet\n"
+                    "3. Autorisiere den Bot (dauert nur 10 Sekunden)\n"
+                    "4. Komm zurück und klick auf **'✅ Ich habe autorisiert'**\n\n"
+                    
+                    "**Was kann der Bot?**\n"
+                    "✓ Raids in deinem Namen starten (NUR raiden!)\n"
+                    "✓ Chat-Nachrichten lesen (für Spam-Schutz)\n"
+                    "✓ Follower-Liste einsehen (als Mod)\n\n"
+                    
+                    "**Wichtig:**\n"
+                    "• Du kannst es jederzeit mit `!raid_disable` in deinem Chat ausschalten\n"
+                    "• Automatische Raids nur bei Deadlock als letzter Kategorie"
                 ),
                 embed=None,
                 ephemeral=True,
@@ -832,7 +864,7 @@ class StreamerRequirementsView(StepView):
             async def confirm_callback(btn_interaction: discord.Interaction):
                 if btn_interaction.user.id != interaction.user.id:
                     await btn_interaction.response.send_message(
-                        "Dieser Button ist nicht für dich.",
+                        "❌ Dieser Button ist nicht für dich.",
                         ephemeral=True
                     )
                     return
@@ -852,21 +884,25 @@ class StreamerRequirementsView(StepView):
                             self.raid_bot_authorized = True
                             await self._update_message(btn_interaction)
                             await btn_interaction.followup.send(
-                                "✅ Raid-Bot erfolgreich autorisiert! Du kannst jetzt die Verifizierung anstoßen.",
+                                "✅ **Raid-Bot erfolgreich autorisiert!**\n"
+                                "Du kannst jetzt die Verifizierung anstoßen (Button 4️⃣).",
                                 ephemeral=True
                             )
                             confirm_button.disabled = True
                             await btn_interaction.message.edit(view=confirm_view)  # type: ignore
                         else:
                             await btn_interaction.followup.send(
-                                "⚠️ Ich konnte deine Autorisierung noch nicht in der Datenbank finden. "
-                                "Stelle sicher, dass du den Bot auf Twitch autorisiert hast, und versuche es dann erneut.",
+                                "⚠️ **Autorisierung noch nicht gefunden**\n\n"
+                                "Mögliche Gründe:\n"
+                                "• Du hast den Bot noch nicht auf Twitch autorisiert\n"
+                                "• Die Autorisierung wurde noch nicht synchronisiert (warte 10 Sek.)\n\n"
+                                "Stelle sicher, dass du auf Twitch autorisiert hast und versuche es dann erneut.",
                                 ephemeral=True
                             )
                     except Exception as e:
                         log.exception("Failed to check raid auth: %r", e)
                         await btn_interaction.followup.send(
-                            "⚠️ Fehler beim Prüfen der Autorisierung. Bitte versuche es erneut.",
+                            "⚠️ Fehler beim Prüfen der Autorisierung. Bitte versuche es erneut oder kontaktiere einen Admin.",
                             ephemeral=True
                         )
 
@@ -874,7 +910,7 @@ class StreamerRequirementsView(StepView):
             confirm_view.add_item(confirm_button)
 
             await interaction.followup.send(
-                "Sobald du auf Twitch autorisiert hast, klick hier:",
+                "**Nach der Autorisierung auf Twitch:**",
                 view=confirm_view,
                 ephemeral=True
             )
@@ -888,7 +924,7 @@ class StreamerRequirementsView(StepView):
             )
 
     @discord.ui.button(
-        label="Verifizierung anstoßen",
+        label="4️⃣ Verifizierung starten",
         style=discord.ButtonStyle.success,
         custom_id="wdm:streamer:req_verify",
     )
@@ -896,15 +932,15 @@ class StreamerRequirementsView(StepView):
         if not self.acknowledged or not self.twitch_login or not self.raid_bot_authorized:
             missing = []
             if not self.acknowledged:
-                missing.append("Voraussetzungen bestätigen")
+                missing.append("1️⃣ Voraussetzungen bestätigen")
             if not self.twitch_login:
-                missing.append("Twitch-Profil angeben")
+                missing.append("2️⃣ Twitch-Profil angeben")
             if not self.raid_bot_authorized:
-                missing.append("Raid-Bot autorisieren")
+                missing.append("3️⃣ Raid-Bot autorisieren")
 
             await _safe_send(
                 interaction,
-                content=f"⚠️ Bitte erledige noch folgende Schritte:\n• " + "\n• ".join(missing),
+                content=f"⚠️ **Bitte erledige noch folgende Schritte:**\n\n" + "\n".join(missing),
                 ephemeral=True,
             )
             return
@@ -919,11 +955,19 @@ class StreamerRequirementsView(StepView):
         self.verification_started = True
         self.verification_message = assign_msg
         await self._update_message(interaction)
-        await interaction.followup.send(assign_msg, ephemeral=True)
+        await interaction.followup.send(
+            f"✅ {assign_msg}\n\n"
+            "**Was passiert jetzt?**\n"
+            "• Ein Team-Mitglied prüft dein Setup\n"
+            "• Du wirst freigeschaltet, sobald alles passt\n"
+            "• Bei Rückfragen melden wir uns bei dir\n\n"
+            "Danke für deine Geduld! 🎉",
+            ephemeral=True
+        )
         await self._finish(interaction)
 
     @discord.ui.button(
-        label="Abbrechen",
+        label="❌ Abbrechen",
         style=discord.ButtonStyle.danger,
         custom_id="wdm:streamer:req_cancel",
     )
@@ -931,7 +975,10 @@ class StreamerRequirementsView(StepView):
         await interaction.response.defer(ephemeral=True)
         await _safe_send(
             interaction,
-            content="Abgebrochen. Du kannst es später mit **/streamer** erneut starten.",
+            content=(
+                "Setup abgebrochen.\n\n"
+                "Du kannst es jederzeit mit **/streamer** erneut starten."
+            ),
             ephemeral=True,
         )
         await self._finish(interaction)
@@ -942,8 +989,9 @@ class StreamerRequirementsView(StepView):
         await _safe_send(
             interaction,
             content=(
-                "Danke! Wir schauen uns kurz an, ob du alle Voraussetzungen erfüllst. "
-                "Als nächstes gib bitte deinen Twitch-Link an."
+                "✅ **Voraussetzungen bestätigt!**\n\n"
+                "Wir schauen kurz, ob du alles erfüllst.\n"
+                "Als nächstes: Gib bitte deinen Twitch-Link an (Button 2️⃣)."
             ),
             ephemeral=True,
         )
@@ -951,7 +999,6 @@ class StreamerRequirementsView(StepView):
     async def mark_twitch_saved(self, interaction: discord.Interaction, *, twitch_login: str) -> None:
         self.twitch_login = twitch_login
         await self._update_message(interaction)
-
 
 
 # ---------------------------------------------------------
@@ -978,7 +1025,7 @@ class StreamerOnboarding(commands.Cog):
 
     @app_commands.command(name="streamer", description="Streamer-Partner werden (2 Schritte).")
     async def streamer_cmd(self, interaction: discord.Interaction):
-        """Startet Schritt 1 direkt per DM und bestaetigt hier nur kurz."""
+        """Startet Schritt 1 direkt per DM und bestätigt hier nur kurz."""
         try:
             await interaction.response.defer(ephemeral=True)
         except Exception:
@@ -993,8 +1040,9 @@ class StreamerOnboarding(commands.Cog):
             await _safe_send(
                 interaction,
                 content=(
-                    "Ich habe dir den Streamer-Setup in die DMs geschickt. "
-                    "Schau dort vorbei; die Buttons bleiben persistent."
+                    "✅ **Streamer-Setup gestartet!**\n\n"
+                    "Ich habe dir alle Infos in die DMs geschickt.\n"
+                    "Die Buttons bleiben persistent – du kannst jederzeit weitermachen."
                 ),
                 ephemeral=True,
             )
@@ -1002,8 +1050,9 @@ class StreamerOnboarding(commands.Cog):
             await _safe_send(
                 interaction,
                 content=(
-                    "Ich konnte dir keine DM senden. "
-                    "Bitte erlaube Direktnachrichten vom Server oder kontaktiere das Team."
+                    "⚠️ **Ich konnte dir keine DM senden.**\n\n"
+                    "Bitte aktiviere Direktnachrichten vom Server in deinen Discord-Einstellungen.\n"
+                    "Alternativ kontaktiere das Team."
                 ),
                 ephemeral=True,
             )
@@ -1011,7 +1060,7 @@ class StreamerOnboarding(commands.Cog):
             log.error("streamer_cmd failed: %r", e)
             await _safe_send(
                 interaction,
-                content="Unerwarteter Fehler beim Start. Bitte probiere es erneut.",
+                content="⚠️ Unerwarteter Fehler beim Start. Bitte probiere es erneut oder kontaktiere einen Admin.",
                 ephemeral=True,
             )
 
