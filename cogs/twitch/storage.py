@@ -357,3 +357,18 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_twitch_subs_user_ts ON twitch_subscriptions_snapshot(twitch_user_id, snapshot_at)"
     )
+
+    # 9) Token Blacklist
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_token_blacklist (
+            twitch_user_id TEXT PRIMARY KEY,
+            twitch_login TEXT NOT NULL,
+            error_message TEXT,
+            error_count INTEGER DEFAULT 1,
+            first_error_at TEXT NOT NULL,
+            last_error_at TEXT NOT NULL,
+            notified INTEGER DEFAULT 0
+        )
+        """
+    )

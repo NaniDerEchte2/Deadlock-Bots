@@ -19,6 +19,7 @@ from urllib.parse import urlencode
 import aiohttp
 
 from .storage import get_conn
+from .token_error_handler import TokenErrorHandler
 
 TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 TWITCH_AUTHORIZE_URL = "https://id.twitch.tv/oauth2/authorize"
@@ -51,6 +52,7 @@ class RaidAuthManager:
         self.redirect_uri = redirect_uri
         self._state_tokens: Dict[str, Tuple[str, float]] = {}  # state -> (twitch_login, timestamp)
         self._lock = asyncio.Lock()
+        self.token_error_handler = TokenErrorHandler()
 
     def generate_auth_url(self, twitch_login: str) -> str:
         """Generiert eine OAuth-URL für Streamer-Autorisierung."""
@@ -110,7 +112,7 @@ class RaidAuthManager:
             return await r.json()
 
     async def refresh_token(
-        self, refresh_token: str, session: aiohttp.ClientSession
+        self, refresh_token: str, session: aiohttp.ClientSession, twitch_user_id: str = None, twitch_login: str = None
     ) -> Dict:
         """Erneuert einen abgelaufenen User Access Token."""
         data = {
@@ -123,12 +125,38 @@ class RaidAuthManager:
         async with session.post(TWITCH_TOKEN_URL, data=data) as r:
             if r.status != 200:
                 txt = await r.text()
+                error_msg = f"HTTP {r.status}: {txt[:300]}"
                 log.error(
-                    "Token refresh failed for refresh_token starting with '%s...': HTTP %s: %s",
+                    "Token refresh failed for refresh_token starting with '%s...': %s",
                     refresh_token[:8],
-                    r.status,
-                    txt[:300],
+                    error_msg,
                 )
+                
+                # Bei "Invalid refresh token" (HTTP 400): Blacklist + Benachrichtigung
+                if r.status == 400 and "invalid" in txt.lower() and twitch_user_id and twitch_login:
+                    log.warning(
+                        "Invalid refresh token detected for %s (ID: %s) - adding to blacklist",
+                        twitch_login,
+                        twitch_user_id,
+                    )
+                    
+                    # Zur Blacklist hinzufügen
+                    self.token_error_handler.add_to_blacklist(
+                        twitch_user_id=twitch_user_id,
+                        twitch_login=twitch_login,
+                        error_message=error_msg,
+                    )
+                    
+                    # Discord-Benachrichtigung senden (async, fire-and-forget)
+                    if hasattr(self, '_discord_bot') and self._discord_bot:
+                        asyncio.create_task(
+                            self.token_error_handler.notify_token_error(
+                                twitch_user_id=twitch_user_id,
+                                twitch_login=twitch_login,
+                                error_message=error_msg,
+                            )
+                        )
+
                 r.raise_for_status()
             return await r.json()
 
@@ -155,10 +183,14 @@ class RaidAuthManager:
         
         # Parallelisierung möglich, aber hier sequenziell zur Sicherheit (Rate Limits)
         for row in rows:
-            user_id = row[0] if not hasattr(row, "keys") else row["twitch_user_id"]
-            login = row[1] if not hasattr(row, "keys") else row["twitch_login"]
-            refresh_tok = row[2] if not hasattr(row, "keys") else row["refresh_token"]
-            expires_iso = row[3] if not hasattr(row, "keys") else row["token_expires_at"]
+            user_id = row["twitch_user_id"]
+            login = row["twitch_login"]
+            refresh_tok = row["refresh_token"]
+            expires_iso = row["token_expires_at"]
+
+            # Sicherheits-Check: Falls doch auf Blacklist, überspringen
+            if self.token_error_handler.is_token_blacklisted(user_id):
+                continue
 
             try:
                 expires_dt = datetime.fromisoformat(expires_iso.replace("Z", "+00:00"))
@@ -190,7 +222,9 @@ class RaidAuthManager:
 
                 log.info("Auto-refreshing token for %s (background maintenance)", login)
                 try:
-                    token_data = await self.refresh_token(refresh_tok, session)
+                    token_data = await self.refresh_token(
+                        refresh_tok, session, twitch_user_id=user_id, twitch_login=login
+                    )
                     new_access = token_data["access_token"]
                     new_refresh = token_data.get("refresh_token", refresh_tok)
                     expires_in = token_data.get("expires_in", 3600)
@@ -265,6 +299,10 @@ class RaidAuthManager:
                 (twitch_user_id, twitch_login),
             )
             conn.commit()
+
+        # Bei erfolgreicher Auth: Von Blacklist entfernen (falls vorhanden)
+        self.token_error_handler.remove_from_blacklist(twitch_user_id)
+
         log.info("Saved raid auth for %s (user_id=%s)", twitch_login, twitch_user_id)
 
     async def get_tokens_for_user(
@@ -275,6 +313,10 @@ class RaidAuthManager:
         Erneuert den Token automatisch, falls abgelaufen.
         Wird bewusst auch genutzt, wenn raid_enabled=0 (Chat-Bot/Moderation).
         """
+        # Blacklist check
+        if self.token_error_handler.is_token_blacklisted(twitch_user_id):
+            return None
+
         with get_conn() as conn:
             row = conn.execute(
                 """
@@ -312,7 +354,12 @@ class RaidAuthManager:
 
             log.info("Refreshing token for %s (get_tokens)", twitch_login)
             try:
-                token_data = await self.refresh_token(refresh_token, session)
+                token_data = await self.refresh_token(
+                    refresh_token,
+                    session,
+                    twitch_user_id=twitch_user_id,
+                    twitch_login=twitch_login,
+                )
                 new_access_token = token_data["access_token"]
                 new_refresh_token = token_data.get("refresh_token", refresh_token)
                 expires_in = token_data.get("expires_in", 3600)
@@ -346,7 +393,19 @@ class RaidAuthManager:
         """
         Holt ein gültiges Access Token für den Streamer.
         Erneuert es automatisch, falls abgelaufen.
+
+        WICHTIG: Wenn der Token auf der Blacklist steht (ungültiger Refresh-Token),
+        wird None zurückgegeben ohne Refresh-Versuch.
         """
+        # SCHRITT 1: Blacklist-Check BEVOR wir überhaupt zur DB gehen
+        if self.token_error_handler.is_token_blacklisted(twitch_user_id):
+            log.warning(
+                "Token for user_id=%s is blacklisted - skipping refresh attempt",
+                twitch_user_id,
+            )
+            return None
+
+        # SCHRITT 2: Token aus DB holen
         with get_conn() as conn:
             row = conn.execute(
                 """
@@ -363,11 +422,11 @@ class RaidAuthManager:
         access_token, refresh_token, expires_at_iso, twitch_login = row
         expires_at = datetime.fromisoformat(expires_at_iso).timestamp()
 
-        # Token noch gültig?
+        # SCHRITT 3: Token noch gültig?
         if time.time() < expires_at - 300:  # 5 Minuten Puffer
             return access_token
 
-        # Token abgelaufen -> refresh
+        # SCHRITT 4: Token abgelaufen -> refresh (mit Blacklist-Protection)
         async with self._lock:
             # Double-Check Locking
             with get_conn() as conn:
@@ -384,7 +443,13 @@ class RaidAuthManager:
 
             log.info("Refreshing token for %s", twitch_login)
             try:
-                token_data = await self.refresh_token(refresh_token, session)
+                # Refresh mit User-Info für Blacklist-Tracking
+                token_data = await self.refresh_token(
+                    refresh_token,
+                    session,
+                    twitch_user_id=twitch_user_id,
+                    twitch_login=twitch_login,
+                )
                 new_access_token = token_data["access_token"]
                 new_refresh_token = token_data.get("refresh_token", refresh_token)
                 expires_in = token_data.get("expires_in", 3600)
@@ -661,12 +726,12 @@ class RaidBot:
         session: aiohttp.ClientSession,
     ):
         self.auth_manager = RaidAuthManager(client_id, client_secret, redirect_uri)
-        self.raid_executor = RaidExecutor(client_id, self.auth_manager)
-        self.session = session
-        self.chat_bot = None  # Wird später gesetzt
+                self.raid_executor = RaidExecutor(client_id, self.auth_manager)
+                self.session = session
+                self.chat_bot = None  # Wird später gesetzt
+                self._cleanup_counter = 0
         
-        # Cleanup-Task starten
-        self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
+                # Cleanup-Task starten        self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
 
     async def cleanup(self):
         """Stoppt Hintergrund-Tasks."""
@@ -695,13 +760,29 @@ class RaidBot:
                 # Das schadet nicht und hält die Tokens frisch.
                 if self.session:
                     await self.auth_manager.refresh_all_tokens(self.session)
-                    
+
+                # Token Blacklist Cleanup (alle ~3.5 Tage = 7 * 30min Zyklen)
+                self._cleanup_counter += 1
+                if self._cleanup_counter % 7 == 0:
+                    self.auth_manager.token_error_handler.cleanup_old_entries(days=30)
+
             except Exception:
                 log.exception("Error during periodic raid bot maintenance")
 
     def set_chat_bot(self, chat_bot):
         """Setzt den Twitch Chat Bot für Recruitment-Nachrichten."""
         self.chat_bot = chat_bot
+
+    def set_discord_bot(self, discord_bot):
+        """
+        Setzt die Discord Bot-Instanz für Token-Error-Benachrichtigungen.
+
+        Args:
+            discord_bot: Discord Client/Bot Instanz
+        """
+        self.auth_manager.token_error_handler.discord_bot = discord_bot
+        self.auth_manager._discord_bot = discord_bot
+        log.info("Discord bot set for token error notifications")
 
     async def complete_setup_for_streamer(self, twitch_user_id: str, twitch_login: str):
         """

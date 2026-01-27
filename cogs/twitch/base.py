@@ -152,6 +152,7 @@ class TwitchBaseCog(commands.Cog):
                     redirect_uri=redirect_uri,
                     session=session,
                 )
+                self._raid_bot.set_discord_bot(self.bot)
                 log.info("Raid-Bot initialisiert (redirect_uri: %s)", redirect_uri)
 
                 # Twitch Chat Bot starten (falls Token vorhanden)
