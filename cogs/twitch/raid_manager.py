@@ -751,7 +751,7 @@ class RaidBot:
                 await asyncio.sleep(2) # Etwas mehr Zeit geben, damit der Mod-Status im Chat "ankommt"
                 
                 # Nachricht im Stil des Screenshots
-                message = f"Deadlock Chatbot verbunden! Hallo! 🎮 deadlock.de"
+                message = "Deadlock Chatbot verbunden! Hallo! 🎮 deadlock.de"
                 
                 # Sende Nachricht (EventSub kompatibel via ChatBot Methode)
                 if hasattr(self.chat_bot, "_send_chat_message"):

@@ -684,7 +684,7 @@ class TwitchDashboardMixin:
         avg_drop = sum_drop / total_sessions if total_sessions else 0.0
         avg_peak = sum_peak / total_sessions if total_sessions else 0.0
         avg_avg_viewers = sum_avg_viewers / total_sessions if total_sessions else 0.0
-        avg_chat_health = sum_chat_health_ratio / total_sessions if total_sessions else 0.0
+
         followers_per_session = (sum_follower_delta / total_sessions) if total_sessions else 0.0
         followers_per_hour = (sum_follower_delta / total_duration_hours) if total_duration_hours else 0.0
         unique_per_100 = (sum_unique / max(sum_avg_viewers, 1)) * 100 if sum_avg_viewers else 0.0

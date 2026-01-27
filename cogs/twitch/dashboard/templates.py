@@ -214,7 +214,7 @@ class DashboardTemplateMixin:
 
     def _streamer_detail_view(self, data: dict, active: str) -> str:
         login = data["login"]
-        meta = data.get("meta", {})
+
         stats = data.get("stats_30d", {})
         sessions = data.get("recent_sessions", [])
 
