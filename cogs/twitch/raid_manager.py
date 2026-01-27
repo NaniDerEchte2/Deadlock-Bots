@@ -854,47 +854,30 @@ class RaidBot:
                 f"Win-Win für alle Deadlock-Streamer! 🎮"
             )
 
-            # 4. Sende Nachricht
-            # Wir stellen sicher, dass der Bot dem Channel beitritt (via EventSub Chat)
+            # 4. Sende Nachricht via Bot
             await self.chat_bot.join(to_broadcaster_login, channel_id=target_id)
-            
-            # Kurze Pause damit Join verarbeitet wird
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)  # Warte bis Join verarbeitet ist
 
-            # TwitchIO 3.x Fix: get_channel returns ChannelInfo which has no .send()
-            # We use send_message instead (EventSub-compatible)
-            sent = False
-            try:
-                # In 3.x haben wir meist self.chat_bot.bot_id und self.chat_bot.send_message
-                bot_id = getattr(self.chat_bot, "bot_id", None)
-                if target_id and bot_id and hasattr(self.chat_bot, "send_message"):
+            # TwitchIO 3.x: Nutze send_message() direkt
+            bot_id = getattr(self.chat_bot, "bot_id", None)
+            if target_id and bot_id and hasattr(self.chat_bot, "send_message"):
+                try:
                     await self.chat_bot.send_message(str(target_id), str(bot_id), message)
-                    sent = True
-                else:
-                    # Fallback für 2.x oder unvollständiges 3.x Setup
-                    channel = self.chat_bot.get_channel(to_broadcaster_login)
-                    if channel and hasattr(channel, "send"):
-                        await channel.send(message)
-                        sent = True
-            except Exception as e:
-                log.debug("Primary send method failed, trying fallback for %s: %s", to_broadcaster_login, e)
-                # Letzter Versuch über get_channel falls oben was schief ging
-                channel = self.chat_bot.get_channel(to_broadcaster_login)
-                if channel and hasattr(channel, "send"):
-                    await channel.send(message)
-                    sent = True
-
-            if sent:
-                log.info(
-                    "Sent bot recruitment message in %s's chat (raided by %s)",
-                    to_broadcaster_login,
-                    from_broadcaster_login,
-                )
+                    log.info(
+                        "Sent recruitment message in %s's chat (raided by %s)",
+                        to_broadcaster_login,
+                        from_broadcaster_login,
+                    )
+                except Exception:
+                    log.exception(
+                        "Failed to send recruitment message to %s (raided by %s)",
+                        to_broadcaster_login,
+                        from_broadcaster_login,
+                    )
             else:
                 log.warning(
-                    "Could not send recruitment message to %s (ID: %s) - No send method worked", 
-                    to_broadcaster_login, 
-                    target_id
+                    "Could not send recruitment message to %s - bot_id or send_message unavailable",
+                    to_broadcaster_login,
                 )
 
         except Exception:
