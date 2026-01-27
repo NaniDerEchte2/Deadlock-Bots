@@ -677,7 +677,8 @@ class SteamLink(commands.Cog):
                 return web.Response(text="OpenID validation failed", status=400)
 
             display_name = await self._fetch_persona(steam_id) or await self._discord_at_name(uid)
-            _save_steam_link_row(uid, steam_id, display_name, verified=1)
+            # Verified=0, da wir erst die Freundschaftsanfrage abwarten wollen
+            _save_steam_link_row(uid, steam_id, display_name, verified=0)
             await self._notify_user_linked(uid, [steam_id])
 
             steam_id_safe = html.escape(steam_id, quote=True)
@@ -735,8 +736,8 @@ class SteamLink(commands.Cog):
                 if not persona:
                     persona = await self._discord_at_name(uid)
 
-                verified = 1 if c.get("verified") else 0
-                _save_steam_link_row(uid, steam_id, persona, verified)
+                # Wir setzen verified=0, damit der User erst Freund werden muss
+                _save_steam_link_row(uid, steam_id, persona, verified=0)
                 saved.append(steam_id)
 
             except Exception:

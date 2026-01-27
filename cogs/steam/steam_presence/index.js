@@ -1150,18 +1150,36 @@ const markFriendRequestFailedStmt = db.prepare(`
          error=?
    WHERE steam_id=?
 `);
-const upsertFriendSteamLinkStmt = db.prepare(`
-  INSERT INTO steam_links(user_id, steam_id, name, verified)
-  VALUES(@user_id, @steam_id, @name, 1)
-  ON CONFLICT(user_id, steam_id) DO UPDATE SET
-    name = CASE
-      WHEN (steam_links.name IS NULL OR steam_links.name = '')
-           AND excluded.name IS NOT NULL AND excluded.name != '' THEN excluded.name
-      ELSE steam_links.name
-    END,
-    verified=1,
-    updated_at=CURRENT_TIMESTAMP
+const verifySteamLinkStmt = db.prepare(`
+  UPDATE steam_links
+  SET verified = 1,
+      name = COALESCE(NULLIF(@name, ''), name),
+      updated_at = CURRENT_TIMESTAMP
+  WHERE steam_id = @steam_id
 `);
+
+const unverifySteamLinkStmt = db.prepare(`
+  UPDATE steam_links
+  SET verified = 0,
+      updated_at = CURRENT_TIMESTAMP
+  WHERE steam_id = ?
+`);
+
+function verifySteamLink(steamId64, displayName) {
+  const sid = normalizeSteamId64(steamId64);
+  if (!sid) return false;
+  const name = displayName ? String(displayName).trim() : '';
+  try {
+    const info = verifySteamLinkStmt.run({ steam_id: sid, name });
+    return info.changes > 0;
+  } catch (err) {
+    log('warn', 'Failed to verify steam link', {
+      steam_id64: sid,
+      error: err && err.message ? err.message : String(err),
+    });
+    return false;
+  }
+}
 
 // ---------- Steam State ----------
 let refreshToken = readToken(REFRESH_TOKEN_PATH);
@@ -1780,20 +1798,7 @@ async function fetchPersonaNames(steamIds) {
   return result;
 }
 
-function upsertSteamFriendLink(steamId64, displayName, userId = 0) {
-  const sid = normalizeSteamId64(steamId64);
-  if (!sid) return false;
-  const name = displayName ? String(displayName).trim() : '';
-  try {
-    upsertFriendSteamLinkStmt.run({ steam_id: sid, name, user_id: Number(userId) || 0 });
-    return true;
-  } catch (err) {
-    log('warn', 'Failed to persist Steam friend into steam_links', {
-      steam_id64: sid,
-      error: err && err.message ? err.message : String(err),
-    });
-    return false;
-  }
+  return result;
 }
 
 async function processFriendRequestQueue(currentFriends, reason) {
@@ -1901,9 +1906,9 @@ async function syncFriendsAndLinks(reason = 'interval') {
       const shouldUpsert = needsInsert || (needsName && name);
       if (!shouldUpsert) continue;
 
-      if (upsertSteamFriendLink(sid, name)) {
-        if (needsInsert) inserted += 1;
-        else if (needsName && name) nameUpdates += 1;
+      if (!needsInsert && needsName && name) {
+         verifySteamLink(sid, name);
+         nameUpdates += 1;
       }
     }
 
@@ -3166,34 +3171,83 @@ client.on('friendRelationship', (steamId, relationship) => {
     relationship_name: relName,
   });
 
-  // If we became friends, save to database
-  const EFriendRelationship = SteamUser.EFriendRelationship || {};
-  if (Number(relationship) === Number(EFriendRelationship.Friend)) {
-    log('info', 'New friend confirmed, saving to steam_links', { steam_id64: sid64 });
+    // If we became friends, save to database
 
-    const cachedName = resolveCachedPersonaName(sid64);
-    if (upsertSteamFriendLink(sid64, cachedName, 0)) {
-      log('info', 'Saved new friend to steam_links', {
-        steam_id64: sid64,
-        name: cachedName || undefined,
-      });
-    }
+    const EFriendRelationship = SteamUser.EFriendRelationship || {};
 
-    // Fetch name asynchronously if it was not available in cache yet
-    if (!cachedName) {
-      fetchPersonaNames([sid64]).then((map) => {
-        const normalized = normalizeSteamId64(sid64);
-        const fetchedName = normalized ? map.get(normalized) : null;
-        if (fetchedName) upsertSteamFriendLink(sid64, fetchedName, 0);
-      }).catch((err) => {
-        log('debug', 'Failed to fetch persona for new friend', {
+    if (Number(relationship) === Number(EFriendRelationship.Friend)) {
+
+      log('info', 'New friend confirmed, checking steam_links', { steam_id64: sid64 });
+
+  
+
+      const cachedName = resolveCachedPersonaName(sid64);
+
+      if (verifySteamLink(sid64, cachedName)) {
+
+        log('info', 'Verified existing steam_link', {
+
           steam_id64: sid64,
-          error: err && err.message ? err.message : String(err),
+
+          name: cachedName || undefined,
+
         });
-      });
+
+      }
+
+  
+
+      // Fetch name asynchronously if it was not available in cache yet
+
+      if (!cachedName) {
+
+        fetchPersonaNames([sid64]).then((map) => {
+
+          const normalized = normalizeSteamId64(sid64);
+
+          const fetchedName = normalized ? map.get(normalized) : null;
+
+          if (fetchedName) verifySteamLink(sid64, fetchedName);
+
+        }).catch((err) => {
+
+          log('debug', 'Failed to fetch persona for new friend', {
+
+            steam_id64: sid64,
+
+            error: err && err.message ? err.message : String(err),
+
+          });
+
+        });
+
+      }
+
+    } else if (Number(relationship) === Number(EFriendRelationship.None)) {
+
+      // Unfriended -> Unverify
+
+      log('info', 'Friendship ended, unverifying in steam_links', { steam_id64: sid64 });
+
+      try {
+
+          const info = unverifySteamLinkStmt.run(sid64);
+
+          if (info.changes > 0) {
+
+              log('info', 'Unverified steam link', { steam_id64: sid64, changes: info.changes });
+
+          }
+
+      } catch (err) {
+
+          log('error', 'Failed to unverify steam link', { steam_id64: sid64, error: err.message });
+
+      }
+
     }
-  }
-});
+
+  });
 
 client.on('receivedFromGC', (appId, msgType, payload) => {
   const messageId = msgType & ~PROTO_MASK;

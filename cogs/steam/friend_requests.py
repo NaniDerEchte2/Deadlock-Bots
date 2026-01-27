@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Iterable
@@ -29,13 +30,14 @@ def _ensure_table() -> None:
         raise
 
 
-def _queue_single(steam_id: str) -> None:
+def _queue_single(steam_id: str, trigger_task: bool = False) -> None:
     if not steam_id:
         return
     sid = str(steam_id).strip()
     if not sid:
         return
     try:
+        # 1. Passive Queue (für Retry/Status-Tracking)
         db.execute(
             """
             INSERT INTO steam_friend_requests(steam_id, status)
@@ -49,10 +51,17 @@ def _queue_single(steam_id: str) -> None:
             """,
             (sid,),
         )
+
+        # 2. Active Task (für Sofort-Ausführung)
+        if trigger_task:
+            payload = json.dumps({"steam_id": sid})
+            db.execute(
+                "INSERT INTO steam_tasks(type, payload, status) VALUES (?, ?, 'PENDING')",
+                ("AUTH_SEND_FRIEND_REQUEST", payload),
+            )
     except Exception:
         log.exception(
             "Failed to queue Steam friend request",
-            # Keep structured, bounded metadata only to avoid logging user-controlled identifiers.
             extra={
                 "steam_id_length": len(sid),
                 "steam_id_valid": bool(re.fullmatch(r"\d{17,20}", sid)),
@@ -66,13 +75,13 @@ def queue_friend_requests(steam_ids: Iterable[str]) -> None:
         return
     _ensure_table()
     for steam_id in steam_ids:
-        _queue_single(steam_id)
+        _queue_single(steam_id, trigger_task=True)
 
 
 def queue_friend_request(steam_id: str) -> None:
     """Queue a single outgoing Steam friend request."""
     _ensure_table()
-    _queue_single(steam_id)
+    _queue_single(steam_id, trigger_task=True)
 
 
 __all__ = ["queue_friend_request", "queue_friend_requests"]
