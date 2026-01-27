@@ -726,12 +726,13 @@ class RaidBot:
         session: aiohttp.ClientSession,
     ):
         self.auth_manager = RaidAuthManager(client_id, client_secret, redirect_uri)
-                self.raid_executor = RaidExecutor(client_id, self.auth_manager)
-                self.session = session
-                self.chat_bot = None  # Wird später gesetzt
-                self._cleanup_counter = 0
+        self.raid_executor = RaidExecutor(client_id, self.auth_manager)
+        self.session = session
+        self.chat_bot = None  # Wird später gesetzt
+        self._cleanup_counter = 0
         
-                # Cleanup-Task starten        self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
+        # Cleanup-Task starten
+        self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
 
     async def cleanup(self):
         """Stoppt Hintergrund-Tasks."""
