@@ -109,6 +109,32 @@ class SteamVerifiedRole(commands.Cog):
             try: await ch.send(chunk)
             except discord.HTTPException as e: log.warning("Konnte Log nicht senden: %s", e)
 
+    async def assign_verified_role(self, user_id: int) -> bool:
+        """Versucht, einem Nutzer sofort die Verified-Rolle zuzuweisen."""
+        guild, role = await self._resolve_guild_and_role()
+        if not guild or not role:
+            return False
+
+        member = guild.get_member(user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except discord.NotFound:
+                return False
+            except Exception:
+                return False
+
+        if role in member.roles:
+            return True
+
+        try:
+            await member.add_roles(role, reason="Manuelle Verifizierung / Sofort-Zuweisung")
+            await self._announce_assignments(guild, [f"✅ <@{user_id}> ({member.display_name}) hat sich verifiziert - Rolle sofort zugewiesen."])
+            return True
+        except Exception as e:
+            log.error("Fehler bei Sofort-Zuweisung der Verified-Rolle an %s: %s", user_id, e)
+            return False
+
     # ---------- Core ----------
     async def _run_once(self) -> int:
         if self.bot.is_closed() or self._http_session_closed():

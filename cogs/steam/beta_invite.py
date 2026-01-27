@@ -32,7 +32,7 @@ BETA_INVITE_PANEL_CUSTOM_ID = "betainvite:panel:start"
 KOFI_VERIFICATION_TOKEN = os.getenv("KOFI_VERIFICATION_TOKEN")
 
 EXPRESS_SUCCESS_DM = "Vielen Dank für deinen Support! 🚑 Dein Deadlock-Invite wird jetzt verarbeitet."
-STEAM_LINK_REQUIRED_DM = "Zahlung erhalten! Aber du musst erst deinen Steam-Account verknüpfen. Nutze danach /betainvite."
+STEAM_LINK_REQUIRED_DM = "Zahlung erhalten! Aber du musst erst deinen Steam-Account verknüpfen. Nutze danach /betainvite oder klicke im Panel auf Weiter."
 INVITE_ONLY_PAYMENT_MESSAGE = (
 '''
 Damit wir dir den Invite schicken können, brauchen wir deine Hilfe!
@@ -569,6 +569,67 @@ class InviteOnlyPaymentView(discord.ui.View):
         )
 
 
+class BetaInviteLinkPromptView(discord.ui.View):
+    def __init__(self, cog: "BetaInviteFlow", user_id: int, login_url: Optional[str], steam_url: Optional[str]) -> None:
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+        
+        if login_url:
+            self.add_item(
+                discord.ui.Button(
+                    label="Via Discord bei Steam anmelden",
+                    style=discord.ButtonStyle.link,
+                    url=login_url,
+                    emoji="🔗",
+                    row=0,
+                )
+            )
+        else:
+            self.add_item(
+                discord.ui.Button(
+                    label="Via Discord bei Steam anmelden",
+                    style=discord.ButtonStyle.secondary,
+                    disabled=True,
+                    emoji="🔗",
+                    row=0,
+                )
+            )
+
+        if steam_url:
+            self.add_item(
+                discord.ui.Button(
+                    label="Direkt bei Steam anmelden",
+                    style=discord.ButtonStyle.link,
+                    url=steam_url,
+                    emoji="🎮",
+                    row=0,
+                )
+            )
+        else:
+            self.add_item(
+                discord.ui.Button(
+                    label="Direkt bei Steam anmelden",
+                    style=discord.ButtonStyle.secondary,
+                    disabled=True,
+                    emoji="🎮",
+                    row=0,
+                )
+            )
+
+    @discord.ui.button(label="Ich habe mich verknüpft – Weiter", style=discord.ButtonStyle.success, emoji="➡️", row=1)
+    async def next_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "Nur der ursprüngliche Nutzer kann diese Auswahl treffen.",
+                ephemeral=True,
+            )
+            return
+        
+        # Den Flow erneut starten (der nun die Verknüpfung finden sollte)
+        await self.cog.start_invite_from_panel(interaction)
+
+
 class BetaInviteConfirmView(discord.ui.View):
     def __init__(self, cog: "BetaInviteFlow", record_id: int, discord_id: int, steam_id64: str) -> None:
         super().__init__(timeout=600)
@@ -983,50 +1044,7 @@ class BetaInviteFlow(commands.Cog):
             except Exception:
                 log.debug("Konnte Steam-Link für BetaInvite nicht bauen", exc_info=True)
 
-        view = discord.ui.View(timeout=180)
-        if login_url:
-            view.add_item(
-                discord.ui.Button(
-                    label="Via Discord bei Steam anmelden",
-                    style=discord.ButtonStyle.link,
-                    url=login_url,
-                    emoji="🔗",
-                    row=0,
-                )
-            )
-        else:
-            view.add_item(
-                discord.ui.Button(
-                    label="Via Discord bei Steam anmelden",
-                    style=discord.ButtonStyle.secondary,
-                    disabled=True,
-                    emoji="🔗",
-                    row=0,
-                )
-            )
-
-        if steam_url:
-            view.add_item(
-                discord.ui.Button(
-                    label="Direkt bei Steam anmelden",
-                    style=discord.ButtonStyle.link,
-                    url=steam_url,
-                    emoji="🎮",
-                    row=0,
-                )
-            )
-        else:
-            view.add_item(
-                discord.ui.Button(
-                    label="Direkt bei Steam anmelden",
-                    style=discord.ButtonStyle.secondary,
-                    disabled=True,
-                    emoji="🎮",
-                    row=0,
-                )
-            )
-
-        return view
+        return BetaInviteLinkPromptView(self, user.id, login_url, steam_url)
 
     async def _process_invite_request(self, interaction: discord.Interaction) -> None:
         try:
@@ -1050,7 +1068,7 @@ class BetaInviteFlow(commands.Cog):
             view = self._build_link_prompt_view(interaction.user)
             prompt = (
                 "🚨 Es ist noch kein Steam-Account mit deinem Discord verknüpft.\n"
-                "Melde dich mit den unten verfügbaren Optionen bei Steam an, und nachdem du dies getan hast führe /betainvite erneut aus."
+                "Melde dich mit den unten verfügbaren Optionen bei Steam an. Sobald du fertig bist, klicke auf **Weiter**."
             )
             _trace(
                 "betainvite_no_link",
@@ -1668,9 +1686,22 @@ class BetaInviteFlow(commands.Cog):
     async def start_invite_from_panel(self, interaction: discord.Interaction) -> None:
         await self._start_betainvite_flow(interaction)
 
+    async def _trigger_immediate_role_assignment(self, user_id: int) -> None:
+        """Versucht, dem Nutzer sofort die Steam-Verified Rolle zu geben."""
+        try:
+            verified_cog = self.bot.get_cog("SteamVerifiedRole")
+            if verified_cog and hasattr(verified_cog, "assign_verified_role"):
+                await verified_cog.assign_verified_role(user_id)
+        except Exception:
+            log.debug("Konnte Sofort-Rollen-Zuweisung nicht triggern", exc_info=True)
+
     async def _start_betainvite_flow(self, interaction: discord.Interaction) -> None:
         try:
-            await interaction.response.defer(ephemeral=True, thinking=True)
+            # Falls die Interaction schon beantwortet wurde (z.B. via Next-Button edit)
+            if interaction.response.is_done():
+                await interaction.edit_original_response(view=None) # Spinner-Ersatz
+            else:
+                await interaction.response.defer(ephemeral=True, thinking=True)
         except Exception as e:
             log.error(f"Failed to defer interaction: {e}")
             _trace("betainvite_defer_error", discord_id=getattr(interaction.user, "id", None), error=str(e))
@@ -1680,14 +1711,29 @@ class BetaInviteFlow(commands.Cog):
         steam_id = _lookup_primary_steam_id(interaction.user.id)
         if not steam_id:
             view = self._build_link_prompt_view(interaction.user)
-            await interaction.followup.send(
+            prompt = (
                 "Bevor wir fortfahren können, musst du deinen Steam-Account verknüpfen.\n"
-                "Nutze einen der unten verfügbaren Login-Optionen. Führe danach `/betainvite` erneut aus.",
+                "Nutze einen der unten verfügbaren Login-Optionen. Sobald du fertig bist, klicke auf **Weiter**."
+            )
+            await interaction.followup.send(
+                prompt,
                 view=view,
                 ephemeral=True
             )
             _trace("betainvite_no_link", discord_id=interaction.user.id)
             return
+
+        # Wenn verknüpft: Sofort verifiziert setzen und Rolle geben
+        try:
+            with db.get_conn() as conn:
+                conn.execute(
+                    "UPDATE steam_links SET verified=1, updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND steam_id=?",
+                    (int(interaction.user.id), steam_id)
+                )
+        except Exception:
+            log.debug("Konnte verified=1 nicht sofort in DB setzen", exc_info=True)
+        
+        await self._trigger_immediate_role_assignment(interaction.user.id)
 
         # 2. Intent prüfen / abfragen
         intent_record = _get_intent_record(interaction.user.id)
