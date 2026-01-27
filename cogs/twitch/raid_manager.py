@@ -123,7 +123,12 @@ class RaidAuthManager:
         async with session.post(TWITCH_TOKEN_URL, data=data) as r:
             if r.status != 200:
                 txt = await r.text()
-                log.error("Token refresh failed: HTTP %s: %s", r.status, txt[:300])
+                log.error(
+                    "Token refresh failed for refresh_token starting with '%s...': HTTP %s: %s",
+                    refresh_token[:8],
+                    r.status,
+                    txt[:300],
+                )
                 r.raise_for_status()
             return await r.json()
 
