@@ -889,7 +889,7 @@ class StreamerRequirementsView(StepView):
                                 ephemeral=True
                             )
                             confirm_button.disabled = True
-                            await btn_interaction.message.edit(view=confirm_view)  # type: ignore
+                            await btn_interaction.edit_original_response(view=confirm_view)
                         else:
                             await btn_interaction.followup.send(
                                 "⚠️ **Autorisierung noch nicht gefunden**\n\n"
