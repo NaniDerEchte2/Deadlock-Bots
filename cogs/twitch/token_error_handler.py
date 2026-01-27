@@ -1,10 +1,10 @@
-"Token Error Handler für Twitch OAuth Refresh-Fehler.
+"""Token Error Handler für Twitch OAuth Refresh-Fehler.
 
 Verwaltet:
 - Blacklist für ungültige Refresh-Tokens
 - Discord-Benachrichtigungen bei Token-Problemen
 - Verhindert endlose Refresh-Versuche
-"
+"""
 import logging
 from datetime import datetime, timezone
 from typing import Optional
