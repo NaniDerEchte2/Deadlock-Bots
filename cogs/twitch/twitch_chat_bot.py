@@ -48,7 +48,9 @@ _SPAM_PHRASES = (
     "Ch͟eap viewers",
     "(remove the space)",
     "Cool overlay \N{THUMBS UP SIGN} Honestly, it\N{RIGHT SINGLE QUOTATION MARK}s so hard to get found on the directory lately. I have small tips on beating the algorithm. Mind if I send you an share?",
-    "Mind if I send you an share"
+    "Mind if I send you an share",
+    " Viewers https://smmbest5.online",
+    "Viewers smmbest4.online"
     
 )
 _SPAM_FRAGMENTS = (
@@ -69,6 +71,7 @@ _SPAM_FRAGMENTS = (
     "get found on the directory",
     "beating the algorithm",
     "d!sc",
+    "smmbest4.online",
 )
 _SPAM_MIN_MATCHES = 2
 
