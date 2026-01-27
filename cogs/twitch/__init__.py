@@ -4,12 +4,11 @@
 """Package entry point for the Twitch stream monitor cog."""
 
 import logging
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
 from discord.ext import commands
 
-if TYPE_CHECKING:
-    from .cog import TwitchStreamCog
+
 
 log = logging.getLogger("TwitchStreams")
 
