@@ -17,7 +17,6 @@ from discord import app_commands
 from discord.ext import commands
 
 from service import db
-from cogs.steam import SCHNELL_LINK_AVAILABLE, SchnellLinkButton
 from cogs.steam.steam_master import SteamTaskClient
 from cogs.welcome_dm import base as welcome_base
 SUPPORT_CHANNEL = "https://discord.com/channels/1289721245281292288/1459628609705738539"
@@ -123,7 +122,7 @@ class _WebhookFollowup:
             return
         except Exception:
             log.debug(
-                "Ko-fi followup DM fehlgeschlagen f\u00fcr %s",
+                "Ko-fi followup DM fehlgeschlagen für %s",
                 getattr(self.user, "id", None),
                 exc_info=True,
             )
@@ -542,7 +541,7 @@ class BetaIntentGateView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.requester_id:
             await interaction.response.send_message(
-                "Nur der ursprngliche Nutzer kann diese Auswahl treffen.",
+                "Nur der ursprüngliche Nutzer kann diese Auswahl treffen.",
                 ephemeral=True,
             )
             return False
@@ -797,7 +796,7 @@ class BetaInviteFlow(commands.Cog):
 
         if member is None:
             await self._notify_log_channel(
-                f"?? Ko-fi Webhook: Nutzer '{username_candidate}' konnte nicht gefunden werden. Raw message: {raw_message!r}"
+                f"⚠️ Ko-fi Webhook: Nutzer '{username_candidate}' konnte nicht gefunden werden. Raw message: {raw_message!r}"
             )
             _trace(
                 "kofi_member_not_found",
@@ -814,7 +813,7 @@ class BetaInviteFlow(commands.Cog):
             dm_ok = await self._safe_dm(member, STEAM_LINK_REQUIRED_DM)
             if not dm_ok:
                 await self._notify_log_channel(
-                    f"?? Ko-fi Webhook: DM an {member.mention} fehlgeschlagen (Steam-Link fehlt)."
+                    f"⚠️ Ko-fi Webhook: DM an {member.mention} fehlgeschlagen (Steam-Link fehlt)."
                 )
             _trace(
                 "kofi_missing_steam_link",
@@ -828,7 +827,7 @@ class BetaInviteFlow(commands.Cog):
             account_id = steam64_to_account_id(steam_id)
         except ValueError as exc:
             await self._notify_log_channel(
-                f"?? Ko-fi Webhook: Ungültige SteamID {steam_id} für {member.mention} ({exc})."
+                f"⚠️ Ko-fi Webhook: Ungültige SteamID {steam_id} für {member.mention} ({exc})."
             )
             _trace(
                 "kofi_invalid_steam_id",
@@ -843,7 +842,7 @@ class BetaInviteFlow(commands.Cog):
         interaction = _WebhookInteractionProxy(member, guild, log_channel)
         
         # Info-Log
-        await self._notify_log_channel(f"?? Zahlung von {member.mention} erhalten. Starte Beta-Invite...")
+        await self._notify_log_channel(f"💰 Zahlung von {member.mention} erhalten. Starte Beta-Invite...")
         await interaction.followup.send(EXPRESS_SUCCESS_DM)
 
         try:
@@ -855,7 +854,7 @@ class BetaInviteFlow(commands.Cog):
         except Exception as exc:
             log.exception("Ko-fi Invite-Flow fehlgeschlagen", exc_info=True)
             await self._notify_log_channel(
-                f"?? Ko-fi Webhook: Invite für {member.mention} (Steam: {steam_id}) fehlgeschlagen: {exc}"
+                f"⚠️ Ko-fi Webhook: Invite für {member.mention} (Steam: {steam_id}) fehlgeschlagen: {exc}"
             )
             _trace(
                 "kofi_invite_exception",
@@ -881,8 +880,8 @@ class BetaInviteFlow(commands.Cog):
         _trace("betainvite_unavailable_start", discord_id=getattr(interaction.user, "id", None))
         await asyncio.sleep(10)
         message = (
-            "Sorry, aktuell sind keine Deadlock-Einladungen verfgbar. "
-            "Wir melden uns, sobald wieder Pl„tze frei sind."
+            "Sorry, aktuell sind keine Deadlock-Einladungen verfügbar. "
+            "Wir melden uns, sobald wieder Plätze frei sind."
         )
         try:
             await interaction.followup.send(message, ephemeral=True)
@@ -902,7 +901,7 @@ class BetaInviteFlow(commands.Cog):
     async def handle_intent_selection(self, interaction: discord.Interaction, intent_choice: str) -> None:
         if intent_choice not in (INTENT_COMMUNITY, INTENT_INVITE_ONLY):
             await interaction.response.send_message(
-                "Ungltige Auswahl.",
+                "Ungültige Auswahl.",
                 ephemeral=True,
             )
             return
@@ -1027,7 +1026,6 @@ class BetaInviteFlow(commands.Cog):
                 )
             )
 
-        view.add_item(SchnellLinkButton(row=1, source="beta_invite_prompt"))
         return view
 
     async def _process_invite_request(self, interaction: discord.Interaction) -> None:
@@ -1043,7 +1041,7 @@ class BetaInviteFlow(commands.Cog):
                 error=str(e),
             )
             await interaction.followup.send(
-                "? Datenbankfehler beim Abrufen der Steam-Verknpfung. Bitte versuche es erneut.",
+                "⚠️ Datenbankfehler beim Abrufen der Steam-Verknüpfung. Bitte versuche es erneut.",
                 ephemeral=True
             )
             return
@@ -1051,14 +1049,9 @@ class BetaInviteFlow(commands.Cog):
         if not resolved:
             view = self._build_link_prompt_view(interaction.user)
             prompt = (
-                "?? Es ist noch kein Steam-Account mit deinem Discord verknpft.\n"
-                "Melde dich mit den unten verfgbaren Optionen bei Steam an, und nachdem du dies getan hast fhre /betainvite erneut aus."
+                "🚨 Es ist noch kein Steam-Account mit deinem Discord verknüpft.\n"
+                "Melde dich mit den unten verfügbaren Optionen bei Steam an, und nachdem du dies getan hast führe /betainvite erneut aus."
             )
-            if SCHNELL_LINK_AVAILABLE:
-                prompt += ""
-            else:
-                prompt += "Der Schnell-Link ist derzeit nicht verfgbar"
-            prompt += ""
             _trace(
                 "betainvite_no_link",
                 discord_id=interaction.user.id,
@@ -1074,7 +1067,7 @@ class BetaInviteFlow(commands.Cog):
         try:
             account_id = steam64_to_account_id(resolved)
         except ValueError as exc:
-            log.warning("Gespeicherte SteamID ungltig", exc_info=True)
+            log.warning("Gespeicherte SteamID ungültig", exc_info=True)
             _trace(
                 "betainvite_invalid_steamid",
                 discord_id=interaction.user.id,
@@ -1082,14 +1075,14 @@ class BetaInviteFlow(commands.Cog):
                 error=str(exc),
             )
             await interaction.followup.send(
-                f"? Gespeicherte SteamID ist ungltig: {exc}. Bitte verknpfe deinen Account erneut.",
+                f"⚠️ Gespeicherte SteamID ist ungültig: {exc}. Bitte verknüpfe deinen Account erneut.",
                 ephemeral=True,
             )
             return
 
         if existing and existing.status == STATUS_INVITE_SENT and existing.steam_id64 == resolved:
             await interaction.followup.send(
-                "? Du bist bereits eingeladen. Prfe unter https://store.steampowered.com/account/playtestinvites .",
+                "✅ Du bist bereits eingeladen. Prüfe unter https://store.steampowered.com/account/playtestinvites .",
                 ephemeral=True,
             )
             _trace(
@@ -1114,7 +1107,7 @@ class BetaInviteFlow(commands.Cog):
 
         if record.status == STATUS_INVITE_SENT and record.steam_id64 == resolved:
             await interaction.followup.send(
-                "? Du bist bereits eingeladen. Prfe unter https://store.steampowered.com/account/playtestinvites .",
+                "✅ Du bist bereits eingeladen. Prüfe unter https://store.steampowered.com/account/playtestinvites .",
                 ephemeral=True,
             )
             _trace(
@@ -1155,7 +1148,7 @@ class BetaInviteFlow(commands.Cog):
             )
         except Exception:
             log.exception(
-                "Friendship pre-check fr betainvite fehlgeschlagen",
+                "Friendship pre-check für betainvite fehlgeschlagen",
                 extra={"discord_id": interaction.user.id, "steam_id": resolved},
             )
             _trace(
@@ -1198,7 +1191,7 @@ class BetaInviteFlow(commands.Cog):
                 last_error=f"Freundschaftsanfrage fehlgeschlagen: {exc}",
             )
             await interaction.followup.send(
-                "? Konnte die Freundschaftsanfrage nicht senden. Bitte versuche es sp„ter erneut.",
+                "⚠️ Konnte die Freundschaftsanfrage nicht senden. Bitte versuche es später erneut.",
                 ephemeral=True,
             )
             return
@@ -1272,10 +1265,10 @@ class BetaInviteFlow(commands.Cog):
                     last_error=None,
                 ) or record
 
-                status_line = "? Wir sind laut Steam schon befreundet." if friend_ok else "?? Die Steam-Anfrage scheint bereits zu bestehen."
+                status_line = "✅ Wir sind laut Steam schon befreundet." if friend_ok else "⏳ Die Steam-Anfrage scheint bereits zu bestehen."
                 message = (
                     f"{status_line}\n"
-                    "Klicke unten auf \"Freundschaft best„tigt\", dann schicken wir dir den Deadlock-Invite."
+                    "Klicke unten auf \"Freundschaft bestätigt\", dann schicken wir dir den Deadlock-Invite."
                 )
                 view = BetaInviteConfirmView(self, record.id, interaction.user.id, resolved)
                 await interaction.followup.send(message, view=view, ephemeral=True)
@@ -1299,7 +1292,7 @@ class BetaInviteFlow(commands.Cog):
                 last_error=f"Freundschaftsanfrage fehlgeschlagen: {error_msg}",
             )
             await interaction.followup.send(
-                "? Konnte die Freundschaftsanfrage nicht senden. Bitte prfe deine Steam-Privatsph„reeinstellungen und versuche es erneut.",
+                "⚠️ Konnte die Freundschaftsanfrage nicht senden. Bitte prüfe deine Steam-Privatsphäreeinstellungen und versuche es erneut.",
                 ephemeral=True,
             )
             return
@@ -1321,8 +1314,8 @@ class BetaInviteFlow(commands.Cog):
         )
 
         message = (
-            "? Freundschaftsanfrage verschickt!\n"
-            "Sobald du die Anfrage angenommen hast, klicke unten auf \"Freundschaft best„tigt\", damit wir die Einladung senden k”nnen."
+            "✅ Freundschaftsanfrage verschickt!\n"
+            "Sobald du die Anfrage angenommen hast, klicke unten auf \"Freundschaft bestätigt\", damit wir die Einladung senden können."
         )
         view = BetaInviteConfirmView(self, record.id, interaction.user.id, resolved)
         await interaction.followup.send(message, view=view, ephemeral=True)
@@ -1686,11 +1679,10 @@ class BetaInviteFlow(commands.Cog):
         # 1. Zuerst Steam-Verknüpfung prüfen (Wunsch des Nutzers)
         steam_id = _lookup_primary_steam_id(interaction.user.id)
         if not steam_id:
-            view = discord.ui.View()
-            view.add_item(SchnellLinkButton())
+            view = self._build_link_prompt_view(interaction.user)
             await interaction.followup.send(
                 "Bevor wir fortfahren können, musst du deinen Steam-Account verknüpfen.\n"
-                "Klicke auf den Button unten, um die Verknüpfung zu starten. Führe danach `/betainvite` erneut aus.",
+                "Nutze einen der unten verfügbaren Login-Optionen. Führe danach `/betainvite` erneut aus.",
                 view=view,
                 ephemeral=True
             )

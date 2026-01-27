@@ -9,7 +9,6 @@ from urllib.parse import urlparse, urlunparse
 
 import discord
 
-from cogs.steam import respond_with_schnelllink
 from .base import MIN_NEXT_SECONDS
 
 __all__ = [
@@ -81,7 +80,6 @@ _STEAM_LINK_DETAILED_DESC = dedent(
     **Ablauf & Optionen:**
     • **Via Discord bei Steam anmelden** – Offizieller Login über unser Portal (kein Passwort, wir lesen nur die **SteamID64**).
     • **Direkt bei Steam anmelden** – Öffnet Steam, damit du deinen Account bestätigst (wir speichern nur die **SteamID64**).
-    • **Schnell-Link anfordern** – Wir schicken dir einen persönlichen Freundschaftslink zum Steam-Bot.
 
 
     • Sobald du dich authentifizierst, kann dir unser Bot automatisch eine Freundschaftsanfrage schicken.
@@ -180,7 +178,7 @@ class SteamLinkStepView(discord.ui.View):
         if not _LINKS_ENABLED or _oauth is None:
             message = (
                 "ℹ️ Die automatische Steam-Verknüpfung ist derzeit deaktiviert. "
-                "Nutze bitte die Schnell-Link-Option oder sende dem Bot direkt eine Anfrage."
+                "Bitte sende dem Bot direkt eine Anfrage."
             )
             if interaction.response.is_done():
                 await interaction.followup.send(message, ephemeral=True)
@@ -232,23 +230,6 @@ class SteamLinkStepView(discord.ui.View):
     )
     async def _start_openid(self, interaction: discord.Interaction, _button: discord.ui.Button):
         await self._present_link_sheet(interaction)
-
-    @discord.ui.button(
-        label="Schnelle Anfrage senden",
-        style=discord.ButtonStyle.secondary,
-        custom_id="steam:friendopts",
-        row=1,
-        emoji="🤝",
-    )
-    async def _show_friend_options(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        try:
-            await respond_with_schnelllink(
-                interaction,
-                source="welcome_dm_friend_options",
-                suppress_embeds=True,
-            )
-        except Exception:
-            _LOGGER.debug("Schnell-Link Bereitstellung fehlgeschlagen", exc_info=True)
 
     @discord.ui.button(
         label="Weiter",

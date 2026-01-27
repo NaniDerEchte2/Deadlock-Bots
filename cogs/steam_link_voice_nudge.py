@@ -14,11 +14,6 @@ from discord.ext import commands
 from service import db
 from cogs import privacy_core as privacy
 
-from cogs.steam import (
-    SCHNELL_LINK_CUSTOM_ID,
-    SchnellLinkButton,
-    respond_with_schnelllink,
-)
 from cogs.steam.friend_requests import queue_friend_request
 from cogs.steam.logging_utils import safe_log_extra
 from cogs.welcome_dm.step_steam_link import steam_link_detailed_description
@@ -348,22 +343,12 @@ class _OptionsView(discord.ui.View):
                 )
             )
 
-        self.add_item(SchnellLinkButton(row=1, source="voice_nudge_view"))
         self.add_item(_CloseButton(row=1))
 
 # Persistente Registry-View (falls weitere Buttons mit custom_id notwendig)
 class _PersistentRegistryView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Schnelle Anfrage senden",
-        style=discord.ButtonStyle.success,
-        emoji="⚡",
-        custom_id=SCHNELL_LINK_CUSTOM_ID,
-    )
-    async def _quick_invite(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await respond_with_schnelllink(interaction, source="voice_nudge_persistent")
 
     @discord.ui.button(label="Schließen", style=discord.ButtonStyle.secondary,
                        emoji="❌", custom_id="nudge_close")

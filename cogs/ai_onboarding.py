@@ -57,7 +57,7 @@ SERVER_CONTEXT = dedent(
 
     Nützliche Bots/Commands:
     - /faq für Fragen zum Server.
-    - /steam link (oder Schnell-Link) um Steam zu koppeln.
+    - /steam link um Steam zu koppeln.
     - /streamer für das Streamer-Partner-Setup.
     - !balance für faire Team-Aufstellungen.
 

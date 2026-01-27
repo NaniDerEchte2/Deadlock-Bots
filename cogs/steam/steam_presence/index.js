@@ -28,7 +28,6 @@ const { URL } = require('url');
 const protobuf = require('protobufjs');
 const SteamUser = require('steam-user');
 const Database = require('better-sqlite3');
-const { QuickInvites } = require('./quick_invites');
 const { StatusAnzeige } = require('./statusanzeige');
 const { DeadlockGcBot } = require('./deadlock_gc_bot');
 const { GcBuildSearch, GC_MSG_FIND_HERO_BUILDS_RESPONSE } = require('./gc_build_search');
@@ -1101,23 +1100,6 @@ const updateHeroBuildCloneUploadedStmt = db.prepare(`
 
 // NOTE: insertHeroBuildCloneStmt moved to BuildCatalogManager
 
-const quickInviteCountsStmt = db.prepare(`
-  SELECT status, COUNT(*) AS count
-    FROM steam_quick_invites
-GROUP BY status
-`);
-const quickInviteRecentStmt = db.prepare(`
-  SELECT invite_link, status, created_at
-    FROM steam_quick_invites
-ORDER BY created_at DESC
-   LIMIT 5
-`);
-const quickInviteAvailableStmt = db.prepare(`
-  SELECT COUNT(*) AS count
-    FROM steam_quick_invites
-   WHERE status = 'available'
-     AND (expires_at IS NULL OR expires_at > strftime('%s','now'))
-`);
 const steamTaskCountsStmt = db.prepare(`
   SELECT status, COUNT(*) AS count
     FROM steam_tasks
@@ -1179,16 +1161,6 @@ const upsertFriendSteamLinkStmt = db.prepare(`
     END,
     verified=1,
     updated_at=CURRENT_TIMESTAMP
-`);
-
-const selectRecentQuickInviteUserStmt = db.prepare(`
-  SELECT reserved_by
-  FROM steam_quick_invites
-  WHERE status IN ('reserved', 'used')
-    AND reserved_by IS NOT NULL
-    AND reserved_at >= (strftime('%s','now') - 600)
-  ORDER BY reserved_at DESC
-  LIMIT 1
 `);
 
 // ---------- Steam State ----------
@@ -1255,16 +1227,6 @@ let heroBuildPublishWaiter = null;
 
 client.setOption('autoRelogin', false);
 client.setOption('machineName', process.env.STEAM_MACHINE_NAME || 'DeadlockBridge');
-
-// Quick Invites (DB + client)
-// Auto-Ensure-Konfiguration: mind. 1 verfügbar halten (kein Ablauf, Limit=1)
-const quickInvites = new QuickInvites(db, client, log, {
-  inviteLimit: 1,
-  inviteDuration: null,          // kein Ablauf
-  poolTarget: 1,                 // mindestens 1 available
-  autoEnsure: true,              // Hintergrund-Ensure aktiv
-  autoEnsureIntervalMs: Number(process.env.STEAM_INVITE_AUTO_ENSURE_MS ?? 30000) // alle 30s prüfen
-});
 
 const statusAnzeige = new StatusAnzeige(client, log, {
   appId: DEADLOCK_APP_ID,
@@ -2370,43 +2332,8 @@ function buildStandaloneSnapshot() {
   const snapshot = {
     timestamp: new Date().toISOString(),
     runtime: getStatusPayload(),
-    quick_invites: { counts: {}, total: 0, available: 0, recent: [] },
     tasks: { counts: {}, recent: [] },
   };
-
-  try {
-    const rows = quickInviteCountsStmt.all();
-    const counts = {};
-    let total = 0;
-    for (const row of rows) {
-      const status = row && row.status ? String(row.status) : 'unknown';
-      const count = Number(row && row.count ? row.count : 0) || 0;
-      counts[status] = count;
-      total += count;
-    }
-    snapshot.quick_invites.counts = counts;
-    snapshot.quick_invites.total = total;
-  } catch (err) {
-    log('warn', 'Failed to collect quick invite counts', { error: err.message });
-  }
-
-  try {
-    const row = quickInviteAvailableStmt.get();
-    snapshot.quick_invites.available = Number(row && row.count ? row.count : 0) || 0;
-  } catch (err) {
-    log('warn', 'Failed to determine available quick invites', { error: err.message });
-  }
-
-  try {
-    const rows = quickInviteRecentStmt.all();
-    snapshot.quick_invites.recent = rows.map((row) => ({
-      invite_link: row.invite_link,
-      status: row.status,
-      created_at: row.created_at,
-    }));
-  } catch (err) {
-    log('warn', 'Failed to collect recent quick invites', { error: err.message });
-  }
 
   try {
     const rows = steamTaskCountsStmt.all();
@@ -2512,39 +2439,6 @@ function processNextTask() {
       case 'AUTH_LOGOUT':
         finalizeTaskRun(task, { ok: true, data: handleLogoutTask() });
         break;
-
-      // -------- Quick Invites --------
-      case 'AUTH_QUICK_INVITE_CREATE': {
-        const p = {
-          inviteLimit: payload?.invite_limit ?? 1,
-          inviteDuration: (Object.prototype.hasOwnProperty.call(payload || {}, 'invite_duration'))
-            ? payload.invite_duration
-            : null, // default null (kein Ablauf)
-        };
-        const promise = (async () => {
-          if (!runtimeState.logged_on) throw new Error('Not logged in');
-          const rec = await quickInvites.createOne(p);
-          return { ok: true, data: rec };
-        })();
-        finalizeTaskRun(task, promise);
-        break;
-      }
-      case 'AUTH_QUICK_INVITE_ENSURE_POOL': {
-        const p = {
-          target: payload?.target ?? 5, // Default: Poolgröße 5
-          inviteLimit: payload?.invite_limit ?? 1,
-          inviteDuration: (Object.prototype.hasOwnProperty.call(payload || {}, 'invite_duration'))
-            ? payload.invite_duration
-            : null,
-        };
-        const promise = (async () => {
-          if (!runtimeState.logged_on) throw new Error('Not logged in');
-          const summary = await quickInvites.ensurePool(p);
-          return { ok: true, data: summary };
-        })();
-        finalizeTaskRun(task, promise);
-        break;
-      }
 
       case 'AUTH_SEND_FRIEND_REQUEST': {
         const promise = (async () => {
@@ -3046,38 +2940,6 @@ const COMMAND_HANDLERS = {
     return { ok: true, data: result };
   },
   logout: () => ({ ok: true, data: handleLogoutTask() }),
-  'quick.ensure': (payload = {}) => {
-    if (!runtimeState.logged_on) throw new Error('Not logged in');
-    const opts = {};
-    const targetValue = payload.target ?? payload.pool_target;
-    if (targetValue != null) opts.target = Number(targetValue);
-    const limitValue = payload.invite_limit ?? payload.inviteLimit;
-    if (limitValue != null) opts.inviteLimit = Number(limitValue);
-    if (Object.prototype.hasOwnProperty.call(payload, 'invite_duration')) {
-      opts.inviteDuration = payload.invite_duration;
-    } else if (Object.prototype.hasOwnProperty.call(payload, 'inviteDuration')) {
-      opts.inviteDuration = payload.inviteDuration;
-    }
-    return quickInvites.ensurePool(opts).then((summary) => {
-      scheduleStatePublish({ reason: 'quick.ensure' });
-      return { ok: true, data: summary };
-    });
-  },
-  'quick.create': (payload = {}) => {
-    if (!runtimeState.logged_on) throw new Error('Not logged in');
-    const opts = {};
-    const limitValue = payload.invite_limit ?? payload.inviteLimit;
-    if (limitValue != null) opts.inviteLimit = Number(limitValue);
-    if (Object.prototype.hasOwnProperty.call(payload, 'invite_duration')) {
-      opts.inviteDuration = payload.invite_duration;
-    } else if (Object.prototype.hasOwnProperty.call(payload, 'inviteDuration')) {
-      opts.inviteDuration = payload.inviteDuration;
-    }
-    return quickInvites.createOne(opts).then((record) => {
-      scheduleStatePublish({ reason: 'quick.create' });
-      return { ok: true, data: record };
-    });
-  },
   'guard.submit': (payload) => ({ ok: true, data: handleGuardCodeTask(payload || {}) }),
   restart: () => {
     log('info', 'Restart command received - terminating process for restart');
@@ -3225,13 +3087,6 @@ function markLoggedOn(details) {
     });
   }, 5000);
 
-  // Direkt nach erfolgreichem Login: mind. 1 Invite sicherstellen
-  if (typeof quickInvites.ensureAtLeastOne === 'function') {
-    quickInvites.ensureAtLeastOne();
-  } else if (typeof quickInvites.ensurePool === 'function') {
-    quickInvites.ensurePool({ target: 1 }).catch((e) => log('warn', 'ensurePool-after-login failed', { error: e.message }));
-  }
-
   scheduleStatePublish({ reason: 'logged_on' });
 }
 
@@ -3316,27 +3171,11 @@ client.on('friendRelationship', (steamId, relationship) => {
   if (Number(relationship) === Number(EFriendRelationship.Friend)) {
     log('info', 'New friend confirmed, saving to steam_links', { steam_id64: sid64 });
 
-    // HEURISTIC: Find the Discord user who most recently clicked "Schnell Link" (last 10 mins)
-    let candidateUserId = 0;
-    try {
-      const row = selectRecentQuickInviteUserStmt.get();
-      if (row && row.reserved_by) {
-        candidateUserId = Number(row.reserved_by);
-        log('info', 'Heuristically matched new friend to Discord user', {
-          steam_id64: sid64,
-          discord_user_id: candidateUserId
-        });
-      }
-    } catch (err) {
-      log('warn', 'Failed to lookup recent quick invite user', { error: err.message });
-    }
-
     const cachedName = resolveCachedPersonaName(sid64);
-    if (upsertSteamFriendLink(sid64, cachedName, candidateUserId)) {
+    if (upsertSteamFriendLink(sid64, cachedName, 0)) {
       log('info', 'Saved new friend to steam_links', {
         steam_id64: sid64,
         name: cachedName || undefined,
-        linked_user: candidateUserId
       });
     }
 
@@ -3345,7 +3184,7 @@ client.on('friendRelationship', (steamId, relationship) => {
       fetchPersonaNames([sid64]).then((map) => {
         const normalized = normalizeSteamId64(sid64);
         const fetchedName = normalized ? map.get(normalized) : null;
-        if (fetchedName) upsertSteamFriendLink(sid64, fetchedName, candidateUserId);
+        if (fetchedName) upsertSteamFriendLink(sid64, fetchedName, 0);
       }).catch((err) => {
         log('debug', 'Failed to fetch persona for new friend', {
           steam_id64: sid64,
@@ -3481,11 +3320,6 @@ function autoLoginIfPossible() {
 autoLoginIfPossible();
 publishStandaloneState({ reason: 'startup' });
 
-// QuickInvites: Auto-Ensure-Loop starten (hält >=1 available), sofern Modul die Methode anbietet
-if (typeof quickInvites.startAutoEnsure === 'function') {
-  quickInvites.startAutoEnsure();
-}
-
 // ---------- Build Catalog Maintenance ----------
 // Periodically maintain the build catalog (discovery + cloning + updates)
 const CATALOG_MAINTENANCE_INTERVAL_MS = parseInt(process.env.CATALOG_MAINTENANCE_INTERVAL_MS || '600000', 10); // Default: 10 minutes
@@ -3529,7 +3363,6 @@ setInterval(() => {
 function shutdown(code = 0) {
   try {
     log('info', 'Shutting down Steam bridge');
-    if (typeof quickInvites.stopAutoEnsure === 'function') quickInvites.stopAutoEnsure();
     statusAnzeige.stop();
     flushPendingPlaytestInvites(new Error('Service shutting down'));
     flushDeadlockGcWaiters(new Error('Service shutting down'));
