@@ -1678,7 +1678,13 @@ function sendFriendRequest(steamId) {
   return new Promise((resolve, reject) => {
     try {
       client.addFriend(steamId, (err) => {
-        if (err) return reject(err);
+        if (err) {
+          // EResult.DuplicateName (29) usually means friend request already sent or already friends
+          if (err.message && err.message.includes('DuplicateName')) {
+            return resolve(true);
+          }
+          return reject(err);
+        }
         resolve(true);
       });
     } catch (err) {
@@ -1794,9 +1800,6 @@ async function fetchPersonaNames(steamIds) {
       error: err && err.message ? err.message : String(err),
     });
   }
-
-  return result;
-}
 
   return result;
 }
