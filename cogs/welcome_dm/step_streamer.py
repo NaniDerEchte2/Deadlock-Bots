@@ -41,10 +41,12 @@ log = logging.getLogger("StreamerOnboarding")
 try:
     from cogs.twitch import storage as twitch_storage
     from cogs.twitch.base import TwitchBaseCog
+    from cogs.twitch.verification import check_streamer_verification
 except Exception as exc:  # pragma: no cover - optional dependency
     log.warning("StreamerOnboarding: Twitch-Module nicht verfügbar: %s", exc, exc_info=True)
     twitch_storage = None  # type: ignore[assignment]
     TwitchBaseCog = None  # type: ignore[assignment]
+    check_streamer_verification = None  # type: ignore[assignment]
 
 import discord
 from discord.ext import commands
@@ -150,9 +152,13 @@ async def _resolve_guild_and_member(
     return g1, m1
 
 
-async def _assign_role_and_notify(interaction: discord.Interaction) -> Tuple[bool, str]:
+async def _assign_role_and_notify(
+    interaction: discord.Interaction, 
+    twitch_login: Optional[str] = None
+) -> Tuple[bool, str]:
     """
     Vergibt die Streamer-Rolle und pingt den Kontrollkanal.
+    Führt wenn möglich eine automatisierte Prüfung der Bio/Links durch.
     Gibt (ok, msg) zurück.
     """
     guild, member = await _resolve_guild_and_member(interaction)
@@ -172,9 +178,56 @@ async def _assign_role_and_notify(interaction: discord.Interaction) -> Tuple[boo
         log.error("add_roles failed for %s: %r", member.id, e)
         return False, "Unerwarteter Fehler beim Zuweisen der Rolle. Bitte Team informieren."
 
-    # 2) Twitch-Registrierung (optional, mehrere Cog-Namen probieren)
+    # 2) Automatisierte Verifizierung (Bio / Social Links)
+    auto_verified = False
+    verification_reason = "Keine automatisierte Prüfung möglich."
+    
+    if twitch_login and check_streamer_verification:
+        try:
+            possible_cogs = ("TwitchStreamCog", "TwitchDeadlock", "TwitchBot", "Twitch")
+            twitch_cog = None
+            for name in possible_cogs:
+                twitch_cog = interaction.client.get_cog(name)  # type: ignore
+                if twitch_cog:
+                    break
+            
+            if twitch_cog and hasattr(twitch_cog, "api"):
+                # Gültige Invites aus dem Cog holen
+                valid_codes = set()
+                invite_dict = getattr(twitch_cog, "_invite_codes", {})
+                if guild.id in invite_dict:
+                    valid_codes = invite_dict[guild.id]
+                else:
+                    # Fallback: falls Cache leer, kurz laden
+                    try:
+                        invites = await guild.invites()
+                        valid_codes = {inv.code for inv in invites if inv.code}
+                    except Exception:
+                        log.debug("Konnte Invites für Auto-Check nicht laden")
+
+                ok, reason = await check_streamer_verification(
+                    twitch_cog.api, 
+                    twitch_login, 
+                    valid_codes
+                )
+                auto_verified = ok
+                verification_reason = reason
+                
+                if auto_verified and twitch_storage:
+                    with twitch_storage.get_conn() as conn:
+                        conn.execute(
+                            "UPDATE twitch_streamers SET manual_verified_permanent=1, manual_verified_at=CURRENT_TIMESTAMP "
+                            "WHERE twitch_login=?",
+                            (twitch_login.lower(),)
+                        )
+                    log.info("Auto-verified streamer %s (Twitch: %s)", member.id, twitch_login)
+        except Exception as e:
+            log.exception("Fehler bei der automatisierten Streamer-Prüfung")
+            verification_reason = f"Fehler bei der Prüfung: {e}"
+
+    # 3) Twitch-Registrierung (optional, mehrere Cog-Namen probieren)
     try:
-        possible_cogs = ("TwitchDeadlock", "TwitchBot", "Twitch")
+        possible_cogs = ("TwitchStreamCog", "TwitchDeadlock", "TwitchBot", "Twitch")
         registered = False
         for name in possible_cogs:
             cog = interaction.client.get_cog(name)  # type: ignore
@@ -203,22 +256,29 @@ async def _assign_role_and_notify(interaction: discord.Interaction) -> Tuple[boo
     except Exception as e:
         log.debug("Twitch registration check failed: %r", e)
 
-    # 3) Kontroll-Ping
+    # 4) Kontroll-Ping
     notify_ch = interaction.client.get_channel(STREAMER_NOTIFY_CHANNEL_ID)  # type: ignore
     if isinstance(notify_ch, (discord.TextChannel, discord.Thread)):
         try:
-            await notify_ch.send(
-                f"🔔 {member.mention} hat den **Streamer-Partner-Setup** abgeschlossen – Kontrolle notwendig."
-            )
+            status_emoji = "✅" if auto_verified else "🔔"
+            msg = f"{status_emoji} {member.mention} hat den **Streamer-Partner-Setup** abgeschlossen.\n"
+            msg += f"**Twitch:** {twitch_login or 'Unbekannt'}\n"
+            msg += f"**Auto-Check:** {'Erfolgreich' if auto_verified else 'Fehlgeschlagen'}\n"
+            msg += f"**Details:** {verification_reason}"
+            
+            await notify_ch.send(msg)
         except Exception as e:
             log.warning("Notify send failed in %s: %r", STREAMER_NOTIFY_CHANNEL_ID, e)
     else:
         log.warning("Notify channel %s nicht gefunden/kein Textkanal.", STREAMER_NOTIFY_CHANNEL_ID)
 
-    return (
-        True,
-        "Alles klar! Wir kümmern uns jetzt um deine Verifizierung. Falls wir Rückfragen haben, melden wir uns bei dir.",
-    )
+    final_msg = "Alles klar! Wir kümmern uns jetzt um deine Verifizierung."
+    if auto_verified:
+        final_msg = "✅ **Automatisierte Prüfung erfolgreich!** Wir haben den Discord-Link auf deinem Twitch-Profil gefunden. Du bist nun als Partner freigeschaltet."
+    else:
+        final_msg = "Alles klar! Wir schauen uns dein Profil kurz manuell an und schalten dich dann frei. Falls wir Rückfragen haben, melden wir uns bei dir."
+
+    return (True, final_msg)
 
 
 async def _safe_send(
@@ -947,7 +1007,7 @@ class StreamerRequirementsView(StepView):
 
         await interaction.response.defer(ephemeral=True)
 
-        assign_ok, assign_msg = await _assign_role_and_notify(interaction)
+        assign_ok, assign_msg = await _assign_role_and_notify(interaction, self.twitch_login)
         if not assign_ok:
             await interaction.followup.send(f"⚠️ {assign_msg}", ephemeral=True)
             return
