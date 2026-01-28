@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -105,6 +106,37 @@ def _can_bind_port(host: str, port: int) -> tuple[bool, Optional[str]]:
         return True, None
     except OSError as exc:
         return False, str(exc)
+
+
+def _probe_kofi_health(
+    host: str,
+    port: int,
+    path: str = "/kofi-health",
+) -> tuple[bool, Optional[str]]:
+    conn: Optional[http.client.HTTPConnection] = None
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=2.0)
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        body = resp.read()
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    if resp.status != 200:
+        return False, f"Status {resp.status}"
+    try:
+        data = json.loads(body.decode("utf-8", errors="ignore"))
+    except Exception as exc:
+        return False, f"Antwort konnte nicht gelesen werden: {exc}"
+    if data.get("ok") is True:
+        return True, None
+    return False, f"Unerwartete Antwort: {data}"
 
 
 class _WebhookFollowup:
@@ -1911,6 +1943,32 @@ async def _start_kofi_webhook_server(beta_invite: BetaInviteFlow) -> None:
         log.warning("Ko-fi Webhook deaktiviert (fastapi/uvicorn fehlt): %s", exc)
         beta_invite._kofi_webhook_task = None
         return
+
+    # Ist bereits ein Ko-fi-Server erreichbar? Dann nicht doppelt starten.
+    already_running, health_error = await asyncio.to_thread(
+        _probe_kofi_health,
+        KOFI_WEBHOOK_HOST,
+        int(KOFI_WEBHOOK_PORT),
+    )
+    if already_running:
+        message = (
+            "Ko-fi Webhook-Server läuft bereits auf "
+            f"{KOFI_WEBHOOK_HOST}:{KOFI_WEBHOOK_PORT}; überspringe zweiten Start."
+        )
+        log.info(message)
+        _trace(
+            "kofi_webhook_server_already_running",
+            host=KOFI_WEBHOOK_HOST,
+            port=KOFI_WEBHOOK_PORT,
+        )
+        beta_invite._kofi_server = None
+        beta_invite._kofi_webhook_task = None
+        return
+    if health_error:
+        log.debug(
+            "Ko-fi Webhook Health-Check fehlgeschlagen (vermutlich kein Server aktiv): %s",
+            health_error,
+        )
 
     # Retry logic for port availability during reloads
     max_retries = 5
