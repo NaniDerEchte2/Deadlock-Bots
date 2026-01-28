@@ -901,7 +901,6 @@ class StreamerRequirementsView(StepView):
                     "✓ Follower-Liste einsehen (als Mod)\n\n"
                     
                     "**Wichtig:**\n"
-                    "• Du kannst es jederzeit mit `!raid_disable` in deinem Chat ausschalten\n"
                     "• Automatische Raids nur bei Deadlock als letzter Kategorie"
                 ),
                 embed=None,
@@ -1083,6 +1082,8 @@ class StreamerOnboarding(commands.Cog):
         self.bot.add_view(StreamerIntroView())
         self.bot.add_view(StreamerRequirementsView())
         log.info("StreamerOnboarding Views registriert (persistent).")
+        # Sicherstellen, dass der Slash-Command in der Haupt-Guild sofort verfügbar ist
+        await self._sync_slash_commands()
 
     @app_commands.command(name="streamer", description="Streamer-Partner werden (2 Schritte).")
     async def streamer_cmd(self, interaction: discord.Interaction):
@@ -1124,6 +1125,22 @@ class StreamerOnboarding(commands.Cog):
                 content="⚠️ Unerwarteter Fehler beim Start. Bitte probiere es erneut oder kontaktiere einen Admin.",
                 ephemeral=True,
             )
+
+    async def _sync_slash_commands(self) -> None:
+        """Synchronisiert den Command für die Haupt-Guild, damit er angezeigt wird."""
+        if not MAIN_GUILD_ID:
+            return
+
+        try:
+            synced = await self.bot.tree.sync(guild=discord.Object(id=MAIN_GUILD_ID))
+            log.info(
+                "StreamerOnboarding: Slash-Command sync abgeschlossen (Guild %s, %d Commands)",
+                MAIN_GUILD_ID,
+                len(synced),
+            )
+        except Exception as exc:
+            log.warning("StreamerOnboarding: Slash-Command sync fehlgeschlagen: %s", exc, exc_info=True)
+
 
 
 async def setup(bot: commands.Bot):
