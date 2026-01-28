@@ -40,6 +40,7 @@ class DashboardBase:
         session_detail_cb: Optional[Callable[[int], Awaitable[dict]]] = None,
         comparison_stats_cb: Optional[Callable[..., Awaitable[dict]]] = None,
         streamer_analytics_data_cb: Optional[Callable[[str, int], Awaitable[dict]]] = None,
+        analytics_suggestions_cb: Optional[Callable[..., Awaitable[dict]]] = None,
     ):
         self._token = app_token
         self._noauth = noauth
@@ -55,6 +56,7 @@ class DashboardBase:
         self._session_detail = session_detail_cb
         self._comparison_stats = comparison_stats_cb
         self._streamer_analytics_data = streamer_analytics_data_cb
+        self._analytics_suggestions = analytics_suggestions_cb
         self._master_dashboard_url = self._resolve_master_dashboard_url()
         self._master_dashboard_href = html_escape(self._master_dashboard_url, quote=True)
 

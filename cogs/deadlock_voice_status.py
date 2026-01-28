@@ -27,7 +27,8 @@ TARGET_CATEGORY_IDS: Set[int] = {
 
 POLL_INTERVAL_SECONDS = 60
 PRESENCE_STALE_SECONDS = 180
-RENAME_COOLDOWN_SECONDS = settings.deadlock_vs_rename_cooldown_seconds
+# Cooldown between voice rename attempts (seconds). Adjust here instead of via env.
+RENAME_COOLDOWN_SECONDS = 360
 RENAME_REASON = "Deadlock Voice Status Update"
 MIN_ACTIVE_PLAYERS = 1
 MATCH_MINUTE_DISPLAY_OFFSET = max(0, settings.match_minute_offset)

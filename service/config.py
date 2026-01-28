@@ -54,13 +54,10 @@ class Settings(BaseSettings):
     
     # --- Deadlock Voice Status ---
     match_minute_offset: int = Field(3, alias="DEADLOCK_MATCH_MINUTE_OFFSET")
-    # rename_cooldown_seconds: int = Field(360, alias="RANK_VOICE_RENAME_COOLDOWN_SECONDS") # Replaced by specific cooldown below
-    deadlock_vs_rename_cooldown_seconds: int = Field(120, alias="DEADLOCK_VS_RENAME_COOLDOWN_SECONDS")
     rank_vs_rename_cooldown_seconds: int = Field(360, alias="RANK_VS_RENAME_COOLDOWN_SECONDS")
 
     # --- Feature Flags & Toggles ---
     master_dashboard_enabled: bool = Field(True, alias="MASTER_DASHBOARD_ENABLED")
-    global_rename_throttle_seconds: int = Field(240, alias="GLOBAL_RENAME_THROTTLE_SECONDS") # 4 minutes default
     
     # --- External Worker Config ---
     # rename_worker_url: Optional[str] = Field(None, alias="RENAME_WORKER_URL") # Not used with DB communication

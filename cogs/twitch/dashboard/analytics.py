@@ -12,6 +12,13 @@ from aiohttp import web
 class DashboardAnalyticsMixin:
     """Advanced analytics dashboard with retention, discovery, and chat health metrics."""
 
+    @staticmethod
+    def _parse_bool_flag(value: object) -> bool:
+        if value is None:
+            return False
+        text = str(value).strip().lower()
+        return text in {"1", "true", "yes", "ja", "on", "y", "all"}
+
     async def analytics_dashboard(self, request: web.Request) -> web.Response:
         """Main analytics dashboard view."""
         self._require_partner_token(request)
@@ -20,14 +27,29 @@ class DashboardAnalyticsMixin:
         streamer_login = request.query.get("streamer", "").strip()
         days = int(request.query.get("days", "30"))
         days = max(7, min(90, days))  # Clamp between 7 and 90
+        include_non_partners = self._parse_bool_flag(
+            request.query.get("include_non_partners") or request.query.get("non_partners")
+        )
 
-        streamer_options = ""
-        if getattr(self, "_list", None):
+        partner_options = ""
+        extra_options = ""
+        if getattr(self, "_analytics_suggestions", None):
+            try:
+                suggestions = await self._analytics_suggestions(True)
+                partners = suggestions.get("partners") or []
+                extras = suggestions.get("extras") or []
+                partner_options = self._build_streamer_options(partners, streamer_login)
+                extra_options = self._build_streamer_options(extras, streamer_login, label_suffix=" (extern)")
+            except Exception:
+                partner_options = ""
+                extra_options = ""
+        elif getattr(self, "_list", None):
             try:
                 streamers = await self._list()
-                streamer_options = self._build_streamer_options(streamers, streamer_login)
+                partner_options = self._build_streamer_options(streamers, streamer_login)
             except Exception:
-                streamer_options = ""
+                partner_options = ""
+        streamer_options = partner_options
         
         # Build the HTML dashboard
         partner_token = ""
@@ -35,7 +57,14 @@ class DashboardAnalyticsMixin:
             partner_token = request.query.get("partner_token", "").strip()
         except Exception:
             partner_token = ""
-        body = self._build_analytics_html(streamer_login, days, streamer_options, partner_token)
+        body = self._build_analytics_html(
+            streamer_login,
+            days,
+            streamer_options,
+            partner_token,
+            extra_streamer_options=extra_options,
+            include_non_partners=include_non_partners,
+        )
         return web.Response(
             text=self._html(body, active="analytics"),
             content_type="text/html"
@@ -60,7 +89,15 @@ class DashboardAnalyticsMixin:
 
 
 
-    def _build_analytics_html(self, streamer_login: str, days: int, streamer_options: str, partner_token: str = "") -> str:
+    def _build_analytics_html(
+        self,
+        streamer_login: str,
+        days: int,
+        streamer_options: str,
+        partner_token: str = "",
+        extra_streamer_options: str = "",
+        include_non_partners: bool = False,
+    ) -> str:
         """Build the analytics dashboard HTML."""
         partner_token = partner_token.strip() if partner_token else ""
 
@@ -70,6 +107,9 @@ class DashboardAnalyticsMixin:
                 "days": days,
                 "streamerOptions": streamer_options,
                 "partnerToken": partner_token,
+                "extraStreamerOptions": extra_streamer_options,
+                "includeNonPartners": bool(include_non_partners),
+                "hasExtraOptions": bool(extra_streamer_options.strip()) if extra_streamer_options else False,
             }
         )
 
@@ -384,6 +424,12 @@ const App = ({
   const [weekdayFilter, setWeekdayFilter] = useState('all');
   const [slotFilter, setSlotFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
+  const [includeNonPartners, setIncludeNonPartners] = useState(Boolean(config.includeNonPartners && config.hasExtraOptions));
+  const optionsHtml = useMemo(() => {
+    const base = config.streamerOptions || '';
+    const extra = includeNonPartners ? (config.extraStreamerOptions || '') : '';
+    return [base, extra].filter(Boolean).join('\\n');
+  }, [config.streamerOptions, config.extraStreamerOptions, includeNonPartners]);
   const partnerToken = useMemo(() => {
     const fromCfg = config.partnerToken || '';
     const urlToken = new URLSearchParams(window.location.search).get('partner_token') || '';
@@ -410,6 +456,19 @@ const App = ({
       active = false;
     };
   }, [streamer, days, partnerToken]);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (streamer) params.set('streamer', streamer); else params.delete('streamer');
+    if (days) params.set('days', String(days)); else params.delete('days');
+    if (includeNonPartners) params.set('include_non_partners', '1'); else params.delete('include_non_partners');
+    const existingToken = new URLSearchParams(window.location.search).get('partner_token') || '';
+    if (partnerToken || existingToken) {
+      params.set('partner_token', partnerToken || existingToken);
+    }
+    const qs = params.toString();
+    const newUrl = `${window.location.pathname}${qs ? `?${qs}` : ''}`;
+    window.history.replaceState({}, '', newUrl);
+  }, [streamer, days, includeNonPartners, partnerToken]);
   const sessions = data?.sessions || [];
   const retention = data?.retention || {};
   const chat = data?.chat || {};
@@ -536,9 +595,28 @@ const App = ({
   }), "             ", /*#__PURE__*/React.createElement("datalist", {
     id: "streamerOptions",
     dangerouslySetInnerHTML: {
-      __html: config.streamerOptions || ''
+      __html: optionsHtml || ''
     }
   }), "           "), "           ", /*#__PURE__*/React.createElement("label", {
+    className: "field"
+  }, "             ", /*#__PURE__*/React.createElement("span", null, "Vorschl\u00e4ge"), "             ", /*#__PURE__*/React.createElement("div", {
+    className: "row",
+    style: {
+      alignItems: 'center',
+      gap: '0.45rem'
+    }
+  }, "               ", /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: includeNonPartners && (config.hasExtraOptions || (config.extraStreamerOptions || '').length > 0),
+    onChange: e => setIncludeNonPartners(e.target.checked)
+  }), "               ", /*#__PURE__*/React.createElement("span", {
+    className: "tiny"
+  }, "Auch Nicht-Partner anzeigen"), "             "), "             ", /*#__PURE__*/React.createElement("span", {
+    className: "tiny",
+    style: {
+      color: 'var(--muted)'
+    }
+  }, config.hasExtraOptions ? 'Inklusive Streams aus Deadlock-Kategorie' : 'Keine externen Vorschl\u00e4ge gefunden'), "           "), "           ", /*#__PURE__*/React.createElement("label", {
     className: "field"
   }, "             ", /*#__PURE__*/React.createElement("span", null, "Zeitraum"), "             ", /*#__PURE__*/React.createElement("select", {
     value: days,
@@ -1346,7 +1424,7 @@ if (root) {
         return body
 
 
-    def _build_streamer_options(self, streamers: List[dict], selected: str) -> str:
+    def _build_streamer_options(self, streamers: List[object], selected: str, label_suffix: str = "") -> str:
         """Build HTML options for streamer dropdown based on stored list."""
         if not streamers:
             return ""
@@ -1354,12 +1432,18 @@ if (root) {
         seen = set()
         options = []
         for row in streamers:
-            login = (row.get("twitch_login") or row.get("streamer") or "").strip()
+            if isinstance(row, str):
+                login = row.strip()
+                label = login
+            else:
+                login = (row.get("twitch_login") or row.get("streamer") or row.get("login") or "").strip()  # type: ignore[union-attr]
+                label = (row.get("label") or login) if isinstance(row, dict) else login  # type: ignore[union-attr]
             if not login or login.lower() in seen:
                 continue
             seen.add(login.lower())
             sel = " selected" if login.lower() == selected_lower else ""
-            options.append(f"<option value='{html.escape(login, quote=True)}'{sel}>{html.escape(login)}</option>")
+            display = f"{label}{label_suffix}" if label_suffix else label
+            options.append(f"<option value='{html.escape(login, quote=True)}'{sel}>{html.escape(display)}</option>")
         return "\n".join(options)
 
     async def streamer_detail(self, request: web.Request) -> web.Response:

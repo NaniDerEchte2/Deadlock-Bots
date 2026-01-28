@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import asyncio
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 import discord
@@ -85,6 +86,62 @@ class TwitchDashboardMixin:
                     raise
                 await asyncio.sleep(0.3 * (attempt + 1))
         return []
+
+    async def _dashboard_analytics_suggestions(
+        self,
+        include_non_partners: bool = True,
+        *,
+        days: int = 90,
+        limit: int = 120,
+    ) -> dict:
+        """Partner- und optionale Non-Partner-Vorschläge für das Analytics-Dashboard."""
+        partners = await self._dashboard_list()
+        extras: List[dict] = []
+
+        if include_non_partners:
+            partner_logins = {
+                (row.get("twitch_login") or row.get("streamer") or "").strip().lower()
+                for row in partners
+                if isinstance(row, dict)
+            }
+            cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+            try:
+                with storage.get_conn() as c:
+                    rows = c.execute(
+                        """
+                        SELECT streamer,
+                               COUNT(*) AS samples,
+                               MAX(ts_utc) AS last_seen,
+                               AVG(viewer_count) AS avg_viewers
+                          FROM twitch_stats_category
+                         WHERE ts_utc >= ?
+                         GROUP BY streamer
+                         ORDER BY samples DESC, last_seen DESC
+                         LIMIT ?
+                        """,
+                        (cutoff, limit * 2),
+                    ).fetchall()
+                for row in rows:
+                    login = str(row["streamer"] if hasattr(row, "keys") else row[0] or "").strip()
+                    if not login:
+                        continue
+                    lower = login.lower()
+                    if lower in partner_logins:
+                        continue
+                    extras.append(
+                        {
+                            "twitch_login": login,
+                            "avg_viewers": float(row["avg_viewers"] if hasattr(row, "keys") else row[3] or 0.0),
+                            "samples": int(row["samples"] if hasattr(row, "keys") else row[1] or 0),
+                            "last_seen": str(row["last_seen"] if hasattr(row, "keys") else row[2] or ""),
+                        }
+                    )
+                    if len(extras) >= limit:
+                        break
+            except Exception:
+                log.debug("Konnte Non-Partner-Suggestions fuer Analytics nicht laden", exc_info=True)
+
+        return {"partners": partners, "extras": extras}
 
     async def _dashboard_set_discord_flag(self, login: str, is_on_discord: bool) -> str:
         normalized = self._normalize_login(login)
@@ -1307,6 +1364,7 @@ class TwitchDashboardMixin:
                     session_detail_cb=self._dashboard_session_detail,
                     comparison_stats_cb=self._dashboard_comparison_stats,
                     streamer_analytics_data_cb=self._dashboard_streamer_analytics_data,
+                    analytics_suggestions_cb=self._dashboard_analytics_suggestions,
                     raid_bot=getattr(self, "_raid_bot", None),
                     reload_cb=self._reload_twitch_cog,
                     http_session=self.api.get_http_session() if self.api else None,

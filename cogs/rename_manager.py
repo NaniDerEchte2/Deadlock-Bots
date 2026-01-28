@@ -11,12 +11,12 @@ from typing import Optional, Tuple
 import discord
 from discord.ext import commands
 
-from service.config import settings
-
 logger = logging.getLogger("RenameManagerCog")
 
 QUEUE_CHECK_INTERVAL_SECONDS = 1.0
 ERROR_BACKOFF_SECONDS = 10.0
+# Global throttle for channel renames (seconds). Adjust here instead of via env.
+RENAME_THROTTLE_SECONDS = 360
 
 class RenameManagerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -56,8 +56,8 @@ class RenameManagerCog(commands.Cog):
                         continue
 
                     time_since_last = time.monotonic() - self._last_rename_attempt_time
-                    if time_since_last < settings.global_rename_throttle_seconds:
-                        throttle_sleep = settings.global_rename_throttle_seconds - time_since_last
+                    if time_since_last < RENAME_THROTTLE_SECONDS:
+                        throttle_sleep = RENAME_THROTTLE_SECONDS - time_since_last
                     else:
                         channel_id, new_name, reason = self._rename_queue.popleft()
 

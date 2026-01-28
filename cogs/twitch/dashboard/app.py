@@ -86,6 +86,7 @@ def build_app(
     session_detail_cb=None,
     comparison_stats_cb=None,
     streamer_analytics_data_cb=None,
+    analytics_suggestions_cb=None,
     raid_bot=None,
     reload_cb=None,
     http_session=None,
@@ -126,6 +127,7 @@ def build_app(
             session_detail_cb=session_detail_cb,
             comparison_stats_cb=comparison_stats_cb,
             streamer_analytics_data_cb=streamer_analytics_data_cb,
+            analytics_suggestions_cb=analytics_suggestions_cb,
         )
         # Raid-Bot Attribute setzen
         ui._raid_bot = raid_bot
