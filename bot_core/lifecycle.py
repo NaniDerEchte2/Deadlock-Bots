@@ -84,7 +84,11 @@ class BotLifecycle:
         """
         Lädt die relevanten Module neu, damit Code-Änderungen beim Restart greifen.
         """
-        importlib.reload(importlib.import_module("service.config"))
+        for module_name in ("service.config", "service.db", "service.dashboard"):
+            try:
+                importlib.reload(importlib.import_module(module_name))
+            except Exception as exc:  # pragma: no cover - defensive reload
+                logger.warning("Module reload skipped for %s: %s", module_name, exc)
         master_module = importlib.reload(importlib.import_module("bot_core.master_bot"))
         control_module = importlib.reload(importlib.import_module("bot_core.control"))
 

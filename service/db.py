@@ -516,6 +516,8 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               sessions_together INTEGER DEFAULT 1,
               total_minutes_together INTEGER DEFAULT 0,
               last_played_together DATETIME DEFAULT CURRENT_TIMESTAMP,
+              user_display_name TEXT,
+              co_player_display_name TEXT,
               PRIMARY KEY(user_id, co_player_id)
             );
 
@@ -586,6 +588,15 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
+        for alter_sql in (
+            "ALTER TABLE user_co_players ADD COLUMN user_display_name TEXT",
+            "ALTER TABLE user_co_players ADD COLUMN co_player_display_name TEXT",
+        ):
+            try:
+                c.execute(alter_sql)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
         # Live player state extensions
         for alter_sql in (
             "ALTER TABLE live_player_state ADD COLUMN deadlock_stage TEXT",

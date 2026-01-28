@@ -9,7 +9,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from aiohttp import ClientSession, ClientTimeout, web
@@ -174,6 +174,8 @@ class DashboardServer:
                     web.get("/api/user-retention", self._handle_user_retention),
                     web.get("/api/member-events", self._handle_member_events),
                     web.get("/api/message-activity", self._handle_message_activity),
+                    web.get("/api/co-player-network", self._handle_co_player_network),
+                    web.get("/api/co-player-network/", self._handle_co_player_network),
                     web.get("/api/server-stats", self._handle_server_stats),
                     web.post("/api/cogs/discover", self._handle_discover),
                     web.get("/api/standalone", self._handle_standalone_list),
@@ -1559,6 +1561,185 @@ class DashboardServer:
         except Exception as exc:
             logging.exception("Failed to load message activity: %s", exc)
             raise web.HTTPInternalServerError(text="Message activity unavailable") from exc
+
+    async def _handle_co_player_network(self, request: web.Request) -> web.Response:
+        """Aggregiertes Co-Player-Netzwerk mit persistierten Anzeigenamen."""
+        self._check_auth(request, required=bool(self.token))
+
+        raw_limit = request.query.get("limit")
+        raw_min_sessions = request.query.get("min_sessions")
+
+        try:
+            limit = int(raw_limit) if raw_limit else 120
+            if limit <= 0:
+                raise ValueError
+            limit = min(limit, 400)
+        except ValueError:
+            raise web.HTTPBadRequest(text="limit must be a positive integer (max 400)")
+
+        try:
+            min_sessions = int(raw_min_sessions) if raw_min_sessions else 1
+            if min_sessions <= 0:
+                raise ValueError
+            min_sessions = min(min_sessions, 100000)
+        except ValueError:
+            raise web.HTTPBadRequest(text="min_sessions must be a positive integer")
+
+        try:
+            rows = db.query_all(
+                """
+                SELECT user_id, co_player_id, sessions_together, total_minutes_together,
+                       last_played_together, user_display_name, co_player_display_name
+                FROM user_co_players
+                WHERE sessions_together >= ?
+                ORDER BY sessions_together DESC, total_minutes_together DESC, last_played_together DESC
+                LIMIT ?
+                """,
+                (min_sessions, limit * 2),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to load co-player network: %s", exc)
+            raise web.HTTPInternalServerError(text="Co-player network unavailable") from exc
+
+        def _ts(value: Any) -> float:
+            if value is None:
+                return 0.0
+            if isinstance(value, (int, float)):
+                return float(value)
+            try:
+                normalized = str(value).replace("T", " ").replace("Z", "")
+                return _dt.datetime.fromisoformat(normalized).timestamp()
+            except Exception:
+                return 0.0
+
+        edges: Dict[Tuple[int, int], Dict[str, Any]] = {}
+        name_map: Dict[int, str] = {}
+        missing_names: Set[int] = set()
+
+        for row in rows:
+            try:
+                uid = int(row["user_id"])
+                coid = int(row["co_player_id"])
+            except Exception:
+                continue
+            if uid == coid:
+                continue
+            sessions = int(row["sessions_together"] or 0)
+            minutes = int(row["total_minutes_together"] or 0)
+            last_played = row["last_played_together"]
+            key = (uid, coid) if uid < coid else (coid, uid)
+            edge = edges.get(key)
+            ts_value = _ts(last_played)
+            if edge is None:
+                edges[key] = {
+                    "source": key[0],
+                    "target": key[1],
+                    "sessions": sessions,
+                    "minutes": minutes,
+                    "last_played": last_played,
+                    "last_played_ts": ts_value,
+                }
+            else:
+                edge["sessions"] = max(edge["sessions"], sessions)
+                edge["minutes"] = max(edge["minutes"], minutes)
+                if ts_value > edge.get("last_played_ts", 0):
+                    edge["last_played_ts"] = ts_value
+                    edge["last_played"] = last_played
+
+            user_name = row.get("user_display_name")
+            co_name = row.get("co_player_display_name")
+            if user_name:
+                name_map[uid] = user_name
+            else:
+                missing_names.add(uid)
+            if co_name:
+                name_map[coid] = co_name
+            else:
+                missing_names.add(coid)
+
+        if missing_names:
+            resolved = self._resolve_display_names(missing_names)
+            for uid, name in resolved.items():
+                if name:
+                    name_map[uid] = name
+
+        updates: List[Tuple[Optional[str], Optional[str], int, int]] = []
+        for row in rows:
+            try:
+                uid = int(row["user_id"])
+                coid = int(row["co_player_id"])
+            except Exception:
+                continue
+            new_user_name = name_map.get(uid)
+            new_co_name = name_map.get(coid)
+            if (not row.get("user_display_name") and new_user_name) or (
+                not row.get("co_player_display_name") and new_co_name
+            ):
+                updates.append((new_user_name, new_co_name, uid, coid))
+
+        if updates:
+            try:
+                db.executemany(
+                    """
+                    UPDATE user_co_players
+                    SET user_display_name = COALESCE(?, user_display_name),
+                        co_player_display_name = COALESCE(?, co_player_display_name)
+                    WHERE user_id = ? AND co_player_id = ?
+                    """,
+                    updates,
+                )
+            except Exception:
+                logger.debug("Could not persist co-player display names", exc_info=True)
+
+        edge_values = sorted(edges.values(), key=lambda e: (e["sessions"], e["minutes"]), reverse=True)
+        trimmed_edges = edge_values[:limit]
+
+        nodes: Dict[int, Dict[str, Any]] = {}
+        for edge in trimmed_edges:
+            source = edge["source"]
+            target = edge["target"]
+            for node_id in (source, target):
+                if node_id not in nodes:
+                    nodes[node_id] = {
+                        "id": node_id,
+                        "name": name_map.get(node_id, f"User {node_id}"),
+                        "sessions": 0,
+                        "minutes": 0,
+                        "degree": 0,
+                    }
+                nodes[node_id]["degree"] += 1
+
+            nodes[source]["sessions"] += edge["sessions"]
+            nodes[target]["sessions"] += edge["sessions"]
+            nodes[source]["minutes"] += edge["minutes"]
+            nodes[target]["minutes"] += edge["minutes"]
+
+        for node in nodes.values():
+            node["weight"] = max(node["sessions"], node["minutes"] // 10)
+
+        links = [
+            {
+                "source": edge["source"],
+                "target": edge["target"],
+                "sessions": edge["sessions"],
+                "minutes": edge["minutes"],
+                "last_played": edge.get("last_played"),
+            }
+            for edge in trimmed_edges
+        ]
+
+        payload = {
+            "nodes": sorted(nodes.values(), key=lambda n: n["sessions"], reverse=True),
+            "links": links,
+            "meta": {
+                "total_edges": len(edges),
+                "returned_edges": len(links),
+                "total_nodes": len(nodes),
+                "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+                "min_sessions": min_sessions,
+            },
+        }
+        return self._json(payload)
 
     async def _handle_server_stats(self, request: web.Request) -> web.Response:
         """Handler für aggregierte Server-Statistiken."""

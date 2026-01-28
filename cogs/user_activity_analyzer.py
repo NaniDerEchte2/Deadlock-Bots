@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -39,6 +40,9 @@ class UserActivityAnalyzer(commands.Cog):
         # Cache für Co-Spieler-Daten (wird alle 30 Min refreshed)
         self._co_player_cache: Dict[int, List[Tuple[int, int]]] = {}
         self._cache_timestamp = datetime.utcnow()
+        # Namens-Cache für Co-Player, damit Display-Namen auch nach Neustarts verfügbar bleiben
+        self._display_name_cache: Dict[int, Tuple[str, float]] = {}
+        self._display_name_cache_ttl = 3600.0  # Sekunden
 
         logger.info("User Activity Analyzer initializing")
 
@@ -127,6 +131,70 @@ class UserActivityAnalyzer(commands.Cog):
     @analyze_user_activity.before_loop
     async def before_analyze(self):
         await self.bot.wait_until_ready()
+
+    def _display_name_from_db(self, user_id: int) -> Optional[str]:
+        """
+        Liefert den zuletzt bekannten Anzeigenamen aus der DB (falls vorhanden).
+        Nutzt co-player- sowie voice_session_log-Daten als Fallback.
+        """
+        try:
+            row = central_db.query_one(
+                """
+                SELECT name FROM (
+                  SELECT user_display_name AS name, last_played_together AS ts
+                  FROM user_co_players
+                  WHERE user_id = ? AND user_display_name IS NOT NULL
+                  UNION ALL
+                  SELECT co_player_display_name AS name, last_played_together AS ts
+                  FROM user_co_players
+                  WHERE co_player_id = ? AND co_player_display_name IS NOT NULL
+                  UNION ALL
+                  SELECT display_name AS name, ended_at AS ts
+                  FROM voice_session_log
+                  WHERE user_id = ? AND display_name IS NOT NULL
+                )
+                WHERE name IS NOT NULL AND name != ''
+                ORDER BY ts DESC
+                LIMIT 1
+                """,
+                (user_id, user_id, user_id),
+            )
+            if row and row[0]:
+                return str(row[0])
+        except Exception as exc:
+            logger.debug("Display name lookup failed for %s: %s", user_id, exc, exc_info=True)
+        return None
+
+    async def _display_name_for(self, user_id: int) -> str:
+        """Resolve a display name and persist it in a short-lived cache."""
+        now = time.time()
+        cached = self._display_name_cache.get(user_id)
+        if cached and now - cached[1] < self._display_name_cache_ttl:
+            return cached[0]
+
+        name = self._display_name_from_db(user_id)
+
+        if not name:
+            user_obj = self.bot.get_user(user_id)
+            if user_obj:
+                name = getattr(user_obj, "display_name", None) or getattr(user_obj, "name", None)
+
+        if not name:
+            try:
+                user_obj = await self.bot.fetch_user(user_id)
+                name = getattr(user_obj, "display_name", None) or getattr(user_obj, "name", None)
+            except (discord.HTTPException, discord.NotFound, discord.Forbidden):
+                name = None
+
+        resolved = name or f"User {user_id}"
+        self._display_name_cache[user_id] = (resolved, now)
+
+        if len(self._display_name_cache) > 512:
+            oldest = sorted(self._display_name_cache.items(), key=lambda item: item[1][1])[:128]
+            for uid, _ in oldest:
+                self._display_name_cache.pop(uid, None)
+
+        return resolved
 
     async def _analyze_single_user(self, user_id: int, sessions: List[Dict]):
         """Analysiert einen einzelnen User und speichert die Patterns."""
@@ -248,26 +316,38 @@ class UserActivityAnalyzer(commands.Cog):
                 try:
                     co_player_ids = json.loads(co_player_ids_json)
                     for co_id in co_player_ids:
-                        co_player_stats[co_id]['sessions'] += 1
-                        co_player_stats[co_id]['minutes'] += duration_minutes
+                        try:
+                            co_int = int(co_id)
+                        except Exception:
+                            continue
+                        if co_int == user_id:
+                            continue
+                        co_player_stats[co_int]['sessions'] += 1
+                        co_player_stats[co_int]['minutes'] += duration_minutes
                 except json.JSONDecodeError:
                     continue
 
-            # Speichere/Update in DB
+            base_display_name = await self._display_name_for(user_id)
+
+            # Speichere/Update in DB (mit persistenten Anzeigenamen)
             for co_id, stats in co_player_stats.items():
+                co_display_name = await self._display_name_for(co_id)
                 central_db.execute(
                     """
                     INSERT INTO user_co_players(
                         user_id, co_player_id, sessions_together,
-                        total_minutes_together, last_played_together
+                        total_minutes_together, last_played_together,
+                        user_display_name, co_player_display_name
                     )
-                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
                     ON CONFLICT(user_id, co_player_id) DO UPDATE SET
                         sessions_together = sessions_together + excluded.sessions_together,
                         total_minutes_together = total_minutes_together + excluded.total_minutes_together,
-                        last_played_together = CURRENT_TIMESTAMP
+                        last_played_together = CURRENT_TIMESTAMP,
+                        user_display_name = COALESCE(excluded.user_display_name, user_display_name),
+                        co_player_display_name = COALESCE(excluded.co_player_display_name, co_player_display_name)
                     """,
-                    (user_id, co_id, stats['sessions'], stats['minutes'])
+                    (user_id, co_id, stats['sessions'], stats['minutes'], base_display_name, co_display_name)
                 )
 
         except Exception as e:
@@ -315,30 +395,51 @@ class UserActivityAnalyzer(commands.Cog):
                         await self._record_co_player_session(
                             member1.id,
                             member2.id,
-                            duration_minutes=10  # 10 Min pro Loop-Interval
+                            duration_minutes=10,  # 10 Min pro Loop-Interval
+                            user_name=getattr(member1, "display_name", None),
+                            co_player_name=getattr(member2, "display_name", None),
                         )
 
         except Exception as e:
             logger.error(f"Error tracking co-players in guild {guild.id}: {e}", exc_info=True)
 
-    async def _record_co_player_session(self, user_id: int, co_player_id: int, duration_minutes: int = 10):
-        """Speichert eine Co-Player-Session (bidirektional)."""
+    async def _record_co_player_session(
+        self,
+        user_id: int,
+        co_player_id: int,
+        duration_minutes: int = 10,
+        user_name: Optional[str] = None,
+        co_player_name: Optional[str] = None,
+    ):
+        """Speichert eine Co-Player-Session (bidirektional) und persistiert Namen."""
+        if user_id == co_player_id:
+            return
         try:
+            base_user_name = user_name or await self._display_name_for(user_id)
+            base_co_name = co_player_name or await self._display_name_for(co_player_id)
+
             # Beide Richtungen speichern (A->B und B->A)
-            for uid, co_uid in [(user_id, co_player_id), (co_player_id, user_id)]:
+            pairs = [
+                (user_id, co_player_id, base_user_name, base_co_name),
+                (co_player_id, user_id, base_co_name, base_user_name),
+            ]
+            for uid, co_uid, uid_name, co_name in pairs:
                 central_db.execute(
                     """
                     INSERT INTO user_co_players(
                         user_id, co_player_id, sessions_together,
-                        total_minutes_together, last_played_together
+                        total_minutes_together, last_played_together,
+                        user_display_name, co_player_display_name
                     )
-                    VALUES (?, ?, 1, ?, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, 1, ?, CURRENT_TIMESTAMP, ?, ?)
                     ON CONFLICT(user_id, co_player_id) DO UPDATE SET
                         sessions_together = sessions_together + 1,
                         total_minutes_together = total_minutes_together + excluded.total_minutes_together,
-                        last_played_together = CURRENT_TIMESTAMP
+                        last_played_together = CURRENT_TIMESTAMP,
+                        user_display_name = COALESCE(excluded.user_display_name, user_display_name),
+                        co_player_display_name = COALESCE(excluded.co_player_display_name, co_player_display_name)
                     """,
-                    (uid, co_uid, duration_minutes)
+                    (uid, co_uid, duration_minutes, uid_name, co_name)
                 )
 
             # Invalidiere Cache

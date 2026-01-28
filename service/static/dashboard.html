@@ -5,6 +5,7 @@
     <title>Master Bot Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
     <style>
         :root {
             color-scheme: dark light;
@@ -695,6 +696,91 @@
             color: #adb5bd;
             font-size: 0.85rem;
         }
+        .network-layout {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 1rem;
+            align-items: stretch;
+        }
+        @media (max-width: 1080px) {
+            .network-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+        .network-visual,
+        .network-side {
+            background: #161616;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.05);
+            padding: 1rem;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+        }
+        .network-graph {
+            width: 100%;
+            min-height: 520px;
+            height: clamp(420px, 55vh, 640px);
+            border-radius: 8px;
+            background:
+                radial-gradient(circle at 22% 24%, rgba(59,130,246,0.12), transparent 38%),
+                radial-gradient(circle at 78% 62%, rgba(131,88,255,0.14), transparent 34%),
+                #0f0f0f;
+            border: 1px solid rgba(255,255,255,0.05);
+            overflow: hidden;
+        }
+        #co-network-svg {
+            width: 100%;
+            height: 100%;
+            min-height: 420px;
+            display: block;
+        }
+        .network-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            color: #adb5bd;
+            margin-bottom: 0.75rem;
+            font-size: 0.9rem;
+        }
+        .network-legend {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+            color: #adb5bd;
+            font-size: 0.85rem;
+        }
+        .network-chip {
+            background: rgba(116, 192, 252, 0.14);
+            border: 1px solid rgba(116, 192, 252, 0.28);
+            border-radius: 999px;
+            padding: 0.2rem 0.65rem;
+            font-weight: 600;
+            color: #e7f5ff;
+            font-size: 0.8rem;
+        }
+        .network-list {
+            max-height: 540px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .network-row {
+            padding: 0.65rem 0.75rem;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+        .network-row strong {
+            color: #fff;
+        }
+        .network-row-meta {
+            color: #adb5bd;
+            font-size: 0.85rem;
+            margin-top: 0.15rem;
+        }
     </style>
 </head>
 <body>
@@ -863,6 +949,35 @@
         <div class="log" id="operation-log"></div>
     </section>
 
+    <section>
+        <div class="section-header">
+            <h2>Co-Player Netzwerk</h2>
+            <div class="section-actions">
+                <button class="reload" id="co-network-refresh">Neu laden</button>
+                <span class="voice-meta" id="co-network-meta">Letzte Aktualisierung: -</span>
+            </div>
+        </div>
+        <p class="voice-meta">Visualisiert, wer wie oft zusammenspielt (Datenquelle: user_co_players).</p>
+        <div class="network-layout">
+            <div class="network-visual">
+                <div class="network-meta">
+                    <div class="network-legend">
+                        <span class="network-chip">Dicke Linie = mehr Sessions</span>
+                        <span class="network-chip">Größerer Knoten = mehr gemeinsame Minuten</span>
+                    </div>
+                    <span class="voice-meta" id="co-network-generated">-</span>
+                </div>
+                <div class="network-graph">
+                    <svg id="co-network-svg"></svg>
+                </div>
+            </div>
+            <div class="network-side">
+                <h3>Top Verbindungen</h3>
+                <div id="co-network-list" class="network-list"></div>
+            </div>
+        </div>
+    </section>
+
     <script>
     const opLog = document.getElementById('operation-log');
     const treeContainer = document.getElementById('tree-container');
@@ -899,6 +1014,14 @@
     const retentionRecent = document.getElementById('retention-recent');
     const retentionRefreshButton = document.getElementById('retention-refresh');
     const retentionUpdated = document.getElementById('retention-updated');
+
+    // Co-Player Netzwerk
+    const coNetworkSvg = document.getElementById('co-network-svg');
+    const coNetworkRefreshBtn = document.getElementById('co-network-refresh');
+    const coNetworkMeta = document.getElementById('co-network-meta');
+    const coNetworkGenerated = document.getElementById('co-network-generated');
+    const coNetworkList = document.getElementById('co-network-list');
+    let coNetworkSimulation = null;
 
     const dashboardRestartBtn = document.getElementById('dashboard-restart');
     const dashboardStatusPill = document.getElementById('dashboard-status-pill');
@@ -2107,6 +2230,173 @@ async function loadUserRetention() {
     }
 }
 
+function clamp(value, min, max) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) {
+        return min;
+    }
+    return Math.min(Math.max(num, min), max);
+}
+
+function renderCoNetworkList(links, nameLookup) {
+    if (!coNetworkList) {
+        return;
+    }
+    coNetworkList.innerHTML = '';
+    if (!links || !links.length) {
+        const empty = document.createElement('div');
+        empty.className = 'voice-meta';
+        empty.textContent = 'Noch keine Co-Player-Daten.';
+        coNetworkList.appendChild(empty);
+        return;
+    }
+    const sorted = [...links].sort((a, b) => (b.sessions || 0) - (a.sessions || 0)).slice(0, 18);
+    sorted.forEach((link) => {
+        const row = document.createElement('div');
+        row.className = 'network-row';
+        const title = document.createElement('div');
+        const sourceName = nameLookup.get(link.source) || `User ${link.source}`;
+        const targetName = nameLookup.get(link.target) || `User ${link.target}`;
+        title.innerHTML = `<strong>${sourceName}</strong> ↔ <strong>${targetName}</strong>`;
+        const meta = document.createElement('div');
+        meta.className = 'network-row-meta';
+        const sessionsLabel = `${safeNumber(link.sessions)} Sessions`;
+        const minutesLabel = `${safeNumber(link.minutes).toLocaleString('de-DE')} Min`;
+        const lastLabel = link.last_played ? ` · ${formatTimestamp(link.last_played)}` : '';
+        meta.textContent = `${sessionsLabel} · ${minutesLabel} ${lastLabel}`;
+        row.appendChild(title);
+        row.appendChild(meta);
+        coNetworkList.appendChild(row);
+    });
+}
+
+function renderCoNetwork(data) {
+    if (!coNetworkSvg) {
+        return;
+    }
+    if (!window.d3) {
+        if (coNetworkMeta) {
+            coNetworkMeta.textContent = 'D3 konnte nicht geladen werden.';
+        }
+        return;
+    }
+    const nodes = Array.isArray(data && data.nodes) ? data.nodes.map((n) => ({ ...n })) : [];
+    const links = Array.isArray(data && data.links) ? data.links.map((l) => ({ ...l })) : [];
+    const meta = (data && data.meta) || {};
+
+    const nameLookup = new Map(nodes.map((n) => [n.id, n.name || `User ${n.id}`]));
+    if (coNetworkMeta) {
+        coNetworkMeta.textContent = `${nodes.length} User · ${links.length} Verbindungen · min ${meta.min_sessions || 1} Sessions`;
+    }
+    if (coNetworkGenerated) {
+        const label = meta.generated_at ? formatTimestamp(meta.generated_at) : new Date().toLocaleTimeString();
+        coNetworkGenerated.textContent = 'Stand: ' + label;
+    }
+
+    renderCoNetworkList(links, nameLookup);
+
+    const width = coNetworkSvg.clientWidth || 900;
+    const height = coNetworkSvg.clientHeight || 520;
+    const svg = d3.select(coNetworkSvg);
+    svg.selectAll('*').remove();
+    svg.attr('viewBox', `0 0 ${width} ${height}`);
+    svg.attr('preserveAspectRatio', 'xMidYMid meet');
+
+    if (!nodes.length || !links.length) {
+        svg.append('text')
+            .attr('x', width / 2)
+            .attr('y', height / 2)
+            .attr('text-anchor', 'middle')
+            .attr('fill', '#adb5bd')
+            .attr('font-size', '14px')
+            .text('Noch keine Co-Player-Daten.');
+        return;
+    }
+
+    const linkForce = d3.forceLink(links)
+        .id((d) => d.id)
+        .distance((d) => Math.max(80, 260 / Math.sqrt((d.sessions || 1) + 0.5)))
+        .strength(0.35);
+
+    const simulation = d3.forceSimulation(nodes)
+        .force('link', linkForce)
+        .force('charge', d3.forceManyBody().strength(-95))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('collision', d3.forceCollide().radius((d) => 12 + Math.sqrt((d.weight || d.sessions || 1)) * 1.7));
+    coNetworkSimulation = simulation;
+
+    const link = svg.append('g')
+        .attr('stroke', 'rgba(116, 192, 252, 0.7)')
+        .attr('stroke-opacity', 0.35)
+        .selectAll('line')
+        .data(links)
+        .join('line')
+        .attr('stroke-width', (d) => 1 + Math.log((d.sessions || 1) + 1) * 1.2)
+        .attr('stroke-dasharray', (d) => (d.sessions || 0) > 8 ? '' : '3,2');
+
+    const node = svg.append('g')
+        .selectAll('g')
+        .data(nodes)
+        .join('g')
+        .call(
+            d3.drag()
+                .on('start', (event, d) => {
+                    if (!event.active) simulation.alphaTarget(0.3).restart();
+                    d.fx = d.x;
+                    d.fy = d.y;
+                })
+                .on('drag', (event, d) => {
+                    d.fx = clamp(event.x, 0, width);
+                    d.fy = clamp(event.y, 0, height);
+                })
+                .on('end', (event, d) => {
+                    if (!event.active) simulation.alphaTarget(0);
+                    d.fx = null;
+                    d.fy = null;
+                })
+        );
+
+    node.append('circle')
+        .attr('r', (d) => 10 + Math.log((d.weight || d.sessions || 1) + 1) * 2.2)
+        .attr('fill', '#4dabf7')
+        .attr('stroke', '#228be6')
+        .attr('stroke-width', 1.4)
+        .attr('fill-opacity', 0.9);
+
+    node.append('text')
+        .attr('x', 12)
+        .attr('y', 4)
+        .attr('fill', '#e9ecef')
+        .attr('font-size', '12px')
+        .attr('font-weight', '700')
+        .text((d) => d.name || d.id);
+
+    simulation.on('tick', () => {
+        link
+            .attr('x1', (d) => clamp(d.source.x, 0, width))
+            .attr('y1', (d) => clamp(d.source.y, 0, height))
+            .attr('x2', (d) => clamp(d.target.x, 0, width))
+            .attr('y2', (d) => clamp(d.target.y, 0, height));
+        node.attr('transform', (d) => `translate(${clamp(d.x, 0, width)}, ${clamp(d.y, 0, height)})`);
+    });
+}
+
+async function loadCoNetwork() {
+    try {
+        const data = await fetchJSON('/api/co-player-network?limit=140&min_sessions=1');
+        renderCoNetwork(data);
+    } catch (err) {
+        const msg = 'Co-Player Netzwerk konnte nicht geladen werden: ' + err.message + (err.message.includes('404') ? ' (Dashboard neu starten, damit der neue API-Endpunkt geladen wird)' : '');
+        log(msg, 'error');
+        if (coNetworkMeta) {
+            coNetworkMeta.textContent = 'Fehler: ' + msg;
+        }
+        if (coNetworkList) {
+            coNetworkList.innerHTML = '<div class="voice-meta">Fehler beim Laden der Co-Player-Daten.</div>';
+        }
+    }
+}
+
 function renderRankMetrics(container, metrics) {
     const state = metrics.state || {};
     const queue = state.queue || {};
@@ -2988,6 +3278,8 @@ async function fetchStandaloneLogs(key, limit = 200) {
     setInterval(loadVoiceHistory, 60000);
     loadUserRetention();
     setInterval(loadUserRetention, 60000);
+    loadCoNetwork();
+    setInterval(loadCoNetwork, 120000);
 
     // Server Stats Initial Load
     loadServerStats();
@@ -2997,6 +3289,11 @@ async function fetchStandaloneLogs(key, limit = 200) {
     if (serverStatsRefreshButton) {
         serverStatsRefreshButton.addEventListener('click', () => {
             loadServerStats();
+        });
+    }
+    if (coNetworkRefreshBtn) {
+        coNetworkRefreshBtn.addEventListener('click', () => {
+            loadCoNetwork();
         });
     }
     </script>

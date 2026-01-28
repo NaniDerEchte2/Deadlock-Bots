@@ -145,6 +145,10 @@ def _redact_co_players(rows: List[Dict[str, object]], uid: int) -> List[Dict[str
             row_copy["co_player_id"] = "redacted"
         if int(user_id or uid) != uid:
             row_copy["user_id"] = uid
+        if "user_display_name" in row_copy and int(user_id or uid) != uid:
+            row_copy["user_display_name"] = "redacted"
+        if "co_player_display_name" in row_copy and int(co_player_id or uid) != uid:
+            row_copy["co_player_display_name"] = "redacted"
         sanitized.append(row_copy)
     return sanitized
 
