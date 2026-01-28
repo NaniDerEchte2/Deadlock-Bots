@@ -178,12 +178,12 @@ if TWITCHIO_AVAILABLE:
                         log.debug("Konnte initialem Channel %s nicht beitreten: %s", channel, e)
 
         async def event_ready(self):
-        """Wird aufgerufen, wenn der Bot verbunden ist."""
-        name = self.user.name if self.user else "Unknown"
-        log.info("Twitch Chat Bot ready | Logged in as: %s", name)
-        # Zeige initial channels (monitored_streamers wird erst nach join() befüllt)
-        initial = ", ".join(self._initial_channels[:10]) if self._initial_channels else "(none yet)"
-        log.info("Initial channels to join: %s", initial)
+            """Wird aufgerufen, wenn der Bot verbunden ist."""
+            name = self.user.name if self.user else "Unknown"
+            log.info("Twitch Chat Bot ready | Logged in as: %s", name)
+            # Zeige initial channels (monitored_streamers wird erst nach join() befüllt)
+            initial = ", ".join(self._initial_channels[:10]) if self._initial_channels else "(none yet)"
+            log.info("Initial channels to join: %s", initial)
 
         async def event_token_refreshed(self, payload):
             """Persistiert erneuerte Bot-Tokens, sobald TwitchIO sie refreshed."""
