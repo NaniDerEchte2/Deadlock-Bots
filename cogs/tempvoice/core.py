@@ -17,8 +17,9 @@ from service import db
 log = logging.getLogger("TempVoiceCore")
 
 # --------- IDs / Konfiguration ---------
+CASUAL_STAGING_ID = 1330278323145801758  # Chill/ Casual Staging
 STAGING_CHANNEL_IDS: Set[int] = {
-    1330278323145801758,  # Casual Staging
+    CASUAL_STAGING_ID,  # Casual Staging
     1357422958544420944,  # Street Brawl Staging
     1412804671432818890,  # Spezial Staging
 }
@@ -36,7 +37,11 @@ STAGING_RULES: Dict[int, Dict[str, Any]] = {
         "disable_rank_caps": True,
         "disable_min_rank": True,
     },
+    CASUAL_STAGING_ID: {  # Chill Lanes: Prefix per Owner-Rang
+        "prefix_from_rank": True,
+    },
 }
+CASUAL_RANK_FALLBACK = "Chill"
 # Legacy-Alias für ältere Imports, zeigt weiterhin auf die ursprüngliche Grind-ID
 MINRANK_CATEGORY_ID: int = 1412804540994162789
 RANKED_CATEGORY_ID: int = 1357422957017698478
@@ -64,6 +69,7 @@ RANK_ORDER = [
 ]
 RANK_SET = set(RANK_ORDER)
 SUFFIX_THRESHOLD_RANK = "emissary"
+MANAGED_PREFIXES = {"lane", "street brawl", CASUAL_RANK_FALLBACK.lower()}.union(RANK_SET)
 
 # Export-Intent für andere Module (verhindert "unused global variable")
 __all__ = [
@@ -78,7 +84,13 @@ __all__ = [
 
 # --------- Hilfen ---------
 def _is_managed_lane(ch: Optional[discord.VoiceChannel]) -> bool:
-    return isinstance(ch, discord.VoiceChannel) and ch.name.startswith("Lane ")
+    if not isinstance(ch, discord.VoiceChannel):
+        return False
+    name = ch.name.lower()
+    for prefix in MANAGED_PREFIXES:
+        if name == prefix or name.startswith(f"{prefix} "):
+            return True
+    return False
 
 def _default_cap(ch: discord.abc.GuildChannel) -> int:
     cat_id = getattr(ch, "category_id", None)
@@ -112,6 +124,24 @@ def _age_seconds(ch: discord.VoiceChannel) -> float:
     except Exception as e:
         log.debug("age_seconds failed for %s: %r", getattr(ch, "id", "?"), e)
         return 999999.0
+
+def _rank_prefix_for(member: discord.Member) -> Optional[str]:
+    """Ermittle den höchsten Rang des Members anhand der Rollen-Namen."""
+    best_idx = 0
+    best_label: Optional[str] = None
+    for role in getattr(member, "roles", []):
+        try:
+            role_name = str(role.name).lower()
+        except Exception:
+            continue
+        idx = _rank_index(role_name)
+        if idx > best_idx:
+            best_idx = idx
+            # Nutze kanonischen Namen aus RANK_ORDER für konsistente Schreibweise
+            best_label = RANK_ORDER[idx]
+    if best_idx > 0 and best_label:
+        return best_label.capitalize()
+    return None
 
 # --------- Ban-Store ---------
 class AsyncBanStore:
@@ -237,6 +267,11 @@ class TempVoiceCore(commands.Cog):
     def _rules_from_base(self, base_name: str) -> Tuple[Dict[str, Any], Optional[int]]:
         base_lower = base_name.lower()
         for sid, rule in STAGING_RULES.items():
+            if rule.get("prefix_from_rank"):
+                first_token = base_lower.split(" ", 1)[0]
+                if first_token in RANK_SET or first_token == CASUAL_RANK_FALLBACK.lower():
+                    return rule, sid
+                continue
             prefix = str(rule.get("prefix") or "Lane").lower()
             if base_lower.startswith(prefix):
                 return rule, sid
@@ -1092,9 +1127,13 @@ class TempVoiceCore(commands.Cog):
                 member = fresh_member
 
                 rules = self._rules_for_staging(staging)
-                prefix = str(rules.get("prefix") or "Lane")
                 cat = staging.category
-                base = await self._next_name(cat, prefix)
+                prefix = str(rules.get("prefix") or "Lane")
+                if rules.get("prefix_from_rank"):
+                    prefix = _rank_prefix_for(member) or CASUAL_RANK_FALLBACK
+                    base = prefix
+                else:
+                    base = await self._next_name(cat, prefix)
                 bitrate = getattr(guild, "bitrate_limit", None) or 256000
                 try:
                     cap = int(rules.get("user_limit", _default_cap(staging)))
