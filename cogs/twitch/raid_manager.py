@@ -950,34 +950,42 @@ class RaidBot:
             await self.chat_bot.join(to_broadcaster_login, channel_id=target_id)
             await asyncio.sleep(0.5)  # Warte bis Join verarbeitet ist
 
-            # TwitchIO 3.x: Nutze send_message() direkt
-            # Verwende bot_id_safe Property statt direktem Attribut-Zugriff
-            bot_id = getattr(self.chat_bot, "bot_id_safe", None)
-            if bot_id is None:
-                # Fallback auf alte Methode falls bot_id_safe nicht existiert
-                bot_id_raw = getattr(self.chat_bot, "bot_id", None)
-                bot_id = str(bot_id_raw).strip() if bot_id_raw and str(bot_id_raw).strip() else None
-            
-            if target_id and bot_id and hasattr(self.chat_bot, "send_message"):
-                try:
-                    await self.chat_bot.send_message(str(target_id), str(bot_id), message)
-                    log.info(
-                        "Sent recruitment message in %s's chat (raided by %s)",
-                        to_broadcaster_login,
-                        from_broadcaster_login,
+            # TwitchIO 3.x: Nutze _send_chat_message helper (MockChannel)
+            # Diese Methode existiert im chat_bot und funktioniert mit EventSub
+            try:
+                if hasattr(self.chat_bot, "_send_chat_message"):
+                    # Mock Channel-Objekt für die interne Methode
+                    class MockChannel:
+                        def __init__(self, login, uid):
+                            self.name = login
+                            self.id = uid
+                    
+                    success = await self.chat_bot._send_chat_message(
+                        MockChannel(to_broadcaster_login, target_id),
+                        message
                     )
-                except Exception:
-                    log.exception(
-                        "Failed to send recruitment message to %s (raided by %s)",
+                    
+                    if success:
+                        log.info(
+                            "Sent recruitment message in %s's chat (raided by %s)",
+                            to_broadcaster_login,
+                            from_broadcaster_login,
+                        )
+                    else:
+                        log.warning(
+                            "Failed to send recruitment message to %s (returned False)",
+                            to_broadcaster_login,
+                        )
+                else:
+                    log.debug(
+                        "Chat bot does not have _send_chat_message method, skipping recruitment message to %s",
                         to_broadcaster_login,
-                        from_broadcaster_login,
                     )
-            else:
-                log.warning(
-                    "Could not send recruitment message to %s - bot_id=%s, send_message=%s",
+            except Exception:
+                log.exception(
+                    "Failed to send recruitment message to %s (raided by %s)",
                     to_broadcaster_login,
-                    bot_id or "None",
-                    "available" if hasattr(self.chat_bot, "send_message") else "unavailable",
+                    from_broadcaster_login,
                 )
 
         except Exception:

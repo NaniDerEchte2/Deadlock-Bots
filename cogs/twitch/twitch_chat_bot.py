@@ -464,7 +464,8 @@ if TWITCHIO_AVAILABLE:
                     await channel.send(text)
                     return True
                 
-                # 2. TwitchIO 3.x Fallback: send_message via Bot
+                # 2. Fallback: Direkte Helix API Call (TwitchIO 3.x kompatibel)
+                # Hinweis: send_message() existiert NICHT in TwitchIO 3.x
                 b_id = None
                 if hasattr(channel, "id"):
                     b_id = str(channel.id)
@@ -478,9 +479,37 @@ if TWITCHIO_AVAILABLE:
                         b_id = str(user.id)
 
                 safe_bot_id = self.bot_id_safe or self.bot_id
-                if b_id and safe_bot_id:
-                    await self.send_message(str(b_id), str(safe_bot_id), text)
-                    return True
+                if b_id and safe_bot_id and self._token_manager:
+                    # Nutze Helix API direkt (user:write:chat scope erforderlich)
+                    try:
+                        tokens = await self._token_manager.get_valid_token()
+                        if not tokens:
+                            log.debug("No valid bot token for Helix chat message")
+                            return False
+                        
+                        access_token, _ = tokens
+                        url = "https://api.twitch.tv/helix/chat/messages"
+                        headers = {
+                            "Client-ID": self._client_id,
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json"
+                        }
+                        payload = {
+                            "broadcaster_id": str(b_id),
+                            "sender_id": str(safe_bot_id),
+                            "message": text
+                        }
+                        
+                        # Nutze aiohttp direkt
+                        import aiohttp
+                        async with aiohttp.ClientSession() as session:
+                            async with session.post(url, headers=headers, json=payload) as r:
+                                if r.status in {200, 204}:
+                                    return True
+                                else:
+                                    log.debug("Helix chat message failed: HTTP %s", r.status)
+                    except Exception as e:
+                        log.debug("Helix chat message exception: %s", e)
 
             except Exception:
                 log.debug("Konnte Chat-Nachricht nicht senden", exc_info=True)

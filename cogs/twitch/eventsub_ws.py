@@ -82,8 +82,7 @@ class EventSubWSListener:
         async with session.ws_connect(ws_url, heartbeat=20) as ws:
             session_id = await self._wait_for_welcome(ws)
             if not session_id:
-                self.log.error("EventSub WS: No session_id received, aborting.")
-                return
+                raise ConnectionError("EventSub WS: No session_id received, aborting.")
 
             if not is_reconnect:
                 await self._register_all_subscriptions(session_id)
@@ -95,6 +94,10 @@ class EventSubWSListener:
                     await self._handle_message(msg.json())
                 elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                     break
+        
+        # If we exit the loop and we are not stopping, it's an error
+        if not self._stop:
+            raise ConnectionResetError("EventSub WS: Connection closed unexpectedly")
 
     async def _wait_for_welcome(self, ws) -> Optional[str]:
         try:

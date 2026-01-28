@@ -214,6 +214,11 @@ class TwitchAPI:
                 out[login] = u
         return out
 
+    async def get_user_info(self, login: str) -> Optional[Dict]:
+        """Liefert detaillierte Informationen für einen einzelnen User (inkl. Bio/Description)."""
+        users = await self.get_users([login])
+        return users.get(login.lower())
+
     async def _fetch_stream_page(
         self,
         *,
