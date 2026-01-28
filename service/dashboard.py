@@ -1646,8 +1646,8 @@ class DashboardServer:
                     edge["last_played_ts"] = ts_value
                     edge["last_played"] = last_played
 
-            user_name = row.get("user_display_name")
-            co_name = row.get("co_player_display_name")
+            user_name = row["user_display_name"]
+            co_name = row["co_player_display_name"]
             if user_name:
                 name_map[uid] = user_name
             else:
@@ -1672,8 +1672,8 @@ class DashboardServer:
                 continue
             new_user_name = name_map.get(uid)
             new_co_name = name_map.get(coid)
-            if (not row.get("user_display_name") and new_user_name) or (
-                not row.get("co_player_display_name") and new_co_name
+            if (not row["user_display_name"] and new_user_name) or (
+                not row["co_player_display_name"] and new_co_name
             ):
                 updates.append((new_user_name, new_co_name, uid, coid))
 
