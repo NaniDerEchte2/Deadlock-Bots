@@ -272,11 +272,12 @@ async def _assign_role_and_notify(
     else:
         log.warning("Notify channel %s nicht gefunden/kein Textkanal.", STREAMER_NOTIFY_CHANNEL_ID)
 
-    final_msg = "Alles klar! Wir kümmern uns jetzt um deine Verifizierung."
-    if auto_verified:
-        final_msg = "✅ **Automatisierte Prüfung erfolgreich!** Wir haben den Discord-Link auf deinem Twitch-Profil gefunden. Du bist nun als Partner freigeschaltet."
-    else:
-        final_msg = "Alles klar! Wir schauen uns dein Profil kurz manuell an und schalten dich dann frei. Falls wir Rückfragen haben, melden wir uns bei dir."
+    final_msg = (
+        "✅ **Automatisierte Prüfung erfolgreich!** Wir haben den Discord-Link auf deinem Twitch-Profil gefunden. "
+        "Du bist nun als Partner freigeschaltet."
+        if auto_verified
+        else "Alles klar! Wir schauen uns dein Profil kurz manuell an und schalten dich dann frei. Falls wir Rückfragen haben, melden wir uns bei dir."
+    )
 
     return (True, final_msg)
 
