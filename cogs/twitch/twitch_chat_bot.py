@@ -234,6 +234,13 @@ if TWITCHIO_AVAILABLE:
         async def join(self, channel_login: str, channel_id: Optional[str] = None):
             """Joint einen Channel via EventSub (TwitchIO 3.x)."""
             try:
+                normalized_login = channel_login.lower().lstrip("#")
+                
+                # Prüfe ZUERST, ob wir bereits subscribed sind
+                if normalized_login in self._monitored_streamers:
+                    log.debug("Channel %s already monitored, skipping subscribe", channel_login)
+                    return True
+                
                 if not channel_id:
                     user = await self.fetch_user(login=channel_login.lstrip("#"))
                     if not user:
@@ -253,7 +260,7 @@ if TWITCHIO_AVAILABLE:
                 # Wir abonnieren über den Standard-WebSocket des Bots
                 await self.subscribe_websocket(payload=payload)
 
-                self._monitored_streamers.add(channel_login.lower().lstrip("#"))
+                self._monitored_streamers.add(normalized_login)
                 return True
             except Exception as e:
                 msg = str(e)
@@ -1218,7 +1225,9 @@ if TWITCHIO_AVAILABLE:
                     continue
                 if is_live is None or not bool(is_live):
                     continue
-                if login_norm.lower() in self._monitored_streamers:
+                # Normalisieren und prüfen
+                normalized_login = login_norm.lower().lstrip("#")
+                if normalized_login in self._monitored_streamers:
                     continue
                 channels_to_join.append((login_norm, uid))
 
