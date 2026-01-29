@@ -96,6 +96,61 @@ class TwitchAdminMixin:
         urls = [f"https://discord.gg/{code}" for code in codes]
         return "Aktive Einladungen:", urls
 
+    async def _cmd_refresh_invites(self, guild: discord.Guild) -> str:
+        """Manually refresh invite codes from Discord API and cache in DB."""
+        try:
+            await self._refresh_guild_invites(guild)
+            count = len(self._invite_codes.get(guild.id, set()))
+            return f"✅ {count} Invite-Codes aktualisiert und in DB gespeichert."
+        except Exception:
+            log.exception("Invite-Refresh fehlgeschlagen")
+            return "❌ Fehler beim Aktualisieren der Invite-Codes."
+
+    async def _get_valid_invite_codes(self, guild_id: Optional[int] = None) -> set[str]:
+        """Get valid invite codes from DB cache (falls back to API if needed)."""
+        # Wenn keine Guild-ID angegeben, nehme die erste verfügbare
+        if guild_id is None:
+            guilds = getattr(self.bot, 'guilds', [])
+            if not guilds:
+                return set()
+            guild_id = guilds[0].id
+        
+        # Zuerst: Versuche aus DB zu laden (schnell, kein API-Call)
+        try:
+            with storage.get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT invite_code FROM discord_invite_codes WHERE guild_id = ?",
+                    (guild_id,)
+                ).fetchall()
+                if rows:
+                    codes = {row[0] for row in rows}
+                    log.debug("Invite-Codes aus DB geladen für Guild %s: %s Codes", guild_id, len(codes))
+                    # Cache auch im RAM für schnelleren Zugriff
+                    self._invite_codes[guild_id] = codes
+                    return codes
+        except Exception:
+            log.debug("Konnte Invite-Codes nicht aus DB laden für Guild %s", guild_id, exc_info=True)
+        
+        # Fallback: RAM-Cache
+        cached = self._invite_codes.get(guild_id)
+        if cached:
+            log.debug("Invite-Codes aus RAM-Cache für Guild %s", guild_id)
+            return cached
+        
+        # Letzter Fallback: Frisch von Discord API abrufen (nur wenn wirklich nötig)
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            log.warning("Guild %s nicht gefunden für Invite-Abruf", guild_id)
+            return set()
+        
+        log.info("Invite-Codes nicht gecached - rufe frisch von Discord API ab für Guild %s", guild_id)
+        try:
+            await self._refresh_guild_invites(guild)
+            return self._invite_codes.get(guild_id, set())
+        except Exception:
+            log.exception("Konnte Invite-Codes nicht abrufen für Guild %s", guild_id)
+            return set()
+
     # -------------------------------------------------------
     # Admin-Commands: Add/Remove Helpers
     # -------------------------------------------------------

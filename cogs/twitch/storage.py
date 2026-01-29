@@ -372,3 +372,19 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+
+    # 10) Discord Invite Codes Cache
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS discord_invite_codes (
+            guild_id      INTEGER NOT NULL,
+            invite_code   TEXT NOT NULL,
+            created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, invite_code)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_discord_invites_guild ON discord_invite_codes(guild_id)"
+    )

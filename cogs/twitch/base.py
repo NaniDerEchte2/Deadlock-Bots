@@ -171,8 +171,9 @@ class TwitchBaseCog(commands.Cog):
 
         # Background tasks
         self.poll_streams.start()
-        self.invites_refresh.start()
+        # invites_refresh.start() → DEAKTIVIERT: On-Demand statt periodisch
         self._spawn_bg_task(self._ensure_category_id(), "twitch.ensure_category_id")
+        self._spawn_bg_task(self._load_invite_codes_from_db(), "twitch.load_invites")
         if self._dashboard_embedded:
             self._spawn_bg_task(self._start_dashboard(), "twitch.start_dashboard")
         else:
@@ -281,25 +282,129 @@ class TwitchBaseCog(commands.Cog):
             log.exception("wait_until_ready fehlgeschlagen")
             return
 
-        for guild in list(self.bot.guilds):
+        guilds = list(self.bot.guilds)
+        if not guilds:
+            return
+
+        # Delay zwischen Guilds einbauen um Rate Limits zu vermeiden
+        delay_between_guilds = max(2.0, 30.0 / len(guilds))  # Minimum 2s, verteilt über 30s
+        
+        for i, guild in enumerate(guilds):
             try:
                 await self._refresh_guild_invites(guild)
+                # Warte zwischen Guilds, außer beim letzten
+                if i < len(guilds) - 1:
+                    await asyncio.sleep(delay_between_guilds)
             except Exception:
                 log.exception("Einladungen für Guild %s fehlgeschlagen", guild.id)
 
+    async def _load_invite_codes_from_db(self):
+        """Load cached invite codes from database on startup."""
+        try:
+            await self.bot.wait_until_ready()
+        except Exception:
+            log.exception("wait_until_ready fehlgeschlagen")
+            return
+        
+        try:
+            with storage.get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT guild_id, invite_code FROM discord_invite_codes"
+                ).fetchall()
+            
+            if not rows:
+                log.info("Keine Invite-Codes in DB gefunden - werden beim ersten Gebrauch abgerufen")
+                return
+            
+            # Gruppiere nach Guild
+            by_guild: Dict[int, Set[str]] = {}
+            for guild_id, code in rows:
+                if guild_id not in by_guild:
+                    by_guild[guild_id] = set()
+                by_guild[guild_id].add(code)
+            
+            # Lade in RAM-Cache
+            for guild_id, codes in by_guild.items():
+                self._invite_codes[guild_id] = codes
+            
+            total_codes = sum(len(codes) for codes in by_guild.values())
+            log.info(
+                "Invite-Codes aus DB geladen: %s Guilds, %s Codes gesamt",
+                len(by_guild), total_codes
+            )
+        except Exception:
+            log.exception("Konnte Invite-Codes nicht aus DB laden")
+
     async def _refresh_guild_invites(self, guild: Guild):
         codes: Set[str] = set()
-        try:
-            invites = await guild.invites()
-            for inv in invites:
-                if inv.code:
-                    codes.add(inv.code)
-        except Forbidden:
-            log.warning("Fehlende Berechtigung, um Invites von Guild %s zu lesen", guild.id)
-        except HTTPException:
-            log.exception("HTTP-Fehler beim Abruf der Invites für Guild %s", guild.id)
+        max_retries = 3
+        retry_delay = 5.0  # Initial 5 Sekunden
+        
+        for attempt in range(max_retries):
+            try:
+                invites = await guild.invites()
+                for inv in invites:
+                    if inv.code:
+                        codes.add(inv.code)
+                break  # Erfolg, Schleife verlassen
+            except Forbidden:
+                log.warning("Fehlende Berechtigung, um Invites von Guild %s zu lesen", guild.id)
+                break  # Keine Retries bei Permission-Fehler
+            except HTTPException as e:
+                if attempt < max_retries - 1 and "429" in str(e):  # Rate Limit
+                    wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                    log.warning(
+                        "Rate Limit bei Invite-Refresh für Guild %s - warte %s Sekunden (Versuch %s/%s)",
+                        guild.id, wait_time, attempt + 1, max_retries
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    # Letzter Versuch oder anderer Fehler - loggen und abbrechen
+                    if "429" in str(e):
+                        log.error(
+                            "HTTP-Fehler beim Abruf der Invites für Guild %s nach %s Versuchen - überspringe",
+                            guild.id, max_retries
+                        )
+                    else:
+                        log.exception("HTTP-Fehler beim Abruf der Invites für Guild %s", guild.id)
+                    break
 
+        # Cache im RAM
         self._invite_codes[guild.id] = codes
+        
+        # Persistiere in DB für spätere Verwendung
+        if codes:
+            try:
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                with storage.get_conn() as conn:
+                    # Lösche alte Codes die nicht mehr existieren
+                    existing = {row[0] for row in conn.execute(
+                        "SELECT invite_code FROM discord_invite_codes WHERE guild_id = ?",
+                        (guild.id,)
+                    ).fetchall()}
+                    
+                    to_remove = existing - codes
+                    if to_remove:
+                        placeholders = ",".join("?" for _ in to_remove)
+                        conn.execute(
+                            f"DELETE FROM discord_invite_codes WHERE guild_id = ? AND invite_code IN ({placeholders})",
+                            (guild.id, *to_remove)
+                        )
+                    
+                    # Füge neue hinzu oder update last_seen_at
+                    for code in codes:
+                        conn.execute(
+                            """INSERT INTO discord_invite_codes (guild_id, invite_code, created_at, last_seen_at)
+                               VALUES (?, ?, ?, ?)
+                               ON CONFLICT(guild_id, invite_code) 
+                               DO UPDATE SET last_seen_at = ?""",
+                            (guild.id, code, now, now, now)
+                        )
+                    conn.commit()
+                    log.debug("Invite-Codes für Guild %s in DB gespeichert: %s", guild.id, len(codes))
+            except Exception:
+                log.exception("Konnte Invite-Codes nicht in DB speichern für Guild %s", guild.id)
 
     async def _init_twitch_chat_bot(self):
         """Initialisiert den Twitch Chat Bot für Raid-Commands."""

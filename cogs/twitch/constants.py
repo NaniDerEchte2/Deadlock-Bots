@@ -31,8 +31,8 @@ TWITCH_LOG_EVERY_N_TICKS = 5
 # Zusätzliche Streams aus der Deadlock-Kategorie für Statistiken loggen (Maximalanzahl je Tick)
 TWITCH_CATEGORY_SAMPLE_LIMIT = 400
 
-# Invite-Refresh alle X Stunden
-INVITES_REFRESH_INTERVAL_HOURS = 12
+# Invite-Refresh alle X Stunden (Discord Rate Limits sind sehr streng!)
+INVITES_REFRESH_INTERVAL_HOURS = 24
 
 # Poll-Intervall (Sekunden)
 # 15s ist der "Sweet Spot": Schnell genug für Auto-Raids, aber sicher vor API-Spam-Filtern.
