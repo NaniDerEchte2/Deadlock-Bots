@@ -16,6 +16,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
+from httpx import stream
+
 try:
     from twitchio import eventsub
     from twitchio import web as twitchio_web
@@ -50,7 +52,8 @@ _SPAM_PHRASES = (
     "Cool overlay \N{THUMBS UP SIGN} Honestly, it\N{RIGHT SINGLE QUOTATION MARK}s so hard to get found on the directory lately. I have small tips on beating the algorithm. Mind if I send you an share?",
     "Mind if I send you an share",
     " Viewers https://smmbest5.online",
-    "Viewers smmbest4.online"
+    "Viewers smmbest4.online",
+    "Viewers streamboo .com",
     
 )
 _SPAM_FRAGMENTS = (
@@ -72,6 +75,8 @@ _SPAM_FRAGMENTS = (
     "beating the algorithm",
     "d!sc",
     "smmbest4.online",
+    "rookie",
+    "streamboo"
 )
 _SPAM_MIN_MATCHES = 2
 
