@@ -36,6 +36,18 @@ from .token_manager import TwitchBotTokenManager
 
 log = logging.getLogger("TwitchStreams.ChatBot")
 _KEYRING_SERVICE = "DeadlockBot"
+# Whitelist für bekannte legitime Bots (keine Spam-Prüfung)
+_WHITELISTED_BOTS = {
+    "streamelements",
+    "nightbot",
+    "streamlabs",
+    "moobot",
+    "fossabot",
+    "wizebot",
+    "pretzelrocks",
+    "soundalerts",
+}
+
 _SPAM_PHRASES = (
     "Best viewers streamboo.com",
     "Best viewers streamboo .com",
@@ -56,11 +68,10 @@ _SPAM_PHRASES = (
     "Viewers streamboo .com",
     
 )
+# Entferne "viewer" und "viewers" aus den Fragmenten - zu allgemein und führt zu False Positives
 _SPAM_FRAGMENTS = (
-    "best viewers",
-    "cheap viewers",
-    "viewers",
-    "viewer",
+    "best viewers",  # Nur die Kombination ist verdächtig
+    "cheap viewers",  # Nur die Kombination ist verdächtig
     "streamboo.com",
     "streamboo .com",
     "streamboo com",
@@ -75,8 +86,8 @@ _SPAM_FRAGMENTS = (
     "beating the algorithm",
     "d!sc",
     "smmbest4.online",
+    "smmbest5.online",
     "rookie",
-    "streamboo"
 )
 _SPAM_MIN_MATCHES = 2
 
@@ -314,6 +325,17 @@ if TWITCHIO_AVAILABLE:
             if message.echo:
                 return
 
+            # Whitelist-Check: Bekannte Bot-Accounts überspringen Spam-Prüfung
+            author_name = getattr(message.author, "name", "").lower()
+            if author_name in _WHITELISTED_BOTS:
+                # Bot ist whitelisted - überspringe Spam-Detection komplett
+                try:
+                    await self._track_chat_health(message)
+                except Exception:
+                    log.debug("Konnte Chat-Health nicht loggen", exc_info=True)
+                await self.process_commands(message)
+                return
+
             try:
                 spam_score = self._calculate_spam_score(message.content or "")
 
@@ -424,10 +446,11 @@ if TWITCHIO_AVAILABLE:
             if any(phrase.casefold() in lowered for phrase in _SPAM_PHRASES):
                 return 999
 
-            hits = sum(1 for frag in _SPAM_FRAGMENTS if frag in lowered)
+            # Prüfe Fragmente mit Wortgrenzen (\b), um Teiltreffer in längeren Wörtern zu vermeiden
+            hits = sum(1 for frag in _SPAM_FRAGMENTS if re.search(r'\b' + re.escape(frag.casefold()) + r'\b', lowered))
 
             # Muster: "viewer [name]" (oft ein Merkmal von Bots)
-            if re.search(r"viewer\s+\w+", lowered):
+            if re.search(r"\bviewer\s+\w+", lowered):
                 hits += 1
 
             compact = re.sub(r"[^a-z0-9]", "", lowered)
