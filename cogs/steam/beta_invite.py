@@ -980,18 +980,6 @@ class BetaInviteFlow(commands.Cog):
             "steam_id64": steam_id,
         }
 
-    async def _reply_no_invites(self, interaction: discord.Interaction) -> None:
-        _trace("betainvite_unavailable_start", discord_id=getattr(interaction.user, "id", None))
-        await asyncio.sleep(10)
-        message = (
-            "Sorry, aktuell sind keine Deadlock-Einladungen verfügbar. "
-            "Wir melden uns, sobald wieder Plätze frei sind."
-        )
-        try:
-            await interaction.followup.send(message, ephemeral=True)
-        except Exception:
-            log.debug("Konnte Unavailable-Antwort nicht senden", exc_info=True)
-        _trace("betainvite_unavailable_done", discord_id=getattr(interaction.user, "id", None))
 
     async def _prompt_intent_gate(self, interaction: discord.Interaction) -> None:
         prompt = (
@@ -1063,7 +1051,7 @@ class BetaInviteFlow(commands.Cog):
         except Exception:
             log.debug("Konnte Intent-View nicht entfernen", exc_info=True)
 
-        await self._reply_no_invites(interaction)
+        await self._process_invite_request(interaction)
 
     def _build_link_prompt_view(self, user: discord.abc.User) -> discord.ui.View:
         login_url: Optional[str] = None
@@ -1819,7 +1807,7 @@ class BetaInviteFlow(commands.Cog):
             discord_id=interaction.user.id,
             intent=intent_record.intent,
         )
-        await self._reply_no_invites(interaction)
+        await self._process_invite_request(interaction)
 
     @app_commands.command(name="betainvite", description="Automatisiert eine Deadlock-Playtest-Einladung anfordern.")
     async def betainvite(self, interaction: discord.Interaction) -> None:
