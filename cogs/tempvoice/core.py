@@ -23,6 +23,9 @@ STAGING_CHANNEL_IDS: Set[int] = {
     1357422958544420944,  # Street Brawl Staging
     1412804671432818890,  # Spezial Staging
 }
+FIXED_LANE_IDS: Set[int] = {
+    1411391356278018245,  # Dauerhafter Voice-Channel (nicht von TempVoice verwalten)
+}
 MINRANK_CATEGORY_IDS: Set[int] = {
     1412804540994162789,  # Grind Lanes
     1289721245281292290,  # Normal Lanes (MinRank freigeschaltet)
@@ -74,6 +77,7 @@ MANAGED_PREFIXES = {"lane", "street brawl", CASUAL_RANK_FALLBACK.lower()}.union(
 # Export-Intent für andere Module (verhindert "unused global variable")
 __all__ = [
     "STAGING_CHANNEL_IDS",
+    "FIXED_LANE_IDS",
     "MINRANK_CATEGORY_ID",
     "MINRANK_CATEGORY_IDS",
     "RANKED_CATEGORY_ID",
@@ -83,8 +87,17 @@ __all__ = [
 ]
 
 # --------- Hilfen ---------
+def _is_fixed_lane(ch: Optional[discord.abc.GuildChannel | int]) -> bool:
+    try:
+        lane_id = int(ch) if isinstance(ch, int) else int(getattr(ch, "id", 0))
+    except Exception:
+        return False
+    return lane_id in FIXED_LANE_IDS
+
 def _is_managed_lane(ch: Optional[discord.VoiceChannel]) -> bool:
     if not isinstance(ch, discord.VoiceChannel):
+        return False
+    if _is_fixed_lane(ch):
         return False
     name = ch.name.lower()
     for prefix in MANAGED_PREFIXES:
@@ -256,6 +269,8 @@ class TempVoiceCore(commands.Cog):
         self._cache_timestamp: Dict[int, float] = {}
         self.lane_rules: Dict[int, Dict[str, Any]] = {}
         self.minrank_blocked_lanes: Set[int] = set()
+        self.category_rules: Dict[int, Dict[str, Any]] = {}
+        self.category_to_staging: Dict[int, int] = {}
 
     def _rules_for_staging(self, staging: discord.abc.GuildChannel) -> Dict[str, Any]:
         try:
@@ -276,6 +291,37 @@ class TempVoiceCore(commands.Cog):
             if base_lower.startswith(prefix):
                 return rule, sid
         return {}, None
+
+    def _refresh_category_rules(self, guild: Optional[discord.Guild]):
+        if not guild:
+            return
+        for staging_id, rules in STAGING_RULES.items():
+            ch = guild.get_channel(int(staging_id))
+            if not isinstance(ch, discord.VoiceChannel):
+                continue
+            cat = ch.category
+            if not cat:
+                continue
+            self.category_rules[int(cat.id)] = rules
+            self.category_to_staging[int(cat.id)] = int(staging_id)
+
+    def _rules_for_category(self, category: Optional[discord.CategoryChannel]) -> Dict[str, Any]:
+        if not category:
+            return {}
+        return self.category_rules.get(int(category.id), {})
+
+    def _source_staging_for_category(self, category: Optional[discord.CategoryChannel]) -> Optional[int]:
+        if not category:
+            return None
+        return self.category_to_staging.get(int(category.id))
+
+    def _desired_prefix_for_rules(self, lane: discord.VoiceChannel, rules: Dict[str, Any]) -> str:
+        if rules.get("prefix_from_rank"):
+            owner_id = self.lane_owner.get(lane.id)
+            member = lane.guild.get_member(int(owner_id)) if owner_id else None
+            prefix = _rank_prefix_for(member) if member else None
+            return prefix or CASUAL_RANK_FALLBACK
+        return str(rules.get("prefix") or "Lane")
 
     def _store_lane_rules(self, lane_id: int, rules: Dict[str, Any]):
         if rules:
@@ -501,6 +547,7 @@ class TempVoiceCore(commands.Cog):
         await self.bot.wait_until_ready()
         await asyncio.sleep(STARTUP_PURGE_DELAY_SEC)
         
+        self._refresh_category_rules(self._first_guild())
         await self._ensure_tables()
         
         await self._rehydrate_from_db()
@@ -542,6 +589,9 @@ class TempVoiceCore(commands.Cog):
 
         for r in rows:
             lane_id = int(r["channel_id"])
+            if _is_fixed_lane(lane_id):
+                await self._forget_lane(lane_id)
+                continue
             lane: Optional[discord.VoiceChannel] = guild.get_channel(lane_id)  # type: ignore
             if not isinstance(lane, discord.VoiceChannel):
                 try:
@@ -601,6 +651,9 @@ class TempVoiceCore(commands.Cog):
         for r in rows:
             lane_id = int(r["channel_id"])
             processed_lane_ids.add(lane_id)
+            if _is_fixed_lane(lane_id):
+                await self._forget_lane(lane_id)
+                continue
             try:
                 lane = guild.get_channel(lane_id)
                 if not isinstance(lane, discord.VoiceChannel):
@@ -620,6 +673,34 @@ class TempVoiceCore(commands.Cog):
             except Exception as e:
                 log.debug("sweep: inspect lane %s failed: %r", ch.id, e)
 
+    async def _forget_lane(self, lane_id: int) -> None:
+        try:
+            await db.execute_async("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
+        except Exception as e:
+            log.debug("cleanup: delete row %s failed: %r", lane_id, e)
+        try:
+            await db.execute_async("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_id,))
+        except Exception as e:
+            log.debug("cleanup: delete interface row %s failed: %r", lane_id, e)
+
+        self.created_channels.discard(lane_id)
+        for mapping in (
+            self.lane_owner,
+            self.lane_base,
+            self.lane_min_rank,
+            self.join_time,
+            self._last_name_desired,
+            self._last_name_patch_ts,
+        ):
+            mapping.pop(lane_id, None)
+        self.lane_rules.pop(lane_id, None)
+        self.minrank_blocked_lanes.discard(lane_id)
+        self._edit_locks.pop(lane_id, None)
+        try:
+            self.bot.dispatch("tempvoice_lane_deleted", lane_id)
+        except Exception as e:
+            log.debug("dispatch lane_deleted failed for %s: %r", lane_id, e)
+
     async def _cleanup_lane(
         self,
         lane_id: int,
@@ -627,6 +708,11 @@ class TempVoiceCore(commands.Cog):
         channel: Optional[discord.VoiceChannel],
         reason: str,
     ) -> None:
+        if _is_fixed_lane(lane_id):
+            log.debug("TempVoice: skip cleanup for fixed lane %s", lane_id)
+            await self._forget_lane(lane_id)
+            return
+
         if channel:
             try:
                 await channel.delete(reason=reason)
@@ -651,33 +737,7 @@ class TempVoiceCore(commands.Cog):
                     getattr(channel, "name", "?"),
                     e,
                 )
-        
-        try:
-            await db.execute_async("DELETE FROM tempvoice_lanes WHERE channel_id=?", (lane_id,))
-        except Exception as e:
-            log.debug("cleanup: delete row %s failed: %r", lane_id, e)
-        try:
-            await db.execute_async("DELETE FROM tempvoice_interface WHERE lane_id=?", (lane_id,))
-        except Exception as e:
-            log.debug("cleanup: delete interface row %s failed: %r", lane_id, e)
-        
-        self.created_channels.discard(lane_id)
-        for mapping in (
-            self.lane_owner,
-            self.lane_base,
-            self.lane_min_rank,
-            self.join_time,
-            self._last_name_desired,
-            self._last_name_patch_ts,
-        ):
-            mapping.pop(lane_id, None)
-        self.lane_rules.pop(lane_id, None)
-        self.minrank_blocked_lanes.discard(lane_id)
-        self._edit_locks.pop(lane_id, None)
-        try:
-            self.bot.dispatch("tempvoice_lane_deleted", lane_id)
-        except Exception as e:
-            log.debug("dispatch lane_deleted failed for %s: %r", lane_id, e)
+        await self._forget_lane(lane_id)
 
     # --------- Öffentliche Helfer (von UI aufgerufen) ---------
     async def parse_user_identifier(self, guild: discord.Guild, raw: str) -> Tuple[Optional[int], Optional[str]]:
@@ -858,6 +918,9 @@ class TempVoiceCore(commands.Cog):
                                  desired_limit: Optional[int] = None,
                                  reason: Optional[str] = None,
                                  force_name: bool = False):
+        if _is_fixed_lane(lane):
+            log.debug("TempVoice: skip edit for fixed lane %s", getattr(lane, "id", "?"))
+            return
         lock = self._lock_for(lane.id)
         async with lock:
             kwargs: Dict[str, Any] = {}
@@ -966,6 +1029,8 @@ class TempVoiceCore(commands.Cog):
         return "".join(parts)
 
     async def _refresh_name(self, lane: discord.VoiceChannel):
+        if _is_fixed_lane(lane):
+            return
         # Schutz: Nie rumpfuschen, wenn LiveMatch-Suffix dran ist oder Channel nicht frisch ist
         if _has_live_suffix(lane.name):
             return
@@ -1008,6 +1073,66 @@ class TempVoiceCore(commands.Cog):
         while n in used:
             n += 1
         return f"{prefix} {n}"
+
+    async def _handle_category_change(self, before: discord.VoiceChannel, after: discord.VoiceChannel):
+        if _is_fixed_lane(after):
+            return
+        if not _is_managed_lane(after):
+            return
+        if after.id not in self.lane_owner:
+            return
+
+        guild = after.guild
+        self._refresh_category_rules(guild)
+        rules = self._rules_for_category(after.category)
+        source_id = self._source_staging_for_category(after.category)
+
+        try:
+            if rules:
+                await self._apply_lane_rules(after, rules)
+            else:
+                self._store_lane_rules(after.id, {})
+                self.minrank_blocked_lanes.discard(after.id)
+        except Exception as e:
+            log.debug("category change: apply rules failed for %s: %r", after.id, e)
+
+        prefix = self._desired_prefix_for_rules(after, rules)
+        base = self.lane_base.get(after.id) or _strip_suffixes(after.name)
+        if not base.lower().startswith(prefix.lower()):
+            try:
+                base = await self._next_name(after.category, prefix)
+            except Exception as e:
+                log.debug("category change: next_name failed for %s: %r", after.id, e)
+                base = prefix
+
+        desired_limit = self._default_limit_for_lane(after)
+        await self.set_lane_template(after, base_name=base, limit=desired_limit)
+
+        try:
+            await db.execute_async(
+                "UPDATE tempvoice_lanes SET category_id=?, source_staging_id=? WHERE channel_id=?",
+                (
+                    int(after.category_id) if after.category_id else 0,
+                    int(source_id) if source_id else None,
+                    int(after.id),
+                ),
+            )
+        except Exception as e:
+            log.debug("category change: persist failed for lane %s: %r", after.id, e)
+
+        try:
+            self.bot.dispatch("tempvoice_lane_category_changed", after, int(after.category_id or 0))
+        except Exception as e:
+            log.debug("dispatch lane_category_changed failed for %s: %r", after.id, e)
+
+        log.info(
+            "TempVoice: Lane %s moved from cat %s to %s -> prefix=%s limit=%s",
+            after.id,
+            getattr(before, "category_id", None),
+            getattr(after, "category_id", None),
+            prefix,
+            desired_limit,
+        )
 
     async def _apply_owner_bans(self, lane: discord.VoiceChannel, owner_id: int):
         banned = await self.bans.list_bans(owner_id)
@@ -1256,6 +1381,21 @@ class TempVoiceCore(commands.Cog):
                 self._lane_creation_locks.pop(member_id, None)
 
     # --------- Events ---------
+    @commands.Cog.listener()
+    async def on_guild_channel_update(
+        self,
+        before: discord.abc.GuildChannel,
+        after: discord.abc.GuildChannel,
+    ):
+        try:
+            if not isinstance(before, discord.VoiceChannel) or not isinstance(after, discord.VoiceChannel):
+                return
+            if before.category_id == after.category_id:
+                return
+            await self._handle_category_change(before, after)
+        except Exception as e:
+            log.debug("guild_channel_update handler failed for %s: %r", getattr(after, "id", "?"), e)
+
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member,
                                     before: discord.VoiceState, after: discord.VoiceState):

@@ -72,6 +72,7 @@ cogs/tempvoice/
 
   * Beim Start: DB-Einträge laden (**Rehydrate**).
   * **Purge** leerer Lanes: sofort & verzögert (zweiter Sweep), inkl. Entfernen verwaister DB-Zeilen.
+  * Kategorie-Umzug: Wird eine TempVoice-Lane manuell in eine andere Kategorie verschoben, passt der Bot Prefix/Limits gemäß den hinterlegten Staging-Regeln dieser Kategorie an.
 * **Sichere Channel-Edits**: Locking + Cooldown, damit Namen/Limits nicht 429-anfällig sind.
 
 **Wichtige öffentliche Methoden (vom Interface genutzt):**
@@ -92,6 +93,7 @@ cogs/tempvoice/
 **Konfigurations-Konstanten (oben in `core.py`):**
 
 * `STAGING_CHANNEL_IDS`: Menge aller Staging-Voice-Channel-IDs
+* `FIXED_LANE_IDS`: Voice-Channel-IDs, die TempVoice ignoriert (kein Purge/Rename/Interface)
 * `MINRANK_CATEGORY_IDS`: Kategorien, in denen MinRank aktiv ist
 * `RANKED_CATEGORY_ID`: (für Defaults pro Kategorie)
 * `INTERFACE_TEXT_CHANNEL_ID`: Textkanal, in den das Interface gepostet wird

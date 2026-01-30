@@ -41,6 +41,7 @@ class RolePermissionVoiceManager(commands.Cog):
             1375934283931451512,
             1357422958544420944,
             1412804671432818890,
+            1411391356278018245,  # TempVoice Fixed Lane (nicht umbenennen/überwachen)
         }
 
         # Discord Rollen-IDs zu Rang-Mapping
