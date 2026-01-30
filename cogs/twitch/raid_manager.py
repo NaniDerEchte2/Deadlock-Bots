@@ -950,7 +950,7 @@ class RaidBot:
                 f"Hey @{to_broadcaster_login}! "
                 f"Du wurdest gerade von @{from_broadcaster_login} geraidet, einem unserer Deadlock Streamer-Partner! <3 "
                 f"{stats_teaser}"
-                f"Falls du Lust hast, Teil der Community zu werden und auch Support zu erhalten – "
+                f"Du kannst auch Teil der Community werden und auch Support zu erhalten – "
                 f"schau gerne mal auf unserem Discord vorbei: {discord_invite} "
                 f"Win-Win für alle Deadlock-Streamer! 🎮"
             )
