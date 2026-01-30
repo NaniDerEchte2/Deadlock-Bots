@@ -1203,6 +1203,9 @@ const runtimeState = {
   deadlock_gc_ready: false,
 };
 
+let gcUnhealthySince = 0;
+const GC_UNHEALTHY_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes
+
 let loginInProgress = false;
 let pendingGuard = null;
 let reconnectTimer = null;
@@ -3047,7 +3050,22 @@ setInterval(() => {
 processNextCommand();
 
 setInterval(() => {
-  try { publishStandaloneState({ reason: 'heartbeat' }); }
+  try {
+    if (runtimeState.logged_on && deadlockAppActive && !deadlockGcReady) {
+      if (gcUnhealthySince === 0) {
+        gcUnhealthySince = Date.now();
+      } else if (Date.now() - gcUnhealthySince > GC_UNHEALTHY_THRESHOLD_MS) {
+        log('error', 'Deadlock GC session has been unhealthy for too long. Suspecting game update required. Restarting service.', {
+          unhealthyMs: Date.now() - gcUnhealthySince,
+          thresholdMs: GC_UNHEALTHY_THRESHOLD_MS
+        });
+        shutdown(1);
+      }
+    } else {
+      gcUnhealthySince = 0;
+    }
+    publishStandaloneState({ reason: 'heartbeat' });
+  }
   catch (err) { log('warn', 'Standalone state heartbeat failed', { error: err.message }); }
 }, Math.max(5000, STATE_PUBLISH_INTERVAL_MS));
 
