@@ -874,8 +874,8 @@ class RaidBot:
             log.debug("Chat bot not available for recruitment message")
             return
 
+        # 1. Sofort beitreten, damit wir bereit sind
         try:
-            # 1. Target ID auflösen
             target_id = None
             if target_stream_data:
                 target_id = target_stream_data.get("user_id")
@@ -890,6 +890,15 @@ class RaidBot:
                 log.warning("Could not resolve user ID for recruitment message to %s", to_broadcaster_login)
                 return
 
+            await self.chat_bot.join(to_broadcaster_login, channel_id=target_id)
+        except Exception:
+            log.debug("Konnte Channel %s nicht vorab beitreten", to_broadcaster_login)
+
+        # 2. 15 Sekunden warten, damit der Streamer den Raid-Alert verarbeiten kann
+        log.info("Warte 15s vor Senden der Recruitment-Message an %s...", to_broadcaster_login)
+        await asyncio.sleep(15.0)
+
+        try:
             # 2. Anti-Spam Check: Haben wir diesen Streamer schon "kürzlich" geraidet?
             # Wir prüfen, ob es mehr als 1 erfolgreichen Raid in den letzten 14 Tagen gab.
             with get_conn() as conn:
@@ -947,9 +956,6 @@ class RaidBot:
             )
 
             # 4. Sende Nachricht via Bot
-            await self.chat_bot.join(to_broadcaster_login, channel_id=target_id)
-            await asyncio.sleep(0.5)  # Warte bis Join verarbeitet ist
-
             # TwitchIO 3.x: Nutze _send_chat_message helper (MockChannel)
             # Diese Methode existiert im chat_bot und funktioniert mit EventSub
             try:
