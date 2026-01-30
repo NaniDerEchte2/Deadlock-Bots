@@ -315,9 +315,6 @@ if TWITCHIO_AVAILABLE:
                         self.id = channel_id
                     def __str__(self):
                         return self.name
-                    async def send(self, content):
-                        # Fallback send method
-                        pass
                 
                 message.channel = MockChannel(broadcaster_login, broadcaster_id)
 
