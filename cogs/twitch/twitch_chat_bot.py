@@ -200,6 +200,19 @@ if TWITCHIO_AVAILABLE:
             # Zeige initial channels (monitored_streamers wird erst nach join() befüllt)
             initial = ", ".join(self._initial_channels[:10]) if self._initial_channels else "(none yet)"
             log.info("Initial channels to join: %s", initial)
+            # Debug: Registrierte Commands loggen
+            cmds = ", ".join(sorted(self.commands.keys()))
+            log.info("Registered Chat Commands: %s", cmds)
+
+        async def event_command_error(self, ctx, error):
+            """Fehlerbehandlung für Commands."""
+            if isinstance(error, twitchio_commands.CommandNotFound):
+                # Kein Traceback für unbekannte Commands, nur Debug
+                log.debug("Command not found: %s", ctx.message.content)
+                return
+            
+            # Andere Fehler loggen
+            log.exception("Error invoking command %s: %s", ctx.command.name if ctx.command else "Unknown", error)
 
         async def event_token_refreshed(self, payload):
             """Persistiert erneuerte Bot-Tokens, sobald TwitchIO sie refreshed."""
