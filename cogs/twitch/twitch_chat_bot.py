@@ -34,6 +34,28 @@ except ImportError:
 from .storage import get_conn
 from .token_manager import TwitchBotTokenManager
 
+# Dedizierter Twitch-Logger Setup
+def _setup_twitch_logging():
+    twitch_log = logging.getLogger("TwitchStreams")
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    file_path = log_dir / "twitch_bot.log"
+    # Prüfe ob Handler bereits existiert (um Duplikate bei Reloads zu vermeiden)
+    if not any(isinstance(h, logging.handlers.RotatingFileHandler) and h.baseFilename.endswith("twitch_bot.log") for h in twitch_log.handlers):
+        import logging.handlers
+        handler = logging.handlers.RotatingFileHandler(
+            file_path,
+            maxBytes=5 * 1024 * 1024, # 5MB
+            backupCount=5,
+            encoding="utf-8"
+        )
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        handler.setFormatter(formatter)
+        twitch_log.addHandler(handler)
+        twitch_log.propagate = True # Auch weiterhin im Master-Log behalten
+
+_setup_twitch_logging()
 log = logging.getLogger("TwitchStreams.ChatBot")
 _KEYRING_SERVICE = "DeadlockBot"
 # Whitelist für bekannte legitime Bots (keine Spam-Prüfung)
@@ -355,7 +377,7 @@ if TWITCHIO_AVAILABLE:
                 return
 
             try:
-                spam_score = self._calculate_spam_score(message.content or "")
+                spam_score, spam_reasons = self._calculate_spam_score(message.content or "")
 
                 # 2. Faktor: Account-Alter prüfen, wenn Verdacht besteht (Score 1)
                 # Wenn Keyword matcht UND Account < 6 Monate -> Ban (Score >= 2)
@@ -373,31 +395,32 @@ if TWITCHIO_AVAILABLE:
                                 age = datetime.now(timezone.utc) - created_at
                                 if age.days < 180: # Jünger als 6 Monate
                                     spam_score += 1
-                                    # Info-Log für interne Feinabstimmung (wie gewünscht)
-                                    # Broadcaster sieht davon nichts (außer Bann-Nachricht falls Score >= 2)
+                                    spam_reasons.append(f"Account-Alter: {age.days} Tage")
                     except Exception:
                         log.debug("Konnte User-Alter für Spam-Check nicht laden", exc_info=True)
 
                 if spam_score >= _SPAM_MIN_MATCHES:
                     enforced = await self._auto_ban_and_cleanup(message)
                     if not enforced:
-                        log.warning("Spam erkannt (Score: %d), aber Auto-Ban konnte nicht durchgesetzt werden.", spam_score)
+                        log.warning("Spam erkannt in %s (Score: %d, Treffer: %s), aber Auto-Ban konnte nicht durchgesetzt werden.", getattr(message.channel, "name", "unknown"), spam_score, ", ".join(spam_reasons))
                     return
-                elif spam_score == 1:
+                elif spam_score > 0:
                     channel_name = getattr(message.channel, "name", "unknown")
                     author_name = getattr(message.author, "name", "unknown")
-                    author_id = str(getattr(message.author, "id", ""))
+                    author_id = str(getattr(author, "id", ""))
                     
                     # Logge Verdacht in Datei für Feinabstimmung
+                    reasons_str = ", ".join(spam_reasons)
                     self._record_autoban(
                         channel_name=channel_name,
                         chatter_login=author_name,
                         chatter_id=author_id,
                         content=message.content or "",
-                        status="SUSPICIOUS"
+                        status=f"SUSPICIOUS({spam_score})",
+                        reason=reasons_str
                     )
                     
-                    log.info("Verdächtige Nachricht (1 Hit, Account > 6 Monate) in %s von %s: %s", channel_name, author_name, message.content)
+                    log.info("Verdächtige Nachricht (Score %d, Treffer: %s) in %s von %s: %s", spam_score, reasons_str, channel_name, author_name, message.content)
             except Exception:
                 log.debug("Auto-Ban Prüfung fehlgeschlagen", exc_info=True)
 
@@ -450,32 +473,41 @@ if TWITCHIO_AVAILABLE:
             self._session_cache[cache_key] = (session_id, now_ts)
             return session_id
 
-        def _calculate_spam_score(self, content: str) -> int:
+        def _calculate_spam_score(self, content: str) -> Tuple[int, list]:
             """Berechnet einen Spam-Score. >= _SPAM_MIN_MATCHES ist ein Ban."""
             if not content:
-                return 0
+                return 0, []
 
+            reasons = []
             raw = content.strip()
             # Direkte Phrasen sind sofortiger Ban -> hoher Score
-            if any(phrase in raw for phrase in _SPAM_PHRASES):
-                return 999
+            for phrase in _SPAM_PHRASES:
+                if phrase in raw:
+                    return 999, [f"Phrase(Exact): {phrase}"]
 
             lowered = raw.casefold()
-            if any(phrase.casefold() in lowered for phrase in _SPAM_PHRASES):
-                return 999
+            for phrase in _SPAM_PHRASES:
+                if phrase.casefold() in lowered:
+                    return 999, [f"Phrase(Casefold): {phrase}"]
 
             # Prüfe Fragmente mit Wortgrenzen (\b), um Teiltreffer in längeren Wörtern zu vermeiden
-            hits = sum(1 for frag in _SPAM_FRAGMENTS if re.search(r'\b' + re.escape(frag.casefold()) + r'\b', lowered))
+            hits = 0
+            for frag in _SPAM_FRAGMENTS:
+                if re.search(r'\b' + re.escape(frag.casefold()) + r'\b', lowered):
+                    hits += 1
+                    reasons.append(f"Fragment: {frag}")
 
             # Muster: "viewer [name]" (oft ein Merkmal von Bots)
             if re.search(r"\bviewer\s+\w+", lowered):
                 hits += 1
+                reasons.append("Muster: viewer + name")
 
             compact = re.sub(r"[^a-z0-9]", "", lowered)
             if "streamboocom" in compact:
                 hits += 1
+                reasons.append("Muster: streamboocom (kompakt)")
 
-            return hits
+            return hits, reasons
 
         async def _get_moderation_context(self, twitch_user_id: str) -> tuple[Optional[object], Optional[dict]]:
             """Holt Session + Auth-Header für Moderationscalls."""
@@ -497,13 +529,13 @@ if TWITCHIO_AVAILABLE:
                 log.debug("Konnte Moderations-Kontext nicht laden (%s)", twitch_user_id, exc_info=True)
                 return None, None
 
-        def _record_autoban(self, *, channel_name: str, chatter_login: str, chatter_id: str, content: str, status: str = "BANNED") -> None:
+        def _record_autoban(self, *, channel_name: str, chatter_login: str, chatter_id: str, content: str, status: str = "BANNED", reason: str = "") -> None:
             """Persistiert Auto-Ban-Ereignis oder Verdacht für spätere Review."""
             try:
                 self._autoban_log.parent.mkdir(parents=True, exist_ok=True)
                 ts = datetime.now(timezone.utc).isoformat()
                 safe_content = content.replace("\n", " ")[:500]
-                line = f"{ts}\t[{status}]\t{channel_name}\t{chatter_login or '-'}\t{chatter_id}\t{safe_content}\n"
+                line = f"{ts}\t[{status}]\t{channel_name}\t{chatter_login or '-'}\t{chatter_id}\t{reason or '-'}\t{safe_content}\n"
                 with self._autoban_log.open("a", encoding="utf-8") as f:
                     f.write(line)
             except Exception:
