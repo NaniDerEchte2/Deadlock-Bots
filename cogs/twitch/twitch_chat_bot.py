@@ -1327,7 +1327,7 @@ def _read_keyring_secret(key: str) -> Optional[str]:
     except Exception:
         return None
 
-    for service in (_KEYRING_SERVICE, f"{key}@{_KEYRING_SERVICE}"):
+    for service in (f"{key}@{_KEYRING_SERVICE}", _KEYRING_SERVICE):
         try:
             val = keyring.get_password(service, key)
             if val:

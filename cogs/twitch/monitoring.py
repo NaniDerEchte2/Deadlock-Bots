@@ -208,7 +208,7 @@ class TwitchMonitoringMixin:
             log.exception("EventSub: Auto-Raid offline handling failed for %s", broadcaster_login or broadcaster_id)
 
     async def _start_eventsub_listener(self):
-        """Startet EINEN konsolidierten EventSub WebSocket Listener für stream.online + stream.offline."""
+        """Startet konsolidierte EventSub WebSocket Listener (verteilt auf bis zu 3 Verbindungen)."""
         if getattr(self, "_eventsub_ws_started", False):
             log.debug("EventSub WS Listener bereits gestartet, überspringe.")
             return
@@ -224,12 +224,6 @@ class TwitchMonitoringMixin:
             log.exception("EventSub WS: wait_until_ready fehlgeschlagen")
             return
 
-        # WICHTIG: NUR EIN WebSocket für stream.online + stream.offline!
-        # TwitchIO Chat Bot nutzt seinen eigenen WebSocket für channel.chat.message
-        # Limit: 3 WebSockets total, wir nutzen hier 1
-        
-        log.info("EventSub WS: Starte EINEN konsolidierten Listener für stream.online + stream.offline")
-
         # 1. Broadcaster sammeln
         offline_streamers = self._get_raid_enabled_streamers_for_eventsub()
         online_streamers = self._get_chat_scope_streamers_for_eventsub()
@@ -238,12 +232,6 @@ class TwitchMonitoringMixin:
             log.info("EventSub WS: Keine Subscriptions notwendig (keine Partner).")
             setattr(self, "_eventsub_ws_started", False)  # Reset flag
             return
-        
-        log.info(
-            "EventSub WS: Registriere %d stream.offline + %d stream.online auf EINEM WebSocket",
-            len(offline_streamers),
-            len(online_streamers),
-        )
         
         # 2. Token Resolver vorbereiten
         token_resolver = None
@@ -261,24 +249,12 @@ class TwitchMonitoringMixin:
             log.warning("EventSub WS: Kein Token Manager vorhanden, Subscriptions könnten fehlschlagen.")
 
         from .eventsub_ws import EventSubWSListener
-        listener = EventSubWSListener(self.api, log, token_resolver=token_resolver)
-        setattr(self, "_eventsub_ws_listener", listener)
+        
+        # Wir verwalten eine Liste von Listenern (max 3)
+        listeners: List[EventSubWSListener] = []
+        setattr(self, "_eventsub_ws_listeners", listeners)
 
-        # 3. BEIDE Typen auf EINEN WebSocket!
-        for entry in offline_streamers:
-            bid = entry.get("twitch_user_id")
-            if bid:
-                listener.add_subscription("stream.offline", str(bid))
-
-        for entry in online_streamers:
-            bid = entry.get("twitch_user_id")
-            if bid:
-                listener.add_subscription("stream.online", str(bid))
-
-        total_subs = len(offline_streamers) + len(online_streamers)
-        log.info("EventSub WS: %d Subscriptions werden auf EINEM WebSocket registriert", total_subs)
-
-        # 4. Callbacks setzen
+        # Callbacks vorbereiten
         async def _offline_cb(bid: str, login: str, _event: dict):
             try:
                 await self._on_eventsub_stream_offline(bid, login)
@@ -291,10 +267,8 @@ class TwitchMonitoringMixin:
                 if not chat_bot:
                     log.debug("EventSub WS: Chat Bot nicht verfügbar für stream.online von %s", login)
                     return
-                    
                 login_norm = login or ""
                 if not login_norm:
-                    # Fallback: DB lookup
                     try:
                         with storage.get_conn() as c:
                             row = c.execute(
@@ -304,38 +278,75 @@ class TwitchMonitoringMixin:
                         if row:
                             login_norm = str(row[0]).lower()
                     except Exception:
-                        log.debug("EventSub WS: Konnte Login für %s nicht aus DB laden", bid, exc_info=True)
-                
+                        pass
                 if not login_norm:
-                    log.warning("EventSub WS: Kein Login für Broadcaster %s gefunden", bid)
                     return
-                
                 monitored = getattr(chat_bot, "_monitored_streamers", set())
                 if login_norm in monitored:
-                    log.debug("EventSub WS: %s bereits im Chat Bot, überspringe Join", login_norm)
                     return
-
                 success = await chat_bot.join(login_norm, channel_id=bid)
                 if success:
                     log.info("EventSub WS: Chat-Bot joined %s (%s) nach Go-Live", login_norm, bid)
-                else:
-                    log.warning("EventSub WS: Chat-Bot konnte %s nicht joinen", login_norm)
             except Exception:
                 log.exception("EventSub WS: Online-Callback fehlgeschlagen für %s", login or bid)
 
-        listener.set_callback("stream.offline", _offline_cb)
-        listener.set_callback("stream.online", _online_cb)
+        def get_or_create_listener() -> Optional[EventSubWSListener]:
+            # Versuche existierenden Listener mit Platz (< 10 cost)
+            for l in listeners:
+                if l.cost < 10:
+                    return l
+            # Wenn kein Platz und < 3 Listener, erstelle neuen
+            if len(listeners) < 3:
+                new_l = EventSubWSListener(self.api, log, token_resolver=token_resolver)
+                new_l.set_callback("stream.offline", _offline_cb)
+                new_l.set_callback("stream.online", _online_cb)
+                listeners.append(new_l)
+                return new_l
+            return None
 
-        # 5. Listener starten
-        log.info("EventSub WS: Listener wird gestartet...")
-        try:
-            await listener.run()
-        except asyncio.CancelledError:
-            log.info("EventSub WS: Listener wurde abgebrochen")
-            raise
-        except Exception:
-            log.exception("EventSub WS: Listener beendet mit Fehler")
-            setattr(self, "_eventsub_ws_started", False)  # Reset bei Fehler
+        # 3. Subscriptions verteilen
+        subs_added = 0
+        for entry in offline_streamers:
+            bid = entry.get("twitch_user_id")
+            if not bid: continue
+            l = get_or_create_listener()
+            if l:
+                l.add_subscription("stream.offline", str(bid))
+                subs_added += 1
+            else:
+                log.error("EventSub WS: Limit erreicht (3 Connections, alle voll). Konnte stream.offline für %s nicht abonnieren.", bid)
+
+        for entry in online_streamers:
+            bid = entry.get("twitch_user_id")
+            if not bid: continue
+            l = get_or_create_listener()
+            if l:
+                l.add_subscription("stream.online", str(bid))
+                subs_added += 1
+            else:
+                log.error("EventSub WS: Limit erreicht (3 Connections, alle voll). Konnte stream.online für %s nicht abonnieren.", bid)
+
+        log.info(
+            "EventSub WS: %d Subscriptions auf %d WebSocket(s) verteilt (Limit: 3).",
+            subs_added, len(listeners)
+        )
+
+        # 4. Alle Listener starten
+        tasks = []
+        for i, l in enumerate(listeners):
+            log.info("EventSub WS: Starte Listener #%d...", i + 1)
+            tasks.append(asyncio.create_task(l.run(), name=f"twitch.eventsub.ws.{i}"))
+        
+        if tasks:
+            try:
+                await asyncio.gather(*tasks)
+            except asyncio.CancelledError:
+                log.info("EventSub WS: Alle Listener wurden abgebrochen")
+                raise
+            except Exception:
+                log.exception("EventSub WS: Ein oder mehrere Listener beendet mit Fehler")
+                setattr(self, "_eventsub_ws_started", False)
+
 
     async def _start_eventsub_offline_listener(self):
         """Kompatibilitäts-Stub (wird nun über _start_eventsub_listener erledigt)."""

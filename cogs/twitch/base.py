@@ -197,9 +197,13 @@ class TwitchBaseCog(commands.Cog):
                 log.exception("Konnte Loop nicht canceln: %r", lp)
         
         # EventSub Listener stoppen
-        es_ws_listener = getattr(self, "_eventsub_ws_listener", None)
-        if es_ws_listener and hasattr(es_ws_listener, "stop"):
-            es_ws_listener.stop()
+        es_ws_listeners = getattr(self, "_eventsub_ws_listeners", [])
+        for listener in es_ws_listeners:
+            try:
+                if hasattr(listener, "stop"):
+                    listener.stop()
+            except Exception:
+                log.exception("Fehler beim Stoppen eines EventSub WS Listeners")
 
         # RaidBot Cleanup
         if self._raid_bot:

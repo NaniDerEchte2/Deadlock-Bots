@@ -36,6 +36,16 @@ class EventSubWSListener:
         self._subscriptions: List[Tuple[str, str, Dict]] = [] # (sub_type, broadcaster_id, condition)
         self._callbacks: Dict[str, EventCallback] = {} # sub_type -> callback
 
+    @property
+    def cost(self) -> int:
+        """
+        Calculate the total cost of all registered subscriptions.
+        stream.online and stream.offline (v1) cost 1 each.
+        """
+        # In a more advanced version, we could look up costs per sub_type.
+        # For now, we know our sub_types (stream.online/offline) cost 1.
+        return len(self._subscriptions)
+
     def stop(self) -> None:
         """Signal the listener to stop."""
         self._stop = True
