@@ -66,7 +66,9 @@ _SPAM_PHRASES = (
     " Viewers https://smmbest5.online",
     "Viewers smmbest4.online",
     "Viewers streamboo .com",
-    
+    "Viewers smmhype12.ru",
+    "Viewers smmhype1.ru",
+    "Viewers smmhype",
 )
 # Entferne "viewer" und "viewers" aus den Fragmenten - zu allgemein und führt zu False Positives
 _SPAM_FRAGMENTS = (
@@ -88,6 +90,9 @@ _SPAM_FRAGMENTS = (
     "smmbest4.online",
     "smmbest5.online",
     "rookie",
+    "smmhype12.ru",
+    "smmhype1.ru",
+    "smmhype",
 )
 _SPAM_MIN_MATCHES = 2
 
@@ -555,9 +560,12 @@ if TWITCHIO_AVAILABLE:
                                 if r.status in {200, 204}:
                                     return True
                                 else:
-                                    log.debug("Helix chat message failed: HTTP %s", r.status)
+                                    txt = await r.text()
+                                    log.warning("Twitch hat die Bot-Nachricht abgelehnt: HTTP %s - %s", r.status, txt)
+                                    return False
                     except Exception as e:
-                        log.debug("Helix chat message exception: %s", e)
+                        log.error("Fehler beim Senden der Helix Chat-Nachricht: %s", e)
+                        return False
 
             except Exception:
                 log.debug("Konnte Chat-Nachricht nicht senden", exc_info=True)
@@ -603,13 +611,13 @@ if TWITCHIO_AVAILABLE:
             # --- ÄNDERUNG: Wir nutzen jetzt das BOT-Token für Moderation, nicht das Streamer-Token ---
             safe_bot_id = self.bot_id_safe or self.bot_id
             if not safe_bot_id or not self._token_manager:
-                log.warning("Kein Bot-ID oder Token-Manager für Auto-Ban verfügbar.")
+                log.warning("Spam erkannt in %s, aber kein Bot-ID oder Token-Manager für Auto-Ban verfügbar.", channel_name)
                 return False
 
             try:
                 tokens = await self._token_manager.get_valid_token()
                 if not tokens:
-                    log.warning("Kein valides Bot-Token für Auto-Ban verfügbar.")
+                    log.warning("Spam erkannt in %s, aber kein valides Bot-Token für Auto-Ban verfügbar.", channel_name)
                     return False
                 access_token, _ = tokens
                 
@@ -680,7 +688,9 @@ if TWITCHIO_AVAILABLE:
                             
                             txt = await resp.text()
                             if resp.status == 403:
-                                log.warning("Bot fehlt Berechtigung (Moderator?) in %s: %s", channel_name, txt)
+                                log.warning("Auto-Ban fehlgeschlagen in %s (403 Forbidden): Bot ist wahrscheinlich kein Moderator!", channel_name)
+                            elif resp.status == 401:
+                                log.warning("Auto-Ban fehlgeschlagen in %s (401 Unauthorized): Bot-Token ist ungültig!", channel_name)
                             else:
                                 log.warning(
                                     "Auto-Ban fehlgeschlagen in %s (user=%s): HTTP %s %s",

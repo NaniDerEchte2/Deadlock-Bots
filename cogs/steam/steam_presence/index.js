@@ -189,6 +189,27 @@ const LOG_THRESHOLD = Object.prototype.hasOwnProperty.call(LOG_LEVELS, LOG_LEVEL
   : LOG_LEVELS.info;
 
 const STEAM_LOG_FILE = path.join(__dirname, '..', '..', '..', 'logs', 'steam_bridge.log');
+const MAX_LOG_LINES = 10000;
+let steamLogLineCount = 0;
+
+function rotateLogFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split('\n');
+    if (lines.length <= MAX_LOG_LINES) {
+      return lines.length;
+    }
+    const newContent = lines.slice(-MAX_LOG_LINES).join('\n');
+    fs.writeFileSync(filePath, newContent, 'utf8');
+    return MAX_LOG_LINES;
+  } catch (err) {
+    return 0;
+  }
+}
+
+// Initial check
+steamLogLineCount = rotateLogFile(STEAM_LOG_FILE);
 
 function log(level, message, extra = undefined) {
   const lvl = LOG_LEVELS[level];
@@ -210,6 +231,10 @@ function log(level, message, extra = undefined) {
   // Also write to file
   try {
     fs.appendFileSync(STEAM_LOG_FILE, line, 'utf8');
+    steamLogLineCount++;
+    if (steamLogLineCount > MAX_LOG_LINES + 500) {
+      steamLogLineCount = rotateLogFile(STEAM_LOG_FILE);
+    }
   } catch (err) {
     // Ignore file write errors
   }
@@ -217,40 +242,30 @@ function log(level, message, extra = undefined) {
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
 const GC_TRACE_LOG_PATH = path.join(PROJECT_ROOT, 'logs', 'deadlock_gc_messages.log');
-let gcTraceStream = null;
+let gcTraceLineCount = 0;
 
 function writeDeadlockGcTrace(event, details = {}) {
   try {
-    if (!gcTraceStream) {
-      fs.mkdirSync(path.dirname(GC_TRACE_LOG_PATH), { recursive: true });
-      gcTraceStream = fs.createWriteStream(GC_TRACE_LOG_PATH, { flags: 'a' });
+    if (gcTraceLineCount === 0) {
+      gcTraceLineCount = rotateLogFile(GC_TRACE_LOG_PATH);
     }
     const entry = {
       time: new Date().toISOString(),
       event,
       ...details,
     };
-    gcTraceStream.write(`${JSON.stringify(entry)}${os.EOL}`);
+    const line = JSON.stringify(entry) + os.EOL;
+    fs.appendFileSync(GC_TRACE_LOG_PATH, line, 'utf8');
+    gcTraceLineCount++;
+    
+    if (gcTraceLineCount > MAX_LOG_LINES + 200) {
+      gcTraceLineCount = rotateLogFile(GC_TRACE_LOG_PATH);
+    }
   } catch (err) {
     // Avoid recursive logging loops.
     console.error('Failed to write Deadlock GC trace', err && err.message ? err.message : err);
   }
 }
-
-function closeDeadlockGcTrace() {
-  if (!gcTraceStream) return;
-  try {
-    gcTraceStream.end();
-  } catch (_) {
-    // ignore
-  } finally {
-    gcTraceStream = null;
-  }
-}
-
-process.on('exit', closeDeadlockGcTrace);
-process.on('SIGINT', closeDeadlockGcTrace);
-process.on('SIGTERM', closeDeadlockGcTrace);
 
 function normalizeToBuffer(value) {
   if (!value && value !== 0) return null;

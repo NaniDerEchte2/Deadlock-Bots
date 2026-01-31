@@ -84,7 +84,12 @@ class DeadlockVoiceStatus(commands.Cog):
             self.trace_file.parent.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             log.debug("Could not create trace log directory: %s", exc, exc_info=True)
-        handler = logging.FileHandler(self.trace_file, encoding="utf-8")
+        handler = logging.handlers.RotatingFileHandler(
+            self.trace_file, 
+            maxBytes=2 * 1024 * 1024, 
+            backupCount=2, 
+            encoding="utf-8"
+        )
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(logging.Formatter("%(asctime)s [TRACE] %(message)s"))
         self._trace_logger.addHandler(handler)
