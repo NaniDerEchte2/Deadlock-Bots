@@ -52,7 +52,6 @@ let steamLogLineCount = 0;
 
 function rotateLogFile(filePath) {
   try {
-    if (!fs.existsSync(filePath)) return;
     const content = fs.readFileSync(filePath, 'utf8');
     const lines = content.split('\n');
     if (lines.length <= MAX_LOG_LINES) {
@@ -62,6 +61,9 @@ function rotateLogFile(filePath) {
     fs.writeFileSync(filePath, newContent, 'utf8');
     return MAX_LOG_LINES;
   } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      return 0;
+    }
     return 0;
   }
 }
@@ -577,8 +579,12 @@ function ensureDir(dirPath) {
 }
 
 function readToken(filePath) {
-  try { if (!fs.existsSync(filePath)) return ''; return fs.readFileSync(filePath, 'utf8').trim(); }
-  catch (err) { log('warn', 'Failed to read token file', { path: filePath, error: err.message }); return ''; }
+  try { return fs.readFileSync(filePath, 'utf8').trim(); }
+  catch (err) {
+    if (err && err.code === 'ENOENT') return '';
+    log('warn', 'Failed to read token file', { path: filePath, error: err.message });
+    return '';
+  }
 }
 
 function writeToken(filePath, value) {
