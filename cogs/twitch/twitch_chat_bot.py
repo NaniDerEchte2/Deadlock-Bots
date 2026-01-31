@@ -97,6 +97,7 @@ _SPAM_PHRASES = (
     "Viewers smmhype12.ru",
     "Viewers smmhype1.ru",
     "Viewers smmhype",
+    "keep viewers on streamboo .com (remove the space)",
 )
 # Entferne "viewer" und "viewers" aus den Fragmenten - zu allgemein und führt zu False Positives
 _SPAM_FRAGMENTS = (
@@ -218,25 +219,30 @@ if TWITCHIO_AVAILABLE:
                 )
                 # Wir machen weiter, damit der Bot zumindest "ready" wird und andere Cogs nicht blockiert
             
-            # Initial channels beitreten
-            if self._initial_channels:
-                log.info("Joining %d initial channels...", len(self._initial_channels))
-                for channel in self._initial_channels:
-                    try:
-                        await self.join(channel)
-                    except Exception as e:
-                        log.debug("Konnte initialem Channel %s nicht beitreten: %s", channel, e)
+            # Initial channels werden NICHT hier gejoined –
+            # setup_hook() läuft vor event_ready(), die WS-Session von TwitchIO
+            # ist noch nicht aufgebaut. Joins hier führen zu
+            # "invalid transport and auth combination" (400).
+            # Defer nach event_ready().
 
         async def event_ready(self):
             """Wird aufgerufen, wenn der Bot verbunden ist."""
             name = self.user.name if self.user else "Unknown"
             log.info("Twitch Chat Bot ready | Logged in as: %s", name)
-            # Zeige initial channels (monitored_streamers wird erst nach join() befüllt)
-            initial = ", ".join(self._initial_channels[:10]) if self._initial_channels else "(none yet)"
-            log.info("Initial channels to join: %s", initial)
             # Debug: Registrierte Commands loggen
             cmds = ", ".join(sorted(self.commands.keys()))
             log.info("Registered Chat Commands: %s", cmds)
+
+            # Initial channels erst hier joinen – WS-Session ist jetzt bereit
+            if self._initial_channels:
+                log.info("Joining %d initial channels...", len(self._initial_channels))
+                for channel in self._initial_channels:
+                    try:
+                        success = await self.join(channel)
+                        if success:
+                            await asyncio.sleep(0.2)  # Rate limiting
+                    except Exception as e:
+                        log.debug("Konnte initialem Channel %s nicht beitreten: %s", channel, e)
 
         async def event_command_error(self, payload):
             """Fehlerbehandlung für Commands."""

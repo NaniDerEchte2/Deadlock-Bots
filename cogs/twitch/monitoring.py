@@ -225,11 +225,13 @@ class TwitchMonitoringMixin:
             return
 
         # 1. Broadcaster sammeln
+        # stream.online wird NICHT hier abonniert – das wird durch _periodic_channel_join
+        # alle 30 Min erledigt. Zwei separate EventSub-WS-Sessions (TwitchIO + unser Listener)
+        # auf derselben Client-ID führen zu 429 "total cost exceeded" bei Twitch.
         offline_streamers = self._get_raid_enabled_streamers_for_eventsub()
-        online_streamers = self._get_chat_scope_streamers_for_eventsub()
         
-        if not offline_streamers and not online_streamers:
-            log.info("EventSub WS: Keine Subscriptions notwendig (keine Partner).")
+        if not offline_streamers:
+            log.info("EventSub WS: Keine stream.offline Subscriptions notwendig.")
             setattr(self, "_eventsub_ws_started", False)  # Reset flag
             return
         
@@ -304,7 +306,7 @@ class TwitchMonitoringMixin:
                 return new_l
             return None
 
-        # 3. Subscriptions verteilen
+        # 3. Subscriptions verteilen (nur stream.offline)
         subs_added = 0
         for entry in offline_streamers:
             bid = entry.get("twitch_user_id")
@@ -316,18 +318,8 @@ class TwitchMonitoringMixin:
             else:
                 log.error("EventSub WS: Limit erreicht (3 Connections, alle voll). Konnte stream.offline für %s nicht abonnieren.", bid)
 
-        for entry in online_streamers:
-            bid = entry.get("twitch_user_id")
-            if not bid: continue
-            l = get_or_create_listener()
-            if l:
-                l.add_subscription("stream.online", str(bid))
-                subs_added += 1
-            else:
-                log.error("EventSub WS: Limit erreicht (3 Connections, alle voll). Konnte stream.online für %s nicht abonnieren.", bid)
-
         log.info(
-            "EventSub WS: %d Subscriptions auf %d WebSocket(s) verteilt (Limit: 3).",
+            "EventSub WS: %d stream.offline Subscriptions auf %d WebSocket(s) verteilt.",
             subs_added, len(listeners)
         )
 
