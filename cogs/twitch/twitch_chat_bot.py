@@ -204,8 +204,11 @@ if TWITCHIO_AVAILABLE:
             cmds = ", ".join(sorted(self.commands.keys()))
             log.info("Registered Chat Commands: %s", cmds)
 
-        async def event_command_error(self, ctx, error):
+        async def event_command_error(self, payload):
             """Fehlerbehandlung für Commands."""
+            ctx = payload.context
+            error = payload.exception
+
             if isinstance(error, twitchio_commands.CommandNotFound):
                 # Kein Traceback für unbekannte Commands, nur Debug
                 log.debug("Command not found: %s", ctx.message.content)
