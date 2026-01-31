@@ -39,6 +39,65 @@ const {
   getOverrideInfo: getGcOverrideInfo,
 } = require('./deadlock_gc_protocol');
 
+// ---------- Logging ----------
+const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
+const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
+const LOG_THRESHOLD = Object.prototype.hasOwnProperty.call(LOG_LEVELS, LOG_LEVEL)
+  ? LOG_LEVELS[LOG_LEVEL]
+  : LOG_LEVELS.info;
+
+const STEAM_LOG_FILE = path.join(__dirname, '..', '..', '..', 'logs', 'steam_bridge.log');
+const MAX_LOG_LINES = 10000;
+let steamLogLineCount = 0;
+
+function rotateLogFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split('\n');
+    if (lines.length <= MAX_LOG_LINES) {
+      return lines.length;
+    }
+    const newContent = lines.slice(-MAX_LOG_LINES).join('\n');
+    fs.writeFileSync(filePath, newContent, 'utf8');
+    return MAX_LOG_LINES;
+  } catch (err) {
+    return 0;
+  }
+}
+
+// Initial check
+steamLogLineCount = rotateLogFile(STEAM_LOG_FILE);
+
+function log(level, message, extra = undefined) {
+  const lvl = LOG_LEVELS[level];
+  if (lvl === undefined || lvl > LOG_THRESHOLD) return;
+  const payload = { time: new Date().toISOString(), level, msg: message };
+  if (extra && typeof extra === 'object') {
+    for (const [key, value] of Object.entries(extra)) {
+      if (value === undefined) continue;
+      payload[key] = value;
+    }
+  }
+  const line = JSON.stringify(payload) + '\n';
+  // Ignore EPIPE errors when parent process closes stdout
+  try {
+    console.log(JSON.stringify(payload));
+  } catch (err) {
+    // Ignore broken pipe errors (EPIPE)
+  }
+  // Also write to file
+  try {
+    fs.appendFileSync(STEAM_LOG_FILE, line, 'utf8');
+    steamLogLineCount++;
+    if (steamLogLineCount > MAX_LOG_LINES + 500) {
+      steamLogLineCount = rotateLogFile(STEAM_LOG_FILE);
+    }
+  } catch (err) {
+    // Ignore file write errors
+  }
+}
+
 function convertKeysToCamelCase(obj) {
     if (Array.isArray(obj)) {
         return obj.map(v => convertKeysToCamelCase(v));
@@ -180,65 +239,6 @@ const WEB_API_HTTP_TIMEOUT_MS = Math.max(
 );
 
 // NOTE: External Deadlock API removed - now using In-Game GC for build discovery
-
-// ---------- Logging ----------
-const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
-const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
-const LOG_THRESHOLD = Object.prototype.hasOwnProperty.call(LOG_LEVELS, LOG_LEVEL)
-  ? LOG_LEVELS[LOG_LEVEL]
-  : LOG_LEVELS.info;
-
-const STEAM_LOG_FILE = path.join(__dirname, '..', '..', '..', 'logs', 'steam_bridge.log');
-const MAX_LOG_LINES = 10000;
-let steamLogLineCount = 0;
-
-function rotateLogFile(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) return;
-    const content = fs.readFileSync(filePath, 'utf8');
-    const lines = content.split('\n');
-    if (lines.length <= MAX_LOG_LINES) {
-      return lines.length;
-    }
-    const newContent = lines.slice(-MAX_LOG_LINES).join('\n');
-    fs.writeFileSync(filePath, newContent, 'utf8');
-    return MAX_LOG_LINES;
-  } catch (err) {
-    return 0;
-  }
-}
-
-// Initial check
-steamLogLineCount = rotateLogFile(STEAM_LOG_FILE);
-
-function log(level, message, extra = undefined) {
-  const lvl = LOG_LEVELS[level];
-  if (lvl === undefined || lvl > LOG_THRESHOLD) return;
-  const payload = { time: new Date().toISOString(), level, msg: message };
-  if (extra && typeof extra === 'object') {
-    for (const [key, value] of Object.entries(extra)) {
-      if (value === undefined) continue;
-      payload[key] = value;
-    }
-  }
-  const line = JSON.stringify(payload) + '\n';
-  // Ignore EPIPE errors when parent process closes stdout
-  try {
-    console.log(JSON.stringify(payload));
-  } catch (err) {
-    // Ignore broken pipe errors (EPIPE)
-  }
-  // Also write to file
-  try {
-    fs.appendFileSync(STEAM_LOG_FILE, line, 'utf8');
-    steamLogLineCount++;
-    if (steamLogLineCount > MAX_LOG_LINES + 500) {
-      steamLogLineCount = rotateLogFile(STEAM_LOG_FILE);
-    }
-  } catch (err) {
-    // Ignore file write errors
-  }
-}
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
 const GC_TRACE_LOG_PATH = path.join(PROJECT_ROOT, 'logs', 'deadlock_gc_messages.log');
