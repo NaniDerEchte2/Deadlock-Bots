@@ -201,11 +201,13 @@ class TwitchAdminMixin:
                     "VALUES (?, ?, ?, datetime('now','+30 days'))",
                     (user["login"].lower(), user["id"], int(require_link)),
                 )
+                # WICHTIG: Auch bei UPDATE die user_id setzen (falls sie vorher NULL war)
                 c.execute(
                     "UPDATE twitch_streamers "
-                    "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL "
+                    "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL, "
+                    "    twitch_user_id=? "
                     "WHERE twitch_login=?",
-                    (normalized,),
+                    (user["id"], normalized),
                 )
         except Exception:
             log.exception("DB-Fehler beim Hinzufügen von %s", normalized)

@@ -181,6 +181,9 @@ class TwitchBaseCog(commands.Cog):
         self._spawn_bg_task(self._refresh_all_invites(), "twitch.refresh_all_invites")
         # NUR EINEN EventSub Listener starten (konsolidiert stream.online + stream.offline)
         self._spawn_bg_task(self._start_eventsub_listener(), "twitch.eventsub")
+        # Beim Start fehlende user_ids in twitch_streamers nachfüllen
+        if self.api:
+            self._spawn_bg_task(self._sync_missing_user_ids(), "twitch.sync_user_ids")
 
     # -------------------------------------------------------
     # Lifecycle
@@ -338,6 +341,108 @@ class TwitchBaseCog(commands.Cog):
             )
         except Exception:
             log.exception("Konnte Invite-Codes nicht aus DB laden")
+
+    async def _sync_missing_user_ids(self):
+        """Beim Start fehlende twitch_user_id in twitch_streamers nachfüllen.
+
+        Strategie:
+          1. Aus twitch_raid_auth übernehmen (kein API-Call noetig).
+          2. Verbleibende per Twitch-API (Helix /users) auflösen.
+        Wird nur beim Hochfahren ausgeführt – neue Einträge bekommen
+        ihre user_id bereits beim Anlegen in _cmd_add / _dashboard_save_discord_profile.
+        """
+        try:
+            await self.bot.wait_until_ready()
+        except Exception:
+            log.exception("wait_until_ready in _sync_missing_user_ids fehlgeschlagen")
+            return
+
+        # --- Phase 1: Sync aus raid_auth (offline, instant) ---
+        try:
+            with storage.get_conn() as conn:
+                conn.execute("""
+                    UPDATE twitch_streamers
+                    SET twitch_user_id = (
+                        SELECT tra.twitch_user_id
+                        FROM twitch_raid_auth tra
+                        WHERE LOWER(tra.twitch_login) = LOWER(twitch_streamers.twitch_login)
+                    )
+                    WHERE twitch_user_id IS NULL
+                      AND EXISTS (
+                          SELECT 1 FROM twitch_raid_auth tra
+                          WHERE LOWER(tra.twitch_login) = LOWER(twitch_streamers.twitch_login)
+                            AND tra.twitch_user_id IS NOT NULL
+                      )
+                """)
+                synced = conn.execute(
+                    "SELECT changes()"
+                ).fetchone()[0]
+            if synced:
+                log.info("_sync_missing_user_ids: %d user_ids aus raid_auth übernommen", synced)
+        except Exception:
+            log.exception("_sync_missing_user_ids: Phase 1 (raid_auth) fehlgeschlagen")
+
+        # --- Phase 2: Rest per API auflösen ---
+        try:
+            with storage.get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT twitch_login FROM twitch_streamers WHERE twitch_user_id IS NULL"
+                ).fetchall()
+            missing = [row[0] for row in rows]
+        except Exception:
+            log.exception("_sync_missing_user_ids: Konnte fehlende Logins nicht laden")
+            return
+
+        if not missing:
+            log.debug("_sync_missing_user_ids: alle user_ids vorhanden, nichts zu tun")
+            return
+
+        log.info("_sync_missing_user_ids: %d Logins ohne user_id, frage Twitch API ab", len(missing))
+
+        try:
+            # get_users gibt ein Dict {login: {id, login, ...}} zurück
+            users = await self.api.get_users(missing)
+        except Exception:
+            log.exception("_sync_missing_user_ids: API-Aufruf fehlgeschlagen")
+            return
+
+        if not users:
+            log.warning(
+                "_sync_missing_user_ids: API hat keine Ergebnisse für %s zurückgegeben",
+                missing,
+            )
+            return
+
+        try:
+            with storage.get_conn() as conn:
+                for login, user_data in users.items():
+                    uid = user_data.get("id")
+                    if uid:
+                        conn.execute(
+                            "UPDATE twitch_streamers SET twitch_user_id = ? "
+                            "WHERE LOWER(twitch_login) = LOWER(?) AND twitch_user_id IS NULL",
+                            (uid, login),
+                        )
+            log.info("_sync_missing_user_ids: %d user_ids per API aktualisiert", len(users))
+        except Exception:
+            log.exception("_sync_missing_user_ids: DB-Update nach API-Aufruf fehlgeschlagen")
+
+        # --- Abschliessender Bericht ---
+        try:
+            with storage.get_conn() as conn:
+                still_missing = conn.execute(
+                    "SELECT twitch_login FROM twitch_streamers WHERE twitch_user_id IS NULL"
+                ).fetchall()
+            if still_missing:
+                log.warning(
+                    "_sync_missing_user_ids: %d Logins konnten nicht aufgelöst werden: %s",
+                    len(still_missing),
+                    [r[0] for r in still_missing],
+                )
+            else:
+                log.info("_sync_missing_user_ids: alle user_ids erfolgreich gesetzt")
+        except Exception:
+            log.debug("_sync_missing_user_ids: Abschliessender Check fehlgeschlagen", exc_info=True)
 
     async def _refresh_guild_invites(self, guild: Guild):
         codes: Set[str] = set()

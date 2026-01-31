@@ -185,6 +185,32 @@ class TwitchDashboardMixin:
         if len(display_name_clean) > 120:
             display_name_clean = display_name_clean[:120]
 
+        # Versuche twitch_user_id zu ermitteln
+        twitch_user_id: Optional[str] = None
+        
+        # 1. Versuche aus raid_auth zu laden
+        try:
+            with storage.get_conn() as conn:
+                raid_row = conn.execute(
+                    "SELECT twitch_user_id FROM twitch_raid_auth WHERE LOWER(twitch_login)=LOWER(?)",
+                    (normalized,),
+                ).fetchone()
+                if raid_row:
+                    twitch_user_id = raid_row[0]
+        except Exception:
+            log.debug("Konnte user_id nicht aus raid_auth laden für %s", normalized, exc_info=True)
+        
+        # 2. Falls nicht in raid_auth: API-Call
+        if not twitch_user_id and self.api:
+            try:
+                users = await self.api.get_users([normalized])
+                user = users.get(normalized)
+                if user:
+                    twitch_user_id = user.get("id")
+                    log.info("Fetched twitch_user_id %s for %s from API", twitch_user_id, normalized)
+            except Exception:
+                log.warning("Konnte user_id nicht von API holen für %s", normalized, exc_info=True)
+
         try:
             with storage.get_conn() as conn:
                 row = conn.execute(
@@ -193,24 +219,41 @@ class TwitchDashboardMixin:
                 ).fetchone()
 
                 if row:
-                    conn.execute(
-                        "UPDATE twitch_streamers "
-                        "SET discord_user_id=?, discord_display_name=?, is_on_discord=? "
-                        "WHERE twitch_login=?",
-                        (
-                            discord_id_clean or None,
-                            display_name_clean or None,
-                            1 if mark_member else 0,
-                            normalized,
-                        ),
-                    )
+                    # UPDATE: Setze auch twitch_user_id falls verfügbar
+                    if twitch_user_id:
+                        conn.execute(
+                            "UPDATE twitch_streamers "
+                            "SET discord_user_id=?, discord_display_name=?, is_on_discord=?, twitch_user_id=? "
+                            "WHERE twitch_login=?",
+                            (
+                                discord_id_clean or None,
+                                display_name_clean or None,
+                                1 if mark_member else 0,
+                                twitch_user_id,
+                                normalized,
+                            ),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE twitch_streamers "
+                            "SET discord_user_id=?, discord_display_name=?, is_on_discord=? "
+                            "WHERE twitch_login=?",
+                            (
+                                discord_id_clean or None,
+                                display_name_clean or None,
+                                1 if mark_member else 0,
+                                normalized,
+                            ),
+                        )
                 else:
+                    # INSERT: Mit user_id falls verfügbar
                     conn.execute(
                         "INSERT INTO twitch_streamers "
-                        "(twitch_login, discord_user_id, discord_display_name, is_on_discord) "
-                        "VALUES (?, ?, ?, ?)",
+                        "(twitch_login, twitch_user_id, discord_user_id, discord_display_name, is_on_discord) "
+                        "VALUES (?, ?, ?, ?, ?)",
                         (
                             normalized,
+                            twitch_user_id,
                             discord_id_clean or None,
                             display_name_clean or None,
                             1 if mark_member else 0,
