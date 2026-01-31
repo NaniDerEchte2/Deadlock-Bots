@@ -104,6 +104,7 @@ function getWorkingAppId() {
 }
 const PROTO_MASK = SteamUser.GCMsgProtoBuf || 0x80000000;
 const GC_MSG_CLIENT_HELLO = 4006;
+const GC_MSG_CLIENT_HELLO_ALT = 9018;
 const GC_MSG_CLIENT_WELCOME = 4004;
 const GC_MSG_CLIENT_TO_GC_UPDATE_HERO_BUILD = 9193;
 const GC_MSG_CLIENT_TO_GC_UPDATE_HERO_BUILD_RESPONSE = 9194;
@@ -1386,6 +1387,7 @@ function sendDeadlockGcHello(force = false) {
     });
     
     client.sendToGC(appId, PROTO_MASK + GC_MSG_CLIENT_HELLO, {}, payload);
+    client.sendToGC(appId, PROTO_MASK + GC_MSG_CLIENT_HELLO_ALT, {}, payload);
     writeDeadlockGcTrace('send_gc_hello', {
       appId,
       payloadHex: payload.toString('hex').substring(0, 200),
@@ -2181,6 +2183,7 @@ function handlePlaytestInviteResponse(appid, msgType, buffer) {
   if (entry && entry.timer) clearTimeout(entry.timer);
 
   const parsedResponse = deadlockGcBot.decodePlaytestInviteResponse(payloadBuffer);
+  log('info', 'DEBUG: Decoded playtest response', { parsed: JSON.stringify(parsedResponse) });
   const code = parsedResponse && typeof parsedResponse.code === 'number' ? parsedResponse.code : null;
   const mapping = Object.prototype.hasOwnProperty.call(PLAYTEST_RESPONSE_MAP, code || 0)
     ? PLAYTEST_RESPONSE_MAP[code || 0]
@@ -3319,7 +3322,7 @@ client.on('receivedFromGC', (appId, msgType, payload) => {
     }
   }
 
-  if (messageId === GC_MSG_CLIENT_WELCOME && isDeadlockApp) {
+  if ((messageId === GC_MSG_CLIENT_WELCOME || messageId === 9019) && isDeadlockApp) {
     log('info', '?? RECEIVED DEADLOCK GC WELCOME - GC CONNECTION ESTABLISHED!', {
       appId,
       messageId,

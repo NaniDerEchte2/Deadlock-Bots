@@ -80,6 +80,10 @@ class StandaloneMixin:
 
                 steam_env["NODE_ENV"] = os.getenv("STEAM_BRIDGE_NODE_ENV", "production")
 
+                # Pass Steam API key to the bridge
+                if os.getenv("STEAM_API_KEY"):
+                    steam_env["STEAM_API_KEY"] = os.getenv("STEAM_API_KEY")
+
                 node_executable = os.getenv("STEAM_BRIDGE_NODE") or "node"
 
                 manager.register(

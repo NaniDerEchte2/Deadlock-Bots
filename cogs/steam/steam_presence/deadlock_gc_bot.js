@@ -309,6 +309,7 @@ class DeadlockGcBot {
       offset = next;
       const field = tag >>> 3;
       const wire = tag & 0x07;
+      // log('debug', `Decoding tag: ${tag}, field: ${field}, wire: ${wire}`);
       if (field === 1 && wire === 0) {
         const { value: code } = parseVarint(buffer, offset);
         return { code, success: Number(code) === 0 };
