@@ -10,6 +10,7 @@ Streamer können den Raid-Bot direkt über Twitch-Chat-Commands steuern:
 """
 import asyncio
 import logging
+import logging.handlers
 import os
 import re
 from datetime import datetime, timezone, timedelta
@@ -42,8 +43,13 @@ def _setup_twitch_logging():
     
     file_path = log_dir / "twitch_bot.log"
     # Prüfe ob Handler bereits existiert (um Duplikate bei Reloads zu vermeiden)
-    if not any(isinstance(h, logging.handlers.RotatingFileHandler) and h.baseFilename.endswith("twitch_bot.log") for h in twitch_log.handlers):
-        import logging.handlers
+    exists = False
+    for h in twitch_log.handlers:
+        if isinstance(h, logging.handlers.RotatingFileHandler) and str(h.baseFilename).endswith("twitch_bot.log"):
+            exists = True
+            break
+            
+    if not exists:
         handler = logging.handlers.RotatingFileHandler(
             file_path,
             maxBytes=5 * 1024 * 1024, # 5MB
