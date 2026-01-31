@@ -30,13 +30,13 @@ class StatusAnzeige extends DeadlockPresenceLogger {
     this.lastPersistErrorAt = 0;
     this.latestPresence = new Map();
     this.voiceWatchStmt = null;
-    this.steamWebApiKey =
-      (options.steamWebApiKey ||
-        process.env.STEAM_WEB_API_KEY ||
+    this.steamApiKey =
+      (options.steamApiKey ||
         process.env.STEAM_API_KEY ||
+        process.env.STEAM_WEB_API_KEY ||
         '') +
       '';
-    this.steamWebApiKey = this.steamWebApiKey.trim() || null;
+    this.steamApiKey = this.steamApiKey.trim() || null;
     this.webApiTimeoutMs = Math.max(
       3000,
       Number.isFinite(Number(options.webApiTimeoutMs))
@@ -279,7 +279,7 @@ class StatusAnzeige extends DeadlockPresenceLogger {
   }
 
   refreshServerSummaries(steamIds) {
-    if (!this.steamWebApiKey || !Array.isArray(steamIds) || !steamIds.length) {
+    if (!this.steamApiKey || !Array.isArray(steamIds) || !steamIds.length) {
       return;
     }
     const uniqueIds = Array.from(
@@ -326,7 +326,7 @@ class StatusAnzeige extends DeadlockPresenceLogger {
     }
     return new Promise((resolve, reject) => {
       const params = new URLSearchParams({
-        key: this.steamWebApiKey,
+        key: this.steamApiKey,
         steamids: ids.join(','),
       });
       const url = `${PLAYER_SUMMARIES_ENDPOINT}?${params.toString()}`;

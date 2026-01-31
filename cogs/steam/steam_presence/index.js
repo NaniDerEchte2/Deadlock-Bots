@@ -156,7 +156,16 @@ const GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW = Number.parseInt(process.env.DEADLOC
 const GC_CLIENT_HELLO_PROTOCOL_VERSION = Number.isFinite(GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW) && GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW > 0
   ? GC_CLIENT_HELLO_PROTOCOL_VERSION_RAW
   : 1;
-const STEAM_WEB_API_KEY = ((process.env.STEAM_API_KEY || process.env.STEAM_WEB_API_KEY || '') + '').trim() || null;
+const STEAM_API_KEY = ((process.env.STEAM_API_KEY || process.env.STEAM_WEB_API_KEY || '') + '').trim() || null;
+if (STEAM_API_KEY) {
+  log('info', 'Steam API key is configured', { 
+    length: STEAM_API_KEY.length,
+    prefix: STEAM_API_KEY.substring(0, 3) + '...',
+    suffix: '...' + STEAM_API_KEY.substring(STEAM_API_KEY.length - 3)
+  });
+} else {
+  log('warn', 'Steam API key is NOT configured');
+}
 const WEB_API_FRIEND_CACHE_TTL_MS = Math.max(
   15000,
   Number.isFinite(Number(process.env.STEAM_WEBAPI_FRIEND_CACHE_MS))
@@ -409,10 +418,10 @@ function httpGetJson(url, timeoutMs = WEB_API_HTTP_TIMEOUT_MS) {
 // Build discovery now uses GC via BuildCatalogManager
 
 async function loadWebApiFriendIds(force = false) {
-  if (!STEAM_WEB_API_KEY) {
+  if (!STEAM_API_KEY) {
     if (!webApiFriendCacheWarned) {
       webApiFriendCacheWarned = true;
-      log('debug', 'Steam Web API key not configured - friendship fallback disabled');
+      log('debug', 'Steam API key not configured - friendship fallback disabled');
     }
     return null;
   }
@@ -425,7 +434,7 @@ async function loadWebApiFriendIds(force = false) {
   if (webApiFriendCachePromise) return webApiFriendCachePromise;
 
   const url = new URL('https://api.steampowered.com/ISteamUser/GetFriendList/v1/');
-  url.searchParams.set('key', STEAM_WEB_API_KEY);
+  url.searchParams.set('key', STEAM_API_KEY);
   url.searchParams.set('steamid', client.steamID.getSteamID64());
   url.searchParams.set('relationship', 'friend');
 
@@ -1254,7 +1263,7 @@ const statusAnzeige = new StatusAnzeige(client, log, {
   appId: DEADLOCK_APP_ID,
   language: process.env.STEAM_PRESENCE_LANGUAGE || 'german',
   db,
-  steamWebApiKey: STEAM_WEB_API_KEY,
+  steamApiKey: STEAM_API_KEY,
   webApiTimeoutMs: WEB_API_HTTP_TIMEOUT_MS,
   webSummaryCacheTtlMs: WEB_API_FRIEND_CACHE_TTL_MS,
 });
