@@ -3116,7 +3116,12 @@ function markLoggedOn(details) {
   scheduleStatePublish({ reason: 'logged_on' });
 }
 
-client.on('loggedOn', (details) => { markLoggedOn(details); });
+client.on('loggedOn', (details) => {
+  deadlockGcBot.refreshGameVersion().catch((err) => {
+    log('warn', 'Auto-update of game version failed', { error: err.message });
+  });
+  markLoggedOn(details);
+});
 client.on('webSession', () => { log('debug', 'Steam web session established'); });
 client.on('steamGuard', (domain, callback, lastCodeWrong) => {
   pendingGuard = { domain, callback };

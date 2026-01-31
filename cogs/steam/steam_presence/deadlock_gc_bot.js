@@ -9,7 +9,9 @@
  * bridge and calls into this helper whenever it needs a payload.
  */
 
-const DEADLOCK_SESSION_NEED = 5972;
+const fs = require('fs');
+const path = require('path');
+
 const DEADLOCK_HELLO_ENTRY_FLAG = 5;
 const DEADLOCK_HELLO_SECONDARY_ENTRY_FLAG = 1;
 const DEADLOCK_HELLO_TIMINGS = [
@@ -24,6 +26,8 @@ const DEADLOCK_HELLO_TIMINGS = [
   { field: 19, value: 2560 },
   { field: 20, value: 1440 },
 ];
+
+const VERSION_CACHE_PATH = path.join(__dirname, '.steam-data', 'last_version.txt');
 
 function encodeVarint(value) {
   let n;
@@ -95,6 +99,83 @@ class DeadlockGcBot {
     this.getTokenCount = typeof getTokenCount === 'function' ? getTokenCount : null;
     this.cachedHello = null;
     this.cachedLegacyHello = null;
+
+    // Default fallback
+    const fallback = 21693781;
+    
+    // 1. Check ENV
+    if (process.env.DEADLOCK_SESSION_NEED) {
+      this.sessionNeed = Number(process.env.DEADLOCK_SESSION_NEED);
+    } else {
+      // 2. Check cache file
+      try {
+        if (fs.existsSync(VERSION_CACHE_PATH)) {
+          const content = fs.readFileSync(VERSION_CACHE_PATH, 'utf8').trim();
+          const cachedVersion = parseInt(content, 10);
+          if (Number.isFinite(cachedVersion) && cachedVersion > 0) {
+            this.sessionNeed = cachedVersion;
+            this.log('info', 'Loaded Deadlock game version from cache', { version: this.sessionNeed });
+          }
+        }
+      } catch (err) {
+        this.log('debug', 'Could not read version cache', { error: err.message });
+      }
+    }
+
+    if (!this.sessionNeed) {
+      this.sessionNeed = fallback;
+    }
+  }
+
+  async refreshGameVersion(appId = 1422450) {
+    if (!this.client || typeof this.client.getProductInfo !== 'function') return false;
+
+    return new Promise((resolve) => {
+      this.client.getProductInfo([appId], [], (err, apps) => {
+        if (err) {
+          this.log('warn', 'Failed to auto-update game version', { error: err && err.message ? err.message : String(err) });
+          resolve(false);
+          return;
+        }
+
+        try {
+          const app = apps && apps[appId] ? apps[appId] : null;
+          const buildId = app?.appinfo?.depots?.branches?.public?.buildid;
+
+          if (buildId) {
+            const numericId = parseInt(buildId, 10);
+            if (Number.isFinite(numericId) && numericId > 0) {
+              const old = this.sessionNeed;
+              if (old !== numericId) {
+                this.sessionNeed = numericId;
+                this.cachedHello = null; // Invalidate cache
+                this.log('info', 'Auto-updated Deadlock game version', {
+                  oldVersion: old,
+                  newVersion: this.sessionNeed,
+                  source: 'Steam ProductInfo'
+                });
+
+                // Persist to cache
+                try {
+                  const dataDir = path.dirname(VERSION_CACHE_PATH);
+                  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+                  fs.writeFileSync(VERSION_CACHE_PATH, String(this.sessionNeed), 'utf8');
+                } catch (cacheErr) {
+                  this.log('warn', 'Failed to save version to cache', { error: cacheErr.message });
+                }
+              } else {
+                 this.log('debug', 'Deadlock game version is up to date', { version: this.sessionNeed });
+              }
+              resolve(true);
+              return;
+            }
+          }
+        } catch (parseErr) {
+          this.log('warn', 'Failed to parse game version from ProductInfo', { error: parseErr.message });
+        }
+        resolve(false);
+      });
+    });
   }
 
   get steamID64() {
@@ -150,7 +231,7 @@ class DeadlockGcBot {
     }
 
     const parts = [];
-    parts.push(encodeFieldVarint(1, DEADLOCK_SESSION_NEED));
+    parts.push(encodeFieldVarint(1, this.sessionNeed));
 
     tokens.forEach((token, index) => {
       const entryParts = [];
