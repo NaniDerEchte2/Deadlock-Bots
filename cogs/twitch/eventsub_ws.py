@@ -32,6 +32,7 @@ class EventSubWSListener:
         self.log = logger or logging.getLogger("TwitchStreams.EventSubWS")
         self._token_resolver = token_resolver
         self._stop = False
+        self._failed = False
         self._ws_url = "wss://eventsub.wss.twitch.tv/ws"
         self._subscriptions: List[Tuple[str, str, Dict]] = [] # (sub_type, broadcaster_id, condition)
         self._callbacks: Dict[str, EventCallback] = {} # sub_type -> callback
@@ -42,9 +43,14 @@ class EventSubWSListener:
         Calculate the total cost of all registered subscriptions.
         stream.online and stream.offline (v1) cost 1 each.
         """
+        if self._failed:
+            return 9999 # Mark as full/broken
         # In a more advanced version, we could look up costs per sub_type.
-        # For now, we know our sub_types (stream.online/offline) cost 1.
         return len(self._subscriptions)
+
+    @property
+    def is_failed(self) -> bool:
+        return self._failed
 
     def stop(self) -> None:
         """Signal the listener to stop."""
@@ -170,6 +176,7 @@ class EventSubWSListener:
                 msg = str(e)
                 if "429" in msg or "transport limit exceeded" in msg.lower():
                     self.log.error("EventSub WS: Transport limit exceeded (429) during subscription of %s for %s. Aborting further subs on this session.", sub_type, bid)
+                    self._failed = True
                     break
                 self.log.error("EventSub WS: Subscription failed for %s (%s): %s", bid, sub_type, e)
 

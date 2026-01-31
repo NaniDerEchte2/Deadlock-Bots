@@ -291,9 +291,9 @@ class TwitchMonitoringMixin:
                 log.exception("EventSub WS: Online-Callback fehlgeschlagen für %s", login or bid)
 
         def get_or_create_listener() -> Optional[EventSubWSListener]:
-            # Versuche existierenden Listener mit Platz (< 10 cost)
+            # Versuche existierenden Listener mit Platz (< 100 cost)
             for l in listeners:
-                if l.cost < 10:
+                if l.cost < 100:
                     return l
             # Wenn kein Platz und < 3 Listener, erstelle neuen
             if len(listeners) < 3:

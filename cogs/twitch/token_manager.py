@@ -83,19 +83,30 @@ class TwitchBotTokenManager:
             if self._refresh_task is None or self._refresh_task.done():
                 self._refresh_task = asyncio.create_task(self._auto_refresh_loop())
 
+            # Sicherstellen, dass die Tokens persistiert werden (z.B. falls sie aus ENV geladen wurden)
+            await self._save_tokens()
+
             log.info("Token manager initialised. Bot id: %s", self.bot_id or "unknown")
             return True
 
-    async def get_valid_token(self) -> Tuple[str, Optional[str]]:
+    async def get_valid_token(self, force_refresh: bool = False) -> Tuple[str, Optional[str]]:
         """
         Return a valid access token (auto-refreshing if needed).
+
+        Args:
+            force_refresh: If True, triggers a refresh even if the token is not expired.
 
         Returns:
             (access_token, bot_id)
         """
         async with self._lock:
-            if self.expires_at and datetime.now() >= self.expires_at - timedelta(minutes=5):
-                log.info("Access token close to expiry; refreshing.")
+            should_refresh = force_refresh
+            if not should_refresh and self.expires_at:
+                if datetime.now() >= self.expires_at - timedelta(minutes=5):
+                    log.info("Access token close to expiry; refreshing.")
+                    should_refresh = True
+            
+            if should_refresh:
                 await self._refresh_access_token()
 
             if not self.access_token:

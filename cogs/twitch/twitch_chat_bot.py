@@ -152,6 +152,7 @@ if TWITCHIO_AVAILABLE:
                 prefix=prefix,
                 **base_kwargs,
             )
+            self.prefix = prefix
             self._client_id = client_id
             self._bot_token = token
             self._bot_refresh_token = refresh_token
@@ -652,96 +653,112 @@ if TWITCHIO_AVAILABLE:
                 log.warning("Spam erkannt in %s, aber kein Bot-ID oder Token-Manager für Auto-Ban verfügbar.", channel_name)
                 return False
 
-            try:
-                tokens = await self._token_manager.get_valid_token()
-                if not tokens:
-                    log.warning("Spam erkannt in %s, aber kein valides Bot-Token für Auto-Ban verfügbar.", channel_name)
-                    return False
-                access_token, _ = tokens
-                
-                headers = {
-                    "Client-ID": self._client_id,
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json"
-                }
-                
-                # Wir nutzen eine temporäre Session für die API-Calls des Bots
-                import aiohttp
-                async with aiohttp.ClientSession() as session:
+            for attempt in range(2): # Maximal 2 Versuche (Original + 1 Retry nach Refresh)
+                try:
+                    tokens = await self._token_manager.get_valid_token()
+                    if not tokens:
+                        log.warning("Spam erkannt in %s, aber kein valides Bot-Token für Auto-Ban verfügbar.", channel_name)
+                        return False
+                    access_token, _ = tokens
                     
-                    # 1. Nachricht löschen
-                    message_id = self._extract_message_id(message)
-                    if message_id:
+                    headers = {
+                        "Client-ID": self._client_id,
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    # Wir nutzen eine temporäre Session für die API-Calls des Bots
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        
+                        # 1. Nachricht löschen
+                        message_id = self._extract_message_id(message)
+                        if message_id:
+                            try:
+                                async with session.delete(
+                                    "https://api.twitch.tv/helix/moderation/chat",
+                                    headers=headers,
+                                    params={
+                                        "broadcaster_id": twitch_user_id,
+                                        "moderator_id": safe_bot_id,  # Bot ist der Moderator
+                                        "message_id": message_id,
+                                    },
+                                ) as resp:
+                                    if resp.status == 401 and attempt == 0:
+                                        log.warning("Delete message 401 in %s, triggering refresh...", channel_name)
+                                        await self._token_manager.get_valid_token(force_refresh=True)
+                                        continue # Retry outer loop
+
+                                    if resp.status not in {200, 204}:
+                                        txt = await resp.text()
+                                        log.debug(
+                                            "Konnte Nachricht nicht löschen (Bot-Action) (%s/%s): HTTP %s %s",
+                                            channel_name,
+                                            message_id,
+                                            resp.status,
+                                            txt[:180].replace("\n", " "),
+                                        )
+                            except Exception:
+                                log.debug("Auto-Delete fehlgeschlagen (%s)", channel_name, exc_info=True)
+
+                        # 2. User bannen
                         try:
-                            async with session.delete(
-                                "https://api.twitch.tv/helix/moderation/chat",
+                            payload = {"data": {"user_id": chatter_id, "reason": "Automatischer Spam-Ban (Bot-Phrase)"}}
+                            async with session.post(
+                                "https://api.twitch.tv/helix/moderation/bans",
                                 headers=headers,
-                                params={
-                                    "broadcaster_id": twitch_user_id,
-                                    "moderator_id": safe_bot_id,  # Bot ist der Moderator
-                                    "message_id": message_id,
-                                },
+                                params={"broadcaster_id": twitch_user_id, "moderator_id": safe_bot_id}, # Bot ist der Moderator
+                                json=payload,
                             ) as resp:
-                                if resp.status not in {200, 204}:
-                                    txt = await resp.text()
-                                    log.debug(
-                                        "Konnte Nachricht nicht löschen (Bot-Action) (%s/%s): HTTP %s %s",
+                                if resp.status in {200, 201, 202}:
+                                    log.info("Auto-Ban (durch Bot) ausgelöst in %s für %s", channel_name, chatter_login or chatter_id)
+                                    self._last_autoban[channel_name.lower()] = {
+                                        "user_id": chatter_id,
+                                        "login": chatter_login,
+                                        "content": original_content,
+                                        "ts": datetime.now(timezone.utc).isoformat(),
+                                    }
+                                    self._record_autoban(
+                                        channel_name=channel_name,
+                                        chatter_login=chatter_login,
+                                        chatter_id=chatter_id,
+                                        content=original_content,
+                                        status="BANNED"
+                                    )
+                                    # Nachricht an den Chat senden, WARUM gebannt wurde
+                                    await self._send_chat_message(
+                                        message.channel,
+                                        f"🛡️ Auto-Mod: {chatter_login} wurde wegen Spam-Verdacht gebannt. (!unban zum Rückgängigmachen)"
+                                    )
+                                    return True
+                                
+                                if resp.status == 401 and attempt == 0:
+                                    log.warning("Ban user 401 in %s, triggering refresh...", channel_name)
+                                    await self._token_manager.get_valid_token(force_refresh=True)
+                                    continue # Retry outer loop
+
+                                txt = await resp.text()
+                                if resp.status == 403:
+                                    log.warning("Auto-Ban fehlgeschlagen in %s (403 Forbidden): Bot ist wahrscheinlich kein Moderator!", channel_name)
+                                elif resp.status == 401:
+                                    log.warning("Auto-Ban fehlgeschlagen in %s (401 Unauthorized) nach Refresh!", channel_name)
+                                else:
+                                    log.warning(
+                                        "Auto-Ban fehlgeschlagen in %s (user=%s): HTTP %s %s",
                                         channel_name,
-                                        message_id,
+                                        chatter_id,
                                         resp.status,
                                         txt[:180].replace("\n", " "),
                                     )
                         except Exception:
-                            log.debug("Auto-Delete fehlgeschlagen (%s)", channel_name, exc_info=True)
+                            log.debug("Auto-Ban Exception in %s", channel_name, exc_info=True)
+                    
+                    # Wenn wir hier sind ohne return True, ist der Ban fehlgeschlagen (und kein 401 Retry möglich)
+                    break
 
-                    # 2. User bannen
-                    try:
-                        payload = {"data": {"user_id": chatter_id, "reason": "Automatischer Spam-Ban (Bot-Phrase)"}}
-                        async with session.post(
-                            "https://api.twitch.tv/helix/moderation/bans",
-                            headers=headers,
-                            params={"broadcaster_id": twitch_user_id, "moderator_id": safe_bot_id}, # Bot ist der Moderator
-                            json=payload,
-                        ) as resp:
-                            if resp.status in {200, 201, 202}:
-                                log.info("Auto-Ban (durch Bot) ausgelöst in %s für %s", channel_name, chatter_login or chatter_id)
-                                self._last_autoban[channel_name.lower()] = {
-                                    "user_id": chatter_id,
-                                    "login": chatter_login,
-                                    "content": original_content,
-                                    "ts": datetime.now(timezone.utc).isoformat(),
-                                }
-                                self._record_autoban(
-                                    channel_name=channel_name,
-                                    chatter_login=chatter_login,
-                                    chatter_id=chatter_id,
-                                    content=original_content,
-                                    status="BANNED"
-                                )
-                                await self._send_chat_message(
-                                    message.channel,
-                                    f"Nachricht gelöscht und Nutzer gebannt: {chatter_login or chatter_id}. Original Nachricht: {original_content}",
-                                )
-                                return True
-                            
-                            txt = await resp.text()
-                            if resp.status == 403:
-                                log.warning("Auto-Ban fehlgeschlagen in %s (403 Forbidden): Bot ist wahrscheinlich kein Moderator!", channel_name)
-                            elif resp.status == 401:
-                                log.warning("Auto-Ban fehlgeschlagen in %s (401 Unauthorized): Bot-Token ist ungültig!", channel_name)
-                            else:
-                                log.warning(
-                                    "Auto-Ban fehlgeschlagen in %s (user=%s): HTTP %s %s",
-                                    channel_name,
-                                    chatter_id,
-                                    resp.status,
-                                    txt[:180].replace("\n", " "),
-                                )
-                    except Exception:
-                        log.debug("Auto-Ban Exception in %s", channel_name, exc_info=True)
-
-            except Exception:
-                log.error("Kritischer Fehler im Auto-Ban-Prozess", exc_info=True)
+                except Exception:
+                    log.error("Fehler im Auto-Ban-Versuch %d", attempt + 1, exc_info=True)
+                    if attempt == 1: break
 
             # Wenn wir hier sind, ist Ban fehlgeschlagen
             return False
@@ -753,42 +770,51 @@ if TWITCHIO_AVAILABLE:
                 log.warning("Unban nicht möglich: Kein Bot-Token/ID verfügbar in %s", channel_name)
                 return False
 
-            try:
-                tokens = await self._token_manager.get_valid_token()
-                if not tokens:
-                    log.warning("Kein valides Bot-Token für Unban verfügbar.")
-                    return False
-                access_token, _ = tokens
-                
-                headers = {
-                    "Client-ID": self._client_id,
-                    "Authorization": f"Bearer {access_token}",
-                }
-                
-                import aiohttp
-                async with aiohttp.ClientSession() as session:
-                    async with session.delete(
-                        "https://api.twitch.tv/helix/moderation/bans",
-                        headers=headers,
-                        params={
-                            "broadcaster_id": broadcaster_id,
-                            "moderator_id": safe_bot_id,  # Bot ist der Moderator
-                            "user_id": target_user_id,
-                        },
-                    ) as resp:
-                        if resp.status in {200, 204}:
-                            log.info("Unban (durch Bot) ausgeführt in %s für %s", channel_name, login_hint or target_user_id)
-                            return True
-                        txt = await resp.text()
-                        log.warning(
-                            "Unban fehlgeschlagen in %s (user=%s): HTTP %s %s",
-                            channel_name,
-                            target_user_id,
-                            resp.status,
-                            txt[:180].replace("\n", " "),
-                        )
-            except Exception:
-                log.debug("Unban Exception in %s", channel_name, exc_info=True)
+            for attempt in range(2):
+                try:
+                    tokens = await self._token_manager.get_valid_token()
+                    if not tokens:
+                        log.warning("Kein valides Bot-Token für Unban verfügbar.")
+                        return False
+                    access_token, _ = tokens
+                    
+                    headers = {
+                        "Client-ID": self._client_id,
+                        "Authorization": f"Bearer {access_token}",
+                    }
+                    
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        async with session.delete(
+                            "https://api.twitch.tv/helix/moderation/bans",
+                            headers=headers,
+                            params={
+                                "broadcaster_id": broadcaster_id,
+                                "moderator_id": safe_bot_id,  # Bot ist der Moderator
+                                "user_id": target_user_id,
+                            },
+                        ) as resp:
+                            if resp.status in {200, 204}:
+                                log.info("Unban (durch Bot) ausgeführt in %s für %s", channel_name, login_hint or target_user_id)
+                                return True
+                            
+                            if resp.status == 401 and attempt == 0:
+                                log.warning("Unban 401 in %s, triggering refresh...", channel_name)
+                                await self._token_manager.get_valid_token(force_refresh=True)
+                                continue
+
+                            txt = await resp.text()
+                            log.warning(
+                                "Unban fehlgeschlagen in %s (user=%s): HTTP %s %s",
+                                channel_name,
+                                target_user_id,
+                                resp.status,
+                                txt[:180].replace("\n", " "),
+                            )
+                    break
+                except Exception:
+                    log.debug("Unban Exception in %s (Versuch %d)", channel_name, attempt + 1, exc_info=True)
+                    if attempt == 1: break
             return False
 
         async def _track_chat_health(self, message) -> None:
@@ -1076,9 +1102,9 @@ if TWITCHIO_AVAILABLE:
 
             await ctx.send(message)
 
-        @twitchio_commands.command(name="uban")
+        @twitchio_commands.command(name="uban", aliases=["unban"])
         async def cmd_uban(self, ctx: twitchio_commands.Context):
-            """!uban - hebt den letzten Auto-Ban im aktuellen Channel auf."""
+            """!uban / !unban - hebt den letzten Auto-Ban im aktuellen Channel auf."""
             if not (ctx.author.is_broadcaster or ctx.author.is_mod):
                 await ctx.send(f"@{ctx.author.name} Nur der Broadcaster oder Mods.")
                 return
