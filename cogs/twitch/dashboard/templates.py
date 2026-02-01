@@ -280,6 +280,16 @@ class DashboardTemplateMixin:
 {nav_html}
 {flash}
 {body}
+<script>
+  document.addEventListener("click", (event) => {{
+    const link = event.target.closest("a[data-same-tab='1']");
+    if (!link) return;
+    const href = link.getAttribute("href");
+    if (!href) return;
+    event.preventDefault();
+    window.location.assign(href);
+  }});
+</script>
 """
 
 

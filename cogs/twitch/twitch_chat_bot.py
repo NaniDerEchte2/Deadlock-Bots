@@ -1,8 +1,8 @@
 # cogs/twitch/twitch_chat_bot.py
 """
-Twitch IRC Chat Bot für Raid-Bot-Steuerung.
+Twitch IRC Chat Bot für Twitch-Bot-Steuerung.
 
-Streamer können den Raid-Bot direkt über Twitch-Chat-Commands steuern:
+Streamer können den Twitch-Bot direkt über Twitch-Chat-Commands steuern:
 - !raid_enable / !raidbot - Aktiviert Auto-Raids
 - !raid_disable / !raidbot_off - Deaktiviert Auto-Raids
 - !raid_status - Zeigt den Status an
@@ -1062,7 +1062,7 @@ if TWITCHIO_AVAILABLE:
             # Nur Broadcaster oder Mods dürfen den Bot steuern
             if not (ctx.author.is_broadcaster or ctx.author.is_mod):
                 await ctx.send(
-                    f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Raid-Bot steuern."
+                    f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Twitch-Bot steuern."
                 )
                 return
 
@@ -1089,15 +1089,15 @@ if TWITCHIO_AVAILABLE:
                 # Noch nicht autorisiert -> OAuth-Link senden
                 if not self._raid_bot:
                     await ctx.send(
-                        f"@{ctx.author.name} Der Raid-Bot ist derzeit nicht verfügbar. "
+                        f"@{ctx.author.name} Der Twitch-Bot ist derzeit nicht verfügbar. "
                         "Kontaktiere einen Admin."
                     )
                     return
 
                 auth_url = self._raid_bot.auth_manager.generate_auth_url(twitch_login)
                 await ctx.send(
-                    f"@{ctx.author.name} Um den Auto-Raid-Bot zu nutzen, musst du ihn zuerst autorisieren. "
-                    f"Klicke hier: {auth_url} (Der Bot raidet automatisch andere Partner, wenn du offline gehst)"
+                    f"@{ctx.author.name} OAuth fehlt – Anforderung: Twitch-Bot autorisieren (Pflicht für Streamer-Partner). "
+                    f"Link: {auth_url} | Auto-Raid, Chat Guard, Discord Auto-Post (Analytics WIP)"
                 )
                 log.info("Sent raid auth link to %s via chat", twitch_login)
                 return
@@ -1107,7 +1107,7 @@ if TWITCHIO_AVAILABLE:
             if raid_enabled:
                 await ctx.send(
                     f"@{ctx.author.name} ✅ Auto-Raid ist bereits aktiviert! "
-                    "Der Bot raidet automatisch andere Partner, wenn du offline gehst."
+                    "Der Twitch-Bot raidet automatisch andere Partner, wenn du offline gehst."
                 )
                 return
 
@@ -1125,7 +1125,7 @@ if TWITCHIO_AVAILABLE:
 
             await ctx.send(
                 f"@{ctx.author.name} ✅ Auto-Raid aktiviert! "
-                "Wenn du offline gehst, raidet der Bot automatisch den Partner mit der kürzesten Stream-Zeit."
+                "Wenn du offline gehst, raidet der Twitch-Bot automatisch den Partner mit der kürzesten Stream-Zeit."
             )
             log.info("Enabled auto-raid for %s via chat", twitch_login)
 
@@ -1134,7 +1134,7 @@ if TWITCHIO_AVAILABLE:
             """!raid_disable - Deaktiviert den Auto-Raid-Bot."""
             if not (ctx.author.is_broadcaster or ctx.author.is_mod):
                 await ctx.send(
-                    f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Raid-Bot steuern."
+                    f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Twitch-Bot steuern."
                 )
                 return
 
@@ -1168,7 +1168,7 @@ if TWITCHIO_AVAILABLE:
 
         @twitchio_commands.command(name="raid_status", aliases=["raidbot_status"])
         async def cmd_raid_status(self, ctx: twitchio_commands.Context):
-            """!raid_status - Zeigt den Raid-Bot-Status an."""
+            """!raid_status - Zeigt den Twitch-Bot-Status an."""
             channel_name = ctx.channel.name
             streamer_data = self._get_streamer_by_channel(channel_name)
 
@@ -1215,8 +1215,8 @@ if TWITCHIO_AVAILABLE:
 
             # Status bestimmen
             if not auth_row:
-                status = "❌ Nicht autorisiert"
-                action = "Verwende !raid_enable zum Aktivieren."
+                status = "❌ Nicht autorisiert (OAuth fehlt)"
+                action = "Anforderung: Twitch-Bot autorisieren mit !raid_enable."
             elif auth_row[0]:  # raid_enabled
                 status = "✅ Aktiv"
                 action = "Auto-Raids sind aktiviert."
@@ -1225,7 +1225,7 @@ if TWITCHIO_AVAILABLE:
                 action = "Aktiviere mit !raid_enable."
 
             # Nachricht zusammenstellen
-            message = f"@{ctx.author.name} Raid-Bot Status: {status}. {action}"
+            message = f"@{ctx.author.name} Twitch-Bot Status: {status}. {action}"
 
             if total_raids:
                 message += f" | Statistik: {total_raids} Raids ({successful_raids or 0} erfolgreich)"
@@ -1323,13 +1323,15 @@ if TWITCHIO_AVAILABLE:
             twitch_login, twitch_user_id, _ = streamer_data
 
             if not self._raid_bot or not self._raid_bot.auth_manager.has_enabled_auth(twitch_user_id):
-                await ctx.send(f"@{ctx.author.name} Bitte zuerst autorisieren/aktivieren: !raid_enable")
+                await ctx.send(
+                    f"@{ctx.author.name} OAuth fehlt – Anforderung: Twitch-Bot autorisieren mit !raid_enable."
+                )
                 return
 
             api_session = getattr(self._raid_bot, "session", None)
             executor = getattr(self._raid_bot, "raid_executor", None)
             if not api_session or not executor:
-                await ctx.send(f"@{ctx.author.name} Raid-Bot nicht verfügbar.")
+                await ctx.send(f"@{ctx.author.name} Twitch-Bot nicht verfügbar.")
                 return
 
             # Partner-Kandidaten laden (verifizierte Partner, Opt-out respektieren)

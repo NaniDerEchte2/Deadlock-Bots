@@ -6,7 +6,11 @@ import html
 import logging
 from typing import TYPE_CHECKING, Optional
 
+import discord
 from aiohttp import web
+
+from ..storage import get_conn
+from ..raid_views import build_raid_requirements_embed, RaidAuthGenerateView
 
 if TYPE_CHECKING:
     from ..raid_manager import RaidBot
@@ -184,7 +188,7 @@ class DashboardRaidMixin:
 
     async def raid_requirements(self, request: web.Request) -> web.Response:
         """
-        Liefert eine kompakte Requirements-Seite und einen frischen OAuth-Link.
+        Sendet die Anforderungen per Discord DM an den Streamer.
         Kein Pre-Gen-Link: jedes Öffnen erzeugt einen neuen State.
         """
         token = request.query.get("token", "")
@@ -198,42 +202,71 @@ class DashboardRaidMixin:
         if not self._raid_bot or not getattr(self._raid_bot, "auth_manager", None):
             return web.Response(text="Raid bot not initialized", status=503)
 
-        auth_url = self._raid_bot.auth_manager.generate_auth_url(login)
-        escaped_login = html.escape(login, quote=True)
-        escaped_url = html.escape(auth_url, quote=True)
+        try:
+            with get_conn() as conn:
+                row = conn.execute(
+                    """
+                    SELECT discord_user_id, discord_display_name
+                    FROM twitch_streamers
+                    WHERE lower(twitch_login) = lower(?)
+                    """,
+                    (login,),
+                ).fetchone()
+        except Exception:
+            log.exception("Failed to load Discord link for raid requirements (%s)", login)
+            return web.Response(text="Failed to load Discord link", status=500)
 
-        body = f"""
-<!DOCTYPE html>
-<html lang="de">
-<head><meta charset="utf-8"><title>Raid-Bot Anforderungen für {escaped_login}</title>
-<style>
-body {{ font-family: Arial, sans-serif; margin: 2rem; color: #111; }}
-.card {{ border:1px solid #ddd; border-radius:10px; padding:1.5rem; max-width:720px; }}
-ul {{ padding-left:1.2rem; }}
-.actions {{ margin-top:1rem; display:flex; gap:.6rem; flex-wrap:wrap; }}
-.btn {{ padding:.65rem 1.1rem; border-radius:8px; border:none; cursor:pointer; font-weight:600; text-decoration:none; }}
-.primary {{ background:#9146FF; color:white; }}
-.ghost {{ background:#f4f4f6; color:#222; }}
-</style>
-</head>
-<body>
-  <div class="card">
-    <h2>Raid-Bot Anforderungen für @{escaped_login}</h2>
-    <p>Das braucht der Streamer, damit Auto-Raids laufen:</p>
-    <ul>
-      <li>Auf „Autorisiere den Raid-Bot“ klicken (öffnet Twitch OAuth).</li>
-      <li>Twitch-Berechtigungen akzeptieren (Raids & Chat).</li>
-      <li>Bot als Moderator behalten (wird automatisch gesetzt).</li>
-    </ul>
-    <div class="actions">
-      <a class="btn primary" href="{escaped_url}" target="_blank" rel="noopener">Jetzt autorisieren</a>
-      <button class="btn ghost" onclick="navigator.clipboard.writeText('{escaped_url}');this.textContent='Link kopiert';">Link kopieren</button>
-    </div>
-  </div>
-</body>
-</html>
-"""
-        return web.Response(text=body, content_type="text/html")
+        if not row:
+            return web.Response(text="Streamer not found", status=404)
+
+        discord_user_id = ""
+        if row:
+            raw_discord_id = row["discord_user_id"] if hasattr(row, "keys") else row[0]
+            if raw_discord_id:
+                discord_user_id = str(raw_discord_id).strip()
+        if not discord_user_id:
+            return web.Response(text="No Discord user linked for this streamer", status=404)
+
+        try:
+            user_id_int = int(discord_user_id)
+        except (TypeError, ValueError):
+            return web.Response(text="Invalid Discord user id", status=400)
+
+        discord_bot = getattr(self._raid_bot.auth_manager, "_discord_bot", None)
+        if not discord_bot:
+            return web.Response(text="Discord bot not available", status=503)
+
+        user = discord_bot.get_user(user_id_int)
+        if user is None:
+            try:
+                user = await discord_bot.fetch_user(user_id_int)
+            except discord.NotFound:
+                user = None
+            except discord.HTTPException:
+                log.exception("Failed to fetch Discord user %s for %s", user_id_int, login)
+                user = None
+
+        if user is None:
+            return web.Response(text="Discord user not found", status=404)
+
+        embed = build_raid_requirements_embed(login)
+        view = RaidAuthGenerateView(
+            auth_manager=self._raid_bot.auth_manager,
+            twitch_login=login,
+        )
+
+        try:
+            await user.send(embed=embed, view=view)
+        except discord.Forbidden:
+            log.warning("Discord DM blocked for %s (%s)", login, user_id_int)
+            return web.Response(text="Discord DM blocked", status=403)
+        except discord.HTTPException:
+            log.exception("Failed to send raid requirements DM to %s (%s)", login, user_id_int)
+            return web.Response(text="Failed to send Discord DM", status=502)
+
+        log.info("Sent raid requirements DM to %s (discord_id=%s)", login, discord_user_id)
+        ok_message = f"Anforderungen per Discord an @{login} gesendet"
+        raise web.HTTPFound(location=self._redirect_location(request, ok=ok_message))
 
     async def raid_history(self, request: web.Request) -> web.Response:
         """Zeigt Raid-History an."""

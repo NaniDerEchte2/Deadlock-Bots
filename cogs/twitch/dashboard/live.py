@@ -299,12 +299,12 @@ class DashboardLiveMixin:
                     raid_cell_parts.append(
                         "<a class='btn btn-small btn-secondary' href='"
                         + raid_link
-                        + "' target='_blank' rel='noopener'>Autorisieren</a>"
+                        + "'>Autorisieren</a>"
                     )
                     raid_cell_parts.append(
                         "<a class='btn btn-small' href='"
                         + requirements_link
-                        + "' target='_blank' rel='noopener'>Anforderungen senden</a>"
+                        + "' data-same-tab='1'>Anforderungen senden</a>"
                     )
             else:
                 raid_cell_parts.append("<span class='badge badge-warn'>Bot offline</span>")

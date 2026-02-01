@@ -1,5 +1,5 @@
 # cogs/twitch/raid_commands.py
-"""Discord Commands für Raid-Bot-Steuerung durch Streamer."""
+"""Discord Commands für Twitch-Bot-Steuerung durch Streamer."""
 
 import logging
 
@@ -7,12 +7,13 @@ import discord
 from discord.ext import commands
 
 from .storage import get_conn
+from .raid_views import build_raid_requirements_embed, RaidAuthGenerateView
 
 log = logging.getLogger("TwitchStreams.RaidCommands")
 
 
 class RaidCommandsMixin:
-    """Discord-Commands für Raid-Bot-Verwaltung durch Streamer."""
+    """Discord-Commands für Twitch-Bot-Verwaltung durch Streamer."""
 
     @commands.hybrid_command(name="traid", aliases=["twitch_raid_auth"])
     async def cmd_twitch_raid_auth(self, ctx: commands.Context):
@@ -40,29 +41,15 @@ class RaidCommandsMixin:
 
         if not hasattr(self, "_raid_bot") or not self._raid_bot:
             await ctx.send(
-                "⚠️ Der Raid-Bot ist derzeit nicht verfügbar. Bitte Admin pingen.",
+                "⚠️ Der Twitch-Bot ist derzeit nicht verfügbar. Bitte wende dich an @earlyalty.",
                 ephemeral=True,
             )
             return
 
-        auth_url = self._raid_bot.auth_manager.generate_auth_url(twitch_login)
-
-        embed = discord.Embed(
-            title="🔐 Twitch Autorisierung",
-            description=(
-                f"Hallo **{twitch_login}**!\n\n"
-                "Bitte autorisiere den Bot mit den neuen Rechten für Auto-Raids, Follower-Zahlen und Chat-Events.\n\n"
-                "Klicke auf den Button unten, um Twitch zu öffnen."
-            ),
-            color=0x9146FF,
-        )
-        view = discord.ui.View()
-        view.add_item(
-            discord.ui.Button(
-                label="Twitch autorisieren",
-                url=auth_url,
-                style=discord.ButtonStyle.link,
-            )
+        embed = build_raid_requirements_embed(twitch_login)
+        view = RaidAuthGenerateView(
+            auth_manager=self._raid_bot.auth_manager,
+            twitch_login=twitch_login,
         )
         await ctx.send(embed=embed, view=view, ephemeral=True)
         log.info("Sent traid auth link to %s (discord_id=%s)", twitch_login, discord_user_id)
@@ -105,33 +92,16 @@ class RaidCommandsMixin:
             # Noch nicht autorisiert -> OAuth-Link generieren
             if not hasattr(self, "_raid_bot") or not self._raid_bot:
                 await ctx.send(
-                    "❌ Der Raid-Bot ist derzeit nicht verfügbar. "
+                    "❌ Der Twitch-Bot ist derzeit nicht verfügbar. "
                     "Bitte kontaktiere einen Admin.",
                     ephemeral=True,
                 )
                 return
 
-            auth_url = self._raid_bot.auth_manager.generate_auth_url(twitch_login)
-            embed = discord.Embed(
-                title="🎯 Raid-Bot Autorisierung",
-                description=(
-                    f"Hallo **{twitch_login}**!\n\n"
-                    "Um den Auto-Raid-Bot zu nutzen, musst du ihn zuerst auf Twitch autorisieren.\n\n"
-                    "**Was macht der Raid-Bot?**\n"
-                    "• Wenn du offline gehst, raidet der Bot automatisch einen anderen Online-Partner\n"
-                    "• Es wird der Partner mit der kürzesten Stream-Zeit geraidet\n"
-                    "• Alle Raids werden mit Metadaten gespeichert\n\n"
-                    "Klicke auf den Button unten, um den Bot zu autorisieren:"
-                ),
-                color=0x9146FF,
-            )
-            view = discord.ui.View()
-            view.add_item(
-                discord.ui.Button(
-                    label="Auf Twitch autorisieren",
-                    url=auth_url,
-                    style=discord.ButtonStyle.link,
-                )
+            embed = build_raid_requirements_embed(twitch_login)
+            view = RaidAuthGenerateView(
+                auth_manager=self._raid_bot.auth_manager,
+                twitch_login=twitch_login,
             )
             await ctx.send(embed=embed, view=view, ephemeral=True)
             log.info("Sent raid auth link to %s (%s)", twitch_login, discord_user_id)
@@ -253,14 +223,14 @@ class RaidCommandsMixin:
             ).fetchall()
 
         embed = discord.Embed(
-            title=f"🎯 Raid-Bot Status für {twitch_login}",
+            title=f"🎯 Twitch-Bot Status für {twitch_login}",
             color=0x9146FF if raid_enabled else 0x808080,
         )
 
         # Status
         if not authorized_at:
-            status = "❌ Nicht autorisiert"
-            status_desc = "Verwende `/raid_enable`, um den Bot zu autorisieren."
+            status = "❌ Nicht autorisiert (OAuth fehlt)"
+            status_desc = "Anforderung: Twitch-Bot autorisieren mit `/raid_enable`."
         elif raid_enabled:
             status = "✅ Aktiv"
             status_desc = "Auto-Raids sind aktiviert."

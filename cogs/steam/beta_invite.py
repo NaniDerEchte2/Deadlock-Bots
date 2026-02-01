@@ -579,13 +579,13 @@ class BetaIntentGateView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Ich will mitspielen/aktiv sein", style=discord.ButtonStyle.success)
-    async def choose_join(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await self.cog.handle_intent_selection(interaction, INTENT_COMMUNITY)
-
-    @discord.ui.button(label="Nur schnell den Invite abholen", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Nur schnell den Invite abholen", style=discord.ButtonStyle.primary)
     async def choose_invite_only(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self.cog.handle_intent_selection(interaction, INTENT_INVITE_ONLY)
+
+    @discord.ui.button(label="Ich will mitspielen/aktiv sein", style=discord.ButtonStyle.primary)
+    async def choose_join(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.cog.handle_intent_selection(interaction, INTENT_COMMUNITY)
 
 
 class InviteOnlyPaymentView(discord.ui.View):

@@ -868,8 +868,7 @@ class TwitchMonitoringMixin:
                            s.archived_at,
                            MAX(
                                CASE
-                                 WHEN sess.had_deadlock_in_session = 1
-                                      OR LOWER(COALESCE(sess.game_name,'')) = LOWER(?)
+                                 WHEN LOWER(COALESCE(sess.game_name,'')) = LOWER(?)
                                  THEN COALESCE(sess.ended_at, sess.started_at)
                                END
                            ) AS last_deadlock_stream_at

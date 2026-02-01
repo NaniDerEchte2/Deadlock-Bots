@@ -530,35 +530,32 @@ class StreamerIntroView(StepView):
             description=(
                 "Wir haben einen **exklusiven Streamer-Bereich** mit automatisierten Tools, "
                 "die dir als Partner das Leben leichter machen.\n\n"
-                "**Was kannst du als Streamer-Partner erwarten?**\n\n"
+                "**Twitch Bot-Update: Das passiert im Hintergrund:**\n\n"
                 
                 "**1️⃣ Auto-Raid Manager**\n"
-                "Schluss mit manuellem Raid-Suchen! Der Bot übernimmt das automatisch:\n"
-                "• Sobald dein Stream offline geht, prüft der Bot, welche Partner live sind\n"
-                "• Automatischer Raid zu einem passenden Partner-Streamer und von einem Partner-Streamer\n"
+                "Schluss mit manuellem Raid-Suchen am Ende eines langen Streams. Der Bot übernimmt das automatisch:\n"
+                "• Sobald dein Stream **offline** geht, prüft der Bot, **welche Partner aktuell live** sind und raidet einen davon\n"
+                "• **Fallback:** Wenn **kein Partner live** ist, sucht der Bot automatisch nach **deutschen Deadlock-Streamern**\n\n"
                 
-                "**2️⃣ Chat Guard – Schutz vor Spam**\n"
-                "Dein Chat bleibt sauber, ohne ständiges Moderieren:\n"
-                "• **Spam-Filter:** Blockiert automatisch Viewer-Bots und bekannte Spam-Muster\n"
-                "• Schützt vor Nachrichten wie „Best viewers, streamboo.com etc.\n"
+                "**2️⃣ Chat Guard – Schutz vor Müll im Chat**\n"
+                "Damit dein Chat sauber bleibt, ohne dass du ständig moderieren musst:\n"
+                "• **Spam-Mod:** Filtert Spam anhand einer vorgegebenen Liste (z. B. Viewer-Bots)\n"
+                "• **Erweiterbar:** Neue Spam-Wellen können wir schnell ergänzen\n"
+                "• **Wichtig:** Bitte gebt Feedback inkl. **exakter Nachricht** – nur so können wir zuverlässig bannen\n\n"
                 
-                "**3️⃣ Discord Live-Stream Auto-Post**\n"
-                "• Sobald du Deadlock streamst, wird dein Stream automatisch im Discord gepostet\n"
-                "• Mehr Sichtbarkeit in der Community – ohne dass du selbst was posten musst\n"
-                "• Direkter Traffic von der Community zu deinem Stream\n\n"
+                "**3️⃣ Analytics Dashboard** *(Work in Progress 03-05/26)*\n"
+                "• **Retention-Analyse:** Wann droppen Zuschauer? (z. B. nach 5, 10 oder 20 Minuten)\n"
+                "• **Unique Chatters:** Wie viele **verschiedene** Menschen interagieren wirklich?\n"
+                "• **Kategorie-Vergleich (DE):** Analyse der deutschen Deadlock-Kategorie & Vergleich zwischen Streamern\n"
+                "→ Ziel: Du erkennst Muster und weißt, was du optimieren kannst.\n\n"
                 
-                "**4️⃣ Analytics Dashboard** *(Work in Progress für 03-05/26)*\n"
-                "Geplante Features, die dir echte Einblicke geben:\n"
-                "• **Retention-Analyse:** Wann droppen Zuschauer? (nach 5, 10, 20 Min.)\n"
-                "• **Unique Chatters:** Wie viele verschiedene Menschen interagieren wirklich?\n"
-                "• **Kategorie-Vergleich (DE):** Datenanalyse für die deutsche Deadlock-Szene\n"
-                "• Vergleiche deine Performance mit anderen Streamern\n\n"
+                "**4️⃣ Discord – Live-Stream Auto-Post**\n"
+                "• Sobald du **Deadlock** streamst, wird dein Stream automatisch im Discord gepostet (#🎥twitch)\n"
+                "→ Ergebnis: Mehr Sichtbarkeit in der Community, ohne dass du selbst posten musst.\n\n"
                 
-                "**Deine Vorteile auf einen Blick:**\n"
-                "✅ Automatisierte Raids → Mehr Networking, weniger Arbeit\n"
-                "✅ Spam-Schutz → Sauberer Chat ohne Aufwand\n"
-                "✅ Auto-Promo → Mehr Reichweite in der DE-Community\n"
-                "✅ Analytics → Verstehe deine Viewer & optimiere deinen Content\n\n"
+                "**Wenn du Lust hast, teste die Beta-Features direkt:**\n"
+                "Nutze #🎥streamer-austausch `!traid`, autorisiere den **Twitch-Bot** "
+                "und gib uns Feedback, wenn dir etwas auffällt oder du dir weitere Features wünschst.\n\n"
                 
                 "**Bereit, Partner zu werden?**"
             ),
@@ -668,7 +665,7 @@ class StreamerRequirementsView(StepView):
         if twitch_login:
             twitch_entry += f" (**{twitch_login}**)"
 
-        raid_entry = f"{'✅' if raid_bot_authorized else '⬜'} Raid-Bot autorisiert"
+        raid_entry = f"{'✅' if raid_bot_authorized else '⬜'} Twitch-Bot autorisiert (Pflicht)"
 
         checklist = [
             f"{'✅' if acknowledged else '⬜'} Voraussetzungen bestätigt",
@@ -697,13 +694,15 @@ class StreamerRequirementsView(StepView):
             
             *Alternative:* Wenn kein Platz mehr bei Social-Links → Als Panel hinzufügen
             
-            **3️⃣ Raid-Bot aktivieren** 🎯
-            **Was macht der Raid-Bot?**
-            • Wenn du offline gehst, raidet der Bot automatisch einen Partner
-            • Andere Partner raiden auch dich – gegenseitige Unterstützung!
-            • Fairness-System wählt das beste Raid-Ziel
-            • Kein Partner online? → Raid zu deutschen Deadlock-Streamern
-            • Manuelle Raids bleiben möglich!
+            **3️⃣ Twitch-Bot autorisieren (Pflicht)** 🎯
+            **Ohne Twitch-Bot-Autorisierung können wir dich nicht freischalten.**
+            
+            **Twitch Bot-Update: Das passiert im Hintergrund**
+            • **Auto-Raid Manager:** Wenn du offline gehst, raidet der Bot automatisch einen Partner
+            • **Fallback:** Kein Partner live? → Raid zu deutschen Deadlock-Streamern
+            • **Chat Guard:** Spam-Filter + erweiterbare Ban-Liste (Feedback inkl. exakter Nachricht hilft)
+            • **Discord Auto-Post:** Live-Stream wird automatisch im Discord gepostet
+            • **Analytics (WIP 03-05/26):** Retention, Unique Chatters, Kategorie-Vergleich (DE)
             
             **Wie aktivieren?**
             Klick auf den Button unten → Autorisiere auf Twitch → Fertig! 🎉
@@ -751,7 +750,7 @@ class StreamerRequirementsView(StepView):
                 "Nutze die Buttons unten, um:\n"
                 "1️⃣ Voraussetzungen bestätigen\n"
                 "2️⃣ Twitch-Link angeben\n"
-                "3️⃣ Raid-Bot autorisieren\n"
+                "3️⃣ Twitch-Bot autorisieren (Pflicht)\n"
                 "4️⃣ Verifizierung starten"
             )
 
@@ -838,7 +837,7 @@ class StreamerRequirementsView(StepView):
         await interaction.response.send_modal(StreamerTwitchProfileModal(self))
 
     @discord.ui.button(
-        label="3️⃣ Raid-Bot autorisieren",
+        label="3️⃣ Twitch-Bot autorisieren",
         style=discord.ButtonStyle.primary,
         custom_id="wdm:streamer:req_raid_bot",
     )
@@ -854,7 +853,7 @@ class StreamerRequirementsView(StepView):
         if self.raid_bot_authorized:
             await _safe_send(
                 interaction,
-                content="✅ Du hast den Raid-Bot bereits autorisiert.",
+                content="✅ Du hast den Twitch-Bot bereits autorisiert.",
                 ephemeral=True,
             )
             return
@@ -867,7 +866,7 @@ class StreamerRequirementsView(StepView):
             if not raid_bot or not auth_mgr:
                 await _safe_send(
                     interaction,
-                    content="⚠️ Raid-Bot ist derzeit nicht verfügbar. Bitte informiere einen Admin.",
+                    content="⚠️ Twitch-Bot ist derzeit nicht verfügbar. Bitte informiere einen Admin.",
                     ephemeral=True,
                 )
                 return
@@ -888,14 +887,21 @@ class StreamerRequirementsView(StepView):
             await _safe_send(
                 interaction,
                 content=(
-                    f"**🎯 Raid-Bot autorisieren für {self.twitch_login}**\n\n"
+                    f"**🎯 Twitch-Bot autorisieren für {self.twitch_login}**\n\n"
+                    "**Pflicht für Streamer-Partner:** Ohne OAuth keine Freischaltung.\n\n"
                     "**Was passiert jetzt?**\n"
                     "1. Klick auf den Button unten\n"
                     "2. Du wirst zu Twitch weitergeleitet\n"
                     "3. Autorisiere den Bot (dauert nur 10 Sekunden)\n"
                     "4. Komm zurück und klick auf **'✅ Ich habe autorisiert'**\n\n"
                     
-                    "**Was kann der Bot?**\n"
+                    "**Was macht der Twitch-Bot?**\n"
+                    "✓ Auto-Raid Manager (Partner live prüfen + Fallback)\n"
+                    "✓ Chat Guard (Spam-Filter)\n"
+                    "✓ Discord Auto-Post (Live-Stream im Discord)\n"
+                    "✓ Analytics Dashboard (WIP 03-05/26)\n\n"
+                    
+                    "**Berechtigungen:**\n"
                     "✓ Raids in deinem Namen starten (NUR raiden!)\n"
                     "✓ Chat-Nachrichten lesen (für Spam-Schutz)\n"
                     "✓ Follower-Liste einsehen (als Mod)\n\n"
@@ -944,7 +950,7 @@ class StreamerRequirementsView(StepView):
                             self.raid_bot_authorized = True
                             await self._update_message(btn_interaction)
                             await btn_interaction.followup.send(
-                                "✅ **Raid-Bot erfolgreich autorisiert!**\n"
+                                "✅ **Twitch-Bot erfolgreich autorisiert!**\n"
                                 "Du kannst jetzt die Verifizierung anstoßen (Button 4️⃣).",
                                 ephemeral=True
                             )
@@ -952,10 +958,11 @@ class StreamerRequirementsView(StepView):
                             await btn_interaction.edit_original_response(view=confirm_view)
                         else:
                             await btn_interaction.followup.send(
-                                "⚠️ **Autorisierung noch nicht gefunden**\n\n"
+                                "⚠️ **Autorisierung noch nicht gefunden (OAuth fehlt)**\n\n"
                                 "Mögliche Gründe:\n"
                                 "• Du hast den Bot noch nicht auf Twitch autorisiert\n"
                                 "• Die Autorisierung wurde noch nicht synchronisiert (warte 10 Sek.)\n\n"
+                                "Wichtig: Ohne Twitch-Bot-Autorisierung keine Freischaltung.\n"
                                 "Stelle sicher, dass du auf Twitch autorisiert hast und versuche es dann erneut.",
                                 ephemeral=True
                             )
@@ -996,7 +1003,7 @@ class StreamerRequirementsView(StepView):
             if not self.twitch_login:
                 missing.append("2️⃣ Twitch-Profil angeben")
             if not self.raid_bot_authorized:
-                missing.append("3️⃣ Raid-Bot autorisieren")
+                missing.append("3️⃣ Twitch-Bot autorisieren (Pflicht)")
 
             await _safe_send(
                 interaction,
