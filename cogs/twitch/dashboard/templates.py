@@ -114,7 +114,7 @@ class DashboardTemplateMixin:
   .badge {{ display:inline-flex; align-items:center; gap:.35rem; padding:.2rem .6rem; border-radius:999px; font-size:.78rem; font-weight:700; border:1px solid var(--bd); background:var(--bg-alt); }}
   .badge-ok {{ background:var(--ok-bg); color:var(--ok-fg); border-color:var(--ok-bd); }}
   .badge-warn {{ background:var(--warn-bg); color:var(--warn-fg); border-color:var(--warn-bd); }}
-  .badge-neutral {{ background:rgba(31,42,48,0.08); color:var(--accent-3); border-color:rgba(31,42,48,0.2); }}
+  .badge-neutral {{ background:rgba(124,58,237,0.15); color:var(--text); border-color:rgba(124,58,237,0.35); }}
   .status-meta {{ font-size:.8rem; color:var(--muted); margin-top:.2rem; }}
   .action-stack {{ display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; }}
   .countdown-ok {{ color:var(--accent); font-weight:700; }}
@@ -246,7 +246,7 @@ class DashboardTemplateMixin:
   .hero-actions {{ display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; }}
   .eyebrow {{ text-transform:uppercase; letter-spacing:.18em; font-size:.7rem; color:var(--muted); margin:0 0 .4rem 0; }}
   .lead {{ margin:.4rem 0 0 0; color:var(--muted); max-width:32rem; }}
-  .panel-grid {{ display:grid; gap:1rem; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); }}
+  .panel-grid {{ display:grid; gap:1.8rem; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); }}
   .panel-grid .card {{ margin-top:0; animation: rise .6s ease both; }}
   .panel-grid .card:nth-child(2) {{ animation-delay:.08s; }}
   .panel-grid .card:nth-child(3) {{ animation-delay:.16s; }}
