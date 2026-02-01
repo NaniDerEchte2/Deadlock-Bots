@@ -81,14 +81,14 @@ class DashboardTemplateMixin:
   h1 {{ font-size: 2.2rem; margin: 0; }}
   h2 {{ font-size: 1.2rem; }}
   a {{ color: inherit; }}
-  .tabs {{ display:flex; gap:.6rem; margin:0 0 1.4rem 0; flex-wrap:wrap; }}
+  .tabs {{ display:flex; gap:.8rem; margin:0 0 1.6rem 0; flex-wrap:wrap; }}
   .tab {{ padding:.55rem .9rem; border-radius:999px; text-decoration:none; color:var(--text); background:var(--card); border:1px solid var(--bd); box-shadow:0 6px 12px var(--shadow); font-weight:600; transition:transform .15s ease, box-shadow .15s ease, background .15s ease; }}
   .tab:hover {{ transform: translateY(-1px); box-shadow:0 10px 18px var(--shadow-strong); }}
   .tab.active {{ background:linear-gradient(135deg, rgba(124,58,237,.35), rgba(124,58,237,.08)); border-color:rgba(124,58,237,.6); color:var(--text); }}
   .tab.tab-admin {{ margin-left:auto; background:linear-gradient(135deg, rgba(244,114,182,.28), rgba(244,114,182,.08)); border-color:rgba(244,114,182,.55); font-weight:700; }}
   .tab.tab-admin:hover {{ background:linear-gradient(135deg, rgba(244,114,182,.4), rgba(244,114,182,.12)); }}
   .card {{ background:var(--card); border:1px solid var(--bd); border-radius:1rem; padding:1.1rem; box-shadow:0 12px 30px var(--shadow); }}
-  .row {{ display:flex; gap:1rem; align-items:center; flex-wrap:wrap; }}
+  .row {{ display:flex; gap:1.2rem; align-items:center; flex-wrap:wrap; }}
   .btn {{ background:var(--accent); color:white; border:none; padding:.55rem .9rem; border-radius:.65rem; cursor:pointer; font-weight:600; letter-spacing:.01em; box-shadow:0 10px 18px rgba(124,58,237,.35); transition:transform .15s ease, box-shadow .15s ease; }}
   .btn:hover {{ transform: translateY(-1px); box-shadow:0 14px 24px rgba(124,58,237,.45); }}
   .btn:disabled {{ opacity:.6; cursor:not-allowed; box-shadow:none; }}
@@ -110,13 +110,13 @@ class DashboardTemplateMixin:
   .flash.ok {{ background:var(--ok-bg); border:1px solid var(--ok-bd); color:var(--ok-fg); }}
   .flash.err {{ background:var(--err-bg); border:1px solid var(--err-bd); color:var(--err-fg); }}
   form.inline {{ display:inline; }}
-  .card-header {{ display:flex; justify-content:space-between; align-items:center; gap:.8rem; flex-wrap:wrap; }}
+  .card-header {{ display:flex; justify-content:space-between; align-items:center; gap:1.2rem; flex-wrap:wrap; }}
   .badge {{ display:inline-flex; align-items:center; gap:.35rem; padding:.2rem .6rem; border-radius:999px; font-size:.78rem; font-weight:700; border:1px solid var(--bd); background:var(--bg-alt); }}
   .badge-ok {{ background:var(--ok-bg); color:var(--ok-fg); border-color:var(--ok-bd); }}
   .badge-warn {{ background:var(--warn-bg); color:var(--warn-fg); border-color:var(--warn-bd); }}
   .badge-neutral {{ background:rgba(124,58,237,0.15); color:var(--text); border-color:rgba(124,58,237,0.35); }}
   .status-meta {{ font-size:.8rem; color:var(--muted); margin-top:.2rem; }}
-  .action-stack {{ display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; }}
+  .action-stack {{ display:flex; flex-wrap:wrap; gap:.6rem; align-items:center; }}
   .countdown-ok {{ color:var(--accent); font-weight:700; }}
   .countdown-warn {{ color:var(--err-fg); font-weight:700; }}
   table.sortable-table th[data-sort-type] {{ cursor:pointer; user-select:none; position:relative; padding-right:1.4rem; }}
@@ -124,30 +124,30 @@ class DashboardTemplateMixin:
   table.sortable-table th[data-sort-type][data-sort-dir="asc"]::after {{ content:"↑"; color:var(--accent); }}
   table.sortable-table th[data-sort-type][data-sort-dir="desc"]::after {{ content:"↓"; color:var(--accent); }}
   .filter-form {{ margin-top:.6rem; }}
-  .filter-form .row {{ align-items:flex-end; gap:1rem; }}
+  .filter-form .row {{ align-items:flex-end; gap:1.2rem; }}
   .filter-label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.9rem; color:var(--muted); }}
-  .filter-card {{ margin-top:1rem; }}
-  .filter-row {{ align-items:flex-end; gap:1rem; flex-wrap:wrap; }}
+  .filter-card {{ margin-top:1.4rem; }}
+  .filter-row {{ align-items:flex-end; gap:1.2rem; flex-wrap:wrap; }}
   .filter-row .filter-label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
   .filter-row select {{ background:var(--bg-alt); border:1px solid var(--bd); color:var(--text); padding:.45rem .6rem; border-radius:.6rem; min-width:12rem; }}
-  .add-streamer-card {{ margin-top:1rem; }}
+  .add-streamer-card {{ margin-top:1.4rem; }}
   .add-streamer-card h2 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-3); }}
   .add-streamer-card form {{ display:flex; flex-direction:column; gap:.8rem; }}
-  .add-streamer-card .form-grid {{ display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-end; }}
+  .add-streamer-card .form-grid {{ display:flex; flex-wrap:wrap; gap:1.2rem; align-items:flex-end; }}
   .add-streamer-card label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
   .add-streamer-card input[type="text"] {{ min-width:14rem; }}
-  .add-streamer-card .form-actions {{ display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }}
+  .add-streamer-card .form-actions {{ display:flex; gap:.8rem; align-items:center; flex-wrap:wrap; }}
   .add-streamer-card .hint {{ margin-top:.2rem; font-size:.8rem; color:var(--muted); max-width:38rem; }}
-  .non-partner-card {{ margin-top:1.8rem; padding:1.2rem; background:linear-gradient(160deg, rgba(124,58,237,.2), rgba(244,114,182,.1)); border-radius:1rem; border:1px solid rgba(124,58,237,.35); box-shadow:0 12px 24px var(--shadow); }}
+  .non-partner-card {{ margin-top:2.2rem; padding:1.2rem; background:linear-gradient(160deg, rgba(124,58,237,.2), rgba(244,114,182,.1)); border-radius:1rem; border:1px solid rgba(124,58,237,.35); box-shadow:0 12px 24px var(--shadow); }}
   .non-partner-card h2 {{ margin:0 0 .4rem 0; font-size:1.1rem; color:var(--accent-3); letter-spacing:.01em; }}
   .non-partner-card p {{ margin:0 0 1rem 0; font-size:.85rem; color:var(--muted); }}
-  .non-partner-list {{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.9rem; }}
-  .non-partner-item {{ display:flex; flex-direction:column; gap:.6rem; padding:.9rem 1rem; background:rgba(18,14,30,.9); border:1px solid rgba(124,58,237,.2); border-radius:.8rem; position:relative; overflow:hidden; }}
+  .non-partner-list {{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:1.2rem; }}
+  .non-partner-item {{ display:flex; flex-direction:column; gap:.8rem; padding:.9rem 1rem; background:rgba(18,14,30,.9); border:1px solid rgba(124,58,237,.2); border-radius:.8rem; position:relative; overflow:hidden; }}
   .non-partner-item::before {{ content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; border:1px solid rgba(124,58,237,.45); opacity:0; transition:opacity .2s ease; }}
   .non-partner-item:hover::before {{ opacity:1; }}
-  .non-partner-header {{ display:flex; justify-content:space-between; align-items:center; gap:.6rem; flex-wrap:wrap; }}
+  .non-partner-header {{ display:flex; justify-content:space-between; align-items:center; gap:.8rem; flex-wrap:wrap; }}
   .non-partner-header strong {{ font-size:1rem; color:var(--accent-3); letter-spacing:.01em; }}
-  .non-partner-badges {{ display:flex; gap:.4rem; flex-wrap:wrap; }}
+  .non-partner-badges {{ display:flex; gap:.6rem; flex-wrap:wrap; }}
   .non-partner-meta {{ display:flex; flex-direction:column; gap:.25rem; font-size:.8rem; color:var(--muted); padding-left:.2rem; }}
   .non-partner-meta span {{ display:flex; align-items:center; gap:.45rem; flex-wrap:wrap; }}
   .non-partner-meta .meta-label {{ color:var(--accent); font-weight:700; min-width:5.4rem; text-transform:uppercase; letter-spacing:.06em; font-size:.7rem; }}
@@ -155,28 +155,28 @@ class DashboardTemplateMixin:
   .non-partner-manage {{ background:var(--bg-alt); border:1px solid var(--bd); border-radius:.7rem; padding:.6rem; }}
   .non-partner-manage > summary {{ cursor:pointer; font-size:.8rem; color:var(--accent); font-weight:600; list-style:none; }}
   .non-partner-manage[open] > summary {{ color:var(--accent-3); }}
-  .non-partner-manage .manage-body {{ margin-top:.5rem; display:flex; flex-direction:column; gap:.6rem; }}
-  .non-partner-actions {{ display:flex; flex-wrap:wrap; gap:.4rem; }}
+  .non-partner-manage .manage-body {{ margin-top:.5rem; display:flex; flex-direction:column; gap:.8rem; }}
+  .non-partner-actions {{ display:flex; flex-wrap:wrap; gap:.6rem; }}
   .non-partner-note {{ font-size:.75rem; color:var(--muted); }}
-  .chart-panel {{ background:var(--bg-alt); border:1px solid var(--bd); border-radius:.9rem; padding:1rem; margin-top:1rem; }}
+  .chart-panel {{ background:var(--bg-alt); border:1px solid var(--bd); border-radius:.9rem; padding:1.2rem; margin-top:1.4rem; }}
   .chart-panel h3 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-3); }}
   .chart-panel canvas {{ width:100%; height:320px; max-height:360px; }}
   .chart-note {{ margin-top:.6rem; font-size:.85rem; color:var(--muted); }}
   .chart-empty {{ margin-top:1rem; font-size:.9rem; color:var(--muted); font-style:italic; }}
-  .analysis-controls {{ margin-top:.8rem; }}
-  .user-form {{ margin-top:.8rem; }}
+  .analysis-controls {{ margin-top:1rem; }}
+  .user-form {{ margin-top:1rem; }}
   .user-hint {{ margin-top:.4rem; font-size:.8rem; color:var(--muted); }}
   .user-warning {{ margin-top:.6rem; color:var(--err-fg); font-weight:600; }}
-  .user-summary {{ display:flex; flex-wrap:wrap; gap:.8rem; margin-top:1rem; }}
+  .user-summary {{ display:flex; flex-wrap:wrap; gap:1.2rem; margin-top:1.2rem; }}
   .user-summary-item {{ background:var(--bg-alt); border:1px solid var(--bd); border-radius:.7rem; padding:.6rem .9rem; min-width:140px; }}
   .user-summary-item .label {{ display:block; color:var(--muted); font-size:.8rem; }}
   .user-summary-item .value {{ display:block; color:var(--accent-3); font-size:1.05rem; font-weight:700; }}
-  .user-meta {{ margin-top:.6rem; font-size:.85rem; color:var(--muted); }}
+  .user-meta {{ margin-top:.8rem; font-size:.85rem; color:var(--muted); }}
   .user-meta strong {{ color:var(--accent-3); font-weight:700; }}
-  .user-chart-grid {{ display:flex; flex-wrap:wrap; gap:1rem; margin-top:1rem; }}
-  .user-chart-panel {{ flex:1 1 280px; }}
+  .user-chart-grid {{ display:flex; flex-wrap:wrap; gap:1.4rem; margin-top:1.4rem; }}
+  .user-chart-panel {{ flex:1 1 300px; }}
   .user-section-empty {{ margin-top:1rem; font-size:.9rem; color:var(--muted); font-style:italic; }}
-  .toggle-group {{ display:flex; gap:.4rem; flex-wrap:wrap; }}
+  .toggle-group {{ display:flex; gap:.6rem; flex-wrap:wrap; }}
   .btn-active {{ background:var(--accent); color:#fff; border:1px solid var(--accent); }}
   .discord-status {{ display:flex; flex-direction:column; gap:.3rem; }}
   .discord-icon {{ font-weight:700; }}
@@ -212,7 +212,7 @@ class DashboardTemplateMixin:
     padding:.6rem;
     display:flex;
     flex-direction:column;
-    gap:.5rem;
+    gap:.6rem;
   }}
   .discord-inline-body label {{
     display:flex;
@@ -226,27 +226,27 @@ class DashboardTemplateMixin:
   }}
   .discord-inline-body .form-actions {{
     display:flex;
-    gap:.4rem;
+    gap:.6rem;
   }}
-  details.advanced-details {{ margin-top:.4rem; width:100%; }}
+  details.advanced-details {{ margin-top:.6rem; width:100%; }}
   details.advanced-details > summary {{ cursor:pointer; font-size:.85rem; color:var(--accent); }}
   details.advanced-details[open] > summary {{ color:var(--accent-3); }}
-  .advanced-content {{ margin-top:.6rem; display:flex; flex-direction:column; gap:.7rem; background:var(--bg-alt); padding:.6rem .7rem; border:1px solid var(--bd); border-radius:.6rem; }}
-  .advanced-content .form-row {{ display:flex; flex-wrap:wrap; gap:.8rem; align-items:flex-end; }}
+  .advanced-content {{ margin-top:.8rem; display:flex; flex-direction:column; gap:.8rem; background:var(--bg-alt); padding:.8rem; border:1px solid var(--bd); border-radius:.6rem; }}
+  .advanced-content .form-row {{ display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-end; }}
   .advanced-content label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
   .advanced-content input[type="text"] {{ background:var(--bg-alt); border:1px solid var(--bd); color:var(--text); padding:.4rem .6rem; border-radius:.5rem; min-width:14rem; }}
-  .discord-preview {{ display:flex; flex-direction:column; gap:.35rem; padding:.5rem .6rem; background:var(--bg-alt); border:1px solid var(--bd); border-radius:.5rem; font-size:.8rem; color:var(--muted); }}
-  .discord-preview-row {{ display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }}
+  .discord-preview {{ display:flex; flex-direction:column; gap:.4rem; padding:.6rem; background:var(--bg-alt); border:1px solid var(--bd); border-radius:.5rem; font-size:.8rem; color:var(--muted); }}
+  .discord-preview-row {{ display:flex; gap:.8rem; align-items:center; flex-wrap:wrap; }}
   .discord-preview-row .preview-label {{ color:var(--accent); font-weight:700; min-width:4.5rem; }}
   .discord-preview-row .preview-empty {{ color:var(--muted); font-style:italic; }}
-  .checkbox-label {{ display:flex; align-items:center; gap:.4rem; font-size:.85rem; color:var(--muted); }}
+  .checkbox-label {{ display:flex; align-items:center; gap:.6rem; font-size:.85rem; color:var(--muted); }}
   .checkbox-label input[type="checkbox"] {{ width:1rem; height:1rem; }}
   .advanced-content .hint {{ font-size:.75rem; color:var(--muted); }}
-  .hero {{ display:flex; justify-content:space-between; align-items:flex-end; gap:1.5rem; flex-wrap:wrap; margin:0 0 1.6rem 0; }}
-  .hero-actions {{ display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; }}
+  .hero {{ display:flex; justify-content:space-between; align-items:flex-end; gap:2rem; flex-wrap:wrap; margin:0 0 2rem 0; }}
+  .hero-actions {{ display:flex; gap:.8rem; flex-wrap:wrap; align-items:center; }}
   .eyebrow {{ text-transform:uppercase; letter-spacing:.18em; font-size:.7rem; color:var(--muted); margin:0 0 .4rem 0; }}
   .lead {{ margin:.4rem 0 0 0; color:var(--muted); max-width:32rem; }}
-  .panel-grid {{ display:grid; gap:1.8rem; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); }}
+  .panel-grid {{ display:grid; gap:2.2rem; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); }}
   .panel-grid .card {{ margin-top:0; animation: rise .6s ease both; }}
   .panel-grid .card:nth-child(2) {{ animation-delay:.08s; }}
   .panel-grid .card:nth-child(3) {{ animation-delay:.16s; }}
@@ -256,15 +256,15 @@ class DashboardTemplateMixin:
   .pill {{ display:inline-flex; align-items:center; gap:.4rem; padding:.35rem .6rem; border-radius:999px; background:var(--bg-alt); border:1px solid var(--bd); font-size:.75rem; color:var(--muted); font-weight:700; }}
   .pill.ok {{ background:var(--ok-bg); border-color:var(--ok-bd); color:var(--ok-fg); }}
   .pill.warn {{ background:var(--warn-bg); border-color:var(--warn-bd); color:var(--warn-fg); }}
-  .chip {{ display:inline-flex; align-items:center; gap:.3rem; padding:.25rem .55rem; border-radius:999px; background:var(--chip-bg); color:var(--text); border:1px solid rgba(124,58,237,.35); font-size:.75rem; font-weight:600; }}
-  .raid-form {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:.8rem; align-items:end; margin-top:.8rem; }}
+  .chip {{ display:inline-flex; align-items:center; gap:.4rem; padding:.25rem .55rem; border-radius:999px; background:var(--chip-bg); color:var(--text); border:1px solid rgba(124,58,237,.35); font-size:.75rem; font-weight:600; }}
+  .raid-form {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:1rem; align-items:end; margin-top:1rem; }}
   .raid-form label {{ display:flex; flex-direction:column; gap:.35rem; font-size:.85rem; color:var(--muted); }}
-  .raid-meta {{ display:flex; flex-wrap:wrap; gap:.5rem; margin-top:.8rem; }}
-  .raid-metrics {{ display:flex; flex-wrap:wrap; gap:.8rem; margin-top:.6rem; }}
-  .mini-stat {{ background:var(--bg-alt); border:1px solid var(--bd); border-radius:.7rem; padding:.5rem .7rem; display:flex; flex-direction:column; min-width:120px; }}
+  .raid-meta {{ display:flex; flex-wrap:wrap; gap:.6rem; margin-top:1rem; }}
+  .raid-metrics {{ display:flex; flex-wrap:wrap; gap:1rem; margin-top:.8rem; }}
+  .mini-stat {{ background:var(--bg-alt); border:1px solid var(--bd); border-radius:.7rem; padding:.6rem .8rem; display:flex; flex-direction:column; min-width:120px; }}
   .mini-stat strong {{ font-size:1.1rem; color:var(--accent-3); }}
   .mini-stat span {{ font-size:.75rem; color:var(--muted); }}
-  .raid-cell {{ display:flex; flex-direction:column; gap:.35rem; align-items:flex-start; }}
+  .raid-cell {{ display:flex; flex-direction:column; gap:.4rem; align-items:flex-start; }}
   @keyframes rise {{
     from {{ opacity:0; transform: translateY(12px); }}
     to {{ opacity:1; transform: translateY(0); }}
@@ -328,7 +328,7 @@ class DashboardTemplateMixin:
             <canvas id="streamerChart"></canvas>
         </div>
 
-        <div class="card" style="margin-top: 1rem;">
+        <div class="card" style="margin-top: 1.4rem;">
             <h3>Recent Sessions</h3>
             <table>
                 <thead>
@@ -419,7 +419,7 @@ class DashboardTemplateMixin:
             <h1>Session Analysis</h1>
             <a href="/twitch/streamer/{s['streamer_login']}" class="btn btn-secondary btn-small">← Back to Streamer</a>
         </div>
-        <div class="card" style="margin-top: 1rem;">
+        <div class="card" style="margin-top: 1.4rem;">
              <div class="row">
                 <div class="discord-cell">
                     <span class="label" style="color:var(--muted)">Streamer</span>
@@ -553,7 +553,7 @@ class DashboardTemplateMixin:
             <canvas id="topChart"></canvas>
         </div>
 
-        <div class="card" style="margin-top: 1rem;">
+        <div class="card" style="margin-top: 1.4rem;">
             <h3>Top Streamers Table</h3>
             <table>
                 <thead>

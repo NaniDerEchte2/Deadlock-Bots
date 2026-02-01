@@ -487,7 +487,7 @@ class DashboardStatsMixin:
         )
 
         hour_tables_block = (
-            '<div class="row" style="gap:1.2rem; flex-wrap:wrap;">'
+            '<div class="row" style="gap:1.4rem; flex-wrap:wrap;">'
             '  <div style="flex:1 1 260px;">'
             '    <h3>Deadlock Kategorie — nach Stunde</h3>'
             '    <table class="sortable-table" data-table="category-hour">'
@@ -520,7 +520,7 @@ class DashboardStatsMixin:
         )
 
         weekday_tables_block = (
-            '<div class="row" style="gap:1.2rem; flex-wrap:wrap;">'
+            '<div class="row" style="gap:1.4rem; flex-wrap:wrap;">'
             '  <div style="flex:1 1 260px;">'
             '    <h3>Deadlock Kategorie — nach Wochentag</h3>'
             '    <table class="sortable-table" data-table="category-weekday">'
@@ -1202,7 +1202,7 @@ class DashboardStatsMixin:
             drop_table_rows = "<tr><td colspan=4><i>Keine markanten Drop-Offs.</i></td></tr>"
 
         retention_card = f"""
-<div class="card" style="margin-top:1.2rem;">
+<div class="card" style="margin-top:1.4rem;">
   <div class="card-header">
     <h2>Retention & Drop-Off</h2>
     <div class="status-meta">Letzte 30 Tage • Sessions: {ret_sessions}</div>
@@ -1239,7 +1239,7 @@ class DashboardStatsMixin:
             f"30d Returning: {_fmt_int(disc_ret30.get('returning'))}/{_fmt_int(disc_ret30.get('total'))}"
         )
         discovery_card = f"""
-<div class="card" style="margin-top:1.0rem;">
+<div class="card" style="margin-top:1.4rem;">
   <div class="card-header">
     <h2>Discovery Funnel</h2>
     <div class="status-meta">{discovery_meta}</div>
@@ -1273,7 +1273,7 @@ class DashboardStatsMixin:
             peak_list = "<div class='status-meta' style='margin-top:.4rem;'>Keine Chat-Peaks in den letzten 30 Tagen.</div>"
 
         chat_card = f"""
-<div class="card" style="margin-top:1.0rem;">
+<div class="card" style="margin-top:1.4rem;">
   <div class="card-header">
     <h2>Chat-Gesundheit</h2>
     <div class="status-meta">Engagement pro Session</div>
@@ -1295,7 +1295,7 @@ class DashboardStatsMixin:
                 for row in content_perf
             )
             content_card = f"""
-<div class="card" style="margin-top:1.0rem;">
+<div class="card" style="margin-top:1.4rem;">
   <div class="card-header">
     <h2>Content Performance (Top 20 Sessions)</h2>
     <div class="status-meta">Titel & Benachrichtigungen vs. Peak Viewer & Engagement (Peak/Follower)</div>
@@ -1372,7 +1372,7 @@ class DashboardStatsMixin:
 
 {insights_html}
 
-<div class="card" style="margin-top:1.2rem;">
+<div class="card" style="margin-top:1.4rem;">
   <div class="card-header">
     <h2>Analyse</h2>
     {focus_toggle_html}
@@ -1380,7 +1380,7 @@ class DashboardStatsMixin:
   {analysis_content}
 </div>
 
-<div class="card" style="margin-top:1.2rem;">
+<div class="card" style="margin-top:1.4rem;">
   <div class="card-header">
     <h2>Top Partner Streamer (Tracked)</h2>
     <div class="row" style="gap:.6rem; align-items:center;">
@@ -1403,7 +1403,7 @@ class DashboardStatsMixin:
   </table>
 </div>
 
-<div class="card" style="margin-top:1.2rem;">
+<div class="card" style="margin-top:1.4rem;">
   <div class="card-header">
     <h2>Top Deadlock Streamer (Kategorie gesamt)</h2>
     <div style="color:var(--muted); font-size:.9rem;">Ansicht: {current_view_label}</div>

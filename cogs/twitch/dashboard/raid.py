@@ -220,9 +220,9 @@ class DashboardRaidMixin:
             <head>
                 <title>Raid History</title>
                 <style>
-                    body {{ font-family: sans-serif; margin: 20px; }}
+                    body {{ font-family: sans-serif; margin: 32px; }}
                     table {{ border-collapse: collapse; width: 100%; }}
-                    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                    th, td {{ border: 1px solid #ddd; padding: 12px 10px; text-align: left; }}
                     th {{ background-color: #9146FF; color: white; }}
                     tr:nth-child(even) {{ background-color: #f2f2f2; }}
                 </style>

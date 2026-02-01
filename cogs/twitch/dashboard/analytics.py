@@ -149,8 +149,8 @@ class DashboardAnalyticsMixin:
     padding: 1.4rem;
     box-shadow: 0 22px 46px rgba(0,0,0,0.45);
   }
-  .grid { display:grid; gap:0.9rem; }
-  .kpi-grid { display:grid; gap:0.8rem; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); }
+  .grid { display:grid; gap:1.2rem; }
+  .kpi-grid { display:grid; gap:1.2rem; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); }
   .kpi { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:0.9rem 1rem; position:relative; overflow:hidden; }
   .kpi::after { content:''; position:absolute; inset:0; background:linear-gradient(145deg, rgba(83,176,248,0.06), rgba(125,241,197,0.05)); opacity:0.6; pointer-events:none; }
   .kpi h4 { margin:0 0 .25rem 0; font-size:0.95rem; color:var(--muted); letter-spacing:0.01em; }
@@ -159,8 +159,8 @@ class DashboardAnalyticsMixin:
   .pill { display:inline-flex; align-items:center; gap:0.4rem; padding:0.55rem 0.85rem; border-radius:12px; border:1px solid var(--border); background:#0d1427; color:var(--text); font-weight:700; letter-spacing:0.01em; }
   .pill.primary { background:linear-gradient(120deg, #53b0f8, #7df1c5); color:#04101b; border:none; }
   .pill.ghost { background:transparent; }
-  .panel { background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:1rem 1.1rem; }
-  .panel-header { display:flex; justify-content:space-between; align-items:flex-start; gap:0.8rem; margin-bottom:0.7rem; }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:1.2rem 1.4rem; }
+  .panel-header { display:flex; justify-content:space-between; align-items:flex-start; gap:1.2rem; margin-bottom:1rem; }
   .panel-header .meta { display:flex; flex-direction:column; gap:0.2rem; }
   .eyebrow { text-transform:uppercase; letter-spacing:0.09em; font-size:0.75rem; color:var(--muted); margin:0; }
   .title { margin:0; font-size:1.18rem; letter-spacing:0.01em; }
@@ -172,11 +172,11 @@ class DashboardAnalyticsMixin:
   .badge.ok { color:#8ff2cd; border-color:rgba(125,241,197,0.5); }
   .badge.warn { color:#f0c674; border-color:rgba(240,198,116,0.4); }
   .badge.err { color:#f87171; border-color:rgba(248,113,113,0.5); }
-  .controls { display:flex; flex-wrap:wrap; gap:0.7rem; align-items:flex-end; }
+  .controls { display:flex; flex-wrap:wrap; gap:0.9rem; align-items:flex-end; }
   .field { display:flex; flex-direction:column; gap:0.3rem; font-size:0.9rem; color:var(--muted); }
   .field input, .field select { background:#0a1020; border:1px solid var(--border); color:var(--text); padding:0.55rem 0.65rem; border-radius:10px; min-width:11rem; }
-  .stack { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:0.9rem; }
-  .insights { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:0.65rem; }
+  .stack { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:1.4rem; }
+  .insights { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1rem; }
   .insight { background:#0a101d; border:1px solid var(--border); border-radius:12px; padding:0.75rem 0.85rem; }
   .insight h5 { margin:0 0 .2rem 0; font-size:1rem; }
   .insight p { margin:0; color:var(--muted); font-size:0.9rem; line-height:1.4; }
@@ -189,10 +189,10 @@ class DashboardAnalyticsMixin:
   tr:hover td { background:rgba(83,176,248,0.05); }
   .scorecard { display:flex; flex-direction:column; gap:0.25rem; }
   .scorecard strong { font-size:1.4rem; }
-  .row { display:flex; flex-wrap:wrap; gap:0.6rem; align-items:center; }
+  .row { display:flex; flex-wrap:wrap; gap:0.8rem; align-items:center; }
   .tiny { font-size:0.82rem; color:var(--muted); }
   .chip { background:rgba(83,176,248,0.08); color:#c9e9ff; border:1px solid rgba(83,176,248,0.35); border-radius:999px; padding:0.25rem 0.6rem; font-weight:700; font-size:0.8rem; }
-  .seg-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:0.6rem; }
+  .seg-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1rem; }
   .seg-card { border:1px dashed var(--border); border-radius:10px; padding:0.7rem 0.8rem; background:#0b111f; }
   .seg-card h6 { margin:0; font-size:0.95rem; }
   .seg-card .value { font-size:1.2rem; font-weight:800; }

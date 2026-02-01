@@ -591,7 +591,7 @@ class DashboardLiveMixin:
         )
 
         table_html = f"""
-<div class="card table-card">
+<div class="card table-card" style="margin-top: 1.4rem;">
   <div class="table-wrap">
     <table>
       <thead>
