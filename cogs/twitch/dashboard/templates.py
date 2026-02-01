@@ -45,34 +45,34 @@ class DashboardTemplateMixin:
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600;700&family=Space+Grotesk:wght@400;500;600&display=swap');
   :root {{
-    color-scheme: light;
-    --bg:#f6f1e9; --bg-alt:#fbf7f0; --card:#fffdf8; --bd:#e3d7c7; --text:#1f1a14; --muted:#6f6254;
-    --accent:#0f766e; --accent-2:#e07a5f; --accent-3:#1f2a30;
-    --ok-bg:#e3f5ea; --ok-bd:#7bc99c; --ok-fg:#195c3a;
-    --err-bg:#fde7e7; --err-bd:#f2b2b2; --err-fg:#8f1d1d;
-    --warn-bg:#fff3dc; --warn-bd:#f5c17a; --warn-fg:#8a4b0e;
-    --shadow:rgba(40,32,20,.12); --shadow-strong:rgba(40,32,20,.18);
-    --chip-bg:rgba(15,118,110,.12);
+    color-scheme: dark;
+    --bg:#0b0a14; --bg-alt:#141226; --card:#1b1630; --bd:#2c2349; --text:#f2edff; --muted:#a394c7;
+    --accent:#7c3aed; --accent-2:#f472b6; --accent-3:#d6ccff;
+    --ok-bg:#0f2f24; --ok-bd:#1f9d7a; --ok-fg:#baf7dd;
+    --err-bg:#3b0f1c; --err-bd:#b91c1c; --err-fg:#fecaca;
+    --warn-bg:#2f210b; --warn-bd:#d97706; --warn-fg:#fde68a;
+    --shadow:rgba(0,0,0,.45); --shadow-strong:rgba(0,0,0,.6);
+    --chip-bg:rgba(124,58,237,.18);
   }}
   * {{ box-sizing: border-box; }}
   body {{
     font-family: "Space Grotesk", "Segoe UI", sans-serif;
     max-width: 1320px;
     margin: 0 auto;
-    padding: 2.4rem 1.6rem 3rem;
+    padding: 2.6rem 1.8rem 3.4rem;
     color:var(--text);
     background:
-      radial-gradient(1200px 600px at 10% -10%, rgba(15,118,110,0.16), transparent 60%),
-      radial-gradient(900px 600px at 90% 0%, rgba(224,122,95,0.14), transparent 55%),
-      linear-gradient(180deg, #fbf7f0 0%, #f3e9d9 100%);
+      radial-gradient(900px 540px at 5% -10%, rgba(124,58,237,0.35), transparent 60%),
+      radial-gradient(900px 540px at 95% 0%, rgba(244,114,182,0.22), transparent 55%),
+      linear-gradient(180deg, #0b0a14 0%, #100c1f 55%, #0b0a14 100%);
     position: relative;
   }}
   body::before {{
     content:"";
     position:fixed;
     inset:0;
-    background: repeating-linear-gradient(135deg, rgba(25,18,9,0.04) 0 1px, transparent 1px 12px);
-    opacity:0.25;
+    background: repeating-linear-gradient(135deg, rgba(255,255,255,0.04) 0 1px, transparent 1px 14px);
+    opacity:0.2;
     pointer-events:none;
     z-index:0;
   }}
@@ -84,24 +84,24 @@ class DashboardTemplateMixin:
   .tabs {{ display:flex; gap:.6rem; margin:0 0 1.4rem 0; flex-wrap:wrap; }}
   .tab {{ padding:.55rem .9rem; border-radius:999px; text-decoration:none; color:var(--text); background:var(--card); border:1px solid var(--bd); box-shadow:0 6px 12px var(--shadow); font-weight:600; transition:transform .15s ease, box-shadow .15s ease, background .15s ease; }}
   .tab:hover {{ transform: translateY(-1px); box-shadow:0 10px 18px var(--shadow-strong); }}
-  .tab.active {{ background:linear-gradient(135deg, rgba(15,118,110,.18), rgba(15,118,110,.05)); border-color:rgba(15,118,110,.5); color:var(--accent-3); }}
-  .tab.tab-admin {{ margin-left:auto; background:linear-gradient(135deg, rgba(224,122,95,.2), rgba(224,122,95,.05)); border-color:rgba(224,122,95,.5); font-weight:700; }}
-  .tab.tab-admin:hover {{ background:linear-gradient(135deg, rgba(224,122,95,.3), rgba(224,122,95,.08)); }}
+  .tab.active {{ background:linear-gradient(135deg, rgba(124,58,237,.35), rgba(124,58,237,.08)); border-color:rgba(124,58,237,.6); color:var(--text); }}
+  .tab.tab-admin {{ margin-left:auto; background:linear-gradient(135deg, rgba(244,114,182,.28), rgba(244,114,182,.08)); border-color:rgba(244,114,182,.55); font-weight:700; }}
+  .tab.tab-admin:hover {{ background:linear-gradient(135deg, rgba(244,114,182,.4), rgba(244,114,182,.12)); }}
   .card {{ background:var(--card); border:1px solid var(--bd); border-radius:1rem; padding:1.1rem; box-shadow:0 12px 30px var(--shadow); }}
   .row {{ display:flex; gap:1rem; align-items:center; flex-wrap:wrap; }}
-  .btn {{ background:var(--accent); color:white; border:none; padding:.55rem .9rem; border-radius:.65rem; cursor:pointer; font-weight:600; letter-spacing:.01em; box-shadow:0 8px 16px rgba(15,118,110,.25); transition:transform .15s ease, box-shadow .15s ease; }}
-  .btn:hover {{ transform: translateY(-1px); box-shadow:0 12px 20px rgba(15,118,110,.28); }}
+  .btn {{ background:var(--accent); color:white; border:none; padding:.55rem .9rem; border-radius:.65rem; cursor:pointer; font-weight:600; letter-spacing:.01em; box-shadow:0 10px 18px rgba(124,58,237,.35); transition:transform .15s ease, box-shadow .15s ease; }}
+  .btn:hover {{ transform: translateY(-1px); box-shadow:0 14px 24px rgba(124,58,237,.45); }}
   .btn:disabled {{ opacity:.6; cursor:not-allowed; box-shadow:none; }}
   .btn-small {{ padding:.35rem .6rem; font-size:.85rem; }}
   .btn-secondary {{ background:var(--bg-alt); color:var(--accent-3); border:1px solid var(--bd); box-shadow:none; }}
   .btn-danger {{ background:#b42318; }}
   .btn-warn {{ background:#d97706; color:#fff; }}
   .btn-ghost {{ background:transparent; color:var(--accent); border:1px dashed var(--bd); box-shadow:none; }}
-  .btn-ghost:hover {{ background:rgba(15,118,110,0.08); box-shadow:none; }}
+  .btn-ghost:hover {{ background:rgba(124,58,237,0.12); box-shadow:none; }}
   table {{ width:100%; border-collapse: collapse; }}
   th, td {{ border-bottom:1px solid var(--bd); padding:.75rem .6rem; text-align:left; vertical-align: top; }}
   th {{ color:var(--accent-3); text-transform:uppercase; letter-spacing:.08em; font-size:.75rem; }}
-  tr:hover td {{ background:rgba(15,118,110,0.05); }}
+  tr:hover td {{ background:rgba(124,58,237,0.08); }}
   input[type="text"] {{ background:var(--bg-alt); border:1px solid var(--bd); color:var(--text); padding:.5rem .65rem; border-radius:.6rem; width:28rem; }}
   input[type="number"], select {{ background:var(--bg-alt); border:1px solid var(--bd); color:var(--text); padding:.5rem .65rem; border-radius:.6rem; }}
   input:disabled, select:disabled {{ opacity:.65; cursor:not-allowed; }}
@@ -138,12 +138,12 @@ class DashboardTemplateMixin:
   .add-streamer-card input[type="text"] {{ min-width:14rem; }}
   .add-streamer-card .form-actions {{ display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }}
   .add-streamer-card .hint {{ margin-top:.2rem; font-size:.8rem; color:var(--muted); max-width:38rem; }}
-  .non-partner-card {{ margin-top:1.8rem; padding:1.2rem; background:linear-gradient(160deg, rgba(15,118,110,.16), rgba(224,122,95,.08)); border-radius:1rem; border:1px solid rgba(15,118,110,.25); box-shadow:0 12px 24px var(--shadow); }}
+  .non-partner-card {{ margin-top:1.8rem; padding:1.2rem; background:linear-gradient(160deg, rgba(124,58,237,.2), rgba(244,114,182,.1)); border-radius:1rem; border:1px solid rgba(124,58,237,.35); box-shadow:0 12px 24px var(--shadow); }}
   .non-partner-card h2 {{ margin:0 0 .4rem 0; font-size:1.1rem; color:var(--accent-3); letter-spacing:.01em; }}
   .non-partner-card p {{ margin:0 0 1rem 0; font-size:.85rem; color:var(--muted); }}
   .non-partner-list {{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.9rem; }}
-  .non-partner-item {{ display:flex; flex-direction:column; gap:.6rem; padding:.9rem 1rem; background:rgba(255,253,248,.92); border:1px solid rgba(15,118,110,.15); border-radius:.8rem; position:relative; overflow:hidden; }}
-  .non-partner-item::before {{ content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; border:1px solid rgba(15,118,110,.3); opacity:0; transition:opacity .2s ease; }}
+  .non-partner-item {{ display:flex; flex-direction:column; gap:.6rem; padding:.9rem 1rem; background:rgba(18,14,30,.9); border:1px solid rgba(124,58,237,.2); border-radius:.8rem; position:relative; overflow:hidden; }}
+  .non-partner-item::before {{ content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; border:1px solid rgba(124,58,237,.45); opacity:0; transition:opacity .2s ease; }}
   .non-partner-item:hover::before {{ opacity:1; }}
   .non-partner-header {{ display:flex; justify-content:space-between; align-items:center; gap:.6rem; flex-wrap:wrap; }}
   .non-partner-header strong {{ font-size:1rem; color:var(--accent-3); letter-spacing:.01em; }}
@@ -256,7 +256,7 @@ class DashboardTemplateMixin:
   .pill {{ display:inline-flex; align-items:center; gap:.4rem; padding:.35rem .6rem; border-radius:999px; background:var(--bg-alt); border:1px solid var(--bd); font-size:.75rem; color:var(--muted); font-weight:700; }}
   .pill.ok {{ background:var(--ok-bg); border-color:var(--ok-bd); color:var(--ok-fg); }}
   .pill.warn {{ background:var(--warn-bg); border-color:var(--warn-bd); color:var(--warn-fg); }}
-  .chip {{ display:inline-flex; align-items:center; gap:.3rem; padding:.25rem .55rem; border-radius:999px; background:var(--chip-bg); color:var(--accent-3); border:1px solid rgba(15,118,110,.2); font-size:.75rem; font-weight:600; }}
+  .chip {{ display:inline-flex; align-items:center; gap:.3rem; padding:.25rem .55rem; border-radius:999px; background:var(--chip-bg); color:var(--text); border:1px solid rgba(124,58,237,.35); font-size:.75rem; font-weight:600; }}
   .raid-form {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:.8rem; align-items:end; margin-top:.8rem; }}
   .raid-form label {{ display:flex; flex-direction:column; gap:.35rem; font-size:.85rem; color:var(--muted); }}
   .raid-meta {{ display:flex; flex-wrap:wrap; gap:.5rem; margin-top:.8rem; }}
