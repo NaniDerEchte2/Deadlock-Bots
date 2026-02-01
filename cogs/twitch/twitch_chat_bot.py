@@ -354,6 +354,22 @@ if TWITCHIO_AVAILABLE:
                 log.exception("_ensure_bot_is_mod: Exception beim Setzen als Mod in %s", broadcaster_login)
                 return False
 
+        async def _ensure_bot_token_registered(self) -> None:
+            """Stellt sicher, dass der Bot-Token in TwitchIO registriert ist.
+
+            subscribe_websocket() nutzt intern den Token, der über add_token()
+            registriert wurde.  Falls setup_hook() noch nicht fertig war oder der
+            Token zwischenzeitlich refreshed wurde, kann dieser fehlen.  Wir
+            registrieren ihn hier nochmal, um die Fehlerquelle zu eliminieren.
+            """
+            api_token = (self._bot_token or "").replace("oauth:", "").strip()
+            if not api_token:
+                return
+            try:
+                await self.add_token(api_token, self._bot_refresh_token)
+            except Exception:
+                log.debug("_ensure_bot_token_registered: add_token fehlgeschlagen", exc_info=True)
+
         async def join(self, channel_login: str, channel_id: Optional[str] = None):
             """Joint einen Channel via EventSub (TwitchIO 3.x)."""
             try:
@@ -375,6 +391,12 @@ if TWITCHIO_AVAILABLE:
                 # Das hält die Anzahl der WebSocket-Verbindungen auf 1 (Limit bei Twitch ist 3 pro Client ID).
                 # Voraussetzung: Der Bot muss Moderator im Ziel-Kanal sein.
                 safe_bot_id = self.bot_id_safe or self.bot_id or ""
+
+                # Token vor dem Subscribe sicherstellen – verhindert
+                # "invalid transport and auth combination" wenn setup_hook()
+                # noch nicht vollständig abgeschlossen war.
+                await self._ensure_bot_token_registered()
+
                 payload = eventsub.ChatMessageSubscription(
                     broadcaster_user_id=str(channel_id), 
                     user_id=str(safe_bot_id)
@@ -387,6 +409,29 @@ if TWITCHIO_AVAILABLE:
                 return True
             except Exception as e:
                 msg = str(e)
+                if "invalid transport and auth combination" in msg:
+                    # Token war zum Zeitpunkt des ersten Versuchs noch nicht
+                    # gebunden.  Kurz warten, Token nochmal registrieren und
+                    # einmal erneut versuchen.
+                    log.warning(
+                        "join(): 'invalid transport and auth combination' für %s – "
+                        "Token wird neu registriert und ein Retry folgt.",
+                        channel_login,
+                    )
+                    await asyncio.sleep(1)
+                    await self._ensure_bot_token_registered()
+                    try:
+                        payload = eventsub.ChatMessageSubscription(
+                            broadcaster_user_id=str(channel_id),
+                            user_id=str(safe_bot_id)
+                        )
+                        await self.subscribe_websocket(payload=payload)
+                        self._monitored_streamers.add(normalized_login)
+                        log.info("join(): Retry erfolgreich für %s nach Token-Registrierung", channel_login)
+                        return True
+                    except Exception as retry_err:
+                        log.error("join(): Retry für %s fehlgeschlagen: %s", channel_login, retry_err)
+                    return False
                 if "403" in msg and "subscription missing proper authorization" in msg:
                     # Automatischer Retry: Bot als Mod setzen und nochmal versuchen
                     log.info(

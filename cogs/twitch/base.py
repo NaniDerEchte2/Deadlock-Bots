@@ -658,17 +658,13 @@ class TwitchBaseCog(commands.Cog):
         unsubscribed = 0
 
         try:
-            subs = await chat_bot.fetch_eventsub_subscriptions()
-            # EventsubSubscriptions ist ein Objekt, kein iterable - extrahiere subscriptions list
+            subs = chat_bot.fetch_eventsub_subscriptions()
+            # fetch_eventsub_subscriptions() gibt ein HTTPAsyncIterator zurück
+            # → zwingend "async for" verwenden, kein await auf die Methode selbst
             subs_list = []
-            if subs and hasattr(subs, 'subscriptions'):
-                subs_list = subs.subscriptions
-            elif subs and hasattr(subs, '__iter__'):
-                try:
-                    subs_list = list(subs)
-                except TypeError:
-                    subs_list = []
-            
+            async for sub in subs:
+                subs_list.append(sub)
+
             for sub in subs_list:
                 try:
                     sub_type = getattr(sub, "type", "") or getattr(sub, "subscription_type", "")
