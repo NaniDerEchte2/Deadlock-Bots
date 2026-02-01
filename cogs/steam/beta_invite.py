@@ -1427,7 +1427,7 @@ class BetaInviteFlow(commands.Cog):
         )
 
         invite_timeout_ms = 30000
-        gc_ready_timeout_ms = 20000
+        gc_ready_timeout_ms = 40000
         invite_attempts = 1
         gc_ready_attempts = 1
         runtime_budget_ms = (
@@ -1549,7 +1549,7 @@ class BetaInviteFlow(commands.Cog):
                 last_error=str(error_text),
             )
             await interaction.followup.send(
-                f"⚠️ Ein Problem ist aufgetreten - der Invite hat nicht geklappt. Bitte wende dich an {BETA_INVITE_SUPPORT_CONTACT}.",
+                f"❌ Einladung fehlgeschlagen:\n**{error_text}**\n\nFalls du denkst, dass das ein Fehler ist, melde dich bitte bei {BETA_INVITE_SUPPORT_CONTACT}.",
                 ephemeral=True,
             )
             _trace(

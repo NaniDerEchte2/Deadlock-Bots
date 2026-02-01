@@ -101,7 +101,7 @@ class DeadlockGcBot {
     this.cachedLegacyHello = null;
 
     // Default fallback
-    const fallback = 21693781;
+    const fallback = 21709122;
     
     // 1. Check ENV
     if (process.env.DEADLOCK_SESSION_NEED) {
@@ -131,6 +131,7 @@ class DeadlockGcBot {
     if (!this.client || typeof this.client.getProductInfo !== 'function') return false;
 
     return new Promise((resolve) => {
+      this.log('info', 'refreshGameVersion: Requesting ProductInfo', { appId });
       this.client.getProductInfo([appId], [], (err, apps) => {
         if (err) {
           this.log('warn', 'Failed to auto-update game version', { error: err && err.message ? err.message : String(err) });
@@ -138,9 +139,22 @@ class DeadlockGcBot {
           return;
         }
 
+        this.log('debug', 'refreshGameVersion: Received ProductInfo response', { 
+          appId, 
+          hasApps: !!apps, 
+          appKeys: apps ? Object.keys(apps) : [] 
+        });
+
         try {
           const app = apps && apps[appId] ? apps[appId] : null;
+          if (!app) {
+             this.log('warn', 'refreshGameVersion: App not found in response', { appId });
+             resolve(false);
+             return;
+          }
+          
           const buildId = app?.appinfo?.depots?.branches?.public?.buildid;
+          this.log('debug', 'refreshGameVersion: Extracted buildId', { buildId, currentVersion: this.sessionNeed });
 
           if (buildId) {
             const numericId = parseInt(buildId, 10);
@@ -160,6 +174,10 @@ class DeadlockGcBot {
                   const dataDir = path.dirname(VERSION_CACHE_PATH);
                   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
                   fs.writeFileSync(VERSION_CACHE_PATH, String(this.sessionNeed), 'utf8');
+                  
+                  this.log('info', 'New game version detected - restarting service to apply changes...');
+                  // Exit to trigger a restart (managed by PM2/Systemd/Docker)
+                  process.exit(0);
                 } catch (cacheErr) {
                   this.log('warn', 'Failed to save version to cache', { error: cacheErr.message });
                 }

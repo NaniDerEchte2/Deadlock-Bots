@@ -1636,12 +1636,12 @@ async function waitForDeadlockGcReady(timeoutMs = DEFAULT_GC_READY_TIMEOUT_MS, o
 
 const PLAYTEST_RESPONSE_MAP = {
   0: { key: 'eResponse_Success', message: 'Einladung erfolgreich übermittelt.' },
-  1: { key: 'eResponse_InternalError', message: 'Interner Fehler beim Game Coordinator.' },
-  3: { key: 'eResponse_InvalidFriend', message: 'Zielkonto ist kein bestätigter Steam-Freund.' },
-  4: { key: 'eResponse_NotFriendsLongEnough', message: 'Freundschaft besteht noch keine 30 Tage.' },
-  5: { key: 'eResponse_AlreadyHasGame', message: 'Account besitzt Deadlock bereits.' },
-  6: { key: 'eResponse_LimitedUser', message: 'Zielkonto ist eingeschränkt (Limited User).' },
-  7: { key: 'eResponse_InviteLimitReached', message: 'Invite-Limit erreicht – bitte später erneut versuchen.' },
+  1: { key: 'eResponse_InternalError', message: 'Interner Fehler bei Steam. Bitte versuche es in ein paar Minuten erneut.' },
+  3: { key: 'eResponse_InvalidFriend', message: 'Wir sind keine Steam-Freunde. Bitte nimm die Freundschaftsanfrage des Bots auf Steam an.' },
+  4: { key: 'eResponse_NotFriendsLongEnough', message: 'Steam-Beschränkung: Die Freundschaft muss mind. 30 Tage bestehen.' },
+  5: { key: 'eResponse_AlreadyHasGame', message: 'Du hast Deadlock bereits! Prüfe deine Steam-Bibliothek oder https://store.steampowered.com/account/playtestinvites' },
+  6: { key: 'eResponse_LimitedUser', message: 'Dein Steam-Account ist eingeschränkt (Limited User). Du musst mind. 5$ auf Steam ausgegeben haben, um Invites zu erhalten.' },
+  7: { key: 'eResponse_InviteLimitReached', message: 'Das tägliche Invite-Limit ist erreicht. Bitte versuche es morgen erneut.' },
 };
 
 function formatPlaytestError(response) {
@@ -2483,6 +2483,22 @@ function processNextTask() {
       case 'AUTH_LOGOUT':
         finalizeTaskRun(task, { ok: true, data: handleLogoutTask() });
         break;
+
+      case 'AUTH_REFRESH_GAME_VERSION': {
+        const promise = (async () => {
+          if (!runtimeState.logged_on) throw new Error('Not logged in');
+          const success = await deadlockGcBot.refreshGameVersion();
+          return {
+            ok: success,
+            data: {
+              version: deadlockGcBot.sessionNeed,
+              updated: success
+            }
+          };
+        })();
+        finalizeTaskRun(task, promise);
+        break;
+      }
 
       case 'AUTH_SEND_FRIEND_REQUEST': {
         const promise = (async () => {
@@ -3468,10 +3484,20 @@ setTimeout(() => {
   scheduleCatalogMaintenance();
 }, 30000); // 30 seconds after startup
 
-// Schedule periodically
+// Schedule catalog maintenance
 setInterval(() => {
   scheduleCatalogMaintenance();
 }, CATALOG_MAINTENANCE_INTERVAL_MS);
+
+// Periodically refresh game version (every 30 minutes)
+setInterval(() => {
+  if (runtimeState.logged_on) {
+    log('debug', 'Running periodic game version check');
+    deadlockGcBot.refreshGameVersion().catch(err => {
+      log('warn', 'Periodic game version check failed', { error: err.message });
+    });
+  }
+}, 30 * 60 * 1000);
 
 function shutdown(code = 0) {
   try {
