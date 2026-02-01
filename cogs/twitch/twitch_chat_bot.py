@@ -328,7 +328,7 @@ if TWITCHIO_AVAILABLE:
             access_token, _ = tokens
 
             try:
-                import aiohttp as _aiohttp
+                import aiohttp
                 url = "https://api.twitch.tv/helix/moderation/moderators"
                 params = {
                     "broadcaster_id": str(broadcaster_id),
@@ -338,18 +338,24 @@ if TWITCHIO_AVAILABLE:
                     "Client-ID": self._client_id,
                     "Authorization": f"Bearer {access_token}",
                 }
-                async with session.post(url, headers=headers, params=params) as r:
-                    if r.status in {200, 204}:
-                        log.info("_ensure_bot_is_mod: Bot (ID: %s) ist jetzt Mod in %s (ID: %s)", safe_bot_id, broadcaster_login, broadcaster_id)
-                        return True
-                    elif r.status == 422:
-                        # 422 = Bot ist bereits Mod → sollte nicht vorkommen wenn 403 vorher kam
-                        log.info("_ensure_bot_is_mod: Bot ist bereits Mod in %s (422)", broadcaster_login)
-                        return True
-                    else:
-                        txt = await r.text()
-                        log.warning("_ensure_bot_is_mod: Fehler beim Setzen als Mod in %s: HTTP %s: %s", broadcaster_login, r.status, txt[:200])
-                        return False
+                # Eigene Session öffnen – raid_bot.session kann jederzeit geschlossen
+                # sein (Shutdown, Polling-Zyklus).  Konsistent mit _auto_ban_and_cleanup
+                # und _unban_user.
+                async with aiohttp.ClientSession() as mod_session:
+                    async with mod_session.post(url, headers=headers, params=params) as r:
+                        if r.status in {200, 204}:
+                            log.info("_ensure_bot_is_mod: Bot (ID: %s) ist jetzt Mod in %s (ID: %s)", safe_bot_id, broadcaster_login, broadcaster_id)
+                            return True
+                        elif r.status == 422:
+                            # 422 = Bot ist bereits Mod → sollte nicht vorkommen wenn 403 vorher kam
+                            log.info("_ensure_bot_is_mod: Bot ist bereits Mod in %s (422)", broadcaster_login)
+                            return True
+                        else:
+                            txt = await r.text()
+                            # 400 "user is banned" → Bot wurde im Channel gebannt,
+                            # Mod-Status kann nicht gesetzt werden bis der Ban aufgehoben wird.
+                            log.warning("_ensure_bot_is_mod: Fehler beim Setzen als Mod in %s: HTTP %s: %s", broadcaster_login, r.status, txt[:200])
+                            return False
             except Exception:
                 log.exception("_ensure_bot_is_mod: Exception beim Setzen als Mod in %s", broadcaster_login)
                 return False
@@ -456,7 +462,9 @@ if TWITCHIO_AVAILABLE:
                     else:
                         log.warning(
                             "join(): Konnte Bot nicht als Mod in %s setzen. "
-                            "Bitte manuell /mod deutschedeadlockcommunity im Channel ausführen.",
+                            "Falls der Bot im Channel gebannt ist, muss er dort zuerst "
+                            "entbannt werden (/unban deutschedeadlockcommunity), "
+                            "danach /mod deutschedeadlockcommunity ausführen.",
                             channel_login
                         )
                 elif "429" in msg or "transport limit exceeded" in msg.lower():
