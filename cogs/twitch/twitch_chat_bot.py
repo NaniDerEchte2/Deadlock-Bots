@@ -97,7 +97,7 @@ _SPAM_PHRASES = (
     "Viewers smmhype12.ru",
     "Viewers smmhype1.ru",
     "Viewers smmhype",
-    "keep viewers on streamboo .com (remove the space)",
+    "viewers on streamboo .com (remove the space)",
 )
 # Entferne "viewer" und "viewers" aus den Fragmenten - zu allgemein und führt zu False Positives
 _SPAM_FRAGMENTS = (
