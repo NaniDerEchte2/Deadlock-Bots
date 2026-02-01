@@ -125,6 +125,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "twitch_stats_tracked", "is_partner", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_stats_category", "is_partner", "INTEGER DEFAULT 0")
 
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_stats_tracked_streamer ON twitch_stats_tracked(streamer)"
+    )
+
     # 4) Link-Klick-Tracking
     conn.execute(
         """

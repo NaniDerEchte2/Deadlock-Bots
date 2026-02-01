@@ -945,13 +945,13 @@ class RaidBot:
                     stats = conn.execute(
                         """
                         SELECT
-                            ROUND(AVG(last_viewer_count)) as avg_viewers,
-                            MAX(last_viewer_count) as peak_viewers
-                        FROM twitch_stream_history
-                        WHERE twitch_user_id = ?
-                          AND last_viewer_count > 0
+                            ROUND(AVG(viewer_count)) as avg_viewers,
+                            MAX(viewer_count) as peak_viewers
+                        FROM twitch_stats_tracked
+                        WHERE streamer = ?
+                          AND viewer_count > 0
                         """,
-                        (target_id,),
+                        (to_broadcaster_login.lower(),),
                     ).fetchone()
 
                 if stats and stats[0]:

@@ -1533,15 +1533,11 @@ class TwitchMonitoringMixin:
         view = registry.pop(tracking_token, None)
         if view is None:
             return
-        remover = getattr(self.bot, "remove_view", None)
-        if callable(remover):
-            try:
-                remover(view)
-            except Exception:
-                log.debug("Konnte View nicht deregistrieren: %s", tracking_token, exc_info=True)
-        else:
-            log.debug("Bot unterstuetzt remove_view nicht, ｜erspringe Deregistrierung f〉 %s", tracking_token)
+        
+        # discord.py hat kein natives remove_view am Bot-Objekt. 
+        # view.stop() reicht aus, um die Interaktionen zu beenden.
         view.stop()
+        log.debug("Live-View gestoppt und aus Registry entfernt: %s", tracking_token)
 
     def _log_link_click(
         self,
