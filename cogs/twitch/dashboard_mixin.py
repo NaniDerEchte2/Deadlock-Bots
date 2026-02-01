@@ -1438,8 +1438,9 @@ class TwitchDashboardMixin:
                 if runner:
                     await runner.cleanup()
                 
-                # Check for address in use (WinError 10048 or EADDRINUSE)
-                is_addr_in_use = e.errno == 10048 or (hasattr(importlib.import_module("errno"), "EADDRINUSE") and e.errno == importlib.import_module("errno").EADDRINUSE)
+                # Check for address in use (WinError 10048 on Windows, EADDRINUSE=98 on Linux)
+                import errno as _errno
+                is_addr_in_use = e.errno in (10048, getattr(_errno, "EADDRINUSE", 98))
                 
                 if is_addr_in_use and attempt < max_retries - 1:
                     log.debug("Twitch dashboard port %s belegt, versuche es erneut in %ss... (Versuch %s/%s)", 
