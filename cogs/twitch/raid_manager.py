@@ -896,7 +896,7 @@ class RaidBot:
 
         # 2. 15 Sekunden warten, damit der Streamer den Raid-Alert verarbeiten kann
         log.info("Warte 15s vor Senden der Recruitment-Message an %s...", to_broadcaster_login)
-        await asyncio.sleep(15.0)
+        await asyncio.sleep(25.0)
 
         try:
             # 2. Anti-Spam Check: Haben wir diesen Streamer schon "kürzlich" geraidet?
