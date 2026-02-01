@@ -25,6 +25,14 @@ class DashboardLiveMixin:
             discord_filter = "any"
 
         total_count = sum(1 for st in items if not bool(st.get("manual_partner_opt_out")))
+        raid_bot_available = bool(getattr(self, "_raid_bot", None))
+        token_value = ""
+        if not self._noauth and self._token:
+            token_value = self._token
+        token_query = f"&token={quote_plus(token_value)}" if token_value else ""
+
+        def raid_auth_link(login: str) -> str:
+            return f"/twitch/raid/auth?login={quote_plus(login)}{token_query}"
 
         now = datetime.now(timezone.utc)
 
@@ -42,6 +50,9 @@ class DashboardLiveMixin:
         rows: List[str] = []
         non_partner_entries: List[dict] = []
         filtered_count = 0
+        raid_authorized_count = 0
+        raid_ready_count = 0
+        raid_missing_logins: List[str] = []
         for st in items:
             login = st.get("twitch_login", "")
             login_html = html.escape(login)
@@ -50,6 +61,20 @@ class DashboardLiveMixin:
             until_dt = _parse_dt(until_raw)
             verified_at_dt = _parse_dt(st.get("manual_verified_at"))
             partner_opt_out = bool(st.get("manual_partner_opt_out"))
+            raid_auth_enabled = st.get("raid_auth_enabled")
+            raid_authorized_at = st.get("raid_authorized_at")
+            raid_bot_enabled = bool(st.get("raid_bot_enabled"))
+            raid_is_authorized = raid_auth_enabled is not None or bool(raid_authorized_at)
+            raid_auto_active = bool(raid_auth_enabled) and raid_bot_enabled
+
+            if not partner_opt_out:
+                if raid_is_authorized:
+                    raid_authorized_count += 1
+                else:
+                    if login:
+                        raid_missing_logins.append(login)
+                if raid_auto_active:
+                    raid_ready_count += 1
 
             is_on_discord = bool(st.get("is_on_discord"))
             discord_user_id = str(st.get("discord_user_id") or "").strip()
@@ -210,12 +235,38 @@ class DashboardLiveMixin:
                 "  </details>"
             )
 
+            raid_cell_parts: List[str] = []
+            if raid_bot_available:
+                if raid_is_authorized:
+                    badge_class = "badge-ok" if raid_auto_active else "badge-neutral"
+                    badge_label = "Bereit" if raid_auto_active else "Autorisiert"
+                    raid_cell_parts.append(f"<span class='badge {badge_class}'>{badge_label}</span>")
+                    if raid_auto_active:
+                        raid_cell_parts.append("<div class='status-meta'>Auto-Raid aktiv</div>")
+                    else:
+                        raid_cell_parts.append("<div class='status-meta'>Auto-Raid aus</div>")
+                else:
+                    raid_cell_parts.append("<span class='badge badge-warn'>Nicht autorisiert</span>")
+                    raid_cell_parts.append("<div class='status-meta'>OAuth fehlt</div>")
+                    raid_link = html.escape(raid_auth_link(login), quote=True)
+                    raid_cell_parts.append(
+                        "<a class='btn btn-small btn-secondary' href='"
+                        + raid_link
+                        + "' target='_blank' rel='noopener'>Autorisieren</a>"
+                    )
+            else:
+                raid_cell_parts.append("<span class='badge badge-warn'>Bot offline</span>")
+                raid_cell_parts.append("<div class='status-meta'>Raids nicht verfügbar</div>")
+
+            raid_cell_html = "<div class='raid-cell'>" + "".join(raid_cell_parts) + "</div>"
+
             rows.append(
                 "<tr>"
                 f"  <td>{login_html}</td>"
                 f"  <td>{discord_html}{advanced_html}</td>"
                 f"  <td>{status_badge}{meta_html}</td>"
                 f"  <td>{countdown_html}</td>"
+                f"  <td>{raid_cell_html}</td>"
                 "  <td>"
                 "    <div class='action-stack'>"
                 "      <form method='post' action='/twitch/verify' class='inline'>"
@@ -244,7 +295,7 @@ class DashboardLiveMixin:
             filtered_count += 1
 
         if not rows:
-            rows.append("<tr><td colspan=5><i>Keine Streamer gefunden.</i></td></tr>")
+            rows.append("<tr><td colspan=6><i>Keine Streamer gefunden.</i></td></tr>")
 
         table_rows = "".join(rows)
 
@@ -437,26 +488,133 @@ class DashboardLiveMixin:
             '</div>'
         )
 
+        unique_logins = sorted(
+            {
+                (st.get("twitch_login") or "").strip()
+                for st in items
+                if (st.get("twitch_login") or "").strip()
+            }
+        )
+        login_options_html = "".join(
+            f"<option value='{html.escape(login, quote=True)}'></option>" for login in unique_logins
+        )
+        token_input = ""
+        if token_value:
+            token_input = (
+                f"<input type='hidden' name='token' value='{html.escape(token_value, quote=True)}'>"
+            )
+        missing_unique = sorted({login for login in raid_missing_logins if login})
+        missing_preview = missing_unique[:6]
+        missing_count = max(0, total_count - raid_authorized_count)
+        if missing_preview:
+            missing_chips = "".join(
+                f"<span class='chip'>{html.escape(login)}</span>" for login in missing_preview
+            )
+            raid_missing_html = (
+                "<div class='raid-meta'>"
+                f"<span class='pill warn'>Fehlende Autorisierung: {missing_count}</span>"
+                f"{missing_chips}"
+                "</div>"
+            )
+        else:
+            raid_missing_html = "<div class='raid-meta'><span class='pill ok'>Alle Partner autorisiert</span></div>"
+
+        raid_bot_state_label = "Verfügbar" if raid_bot_available else "Nicht aktiv"
+        raid_bot_state_class = "ok" if raid_bot_available else "warn"
+        redirect_label = html.escape(self._redirect_uri or "—")
+        raid_form_disabled_attr = " disabled" if not raid_bot_available else ""
+        raid_form_note = ""
+        if not raid_bot_available:
+            raid_form_note = (
+                "<div class='status-meta'>Raid Bot ist nicht aktiv. Autorisierung ist derzeit nicht möglich.</div>"
+            )
+
+        raid_auth_card_html = (
+            "<div class='card raid-auth-card'>"
+            "  <div class='card-header'>"
+            "    <div>"
+            "      <p class='eyebrow'>Raid Bot</p>"
+            "      <h2>Twitch Bot Autorisierung</h2>"
+            "      <p class='lead'>Pflicht für Auto-Raids. Jeder Streamer muss einmal autorisieren.</p>"
+            "    </div>"
+            "    <div class='raid-metrics'>"
+            f"      <div class='mini-stat'><strong>{raid_authorized_count}</strong><span>Autorisiert</span></div>"
+            f"      <div class='mini-stat'><strong>{missing_count}</strong><span>Fehlt</span></div>"
+            f"      <div class='mini-stat'><strong>{raid_ready_count}</strong><span>Auto-Raid aktiv</span></div>"
+            "    </div>"
+            "  </div>"
+            "  <form class='raid-form' method='get' action='/twitch/raid/auth' target='_blank'>"
+            "    <label>Streamer Login"
+            f"      <input type='text' name='login' list='raid-login-list' placeholder='earlysalty' required{raid_form_disabled_attr}>"
+            "    </label>"
+            f"    {token_input}"
+            f"    <button class='btn'{raid_form_disabled_attr}>OAuth Link erzeugen</button>"
+            "  </form>"
+            f"  {raid_form_note}"
+            f"  <datalist id='raid-login-list'>{login_options_html}</datalist>"
+            "  <div class='raid-meta'>"
+            f"    <span class='pill'>Redirect: {redirect_label}</span>"
+            f"    <span class='pill {raid_bot_state_class}'>Raid Bot: {raid_bot_state_label}</span>"
+            "    <span class='pill'>Aktivieren im Chat: !raid_enable</span>"
+            "  </div>"
+            f"  {raid_missing_html}"
+            "</div>"
+        )
+
+        raid_history_link = ""
+        if raid_bot_available:
+            history_href = "/twitch/raid/history"
+            if token_value:
+                history_href = history_href + "?token=" + quote_plus(token_value)
+            raid_history_link = (
+                "<a class='btn btn-secondary' href='"
+                + html.escape(history_href, quote=True)
+                + "' target='_blank' rel='noopener'>Raid History</a>"
+            )
+
+        hero_actions = (
+            (raid_history_link + " " if raid_history_link else "")
+            + "<form method='post' action='/twitch/reload'>"
+            + "<button class='btn btn-warn'>Reload Twitch Cog</button>"
+            + "</form>"
+        )
+
+        hero_html = (
+            "<header class='hero'>"
+            "  <div>"
+            "    <p class='eyebrow'>Twitch Admin</p>"
+            "    <h1>Deadlock Twitch Ops</h1>"
+            "    <p class='lead'>Live-Partner verwalten, Discord-Verknüpfungen prüfen und Raid-Bot autorisieren.</p>"
+            "  </div>"
+            f"  <div class='hero-actions'>{hero_actions}</div>"
+            "</header>"
+        )
+
+        table_html = f"""
+<div class="card table-card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Login</th><th>Discord</th><th>Verifizierung</th><th>Countdown</th><th>Raid Bot</th><th>Aktionen</th></tr>
+      </thead>
+      <tbody>
+        {table_rows}
+      </tbody>
+    </table>
+  </div>
+</div>
+"""
+
         body = f"""
-<div style="display:flex; justify-content:space-between; align-items:center;">
-  <h1 style="margin:.2rem 0 1rem 0;">Deadlock Twitch Posting – Admin</h1>
-  <form method="post" action="/twitch/reload" style="margin:0;">
-    <button class="btn btn-warn">Reload Twitch Cog</button>
-  </form>
+{hero_html}
+
+<div class="panel-grid">
+  {add_streamer_card_html}
+  {raid_auth_card_html}
+  {filter_card_html}
 </div>
 
-{add_streamer_card_html}
-
-{filter_card_html}
-
-<table>
-  <thead>
-    <tr><th>Login</th><th>Discord</th><th>Verifizierung</th><th>Countdown</th><th>Aktionen</th></tr>
-  </thead>
-  <tbody>
-    {table_rows}
-  </tbody>
-</table>
+{table_html}
 
 {non_partner_card_html}
 """

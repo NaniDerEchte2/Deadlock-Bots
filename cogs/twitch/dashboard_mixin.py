@@ -68,16 +68,29 @@ class TwitchDashboardMixin:
                     )
                     rows = c.execute(
                         """
-                        SELECT twitch_login,
-                               manual_verified_permanent,
-                               manual_verified_until,
-                               manual_verified_at,
-                               manual_partner_opt_out,
-                               is_on_discord,
-                               discord_user_id,
-                               discord_display_name
-                          FROM twitch_streamers
-                         ORDER BY twitch_login
+                        SELECT s.twitch_login,
+                               s.manual_verified_permanent,
+                               s.manual_verified_until,
+                               s.manual_verified_at,
+                               s.manual_partner_opt_out,
+                               s.is_on_discord,
+                               s.discord_user_id,
+                               s.discord_display_name,
+                               s.raid_bot_enabled,
+                               a.raid_enabled AS raid_auth_enabled,
+                               a.authorized_at AS raid_authorized_at,
+                               a.token_expires_at AS raid_token_expires_at
+                          FROM twitch_streamers s
+                          LEFT JOIN twitch_raid_auth a
+                            ON (
+                                 s.twitch_user_id IS NOT NULL
+                                 AND s.twitch_user_id = a.twitch_user_id
+                               )
+                            OR (
+                                 s.twitch_user_id IS NULL
+                                 AND LOWER(s.twitch_login) = LOWER(a.twitch_login)
+                               )
+                         ORDER BY s.twitch_login
                         """
                     ).fetchall()
                 return [dict(row) for row in rows]

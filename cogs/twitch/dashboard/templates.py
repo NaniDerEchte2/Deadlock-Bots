@@ -43,86 +43,123 @@ class DashboardTemplateMixin:
 <title>Deadlock Twitch Posting – Admin</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600;700&family=Space+Grotesk:wght@400;500;600&display=swap');
   :root {{
-    --bg:#0f0f23; --card:#151a28; --bd:#2a3044; --text:#eeeeee; --muted:#9aa4b2;
-    --accent:#6d4aff; --accent-2:#9bb0ff; --ok-bg:#15391f; --ok-bd:#1d6b33; --ok-fg:#b6f0c8;
-    --err-bg:#3a1a1a; --err-bd:#792e2e; --err-fg:#ffd2d2;
+    color-scheme: light;
+    --bg:#f6f1e9; --bg-alt:#fbf7f0; --card:#fffdf8; --bd:#e3d7c7; --text:#1f1a14; --muted:#6f6254;
+    --accent:#0f766e; --accent-2:#e07a5f; --accent-3:#1f2a30;
+    --ok-bg:#e3f5ea; --ok-bd:#7bc99c; --ok-fg:#195c3a;
+    --err-bg:#fde7e7; --err-bd:#f2b2b2; --err-fg:#8f1d1d;
+    --warn-bg:#fff3dc; --warn-bd:#f5c17a; --warn-fg:#8a4b0e;
+    --shadow:rgba(40,32,20,.12); --shadow-strong:rgba(40,32,20,.18);
+    --chip-bg:rgba(15,118,110,.12);
   }}
   * {{ box-sizing: border-box; }}
-  body {{ font-family: system-ui, Arial, sans-serif; max-width: 1250px; margin: 2rem auto; color:var(--text); background:var(--bg); }}
-  .tabs {{ display:flex; gap:.5rem; margin-bottom:1rem; }}
-  .tab {{ padding:.5rem .8rem; border-radius:.5rem; text-decoration:none; color:#ddd; background:#1a1f2e; border:1px solid var(--bd); }}
-  .tab.active {{ background:var(--accent); color:#fff; }}
-  .tab.tab-admin {{ margin-left:auto; background:#2d255b; color:#fff; border-color:var(--accent); font-weight:600; }}
-  .tab.tab-admin:hover {{ background:var(--accent); color:#fff; }}
-  .card {{ background:var(--card); border:1px solid var(--bd); border-radius:.7rem; padding:1rem; }}
+  body {{
+    font-family: "Space Grotesk", "Segoe UI", sans-serif;
+    max-width: 1320px;
+    margin: 0 auto;
+    padding: 2.4rem 1.6rem 3rem;
+    color:var(--text);
+    background:
+      radial-gradient(1200px 600px at 10% -10%, rgba(15,118,110,0.16), transparent 60%),
+      radial-gradient(900px 600px at 90% 0%, rgba(224,122,95,0.14), transparent 55%),
+      linear-gradient(180deg, #fbf7f0 0%, #f3e9d9 100%);
+    position: relative;
+  }}
+  body::before {{
+    content:"";
+    position:fixed;
+    inset:0;
+    background: repeating-linear-gradient(135deg, rgba(25,18,9,0.04) 0 1px, transparent 1px 12px);
+    opacity:0.25;
+    pointer-events:none;
+    z-index:0;
+  }}
+  body > * {{ position: relative; z-index: 1; }}
+  h1, h2, h3 {{ font-family: "Fraunces", "Georgia", serif; letter-spacing: .01em; }}
+  h1 {{ font-size: 2.2rem; margin: 0; }}
+  h2 {{ font-size: 1.2rem; }}
+  a {{ color: inherit; }}
+  .tabs {{ display:flex; gap:.6rem; margin:0 0 1.4rem 0; flex-wrap:wrap; }}
+  .tab {{ padding:.55rem .9rem; border-radius:999px; text-decoration:none; color:var(--text); background:var(--card); border:1px solid var(--bd); box-shadow:0 6px 12px var(--shadow); font-weight:600; transition:transform .15s ease, box-shadow .15s ease, background .15s ease; }}
+  .tab:hover {{ transform: translateY(-1px); box-shadow:0 10px 18px var(--shadow-strong); }}
+  .tab.active {{ background:linear-gradient(135deg, rgba(15,118,110,.18), rgba(15,118,110,.05)); border-color:rgba(15,118,110,.5); color:var(--accent-3); }}
+  .tab.tab-admin {{ margin-left:auto; background:linear-gradient(135deg, rgba(224,122,95,.2), rgba(224,122,95,.05)); border-color:rgba(224,122,95,.5); font-weight:700; }}
+  .tab.tab-admin:hover {{ background:linear-gradient(135deg, rgba(224,122,95,.3), rgba(224,122,95,.08)); }}
+  .card {{ background:var(--card); border:1px solid var(--bd); border-radius:1rem; padding:1.1rem; box-shadow:0 12px 30px var(--shadow); }}
   .row {{ display:flex; gap:1rem; align-items:center; flex-wrap:wrap; }}
-  .btn {{ background:var(--accent); color:white; border:none; padding:.5rem .8rem; border-radius:.5rem; cursor:pointer; }}
-  .btn:hover {{ opacity:.95; }}
+  .btn {{ background:var(--accent); color:white; border:none; padding:.55rem .9rem; border-radius:.65rem; cursor:pointer; font-weight:600; letter-spacing:.01em; box-shadow:0 8px 16px rgba(15,118,110,.25); transition:transform .15s ease, box-shadow .15s ease; }}
+  .btn:hover {{ transform: translateY(-1px); box-shadow:0 12px 20px rgba(15,118,110,.28); }}
+  .btn:disabled {{ opacity:.6; cursor:not-allowed; box-shadow:none; }}
   .btn-small {{ padding:.35rem .6rem; font-size:.85rem; }}
-  .btn-secondary {{ background:#2a3044; color:var(--text); border:1px solid var(--bd); }}
-  .btn-danger {{ background:#792e2e; }}
-  .btn-warn {{ background:#b8741a; color:#fff; }}
-  table {{ width:100%; border-collapse: collapse; margin-top:1rem; }}
-  th, td {{ border-bottom:1px solid var(--bd); padding:.6rem; text-align:left; }}
-  th {{ color:var(--accent-2); }}
-  input[type="text"] {{ background:#0f1422; border:1px solid var(--bd); color:var(--text); padding:.45rem .6rem; border-radius:.4rem; width:28rem; }}
-  input[type="number"], select {{ background:#0f1422; border:1px solid var(--bd); color:var(--text); padding:.45rem .6rem; border-radius:.4rem; }}
+  .btn-secondary {{ background:var(--bg-alt); color:var(--accent-3); border:1px solid var(--bd); box-shadow:none; }}
+  .btn-danger {{ background:#b42318; }}
+  .btn-warn {{ background:#d97706; color:#fff; }}
+  .btn-ghost {{ background:transparent; color:var(--accent); border:1px dashed var(--bd); box-shadow:none; }}
+  .btn-ghost:hover {{ background:rgba(15,118,110,0.08); box-shadow:none; }}
+  table {{ width:100%; border-collapse: collapse; }}
+  th, td {{ border-bottom:1px solid var(--bd); padding:.75rem .6rem; text-align:left; vertical-align: top; }}
+  th {{ color:var(--accent-3); text-transform:uppercase; letter-spacing:.08em; font-size:.75rem; }}
+  tr:hover td {{ background:rgba(15,118,110,0.05); }}
+  input[type="text"] {{ background:var(--bg-alt); border:1px solid var(--bd); color:var(--text); padding:.5rem .65rem; border-radius:.6rem; width:28rem; }}
+  input[type="number"], select {{ background:var(--bg-alt); border:1px solid var(--bd); color:var(--text); padding:.5rem .65rem; border-radius:.6rem; }}
+  input:disabled, select:disabled {{ opacity:.65; cursor:not-allowed; }}
   small {{ color:var(--muted); }}
-  .flash {{ margin:.7rem 0; padding:.5rem .7rem; border-radius:.4rem; }}
+  .flash {{ margin:.7rem 0; padding:.6rem .8rem; border-radius:.6rem; }}
   .flash.ok {{ background:var(--ok-bg); border:1px solid var(--ok-bd); color:var(--ok-fg); }}
   .flash.err {{ background:var(--err-bg); border:1px solid var(--err-bd); color:var(--err-fg); }}
   form.inline {{ display:inline; }}
   .card-header {{ display:flex; justify-content:space-between; align-items:center; gap:.8rem; flex-wrap:wrap; }}
-  .badge {{ display:inline-block; padding:.2rem .6rem; border-radius:999px; font-size:.8rem; font-weight:600; }}
-  .badge-ok {{ background:var(--ok-bd); color:var(--ok-fg); }}
-  .badge-warn {{ background:var(--err-bd); color:var(--err-fg); }}
-  .badge-neutral {{ background:#2a3044; color:#ddd; }}
+  .badge {{ display:inline-flex; align-items:center; gap:.35rem; padding:.2rem .6rem; border-radius:999px; font-size:.78rem; font-weight:700; border:1px solid var(--bd); background:var(--bg-alt); }}
+  .badge-ok {{ background:var(--ok-bg); color:var(--ok-fg); border-color:var(--ok-bd); }}
+  .badge-warn {{ background:var(--warn-bg); color:var(--warn-fg); border-color:var(--warn-bd); }}
+  .badge-neutral {{ background:rgba(31,42,48,0.08); color:var(--accent-3); border-color:rgba(31,42,48,0.2); }}
   .status-meta {{ font-size:.8rem; color:var(--muted); margin-top:.2rem; }}
   .action-stack {{ display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; }}
-  .countdown-ok {{ color:var(--accent-2); font-weight:600; }}
-  .countdown-warn {{ color:var(--err-fg); font-weight:600; }}
+  .countdown-ok {{ color:var(--accent); font-weight:700; }}
+  .countdown-warn {{ color:var(--err-fg); font-weight:700; }}
   table.sortable-table th[data-sort-type] {{ cursor:pointer; user-select:none; position:relative; padding-right:1.4rem; }}
   table.sortable-table th[data-sort-type]::after {{ content:"⇅"; position:absolute; right:.4rem; color:var(--muted); font-size:.75rem; top:50%; transform:translateY(-50%); }}
-  table.sortable-table th[data-sort-type][data-sort-dir="asc"]::after {{ content:"↑"; color:var(--accent-2); }}
-  table.sortable-table th[data-sort-type][data-sort-dir="desc"]::after {{ content:"↓"; color:var(--accent-2); }}
+  table.sortable-table th[data-sort-type][data-sort-dir="asc"]::after {{ content:"↑"; color:var(--accent); }}
+  table.sortable-table th[data-sort-type][data-sort-dir="desc"]::after {{ content:"↓"; color:var(--accent); }}
   .filter-form {{ margin-top:.6rem; }}
   .filter-form .row {{ align-items:flex-end; gap:1rem; }}
   .filter-label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.9rem; color:var(--muted); }}
   .filter-card {{ margin-top:1rem; }}
   .filter-row {{ align-items:flex-end; gap:1rem; flex-wrap:wrap; }}
   .filter-row .filter-label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
-  .filter-row select {{ background:#0f1422; border:1px solid var(--bd); color:var(--text); padding:.4rem .6rem; border-radius:.4rem; min-width:12rem; }}
+  .filter-row select {{ background:var(--bg-alt); border:1px solid var(--bd); color:var(--text); padding:.45rem .6rem; border-radius:.6rem; min-width:12rem; }}
   .add-streamer-card {{ margin-top:1rem; }}
-  .add-streamer-card h2 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-2); }}
+  .add-streamer-card h2 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-3); }}
   .add-streamer-card form {{ display:flex; flex-direction:column; gap:.8rem; }}
   .add-streamer-card .form-grid {{ display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-end; }}
   .add-streamer-card label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
   .add-streamer-card input[type="text"] {{ min-width:14rem; }}
   .add-streamer-card .form-actions {{ display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }}
   .add-streamer-card .hint {{ margin-top:.2rem; font-size:.8rem; color:var(--muted); max-width:38rem; }}
-  .non-partner-card {{ margin-top:1.8rem; padding:1.2rem; background:linear-gradient(145deg, rgba(36,41,68,.7), rgba(16,24,46,.9)); border-radius:.9rem; border:1px solid rgba(109,74,255,.35); box-shadow:0 12px 24px rgba(12,16,32,.45); }}
-  .non-partner-card h2 {{ margin:0 0 .4rem 0; font-size:1.1rem; color:#fff; letter-spacing:.01em; }}
-  .non-partner-card p {{ margin:0 0 1rem 0; font-size:.85rem; color:var(--accent-2); opacity:.85; }}
+  .non-partner-card {{ margin-top:1.8rem; padding:1.2rem; background:linear-gradient(160deg, rgba(15,118,110,.16), rgba(224,122,95,.08)); border-radius:1rem; border:1px solid rgba(15,118,110,.25); box-shadow:0 12px 24px var(--shadow); }}
+  .non-partner-card h2 {{ margin:0 0 .4rem 0; font-size:1.1rem; color:var(--accent-3); letter-spacing:.01em; }}
+  .non-partner-card p {{ margin:0 0 1rem 0; font-size:.85rem; color:var(--muted); }}
   .non-partner-list {{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.9rem; }}
-  .non-partner-item {{ display:flex; flex-direction:column; gap:.6rem; padding:.9rem 1rem; background:rgba(10,14,32,.85); border:1px solid rgba(155,176,255,.2); border-radius:.7rem; position:relative; overflow:hidden; }}
-  .non-partner-item::before {{ content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; border:1px solid rgba(109,74,255,.25); opacity:0; transition:opacity .2s ease; }}
+  .non-partner-item {{ display:flex; flex-direction:column; gap:.6rem; padding:.9rem 1rem; background:rgba(255,253,248,.92); border:1px solid rgba(15,118,110,.15); border-radius:.8rem; position:relative; overflow:hidden; }}
+  .non-partner-item::before {{ content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; border:1px solid rgba(15,118,110,.3); opacity:0; transition:opacity .2s ease; }}
   .non-partner-item:hover::before {{ opacity:1; }}
   .non-partner-header {{ display:flex; justify-content:space-between; align-items:center; gap:.6rem; flex-wrap:wrap; }}
-  .non-partner-header strong {{ font-size:1rem; color:#fff; letter-spacing:.01em; }}
+  .non-partner-header strong {{ font-size:1rem; color:var(--accent-3); letter-spacing:.01em; }}
   .non-partner-badges {{ display:flex; gap:.4rem; flex-wrap:wrap; }}
   .non-partner-meta {{ display:flex; flex-direction:column; gap:.25rem; font-size:.8rem; color:var(--muted); padding-left:.2rem; }}
   .non-partner-meta span {{ display:flex; align-items:center; gap:.45rem; flex-wrap:wrap; }}
-  .non-partner-meta .meta-label {{ color:var(--accent-2); font-weight:600; min-width:5.4rem; text-transform:uppercase; letter-spacing:.06em; font-size:.7rem; }}
+  .non-partner-meta .meta-label {{ color:var(--accent); font-weight:700; min-width:5.4rem; text-transform:uppercase; letter-spacing:.06em; font-size:.7rem; }}
   .non-partner-warning {{ color:var(--err-fg); font-weight:600; font-size:.75rem; }}
-  .non-partner-manage {{ background:#0f1422; border:1px solid rgba(109,74,255,.25); border-radius:.6rem; padding:.6rem; }}
-  .non-partner-manage > summary {{ cursor:pointer; font-size:.8rem; color:var(--accent-2); font-weight:600; list-style:none; }}
-  .non-partner-manage[open] > summary {{ color:#fff; }}
+  .non-partner-manage {{ background:var(--bg-alt); border:1px solid var(--bd); border-radius:.7rem; padding:.6rem; }}
+  .non-partner-manage > summary {{ cursor:pointer; font-size:.8rem; color:var(--accent); font-weight:600; list-style:none; }}
+  .non-partner-manage[open] > summary {{ color:var(--accent-3); }}
   .non-partner-manage .manage-body {{ margin-top:.5rem; display:flex; flex-direction:column; gap:.6rem; }}
   .non-partner-actions {{ display:flex; flex-wrap:wrap; gap:.4rem; }}
   .non-partner-note {{ font-size:.75rem; color:var(--muted); }}
-  .chart-panel {{ background:#10162a; border:1px solid var(--bd); border-radius:.7rem; padding:1rem; margin-top:1rem; }}
-  .chart-panel h3 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-2); }}
+  .chart-panel {{ background:var(--bg-alt); border:1px solid var(--bd); border-radius:.9rem; padding:1rem; margin-top:1rem; }}
+  .chart-panel h3 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-3); }}
   .chart-panel canvas {{ width:100%; height:320px; max-height:360px; }}
   .chart-note {{ margin-top:.6rem; font-size:.85rem; color:var(--muted); }}
   .chart-empty {{ margin-top:1rem; font-size:.9rem; color:var(--muted); font-style:italic; }}
@@ -131,22 +168,22 @@ class DashboardTemplateMixin:
   .user-hint {{ margin-top:.4rem; font-size:.8rem; color:var(--muted); }}
   .user-warning {{ margin-top:.6rem; color:var(--err-fg); font-weight:600; }}
   .user-summary {{ display:flex; flex-wrap:wrap; gap:.8rem; margin-top:1rem; }}
-  .user-summary-item {{ background:#10162a; border:1px solid var(--bd); border-radius:.6rem; padding:.6rem .9rem; min-width:140px; }}
+  .user-summary-item {{ background:var(--bg-alt); border:1px solid var(--bd); border-radius:.7rem; padding:.6rem .9rem; min-width:140px; }}
   .user-summary-item .label {{ display:block; color:var(--muted); font-size:.8rem; }}
-  .user-summary-item .value {{ display:block; color:#fff; font-size:1.05rem; font-weight:600; }}
+  .user-summary-item .value {{ display:block; color:var(--accent-3); font-size:1.05rem; font-weight:700; }}
   .user-meta {{ margin-top:.6rem; font-size:.85rem; color:var(--muted); }}
-  .user-meta strong {{ color:#fff; font-weight:600; }}
+  .user-meta strong {{ color:var(--accent-3); font-weight:700; }}
   .user-chart-grid {{ display:flex; flex-wrap:wrap; gap:1rem; margin-top:1rem; }}
   .user-chart-panel {{ flex:1 1 280px; }}
   .user-section-empty {{ margin-top:1rem; font-size:.9rem; color:var(--muted); font-style:italic; }}
   .toggle-group {{ display:flex; gap:.4rem; flex-wrap:wrap; }}
   .btn-active {{ background:var(--accent); color:#fff; border:1px solid var(--accent); }}
   .discord-status {{ display:flex; flex-direction:column; gap:.3rem; }}
-  .discord-icon {{ font-weight:600; }}
+  .discord-icon {{ font-weight:700; }}
   .discord-warning {{ color:var(--err-fg); font-size:.8rem; font-weight:600; }}
   .discord-cell {{ display:flex; flex-direction:column; gap:.3rem; align-items:flex-start; }}
   .discord-cell .discord-main {{ display:flex; align-items:center; gap:.4rem; }}
-  .discord-cell .discord-flag {{ font-weight:600; }}
+  .discord-cell .discord-flag {{ font-weight:700; }}
   details.discord-inline {{ display:inline-block; }}
   details.discord-inline > summary {{
     cursor:pointer;
@@ -157,9 +194,9 @@ class DashboardTemplateMixin:
     height:1.6rem;
     border-radius:999px;
     border:1px solid var(--bd);
-    background:#1a1f2e;
-    color:var(--accent-2);
-    font-weight:600;
+    background:var(--bg-alt);
+    color:var(--accent);
+    font-weight:700;
     margin:0;
   }}
   details.discord-inline[open] > summary {{
@@ -169,9 +206,9 @@ class DashboardTemplateMixin:
   }}
   .discord-inline-body {{
     margin-top:.4rem;
-    background:#10162a;
+    background:var(--bg-alt);
     border:1px solid var(--bd);
-    border-radius:.4rem;
+    border-radius:.6rem;
     padding:.6rem;
     display:flex;
     flex-direction:column;
@@ -192,19 +229,53 @@ class DashboardTemplateMixin:
     gap:.4rem;
   }}
   details.advanced-details {{ margin-top:.4rem; width:100%; }}
-  details.advanced-details > summary {{ cursor:pointer; font-size:.85rem; color:var(--accent-2); }}
-  details.advanced-details[open] > summary {{ color:#fff; }}
-  .advanced-content {{ margin-top:.6rem; display:flex; flex-direction:column; gap:.7rem; background:#10162a; padding:.6rem .7rem; border:1px solid var(--bd); border-radius:.5rem; }}
+  details.advanced-details > summary {{ cursor:pointer; font-size:.85rem; color:var(--accent); }}
+  details.advanced-details[open] > summary {{ color:var(--accent-3); }}
+  .advanced-content {{ margin-top:.6rem; display:flex; flex-direction:column; gap:.7rem; background:var(--bg-alt); padding:.6rem .7rem; border:1px solid var(--bd); border-radius:.6rem; }}
   .advanced-content .form-row {{ display:flex; flex-wrap:wrap; gap:.8rem; align-items:flex-end; }}
   .advanced-content label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
-  .advanced-content input[type="text"] {{ background:#0f1422; border:1px solid var(--bd); color:var(--text); padding:.4rem .6rem; border-radius:.4rem; min-width:14rem; }}
-  .discord-preview {{ display:flex; flex-direction:column; gap:.35rem; padding:.5rem .6rem; background:#0f1422; border:1px solid var(--bd); border-radius:.4rem; font-size:.8rem; color:var(--muted); }}
+  .advanced-content input[type="text"] {{ background:var(--bg-alt); border:1px solid var(--bd); color:var(--text); padding:.4rem .6rem; border-radius:.5rem; min-width:14rem; }}
+  .discord-preview {{ display:flex; flex-direction:column; gap:.35rem; padding:.5rem .6rem; background:var(--bg-alt); border:1px solid var(--bd); border-radius:.5rem; font-size:.8rem; color:var(--muted); }}
   .discord-preview-row {{ display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }}
-  .discord-preview-row .preview-label {{ color:var(--accent-2); font-weight:600; min-width:4.5rem; }}
+  .discord-preview-row .preview-label {{ color:var(--accent); font-weight:700; min-width:4.5rem; }}
   .discord-preview-row .preview-empty {{ color:var(--muted); font-style:italic; }}
   .checkbox-label {{ display:flex; align-items:center; gap:.4rem; font-size:.85rem; color:var(--muted); }}
   .checkbox-label input[type="checkbox"] {{ width:1rem; height:1rem; }}
   .advanced-content .hint {{ font-size:.75rem; color:var(--muted); }}
+  .hero {{ display:flex; justify-content:space-between; align-items:flex-end; gap:1.5rem; flex-wrap:wrap; margin:0 0 1.6rem 0; }}
+  .hero-actions {{ display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; }}
+  .eyebrow {{ text-transform:uppercase; letter-spacing:.18em; font-size:.7rem; color:var(--muted); margin:0 0 .4rem 0; }}
+  .lead {{ margin:.4rem 0 0 0; color:var(--muted); max-width:32rem; }}
+  .panel-grid {{ display:grid; gap:1rem; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); }}
+  .panel-grid .card {{ margin-top:0; animation: rise .6s ease both; }}
+  .panel-grid .card:nth-child(2) {{ animation-delay:.08s; }}
+  .panel-grid .card:nth-child(3) {{ animation-delay:.16s; }}
+  .table-wrap {{ overflow-x:auto; border-radius:1rem; border:1px solid var(--bd); background:var(--card); box-shadow:0 12px 30px var(--shadow); animation: rise .6s ease both; animation-delay:.15s; }}
+  .table-card {{ padding:1.1rem; }}
+  .table-card table {{ margin-top:0; }}
+  .pill {{ display:inline-flex; align-items:center; gap:.4rem; padding:.35rem .6rem; border-radius:999px; background:var(--bg-alt); border:1px solid var(--bd); font-size:.75rem; color:var(--muted); font-weight:700; }}
+  .pill.ok {{ background:var(--ok-bg); border-color:var(--ok-bd); color:var(--ok-fg); }}
+  .pill.warn {{ background:var(--warn-bg); border-color:var(--warn-bd); color:var(--warn-fg); }}
+  .chip {{ display:inline-flex; align-items:center; gap:.3rem; padding:.25rem .55rem; border-radius:999px; background:var(--chip-bg); color:var(--accent-3); border:1px solid rgba(15,118,110,.2); font-size:.75rem; font-weight:600; }}
+  .raid-form {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:.8rem; align-items:end; margin-top:.8rem; }}
+  .raid-form label {{ display:flex; flex-direction:column; gap:.35rem; font-size:.85rem; color:var(--muted); }}
+  .raid-meta {{ display:flex; flex-wrap:wrap; gap:.5rem; margin-top:.8rem; }}
+  .raid-metrics {{ display:flex; flex-wrap:wrap; gap:.8rem; margin-top:.6rem; }}
+  .mini-stat {{ background:var(--bg-alt); border:1px solid var(--bd); border-radius:.7rem; padding:.5rem .7rem; display:flex; flex-direction:column; min-width:120px; }}
+  .mini-stat strong {{ font-size:1.1rem; color:var(--accent-3); }}
+  .mini-stat span {{ font-size:.75rem; color:var(--muted); }}
+  .raid-cell {{ display:flex; flex-direction:column; gap:.35rem; align-items:flex-start; }}
+  @keyframes rise {{
+    from {{ opacity:0; transform: translateY(12px); }}
+    to {{ opacity:1; transform: translateY(0); }}
+  }}
+  @media (max-width: 720px) {{
+    body {{ padding:1.6rem 1.1rem 2.2rem; }}
+    h1 {{ font-size:1.8rem; }}
+    .tab.tab-admin {{ margin-left:0; }}
+    input[type="text"] {{ width:100%; }}
+    .add-streamer-card input[type="text"] {{ min-width:0; width:100%; }}
+  }}
 </style>
 {nav_html}
 {flash}
