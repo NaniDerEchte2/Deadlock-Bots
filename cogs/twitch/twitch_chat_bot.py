@@ -1768,9 +1768,9 @@ async def create_twitch_chat_bot(
     # oder übergeben einen Dummy, falls TwitchIO das schluckt.
     # Besser: Wir übergeben was wir haben.
 
-    adapter_host = (os.getenv("TWITCH_CHAT_ADAPTER_HOST") or "").strip()
+    adapter_host = (os.getenv("TWITCH_CHAT_ADAPTER_HOST") or "").strip() or "127.0.0.1"
     adapter_port_raw = (os.getenv("TWITCH_CHAT_ADAPTER_PORT") or "").strip()
-    adapter_port = None
+    adapter_port = 4343
     if adapter_port_raw:
         try:
             adapter_port = int(adapter_port_raw)
@@ -1779,14 +1779,35 @@ async def create_twitch_chat_bot(
                 "TWITCH_CHAT_ADAPTER_PORT '%s' ist ungueltig - es wird der Standardport 4343 genutzt",
                 adapter_port_raw,
             )
-            adapter_port = None
+            adapter_port = 4343
 
+    # Adapter nur starten wenn TWITCH_CHAT_ADAPTER nicht explizit deaktiviert ist
+    # UND der Port frei ist. TwitchIO 3.x erstellt intern einen Default-Adapter wenn
+    # keiner übergeben wird – wir kontrollieren das hier explizit, um Port-Konflikte
+    # bei Cog-Reloads zu vermeiden.
+    adapter_disabled = (os.getenv("TWITCH_CHAT_ADAPTER") or "").strip().lower() in {"0", "false", "off", "no"}
     web_adapter = None
-    if adapter_host or adapter_port_raw:
-        web_adapter = twitchio_web.AiohttpAdapter(
-            host=adapter_host or None,
-            port=adapter_port,
-        )
+    if not adapter_disabled:
+        import socket as _socket
+        try:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
+                _s.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+                _s.bind((adapter_host, adapter_port))
+            # Port ist frei – Adapter erstellen
+            web_adapter = twitchio_web.AiohttpAdapter(
+                host=adapter_host,
+                port=adapter_port,
+            )
+            log.info("TwitchIO Web Adapter wird auf %s:%s gestartet", adapter_host, adapter_port)
+        except OSError:
+            log.warning(
+                "TwitchIO Web Adapter Port %s auf %s bereits belegt – starte ohne Adapter "
+                "(Webhooks/OAuth für Chat-Bot ausgeschaltet).",
+                adapter_port, adapter_host,
+            )
+            web_adapter = None
+    else:
+        log.info("TwitchIO Web Adapter deaktiviert per TWITCH_CHAT_ADAPTER.")
 
     bot = RaidChatBot(
         token=token,
