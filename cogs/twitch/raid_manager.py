@@ -729,6 +729,7 @@ class RaidBot:
         self.raid_executor = RaidExecutor(client_id, self.auth_manager)
         self.session = session
         self.chat_bot = None  # Wird später gesetzt
+        self._bot_id = None   # Wird bei set_chat_bot gesetzt als Fallback
         self._cleanup_counter = 0
         
         # Cleanup-Task starten
@@ -773,6 +774,11 @@ class RaidBot:
     def set_chat_bot(self, chat_bot):
         """Setzt den Twitch Chat Bot für Recruitment-Nachrichten."""
         self.chat_bot = chat_bot
+        # Bot-ID speichern damit complete_setup auch ohne chat_bot funktioniert
+        if chat_bot:
+            bot_id = getattr(chat_bot, "bot_id_safe", None) or getattr(chat_bot, "bot_id", None)
+            if bot_id and str(bot_id).strip():
+                self._bot_id = str(bot_id).strip()
 
     def set_discord_bot(self, discord_bot):
         """
@@ -800,12 +806,22 @@ class RaidBot:
             return
 
         access_token, _ = tokens
-        # Verwende bot_id_safe Property für sicheren Zugriff
-        bot_id = getattr(self.chat_bot, "bot_id_safe", None)
-        if bot_id is None:
-            # Fallback auf alte Methode
-            bot_id_raw = getattr(self.chat_bot, "bot_id", None)
-            bot_id = str(bot_id_raw).strip() if bot_id_raw and str(bot_id_raw).strip() else None
+        # Bot-ID: aus chat_bot wenn verfügbar, sonst aus gespeichertem _bot_id Fallback
+        bot_id = None
+        if self.chat_bot:
+            bot_id = getattr(self.chat_bot, "bot_id_safe", None)
+            if bot_id is None:
+                bot_id_raw = getattr(self.chat_bot, "bot_id", None)
+                bot_id = str(bot_id_raw).strip() if bot_id_raw and str(bot_id_raw).strip() else None
+        if not bot_id:
+            bot_id = getattr(self, "_bot_id", None)
+        if not bot_id:
+            # Letzte Chance: Bot-ID aus ENV
+            import os
+            bot_id = os.getenv("TWITCH_BOT_USER_ID", "").strip() or None
+        if not bot_id:
+            log.warning("complete_setup: Keine Bot-ID verfügbar für %s (chat_bot=%s). Setze TWITCH_BOT_USER_ID ENV.", twitch_login, "None" if not self.chat_bot else "set")
+            return
         
         # 2. Bot als Moderator setzen
         if bot_id:

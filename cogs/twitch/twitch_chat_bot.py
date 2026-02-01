@@ -298,6 +298,62 @@ if TWITCHIO_AVAILABLE:
             except Exception:
                 log.debug("Konnte refreshed Bot-Token nicht in TwitchIO registrieren", exc_info=True)
 
+        async def _ensure_bot_is_mod(self, broadcaster_id: str, broadcaster_login: str) -> bool:
+            """
+            Setzt den Bot als Moderator im Ziel-Channel über den Streamer-Token.
+            Wird aufgerufen wenn ein join() mit 403 fehlschlägt.
+            Gibt True zurück wenn der Bot erfolgreich als Mod gesetzt wurde.
+            """
+            raid_bot = getattr(self, "_raid_bot", None)
+            if not raid_bot or not hasattr(raid_bot, "auth_manager"):
+                log.debug("_ensure_bot_is_mod: Kein RaidManager verfügbar für %s", broadcaster_login)
+                return False
+
+            safe_bot_id = self.bot_id_safe or self.bot_id or ""
+            if not safe_bot_id:
+                log.debug("_ensure_bot_is_mod: Keine Bot-ID verfügbar")
+                return False
+
+            # Streamer-Token holen (wird bei Bedarf automatisch refreshed)
+            session = raid_bot.session if hasattr(raid_bot, "session") else None
+            if not session:
+                log.debug("_ensure_bot_is_mod: Keine HTTP-Session im RaidManager")
+                return False
+
+            tokens = await raid_bot.auth_manager.get_tokens_for_user(broadcaster_id, session)
+            if not tokens:
+                log.warning("_ensure_bot_is_mod: Kein gültiger Token für %s (uid=%s) – Token abgelaufen?", broadcaster_login, broadcaster_id)
+                return False
+
+            access_token, _ = tokens
+
+            try:
+                import aiohttp as _aiohttp
+                url = "https://api.twitch.tv/helix/moderation/moderators"
+                params = {
+                    "broadcaster_id": str(broadcaster_id),
+                    "user_id": str(safe_bot_id),
+                }
+                headers = {
+                    "Client-ID": self._client_id,
+                    "Authorization": f"Bearer {access_token}",
+                }
+                async with session.post(url, headers=headers, params=params) as r:
+                    if r.status in {200, 204}:
+                        log.info("_ensure_bot_is_mod: Bot (ID: %s) ist jetzt Mod in %s (ID: %s)", safe_bot_id, broadcaster_login, broadcaster_id)
+                        return True
+                    elif r.status == 422:
+                        # 422 = Bot ist bereits Mod → sollte nicht vorkommen wenn 403 vorher kam
+                        log.info("_ensure_bot_is_mod: Bot ist bereits Mod in %s (422)", broadcaster_login)
+                        return True
+                    else:
+                        txt = await r.text()
+                        log.warning("_ensure_bot_is_mod: Fehler beim Setzen als Mod in %s: HTTP %s: %s", broadcaster_login, r.status, txt[:200])
+                        return False
+            except Exception:
+                log.exception("_ensure_bot_is_mod: Exception beim Setzen als Mod in %s", broadcaster_login)
+                return False
+
         async def join(self, channel_login: str, channel_id: Optional[str] = None):
             """Joint einen Channel via EventSub (TwitchIO 3.x)."""
             try:
@@ -332,11 +388,32 @@ if TWITCHIO_AVAILABLE:
             except Exception as e:
                 msg = str(e)
                 if "403" in msg and "subscription missing proper authorization" in msg:
-                    log.warning(
-                        "Cannot join chat for %s. Reasons: Bot account missing 'user:read:chat' scope "
-                        "OR Bot is not a Moderator in the channel (please /mod bot).",
+                    # Automatischer Retry: Bot als Mod setzen und nochmal versuchen
+                    log.info(
+                        "join(): 403 für %s – versuche Bot automatisch als Mod zu setzen...",
                         channel_login
                     )
+                    mod_set = await self._ensure_bot_is_mod(str(channel_id), channel_login)
+                    if mod_set:
+                        # Kurze Pause damit Twitch den Mod-Status propagiert
+                        await asyncio.sleep(1)
+                        try:
+                            payload = eventsub.ChatMessageSubscription(
+                                broadcaster_user_id=str(channel_id),
+                                user_id=str(safe_bot_id)
+                            )
+                            await self.subscribe_websocket(payload=payload)
+                            self._monitored_streamers.add(normalized_login)
+                            log.info("join(): Retry erfolgreich für %s nach Mod-Autorisierung", channel_login)
+                            return True
+                        except Exception as retry_err:
+                            log.warning("join(): Retry für %s fehlgeschlagen nach Mod-Autorisierung: %s", channel_login, retry_err)
+                    else:
+                        log.warning(
+                            "join(): Konnte Bot nicht als Mod in %s setzen. "
+                            "Bitte manuell /mod deutschedeadlockcommunity im Channel ausführen.",
+                            channel_login
+                        )
                 elif "429" in msg or "transport limit exceeded" in msg.lower():
                     log.error(
                         "Cannot join chat for %s: WebSocket Transport Limit (429) reached. "
