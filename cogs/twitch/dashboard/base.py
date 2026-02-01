@@ -34,6 +34,7 @@ class DashboardBase:
         list_cb: Callable[[], Awaitable[List[dict]]],
         stats_cb: Callable[..., Awaitable[dict]],
         verify_cb: Callable[[str, str], Awaitable[str]],
+        archive_cb: Callable[[str, str], Awaitable[str]],
         discord_flag_cb: Callable[[str, bool], Awaitable[str]],
         discord_profile_cb: Callable[[str, Optional[str], Optional[str], bool], Awaitable[str]],
         streamer_overview_cb: Optional[Callable[[str], Awaitable[dict]]] = None,
@@ -50,6 +51,7 @@ class DashboardBase:
         self._list = list_cb
         self._stats = stats_cb
         self._verify = verify_cb
+        self._archive = archive_cb
         self._discord_flag = discord_flag_cb
         self._discord_profile = discord_profile_cb
         self._streamer_overview = streamer_overview_cb

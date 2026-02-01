@@ -24,7 +24,11 @@ class DashboardLiveMixin:
         if discord_filter not in {"any", "yes", "no", "linked"}:
             discord_filter = "any"
 
-        total_count = sum(1 for st in items if not bool(st.get("manual_partner_opt_out")))
+        total_count = sum(
+            1
+            for st in items
+            if not bool(st.get("manual_partner_opt_out")) and not bool(st.get("archived_at"))
+        )
         raid_bot_available = bool(getattr(self, "_raid_bot", None))
         token_value = ""
         if not self._noauth and self._token:
@@ -49,6 +53,7 @@ class DashboardLiveMixin:
 
         rows: List[str] = []
         non_partner_entries: List[dict] = []
+        archived_entries: List[dict] = []
         filtered_count = 0
         raid_authorized_count = 0
         raid_ready_count = 0
@@ -60,6 +65,13 @@ class DashboardLiveMixin:
             until_raw = st.get("manual_verified_until")
             until_dt = _parse_dt(until_raw)
             verified_at_dt = _parse_dt(st.get("manual_verified_at"))
+            archived_at_raw = st.get("archived_at")
+            archived_dt = _parse_dt(archived_at_raw)
+            is_archived = archived_dt is not None
+            last_deadlock_dt = _parse_dt(st.get("last_deadlock_stream_at"))
+            inactive_days: Optional[int] = None
+            if last_deadlock_dt:
+                inactive_days = (now.date() - last_deadlock_dt.date()).days
             partner_opt_out = bool(st.get("manual_partner_opt_out"))
             raid_auth_enabled = st.get("raid_auth_enabled")
             raid_authorized_at = st.get("raid_authorized_at")
@@ -67,7 +79,7 @@ class DashboardLiveMixin:
             raid_is_authorized = raid_auth_enabled is not None or bool(raid_authorized_at)
             raid_auto_active = bool(raid_auth_enabled) and raid_bot_enabled
 
-            if not partner_opt_out:
+            if not partner_opt_out and not is_archived:
                 if raid_is_authorized:
                     raid_authorized_count += 1
                 else:
@@ -119,6 +131,14 @@ class DashboardLiveMixin:
             if verified_at_dt:
                 meta_parts.append(f"Bestätigt am {verified_at_dt.date().isoformat()}")
 
+            if last_deadlock_dt:
+                days_since = inactive_days or 0
+                meta_parts.append(
+                    f"Letzter Deadlock-Stream: {last_deadlock_dt.date().isoformat()} ({days_since} Tage her)"
+                )
+            else:
+                meta_parts.append("Noch kein Deadlock-Stream erfasst")
+
             meta_html = (
                 f"<div class='status-meta'>{' • '.join(meta_parts)}</div>" if meta_parts else ""
             )
@@ -166,6 +186,30 @@ class DashboardLiveMixin:
                 else "Discord-Markierung entfernen"
             )
             toggle_classes = "btn btn-small" if not is_on_discord else "btn btn-small btn-secondary"
+
+            archived_at_label = archived_dt.date().isoformat() if archived_dt else (archived_at_raw or "—")
+            last_stream_label = last_deadlock_dt.date().isoformat() if last_deadlock_dt else "—"
+
+            if is_archived:
+                raid_status = (
+                    "OAuth fehlt"
+                    if not raid_is_authorized
+                    else ("Auto-Raid aktiv" if raid_auto_active else "Autorisiert")
+                )
+                archived_entries.append(
+                    {
+                        "login": login,
+                        "status": status_text,
+                        "status_badge": status_badge,
+                        "archived_at": archived_at_label,
+                        "last_stream": last_stream_label,
+                        "inactive_days": inactive_days,
+                        "raid_status": raid_status,
+                        "meta": list(meta_parts),
+                        "escaped_login": escaped_login,
+                    }
+                )
+                continue
 
             should_list_as_non_partner = partner_opt_out
             if should_list_as_non_partner:
@@ -249,10 +293,18 @@ class DashboardLiveMixin:
                     raid_cell_parts.append("<span class='badge badge-warn'>Nicht autorisiert</span>")
                     raid_cell_parts.append("<div class='status-meta'>OAuth fehlt</div>")
                     raid_link = html.escape(raid_auth_link(login), quote=True)
+                    requirements_link = html.escape(
+                        f"/twitch/raid/requirements?login={escaped_login}{token_query}", quote=True
+                    )
                     raid_cell_parts.append(
                         "<a class='btn btn-small btn-secondary' href='"
                         + raid_link
                         + "' target='_blank' rel='noopener'>Autorisieren</a>"
+                    )
+                    raid_cell_parts.append(
+                        "<a class='btn btn-small' href='"
+                        + requirements_link
+                        + "' target='_blank' rel='noopener'>Anforderungen senden</a>"
                     )
             else:
                 raid_cell_parts.append("<span class='badge badge-warn'>Bot offline</span>")
@@ -283,6 +335,11 @@ class DashboardLiveMixin:
                 f"        <input type='hidden' name='login' value='{escaped_login}'>"
                 f"        <input type='hidden' name='mode' value='{toggle_mode}'>"
                 f"        <button class='{toggle_classes}'>{html.escape(toggle_label)}</button>"
+                "      </form>"
+                "      <form method='post' action='/twitch/archive' class='inline'>"
+                f"        <input type='hidden' name='login' value='{escaped_login}'>"
+                "        <input type='hidden' name='mode' value='archive'>"
+                "        <button class='btn btn-small btn-secondary'>Archivieren</button>"
                 "      </form>"
                 "      <form method='post' action='/twitch/remove' class='inline'>"
                 f"        <input type='hidden' name='login' value='{escaped_login}'>"
@@ -467,11 +524,76 @@ class DashboardLiveMixin:
                 "<li class='non-partner-item'><span class='non-partner-meta'>Keine zusätzlichen Streamer ohne Partner-Status vorhanden.</span></li>"
             )
 
+        if archived_entries:
+            archived_rows: List[str] = []
+            for entry in archived_entries:
+                inactive_badge = ""
+                if entry.get("inactive_days") is not None:
+                    inactive_badge = (
+                        f"<span class='badge badge-neutral'>{entry['inactive_days']} Tage inaktiv</span>"
+                    )
+                meta_line = ""
+                if entry.get("meta"):
+                    meta_line = (
+                        "    <span><span class='meta-label'>Info</span><span>"
+                        + " • ".join(html.escape(m) for m in entry["meta"])
+                        + "</span></span>"
+                    )
+                raid_line = ""
+                if entry.get("raid_status"):
+                    raid_line = (
+                        "    <span><span class='meta-label'>Raid</span><span>"
+                        + html.escape(entry["raid_status"])
+                        + "</span></span>"
+                    )
+
+                archived_rows.append(
+                    "<li class='non-partner-item archived-item'>"
+                    "  <div class='non-partner-header'>"
+                    f"    <strong>{html.escape(entry['login'])}</strong>"
+                    "    <div class='non-partner-badges'>"
+                    f"      {entry.get('status_badge', '')}"
+                    f"      {inactive_badge}"
+                    "    </div>"
+                    "  </div>"
+                    "  <div class='non-partner-meta'>"
+                    f"    <span><span class='meta-label'>Archiviert</span><span>{html.escape(entry.get('archived_at') or '—')}</span></span>"
+                    f"    <span><span class='meta-label'>Letzter Stream</span><span>{html.escape(entry.get('last_stream') or '—')}</span></span>"
+                    f"{raid_line}"
+                    f"{meta_line}"
+                    "  </div>"
+                    "  <div class='non-partner-actions'>"
+                    "    <form method='post' action='/twitch/archive' class='inline'>"
+                    f"      <input type='hidden' name='login' value='{entry['escaped_login']}'>"
+                    "      <input type='hidden' name='mode' value='unarchive'>"
+                    "      <button class='btn btn-small'>Reaktivieren</button>"
+                    "    </form>"
+                    "    <form method='post' action='/twitch/remove' class='inline'>"
+                    f"      <input type='hidden' name='login' value='{entry['escaped_login']}'>"
+                    "      <button class='btn btn-small btn-danger'>Streamer entfernen</button>"
+                    "    </form>"
+                    "  </div>"
+                    "</li>"
+                )
+            archived_list_html = "".join(archived_rows)
+        else:
+            archived_list_html = (
+                "<li class='non-partner-item archived-item'><span class='non-partner-meta'>Keine archivierten Streamer.</span></li>"
+            )
+
         non_partner_card_html = (
             "<div class='card non-partner-card'>"
             "  <h2>Keine Partner</h2>"
             "  <p>Streamer, die ausdrücklich als „Kein Partner“ markiert wurden. Sie tauchen nicht in der Hauptliste auf, können aber hier samt Discord-Verknüpfung weiterverwaltet werden.</p>"
             f"  <ul class='non-partner-list'>{non_partner_list_html}</ul>"
+            "</div>"
+        )
+
+        archived_card_html = (
+            "<div class='card non-partner-card archived-card'>"
+            "  <h2>Archivierte Streamer</h2>"
+            "  <p>Automatisch nach 10+ Tagen Inaktivität. Bei neuem Stream werden sie automatisch reaktiviert.</p>"
+            f"  <ul class='non-partner-list'>{archived_list_html}</ul>"
             "</div>"
         )
 
@@ -616,6 +738,7 @@ class DashboardLiveMixin:
 
 {table_html}
 
+{archived_card_html}
 {non_partner_card_html}
 """
 
@@ -798,6 +921,23 @@ class DashboardLiveMixin:
                 request, err="Verifizierung fehlgeschlagen"
             )
             raise web.HTTPFound(location=location)
+
+    async def archive(self, request: web.Request):
+        self._require_token(request)
+        data = await request.post()
+        login = (data.get("login") or "").strip()
+        mode = (data.get("mode") or "").strip().lower() or "toggle"
+        try:
+            msg = await self._archive(login, mode)
+            location = self._redirect_location(request, ok=msg)
+        except ValueError as exc:
+            location = self._redirect_location(request, err=str(exc))
+        except Exception as exc:
+            log.exception("dashboard archive failed: %s", exc)
+            location = self._redirect_location(
+                request, err="Archivierung fehlgeschlagen"
+            )
+        raise web.HTTPFound(location=location)
 
 
 __all__ = ["DashboardLiveMixin"]

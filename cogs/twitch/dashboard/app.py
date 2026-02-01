@@ -47,6 +47,7 @@ class Dashboard(
             web.post("/twitch/add_streamer", self.add_streamer),
             web.post("/twitch/remove", self.remove),
             web.post("/twitch/verify", self.verify),
+            web.post("/twitch/archive", self.archive),
             web.post("/twitch/discord_flag", self.discord_flag),
             web.post("/twitch/discord_link", self.discord_link),
             web.get("/twitch/stats", self.stats),
@@ -62,6 +63,7 @@ class Dashboard(
             # Raid Bot Routes
             web.get("/twitch/raid/auth", self.raid_auth_start),
             web.get("/twitch/raid/callback", self.raid_oauth_callback),
+            web.get("/twitch/raid/requirements", self.raid_requirements),
             web.post("/twitch/raid/toggle", self.raid_toggle),
             web.get("/twitch/raid/history", self.raid_history),
             # Reload
@@ -79,6 +81,7 @@ def build_app(
     list_cb=None,
     stats_cb=None,
     verify_cb=None,
+    archive_cb=None,
     discord_flag_cb=None,
     discord_profile_cb=None,
     raid_history_cb=None,
@@ -106,6 +109,7 @@ def build_app(
             list_cb,
             stats_cb,
             verify_cb,
+            archive_cb,
             discord_flag_cb,
             discord_profile_cb,
         )
@@ -121,6 +125,7 @@ def build_app(
             list_cb=list_cb,
             stats_cb=stats_cb,
             verify_cb=verify_cb,
+            archive_cb=archive_cb,
             discord_flag_cb=discord_flag_cb,
             discord_profile_cb=discord_profile_cb,
             streamer_overview_cb=streamer_overview_cb,

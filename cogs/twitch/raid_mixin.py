@@ -128,24 +128,36 @@ class TwitchRaidMixin:
         with get_conn() as conn:
             partners = conn.execute(
                 """
-                SELECT DISTINCT s.twitch_login, s.twitch_user_id
-                FROM twitch_streamers s
-                WHERE (s.manual_verified_permanent = 1
-                       OR s.manual_verified_until IS NOT NULL
-                       OR s.manual_verified_at IS NOT NULL)
-                  AND s.manual_partner_opt_out = 0
-                  AND s.twitch_user_id != ?
-                """,
+            SELECT DISTINCT s.twitch_login,
+                            s.twitch_user_id,
+                            s.archived_at,
+                            a.raid_enabled,
+                            a.authorized_at
+              FROM twitch_streamers s
+              LEFT JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
+             WHERE (s.manual_verified_permanent = 1
+                    OR s.manual_verified_until IS NOT NULL
+                    OR s.manual_verified_at IS NOT NULL)
+               AND s.manual_partner_opt_out = 0
+               AND s.archived_at IS NULL
+               AND s.twitch_user_id IS NOT NULL
+               AND s.twitch_user_id != ?
+            """,
                 (twitch_user_id,),
             ).fetchall()
 
         # Nur Partner, die gerade live sind
-        for partner_login, partner_user_id in partners:
+        for partner_login, partner_user_id, archived_at, raid_enabled, raid_authorized_at in partners:
+            if archived_at:
+                continue
+            if not raid_enabled and not raid_authorized_at:
+                continue
             partner_login_lower = partner_login.lower()
             stream_data = streams_by_login.get(partner_login_lower)
             if stream_data:
                 # Stream-Daten mit user_id anreichern
                 stream_data["user_id"] = partner_user_id
+                stream_data["raid_enabled"] = bool(raid_enabled) or bool(raid_authorized_at)
                 online_partners.append(stream_data)
                 partner_logins_lower.append(partner_login_lower)
 

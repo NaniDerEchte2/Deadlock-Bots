@@ -15,6 +15,7 @@ from aiohttp import web
 from . import storage
 from .dashboard import Dashboard
 from .logger import log
+from .constants import TWITCH_TARGET_GAME_NAME
 
 
 def _parse_env_int(var_name: str, default: int = 0) -> int:
@@ -53,6 +54,7 @@ class TwitchDashboardMixin:
         # kleine Retry-Logik gegen gelegentliche "database is locked" Antworten
         for attempt in range(3):
             try:
+                target_game = (os.getenv("TWITCH_TARGET_GAME_NAME") or TWITCH_TARGET_GAME_NAME or "").strip()
                 with storage.get_conn() as c:
                     c.execute(
                         """
@@ -73,13 +75,15 @@ class TwitchDashboardMixin:
                                s.manual_verified_until,
                                s.manual_verified_at,
                                s.manual_partner_opt_out,
+                               s.archived_at,
                                s.is_on_discord,
                                s.discord_user_id,
                                s.discord_display_name,
                                s.raid_bot_enabled,
                                a.raid_enabled AS raid_auth_enabled,
                                a.authorized_at AS raid_authorized_at,
-                               a.token_expires_at AS raid_token_expires_at
+                               a.token_expires_at AS raid_token_expires_at,
+                               sess.last_deadlock_stream_at
                           FROM twitch_streamers s
                           LEFT JOIN twitch_raid_auth a
                             ON (
@@ -90,8 +94,20 @@ class TwitchDashboardMixin:
                                  s.twitch_user_id IS NULL
                                  AND LOWER(s.twitch_login) = LOWER(a.twitch_login)
                                )
+                          LEFT JOIN (
+                               SELECT LOWER(streamer_login) AS streamer_login,
+                                      MAX(CASE
+                                            WHEN had_deadlock_in_session = 1
+                                                 OR LOWER(COALESCE(game_name,'')) = LOWER(?)
+                                            THEN COALESCE(ended_at, started_at)
+                                          END) AS last_deadlock_stream_at
+                                 FROM twitch_stream_sessions
+                                GROUP BY LOWER(streamer_login)
+                          ) AS sess
+                            ON sess.streamer_login = LOWER(s.twitch_login)
                          ORDER BY s.twitch_login
-                        """
+                        """,
+                        (target_game,),
                     ).fetchall()
                 return [dict(row) for row in rows]
             except sqlite3.OperationalError as exc:
@@ -177,6 +193,60 @@ class TwitchDashboardMixin:
         if is_on_discord:
             return f"{normalized} als Discord-Mitglied markiert"
         return f"Discord-Markierung für {normalized} entfernt"
+
+    async def _dashboard_archive(self, login: str, mode: str) -> str:
+        """
+        Archiviert oder ent-archiviert einen Streamer.
+
+        mode: 'archive'/'on' -> setzt archived_at=now, 'unarchive'/'off' -> NULL, 'toggle' -> flip.
+        """
+        normalized = self._normalize_login(login)
+        if not normalized:
+            raise ValueError("Ungültiger Login")
+
+        mode_clean = (mode or "").strip().lower()
+        if mode_clean in {"archive", "on", "set"}:
+            desired = "archive"
+        elif mode_clean in {"unarchive", "off", "unset", "restore"}:
+            desired = "unarchive"
+        else:
+            desired = "toggle"
+
+        now_iso = datetime.utcnow().isoformat(timespec="seconds")
+        with storage.get_conn() as conn:
+            row = conn.execute(
+                "SELECT archived_at FROM twitch_streamers WHERE twitch_login = ?",
+                (normalized,),
+            ).fetchone()
+            if not row:
+                raise ValueError(f"{normalized} ist nicht gespeichert")
+            current = row[0] if hasattr(row, "keys") else row[0]
+
+            if desired == "archive":
+                if current:
+                    return f"{normalized} ist bereits archiviert (seit {current})"
+                conn.execute(
+                    "UPDATE twitch_streamers SET archived_at = ? WHERE twitch_login = ?",
+                    (now_iso, normalized),
+                )
+                return f"{normalized} archiviert"
+
+            if desired == "unarchive":
+                if not current:
+                    return f"{normalized} ist nicht archiviert"
+                conn.execute(
+                    "UPDATE twitch_streamers SET archived_at = NULL WHERE twitch_login = ?",
+                    (normalized,),
+                )
+                return f"{normalized} ent-archiviert"
+
+            # toggle
+            new_value = None if current else now_iso
+            conn.execute(
+                "UPDATE twitch_streamers SET archived_at = ? WHERE twitch_login = ?",
+                (new_value, normalized),
+            )
+            return f"{normalized} {'archiviert' if new_value else 'reaktiviert'}"
 
     async def _dashboard_save_discord_profile(
         self,
@@ -1384,6 +1454,14 @@ class TwitchDashboardMixin:
     async def _reload_twitch_cog(self) -> str:
         """Hot reload the entire Twitch cog."""
         try:
+            if hasattr(self.bot, "reload_cog"):
+                ok, msg = await self.bot.reload_cog("cogs.twitch")
+                if ok:
+                    log.info("Twitch cog hot reloaded via dashboard")
+                    return "Twitch-Modul erfolgreich neu geladen"
+                log.warning("Twitch cog hot reload failed via dashboard: %s", msg)
+                return f"Fehler beim Neuladen: {msg}"
+
             await self.bot.reload_extension("cogs.twitch")
             log.info("Twitch cog hot reloaded via dashboard")
             return "Twitch-Modul erfolgreich neu geladen"
@@ -1413,6 +1491,7 @@ class TwitchDashboardMixin:
                     list_cb=self._dashboard_list,
                     stats_cb=self._dashboard_stats,
                     verify_cb=self._dashboard_verify,
+                    archive_cb=self._dashboard_archive,
                     discord_flag_cb=self._dashboard_set_discord_flag,
                     discord_profile_cb=self._dashboard_save_discord_profile,
                     raid_history_cb=self._dashboard_raid_history if hasattr(self, "_dashboard_raid_history") else None,

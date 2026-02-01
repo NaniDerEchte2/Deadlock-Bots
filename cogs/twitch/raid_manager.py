@@ -1184,6 +1184,7 @@ class RaidBot:
                 s
                 for s in online_partners
                 if s.get("user_id") not in exclude_ids
+                and bool(s.get("raid_enabled", True))
                 and not self._is_blacklisted(s.get("user_id"), s.get("user_login"))
             ]
 

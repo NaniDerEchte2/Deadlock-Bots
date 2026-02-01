@@ -67,6 +67,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ("manual_verified_until", "TEXT"),
         ("manual_verified_at", "TEXT"),
         ("manual_partner_opt_out", "INTEGER DEFAULT 0"),
+        ("archived_at", "TEXT"),
         ("raid_bot_enabled", "INTEGER DEFAULT 0"),  # Auto-Raid Opt-in/out (default: off)
         ("created_at", "TEXT DEFAULT CURRENT_TIMESTAMP"),
     ]:
@@ -186,6 +187,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "twitch_stream_sessions", "language", "TEXT")
     _add_column_if_missing(conn, "twitch_stream_sessions", "is_mature", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_stream_sessions", "tags", "TEXT")
+    _add_column_if_missing(conn, "twitch_stream_sessions", "had_deadlock_in_session", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_stream_sessions", "followers_start", "INTEGER")
     _add_column_if_missing(conn, "twitch_stream_sessions", "followers_end", "INTEGER")
     _add_column_if_missing(conn, "twitch_stream_sessions", "follower_delta", "INTEGER")

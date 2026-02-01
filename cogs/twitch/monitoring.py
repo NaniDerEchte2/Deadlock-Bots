@@ -6,7 +6,8 @@ import asyncio
 import secrets
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import os
 from typing import Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -70,6 +71,7 @@ class TwitchMonitoringMixin:
                      WHERE raid_bot_enabled = 1
                        AND twitch_user_id IS NOT NULL
                        AND twitch_login IS NOT NULL
+                       AND archived_at IS NULL
                     """
                 ).fetchall()
             return [
@@ -96,6 +98,7 @@ class TwitchMonitoringMixin:
                             OR s.manual_verified_until IS NOT NULL
                             OR s.manual_verified_at IS NOT NULL)
                        AND s.manual_partner_opt_out = 0
+                       AND s.archived_at IS NULL
                        AND s.twitch_user_id IS NOT NULL
                        AND s.twitch_login IS NOT NULL
                     """
@@ -127,7 +130,7 @@ class TwitchMonitoringMixin:
         try:
             with storage.get_conn() as c:
                 rows = c.execute(
-                    "SELECT twitch_login FROM twitch_streamers WHERE twitch_login IS NOT NULL"
+                    "SELECT twitch_login FROM twitch_streamers WHERE twitch_login IS NOT NULL AND archived_at IS NULL"
                 ).fetchall()
             return [str(r["twitch_login"] if hasattr(r, "keys") else r[0]).lower() for r in rows]
         except Exception:
@@ -399,7 +402,7 @@ class TwitchMonitoringMixin:
             with storage.get_conn() as c:
                 rows = c.execute(
                     "SELECT twitch_login, twitch_user_id, require_discord_link, "
-                    "       manual_verified_permanent, manual_verified_until "
+                    "       manual_verified_permanent, manual_verified_until, archived_at "
                     "FROM twitch_streamers"
                 ).fetchall()
             tracked: List[Dict[str, object]] = []
@@ -411,6 +414,14 @@ class TwitchMonitoringMixin:
                     continue
                 user_id = str(row_dict.get("twitch_user_id") or "").strip()
                 require_link = bool(row_dict.get("require_discord_link"))
+                archived_at_raw = row_dict.get("archived_at")
+                archived_dt: Optional[datetime] = None
+                if archived_at_raw:
+                    try:
+                        archived_dt = datetime.fromisoformat(str(archived_at_raw))
+                    except Exception:
+                        archived_dt = None
+                is_archived = archived_dt is not None
                 is_verified = False
                 try:
                     is_verified = self._is_partner_verified(row_dict, now_utc)
@@ -423,10 +434,12 @@ class TwitchMonitoringMixin:
                         "twitch_user_id": user_id,
                         "require_link": require_link,
                         "is_verified": is_verified,
+                        "archived_at": archived_at_raw,
+                        "is_archived": is_archived,
                     }
                 )
                 login_lower = login.lower()
-                if login_lower and is_verified:
+                if login_lower and is_verified and not is_archived:
                     partner_logins.add(login_lower)
         except Exception:
             log.exception("Konnte tracked Streamer nicht aus DB lesen")
@@ -545,8 +558,19 @@ class TwitchMonitoringMixin:
             login_lower = login.lower()
             stream = streams_by_login.get(login_lower)
             previous_state = live_state.get(login_lower, {})
+            archived_at_raw = entry.get("archived_at")
+            is_archived = bool(entry.get("is_archived"))
             was_live = bool(previous_state.get("is_live", 0))
             is_live = bool(stream)
+
+            # Auto-Entarchivierung sobald jemand wieder streamt
+            if is_live and is_archived:
+                try:
+                    await self._dashboard_archive(login, "unarchive")
+                    is_archived = False
+                    entry["is_archived"] = False
+                except Exception:
+                    log.debug("Auto-Unarchive fehlgeschlagen für %s", login, exc_info=True)
             previous_game = (previous_state.get("last_game") or "").strip()
             previous_game_lower = previous_game.lower()
             was_deadlock = previous_game_lower == target_game_lower
@@ -619,6 +643,7 @@ class TwitchMonitoringMixin:
                 and is_deadlock
                 and (not was_live or not was_deadlock or not message_id_previous)
                 and is_verified
+                and not is_archived
             )
 
             if should_post:
@@ -677,6 +702,7 @@ class TwitchMonitoringMixin:
                 and was_live
                 and not is_live
                 and had_deadlock_in_session
+                and not is_archived
             )
 
             # Auto-Raid beim Offline-Gehen
@@ -769,6 +795,7 @@ class TwitchMonitoringMixin:
                 pass
 
         await self._persist_live_state_rows(pending_state_rows)
+        await self._auto_archive_inactive_streamers()
 
     async def _persist_live_state_rows(
         self,
@@ -818,6 +845,85 @@ class TwitchMonitoringMixin:
                     return
                 await asyncio.sleep(retry_delay)
                 retry_delay *= 2
+
+    async def _auto_archive_inactive_streamers(self, *, days: int = 10) -> None:
+        """
+        Archiviert Partner automatisch, wenn sie länger als `days` Tage nicht gestreamt haben.
+        Läuft maximal alle 15 Minuten, um DB-Load gering zu halten.
+        """
+        now = datetime.now(timezone.utc)
+        last_run = getattr(self, "_last_archive_check", 0.0)
+        if time.time() - last_run < 900:
+            return
+        setattr(self, "_last_archive_check", time.time())
+
+        cutoff = now - timedelta(days=days)
+
+        try:
+            target_game = (os.getenv("TWITCH_TARGET_GAME_NAME") or TWITCH_TARGET_GAME_NAME or "").strip()
+            with storage.get_conn() as c:
+                rows = c.execute(
+                    """
+                    SELECT s.twitch_login,
+                           s.archived_at,
+                           MAX(
+                               CASE
+                                 WHEN sess.had_deadlock_in_session = 1
+                                      OR LOWER(COALESCE(sess.game_name,'')) = LOWER(?)
+                                 THEN COALESCE(sess.ended_at, sess.started_at)
+                               END
+                           ) AS last_deadlock_stream_at
+                      FROM twitch_streamers s
+                      LEFT JOIN twitch_stream_sessions sess
+                        ON LOWER(sess.streamer_login) = LOWER(s.twitch_login)
+                     WHERE s.manual_partner_opt_out = 0
+                       AND (s.manual_verified_permanent = 1
+                            OR s.manual_verified_until IS NOT NULL
+                            OR s.manual_verified_at IS NOT NULL)
+                    GROUP BY s.twitch_login, s.archived_at
+                    """,
+                    (target_game,),
+                ).fetchall()
+        except Exception:
+            log.debug("Auto-Archivierung: konnte Streamer-Liste nicht laden", exc_info=True)
+            return
+
+        for row in rows:
+            try:
+                login = (row["twitch_login"] if hasattr(row, "keys") else row[0] or "").strip()
+            except Exception:
+                continue
+            if not login:
+                continue
+
+            archived_at = row["archived_at"] if hasattr(row, "keys") else row[1]
+            if archived_at:
+                continue
+
+            last_stream_raw = row["last_deadlock_stream_at"] if hasattr(row, "keys") else row[2]
+            if not last_stream_raw:
+                # Keine Historie -> keine automatische Archivierung
+                continue
+
+            try:
+                last_dt = datetime.fromisoformat(str(last_stream_raw).replace("Z", "+00:00"))
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                log.debug("Auto-Archivierung: Datum unlesbar für %s (%r)", login, last_stream_raw, exc_info=True)
+                continue
+
+            if last_dt < cutoff:
+                try:
+                    await self._dashboard_archive(login, "archive")
+                    log.info(
+                        "Auto-archiviert %s (letzter Stream %s, cutoff %s)",
+                        login,
+                        last_dt.date().isoformat(),
+                        cutoff.date().isoformat(),
+                    )
+                except Exception:
+                    log.debug("Auto-Archivierung fehlgeschlagen für %s", login, exc_info=True)
 
     @staticmethod
     def _parse_dt(value: Optional[str]) -> Optional[datetime]:
@@ -964,6 +1070,7 @@ class TwitchMonitoringMixin:
         viewer_count = int(stream.get("viewer_count") or 0)
         stream_id = str(stream.get("id") or "").strip() or None
         game_name = (stream.get("game_name") or "").strip() or None
+        had_deadlock_initial = 1 if self._stream_is_in_target_category(stream) else 0
         session_id: Optional[int] = None
         try:
             with storage.get_conn() as c:
@@ -972,8 +1079,8 @@ class TwitchMonitoringMixin:
                     INSERT INTO twitch_stream_sessions (
                         streamer_login, stream_id, started_at, start_viewers, peak_viewers,
                         end_viewers, avg_viewers, samples, followers_start, stream_title,
-                        language, is_mature, tags, game_name
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        language, is_mature, tags, game_name, had_deadlock_in_session
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         login,
@@ -990,6 +1097,7 @@ class TwitchMonitoringMixin:
                         1 if is_mature else 0,
                         tags,
                         game_name,
+                        had_deadlock_initial,
                     ),
                 )
                 session_id = int(c.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -1179,20 +1287,23 @@ class TwitchMonitoringMixin:
         followers_start = _row_val(session_row, "followers_start", 19, None)
 
         twitch_user_id: Optional[str] = None
+        had_deadlock_state = False
         try:
             with storage.get_conn() as c:
                 state_row = c.execute(
-                    "SELECT twitch_user_id, last_game FROM twitch_live_state WHERE streamer_login = ?",
+                    "SELECT twitch_user_id, last_game, had_deadlock_in_session FROM twitch_live_state WHERE streamer_login = ?",
                     (login_lower,),
                 ).fetchone()
             if state_row is not None:
                 twitch_user_id = _row_val(state_row, "twitch_user_id", 0, None)
                 last_game_value = _row_val(state_row, "last_game", 1, None)
+                had_deadlock_state = bool(int(_row_val(state_row, "had_deadlock_in_session", 2, 0) or 0))
             else:
                 last_game_value = None
         except Exception:
             last_game_value = None
             twitch_user_id = None
+            had_deadlock_state = False
 
         followers_end = await self._fetch_followers_total_safe(
             twitch_user_id=twitch_user_id,
@@ -1202,6 +1313,12 @@ class TwitchMonitoringMixin:
         follower_delta = None
         if followers_start is not None and followers_end is not None:
             follower_delta = int(followers_end) - int(followers_start)
+
+        target_game_lower = self._get_target_game_lower()
+        last_game_lower = (last_game_value or "").strip().lower() if last_game_value else ""
+        had_deadlock_session = had_deadlock_state or (
+            bool(target_game_lower) and last_game_lower == target_game_lower
+        )
 
         try:
             with storage.get_conn() as c:
@@ -1225,6 +1342,7 @@ class TwitchMonitoringMixin:
                            followers_end = ?,
                            follower_delta = ?,
                            notes = ?,
+                           had_deadlock_in_session = ?,
                            game_name = COALESCE(game_name, ?)
                      WHERE id = ?
                     """,
@@ -1246,6 +1364,7 @@ class TwitchMonitoringMixin:
                         followers_end,
                         follower_delta,
                         reason,
+                        1 if had_deadlock_session else 0,
                         last_game_value,
                         session_id,
                     ),

@@ -182,6 +182,59 @@ class DashboardRaidMixin:
             log.exception("Failed to toggle raid for %s", safe_user_id)
             return web.json_response({"error": str(exc)}, status=500)
 
+    async def raid_requirements(self, request: web.Request) -> web.Response:
+        """
+        Liefert eine kompakte Requirements-Seite und einen frischen OAuth-Link.
+        Kein Pre-Gen-Link: jedes Öffnen erzeugt einen neuen State.
+        """
+        token = request.query.get("token", "")
+        if not self._check_token(token):
+            return web.Response(text="Unauthorized", status=401)
+
+        login = request.query.get("login", "").strip().lower()
+        if not login:
+            return web.Response(text="Missing login parameter", status=400)
+
+        if not self._raid_bot or not getattr(self._raid_bot, "auth_manager", None):
+            return web.Response(text="Raid bot not initialized", status=503)
+
+        auth_url = self._raid_bot.auth_manager.generate_auth_url(login)
+        escaped_login = html.escape(login, quote=True)
+        escaped_url = html.escape(auth_url, quote=True)
+
+        body = f"""
+<!DOCTYPE html>
+<html lang="de">
+<head><meta charset="utf-8"><title>Raid-Bot Anforderungen für {escaped_login}</title>
+<style>
+body {{ font-family: Arial, sans-serif; margin: 2rem; color: #111; }}
+.card {{ border:1px solid #ddd; border-radius:10px; padding:1.5rem; max-width:720px; }}
+ul {{ padding-left:1.2rem; }}
+.actions {{ margin-top:1rem; display:flex; gap:.6rem; flex-wrap:wrap; }}
+.btn {{ padding:.65rem 1.1rem; border-radius:8px; border:none; cursor:pointer; font-weight:600; text-decoration:none; }}
+.primary {{ background:#9146FF; color:white; }}
+.ghost {{ background:#f4f4f6; color:#222; }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h2>Raid-Bot Anforderungen für @{escaped_login}</h2>
+    <p>Das braucht der Streamer, damit Auto-Raids laufen:</p>
+    <ul>
+      <li>Auf „Autorisiere den Raid-Bot“ klicken (öffnet Twitch OAuth).</li>
+      <li>Twitch-Berechtigungen akzeptieren (Raids & Chat).</li>
+      <li>Bot als Moderator behalten (wird automatisch gesetzt).</li>
+    </ul>
+    <div class="actions">
+      <a class="btn primary" href="{escaped_url}" target="_blank" rel="noopener">Jetzt autorisieren</a>
+      <button class="btn ghost" onclick="navigator.clipboard.writeText('{escaped_url}');this.textContent='Link kopiert';">Link kopieren</button>
+    </div>
+  </div>
+</body>
+</html>
+"""
+        return web.Response(text=body, content_type="text/html")
+
     async def raid_history(self, request: web.Request) -> web.Response:
         """Zeigt Raid-History an."""
         token = request.query.get("token", "")
