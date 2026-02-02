@@ -99,6 +99,14 @@ class AnalyticsBackendExtended:
         where_clause = "AND LOWER(s.streamer_login) = ?" if streamer_login else ""
         params = [since_date, streamer_login.lower().strip()] if streamer_login else [since_date]
         
+        # BUGFIX: Prüfe ob follower_delta Spalte existiert
+        try:
+            conn.execute("SELECT follower_delta FROM twitch_stream_sessions LIMIT 1")
+            follower_sum = "SUM(COALESCE(s.follower_delta, 0)) as total_followers"
+        except Exception:
+            follower_sum = "0 as total_followers"
+            log.debug("follower_delta Spalte fehlt - verwende 0")
+        
         # Main metrics query
         query = f"""
             SELECT 
@@ -107,7 +115,7 @@ class AnalyticsBackendExtended:
                 AVG(s.retention_20m) as avg_ret_20m,
                 AVG(s.dropoff_pct) as avg_dropoff,
                 AVG(s.peak_viewers) as avg_peak,
-                SUM(COALESCE(s.follower_delta, 0)) as total_followers,
+                {follower_sum},
                 COUNT(*) as session_count,
                 SUM(s.duration_seconds) as total_duration_sec,
                 AVG(s.unique_chatters) as avg_unique_chatters,
@@ -153,11 +161,12 @@ class AnalyticsBackendExtended:
         if streamer_login:
             prev_params.append(streamer_login.lower().strip())
         
+        # Use same follower_sum for previous period
         prev_query = f"""
             SELECT 
                 AVG(s.retention_5m) as avg_ret_5m,
                 AVG(s.peak_viewers) as avg_peak,
-                SUM(COALESCE(s.follower_delta, 0)) as total_followers,
+                {follower_sum},
                 AVG(CASE WHEN s.avg_viewers > 0 THEN (s.unique_chatters * 100.0 / s.avg_viewers) ELSE 0 END) as chat_per_100
             FROM twitch_stream_sessions s
             WHERE s.started_at >= ? AND s.started_at < ?
@@ -252,11 +261,18 @@ class AnalyticsBackendExtended:
         where_clause = "AND LOWER(s.streamer_login) = ?" if streamer_login else ""
         params = [since_date, streamer_login.lower().strip()] if streamer_login else [since_date]
         
+        # BUGFIX: Handle missing follower_delta column
+        try:
+            conn.execute("SELECT follower_delta FROM twitch_stream_sessions LIMIT 1")
+            follower_sum = "SUM(COALESCE(s.follower_delta, 0)) as followers_delta"
+        except Exception:
+            follower_sum = "0 as followers_delta"
+        
         query = f"""
             SELECT 
                 DATE(s.started_at) as date,
                 AVG(s.peak_viewers) as peak_viewers,
-                SUM(COALESCE(s.follower_delta, 0)) as followers_delta,
+                {follower_sum},
                 AVG(s.avg_viewers) as avg_viewers
             FROM twitch_stream_sessions s
             WHERE s.started_at >= ?
@@ -323,6 +339,16 @@ class AnalyticsBackendExtended:
         where_clause = "AND LOWER(s.streamer_login) = ?" if streamer_login else ""
         params = [since_date, streamer_login.lower().strip()] if streamer_login else [since_date]
         
+        # BUGFIX: Prüfe ob follower_* Spalten existieren, sonst verwende 0
+        try:
+            conn.execute("SELECT follower_start FROM twitch_stream_sessions LIMIT 1")
+            has_follower_cols = True
+        except Exception:
+            has_follower_cols = False
+            log.warning("Follower-Spalten fehlen in DB - verwende Default-Werte (0)")
+        
+        follower_select = "COALESCE(s.follower_start, 0) as follower_start, COALESCE(s.follower_end, 0) as follower_end" if has_follower_cols else "0 as follower_start, 0 as follower_end"
+        
         query = f"""
             SELECT 
                 s.id,
@@ -340,8 +366,7 @@ class AnalyticsBackendExtended:
                 s.unique_chatters,
                 s.first_time_chatters,
                 s.returning_chatters,
-                COALESCE(s.follower_start, 0) as follower_start,
-                COALESCE(s.follower_end, 0) as follower_end,
+                {follower_select},
                 s.stream_title
             FROM twitch_stream_sessions s
             WHERE s.started_at >= ?

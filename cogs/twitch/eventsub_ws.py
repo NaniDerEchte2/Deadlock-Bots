@@ -42,11 +42,17 @@ class EventSubWSListener:
         """
         Calculate the total cost of all registered subscriptions.
         stream.online and stream.offline (v1) cost 1 each.
+        Max cost per transport: 10 (Twitch limit)
         """
         if self._failed:
             return 9999 # Mark as full/broken
         # In a more advanced version, we could look up costs per sub_type.
         return len(self._subscriptions)
+    
+    @property
+    def has_capacity(self) -> bool:
+        """Check if this listener can accept more subscriptions (max 10 per transport)"""
+        return self.cost < 10 and not self._failed
 
     @property
     def is_failed(self) -> bool:
@@ -154,10 +160,24 @@ class EventSubWSListener:
             self.log.error("EventSub WS: No user token available. Subscriptions will fail.")
             return
 
-        # Twitch limit: 3000 subscriptions per verified session, 300 per unverified.
-        # We assume we stay within these limits.
+        # Twitch limits:
+        # - Max 3 concurrent WebSocket connections (transports) per Client ID
+        # - Max 10 subscriptions per transport (websocket transport subscriptions total cost)
+        # - Max 100 subscriptions total per Client ID
+        
+        max_subs_per_transport = 10
+        if len(self._subscriptions) > max_subs_per_transport:
+            self.log.error(
+                "EventSub WS: Versuche %d Subscriptions zu registrieren, aber Limit ist %d pro Transport! "
+                "Nur die ersten %d werden registriert.",
+                len(self._subscriptions), max_subs_per_transport, max_subs_per_transport
+            )
+            # Markiere Session als fehlgeschlagen wenn zu viele Subs
+            self._failed = True
+            self._subscriptions = self._subscriptions[:max_subs_per_transport]
         
         # Batch subscriptions to avoid hitting API rate limits too hard
+        successful_count = 0
         for i, (sub_type, bid, condition) in enumerate(self._subscriptions):
             try:
                 await self.api.subscribe_eventsub_websocket(
@@ -166,24 +186,40 @@ class EventSubWSListener:
                     condition=condition,
                     oauth_token=token,
                 )
-                self.log.debug("EventSub WS: Subscribed %s for %s", sub_type, bid)
+                successful_count += 1
+                self.log.debug("EventSub WS: Subscribed %s for %s (%d/%d)", sub_type, bid, successful_count, len(self._subscriptions))
                 
-                # Small delay every 5 subs to be nice to the API
-                if (i + 1) % 5 == 0:
-                    await asyncio.sleep(0.5)
+                # Small delay every 3 subs to be nice to the API
+                if (i + 1) % 3 == 0:
+                    await asyncio.sleep(0.3)
                     
             except Exception as e:
                 msg = str(e)
-                if "429" in msg or "transport limit exceeded" in msg.lower():
+                if "429" in msg or "transport limit exceeded" in msg.lower() or "websocket transport" in msg.lower():
+                    # 429 Error - Transport limit erreicht
+                    if "websocket transports limit exceeded" in msg.lower():
+                        self.log.error(
+                            "EventSub WS: Max WebSocket Transport Limit (3) erreicht! "
+                            "Keine weiteren Transports möglich. Bitte alte Sessions beenden."
+                        )
+                        self._failed = True
+                        break
+                    
+                    if "websocket transport subscriptions total cost exceeded" in msg.lower():
+                        self.log.error(
+                            "EventSub WS: Transport Subscription Cost Limit (%d) erreicht bei %s for %s. "
+                            "Dieser Transport ist voll. Erstelle eine neue Session.",
+                            max_subs_per_transport, sub_type, bid
+                        )
+                        self._failed = True
+                        break
+                    
+                    # Generischer 429 - warte und retry einmal
                     self.log.warning(
-                        "EventSub WS: Transport limit (429) hit during %s for %s "
-                        "– warte 5s und überspringe diese Sub (Session bleibt nutzbar).",
+                        "EventSub WS: Rate limit (429) hit during %s for %s – warte 2s und versuche einmal retry.",
                         sub_type, bid,
                     )
-                    # Nur diese eine Sub überspringen, nicht die ganze Session
-                    # abbrechen. Ein weiterer 429 nach der Pause markiert die Session
-                    # als kaputt.
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(2)
                     try:
                         await self.api.subscribe_eventsub_websocket(
                             session_id=session_id,
@@ -191,16 +227,24 @@ class EventSubWSListener:
                             condition=condition,
                             oauth_token=token,
                         )
+                        successful_count += 1
                         self.log.info("EventSub WS: Retry nach 429 erfolgreich: %s for %s", sub_type, bid)
                     except Exception as retry_err:
                         retry_msg = str(retry_err)
-                        if "429" in retry_msg or "transport limit exceeded" in retry_msg.lower():
-                            self.log.error("EventSub WS: Transport limit (429) erneut nach Retry – Session wird markiert als fehlgeschlagen.", )
+                        if "429" in retry_msg or "transport limit" in retry_msg.lower():
+                            self.log.error(
+                                "EventSub WS: Transport limit (429) auch nach Retry – Session als fehlgeschlagen markiert."
+                            )
                             self._failed = True
                             break
                         self.log.error("EventSub WS: Retry für %s (%s) fehlgeschlagen: %s", bid, sub_type, retry_err)
                     continue
                 self.log.error("EventSub WS: Subscription failed for %s (%s): %s", bid, sub_type, e)
+        
+        self.log.info(
+            "EventSub WS: Subscription-Registrierung abgeschlossen: %d/%d erfolgreich",
+            successful_count, len(self._subscriptions)
+        )
 
     async def _handle_message(self, data: Dict) -> None:
         meta = data.get("metadata") or {}

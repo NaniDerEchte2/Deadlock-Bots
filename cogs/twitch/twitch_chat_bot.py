@@ -123,7 +123,7 @@ _SPAM_FRAGMENTS = (
     "smmhype1.ru",
     "smmhype",
 )
-_SPAM_MIN_MATCHES = 2
+_SPAM_MIN_MATCHES = 3
 
 
 if TWITCHIO_AVAILABLE:
@@ -536,8 +536,8 @@ if TWITCHIO_AVAILABLE:
             try:
                 spam_score, spam_reasons = self._calculate_spam_score(message.content or "")
 
-                # 2. Faktor: Account-Alter prüfen, wenn Verdacht besteht (Score 1)
-                # Wenn Keyword matcht UND Account < 6 Monate -> Ban (Score >= 2)
+                # 2. Faktor: Account-Alter prüfen, wenn Verdacht besteht (Score 2)
+                # Wenn Keyword matcht UND Account < 3 Monate -> Ban (Score >= 3)
                 if 0 < spam_score < _SPAM_MIN_MATCHES:
                     try:
                         author_id = getattr(message.author, "id", None)
@@ -550,8 +550,8 @@ if TWITCHIO_AVAILABLE:
                                     created_at = created_at.replace(tzinfo=timezone.utc)
                                 
                                 age = datetime.now(timezone.utc) - created_at
-                                if age.days < 180: # Jünger als 6 Monate
-                                    spam_score += 1
+                                if age.days < 90: # Jünger als 3 Monate
+                                    spam_score += 2
                                     spam_reasons.append(f"Account-Alter: {age.days} Tage")
                     except Exception:
                         log.debug("Konnte User-Alter für Spam-Check nicht laden", exc_info=True)
@@ -637,15 +637,14 @@ if TWITCHIO_AVAILABLE:
 
             reasons = []
             raw = content.strip()
-            # Direkte Phrasen sind sofortiger Ban -> hoher Score
             for phrase in _SPAM_PHRASES:
                 if phrase in raw:
-                    return 999, [f"Phrase(Exact): {phrase}"]
+                    return 1, [f"Phrase(Exact): {phrase}"]
 
             lowered = raw.casefold()
             for phrase in _SPAM_PHRASES:
                 if phrase.casefold() in lowered:
-                    return 999, [f"Phrase(Casefold): {phrase}"]
+                    return 1, [f"Phrase(Casefold): {phrase}"]
 
             # Prüfe Fragmente mit Wortgrenzen (\b), um Teiltreffer in längeren Wörtern zu vermeiden
             hits = 0

@@ -87,17 +87,30 @@ class TwitchRaidMixin:
                 return False
             return (now - dt).total_seconds() <= recency_cap_seconds
 
+        # BUGFIX: Wenn der Streamer AKTIV Deadlock streamt (last_game == target_game),
+        # dann ist die Recency-Prüfung NICHT nötig! Nur bei "Just Chatting" ist sie relevant.
         if allow_auto_raid and target_game_lower:
-            recent_deadlock = _is_recent_deadlock(last_deadlock_seen_at_str)
-            if not recent_deadlock:
-                log.info(
-                    "Auto-Raid ausgelassen für %s: letzter Deadlock > %ds her (last_seen=%s, last_game=%s)",
+            # Wenn aktuell Deadlock läuft, ist die Recency automatisch erfüllt
+            if last_game_lower == target_game_lower:
+                # Aktiv Deadlock -> kein Recency-Check nötig
+                log.debug(
+                    "Auto-Raid erlaubt für %s: Aktiv %s gestreamt (last_game=%s)",
                     login,
-                    recency_cap_seconds,
-                    last_deadlock_seen_at_str or "unknown",
-                    last_game or "unbekannt",
+                    target_game_lower.title(),
+                    last_game
                 )
-                return
+            else:
+                # Just Chatting mit Deadlock-Session -> Recency-Check
+                recent_deadlock = _is_recent_deadlock(last_deadlock_seen_at_str)
+                if not recent_deadlock:
+                    log.info(
+                        "Auto-Raid ausgelassen für %s: letzter Deadlock > %ds her (last_seen=%s, last_game=%s)",
+                        login,
+                        recency_cap_seconds,
+                        last_deadlock_seen_at_str or "unknown",
+                        last_game or "unbekannt",
+                    )
+                    return
 
         if not allow_auto_raid:
             log.info(
