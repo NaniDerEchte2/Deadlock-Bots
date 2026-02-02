@@ -1809,7 +1809,7 @@ async def create_twitch_chat_bot(
             # Connect-Check ist passiv und verursacht kein TIME_WAIT wie Bind-Check
             with _socket.create_connection((adapter_host, adapter_port), timeout=0.2):
                 # Verbindung erfolgreich -> Port ist belegt
-                log.warning(
+                log.debug(
                     "TwitchIO Web Adapter Port %s auf %s ist belegt (Verbindung erfolgreich) – starte ohne Adapter "
                     "(Webhooks/OAuth für Chat-Bot ausgeschaltet).",
                     adapter_port, adapter_host,
