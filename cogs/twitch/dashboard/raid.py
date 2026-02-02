@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Optional
 import discord
 from aiohttp import web
 
+from .base import _sanitize_log_value
 from ..storage import get_conn
 from ..raid_views import build_raid_requirements_embed, RaidAuthGenerateView
 
@@ -122,7 +123,7 @@ class DashboardRaidMixin:
                 scopes=token_data.get("scope", []),
             )
 
-            log.info("Raid auth successful for %s", twitch_login)
+            log.info("Raid auth successful for %s", _sanitize_log_value(twitch_login))
 
             # Post-Auth Aktionen (Mod + Nachricht) - Hintergrund-Task um Response nicht zu blockieren
             import asyncio
@@ -145,7 +146,7 @@ class DashboardRaidMixin:
             )
 
         except Exception:
-            log.exception("OAuth callback error for %s", login)
+            log.exception("OAuth callback error for %s", _sanitize_log_value(login))
             return web.Response(
                 text="""
                 <html>
@@ -182,7 +183,7 @@ class DashboardRaidMixin:
                 {"success": True, "message": f"Auto-Raid {'aktiviert' if enabled else 'deaktiviert'}"}
             )
         except Exception as exc:
-            safe_user_id = user_id.replace("\r", "").replace("\n", "")
+            safe_user_id = _sanitize_log_value(user_id)
             log.exception("Failed to toggle raid for %s", safe_user_id)
             return web.json_response({"error": str(exc)}, status=500)
 
@@ -213,7 +214,10 @@ class DashboardRaidMixin:
                     (login,),
                 ).fetchone()
         except Exception:
-            log.exception("Failed to load Discord link for raid requirements (%s)", login)
+            log.exception(
+                "Failed to load Discord link for raid requirements (%s)",
+                _sanitize_log_value(login),
+            )
             return web.Response(text="Failed to load Discord link", status=500)
 
         if not row:
@@ -243,7 +247,11 @@ class DashboardRaidMixin:
             except discord.NotFound:
                 user = None
             except discord.HTTPException:
-                log.exception("Failed to fetch Discord user %s for %s", user_id_int, login)
+                log.exception(
+                    "Failed to fetch Discord user %s for %s",
+                    user_id_int,
+                    _sanitize_log_value(login),
+                )
                 user = None
 
         if user is None:
@@ -258,13 +266,25 @@ class DashboardRaidMixin:
         try:
             await user.send(embed=embed, view=view)
         except discord.Forbidden:
-            log.warning("Discord DM blocked for %s (%s)", login, user_id_int)
+            log.warning(
+                "Discord DM blocked for %s (%s)",
+                _sanitize_log_value(login),
+                user_id_int,
+            )
             return web.Response(text="Discord DM blocked", status=403)
         except discord.HTTPException:
-            log.exception("Failed to send raid requirements DM to %s (%s)", login, user_id_int)
+            log.exception(
+                "Failed to send raid requirements DM to %s (%s)",
+                _sanitize_log_value(login),
+                user_id_int,
+            )
             return web.Response(text="Failed to send Discord DM", status=502)
 
-        log.info("Sent raid requirements DM to %s (discord_id=%s)", login, discord_user_id)
+        log.info(
+            "Sent raid requirements DM to %s (discord_id=%s)",
+            _sanitize_log_value(login),
+            _sanitize_log_value(discord_user_id),
+        )
         ok_message = f"Anforderungen per Discord an @{login} gesendet"
         raise web.HTTPFound(location=self._redirect_location(request, ok=ok_message))
 
