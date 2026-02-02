@@ -98,6 +98,7 @@ _SPAM_PHRASES = (
     "Viewers smmhype1.ru",
     "Viewers smmhype",
     "viewers on streamboo .com (remove the space)",
+    "Hey friend I really enjoy your content so I give you a follow I’d love to be a friend and of you feel free to Add me on Discord",
 )
 # Entferne "viewer" und "viewers" aus den Fragmenten - zu allgemein und führt zu False Positives
 _SPAM_FRAGMENTS = (
