@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from aiohttp import web
@@ -39,6 +40,9 @@ class Dashboard(
         return web.Response(text="Kein Reload-Handler definiert", status=501)
 
     def attach(self, app: web.Application):
+        static_path = os.path.join(os.path.dirname(__file__), "static")
+        app.router.add_static("/twitch/static", static_path, append_version=True)
+
         app.add_routes([
             web.get("/twitch", self.index),
             web.get("/twitch/add_any", self.add_any),

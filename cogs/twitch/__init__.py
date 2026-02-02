@@ -23,7 +23,12 @@ async def setup(bot: commands.Bot):
         bot.remove_command(existing.name)
         log.info("Removed pre-existing !twl command before adding Twitch cog")
 
-    # 2) Cog hinzufügen
+    # 2) Cog hinzufügen – vorher prüfen ob bereits geladen (z.B. nach failedReload)
+    existing_cog = bot.get_cog("TwitchStreamCog")
+    if existing_cog is not None:
+        log.warning("TwitchStreamCog ist bereits geladen – wird zuerst entfernt")
+        await bot.remove_cog("TwitchStreamCog")
+
     cog = TwitchStreamCog(bot)
     await bot.add_cog(cog)
 

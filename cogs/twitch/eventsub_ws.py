@@ -175,9 +175,31 @@ class EventSubWSListener:
             except Exception as e:
                 msg = str(e)
                 if "429" in msg or "transport limit exceeded" in msg.lower():
-                    self.log.error("EventSub WS: Transport limit exceeded (429) during subscription of %s for %s. Aborting further subs on this session.", sub_type, bid)
-                    self._failed = True
-                    break
+                    self.log.warning(
+                        "EventSub WS: Transport limit (429) hit during %s for %s "
+                        "– warte 5s und überspringe diese Sub (Session bleibt nutzbar).",
+                        sub_type, bid,
+                    )
+                    # Nur diese eine Sub überspringen, nicht die ganze Session
+                    # abbrechen. Ein weiterer 429 nach der Pause markiert die Session
+                    # als kaputt.
+                    await asyncio.sleep(5)
+                    try:
+                        await self.api.subscribe_eventsub_websocket(
+                            session_id=session_id,
+                            sub_type=sub_type,
+                            condition=condition,
+                            oauth_token=token,
+                        )
+                        self.log.info("EventSub WS: Retry nach 429 erfolgreich: %s for %s", sub_type, bid)
+                    except Exception as retry_err:
+                        retry_msg = str(retry_err)
+                        if "429" in retry_msg or "transport limit exceeded" in retry_msg.lower():
+                            self.log.error("EventSub WS: Transport limit (429) erneut nach Retry – Session wird markiert als fehlgeschlagen.", )
+                            self._failed = True
+                            break
+                        self.log.error("EventSub WS: Retry für %s (%s) fehlgeschlagen: %s", bid, sub_type, retry_err)
+                    continue
                 self.log.error("EventSub WS: Subscription failed for %s (%s): %s", bid, sub_type, e)
 
     async def _handle_message(self, data: Dict) -> None:

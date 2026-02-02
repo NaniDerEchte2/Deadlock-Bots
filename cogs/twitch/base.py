@@ -189,72 +189,156 @@ class TwitchBaseCog(commands.Cog):
     # Lifecycle
     # -------------------------------------------------------
     async def cog_unload(self):
-        """Ensure background resources are torn down when the cog is removed."""
+        """Ensure background resources are torn down when the cog is removed.
+        
+        Shutdown-Reihenfolge (wichtig!):
+        1. Tasks/Loops canceln
+        2. EventSub WebSocket Listeners stoppen
+        3. Chat Bot sauber beenden (inklusive Port-Freigabe)
+        4. Token Manager cleanup
+        5. Dashboard stoppen (inklusive Port-Freigabe)
+        6. Raid Bot cleanup
+        7. API Session schließen
+        8. Commands deregistrieren
+        """
+        log.info("Twitch Cog Unload gestartet – fahre alle Ressourcen herunter...")
+        
+        # 1. Background Loops canceln
         loops = (self.poll_streams, self.invites_refresh)
-
         for lp in loops:
             try:
                 if lp.is_running():
                     lp.cancel()
+                    log.debug("Loop gecancelt: %r", lp)
             except Exception:
                 log.exception("Konnte Loop nicht canceln: %r", lp)
         
-        # EventSub Listener stoppen
+        # 2. EventSub Listener stoppen UND WebSocket-Sessions schließen
         es_ws_listeners = getattr(self, "_eventsub_ws_listeners", [])
-        for listener in es_ws_listeners:
-            try:
-                if hasattr(listener, "stop"):
-                    listener.stop()
-            except Exception:
-                log.exception("Fehler beim Stoppen eines EventSub WS Listeners")
+        if es_ws_listeners:
+            log.info("Stoppe %d EventSub WS Listener...", len(es_ws_listeners))
+            for i, listener in enumerate(es_ws_listeners):
+                try:
+                    if hasattr(listener, "stop"):
+                        listener.stop()
+                        log.debug("EventSub Listener %d: stop() aufgerufen", i)
+                    # Warte kurz damit der Listener die WebSocket-Session schließen kann
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    log.exception("Fehler beim Stoppen von EventSub WS Listener %d", i)
+            # Kurze Pause damit alle WS-Sessions geschlossen werden können
+            await asyncio.sleep(1.0)
+            log.info("EventSub WS Listener gestoppt")
 
-        # RaidBot Cleanup
-        if self._raid_bot:
-            try:
-                await self._raid_bot.cleanup()
-            except Exception:
-                log.exception("RaidBot cleanup fehlgeschlagen")
-
-        await asyncio.sleep(0.1)  # Give event loop a moment
-
-        # Twitch Chat Bot stoppen
+        # 3. Twitch Chat Bot sauber beenden (Port 4343 freigeben)
         if self._twitch_chat_bot:
+            log.info("Beende Twitch Chat Bot...")
             try:
+                # TwitchIO Bot hat keine explizite shutdown-Methode in 3.x,
+                # aber close() schließt die WebSocket-Session und den Adapter.
                 if hasattr(self._twitch_chat_bot, "close"):
                     await self._twitch_chat_bot.close()
+                    log.debug("Chat Bot close() abgeschlossen")
+                
+                # Warte explizit auf Port-Freigabe (4343)
+                adapter = getattr(self._twitch_chat_bot, "adapter", None)
+                if adapter:
+                    adapter_host = getattr(adapter, "_host", "127.0.0.1")
+                    adapter_port = int(getattr(adapter, "_port", 4343))
+                    
+                    # Gebe dem Adapter Zeit zum Herunterfahren
+                    await asyncio.sleep(2.0)
+                    
+                    # Prüfe ob der Port frei ist
+                    for retry in range(10):  # Max 10 Sekunden warten
+                        can_bind, _ = await self._can_bind_port_async(adapter_host, adapter_port)
+                        if can_bind:
+                            log.info("Chat Bot Adapter Port %s:%s erfolgreich freigegeben", adapter_host, adapter_port)
+                            break
+                        if retry < 9:
+                            log.debug("Warte auf Port-Freigabe %s:%s... (%d/10)", adapter_host, adapter_port, retry + 1)
+                            await asyncio.sleep(1.0)
+                        else:
+                            log.warning("Port %s:%s nach 10s noch belegt – fahre trotzdem fort", adapter_host, adapter_port)
+                
+                log.info("Twitch Chat Bot beendet")
             except Exception:
                 log.exception("Twitch Chat Bot shutdown fehlgeschlagen")
+        
+        # 4. Token Manager cleanup
         if self._bot_token_manager:
             try:
                 await self._bot_token_manager.cleanup()
+                log.debug("Bot Token Manager cleanup abgeschlossen")
             except Exception:
                 log.exception("Twitch Bot Token Manager shutdown fehlgeschlagen")
 
+        # 5. Dashboard stoppen (Port 8765 freigeben)
         if self._web:
+            log.info("Stoppe Twitch Dashboard...")
             try:
                 await self._stop_dashboard()
-                log.info("Twitch dashboard stopped during unload.")
+                
+                # Warte explizit auf Port-Freigabe (8765)
+                dashboard_port = self._dashboard_port
+                dashboard_host = self._dashboard_host
+                
+                # Gebe dem Dashboard Zeit zum Herunterfahren
+                await asyncio.sleep(2.0)
+                
+                # Prüfe ob der Port frei ist
+                for retry in range(10):  # Max 10 Sekunden warten
+                    can_bind, _ = await self._can_bind_port_async(dashboard_host, dashboard_port)
+                    if can_bind:
+                        log.info("Dashboard Port %s:%s erfolgreich freigegeben", dashboard_host, dashboard_port)
+                        break
+                    if retry < 9:
+                        log.debug("Warte auf Port-Freigabe %s:%s... (%d/10)", dashboard_host, dashboard_port, retry + 1)
+                        await asyncio.sleep(1.0)
+                    else:
+                        log.warning("Port %s:%s nach 10s noch belegt – fahre trotzdem fort", dashboard_host, dashboard_port)
+                
+                log.info("Twitch Dashboard gestoppt")
             except Exception:
                 log.exception("Dashboard shutdown fehlgeschlagen")
 
-        if self.api is not None:
+        # 6. RaidBot Cleanup
+        if self._raid_bot:
             try:
+                await self._raid_bot.cleanup()
+                log.debug("RaidBot cleanup abgeschlossen")
+            except Exception:
+                log.exception("RaidBot cleanup fehlgeschlagen")
+
+        # 7. API Session schließen (mit Grace Period für laufende Requests)
+        if self.api is not None:
+            log.info("Schließe Twitch API Session...")
+            try:
+                # Warte kurz damit laufende Requests abgeschlossen werden können
+                await asyncio.sleep(1.0)
                 await self.api.aclose()
+                log.info("Twitch API Session geschlossen")
             except asyncio.CancelledError as exc:
                 log.debug("Schließen der TwitchAPI-Session abgebrochen: %s", exc)
                 raise
             except Exception:
                 log.exception("TwitchAPI-Session konnte nicht geschlossen werden")
 
+        # 8. Commands deregistrieren
         try:
             if self._twl_command is not None:
                 existing = self.bot.get_command(self._twl_command.name)
                 if existing is self._twl_command:
                     self.bot.remove_command(self._twl_command.name)
+                    log.debug("!twl Command deregistriert")
         except Exception:
             log.exception("Konnte !twl-Command nicht deregistrieren")
         finally:
             self._twl_command = None
+        
+        # Finale Pause damit alle async Tasks sauber beendet werden können
+        await asyncio.sleep(0.5)
+        log.info("Twitch Cog Unload abgeschlossen")
 
     def set_prefix_command(self, command: commands.Command) -> None:
         """Speichert die Referenz auf den dynamisch registrierten Prefix-Command."""

@@ -165,6 +165,10 @@ if TWITCHIO_AVAILABLE:
             self._monitored_streamers: Set[str] = set()
             self._session_cache: Dict[str, Tuple[int, datetime]] = {}
             self._last_autoban: Dict[str, Dict[str, str]] = {}
+            # Cooldown: Verhindert, dass _ensure_bot_is_mod auf einem
+            # gebannten Channel sekundlich wiederholt wird.
+            # Key = channel_login (lowercase), Value = nächster erlaubter Zeitpunkt.
+            self._mod_retry_cooldown: Dict[str, datetime] = {}
             self._autoban_log = Path("logs") / "twitch_autobans.log"
             log.info("Twitch Chat Bot initialized with %d initial channels", len(self._initial_channels))
 
@@ -439,6 +443,13 @@ if TWITCHIO_AVAILABLE:
                         log.error("join(): Retry für %s fehlgeschlagen: %s", channel_login, retry_err)
                     return False
                 if "403" in msg and "subscription missing proper authorization" in msg:
+                    # Cooldown-Prüfung: Bei gebannen Bots nicht wiederholt versuchen
+                    cd_key = normalized_login
+                    cd_until = self._mod_retry_cooldown.get(cd_key)
+                    if cd_until and datetime.now(timezone.utc) < cd_until:
+                        log.debug("join(): Mod-Retry für %s auf Cooldown bis %s – überspringe", channel_login, cd_until.isoformat())
+                        return False
+
                     # Automatischer Retry: Bot als Mod setzen und nochmal versuchen
                     log.info(
                         "join(): 403 für %s – versuche Bot automatisch als Mod zu setzen...",
@@ -460,11 +471,14 @@ if TWITCHIO_AVAILABLE:
                         except Exception as retry_err:
                             log.warning("join(): Retry für %s fehlgeschlagen nach Mod-Autorisierung: %s", channel_login, retry_err)
                     else:
+                        # Cooldown setzen: Nächster Retry erst nach 10 Minuten
+                        self._mod_retry_cooldown[cd_key] = datetime.now(timezone.utc) + timedelta(minutes=10)
                         log.warning(
                             "join(): Konnte Bot nicht als Mod in %s setzen. "
                             "Falls der Bot im Channel gebannt ist, muss er dort zuerst "
                             "entbannt werden (/unban deutschedeadlockcommunity), "
-                            "danach /mod deutschedeadlockcommunity ausführen.",
+                            "danach /mod deutschedeadlockcommunity ausführen. "
+                            "Nächster Retry in 10 min.",
                             channel_login
                         )
                 elif "429" in msg or "transport limit exceeded" in msg.lower():
@@ -1792,22 +1806,27 @@ async def create_twitch_chat_bot(
     if not adapter_disabled:
         import socket as _socket
         try:
-            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
-                _s.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-                _s.bind((adapter_host, adapter_port))
-            # Port ist frei – Adapter erstellen
-            web_adapter = twitchio_web.AiohttpAdapter(
-                host=adapter_host,
-                port=adapter_port,
-            )
-            log.info("TwitchIO Web Adapter wird auf %s:%s gestartet", adapter_host, adapter_port)
+            # Versuch einer Verbindung, um zu prüfen, ob der Port belegt ist
+            # Connect-Check ist passiv und verursacht kein TIME_WAIT wie Bind-Check
+            with _socket.create_connection((adapter_host, adapter_port), timeout=0.2):
+                # Verbindung erfolgreich -> Port ist belegt
+                log.warning(
+                    "TwitchIO Web Adapter Port %s auf %s ist belegt (Verbindung erfolgreich) – starte ohne Adapter "
+                    "(Webhooks/OAuth für Chat-Bot ausgeschaltet).",
+                    adapter_port, adapter_host,
+                )
+                web_adapter = None
         except OSError:
-            log.warning(
-                "TwitchIO Web Adapter Port %s auf %s bereits belegt – starte ohne Adapter "
-                "(Webhooks/OAuth für Chat-Bot ausgeschaltet).",
-                adapter_port, adapter_host,
-            )
-            web_adapter = None
+             # Verbindung fehlgeschlagen -> Port ist wahrscheinlich frei
+            try:
+                web_adapter = twitchio_web.AiohttpAdapter(
+                    host=adapter_host,
+                    port=adapter_port,
+                )
+                log.info("TwitchIO Web Adapter wird auf %s:%s gestartet", adapter_host, adapter_port)
+            except Exception as e:
+                log.error("Fehler beim Erstellen des Adapters trotz freiem Port: %s", e)
+                web_adapter = None
     else:
         log.info("TwitchIO Web Adapter deaktiviert per TWITCH_CHAT_ADAPTER.")
 

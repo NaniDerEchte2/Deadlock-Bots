@@ -16,6 +16,7 @@ from . import storage
 from .dashboard import Dashboard
 from .logger import log
 from .constants import TWITCH_TARGET_GAME_NAME
+from .analytics_backend_extended import AnalyticsBackendExtended
 
 
 def _parse_env_int(var_name: str, default: int = 0) -> int:
@@ -381,8 +382,11 @@ class TwitchDashboardMixin:
         stats["avg_viewers_tracked"] = tr_avg
         return stats
 
-    async def _dashboard_streamer_analytics_data(self, streamer_login: str, days: int = 30) -> dict:
-        """Return the full analytics payload used by /twitch/analytics."""
+    async def _dashboard_streamer_analytics_data_old(self, streamer_login: str, days: int = 30) -> dict:
+        """
+        Comprehensive Analytics Data Aggregation.
+        Calculates Channel Health Score and benchmarks against Deadlock category.
+        """
         from datetime import datetime, timedelta
         import math
 
@@ -397,665 +401,396 @@ class TwitchDashboardMixin:
                     continue
             return None
 
-        def _percentile(values: List[float], pct: float) -> Optional[float]:
-            if not values:
-                return None
-            ordered = sorted(values)
-            k = (len(ordered) - 1) * pct
-            f = math.floor(k)
-            c = math.ceil(k)
-            if f == c:
-                return ordered[int(k)]
-            return ordered[f] * (c - k) + ordered[c] * (k - f)
+        def _pct(val: Optional[float]) -> float:
+            if val is None: return 0.0
+            # Heuristic: if <= 1.0 assume ratio, else percent
+            if 0 <= val <= 1: return float(val) * 100.0
+            return float(val)
+
+        def _percentile_rank(val: float, population: List[float]) -> float:
+            if not population: return 50.0
+            population.sort()
+            import bisect
+            idx = bisect.bisect_left(population, val)
+            return (idx / len(population)) * 100.0
+
+        def _norm(val: float, target: float) -> float:
+            if target <= 0: return 0.0
+            return min(100.0, (val / target) * 100.0)
 
         login = self._normalize_login(streamer_login) if streamer_login else ""
         now = datetime.utcnow()
         cutoff = now - timedelta(days=days)
-        prev_cutoff = cutoff - timedelta(days=days)
         cutoff_iso = cutoff.isoformat()
-        prev_cutoff_iso = prev_cutoff.isoformat()
 
+        # --- Data Containers ---
         sessions_data: List[dict] = []
         drops: List[dict] = []
-        hourly_self: dict[int, List[float]] = {}
-        weekday_hour: dict[int, dict[int, List[float]]] = {}
-
-        sum_peak = sum_ret5 = sum_ret10 = sum_ret20 = sum_drop = 0.0
-        sum_unique = sum_first = sum_returning = 0
-        sum_unique_viewers_est = 0.0
-        sum_messages = 0
-        sum_avg_viewers = 0.0
-        sum_follower_delta = 0
-        sum_chat_health_ratio = 0.0
+        
+        # --- Accumulators ---
         total_sessions = 0
-        total_duration_hours = 0.0
-        total_watch_time_hours = 0.0
-        categories: dict[str, dict[str, float]] = {}
-
-        session_sql = """
-            SELECT id,
-                   streamer_login,
-                   stream_id,
-                   started_at,
-                   ended_at,
-                   duration_seconds,
-                   start_viewers,
-                   peak_viewers,
-                   end_viewers,
-                   avg_viewers,
-                   retention_5m,
-                   retention_10m,
-                   retention_20m,
-                   dropoff_pct,
-                   dropoff_label,
-                   unique_chatters,
-                   first_time_chatters,
-                   returning_chatters,
-                   followers_start,
-                   followers_end,
-                   follower_delta,
-                   stream_title,
-                   tags,
-                   language,
-                   notes,
-                   game_name
-              FROM twitch_stream_sessions
-             WHERE started_at >= ?
-        """
-        params: List[object] = [cutoff_iso]
-        if login:
-            session_sql += " AND streamer_login = ?"
-            params.append(login)
-        session_sql += " ORDER BY started_at DESC"
+        total_duration_h = 0.0
+        total_watch_time_h = 0.0
+        
+        sum_avg_viewers = 0.0
+        sum_peak_viewers = 0.0
+        sum_ret10 = 0.0
+        sum_dropoff = 0.0
+        sum_unique_chatters = 0
+        sum_chat_msgs = 0
+        sum_followers = 0
+        sum_returning_chatters = 0
+        sum_first_chatters = 0
 
         with storage.get_conn() as conn:
-            rows = conn.execute(session_sql, params).fetchall()
-
-            def _pct(val: Optional[float]) -> float:
-                if val is None:
-                    return 0.0
-                if 0 <= val <= 1:
-                    return float(val) * 100.0
-                return float(val)
-
-            def _estimate_unique_viewers(avg_viewers: float, unique_chatters: int, peak_viewers: int) -> float:
-                # Use chat engagement as a proxy for reach; clamp engagement to avoid runaway values
-                chat_per_100 = (unique_chatters * 100.0 / max(avg_viewers, 1)) if avg_viewers > 0 else 0.0
-                engagement = min(0.6, max(chat_per_100 / 100.0, 0.02))  # assume 2%..60% active chatters
-                est = unique_chatters / engagement if engagement > 0 else float(avg_viewers)
-                est = max(est, avg_viewers)
-                if peak_viewers:
-                    est = min(est, peak_viewers * 4)  # soft upper bound
-                return round(est, 1)
-
-            for s in rows:
-                started_dt = _parse_dt(s["started_at"])
-                started_label = started_dt.strftime("%Y-%m-%d") if started_dt else "-"
-                start_time_label = started_dt.strftime("%H:%M") if started_dt else "--:--"
-                duration_seconds = int(s["duration_seconds"] or 0)
-                duration_hours = duration_seconds / 3600 if duration_seconds > 0 else 0.0
-                follower_delta = s["follower_delta"]
-                if follower_delta is None:
-                    try:
-                        follower_delta = (s["followers_end"] or 0) - (s["followers_start"] or 0)
-                    except Exception:
-                        follower_delta = 0
-
-                ret5 = _pct(s["retention_5m"])
-                ret10 = _pct(s["retention_10m"])
-                ret20 = _pct(s["retention_20m"])
-
-                # Chat messages per session
-                msg_row = conn.execute(
-                    "SELECT SUM(messages) AS msg FROM twitch_session_chatters WHERE session_id=?",
-                    (s["id"],),
-                ).fetchone()
-                total_messages = int(msg_row["msg"] or 0) if msg_row else 0
-                rpm = total_messages / max(duration_seconds / 60, 1)
-
-                unique_viewers_est = _estimate_unique_viewers(float(s["avg_viewers"] or 0.0), s["unique_chatters"] or 0, s["peak_viewers"] or 0)
-                chat_per_viewer = (float(s["unique_chatters"] or 0) * 100.0) / max(float(s["avg_viewers"] or 0.0), 1.0) if (s["avg_viewers"] or 0) else 0.0
-                first_rate = ((s["first_time_chatters"] or 0) / max((s["unique_chatters"] or 0), 1)) * 100 if (s["unique_chatters"] or 0) else 0.0
-                returning_rate = ((s["returning_chatters"] or 0) / max((s["unique_chatters"] or 0), 1)) * 100 if (s["unique_chatters"] or 0) else 0.0
-
-                session_entry = {
-                    "id": s["id"],
-                    "streamId": s["stream_id"],
-                    "date": started_label,
-                    "startTime": start_time_label,
-                    "duration": duration_seconds,
-                    "startViewers": s["start_viewers"] or 0,
-                    "peakViewers": s["peak_viewers"] or 0,
-                    "endViewers": s["end_viewers"] or 0,
-                    "avgViewers": s["avg_viewers"] or 0,
-                    "uniqueViewersEst": unique_viewers_est,
-                    "retention5m": round(ret5, 1),
-                    "retention10m": round(ret10, 1),
-                    "retention20m": round(ret20, 1),
-                    "dropoffPct": round((s["dropoff_pct"] or 0) * 100, 1) if (s["dropoff_pct"] and s["dropoff_pct"] <= 1) else round(s["dropoff_pct"] or 0, 1),
-                    "dropoffLabel": s["dropoff_label"] or "",
-                    "uniqueChatters": s["unique_chatters"] or 0,
-                    "firstTimeChatters": s["first_time_chatters"] or 0,
-                    "returningChatters": s["returning_chatters"] or 0,
-                    "messages": total_messages,
-                    "rpm": round(rpm, 2),
-                    "followersStart": s["followers_start"] or 0,
-                    "followersEnd": s["followers_end"] or 0,
-                    "followerDelta": follower_delta or 0,
-                    "followersPerHour": round((follower_delta or 0) / max(duration_hours, 0.01), 2) if duration_hours else 0.0,
-                    "title": s["stream_title"] or "",
-                    "tags": s["tags"] or "",
-                    "language": s["language"] or "",
-                    "notes": s["notes"] or "",
-                    "game": s["game_name"] or "",
-                    "weekday": started_dt.weekday() if started_dt else None,
-                    "hour": started_dt.hour if started_dt else None,
-                    "firstRate": round(first_rate, 1),
-                    "returningRate": round(returning_rate, 1),
-                    "chatPerViewer": round(chat_per_viewer, 1),
-                }
-
-                # derive drop minute if encoded as t=XXm (...)
-                drop_label = session_entry["dropoffLabel"]
-                drop_minute: Optional[int] = None
-                if drop_label.startswith("t="):
-                    try:
-                        minute_part = drop_label.split("m", 1)[0].replace("t=", "")
-                        drop_minute = int(minute_part)
-                    except Exception:
-                        drop_minute = None
-                session_entry["dropMinute"] = drop_minute
-
-                sessions_data.append(session_entry)
-
-                total_sessions += 1
-                sum_peak += session_entry["peakViewers"]
-                sum_ret5 += session_entry["retention5m"]
-                sum_ret10 += session_entry["retention10m"]
-                sum_ret20 += session_entry["retention20m"]
-                sum_drop += session_entry["dropoffPct"] or 0.0
-                sum_unique += session_entry["uniqueChatters"]
-                sum_first += session_entry["firstTimeChatters"]
-                sum_returning += session_entry["returningChatters"]
-                sum_follower_delta += session_entry["followerDelta"]
-                sum_avg_viewers += float(session_entry["avgViewers"] or 0.0)
-                sum_unique_viewers_est += float(unique_viewers_est)
-                sum_messages += total_messages
-                total_duration_hours += duration_hours
-                total_watch_time_hours += (float(session_entry["avgViewers"] or 0.0) * duration_hours)
-
-                avg_viewers = float(session_entry["avgViewers"] or 0.0)
-                chat_ratio = (session_entry["uniqueChatters"] / max(avg_viewers, 1)) * 100 if avg_viewers > 0 else 0.0
-                sum_chat_health_ratio += chat_ratio
-
-                # drops
-                drops.append(
-                    {
-                        "streamer": session_entry.get("streamId") or login or session_entry.get("streamer", ""),
-                        "start": started_label,
-                        "dropPct": session_entry["dropoffPct"],
-                        "dropLabel": session_entry["dropoffLabel"],
-                        "minute": drop_minute,
-                        "title": session_entry["title"],
-                    }
-                )
-
-                if started_dt:
-                    hour = started_dt.hour
-                    hourly_self.setdefault(hour, []).append(avg_viewers)
-                    weekday = started_dt.weekday()
-                    weekday_hour.setdefault(weekday, {}).setdefault(hour, []).append(avg_viewers)
-
-                # categories/games
-                game_name = (session_entry.get("game") or "").strip() or "Unbekannt"
-                cat = categories.setdefault(game_name, {"sessions": 0, "avg_sum": 0.0, "peak_sum": 0.0, "followers_sum": 0.0, "unique_sum": 0, "duration_h": 0.0})
-                cat["sessions"] += 1
-                cat["avg_sum"] += float(session_entry["avgViewers"] or 0.0)
-                cat["peak_sum"] += float(session_entry["peakViewers"] or 0.0)
-                cat["followers_sum"] += float(session_entry["followerDelta"] or 0.0)
-                cat["unique_sum"] += int(session_entry["uniqueChatters"] or 0)
-                cat["duration_h"] += duration_hours
-
-            # Chatters rollup for returning viewers
-            returning_7d = 0
-            returning_30d = 0
-            base_rollup_sql = """
-                SELECT COUNT(DISTINCT COALESCE(chatter_id, chatter_login)) as cnt
-                  FROM twitch_chatter_rollup
-                 WHERE last_seen_at >= ?
-                   AND first_seen_at < ?
-            """
-            rollup_params = [ (now - timedelta(days=7)).isoformat(), (now - timedelta(days=7)).isoformat() ]
-            if login:
-                base_rollup_sql += " AND streamer_login = ?"
-                rollup_params.append(login)
-            row_7d = conn.execute(base_rollup_sql, rollup_params).fetchone()
-            returning_7d = int(row_7d["cnt"] or 0) if row_7d else 0
-
-            rollup_params_30 = [cutoff_iso, cutoff_iso]
-            rollup_sql_30 = """
-                SELECT COUNT(DISTINCT COALESCE(chatter_id, chatter_login)) as cnt
-                  FROM twitch_chatter_rollup
-                 WHERE last_seen_at >= ?
-                   AND first_seen_at < ?
-            """
-            if login:
-                rollup_sql_30 += " AND streamer_login = ?"
-                rollup_params_30.append(login)
-            row_30d = conn.execute(rollup_sql_30, rollup_params_30).fetchone()
-            returning_30d = int(row_30d["cnt"] or 0) if row_30d else 0
-
-            # total unique chatters in window
-            unique_30d_sql = """
-                SELECT COUNT(DISTINCT chatter_login) as cnt
-                  FROM twitch_session_chatters
-                 WHERE first_message_at >= ?
-            """
-            unique_params = [cutoff_iso]
-            if login:
-                unique_30d_sql += " AND streamer_login = ?"
-                unique_params.append(login)
-            uniq_row = conn.execute(unique_30d_sql, unique_params).fetchone()
-            total_unique_chatters_30d = int(uniq_row["cnt"] or 0) if uniq_row else 0
-
-            unique_7d_sql = """
-                SELECT COUNT(DISTINCT chatter_login) as cnt
-                  FROM twitch_session_chatters
-                 WHERE first_message_at >= ?
-            """
-            unique_7d_params = [(now - timedelta(days=7)).isoformat()]
-            if login:
-                unique_7d_sql += " AND streamer_login = ?"
-                unique_7d_params.append(login)
-            uniq_7d_row = conn.execute(unique_7d_sql, unique_7d_params).fetchone()
-            total_unique_chatters_7d = int(uniq_7d_row["cnt"] or 0) if uniq_7d_row else 0
-
-            # previous-period unique chatters for trend
-            prev_unique_sql = """
-                SELECT COUNT(DISTINCT chatter_login) as cnt
-                  FROM twitch_session_chatters
-                 WHERE first_message_at >= ?
-                   AND first_message_at < ?
-            """
-            prev_params = [prev_cutoff_iso, cutoff_iso]
-            if login:
-                prev_unique_sql += " AND streamer_login = ?"
-                prev_params.append(login)
-            prev_row = conn.execute(prev_unique_sql, prev_params).fetchone()
-            prev_unique_chatters = int(prev_row["cnt"] or 0) if prev_row else 0
-
-            # hourly category baseline
-            hourly_cat: dict[int, List[float]] = {}
-            cat_rows = conn.execute(
+            # 1. Sessions Data
+            # ----------------
+            session_rows = conn.execute(
                 """
-                SELECT CAST(strftime('%H', ts_utc) AS INTEGER) as hour,
-                       AVG(viewer_count) as avg_viewers,
-                       COUNT(*) as samples
-                  FROM twitch_stats_category
-                 WHERE ts_utc >= ?
-                 GROUP BY hour
-                """,
-                (cutoff_iso,),
-            ).fetchall()
-            for r in cat_rows:
-                hour = int(r["hour"] or 0)
-                hourly_cat.setdefault(hour, []).append(float(r["avg_viewers"] or 0.0))
-
-            # tracked partners baseline
-            hourly_tracked: dict[int, List[float]] = {}
-            tracked_rows = conn.execute(
-                """
-                SELECT CAST(strftime('%H', ts_utc) AS INTEGER) as hour,
-                       AVG(viewer_count) as avg_viewers,
-                       COUNT(*) as samples
-                  FROM twitch_stats_tracked
-                 WHERE ts_utc >= ?
-                 GROUP BY hour
-                """,
-                (cutoff_iso,),
-            ).fetchall()
-            for r in tracked_rows:
-                hour = int(r["hour"] or 0)
-                hourly_tracked.setdefault(hour, []).append(float(r["avg_viewers"] or 0.0))
-
-            # benchmark tables (top 10)
-            def _load_top(table: str) -> List[dict]:
-                sql = f"""
-                    WITH agg AS (
-                        SELECT streamer,
-                               COUNT(*) as samples,
-                               AVG(viewer_count) as avg_viewers,
-                               MAX(viewer_count) as peak_viewers,
-                               MAX(is_partner) as is_partner
-                          FROM {table}
-                         WHERE ts_utc >= ?
-                         GROUP BY streamer
-                    )
-                    SELECT agg.streamer,
-                           agg.samples,
-                           agg.avg_viewers,
-                           agg.peak_viewers,
-                           agg.is_partner,
-                           COALESCE(ts.is_on_discord, 0) AS is_on_discord,
-                           ts.discord_display_name,
-                           ts.discord_user_id
-                      FROM agg
-                      LEFT JOIN twitch_streamers ts ON LOWER(ts.twitch_login) = LOWER(agg.streamer)
-                     WHERE agg.samples >= 5
-                     ORDER BY agg.avg_viewers DESC
-                     LIMIT 10
-                """
-                bench_rows = conn.execute(sql, (cutoff_iso,)).fetchall()
-                return [
-                    {
-                        "streamer": r["streamer"],
-                        "samples": r["samples"],
-                        "avgViewers": round(r["avg_viewers"] or 0, 1),
-                        "peakViewers": r["peak_viewers"] or 0,
-                        "isPartner": bool(r["is_partner"]),
-                        "onDiscord": bool(r["is_on_discord"]),
-                        "discordDisplay": r["discord_display_name"] or "",
-                        "discordId": r["discord_user_id"] or "",
-                    }
-                    for r in bench_rows
-                ]
-
-            top_tracked = _load_top("twitch_stats_tracked")
-            top_category = _load_top("twitch_stats_category")
-
-            # quantiles for viewer baseline (category)
-        cat_all_rows = conn.execute(
-            "SELECT viewer_count FROM twitch_stats_category WHERE ts_utc >= ?",
-            (cutoff_iso,),
-        ).fetchall()
-        cat_values = [float(r["viewer_count"] or 0.0) for r in cat_all_rows if r["viewer_count"] is not None]
-        q25 = _percentile(cat_values, 0.25)
-        q50 = _percentile(cat_values, 0.50)
-        q75 = _percentile(cat_values, 0.75)
-
-        def _compute_prev_window(window_start: str, window_end: str) -> dict:
-            """Aggregate a comparison window for deltas (previous period)."""
-            prev_sql = """
-                SELECT id,
-                       started_at,
-                       duration_seconds,
-                       peak_viewers,
-                       avg_viewers,
-                       retention_5m,
-                       retention_10m,
-                       retention_20m,
-                       dropoff_pct,
-                       unique_chatters,
-                       first_time_chatters,
-                       returning_chatters,
-                       follower_delta,
-                       followers_start,
-                       followers_end
+                SELECT id, streamer_login, started_at, duration_seconds, 
+                       avg_viewers, peak_viewers, 
+                       retention_10m, dropoff_pct, dropoff_label,
+                       unique_chatters, returning_chatters, first_time_chatters,
+                       follower_delta, stream_title, game_name
                   FROM twitch_stream_sessions
                  WHERE started_at >= ?
-                   AND started_at < ?
-            """
-            prev_params: List[object] = [window_start, window_end]
-            if login:
-                prev_sql += " AND streamer_login = ?"
-                prev_params.append(login)
-            prev_rows = conn.execute(prev_sql, prev_params).fetchall()
-            if not prev_rows:
-                return {}
+                   AND (streamer_login = ? OR ? = '')
+                 ORDER BY started_at DESC
+                """, (cutoff_iso, login, login)
+            ).fetchall()
 
-            prev_sum_avg_viewers = prev_sum_ret10 = prev_sum_unique = prev_sum_first = prev_sum_returning = 0.0
-            prev_sum_peak = prev_sum_watch_time_h = prev_sum_unique_est = 0.0
-            prev_sum_follower_delta = 0.0
-            prev_total_duration_h = 0.0
-            prev_sessions = 0
-            for r in prev_rows:
-                prev_sessions += 1
-                duration_seconds = int(r["duration_seconds"] or 0)
-                duration_hours = duration_seconds / 3600 if duration_seconds > 0 else 0.0
-                follower_delta = r["follower_delta"]
-                if follower_delta is None:
-                    try:
-                        follower_delta = (r["followers_end"] or 0) - (r["followers_start"] or 0)
-                    except Exception:
-                        follower_delta = 0
+            # Chat Messages Map (Session ID -> Count)
+            # Optimization: Pre-fetch counts
+            msg_counts = {}
+            if session_rows:
+                ids = [str(r["id"]) for r in session_rows]
+                placeholders = ",".join("?" * len(ids))
+                # Note: This might be heavy if >1000 sessions, but for 30d single streamer it's fine.
+                # If global view, limit strictly.
+                if len(ids) < 900:
+                    mc_rows = conn.execute(
+                        f"SELECT session_id, COUNT(*) as c FROM twitch_chat_messages WHERE session_id IN ({placeholders}) GROUP BY session_id",
+                        ids
+                    ).fetchall()
+                    msg_counts = {r["session_id"]: r["c"] for r in mc_rows}
 
-                ret10_prev = _pct(r["retention_10m"])
-                avg_viewers_prev = float(r["avg_viewers"] or 0.0)
-                unique_chat_prev = int(r["unique_chatters"] or 0)
-                first_prev = int(r["first_time_chatters"] or 0)
-                returning_prev = int(r["returning_chatters"] or 0)
+            for s in session_rows:
+                dur_sec = s["duration_seconds"] or 0
+                dur_h = dur_sec / 3600.0
+                
+                avg_v = float(s["avg_viewers"] or 0)
+                peak_v = int(s["peak_viewers"] or 0)
+                ret10 = _pct(s["retention_10m"])
+                drop_pct = _pct(s["dropoff_pct"])
+                
+                u_chat = s["unique_chatters"] or 0
+                r_chat = s["returning_chatters"] or 0
+                f_chat = s["first_time_chatters"] or 0
+                
+                msgs = msg_counts.get(s["id"], 0)
+                # Fallback estimate if msg table empty but stats exist
+                if msgs == 0 and u_chat > 0:
+                    msgs = u_chat * 5 # Approximation
 
-                unique_est_prev = _estimate_unique_viewers(
-                    avg_viewers_prev,
-                    unique_chat_prev,
-                    int(r["peak_viewers"] or 0),
-                )
+                f_delta = s["follower_delta"] or 0
+                
+                # Entry
+                sess = {
+                    "id": s["id"],
+                    "date": s["started_at"][:10],
+                    "startTime": s["started_at"][11:16],
+                    "duration": dur_sec,
+                    "avgViewers": avg_v,
+                    "peakViewers": peak_v,
+                    "retention10m": ret10,
+                    "dropoff": drop_pct,
+                    "chatters": u_chat,
+                    "messages": msgs,
+                    "followers": f_delta,
+                    "title": s["stream_title"] or "",
+                    "rpm": round(msgs / (dur_sec/60), 1) if dur_sec > 0 else 0
+                }
+                sessions_data.append(sess)
+                
+                # Drops for Insights
+                if drop_pct > 15:
+                    drops.append({
+                        "date": sess["date"],
+                        "pct": drop_pct,
+                        "label": s["dropoff_label"] or "?"
+                    })
 
-                prev_sum_avg_viewers += avg_viewers_prev
-                prev_sum_ret10 += ret10_prev
-                prev_sum_unique += unique_chat_prev
-                prev_sum_first += first_prev
-                prev_sum_returning += returning_prev
-                prev_sum_peak += float(r["peak_viewers"] or 0.0)
-                prev_sum_unique_est += float(unique_est_prev)
-                prev_sum_watch_time_h += avg_viewers_prev * duration_hours
-                prev_sum_follower_delta += float(follower_delta or 0.0)
-                prev_total_duration_h += duration_hours
+                # Aggregates
+                total_sessions += 1
+                total_duration_h += dur_h
+                total_watch_time_h += (avg_v * dur_h)
+                
+                sum_avg_viewers += avg_v
+                sum_peak_viewers += peak_v
+                sum_ret10 += ret10
+                sum_dropoff += drop_pct
+                sum_unique_chatters += u_chat
+                sum_chat_msgs += msgs
+                sum_followers += f_delta
+                sum_returning_chatters += r_chat
+                sum_first_chatters += f_chat
 
-            avg_viewers_prev = prev_sum_avg_viewers / prev_sessions if prev_sessions else 0.0
-            avg_ret10_prev = prev_sum_ret10 / prev_sessions if prev_sessions else 0.0
-            unique_per_100_prev = (prev_sum_unique / max(prev_sum_avg_viewers, 1)) * 100 if prev_sum_avg_viewers else 0.0
-            followers_per_hour_prev = (prev_sum_follower_delta / prev_total_duration_h) if prev_total_duration_h else 0.0
-            avg_duration_min_prev = (prev_total_duration_h * 60 / prev_sessions) if prev_sessions else 0.0
-            watch_time_per_viewer_min_prev = (prev_sum_watch_time_h * 60) / max(prev_sum_unique_est, 1) if prev_sum_unique_est else 0.0
+            # 2. Raid History (Network)
+            # -------------------------
+            raids_sent_row = conn.execute(
+                "SELECT COUNT(*) as c, SUM(viewer_count) as v FROM twitch_raid_history WHERE from_broadcaster_login=? AND executed_at >= ?",
+                (login, cutoff_iso)
+            ).fetchone()
+            raids_recv_row = conn.execute(
+                "SELECT COUNT(*) as c, SUM(viewer_count) as v FROM twitch_raid_history WHERE to_broadcaster_login=? AND executed_at >= ?",
+                (login, cutoff_iso)
+            ).fetchone()
+            
+            raids_sent = raids_sent_row["c"] or 0
+            raids_sent_viewers = raids_sent_row["v"] or 0
+            raids_recv = raids_recv_row["c"] or 0
+            raids_recv_viewers = raids_recv_row["v"] or 0
 
-            return {
-                "sessions": prev_sessions,
-                "avg_avg_viewers": avg_viewers_prev,
-                "avg_ret10": avg_ret10_prev,
-                "unique_per_100": unique_per_100_prev,
-                "followers_per_hour": followers_per_hour_prev,
-                "avg_duration_min": avg_duration_min_prev,
-                "watch_time_per_viewer_min": watch_time_per_viewer_min_prev,
-            }
+            # 3. Monetization (Subs)
+            # ----------------------
+            sub_row = conn.execute(
+                "SELECT total, points FROM twitch_subscriptions_snapshot WHERE twitch_login=? ORDER BY snapshot_at DESC LIMIT 1",
+                (login,)
+            ).fetchone()
+            curr_subs = sub_row["total"] or 0 if sub_row else 0
+            curr_points = sub_row["points"] or 0 if sub_row else 0
 
-        prev_window = _compute_prev_window(prev_cutoff_iso, cutoff_iso)
+            # 4. Engagement (Link Clicks)
+            # ---------------------------
+            clicks_row = conn.execute(
+                "SELECT COUNT(*) as c FROM twitch_link_clicks WHERE streamer_login=? AND clicked_at >= ?",
+                (login, cutoff_iso)
+            ).fetchone()
+            link_clicks = clicks_row["c"] or 0 if clicks_row else 0
 
-        avg_ret5 = sum_ret5 / total_sessions if total_sessions else 0.0
-        avg_ret10 = sum_ret10 / total_sessions if total_sessions else 0.0
-        avg_ret20 = sum_ret20 / total_sessions if total_sessions else 0.0
-        avg_drop = sum_drop / total_sessions if total_sessions else 0.0
-        avg_peak = sum_peak / total_sessions if total_sessions else 0.0
-        avg_avg_viewers = sum_avg_viewers / total_sessions if total_sessions else 0.0
+            # 5. Benchmarking / Population Data
+            # ---------------------------------
+            # We need population distributions for percentiles
+            
+            # Category Avg Viewers Distribution
+            pop_cat_rows = conn.execute(
+                "SELECT AVG(viewer_count) as v FROM twitch_stats_category WHERE ts_utc >= ? GROUP BY streamer",
+                (cutoff_iso,)
+            ).fetchall()
+            pop_avg_viewers = [r["v"] for r in pop_cat_rows if r["v"] is not None]
+            
+            # Category Peak Viewers Distribution
+            pop_peak_rows = conn.execute(
+                "SELECT MAX(viewer_count) as v FROM twitch_stats_category WHERE ts_utc >= ? GROUP BY streamer",
+                (cutoff_iso,)
+            ).fetchall()
+            pop_peak_viewers = [r["v"] for r in pop_peak_rows if r["v"] is not None]
 
-        followers_per_session = (sum_follower_delta / total_sessions) if total_sessions else 0.0
-        followers_per_hour = (sum_follower_delta / total_duration_hours) if total_duration_hours else 0.0
-        unique_per_100 = (sum_unique / max(sum_avg_viewers, 1)) * 100 if sum_avg_viewers else 0.0
-        first_share = (sum_first / max(sum_unique, 1)) if sum_unique else 0.0
-        returning_share = (sum_returning / max(sum_unique, 1)) if sum_unique else 0.0
-        unique_est_avg = (sum_unique_viewers_est / total_sessions) if total_sessions else 0.0
-        avg_to_unique_ratio = (avg_avg_viewers / max(unique_est_avg, 1)) if unique_est_avg else 0.0
-        watch_time_hours = total_watch_time_hours
-        avg_watch_time_per_viewer_min = (watch_time_hours * 60) / max(sum_unique_viewers_est, 1) if sum_unique_viewers_est else 0.0
-        returning_rate_7d = (returning_7d / max(total_unique_chatters_7d, 1)) * 100 if total_unique_chatters_7d else 0.0
-        returning_rate_30d = (returning_30d / max(total_unique_chatters_30d, 1)) * 100 if total_unique_chatters_30d else 0.0
+            # Internal Cohort (Partners/Tracked) for deeper stats
+            # We use 'twitch_stream_sessions' aggregations for other metrics
+            cohort_rows = conn.execute(
+                """
+                SELECT AVG(avg_viewers) as avg_v,
+                       AVG(retention_10m) as r10, 
+                       AVG(dropoff_pct) as avg_drop, 
+                       SUM(follower_delta) as growth,
+                       SUM(unique_chatters) as chat
+                  FROM twitch_stream_sessions 
+                 WHERE started_at >= ? 
+                 GROUP BY streamer_login
+                """, (cutoff_iso,)
+            ).fetchall()
+            
+            cohort_avg = [float(r["avg_v"] or 0) for r in cohort_rows]
+            cohort_ret10 = [_pct(r["r10"]) for r in cohort_rows]
+            cohort_drop = [_pct(r["avg_drop"]) for r in cohort_rows]
+            cohort_growth = [int(r["growth"] or 0) for r in cohort_rows]
+            cohort_chat = [int(r["chat"] or 0) for r in cohort_rows]
 
-        # chat peaks detection
-        max_unique = max((s["uniqueChatters"] for s in sessions_data), default=0)
-        avg_unique = (sum_unique / total_sessions) if total_sessions else 0
-        chat_peaks = bool(max_unique and max_unique >= (avg_unique * 1.2 + 5))
 
-        # chat health score (0-100)
-        def _score(val: float) -> float:
-            return max(0.0, min(100.0, val))
+        # --- Metric Calculations ---
+        
+        # Averages
+        avg_v = sum_avg_viewers / max(total_sessions, 1)
+        peak_v = sum_peak_viewers / max(total_sessions, 1) # Avg Peak
+        avg_ret10 = sum_ret10 / max(total_sessions, 1)
+        avg_drop = sum_dropoff / max(total_sessions, 1)
+        
+        # Rates
+        chat_rate = (sum_unique_chatters / max(total_sessions, 1)) / max(avg_v, 1) * 100 # Chatters per 100 viewers
+        returning_rate = (sum_returning_chatters / max(sum_unique_chatters, 1)) * 100
+        growth_rate = sum_followers / max(total_duration_h, 1) # Followers per hour
+        conversion_rate = (sum_followers / max(sum_unique_chatters, 1)) * 100 # Follows per unique chatter (proxy for unique viewer)
+        
+        monetization_efficiency = curr_points / max(avg_v, 1) # Points per Viewer
+        
+        network_ratio = raids_sent / max(total_sessions, 1) # Raids sent per session
+        
+        # --- SCORING ENGINE (Improved) ---
+        import math
+        
+        # Logarithmic scale for Reach to be fair to small streamers
+        def _score_log(val):
+            if val <= 1: return 0
+            return min(100, math.log10(val) * 33) # 10->33, 100->66, 1000->99
 
-        unique_norm = _score(unique_per_100)
-        first_norm = _score(first_share * 100)
-        returning_norm = _score(returning_share * 100)
-        peaks_norm = 100.0 if chat_peaks else 0.0
-        trend_pct = 0.0
-        if prev_unique_chatters > 0:
-            trend_pct = ((total_unique_chatters_30d - prev_unique_chatters) / prev_unique_chatters) * 100
-        trend_norm = _score(50 + trend_pct * 0.5)
-        chat_health_score = round(
-            0.4 * unique_norm + 0.2 * first_norm + 0.2 * returning_norm + 0.1 * peaks_norm + 0.1 * trend_norm,
-            1,
+        # 1. Reach (25%)
+        # Mix of Percentile (vs Peers) and Absolute Log Scale (Progress)
+        s_reach_avg = _percentile_rank(avg_v, cohort_avg if cohort_avg else pop_avg_viewers)
+        s_reach_abs = _score_log(avg_v)
+        score_reach = (s_reach_avg * 0.5) + (s_reach_abs * 0.5)
+        
+        # 2. Retention (25%)
+        # Benchmarks: 30% is low, 70% is high
+        s_ret_raw = _norm(avg_ret10 - 20, 50) # 20% -> 0, 70% -> 100
+        s_ret_cohort = _percentile_rank(avg_ret10, cohort_ret10)
+        s_drop = _norm(50 - avg_drop, 40) # 50% drop -> 0, 10% drop -> 100
+        score_retention = (s_ret_raw * 0.4) + (s_ret_cohort * 0.3) + (s_drop * 0.3)
+        
+        # 3. Engagement (20%)
+        # Benchmarks: 5 chatters/100v is low, 25 is high
+        s_chat_density = _norm(chat_rate, 25)
+        s_returning = _norm(returning_rate, 60) # 60% returning is very loyal
+        s_clicks = _norm(link_clicks / max(total_duration_h, 1), 0.5)
+        s_chat_cohort = _percentile_rank(sum_unique_chatters / max(total_sessions, 1), cohort_chat)
+        score_engagement = (s_chat_density * 0.4) + (s_returning * 0.2) + (s_clicks * 0.2) + (s_chat_cohort * 0.2)
+        
+        # 4. Growth (15%)
+        s_growth_cohort = _percentile_rank(sum_followers, cohort_growth)
+        s_conversion = _norm(conversion_rate, 5) # 5% conversion is good
+        score_growth = (s_growth_cohort * 0.6) + (s_conversion * 0.4)
+        
+        # 5. Monetization (10%)
+        # Target: 2 points per viewer
+        score_money = _norm(monetization_efficiency, 2.5)
+        
+        # 6. Network (5%)
+        s_raid_sent = _norm(network_ratio, 0.5)
+        s_raid_recv = _norm(raids_recv, 5) # 5 incoming raids in period
+        score_network = (s_raid_sent * 0.6) + (s_raid_recv * 0.4)
+        
+        # Total
+        total_score = (
+            score_reach * 0.25 +
+            score_retention * 0.25 +
+            score_engagement * 0.20 +
+            score_growth * 0.15 +
+            score_money * 0.10 +
+            score_network * 0.05
         )
-        messages_per_min = sum_messages / max(total_duration_hours * 60, 1) if total_duration_hours else 0.0
-        messages_per_viewer = sum_messages / max(sum_unique_viewers_est, 1) if sum_unique_viewers_est else 0.0
+        
+        # --- Deep Insights & Correlations ---
+        
+        findings = []
+        actions = []
+        
+        # Correlation Helper
+        def _correlate(list_a, list_b):
+            if len(list_a) != len(list_b) or len(list_a) < 3: return 0
+            avg_a = sum(list_a) / len(list_a)
+            avg_b = sum(list_b) / len(list_b)
+            num = sum((a - avg_a) * (b - avg_b) for a, b in zip(list_a, list_b))
+            den = math.sqrt(sum((a - avg_a)**2 for a in list_a) * sum((b - avg_b)**2 for b in list_b))
+            return num / den if den != 0 else 0
 
-        hourly_self_avg = {h: round(sum(vals) / len(vals), 1) for h, vals in hourly_self.items()}
-        hourly_cat_avg = {h: round(sum(vals) / len(vals), 1) for h, vals in hourly_cat.items()}
-        hourly_tracked_avg = {h: round(sum(vals) / len(vals), 1) for h, vals in hourly_tracked.items()}
+        # Extract vectors for correlation
+        vec_dur = [s["duration"] for s in sessions_data]
+        vec_viewers = [s["avgViewers"] for s in sessions_data]
+        vec_chat = [s["messages"] for s in sessions_data]
+        vec_ret = [s["retention10m"] for s in sessions_data]
+        
+        corr_dur_view = _correlate(vec_dur, vec_viewers)
+        corr_chat_ret = _correlate(vec_chat, vec_ret)
+        
+        # 1. Retention Analysis
+        if avg_ret10 < 35:
+            findings.append({"type": "neg", "title": "Kritischer Viewer-Verlust", "text": f"Nur {avg_ret10:.1f}% deiner Zuschauer bleiben länger als 10 Minuten. Dies ist der Hauptgrund für stagnierendes Wachstum."})
+            actions.append({"tag": "Content", "text": "Strukturiere deine ersten 15 Minuten neu: Kein 'Warten auf Zuschauer', starte sofort mit Content/Gameplay."})
+        elif avg_ret10 > 60:
+            findings.append({"type": "pos", "title": "Starke Bindung", "text": "Deine Zuschauer bleiben überdurchschnittlich lange (Top-Tier Retention). Das Fundament für Wachstum steht."})
 
-        heatmap = {}
-        for weekday, hours in weekday_hour.items():
-            heatmap[weekday] = {h: round(sum(vals) / len(vals), 1) for h, vals in hours.items()}
+        # 2. Chat & Community
+        if chat_rate < 5:
+            findings.append({"type": "neg", "title": "Stiller Chat", "text": "Weniger als 5% deiner Zuschauer chatten. Das schadet der Discovery und Bindung."})
+            actions.append({"tag": "Engagement", "text": "Nutze 'Call-to-Action': Stelle alle 15 Minuten eine offene Frage an den Chat oder nutze Predictions."})
+        elif corr_chat_ret > 0.4:
+            findings.append({"type": "pos", "title": "Chat treibt Retention", "text": "Daten zeigen: Wenn dein Chat aktiv ist, bleiben die Leute deutlich länger. Interaktion ist dein Schlüssel zum Erfolg."})
 
-        # best slots (weekday/hour) from heatmap
-        slots_flat: List[tuple[int, int, float]] = []
-        for w, hours in heatmap.items():
-            for h, val in hours.items():
-                slots_flat.append((w, h, val))
-        top_slots = sorted(slots_flat, key=lambda t: t[2], reverse=True)[:3]
+        # 3. Schedule & Duration
+        if corr_dur_view < -0.3:
+            findings.append({"type": "warn", "title": "Zu lange Streams?", "text": "Deine Zuschauerzahlen sinken bei längeren Streams deutlich. Deine Audience ermüdet."})
+            actions.append({"tag": "Schedule", "text": "Versuche, deine Streams um 30-60 Minuten zu kürzen und die Energie zu komprimieren."})
+        
+        # 4. Networking
+        if network_ratio < 0.1:
+            findings.append({"type": "neg", "title": "Isolierte Insel", "text": "Du raidest fast nie. Twitch ist ein Geben und Nehmen."})
+            actions.append({"tag": "Network", "text": "Suche dir 2-3 Deadlock-Partner ähnlicher Größe und raide sie konsequent nach jedem Stream."})
+        elif raids_recv > 5:
+            findings.append({"type": "pos", "title": "Guter Netzwerk-Hub", "text": "Du wirst oft geraidet. Deine Networking-Strategie funktioniert."})
 
-        category_list = []
-        for name, stats in categories.items():
-            sessions_count = stats["sessions"] or 1
-            avg_v = stats["avg_sum"] / sessions_count
-            peak_v = stats["peak_sum"] / sessions_count
-            followers_h = (stats["followers_sum"] / max(stats["duration_h"], 0.01)) if stats["duration_h"] else 0.0
-            category_list.append(
-                {
-                    "name": name,
-                    "sessions": sessions_count,
-                    "avgViewers": round(avg_v, 1),
-                    "peakViewers": round(peak_v, 1),
-                    "followersPerHour": round(followers_h, 2),
-                    "chatPerSession": round((stats["unique_sum"] / sessions_count) if sessions_count else 0.0, 1),
-                }
-            )
-        category_list = sorted(category_list, key=lambda c: c["avgViewers"], reverse=True)[:6]
+        # 5. Growth
+        if conversion_rate < 1.0 and avg_v > 10:
+             findings.append({"type": "neg", "title": "Niedrige Conversion", "text": "Zuschauer schauen zu, folgen aber nicht. Der 'Reason to Follow' fehlt."})
+             actions.append({"tag": "Growth", "text": "Erinnere an Follows in High-Hype-Momenten (nicht am Anfang). Definiere ein Follow-Goal im Overlay."})
 
-        drops_sorted = sorted(
-            [d for d in drops if d.get("dropPct") is not None],
-            key=lambda d: d.get("dropPct", 0),
-            reverse=True,
-        )[:12]
+        # --- Benchmark Comparison ---
+        avg_pop_viewers = sum(pop_avg_viewers)/len(pop_avg_viewers) if pop_avg_viewers else 0
+        avg_pop_ret = sum(cohort_ret10)/len(cohort_ret10) if cohort_ret10 else 0
+        
+        benchmarks = {
+            "avgViewers": {"you": round(avg_v, 1), "avg": round(avg_pop_viewers, 1), "top10": round(_percentile_rank(90, pop_avg_viewers), 1)},
+            "retention": {"you": round(avg_ret10, 1), "avg": round(avg_pop_ret, 1)},
+        }
 
+        scores = {
+            "total": round(total_score),
+            "reach": round(score_reach),
+            "retention": round(score_retention),
+            "engagement": round(score_engagement),
+            "growth": round(score_growth),
+            "monetization": round(score_money),
+            "network": round(score_network)
+        }
+        
         summary = {
-            "totalSessions": total_sessions,
-            "avgPeakViewers": round(avg_peak, 1),
-            "followersDelta": sum_follower_delta,
-            "retention10m": round(avg_ret10, 1),
-            "uniqueChatPer100": round(unique_per_100, 1),
-            "chatHealthScore": chat_health_score,
-            "returning30d": returning_30d,
-            "uniqueViewersEst": round(sum_unique_viewers_est, 0),
-            "avgWatchTimeHours": round(watch_time_hours, 2),
+            "avgViewers": round(avg_v, 1),
+            "peakViewers": peak_v,
+            "hoursStreamed": round(total_duration_h, 1),
+            "hoursWatched": round(total_watch_time_h, 0),
+            "followersDelta": sum_followers,
+            "subsTotal": curr_subs,
+            "subPoints": curr_points,
+            "raidsSent": raids_sent,
+            "raidsRecv": raids_recv,
+            "linkClicks": link_clicks,
+            "uniqueChatters": sum_unique_chatters
         }
-
-        retention_block = {
-            "avg5m": round(avg_ret5, 1),
-            "avg10m": round(avg_ret10, 1),
-            "avg20m": round(avg_ret20, 1),
-            "avgDropoff": round(avg_drop, 1),
-            "trend": [
-                {
-                    "label": s["date"],
-                    "r5": s["retention5m"],
-                    "r10": s["retention10m"],
-                    "r20": s["retention20m"],
-                }
-                for s in sessions_data[:12]
-            ],
-            "drops": drops_sorted,
-        }
-
-        discovery_block = {
-            "avgPeak": round(avg_peak, 1),
-            "followersDelta": sum_follower_delta,
-            "followersPerSession": round(followers_per_session, 1),
-            "followersPerHour": round(followers_per_hour, 2),
-            "returning7d": returning_7d,
-            "returning30d": returning_30d,
-            "returningRate7d": round(returning_rate_7d, 1),
-            "returningRate30d": round(returning_rate_30d, 1),
-        }
-
-        chat_block = {
-            "uniquePer100": round(unique_per_100, 1),
-            "firstShare": round(first_share * 100, 1),
-            "returningShare": round(returning_share * 100, 1),
-            "totalUnique30d": total_unique_chatters_30d,
-            "chatHealthScore": chat_health_score,
-            "chatPeaks": chat_peaks,
-            "messagesPerMin": round(messages_per_min, 2),
-            "messagesPerViewer": round(messages_per_viewer, 2),
-        }
-
-        compare_block = {}
-        if prev_window:
-            compare_block = {
-                "prev": {
-                    "avgViewers": round(prev_window.get("avg_avg_viewers", 0.0), 1),
-                    "retention10m": round(prev_window.get("avg_ret10", 0.0), 1),
-                    "chatPer100": round(prev_window.get("unique_per_100", 0.0), 1),
-                    "followersPerHour": round(prev_window.get("followers_per_hour", 0.0), 2),
-                    "avgDurationMin": round(prev_window.get("avg_duration_min", 0.0), 1),
-                    "watchTimePerViewerMin": round(prev_window.get("watch_time_per_viewer_min", 0.0), 1),
-                },
-                "days": days,
-            }
-
-        audience_block = {
-            "uniqueEstimateTotal": round(sum_unique_viewers_est, 0),
-            "uniqueEstimateAvg": round(unique_est_avg, 1),
-            "avgToUniqueRatio": round(avg_to_unique_ratio * 100, 1),
-            "watchTimeHours": round(watch_time_hours, 2),
-            "watchTimePerViewerMin": round(avg_watch_time_per_viewer_min, 1),
-            "unique7d": total_unique_chatters_7d,
-            "unique30d": total_unique_chatters_30d,
-            "returningRate7d": round(returning_rate_7d, 1),
-            "returningRate30d": round(returning_rate_30d, 1),
-        }
-
-        benchmark = {
-            "topTracked": top_tracked,
-            "topCategory": top_category,
-            "categoryQuantiles": {
-                "q25": round(q25, 1) if q25 is not None else None,
-                "q50": round(q50, 1) if q50 is not None else None,
-                "q75": round(q75, 1) if q75 is not None else None,
-            },
-        }
-
-        analysis = {
-            "hourlySelf": hourly_self_avg,
-            "hourlyCategory": hourly_cat_avg,
-            "hourlyTracked": hourly_tracked_avg,
-            "heatmap": heatmap,
-        }
-
-        timing_block = {
-            "topSlots": [{"weekday": w, "hour": h, "avgViewers": val} for w, h, val in top_slots]
-        }
-        categories_block = {"top": category_list}
 
         return {
-            "timeframe": {"days": days, "from": cutoff_iso},
+            "meta": {"streamer": login, "days": days, "generated": now.isoformat()},
+            "scores": scores,
             "summary": summary,
-            "retention": retention_block,
-            "discovery": discovery_block,
-            "chat": chat_block,
-            "audience": audience_block,
-            "benchmark": benchmark,
-            "analysis": analysis,
-            "timing": timing_block,
-            "categories": categories_block,
-            "compare": compare_block,
+            "benchmarks": benchmarks,
             "sessions": sessions_data,
+            "findings": findings,
+            "actions": actions,
+            "correlations": {
+                "durationVsViewers": round(corr_dur_view, 2),
+                "chatVsRetention": round(corr_chat_ret, 2)
+            },
+            "retention": {"avg10m": round(avg_ret10, 1), "avgDrop": round(avg_drop, 1), "drops": drops},
+            "network": {"sent": raids_sent, "received": raids_recv, "sentViewers": raids_sent_viewers},
         }
+
+    async def _dashboard_streamer_analytics_data(self, streamer_login: str, days: int = 30) -> dict:
+        """
+        New comprehensive analytics using AnalyticsBackendExtended.
+        Returns data structure compatible with the new React dashboard.
+        """
+        return await AnalyticsBackendExtended.get_comprehensive_analytics(
+            streamer_login=streamer_login,
+            days=days
+        )
 
     async def _dashboard_streamer_overview(self, login: str) -> dict:
         """Fetch comprehensive stats for a single streamer."""
@@ -1452,17 +1187,33 @@ class TwitchDashboardMixin:
         return "Unbekannter Modus"
 
     async def _reload_twitch_cog(self) -> str:
-        """Hot reload the entire Twitch cog."""
-        try:
-            if hasattr(self.bot, "reload_cog"):
-                ok, msg = await self.bot.reload_cog("cogs.twitch")
-                if ok:
-                    log.info("Twitch cog hot reloaded via dashboard")
-                    return "Twitch-Modul erfolgreich neu geladen"
-                log.warning("Twitch cog hot reload failed via dashboard: %s", msg)
-                return f"Fehler beim Neuladen: {msg}"
+        """Hot reload the entire Twitch cog.
 
-            await self.bot.reload_extension("cogs.twitch")
+        Verwendet explizites unload → load statt reload_extension(),
+        damit bei einem fehlgeschlagenen vorherigen Reload der Cog
+        nicht in einem inkonsistenten "already loaded" Zustand bleibt.
+        
+        Wartet nach dem Unload explizit auf Port-Freigabe, damit
+        der neue Cog sauber starten kann.
+        """
+        try:
+            # 1) Sicher unloaden (ignoriere Fehler wenn nicht geladen)
+            try:
+                await self.bot.unload_extension("cogs.twitch")
+                log.info("Twitch cog unloaded for reload")
+                
+                # Warte explizit darauf, dass alle Ressourcen freigegeben wurden
+                # (besonders wichtig: Ports 4343 und 8765)
+                log.info("Warte 3 Sekunden auf vollständige Ressourcen-Freigabe...")
+                await asyncio.sleep(3.0)
+                
+            except Exception as unload_err:
+                log.warning("Twitch cog unload before reload: %s", unload_err)
+                # Auch bei Fehler kurz warten, damit teilweise Cleanups Zeit haben
+                await asyncio.sleep(2.0)
+
+            # 2) Neu laden
+            await self.bot.load_extension("cogs.twitch")
             log.info("Twitch cog hot reloaded via dashboard")
             return "Twitch-Modul erfolgreich neu geladen"
         except Exception as e:

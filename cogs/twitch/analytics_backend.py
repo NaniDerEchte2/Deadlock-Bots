@@ -260,7 +260,7 @@ class AnalyticsBackend:
                 AVG(s.unique_chatters) as unique_chatters,
                 AVG(CASE WHEN s.avg_viewers > 0 THEN (s.unique_chatters * 100.0 / s.avg_viewers) ELSE 0 END) as chat_per_100,
                 SUM(s.first_time_chatters) as first_time,
-                SUM(s.returning_chatters) as returning
+                SUM(s.returning_chatters) as returning_chatters
             FROM twitch_stream_sessions s
             WHERE s.started_at >= ?
               AND s.ended_at IS NOT NULL

@@ -178,6 +178,13 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             followers_start    INTEGER,
             followers_end      INTEGER,
             follower_delta     INTEGER,
+            stream_title       TEXT,
+            notification_text  TEXT,
+            language           TEXT,
+            is_mature          INTEGER DEFAULT 0,
+            tags               TEXT,
+            had_deadlock_in_session INTEGER DEFAULT 0,
+            game_name          TEXT,
             notes              TEXT
         )
         """

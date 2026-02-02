@@ -125,7 +125,10 @@ class TwitchBotTokenManager:
                 headers = {"Authorization": f"OAuth {token}"}
                 async with session.get("https://id.twitch.tv/oauth2/validate", headers=headers) as resp:
                     if resp.status != 200:
-                        log.warning("Token validation failed: HTTP %s", resp.status)
+                        # 401 beim Validate ist normal wenn das Token zwischen zwei
+                        # Auto-Refresh-Zyklen abläuft – der Caller refresht dann.
+                        lvl = logging.DEBUG if resp.status == 401 else logging.WARNING
+                        log.log(lvl, "Token validation failed: HTTP %s", resp.status)
                         return False
 
                     data = await resp.json()
