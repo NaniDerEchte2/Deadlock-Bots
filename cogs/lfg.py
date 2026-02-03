@@ -6,6 +6,7 @@ Steam Rank Checker - LFG System
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -39,7 +40,7 @@ VOICE_CATEGORY_TOLERANCE = {
 }
 
 # AI Configuration (Gemini)
-GEMINI_MODEL = "gemini-3-pro-preview"
+GEMINI_MODEL = os.getenv("AI_GEMINI_MODEL", "gemini-2.0-flash")
 GEMINI_VOICE_MODEL = GEMINI_MODEL
 USE_AI_DETECTION = True
 
@@ -131,6 +132,30 @@ class SteamRankChecker(commands.Cog):
 
         return highest_rank or ("Obscurus", 0)
 
+    def _keyword_lfg_intent(self, message_content: str) -> bool:
+        """Fallback-Heuristik, falls AI nicht verfügbar ist."""
+        text = (message_content or "").lower()
+        if not text:
+            return False
+
+        if "lfg" in text or "lfm" in text:
+            return True
+
+        if ("suche" in text or "suchen" in text or "gesucht" in text) and (
+            "mitspieler" in text or "team" in text or "gruppe" in text or "party" in text
+        ):
+            return True
+
+        if ("spielen" in text or "zocken" in text or "grinden" in text) and (
+            "wer" in text or "jemand" in text or "bock" in text
+        ):
+            return True
+
+        if "duo" in text or "trio" in text or "squad" in text or "stack" in text:
+            return True
+
+        return False
+
     async def _ai_check_lfg_intent(self, message_content: str) -> bool:
         """Nutzt nur AI um zu prüfen, ob jemand nach Mitspielern sucht."""
         if not USE_AI_DETECTION:
@@ -162,11 +187,11 @@ class SteamRankChecker(commands.Cog):
             )
         except Exception as exc:
             log.warning("AI Intent-Check fehlgeschlagen (%s) - kein LFG erkannt", exc)
-            return False
+            return self._keyword_lfg_intent(message_content)
 
         if not answer_text:
-            log.warning("AI gab keine Antwort zurück - kein LFG erkannt")
-            return False
+            log.warning("AI gab keine Antwort zurück - Fallback auf Keywords")
+            return self._keyword_lfg_intent(message_content)
 
         normalized = str(answer_text).strip().lower()
         if normalized.startswith("ja") or normalized.startswith("yes"):
