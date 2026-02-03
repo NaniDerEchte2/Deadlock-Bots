@@ -1823,11 +1823,20 @@ class BetaInviteFlow(commands.Cog):
 
         try:
             # 1. Zuerst Steam-Verknüpfung prüfen
+            #    Retry mit kurzen Pausen: OAuth-Callback könnte noch in Flight sein
+            #    wenn der User "Weiter" direkt nach dem Steam-Login klickt.
             steam_id = _lookup_primary_steam_id(interaction.user.id)
+            if not steam_id:
+                for _ in range(5):
+                    await asyncio.sleep(3)
+                    steam_id = _lookup_primary_steam_id(interaction.user.id)
+                    if steam_id:
+                        break
+
             if not steam_id:
                 stop_anim.set()
                 if anim_task: await anim_task
-                
+
                 view = self._build_link_prompt_view(interaction.user)
                 prompt = (
                     "Bevor wir fortfahren können, musst du deinen Steam-Account verknüpfen.\n"
