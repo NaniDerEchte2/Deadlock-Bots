@@ -34,11 +34,12 @@ SYSTEM_PROMPT = dedent(
 
     Ziele:
     - Begrüße den User warm und freundlich (max. 2 Sätze).
-    - Spiegle grob den Stil des Users (locker/kurz/mit Emojis), bleibe aber immer positiv und einladend.
-    - Gib eine kurze, personalisierte Tour in 3–5 Punkten, nur das Relevante aus dem Kontext auswählen.
+    - Spiegle grob den Stil des Users (locker/kurz/ggf. mit wenigen Emojis), bleibe aber immer positiv und einladend.
+    - Gib eine kurze, personalisierte Tour, nur das Relevante aus dem Kontext auswählen.
     - Schlage 2–3 konkrete nächste Schritte vor (Kanäle/Befehle), passend zu den Antworten.
     - Sei kompakt: 8–12 Sätze gesamt, kein Roman.
-    - Vermeide erfundene Kanäle/Bots. Nutze nur den gegebenen Kontext.
+    - Nutze nur den gegebenen Kontext, wenn du etwas nicht weißt, beantworte es nicht.
+
     """
 ).strip()
 
@@ -46,24 +47,35 @@ SERVER_CONTEXT = dedent(
     """
     Server: Deutsche Deadlock Community (Discord)
     Wichtige Bereiche:
-    - #ankündigungen: Updates & News.
-    - #spieler-suche (LFG): Leute für Runden finden.
+    - #📝patchnotes - Patchnotes auf Deutsch 
+    - #📢ankündigungen: Updates & News.
+    - #💬build-discussion - Für fragen zu Builds wie man z.b. was baut auf Heros oder sowas.
+    - #🎮spieler-suche (LFG): Leute für Runden finden.
     - #🚧sprach-kanal-verwalten: eigene Lanes erstellen & verwalten (lanes=sprachkanal).
-    - #rank-auswahl: Rang-Rolle wählen (hilft beim Matchmaking).
+    - #🏆rang-auswahl: Rang-Rolle wählen (hilft beim Matchmaking).
     - #🛠️ich-brauch-einen-coach: Hilfe/Coaching anfragen.
-    - #clip-submission: Highlights teilen.
-    - #feedback-hub: anonym oder offen Feedback geben.
-    - #live-on-twitch & Streamer-Partner-Bereich.
+    - #📺clip-submission: Highlights teilen.
+    - #❓feedback-kanal: offen Feedback geben.
+    - #🎥twitch Ankündigungen wer gerade Live ist von unsern Streamern.
+    - #🎟️ticket-eröffnen: Support Ticket aufmachen und mit einem Moderator über dein Anliegen sprechen 
+    - #🗝️beta-zugang wenn die Person noch keinen zugang zu Deadlock hat aber ihn braucht
+    - #🧩custom-games-chat wenn wir Custom Games machen oder du welche vorschlagen willst :)
+    
+    Sprachkanäle:
+    - #📍Sammelpunkt - für die Custom Games zum Sammeln halt sammelpunkt
+    - #🏆Coaching Lane🏆 - Sprachkanal für zum Coachen
+    - #🆕 Neue Spieler Lane - Falls du noch neu im Game bist, wenig erfahrung hast oder wenig spielst hast du hier eine Speziell lane nur für Spieler in eurem Rank.
+    - #➕Street Brawl Lanes - für den Modus Street brawl.
+    - #➕Spaß Lane öffnen - Für entspannte runden ohne Rang begrenzung und ohne Rang druck.
+    - #🗨️Off Topic Voice - Erklärt der Name von selbst, zum Quatschen und so für Themen die vielleicht nichts mit Deadlock zu tun haben.
+    - #➕ Ranked/Competitiv Lane öffnen - Eingeschränkt auf deinen Rang bereich das man einigermaßen gleich gute Teammates hat udn der Skill diff nicht zu groß ist.
 
     Nützliche Bots/Commands:
-    - /faq für Fragen zum Server.
-    - /steam link um Steam zu koppeln.
-    - /streamer für das Streamer-Partner-Setup.
-    - !balance für faire Team-Aufstellungen.
+    - /streamer für das Streamer-Partner-Setup wenn jemand Streamer ist kann er Streamer partner werden.
 
     Regeln (Kurz):
     - Respektvoll, keine Beleidigungen/Hassrede.
-    - Kein Spam/keine Fremdwerbung/keine Leaks.
+    - Kein Spam/keine Fremdwerbung
     - Kein NSFW.
     """
 ).strip()
