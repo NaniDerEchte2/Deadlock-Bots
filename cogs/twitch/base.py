@@ -742,12 +742,25 @@ class TwitchBaseCog(commands.Cog):
         unsubscribed = 0
 
         try:
-            subs = chat_bot.fetch_eventsub_subscriptions()
-            # fetch_eventsub_subscriptions() gibt ein HTTPAsyncIterator zurück
-            # → zwingend "async for" verwenden, kein await auf die Methode selbst
+            subs_result = chat_bot.fetch_eventsub_subscriptions()
+            # TwitchIO liefert je nach Version ein awaitable, das einen HTTPAsyncIterator zurückgibt.
+            if asyncio.iscoroutine(subs_result):
+                subs_result = await subs_result
+
             subs_list = []
-            async for sub in subs:
-                subs_list.append(sub)
+            if hasattr(subs_result, "__aiter__"):
+                async for sub in subs_result:
+                    subs_list.append(sub)
+            elif subs_result is None:
+                log.warning("Cleanup: fetch_eventsub_subscriptions returned None")
+            else:
+                try:
+                    subs_list.extend(list(subs_result))
+                except TypeError:
+                    log.warning(
+                        "Cleanup: fetch_eventsub_subscriptions returned unexpected type: %s",
+                        type(subs_result),
+                    )
 
             for sub in subs_list:
                 try:
