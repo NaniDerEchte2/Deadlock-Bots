@@ -492,6 +492,42 @@ if TWITCHIO_AVAILABLE:
                     log.error("Failed to join channel %s: %s", channel_login, e)
                 return False
 
+        async def follow_channel(self, broadcaster_id: str) -> bool:
+            """Folgt einem Channel mit dem Bot-Account (nötig für Follower-only Chats)."""
+            safe_bot_id = self.bot_id_safe or self.bot_id
+            if not safe_bot_id or not self._token_manager:
+                log.debug("follow_channel: Kein Bot-ID oder Token-Manager verfügbar")
+                return False
+
+            try:
+                tokens = await self._token_manager.get_valid_token()
+                if not tokens:
+                    return False
+                access_token, _ = tokens
+
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    headers = {
+                        "Client-ID": self._client_id,
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                    }
+                    payload = {"from_id": str(safe_bot_id), "to_id": str(broadcaster_id)}
+                    async with session.post(
+                        "https://api.twitch.tv/helix/users/follows",
+                        headers=headers,
+                        json=payload,
+                    ) as r:
+                        if r.status in {200, 204}:
+                            log.info("follow_channel: Bot folgt jetzt %s", broadcaster_id)
+                            return True
+                        txt = await r.text()
+                        log.debug("follow_channel: HTTP %s – %s", r.status, txt[:200])
+                        return False
+            except Exception:
+                log.debug("follow_channel: Exception", exc_info=True)
+                return False
+
         async def event_message(self, message):
             """Wird bei jeder Chat-Nachricht aufgerufen."""
             # Compatibility layer for TwitchIO 3.x EventSub

@@ -507,6 +507,12 @@ class TwitchMonitoringMixin:
             except Exception:
                 log.exception("Fehler beim Stats-Logging")
 
+        # Partner-Rekrutierung (intern rate-limitiert auf 30 min)
+        try:
+            await self._run_partner_recruit(category_streams)
+        except Exception:
+            log.exception("Fehler bei Partner-Rekrutierung")
+
     async def _process_postings(
         self,
         tracked: List[Dict[str, object]],

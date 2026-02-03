@@ -58,7 +58,7 @@ SERVER_CONTEXT = dedent(
     - #❓feedback-kanal: offen Feedback geben.
     - #🎥twitch Ankündigungen wer gerade Live ist von unsern Streamern.
     - #🎟️ticket-eröffnen: Support Ticket aufmachen und mit einem Moderator über dein Anliegen sprechen 
-    - #🗝️beta-zugang wenn die Person noch keinen zugang zu Deadlock hat aber ihn braucht
+    - #🗝️beta-zugang wenn die Person noch keinen zugang zu Deadlock hat aber ihn braucht1407085699374649364
     - #🧩custom-games-chat wenn wir Custom Games machen oder du welche vorschlagen willst :)
     
     Sprachkanäle:
@@ -66,7 +66,7 @@ SERVER_CONTEXT = dedent(
     - #🏆Coaching Lane🏆 - Sprachkanal für zum Coachen
     - #🆕 Neue Spieler Lane - Falls du noch neu im Game bist, wenig erfahrung hast oder wenig spielst hast du hier eine Speziell lane nur für Spieler in eurem Rank.
     - #➕Street Brawl Lanes - für den Modus Street brawl.
-    - #➕Spaß Lane öffnen - Für entspannte runden ohne Rang begrenzung und ohne Rang druck.
+    - #➕Spaß Lane öffnen - Für entspannte runden ohne Rang begrenzung und ohne Rang druck. WICHTIG: Hier steht auch ein Rang dabei, der Dient aber nur als Richtungsgeber in welche, Rang bereich wir uns bewegen. Joinen kannst du Trotzdem.
     - #🗨️Off Topic Voice - Erklärt der Name von selbst, zum Quatschen und so für Themen die vielleicht nichts mit Deadlock zu tun haben.
     - #➕ Ranked/Competitiv Lane öffnen - Eingeschränkt auf deinen Rang bereich das man einigermaßen gleich gute Teammates hat udn der Skill diff nicht zu groß ist.
 

@@ -910,6 +910,10 @@ class RaidBot:
         except Exception:
             log.debug("Konnte Channel %s nicht vorab beitreten", to_broadcaster_login)
 
+        # Bot dem Channel folgen – damit die Nachricht auch in "Follower only" Chats gesendet werden kann
+        if target_id and hasattr(self.chat_bot, "follow_channel"):
+            await self.chat_bot.follow_channel(target_id)
+
         # 2. 15 Sekunden warten, damit der Streamer den Raid-Alert verarbeiten kann
         log.info("Warte 15s vor Senden der Recruitment-Message an %s...", to_broadcaster_login)
         await asyncio.sleep(25.0)
@@ -947,7 +951,7 @@ class RaidBot:
                         SELECT
                             ROUND(AVG(viewer_count)) as avg_viewers,
                             MAX(viewer_count) as peak_viewers
-                        FROM twitch_stats_tracked
+                        FROM twitch_stats_category
                         WHERE streamer = ?
                           AND viewer_count > 0
                         """,
@@ -958,7 +962,7 @@ class RaidBot:
                     avg_viewers = int(stats[0])
                     peak_viewers = int(stats[1]) if stats[1] else 0
                     if peak_viewers > 0:
-                        stats_teaser = f"Übrigens: Du hattest im Schnitt {avg_viewers} Viewer bei Deadlock, dein Peak war {peak_viewers}. Weitere Details haben wir auch – "
+                        stats_teaser = f"Übrigens: Du hattest im Schnitt {avg_viewers} Viewer bei Deadlock, dein Peak war {peak_viewers}. Weitere Details haben wir auch falls du willst :) "
             except Exception:
                 log.debug("Could not fetch stats for %s", to_broadcaster_login, exc_info=True)
 
