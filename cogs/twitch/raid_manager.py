@@ -718,6 +718,10 @@ class RaidBot:
     - Führt den Raid aus und loggt Metadaten (gesendete + empfangene Raids)
     """
 
+    # Wie lange (in Sekunden) nach einem gestarteten Raid der Lock pro Broadcaster gilt.
+    # Twitch braucht ca. 30-60s bis der Raid fertig ist; 90s gibt etwas Puffer.
+    RAID_LOCK_TTL_SECONDS = 90
+
     def __init__(
         self,
         client_id: str,
@@ -731,6 +735,11 @@ class RaidBot:
         self.chat_bot = None  # Wird später gesetzt
         self._bot_id = None   # Wird bei set_chat_bot gesetzt als Fallback
         self._cleanup_counter = 0
+
+        # Pro-Broadcaster Raid-Lock: {broadcaster_id: Zeitstempel des letzten Raid-Starts}
+        # Verhindert, dass mehrere gleichzeitige Offline-Events Raids auf denselben Kanal schießen.
+        self._raid_locks: Dict[str, float] = {}
+        self._raid_lock_mutex = asyncio.Lock()  # Schützt _raid_locks vor Race Conditions
         
         # Cleanup-Task starten
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
