@@ -11,6 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 
 const DEADLOCK_HELLO_ENTRY_FLAG = 5;
 const DEADLOCK_HELLO_SECONDARY_ENTRY_FLAG = 1;
@@ -128,69 +129,71 @@ class DeadlockGcBot {
   }
 
   async refreshGameVersion(appId = 1422450) {
-    if (!this.client || typeof this.client.getProductInfo !== 'function') return false;
-
     return new Promise((resolve) => {
-      this.log('info', 'refreshGameVersion: Requesting ProductInfo', { appId });
-      this.client.getProductInfo([appId], [], (err, apps) => {
-        if (err) {
-          this.log('warn', 'Failed to auto-update game version', { error: err && err.message ? err.message : String(err) });
-          resolve(false);
-          return;
-        }
+      const url = `https://api.steampowered.com/IGCVersion_${appId}/GetClientVersion/v1/`;
+      this.log('info', 'refreshGameVersion: Requesting version from Web API', { url });
 
-        this.log('debug', 'refreshGameVersion: Received ProductInfo response', { 
-          appId, 
-          hasApps: !!apps, 
-          appKeys: apps ? Object.keys(apps) : [] 
-        });
-
-        try {
-          const app = apps && apps[appId] ? apps[appId] : null;
-          if (!app) {
-             this.log('warn', 'refreshGameVersion: App not found in response', { appId });
-             resolve(false);
-             return;
+      const req = https.get(url, (res) => {
+        let data = '';
+        res.on('data', (chunk) => data += chunk);
+        res.on('end', () => {
+          if (res.statusCode !== 200) {
+            this.log('warn', 'Failed to fetch game version from Web API', { statusCode: res.statusCode, body: data });
+            resolve(false);
+            return;
           }
-          
-          const buildId = app?.appinfo?.depots?.branches?.public?.buildid;
-          this.log('debug', 'refreshGameVersion: Extracted buildId', { buildId, currentVersion: this.sessionNeed });
 
-          if (buildId) {
-            const numericId = parseInt(buildId, 10);
-            if (Number.isFinite(numericId) && numericId > 0) {
-              const old = this.sessionNeed;
-              if (old !== numericId) {
-                this.sessionNeed = numericId;
-                this.cachedHello = null; // Invalidate cache
-                this.log('info', 'Auto-updated Deadlock game version', {
-                  oldVersion: old,
-                  newVersion: this.sessionNeed,
-                  source: 'Steam ProductInfo'
-                });
+          try {
+            const json = JSON.parse(data);
+            const activeVersion = json?.result?.active_version;
 
-                // Persist to cache
-                try {
-                  const dataDir = path.dirname(VERSION_CACHE_PATH);
-                  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-                  fs.writeFileSync(VERSION_CACHE_PATH, String(this.sessionNeed), 'utf8');
-                  
-                  this.log('info', 'New game version detected - restarting service to apply changes...');
-                  // Exit to trigger a restart (managed by PM2/Systemd/Docker)
-                  process.exit(0);
-                } catch (cacheErr) {
-                  this.log('warn', 'Failed to save version to cache', { error: cacheErr.message });
+            this.log('debug', 'refreshGameVersion: Received Web API response', { 
+              appId, 
+              activeVersion,
+              minAllowedVersion: json?.result?.min_allowed_version 
+            });
+
+            if (activeVersion) {
+              const numericId = parseInt(activeVersion, 10);
+              if (Number.isFinite(numericId) && numericId > 0) {
+                const old = this.sessionNeed;
+                if (old !== numericId) {
+                  this.sessionNeed = numericId;
+                  this.cachedHello = null; // Invalidate cache
+                  this.log('info', 'Auto-updated Deadlock game version', {
+                    oldVersion: old,
+                    newVersion: this.sessionNeed,
+                    source: 'Steam Web API'
+                  });
+
+                  // Persist to cache
+                  try {
+                    const dataDir = path.dirname(VERSION_CACHE_PATH);
+                    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+                    fs.writeFileSync(VERSION_CACHE_PATH, String(this.sessionNeed), 'utf8');
+                    
+                    this.log('info', 'New game version detected - restarting service to apply changes...');
+                    // Exit to trigger a restart (managed by PM2/Systemd/Docker)
+                    process.exit(0);
+                  } catch (cacheErr) {
+                    this.log('warn', 'Failed to save version to cache', { error: cacheErr.message });
+                  }
+                } else {
+                   this.log('debug', 'Deadlock game version is up to date', { version: this.sessionNeed });
                 }
-              } else {
-                 this.log('debug', 'Deadlock game version is up to date', { version: this.sessionNeed });
+                resolve(true);
+                return;
               }
-              resolve(true);
-              return;
             }
+          } catch (parseErr) {
+            this.log('warn', 'Failed to parse game version from Web API', { error: parseErr.message });
           }
-        } catch (parseErr) {
-          this.log('warn', 'Failed to parse game version from ProductInfo', { error: parseErr.message });
-        }
+          resolve(false);
+        });
+      });
+
+      req.on('error', (err) => {
+        this.log('warn', 'Failed to auto-update game version (Web API error)', { error: err.message });
         resolve(false);
       });
     });
