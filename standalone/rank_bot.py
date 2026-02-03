@@ -783,6 +783,8 @@ async def _apply_rank_to_member(
             logger.warning("MMR Sync: Rolle %s konnte nicht erstellt werden: %s", rank_name, exc)
             return False
 
+    await remove_all_rank_roles(member, guild)
+
     try:
         if role not in member.roles:
             await member.add_roles(role, reason=reason)
@@ -790,15 +792,6 @@ async def _apply_rank_to_member(
         logger.warning("MMR Sync: Konnte Rolle %s bei %s nicht hinzufuegen: %s", rank_name, member.id, exc)
         return False
 
-    for role_name in ranks:
-        if role_name == rank_name:
-            continue
-        role_to_remove = discord.utils.get(guild.roles, name=role_name.capitalize())
-        if role_to_remove and role_to_remove in member.roles:
-            try:
-                await member.remove_roles(role_to_remove, reason=reason)
-            except (discord.Forbidden, discord.HTTPException) as exc:
-                logger.warning("MMR Sync: Entfernen von %s bei %s fehlgeschlagen: %s", role_name, member.id, exc)
     return True
 
 async def sync_mmr_roles(
