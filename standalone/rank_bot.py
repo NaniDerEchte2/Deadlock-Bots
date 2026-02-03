@@ -1,9 +1,10 @@
 import discord
 from discord.ext import commands, tasks
+import aiohttp
 import json
 import sqlite3
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 import os
 import logging
 import time
@@ -11,6 +12,7 @@ from pathlib import Path
 import sys
 import atexit
 from typing import Optional, Dict, List, Any
+from zoneinfo import ZoneInfo
 
 # ---------- Repo-Root robust finden, damit "service" importierbar ist ----------
 def _add_repo_root_for_imports(marker="service/db.py") -> str:
@@ -31,6 +33,7 @@ REPO_ROOT = _add_repo_root_for_imports()
 
 # zentrale DB via service.db
 from service import db as central_db
+from service.http_client import build_resilient_connector
 DB_FILE = str(Path(central_db.db_path()))
 
 # Logging setup
@@ -76,8 +79,21 @@ NO_NOTIFICATION_ROLE_ID = 1397688110959165462
 PHANTOM_NOTIFICATION_CHANNEL_ID = 1374364800817303632
 RANK_SELECTION_CHANNEL_ID = 1398021105339334666  # Channel für automatische View-Wiederherstellung
 
+# Deadlock MMR Sync
+MMR_API_URL = "https://api.deadlock-api.com/v1/players/mmr"
+MMR_SYNC_START_HOUR = int(os.getenv("DEADLOCK_MMR_SYNC_HOUR", "5"))
+MMR_SYNC_TZ = os.getenv("DEADLOCK_MMR_SYNC_TZ", "Europe/Berlin")
+MMR_SYNC_MAX_RPS = float(os.getenv("DEADLOCK_MMR_MAX_RPS", "20"))
+MMR_SYNC_BATCH_SIZE = int(os.getenv("DEADLOCK_MMR_BATCH_SIZE", "1000"))
+MMR_SYNC_TIMEOUT = float(os.getenv("DEADLOCK_MMR_TIMEOUT", "20"))
+MMR_SYNC_NS = "mmr_sync"
+MMR_SYNC_LAST_RUN_KEY = "last_run_date"
+
 # Test-User System - für normalen Betrieb leer lassen
 test_users: List[discord.Member] = []
+
+# MMR Sync Lock (verhindert parallele Läufe)
+MMR_SYNC_LOCK = asyncio.Lock()
 
 COMMAND_BOT_KEY = "rank"
 COMMAND_POLL_LIMIT = 5
@@ -310,6 +326,7 @@ def collect_rank_bot_snapshot() -> Dict[str, Any]:
         "loops": {
             "daily_notification": _loop_running(globals().get("daily_notification_check")),
             "daily_cleanup": _loop_running(globals().get("daily_cleanup_check")),
+            "daily_mmr_sync": _loop_running(globals().get("daily_mmr_sync_check")),
             "command_poller": _loop_running(globals().get("standalone_command_poller")),
             "state_publisher": _loop_running(globals().get("standalone_state_publisher")),
         },
@@ -467,6 +484,12 @@ def ensure_notification_tasks_running(mode: str = "normal", interval: int = 30) 
     else:
         started_flags["daily_cleanup"] = False
 
+    if not daily_mmr_sync_check.is_running():
+        daily_mmr_sync_check.start()
+        started_flags["daily_mmr_sync"] = True
+    else:
+        started_flags["daily_mmr_sync"] = False
+
     return {
         "mode": mode,
         "interval": interval,
@@ -474,6 +497,7 @@ def ensure_notification_tasks_running(mode: str = "normal", interval: int = 30) 
         "loops": {
             "daily_notification": daily_notification_check.is_running(),
             "daily_cleanup": daily_cleanup_check.is_running(),
+            "daily_mmr_sync": daily_mmr_sync_check.is_running(),
         },
     }
 
@@ -491,11 +515,18 @@ def stop_notification_tasks() -> Dict[str, Any]:
     else:
         stopped_flags["daily_cleanup"] = False
 
+    if daily_mmr_sync_check.is_running():
+        daily_mmr_sync_check.stop()
+        stopped_flags["daily_mmr_sync"] = True
+    else:
+        stopped_flags["daily_mmr_sync"] = False
+
     return {
         "stopped": stopped_flags,
         "loops": {
             "daily_notification": daily_notification_check.is_running(),
             "daily_cleanup": daily_cleanup_check.is_running(),
+            "daily_mmr_sync": daily_mmr_sync_check.is_running(),
         },
     }
 
@@ -552,6 +583,308 @@ async def remove_all_rank_roles(member: discord.Member, guild: discord.Guild):
                 raise
             except Exception as e:
                 logger.warning("remove_all_rank_roles: konnte Rolle nicht entfernen: %s", e)
+
+# ---------- MMR Sync ----------
+STEAM_ID64_BASE = 76561197960265728
+
+def _get_mmr_tzinfo() -> tzinfo:
+    try:
+        return ZoneInfo(MMR_SYNC_TZ)
+    except Exception:
+        logger.warning("MMR Sync: Ungueltige Zeitzone '%s' -> fallback lokal.", MMR_SYNC_TZ)
+        return datetime.now().astimezone().tzinfo
+
+def _mmr_today_str() -> str:
+    tzinfo = _get_mmr_tzinfo()
+    return datetime.now(tzinfo).date().isoformat()
+
+def _mmr_should_run_now() -> bool:
+    tzinfo = _get_mmr_tzinfo()
+    now = datetime.now(tzinfo)
+    if now.hour < MMR_SYNC_START_HOUR:
+        return False
+    last_run = central_db.get_kv(MMR_SYNC_NS, MMR_SYNC_LAST_RUN_KEY)
+    return last_run != now.date().isoformat()
+
+def _set_mmr_last_run(date_str: str) -> None:
+    central_db.set_kv(MMR_SYNC_NS, MMR_SYNC_LAST_RUN_KEY, date_str)
+
+def steamid64_to_account_id(steam_id64: str) -> Optional[int]:
+    try:
+        sid = int(str(steam_id64).strip())
+    except (TypeError, ValueError):
+        return None
+    account_id = sid - STEAM_ID64_BASE
+    if account_id <= 0:
+        return None
+    return account_id
+
+def _fetch_steam_links() -> List[tuple[int, str]]:
+    with central_db.get_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT user_id, steam_id
+              FROM steam_links
+             WHERE steam_id IS NOT NULL
+               AND steam_id != ''
+            """
+        )
+        rows = cursor.fetchall()
+    links: List[tuple[int, str]] = []
+    for user_id, steam_id in rows:
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            continue
+        if steam_id is None:
+            continue
+        links.append((uid, str(steam_id).strip()))
+    return links
+
+def _build_account_id_map(
+    links: List[tuple[int, str]]
+) -> tuple[Dict[int, List[int]], Dict[int, str]]:
+    account_to_users: Dict[int, List[int]] = {}
+    account_to_steam: Dict[int, str] = {}
+    for user_id, steam_id in links:
+        account_id = steamid64_to_account_id(steam_id)
+        if account_id is None:
+            logger.warning("MMR Sync: Ungueltige SteamID64: %s (user_id=%s)", steam_id, user_id)
+            continue
+        account_to_users.setdefault(account_id, [])
+        if user_id not in account_to_users[account_id]:
+            account_to_users[account_id].append(user_id)
+        account_to_steam.setdefault(account_id, steam_id)
+    return account_to_users, account_to_steam
+
+def _chunked(seq: List[int], size: int) -> List[List[int]]:
+    size = max(1, size)
+    return [seq[i:i + size] for i in range(0, len(seq), size)]
+
+def _entry_sort_key(entry: Dict[str, Any]) -> int:
+    for key in ("start_time", "match_id"):
+        value = entry.get(key)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+def _normalize_mmr_response(data: Any) -> Dict[int, Dict[str, Any]]:
+    if isinstance(data, dict) and "data" in data:
+        data = data.get("data")
+    if not isinstance(data, list):
+        return {}
+    normalized: Dict[int, Dict[str, Any]] = {}
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        account_id = entry.get("account_id")
+        try:
+            account_id_int = int(account_id)
+        except (TypeError, ValueError):
+            continue
+        current = normalized.get(account_id_int)
+        if current is None or _entry_sort_key(entry) > _entry_sort_key(current):
+            normalized[account_id_int] = entry
+    return normalized
+
+def _merge_mmr_entries(
+    target: Dict[int, Dict[str, Any]],
+    incoming: Dict[int, Dict[str, Any]]
+) -> None:
+    for account_id, entry in incoming.items():
+        current = target.get(account_id)
+        if current is None or _entry_sort_key(entry) > _entry_sort_key(current):
+            target[account_id] = entry
+
+def _rank_name_from_mmr(entry: Dict[str, Any]) -> Optional[str]:
+    division = entry.get("division")
+    if division is None:
+        rank_value = entry.get("rank")
+        try:
+            division = int(rank_value) // 10
+        except (TypeError, ValueError):
+            return None
+    try:
+        division_int = int(division)
+    except (TypeError, ValueError):
+        return None
+    if 0 <= division_int < len(ranks):
+        return ranks[division_int]
+    return None
+
+async def _fetch_mmr_batch(
+    session: aiohttp.ClientSession,
+    account_ids: List[int]
+) -> List[Dict[str, Any]]:
+    params = {"account_ids": ",".join(str(aid) for aid in account_ids)}
+    async with session.get(MMR_API_URL, params=params) as resp:
+        if resp.status != 200:
+            text = await resp.text()
+            raise RuntimeError(f"MMR API {resp.status}: {text[:200]}")
+        data = await resp.json()
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and "data" in data:
+        return data.get("data") or []
+    return []
+
+async def _fetch_all_mmr_entries(
+    account_ids: List[int]
+) -> tuple[Dict[int, Dict[str, Any]], bool]:
+    if not account_ids:
+        return {}, False
+    entries: Dict[int, Dict[str, Any]] = {}
+    had_errors = False
+    connector = build_resilient_connector(limit=50, limit_per_host=10)
+    timeout = aiohttp.ClientTimeout(total=MMR_SYNC_TIMEOUT)
+    min_delay = 1.0 / max(MMR_SYNC_MAX_RPS, 1.0)
+
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        batches = _chunked(account_ids, MMR_SYNC_BATCH_SIZE)
+        for idx, batch in enumerate(batches, start=1):
+            started = time.monotonic()
+            try:
+                raw = await _fetch_mmr_batch(session, batch)
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError, RuntimeError) as exc:
+                had_errors = True
+                logger.warning("MMR Sync: Batch %s/%s fehlgeschlagen: %s", idx, len(batches), exc)
+            else:
+                normalized = _normalize_mmr_response(raw)
+                _merge_mmr_entries(entries, normalized)
+
+            elapsed = time.monotonic() - started
+            delay = max(0.0, min_delay - elapsed)
+            if delay:
+                await asyncio.sleep(delay)
+
+    return entries, had_errors
+
+async def _apply_rank_to_member(
+    member: discord.Member,
+    guild: discord.Guild,
+    rank_name: str,
+    *,
+    reason: str
+) -> bool:
+    if rank_name not in ranks:
+        return False
+    current_rank = get_user_current_rank(member)
+    if current_rank == rank_name:
+        return False
+
+    role = discord.utils.get(guild.roles, name=rank_name.capitalize())
+    if not role:
+        try:
+            role = await guild.create_role(name=rank_name.capitalize(), reason=reason)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning("MMR Sync: Rolle %s konnte nicht erstellt werden: %s", rank_name, exc)
+            return False
+
+    try:
+        if role not in member.roles:
+            await member.add_roles(role, reason=reason)
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        logger.warning("MMR Sync: Konnte Rolle %s bei %s nicht hinzufuegen: %s", rank_name, member.id, exc)
+        return False
+
+    for role_name in ranks:
+        if role_name == rank_name:
+            continue
+        role_to_remove = discord.utils.get(guild.roles, name=role_name.capitalize())
+        if role_to_remove and role_to_remove in member.roles:
+            try:
+                await member.remove_roles(role_to_remove, reason=reason)
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                logger.warning("MMR Sync: Entfernen von %s bei %s fehlgeschlagen: %s", role_name, member.id, exc)
+    return True
+
+async def sync_mmr_roles(
+    *,
+    only_steam_ids: Optional[List[str]] = None,
+    dry_run: bool = False,
+    update_last_run: bool = False
+) -> Dict[str, Any]:
+    summary = {
+        "checked_links": 0,
+        "accounts_requested": 0,
+        "entries_received": 0,
+        "users_total": 0,
+        "members_updated": 0,
+        "members_skipped": 0,
+        "missing_mmr": 0,
+        "missing_rank": 0,
+        "missing_member": 0,
+        "dry_run": dry_run,
+    }
+
+    links = _fetch_steam_links()
+    if only_steam_ids:
+        filtered = []
+        allowed = {str(sid).strip() for sid in only_steam_ids if sid}
+        for user_id, steam_id in links:
+            if steam_id in allowed:
+                filtered.append((user_id, steam_id))
+        links = filtered
+
+    summary["checked_links"] = len(links)
+    account_to_users, account_to_steam = _build_account_id_map(links)
+    account_ids = list(account_to_users.keys())
+    summary["accounts_requested"] = len(account_ids)
+
+    if not account_ids:
+        return summary
+
+    mmr_entries, had_errors = await _fetch_all_mmr_entries(account_ids)
+    summary["entries_received"] = len(mmr_entries)
+
+    reason = "Deadlock MMR Sync"
+    for account_id, user_ids in account_to_users.items():
+        entry = mmr_entries.get(account_id)
+        if not entry:
+            summary["missing_mmr"] += len(user_ids)
+            continue
+
+        rank_name = _rank_name_from_mmr(entry)
+        if not rank_name:
+            summary["missing_rank"] += len(user_ids)
+            continue
+
+        for user_id in user_ids:
+            summary["users_total"] += 1
+            member_found = False
+            for guild in bot.guilds:
+                member = guild.get_member(int(user_id))
+                if not member:
+                    continue
+                member_found = True
+                if dry_run:
+                    summary["members_skipped"] += 1
+                    logger.info(
+                        "MMR Sync (dry): user_id=%s steam_id=%s -> %s",
+                        user_id,
+                        account_to_steam.get(account_id, "unknown"),
+                        rank_name,
+                    )
+                    continue
+
+                updated = await _apply_rank_to_member(member, guild, rank_name, reason=reason)
+                if updated:
+                    summary["members_updated"] += 1
+                else:
+                    summary["members_skipped"] += 1
+
+            if not member_found:
+                summary["missing_member"] += 1
+
+    if update_last_run and not had_errors:
+        _set_mmr_last_run(_mmr_today_str())
+    elif update_last_run and had_errors:
+        logger.warning("MMR Sync: Fehler aufgetreten, last_run wird nicht gesetzt.")
+
+    return summary
 
 def track_dm_sent(user_id: str):
     with central_db.get_conn() as conn:
@@ -1417,6 +1750,75 @@ async def stop_notification_system(ctx: commands.Context):
         await push_rank_bot_state()
     except Exception as exc:
         logger.debug("State push after !rstop failed: %s", exc)
+
+@bot.command(name='mmrsync')
+@commands.has_permissions(administrator=True)
+async def mmr_sync_command(ctx: commands.Context, mode: str = None):
+    dry_run = str(mode or "").lower() in {"dry", "dryrun", "test"}
+
+    if MMR_SYNC_LOCK.locked():
+        await ctx.send(embed=discord.Embed(
+            title="⏳ MMR Sync läuft bereits",
+            description="Bitte warte, bis der aktuelle Sync abgeschlossen ist.",
+            color=0xffaa00
+        ))
+        return
+
+    async with MMR_SYNC_LOCK:
+        async with ctx.typing():
+            summary = await sync_mmr_roles(dry_run=dry_run)
+
+    embed = discord.Embed(
+        title="✅ MMR Sync abgeschlossen",
+        description="Daily Sync (manuell gestartet)",
+        color=0x00cc66
+    )
+    embed.add_field(name="🔗 Links", value=str(summary.get("checked_links")), inline=True)
+    embed.add_field(name="🧾 Accounts", value=str(summary.get("accounts_requested")), inline=True)
+    embed.add_field(name="📦 Entries", value=str(summary.get("entries_received")), inline=True)
+    embed.add_field(name="✅ Updated", value=str(summary.get("members_updated")), inline=True)
+    embed.add_field(name="⏭️ Skipped", value=str(summary.get("members_skipped")), inline=True)
+    embed.add_field(name="❓ Missing MMR", value=str(summary.get("missing_mmr")), inline=True)
+    embed.add_field(name="❓ Missing Rank", value=str(summary.get("missing_rank")), inline=True)
+    embed.add_field(name="❓ Missing Member", value=str(summary.get("missing_member")), inline=True)
+    embed.add_field(name="🧪 Dry Run", value=str(summary.get("dry_run")), inline=True)
+    embed.set_footer(text="🎮 Deadlock Rank Bot")
+    await ctx.send(embed=embed)
+
+@bot.command(name='mmrtest')
+@commands.has_permissions(administrator=True)
+async def mmr_test_command(ctx: commands.Context, steam_id64: str, mode: str = None):
+    dry_run = str(mode or "").lower() in {"dry", "dryrun", "test"}
+
+    if MMR_SYNC_LOCK.locked():
+        await ctx.send(embed=discord.Embed(
+            title="⏳ MMR Sync läuft bereits",
+            description="Bitte warte, bis der aktuelle Sync abgeschlossen ist.",
+            color=0xffaa00
+        ))
+        return
+
+    async with MMR_SYNC_LOCK:
+        async with ctx.typing():
+            summary = await sync_mmr_roles(only_steam_ids=[steam_id64], dry_run=dry_run)
+
+    embed = discord.Embed(
+        title="✅ MMR Test abgeschlossen",
+        description=f"SteamID64: `{steam_id64}`",
+        color=0x00cc66
+    )
+    embed.add_field(name="🔗 Links", value=str(summary.get("checked_links")), inline=True)
+    embed.add_field(name="🧾 Accounts", value=str(summary.get("accounts_requested")), inline=True)
+    embed.add_field(name="📦 Entries", value=str(summary.get("entries_received")), inline=True)
+    embed.add_field(name="✅ Updated", value=str(summary.get("members_updated")), inline=True)
+    embed.add_field(name="⏭️ Skipped", value=str(summary.get("members_skipped")), inline=True)
+    embed.add_field(name="❓ Missing MMR", value=str(summary.get("missing_mmr")), inline=True)
+    embed.add_field(name="❓ Missing Rank", value=str(summary.get("missing_rank")), inline=True)
+    embed.add_field(name="❓ Missing Member", value=str(summary.get("missing_member")), inline=True)
+    embed.add_field(name="🧪 Dry Run", value=str(summary.get("dry_run")), inline=True)
+    embed.set_footer(text="🎮 Deadlock Rank Bot")
+    await ctx.send(embed=embed)
+
 @bot.command(name='radd')
 @commands.has_permissions(administrator=True)
 async def add_user_to_queue(ctx: commands.Context, user: discord.Member):
@@ -1697,6 +2099,27 @@ async def daily_cleanup_check():
         logger.info(f"Daily cleanup completed: {cleaned_count} old DM views removed")
     else:
         logger.info("Daily cleanup completed: No old DM views to remove")
+
+@tasks.loop(minutes=1)
+async def daily_mmr_sync_check():
+    if not _mmr_should_run_now():
+        return
+    if MMR_SYNC_LOCK.locked():
+        return
+    async with MMR_SYNC_LOCK:
+        summary = await sync_mmr_roles(update_last_run=True)
+        logger.info(
+            "MMR Sync fertig: links=%s accounts=%s entries=%s updated=%s skipped=%s missing_mmr=%s missing_rank=%s missing_member=%s dry=%s",
+            summary.get("checked_links"),
+            summary.get("accounts_requested"),
+            summary.get("entries_received"),
+            summary.get("members_updated"),
+            summary.get("members_skipped"),
+            summary.get("missing_mmr"),
+            summary.get("missing_rank"),
+            summary.get("missing_member"),
+            summary.get("dry_run"),
+        )
 
 async def create_daily_queue():
     today = datetime.now().strftime('%Y-%m-%d')
