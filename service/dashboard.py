@@ -23,6 +23,10 @@ DEFAULT_RETENTION_EXCLUDED_ROLE_IDS = {
     1309741866098491479,
 }
 
+LOG_TAIL_DEFAULT_LINES = 400
+LOG_TAIL_MAX_LINES = 5000
+LOG_TAIL_MAX_BYTES = 4 * 1024 * 1024
+
 try:
     from service.standalone_manager import (
         StandaloneAlreadyRunning,
@@ -114,6 +118,11 @@ class DashboardServer:
             env_name="DASHBOARD_HEALTHCHECK_TIMEOUT_SECONDS",
         )
         self._health_targets = self._build_health_targets()
+        log_dir_env = (os.getenv("MASTER_DASHBOARD_LOG_DIR") or "").strip()
+        if log_dir_env:
+            self._log_dir = Path(os.path.expandvars(log_dir_env)).expanduser()
+        else:
+            self._log_dir = Path(__file__).resolve().parent.parent / "logs"
 
     @staticmethod
     def _sanitize(value: Any) -> Any:
@@ -178,6 +187,8 @@ class DashboardServer:
                     web.get("/api/co-player-network/", self._handle_co_player_network),
                     web.get("/api/server-stats", self._handle_server_stats),
                     web.post("/api/cogs/discover", self._handle_discover),
+                    web.get("/api/logs", self._handle_log_index),
+                    web.get("/api/logs/{name}", self._handle_log_read),
                     web.get("/api/standalone", self._handle_standalone_list),
                     web.get("/api/standalone/{key}/logs", self._handle_standalone_logs),
                     web.post("/api/standalone/{key}/start", self._handle_standalone_start),
@@ -341,6 +352,77 @@ class DashboardServer:
             if required:
                 raise web.HTTPUnauthorized(text="Missing or invalid dashboard token", headers={"WWW-Authenticate": "Bearer"})
             raise web.HTTPUnauthorized(text="Missing or invalid dashboard token", headers={"WWW-Authenticate": "Bearer"})
+
+    def _list_log_files(self) -> List[Dict[str, Any]]:
+        log_dir = self._log_dir
+        if not log_dir.exists() or not log_dir.is_dir():
+            return []
+        entries: List[Dict[str, Any]] = []
+        for path in log_dir.iterdir():
+            if not path.is_file():
+                continue
+            name = path.name
+            if name.startswith("."):
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            modified = _dt.datetime.fromtimestamp(
+                stat.st_mtime,
+                tz=_dt.timezone.utc,
+            ).isoformat()
+            entries.append(
+                {
+                    "name": name,
+                    "size": stat.st_size,
+                    "modified": modified,
+                    "modified_ts": stat.st_mtime,
+                }
+            )
+        entries.sort(key=lambda item: item["modified_ts"], reverse=True)
+        for item in entries:
+            item.pop("modified_ts", None)
+        return entries
+
+    def _resolve_log_file(self, name: str) -> Path:
+        raw = (name or "").strip()
+        if not raw:
+            raise web.HTTPBadRequest(text="Log file missing")
+        if raw in {".", ".."} or Path(raw).name != raw or ".." in raw:
+            raise web.HTTPBadRequest(text="Invalid log filename")
+        log_dir = self._log_dir
+        path = log_dir / raw
+        try:
+            resolved = path.resolve()
+            log_dir_resolved = log_dir.resolve()
+            if log_dir_resolved not in resolved.parents and resolved != log_dir_resolved:
+                raise web.HTTPBadRequest(text="Invalid log filename")
+        except Exception:
+            pass
+        if not path.exists() or not path.is_file():
+            raise web.HTTPNotFound(text="Log file not found")
+        return path
+
+    @staticmethod
+    def _tail_log_lines(path: Path, limit: int) -> List[str]:
+        if limit <= 0:
+            return []
+        block_size = 8192
+        data = b""
+        lines: List[bytes] = []
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            position = handle.tell()
+            while position > 0 and len(lines) <= limit and len(data) < LOG_TAIL_MAX_BYTES:
+                read_size = min(block_size, position)
+                position -= read_size
+                handle.seek(position)
+                data = handle.read(read_size) + data
+                lines = data.splitlines()
+        if len(lines) > limit:
+            lines = lines[-limit:]
+        return [line.decode("utf-8", errors="replace") for line in lines]
 
     def _normalize_names(self, items: Iterable[str]) -> List[str]:
         normalized: List[str] = []
@@ -2374,6 +2456,46 @@ class DashboardServer:
                 "namespace": namespace,
                 "changed": changed,
                 "message": message,
+            }
+        )
+
+    async def _handle_log_index(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        entries = self._list_log_files()
+        return self._json({"logs": entries})
+
+    async def _handle_log_read(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        name = request.match_info.get("name", "")
+        lines_raw = request.query.get("lines")
+        try:
+            lines = int(lines_raw) if lines_raw else LOG_TAIL_DEFAULT_LINES
+            if lines <= 0:
+                raise ValueError
+            lines = min(lines, LOG_TAIL_MAX_LINES)
+        except ValueError:
+            raise web.HTTPBadRequest(
+                text=f"lines must be a positive integer <= {LOG_TAIL_MAX_LINES}"
+            )
+        path = self._resolve_log_file(name)
+        try:
+            stat = path.stat()
+            entries = self._tail_log_lines(path, lines)
+        except OSError as exc:
+            logging.getLogger(__name__).exception(
+                "Failed reading log file %s: %s", self._safe_log_value(name), exc
+            )
+            raise web.HTTPInternalServerError(text="Failed to read log file") from exc
+        modified = _dt.datetime.fromtimestamp(
+            stat.st_mtime,
+            tz=_dt.timezone.utc,
+        ).isoformat()
+        return self._json(
+            {
+                "name": path.name,
+                "size": stat.st_size,
+                "modified": modified,
+                "lines": entries,
             }
         )
 

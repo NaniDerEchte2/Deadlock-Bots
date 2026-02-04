@@ -417,6 +417,73 @@
             max-height: 240px;
             overflow-y: auto;
         }
+        .log-browser {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        .log-tab-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.45rem;
+        }
+        .log-tab-btn {
+            background: #1b1b1b;
+            color: inherit;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 999px;
+            padding: 0.25rem 0.7rem;
+            margin: 0;
+            font-size: 0.82rem;
+            cursor: pointer;
+        }
+        .log-tab-btn.active {
+            background: #1c7ed6;
+            border-color: rgba(28,126,214,0.7);
+            color: #fff;
+        }
+        .log-viewer {
+            background: #0f0f0f;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 8px;
+            padding: 0.75rem;
+        }
+        .log-meta {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+            font-size: 0.8rem;
+            color: #adb5bd;
+            margin-bottom: 0.5rem;
+        }
+        .log-content {
+            margin: 0;
+            max-height: 520px;
+            overflow: auto;
+            white-space: pre;
+            font-family: ui-monospace, SFMono-Regular, SFMono, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+            font-size: 0.84rem;
+            line-height: 1.4;
+            color: #e9ecef;
+        }
+        .log-empty {
+            color: #868e96;
+            font-size: 0.85rem;
+        }
+        .log-lines {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+        .log-lines-input {
+            width: 90px;
+            padding: 0.3rem 0.45rem;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.1);
+            background: #1f1f1f;
+            color: inherit;
+        }
         .tree-container {
             max-height: 600px;
             overflow-y: auto;
@@ -1176,6 +1243,28 @@
     <div class="tab-panel" data-tab="logs">
 
         <section>
+            <div class="section-header">
+                <h2>Log Dateien</h2>
+                <div class="section-actions">
+                    <label class="log-lines">
+                        Zeilen
+                        <input id="logs-lines" class="log-lines-input" type="number" min="10" max="5000" value="400">
+                    </label>
+                    <button class="reload" id="logs-refresh">Neu laden</button>
+                </div>
+            </div>
+            <div class="log-browser">
+                <div class="log-tab-bar" id="log-tabs">
+                    <span class="log-empty">Logs werden geladen...</span>
+                </div>
+                <div class="log-viewer">
+                    <div class="log-meta" id="log-meta">Waehle eine Logdatei aus.</div>
+                    <pre class="log-content" id="log-content">Noch keine Logdatei geladen.</pre>
+                </div>
+            </div>
+        </section>
+
+        <section>
             <h2>Recent Operations</h2>
             <div class="log" id="operation-log"></div>
         </section>
@@ -1185,6 +1274,11 @@
 
     <script>
     const opLog = document.getElementById('operation-log');
+    const logTabs = document.getElementById('log-tabs');
+    const logContent = document.getElementById('log-content');
+    const logMeta = document.getElementById('log-meta');
+    const logsRefreshButton = document.getElementById('logs-refresh');
+    const logsLinesInput = document.getElementById('logs-lines');
     const treeContainer = document.getElementById('tree-container');
     const tokenInput = document.getElementById('token-input');
     const selectionTitle = document.getElementById('selection-title');
@@ -1257,6 +1351,10 @@
     const logOpenState = new Map();
     let isRefreshingStandalone = false;
     let authToken = localStorage.getItem('master-dashboard-token') || '';
+    let logIndex = [];
+    let selectedLogName = '';
+    let logsInitialized = false;
+    let logsLoading = false;
     let selectedNode = null;
     let showHiddenCogs = false;
     let lastTreeData = null;
@@ -1287,6 +1385,173 @@
             throw new Error(text || response.statusText);
         }
         return response.json();
+    }
+
+    function formatBytes(value) {
+        if (value === null || value === undefined || Number.isNaN(value)) {
+            return '-';
+        }
+        if (value === 0) {
+            return '0 B';
+        }
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let size = value;
+        let idx = 0;
+        while (size >= 1024 && idx < units.length - 1) {
+            size /= 1024;
+            idx += 1;
+        }
+        const precision = size >= 10 || idx === 0 ? 0 : 1;
+        return size.toFixed(precision) + ' ' + units[idx];
+    }
+
+    function formatLogTime(value) {
+        if (!value) {
+            return '-';
+        }
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) {
+            return value;
+        }
+        return date.toLocaleString();
+    }
+
+    function normalizeLogLines() {
+        if (!logsLinesInput) {
+            return 400;
+        }
+        let value = parseInt(logsLinesInput.value, 10);
+        if (!Number.isFinite(value)) {
+            value = 400;
+        }
+        value = Math.max(10, Math.min(5000, value));
+        logsLinesInput.value = value;
+        return value;
+    }
+
+    function updateLogMeta(info, lineCount) {
+        if (!logMeta) {
+            return;
+        }
+        if (!info) {
+            logMeta.textContent = 'Waehle eine Logdatei aus.';
+            return;
+        }
+        const sizeText = formatBytes(info.size);
+        const timeText = formatLogTime(info.modified);
+        const lineText = lineCount ? `Letzte ${lineCount} Zeilen` : 'Keine Zeilen';
+        logMeta.textContent = `${info.name} · ${sizeText} · ${timeText} · ${lineText}`;
+    }
+
+    function renderLogTabs() {
+        if (!logTabs) {
+            return;
+        }
+        logTabs.innerHTML = '';
+        if (!logIndex.length) {
+            const empty = document.createElement('span');
+            empty.className = 'log-empty';
+            empty.textContent = 'Keine Logdateien gefunden.';
+            logTabs.appendChild(empty);
+            return;
+        }
+        logIndex.forEach((info) => {
+            const btn = document.createElement('button');
+            btn.className = 'log-tab-btn';
+            if (info.name === selectedLogName) {
+                btn.classList.add('active');
+            }
+            btn.textContent = info.name;
+            const metaTime = formatLogTime(info.modified);
+            const metaSize = formatBytes(info.size);
+            btn.title = metaTime !== '-' ? `${metaSize} · ${metaTime}` : metaSize;
+            btn.addEventListener('click', () => {
+                if (selectedLogName === info.name) {
+                    return;
+                }
+                selectedLogName = info.name;
+                renderLogTabs();
+                loadLogFile(info.name);
+            });
+            logTabs.appendChild(btn);
+        });
+    }
+
+    async function loadLogIndex() {
+        if (!logTabs || !logContent) {
+            return;
+        }
+        if (logsLoading) {
+            return;
+        }
+        logsLoading = true;
+        if (logsRefreshButton) {
+            logsRefreshButton.disabled = true;
+        }
+        try {
+            const data = await fetchJSON('/api/logs');
+            logIndex = Array.isArray(data.logs) ? data.logs : [];
+            const hasSelected = selectedLogName && logIndex.some((entry) => entry.name === selectedLogName);
+            if (!hasSelected) {
+                selectedLogName = logIndex.length ? logIndex[0].name : '';
+            }
+            renderLogTabs();
+            if (selectedLogName) {
+                await loadLogFile(selectedLogName);
+            } else {
+                logContent.textContent = 'Keine Logdateien vorhanden.';
+                updateLogMeta(null, 0);
+            }
+        } catch (err) {
+            log('Log-Liste konnte nicht geladen werden: ' + err.message, 'error');
+            logContent.textContent = 'Fehler beim Laden der Logliste: ' + err.message;
+            updateLogMeta(null, 0);
+        } finally {
+            logsLoading = false;
+            if (logsRefreshButton) {
+                logsRefreshButton.disabled = false;
+            }
+        }
+    }
+
+    async function loadLogFile(name) {
+        if (!logContent) {
+            return;
+        }
+        if (!name) {
+            logContent.textContent = 'Keine Logdatei ausgewaehlt.';
+            updateLogMeta(null, 0);
+            return;
+        }
+        const lineLimit = normalizeLogLines();
+        const params = new URLSearchParams();
+        params.set('lines', String(lineLimit));
+        logContent.textContent = 'Lade Logdaten...';
+        try {
+            const data = await fetchJSON(`/api/logs/${encodeURIComponent(name)}?${params.toString()}`);
+            const lines = Array.isArray(data.lines) ? data.lines : [];
+            logContent.textContent = lines.length ? lines.join('\n') : 'Keine Logeintraege vorhanden.';
+            updateLogMeta(
+                {
+                    name: data.name || name,
+                    size: data.size,
+                    modified: data.modified,
+                },
+                lines.length,
+            );
+        } catch (err) {
+            log('Logdatei konnte nicht geladen werden: ' + err.message, 'error');
+            logContent.textContent = 'Fehler beim Laden der Logdatei: ' + err.message;
+            updateLogMeta(null, 0);
+        }
+    }
+
+    function ensureLogsLoaded() {
+        if (logsInitialized) {
+            return;
+        }
+        logsInitialized = true;
+        loadLogIndex();
     }
 
     if (toggleUnmanageableButton) {
@@ -1322,6 +1587,18 @@
                 currentVoiceMode = btn.dataset.mode || 'hour';
                 loadVoiceHistory();
             });
+        });
+    }
+    if (logsRefreshButton) {
+        logsRefreshButton.addEventListener('click', () => {
+            loadLogIndex();
+        });
+    }
+    if (logsLinesInput) {
+        logsLinesInput.addEventListener('change', () => {
+            if (selectedLogName) {
+                loadLogFile(selectedLogName);
+            }
         });
     }
     if (retentionRefreshButton) {
@@ -3455,6 +3732,9 @@ async function fetchStandaloneLogs(key, limit = 200) {
         authToken = tokenInput.value.trim();
         localStorage.setItem('master-dashboard-token', authToken);
         loadStatus();
+        if (logsInitialized) {
+            loadLogIndex();
+        }
     });
 
     document.getElementById('reload-all').addEventListener('click', async () => {
@@ -3494,6 +3774,9 @@ async function fetchStandaloneLogs(key, limit = 200) {
                 if (target === 'activity') {
                     if (typeof loadVoiceHistory === 'function') loadVoiceHistory();
                     if (typeof loadCoNetwork === 'function') loadCoNetwork();
+                }
+                if (target === 'logs') {
+                    ensureLogsLoaded();
                 }
             });
         });
