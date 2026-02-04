@@ -6,12 +6,14 @@ Analysiert Anfragen mit KI und routet Spieler basierend auf Skill, Modus und Ver
 from __future__ import annotations
 
 import logging
-import os
 import time
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Set, Tuple
 
+import aiosqlite
 import discord
 from discord.ext import commands
+
+from service.db import db_path
 
 log = logging.getLogger("SmartLFG")
 
@@ -27,6 +29,16 @@ GUILD_ID = 1289721245281292288
 
 # AI Config (ChatGPT/OpenAI)
 OPENAI_MODEL = "gpt-5.2"
+NO_LFG_TOKEN = "NO_LFG"
+LFG_INTENT_MAX_TOKENS = 8
+USE_AI_LFG_DETECTION = True
+
+# Steam presence freshness (wie lange die Daten maximal alt sein dürfen)
+PRESENCE_STALE_SECONDS = 300  # 5 Minuten
+
+# Rank-Matching: wie viele Ränge Unterschied sind erlaubt?
+RANK_TOLERANCE = 2  # +/- 2 Ränge
+MAX_MENTION_PINGS = 10
 
 # Spezielle Channel / Kategorien
 NEW_PLAYER_LANE_ID = 1465839460485697556
@@ -37,6 +49,9 @@ RANKED_CATEGORY_ID = 1412804540994162789  # "Grind" Category
 # Rollen & Ranks
 UNKNOWN_ROLE_ID = 1397687886580547745
 UNKNOWN_RANK_NAME = "Unbekannt"
+UNKNOWN_RANK_NAME_LOWER = UNKNOWN_RANK_NAME.lower()
+# Bis zu welchem Rang sollen Unbekannte gematcht werden (Default: Emissary = 6)
+UNKNOWN_MAX_MATCH_RANK = 6
 
 # Rank Definitionen
 # 1-5: New Player Friendly
@@ -65,15 +80,29 @@ class SmartLFGAgent(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self.db: Optional[aiosqlite.Connection] = None
         self.lfg_cooldowns: Dict[int, float] = {}
         self.cooldown_seconds = 60  # Kurzer Cooldown gegen Spam
 
     async def cog_load(self) -> None:
+        await self._ensure_db()
         log.info(
             "SmartLFGAgent geladen - LFG Channel: %s | Output Channel: %s",
             LFG_CHANNEL_ID,
             OUTPUT_CHANNEL_ID,
         )
+
+    async def cog_unload(self) -> None:
+        if self.db:
+            await self.db.close()
+            self.db = None
+        log.info("SmartLFGAgent entladen")
+
+    async def _ensure_db(self) -> None:
+        if self.db:
+            return
+        self.db = await aiosqlite.connect(str(db_path()))
+        self.db.row_factory = aiosqlite.Row
 
     def _get_user_rank(self, member: discord.Member) -> Tuple[str, int]:
         """Ermittelt den höchsten Rang eines Users."""
@@ -88,6 +117,274 @@ class SmartLFGAgent(commands.Cog):
         if highest[1] == 0:
             return (UNKNOWN_RANK_NAME, 0)
         return highest
+
+    def _keyword_lfg_intent(self, message_content: str) -> bool:
+        """Fallback-Heuristik für LFG-Erkennung."""
+        text = (message_content or "").lower()
+        if not text:
+            return False
+
+        if "lfg" in text or "lfm" in text:
+            return True
+
+        if ("suche" in text or "suchen" in text or "gesucht" in text) and (
+            "mitspieler" in text or "team" in text or "gruppe" in text or "party" in text
+        ):
+            return True
+
+        if ("spielen" in text or "zocken" in text or "grinden" in text) and (
+            "wer" in text or "jemand" in text or "bock" in text
+        ):
+            return True
+
+        if "duo" in text or "trio" in text or "squad" in text or "stack" in text:
+            return True
+
+        return False
+
+    async def _ai_check_lfg_intent(self, message_content: str) -> bool:
+        """AI-Check ob die Nachricht wirklich LFG ist (strikt)."""
+        if not message_content or not message_content.strip():
+            return False
+        if self._keyword_lfg_intent(message_content):
+            return True
+
+        if not USE_AI_LFG_DETECTION:
+            return False
+
+        ai = getattr(self.bot, "get_cog", lambda name: None)("AIConnector")
+        if not ai:
+            log.warning("AIConnector nicht geladen - LFG-Detection deaktiviert")
+            return False
+
+        prompt = (
+            "Antworte strikt nur mit 'ja' oder 'nein'. "
+            "Sage 'ja' nur, wenn die Nachricht eindeutig Mitspieler für Deadlock JETZT/zeitnah sucht "
+            "(LFG/LFM, 'suche Leute', 'wer bock', 'jemand Lust zu zocken', duo/trio/stack). "
+            "Sage 'nein' bei Smalltalk, Diskussionen, Memes, News/Leaks, Meinungen oder allem, "
+            "was keine klare Spielersuche ist. Im Zweifel immer 'nein'.\n\n"
+            f"Nachricht: \"{message_content}\""
+        )
+        try:
+            answer_text, _meta = await ai.generate_text(
+                provider="openai",
+                prompt=prompt,
+                system_prompt=None,
+                model=OPENAI_MODEL,
+                max_output_tokens=LFG_INTENT_MAX_TOKENS,
+                temperature=0,
+            )
+        except Exception as exc:
+            log.warning("AI Intent-Check fehlgeschlagen (%s) - Fallback Keywords", exc)
+            return self._keyword_lfg_intent(message_content)
+
+        if not answer_text:
+            log.warning("AI gab keine Antwort zurück - Fallback auf Keywords")
+            return self._keyword_lfg_intent(message_content)
+
+        normalized = str(answer_text).strip().lower()
+        if normalized.startswith("ja") or normalized.startswith("yes"):
+            return True
+        if normalized.startswith("nein") or normalized.startswith("no"):
+            return False
+
+        return False
+
+    async def _get_all_steam_links(self) -> Dict[int, List[str]]:
+        """
+        Holt alle Discord User -> Steam ID Mappings.
+        Returns: {discord_user_id: [steam_id1, steam_id2, ...]}
+        """
+        await self._ensure_db()
+        if not self.db:
+            return {}
+
+        query = """
+            SELECT user_id, steam_id
+            FROM steam_links
+            WHERE steam_id IS NOT NULL AND steam_id != ''
+            AND verified = 1
+            ORDER BY primary_account DESC, updated_at DESC
+        """
+        cursor = await self.db.execute(query)
+        rows = await cursor.fetchall()
+        await cursor.close()
+
+        mapping: Dict[int, List[str]] = {}
+        for row in rows:
+            uid = int(row["user_id"])
+            sid = str(row["steam_id"])
+            mapping.setdefault(uid, []).append(sid)
+
+        return mapping
+
+    async def _get_online_steam_users(self, steam_ids: Set[str]) -> Dict[str, Tuple[str, Optional[int]]]:
+        """
+        Filtert Steam-IDs nach Online-Status (in Deadlock).
+        Returns: {steam_id: (stage, minutes)}
+        stage: 'lobby' oder 'match'
+        minutes: Spielminuten bei 'match', None bei 'lobby'
+        """
+        await self._ensure_db()
+        if not self.db or not steam_ids:
+            return {}
+
+        now = int(time.time())
+        placeholders = ",".join("?" for _ in steam_ids)
+
+        query = f"""
+            SELECT steam_id, deadlock_stage, deadlock_minutes, deadlock_updated_at, last_seen_ts
+            FROM live_player_state
+            WHERE steam_id IN ({placeholders})
+            AND (in_deadlock_now = 1 OR deadlock_stage IS NOT NULL)
+        """
+
+        cursor = await self.db.execute(query, tuple(steam_ids))
+        rows = await cursor.fetchall()
+        await cursor.close()
+
+        online_map: Dict[str, Tuple[str, Optional[int]]] = {}
+
+        for row in rows:
+            updated_at = row["deadlock_updated_at"] or row["last_seen_ts"]
+            if not updated_at:
+                continue
+
+            # Zu alte Daten überspringen
+            if now - int(updated_at) > PRESENCE_STALE_SECONDS:
+                continue
+
+            stage = row["deadlock_stage"]
+            if stage not in {"lobby", "match"}:
+                continue
+
+            minutes = row["deadlock_minutes"]
+            online_map[str(row["steam_id"])] = (stage, minutes)
+
+        return online_map
+
+    async def _find_matching_players(
+        self,
+        author_rank_value: int,
+        author_id: int,
+        *,
+        min_rank: Optional[int] = None,
+        max_rank: Optional[int] = None,
+        include_unknown_until: Optional[int] = None,
+    ) -> List[Tuple[int, str, int, str, Optional[int]]]:
+        """
+        Findet Discord-User die:
+        1. Steam-Account verknüpft haben
+        2. Online in Deadlock sind (Lobby oder Match)
+        3. Rang im Toleranzbereich haben
+
+        Returns: [(discord_user_id, rank_name, rank_value, stage, minutes), ...]
+        """
+        if min_rank is None or max_rank is None:
+            min_rank = max(1, author_rank_value - RANK_TOLERANCE)
+            max_rank = min(11, author_rank_value + RANK_TOLERANCE)
+        else:
+            min_rank = max(1, min_rank)
+            max_rank = min(11, max_rank)
+
+        allow_unknown_matches = (
+            include_unknown_until is not None
+            and author_rank_value <= include_unknown_until
+        )
+
+        steam_links = await self._get_all_steam_links()
+        all_steam_ids = {sid for sids in steam_links.values() for sid in sids}
+        online_users = await self._get_online_steam_users(all_steam_ids)
+
+        if not online_users:
+            return []
+
+        guild = self.bot.get_guild(GUILD_ID)
+        if not guild:
+            log.warning("Guild %s nicht gefunden", GUILD_ID)
+            return []
+
+        matching_players: List[Tuple[int, str, int, str, Optional[int]]] = []
+
+        for discord_id, steam_ids in steam_links.items():
+            if discord_id == author_id:
+                continue
+
+            user_online = False
+            user_stage = None
+            user_minutes = None
+            for sid in steam_ids:
+                if sid in online_users:
+                    user_online = True
+                    user_stage, user_minutes = online_users[sid]
+                    break
+
+            if not user_online:
+                continue
+
+            member = guild.get_member(discord_id)
+            if not member or member.bot:
+                continue
+
+            if member.voice and member.voice.channel:
+                continue
+
+            rank_name, rank_value = self._get_user_rank(member)
+            is_unknown_rank = rank_value == 0 and rank_name.lower() == UNKNOWN_RANK_NAME_LOWER
+
+            if allow_unknown_matches and is_unknown_rank:
+                matching_players.append((discord_id, rank_name, rank_value, user_stage, user_minutes))
+            elif min_rank <= rank_value <= max_rank:
+                matching_players.append((discord_id, rank_name, rank_value, user_stage, user_minutes))
+
+        return matching_players
+
+    def _build_player_lines(
+        self,
+        guild: discord.Guild,
+        matching_players: List[Tuple[int, str, int, str, Optional[int]]],
+    ) -> Tuple[List[str], int, int]:
+        in_lobby: List[str] = []
+        in_match: List[str] = []
+
+        for discord_id, _rank_name, _rank_value, stage, minutes in matching_players:
+            member = guild.get_member(discord_id)
+            if not member:
+                continue
+            if stage == "lobby":
+                in_lobby.append(member.mention)
+            elif stage == "match":
+                if minutes is not None:
+                    in_match.append(f"{member.mention} ({minutes}m)")
+                else:
+                    in_match.append(member.mention)
+
+        lobby_count = len(in_lobby)
+        match_count = len(in_match)
+
+        lines: List[str] = []
+        remaining = MAX_MENTION_PINGS
+
+        if in_lobby:
+            shown = in_lobby[:remaining]
+            remaining -= len(shown)
+            extra = len(in_lobby) - len(shown)
+            extra_txt = f" (+{extra})" if extra > 0 else ""
+            if shown:
+                lines.append(f"🟢 Lobby: {' '.join(shown)}{extra_txt}")
+
+        if in_match:
+            if remaining > 0:
+                shown = in_match[:remaining]
+                remaining -= len(shown)
+                extra = len(in_match) - len(shown)
+                extra_txt = f" (+{extra})" if extra > 0 else ""
+                if shown:
+                    lines.append(f"🎯 Match: {' '.join(shown)}{extra_txt}")
+            else:
+                lines.append(f"🎯 Match: (+{len(in_match)})")
+
+        return lines, lobby_count, match_count
 
     def _get_voice_state_context(self, guild: discord.Guild) -> str:
         """
@@ -173,6 +470,30 @@ class SmartLFGAgent(commands.Cog):
         # 1. User Info
         rank_name, rank_val = self._get_user_rank(message.author)
         is_new_player = rank_val <= 5  # Unbekannt (0) bis Ritualist (5)
+
+        player_lines: List[str] = []
+        try:
+            is_unknown_rank = rank_val == 0 and rank_name.lower() == UNKNOWN_RANK_NAME_LOWER
+            search_min_rank = max(1, rank_val - RANK_TOLERANCE)
+            search_max_rank = min(11, rank_val + RANK_TOLERANCE)
+            if is_unknown_rank:
+                search_min_rank = 1
+                search_max_rank = UNKNOWN_MAX_MATCH_RANK
+
+            matching_players = await self._find_matching_players(
+                rank_val,
+                message.author.id,
+                min_rank=search_min_rank,
+                max_rank=search_max_rank,
+                include_unknown_until=UNKNOWN_MAX_MATCH_RANK,
+            )
+            if message.guild:
+                player_lines, _lobby_count, _match_count = self._build_player_lines(
+                    message.guild,
+                    matching_players,
+                )
+        except Exception as exc:
+            log.warning("Spielersuche fehlgeschlagen (%s)", exc)
         
         # 2. Voice Context holen
         voice_context = self._get_voice_state_context(message.guild)
@@ -216,7 +537,7 @@ class SmartLFGAgent(commands.Cog):
             "Antworte kurz (2-3 Sätze). Verlinke den Voice Channel im Format `[ChannelName](URL)`. "
             "Erkläre kurz warum du diesen Channel empfiehlst (z.B. 'passender Rang', 'perfekt für Einsteiger'). "
             "Keine 'Hallo' Floskeln am Anfang, steig direkt ein wie in den Beispielen.\n"
-            "WICHIG: Wenn es kein LFG ist schreib nichts, wenn es eine Diskussion ist schreib nichts"
+            f"WICHTIG: Wenn es KEIN LFG ist oder eine Diskussion, antworte exakt mit `{NO_LFG_TOKEN}` (ohne Zusatz)."
         )
 
         user_input = (
@@ -225,7 +546,9 @@ class SmartLFGAgent(commands.Cog):
             f"Ist New Player: {'Ja' if is_new_player else 'Nein'}\n"
             f"Nachricht: \"{message.content}\"\n\n"
             f"VERFÜGBARE VOICE CHANNELS (Status):\n{voice_context}\n\n"
-            "Empfiehl den besten Channel und antworte im Persona-Style."
+            f"Empfiehl den besten Channel und antworte im Persona-Style. "
+            f"Wenn es KEIN LFG ist oder eine Diskussion, antworte exakt mit {NO_LFG_TOKEN}."
+            
         )
 
         # 4. AI Request
@@ -245,12 +568,30 @@ class SmartLFGAgent(commands.Cog):
                 temperature=0.7
             )
 
+        clean_text: Optional[str] = None
         if response_text:
             # Clean up potential markdown code blocks provided by AI
-            clean_text = response_text.replace("```markdown", "").replace("```", "").strip()
-            await output_channel.send(f"{prefix}{clean_text}")
-        else:
-            await output_channel.send(f"{prefix}🤔 Puh, gerade hakt's bei mir. Versuch's gleich nochmal.")
+            cleaned = response_text.replace("```markdown", "").replace("```", "").strip()
+            if cleaned.upper() != NO_LFG_TOKEN:
+                clean_text = cleaned
+
+        response_parts: List[str] = []
+
+        if player_lines:
+            header = "sucht Mitspieler!" if prefix else f"{message.author.mention} sucht Mitspieler!"
+            response_parts.append(header + "\n" + "\n".join(player_lines))
+
+        if clean_text:
+            response_parts.append(clean_text)
+
+        if response_parts:
+            final_text = "\n\n".join(response_parts)
+            if prefix:
+                final_text = prefix + final_text
+            await output_channel.send(final_text)
+            return
+
+        await output_channel.send(f"{prefix}🤔 Puh, gerade hakt's bei mir. Versuch's gleich nochmal.")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -261,6 +602,10 @@ class SmartLFGAgent(commands.Cog):
         if message.channel.id != LFG_CHANNEL_ID:
             return
 
+        is_lfg = await self._ai_check_lfg_intent(message.content)
+        if not is_lfg:
+            return
+
         # Cooldown Check
         now = time.time()
         if now - self.lfg_cooldowns.get(message.author.id, 0) < self.cooldown_seconds:
@@ -269,8 +614,7 @@ class SmartLFGAgent(commands.Cog):
         
         self.lfg_cooldowns[message.author.id] = now
         
-        # Wir gehen davon aus, dass alles in diesem Channel LFG ist (oder Smalltalk dazu)
-        # Die AI soll auch auf Smalltalk reagieren ("Hat wer bock?" -> "Ja schau mal Lane 1")
+        # Nur echte LFG-Anfragen werden weiterverarbeitet
         await self._handle_lfg_request(message)
 
     @commands.command(name="lfgtest")
