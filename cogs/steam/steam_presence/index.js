@@ -1037,6 +1037,17 @@ const resetTaskPendingStmt = db.prepare(`
          updated_at = ?
    WHERE id = ?
 `);
+const STALE_TASK_TIMEOUT_S = 180; // Tasks länger als 3 Min in RUNNING -> FAILED
+const failStaleTasksStmt = db.prepare(`
+  UPDATE steam_tasks
+     SET status = 'FAILED',
+         error = 'Task stale: keine Antwort innerhalb ' || ? || 's',
+         finished_at = ?,
+         updated_at = ?
+   WHERE status = 'RUNNING'
+     AND started_at IS NOT NULL
+     AND started_at < ?
+`);
 const finishTaskStmt = db.prepare(`
   UPDATE steam_tasks
      SET status = ?,
@@ -2447,10 +2458,12 @@ function finalizeTaskRun(task, outcome) {
     outcome.then(
       (res) => completeTask(task.id, (res && res.ok) ? 'DONE' : 'FAILED', res, res && !res.ok ? res.error : null),
       (err) => completeTask(task.id, 'FAILED', { ok: false, error: err?.message || String(err) }, err?.message || String(err))
-    );
+    ).finally(() => { taskInProgress = false; });
+    return true; // async
   } else {
     const ok = outcome && outcome.ok;
     completeTask(task.id, ok ? 'DONE' : 'FAILED', outcome, outcome && !ok ? outcome.error : null);
+    return false; // sync
   }
 }
 
@@ -2459,6 +2472,7 @@ function processNextTask() {
   taskInProgress = true;
 
   let task = null;
+  let isAsync = false;
   try {
     task = selectPendingTaskStmt.get();
     if (!task) return;
@@ -2496,7 +2510,7 @@ function processNextTask() {
             }
           };
         })();
-        finalizeTaskRun(task, promise);
+        isAsync = finalizeTaskRun(task, promise);
         break;
       }
 
@@ -2515,7 +2529,7 @@ function processNextTask() {
             },
           };
         })();
-        finalizeTaskRun(task, promise);
+        isAsync = finalizeTaskRun(task, promise);
         break;
       }
 
@@ -2557,7 +2571,7 @@ function processNextTask() {
             },
           };
         })();
-        finalizeTaskRun(task, promise);
+        isAsync = finalizeTaskRun(task, promise);
         break;
       }
 
@@ -2654,7 +2668,7 @@ function processNextTask() {
             throw err;
           }
         })();
-        finalizeTaskRun(task, promise);
+        isAsync = finalizeTaskRun(task, promise);
         break;
       }
 
@@ -2697,7 +2711,7 @@ function processNextTask() {
             ? { ok: true, data }
             : { ok: false, data, error: errorText };
         })();
-        finalizeTaskRun(task, promise);
+        isAsync = finalizeTaskRun(task, promise);
         break;
       }
 
@@ -2728,7 +2742,7 @@ function processNextTask() {
             },
           };
         })();
-        finalizeTaskRun(task, promise);
+        isAsync = finalizeTaskRun(task, promise);
         break;
       }
 
@@ -2765,7 +2779,7 @@ function processNextTask() {
             return { ok: false, error: err.message };
           }
         })();
-        finalizeTaskRun(task, promise);
+        isAsync = finalizeTaskRun(task, promise);
         break;
       }
 
@@ -2803,7 +2817,7 @@ function processNextTask() {
             return { ok: false, error: err.message };
           }
         })();
-        finalizeTaskRun(task, promise);
+        isAsync = finalizeTaskRun(task, promise);
         break;
       }
 
@@ -2834,7 +2848,7 @@ function processNextTask() {
             return { ok: false, error: err.message };
           }
         })();
-        finalizeTaskRun(task, promise);
+        isAsync = finalizeTaskRun(task, promise);
         break;
       }
 
@@ -2868,7 +2882,7 @@ function processNextTask() {
             return { ok: false, error: err.message };
           }
         })();
-        finalizeTaskRun(task, promise);
+        isAsync = finalizeTaskRun(task, promise);
         break;
       }
 
@@ -2964,7 +2978,7 @@ function processNextTask() {
             return { ok: false, error: err.message };
           }
         })();
-        finalizeTaskRun(task, promise);
+        isAsync = finalizeTaskRun(task, promise);
         break;
       }
 
@@ -2975,12 +2989,22 @@ function processNextTask() {
     log('error', 'Failed to process steam task', { error: err.message });
     if (task && task.id) completeTask(task.id, 'FAILED', { ok:false, error: err.message }, err.message);
   } finally {
-    taskInProgress = false;
+    if (!isAsync) taskInProgress = false;
   }
 }
 
 setInterval(() => {
-  try { processNextTask(); } catch (err) { log('error', 'Task polling loop failed', { error: err.message }); }
+  try {
+    // Stale RUNNING Tasks aufräumen (z.B. nach Bridge-Crash)
+    const now = nowSeconds();
+    const staleCutoff = now - STALE_TASK_TIMEOUT_S;
+    const staleResult = failStaleTasksStmt.run(STALE_TASK_TIMEOUT_S, now, now, staleCutoff);
+    if (staleResult.changes > 0) {
+      log('warn', 'Cleaned up stale RUNNING tasks', { count: staleResult.changes, cutoff_age_s: STALE_TASK_TIMEOUT_S });
+      taskInProgress = false; // Erlaubt neuen Task nach Cleanup
+    }
+    processNextTask();
+  } catch (err) { log('error', 'Task polling loop failed', { error: err.message }); }
 }, Math.max(500, TASK_POLL_INTERVAL_MS));
 
 setInterval(() => {

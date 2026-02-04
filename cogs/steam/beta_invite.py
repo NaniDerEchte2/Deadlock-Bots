@@ -1172,6 +1172,15 @@ class BetaInviteFlow(commands.Cog):
             )
             return
 
+        if record.status == STATUS_ERROR and record.friend_confirmed_at is not None:
+            record = _update_invite(record.id, status=STATUS_WAITING, last_error=None) or record
+            _trace(
+                "betainvite_error_retry_after_friend_confirmed",
+                discord_id=interaction.user.id,
+                steam_id64=resolved,
+                previous_error=existing.last_error if existing else None,
+            )
+
         friend_ok = False
         account_id_from_friend: Optional[int] = None
         try:
@@ -1434,8 +1443,8 @@ class BetaInviteFlow(commands.Cog):
 
         invite_timeout_ms = 30000
         gc_ready_timeout_ms = 40000
-        invite_attempts = 1
-        gc_ready_attempts = 1
+        invite_attempts = 3
+        gc_ready_attempts = 3
         runtime_budget_ms = (
             gc_ready_timeout_ms * max(gc_ready_attempts, 1)
             + invite_timeout_ms * max(invite_attempts, 1)
