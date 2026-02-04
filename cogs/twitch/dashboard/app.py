@@ -14,9 +14,11 @@ from .templates import DashboardTemplateMixin
 from .raid import DashboardRaidMixin
 from .analyse import DashboardAnalyseMixin
 from .analytics import DashboardAnalyticsMixin
+from ..analytics_v2 import AnalyticsV2Mixin
 
 
 class Dashboard(
+    AnalyticsV2Mixin,
     DashboardRaidMixin,
     DashboardAnalyticsMixin,
     DashboardAnalyseMixin,
@@ -73,6 +75,9 @@ class Dashboard(
             # Reload
             web.post("/twitch/reload", self.reload_cog),
         ])
+
+        # Analytics V2 API routes
+        self._register_v2_routes(app.router)
 
 
 def build_app(

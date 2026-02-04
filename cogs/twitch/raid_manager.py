@@ -5,7 +5,7 @@ Raid Bot Manager für automatische Twitch Raids zwischen Partnern.
 Verwaltet:
 - OAuth User Access Tokens für Streamer
 - Automatische Raids beim Offline-Gehen
-- Partner-Auswahl (kürzeste Stream-Zeit)
+- Partner-Auswahl (niedrigste Viewer, optional niedrigste Follower)
 - Raid-Metadaten und History
 """
 import logging
@@ -39,6 +39,8 @@ RAID_SCOPES = [
     "chat:read",
     "chat:edit",
 ]
+
+RAID_TARGET_COOLDOWN_DAYS = 7  # Avoid repeating the same raid target if alternatives exist
 
 log = logging.getLogger("TwitchStreams.RaidManager")
 
@@ -714,7 +716,7 @@ class RaidBot:
     Hauptklasse für automatische Raid-Verwaltung.
 
     - Erkennt, wenn ein Partner offline geht
-    - Wählt Partner nach Fairness aus (wer weniger Raids bekommen hat)
+    - Wählt Partner nach niedrigsten Viewern (Tie-Breaker: Follower, dann Stream-Zeit)
     - Führt den Raid aus und loggt Metadaten (gesendete + empfangene Raids)
     """
 
@@ -1021,76 +1023,106 @@ class RaidBot:
                 from_broadcaster_login,
             )
 
-    def _select_fairest_candidate(
+    def _get_recent_raid_targets(self, from_broadcaster_id: str, days: int) -> set[str]:
+        if not from_broadcaster_id or days <= 0:
+            return set()
+        cutoff = f"-{int(days)} days"
+        try:
+            with get_conn() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT to_broadcaster_id
+                    FROM twitch_raid_history
+                    WHERE from_broadcaster_id = ?
+                      AND success = 1
+                      AND executed_at >= datetime('now', ?)
+                    """,
+                    (from_broadcaster_id, cutoff),
+                ).fetchall()
+            return {str(row[0]) for row in rows if row and row[0]}
+        except Exception:
+            log.debug("Failed to load recent raid targets for %s", from_broadcaster_id, exc_info=True)
+            return set()
+
+    async def _attach_followers_totals(self, candidates: List[Dict]) -> None:
+        if not candidates or not self.session:
+            return
+        try:
+            from .twitch_api import TwitchAPI
+        except Exception:
+            return
+
+        api = TwitchAPI(self.auth_manager.client_id, self.auth_manager.client_secret, session=self.session)
+
+        for candidate in candidates:
+            if candidate.get("followers_total") is not None:
+                continue
+            user_id = str(candidate.get("user_id") or "").strip()
+            if not user_id:
+                continue
+            try:
+                token = await self.auth_manager.get_valid_token(user_id, self.session)
+            except Exception:
+                token = None
+            if not token:
+                continue
+            try:
+                followers = await api.get_followers_total(user_id, user_token=token)
+            except Exception:
+                continue
+            if followers is not None:
+                candidate["followers_total"] = int(followers)
+
+    async def _select_fairest_candidate(
         self, candidates: List[Dict], from_broadcaster_id: str
     ) -> Optional[Dict]:
         """
-        Wählt den fairsten Raid-Kandidaten aus.
-
-        Fairness-Kriterien:
-        1. Wer weniger Raids bekommen hat (Hauptkriterium)
-        2. Wer kürzer live ist (Tiebreaker)
-
-        Returns:
-            Der fairste Kandidat oder None
+        Wählt den Raid-Kandidaten mit den wenigsten Viewern.
+        Bei Gleichstand: Wenigste Follower (wenn verfügbar), danach kürzeste Stream-Zeit.
+        Ziele der letzten Tage werden vermieden, sofern Alternativen existieren.
         """
         if not candidates:
             return None
 
-        # Raid-Statistiken für alle Kandidaten holen
-        candidate_stats = []
+        recent_targets = self._get_recent_raid_targets(from_broadcaster_id, RAID_TARGET_COOLDOWN_DAYS)
+        if recent_targets:
+            filtered = [
+                c for c in candidates if str(c.get("user_id") or "") not in recent_targets
+            ]
+        else:
+            filtered = []
 
-        with get_conn() as conn:
-            for candidate in candidates:
-                user_id = candidate.get("user_id")
-                user_login = candidate.get("user_login", "")
-                started_at = candidate.get("started_at", "9999-99-99")
+        pool = filtered or candidates
 
-                # Anzahl empfangener Raids
-                received = conn.execute(
-                    """
-                    SELECT COUNT(*) FROM twitch_raid_history
-                    WHERE to_broadcaster_id = ? AND success = 1
-                    """,
-                    (user_id,),
-                ).fetchone()
-                received_count = received[0] if received else 0
+        await self._attach_followers_totals(pool)
 
-                # Anzahl gesendeter Raids (für spätere Analysen)
-                sent = conn.execute(
-                    """
-                    SELECT COUNT(*) FROM twitch_raid_history
-                    WHERE from_broadcaster_id = ? AND success = 1
-                    """,
-                    (user_id,),
-                ).fetchone()
-                sent_count = sent[0] if sent else 0
+        def _safe_int(value: object, default: int) -> int:
+            try:
+                if value is None:
+                    return default
+                return int(value)
+            except (TypeError, ValueError):
+                return default
 
-                candidate_stats.append({
-                    "candidate": candidate,
-                    "user_id": user_id,
-                    "user_login": user_login,
-                    "started_at": started_at,
-                    "received_raids": received_count,
-                    "sent_raids": sent_count,
-                })
+        def _sort_key(candidate: Dict) -> tuple[int, int, str]:
+            viewers = _safe_int(candidate.get("viewer_count"), 10**9)
+            followers = _safe_int(candidate.get("followers_total"), 10**9)
+            started_at = candidate.get("started_at") or "9999-99-99"
+            return (viewers, followers, started_at)
 
-        # Sortieren nach Fairness:
-        # 1. Weniger empfangene Raids = höhere Priorität
-        # 2. Bei Gleichstand: kürzere Stream-Zeit
-        candidate_stats.sort(key=lambda x: (x["received_raids"], x["started_at"]))
+        pool.sort(key=_sort_key)
 
-        selected = candidate_stats[0]
+        selected = pool[0]
         log.info(
-            "Raid target selection: %s (received: %d raids, sent: %d raids, started: %s) from %d candidates",
-            selected["user_login"],
-            selected["received_raids"],
-            selected["sent_raids"],
-            selected["started_at"][:16],
+            "Raid target selection (min viewers): %s (viewers=%s, followers=%s, recent_filtered=%d) from %d candidates",
+            selected.get("user_login"),
+            selected.get("viewer_count"),
+            selected.get("followers_total"),
+            max(0, len(candidates) - len(pool)),
             len(candidates),
         )
 
-        return selected["candidate"]
+        return selected
 
     def _is_blacklisted(self, target_id: str, target_login: str) -> bool:
         """Prüft, ob ein Ziel auf der Blacklist steht."""
@@ -1193,9 +1225,9 @@ class RaidBot:
             ]
 
             if partner_candidates:
-                # Partner vorhanden -> Fairness-basierte Auswahl
+                # Partner vorhanden -> Auswahl nach niedrigsten Viewern
                 is_partner_raid = True
-                target = self._select_fairest_candidate(partner_candidates, broadcaster_id)
+                target = await self._select_fairest_candidate(partner_candidates, broadcaster_id)
                 candidates_count = len(partner_candidates)
 
             # 2. Fallback (Deadlock-DE), falls kein Partner gefunden
@@ -1222,15 +1254,8 @@ class RaidBot:
                 ]
 
                 if fallback_candidates:
-                    # Sortiere nach kürzester Stream-Zeit
-                    fallback_candidates.sort(key=lambda s: s.get("started_at", "9999"))
-                    target = fallback_candidates[0]
+                    target = await self._select_fairest_candidate(fallback_candidates, broadcaster_id)
                     candidates_count = len(fallback_candidates)
-                    log.info(
-                        "Selected fallback target: %s (from %d candidates)",
-                        target["user_login"],
-                        candidates_count,
-                    )
 
             if not target:
                 log.info(

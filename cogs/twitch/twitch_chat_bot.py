@@ -1435,8 +1435,8 @@ if TWITCHIO_AVAILABLE:
             target = None
             
             if candidates:
-                # Fairness-Auswahl wiederverwenden
-                target = self._raid_bot._select_fairest_candidate(candidates, broadcaster_id=twitch_user_id)  # type: ignore[attr-defined]
+                # Auswahl nach niedrigsten Viewern wiederverwenden
+                target = await self._raid_bot._select_fairest_candidate(candidates, twitch_user_id)  # type: ignore[attr-defined]
             
             if not target:
                 # Fallback auf DE Deadlock-Streamer
@@ -1449,7 +1449,10 @@ if TWITCHIO_AVAILABLE:
                         de_streams = [s for s in de_streams if str(s.get("user_id")) != str(twitch_user_id)]
                         if de_streams:
                             is_partner_raid = False
-                            target = de_streams[0]
+                            target = await self._raid_bot._select_fairest_candidate(de_streams, twitch_user_id)  # type: ignore[attr-defined]
+                            if not target:
+                                await ctx.send(f"@{ctx.author.name} Kein geeigneter Fallback-Streamer gefunden.")
+                                return
                             # Normalisieren für executor
                             if "user_login" not in target and "user_name" in target:
                                 target["user_login"] = target["user_name"].lower()
