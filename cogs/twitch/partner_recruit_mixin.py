@@ -26,16 +26,17 @@ RECRUIT_MIN_DAYS = 5                  # Mindestanzahl Streaming-Tage im Zeitraum
 RECRUIT_MIN_AVG_SAMPLES_PER_DAY = 96  # ≈ 2h bei 75s-Sample-Intervall
 RECRUIT_COOLDOWN_DAYS = 60            # Pause zwischen Kontaktversuchen
 RECRUIT_CHECK_INTERVAL_SECONDS = 1800 # Prüfzyklus (30 min)
-RECRUIT_DISCORD_INVITE = "discord / z5TfVHuQq2"
+RECRUIT_DISCORD_INVITE = "discord.gg/z5TfVHuQq2"
 
 # Twitch-Chat-Limit: 500 Zeichen. Nachricht bleibt bei ~300 Zeichen.
 _OUTREACH_MSG = (
-    "Hey @{login}! Du streamst Deadlock regelmäßig – "
-    "{days} Tage in 2 Wochen, das ist sportlich :)! "
-    "Wir sind immer auf der Suche nach Talenten, deshalb laden wir dich zu unserem Streamer-Partner-Programm ein. "
-    "Was dich erwarten wird: Auto-Raids, Go-Live Ankündigungen auf unserem Discord, "
-    "Stats, Anti-Spam-Schutz & individueller Support für deinen Kanal. "
-    "Falls du bock hast, schau hier mal vorbei: {invite} <3"
+    "Hey @{login}! Wir haben gesehen, du streamst Deadlock regelmäßiger. "
+    "{days} Tage in 2 Wochen, das ist sportlich :). "
+    "Da wir immer auf der Suche nach Talenten sind, und du regelmäßiger streamst haben wir gedacht, "
+    "laden wir dich zu unserem Streamer-Partner-Programm ein. "
+    "Das kannst du von uns erwarten: Anti-Spam-Schutz & Support für deinen Kanal, "
+    "Go-Live Ankündigungen auf unserem Discord Server, Auto-Raids. "
+    "Falls du bock hast schau gerne hier mal vorbei: {invite} <3"
 )
 
 
@@ -104,6 +105,9 @@ class TwitchPartnerRecruitMixin:
                       AND LOWER(streamer) NOT IN (
                             SELECT streamer_login FROM twitch_partner_outreach
                              WHERE cooldown_until > datetime('now')
+                          )
+                      AND LOWER(streamer) NOT IN (
+                            SELECT LOWER(target_login) FROM twitch_raid_blacklist
                           )
                     GROUP BY streamer
                     HAVING COUNT(DISTINCT DATE(ts_utc)) >= ?
