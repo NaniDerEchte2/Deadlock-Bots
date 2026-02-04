@@ -9,10 +9,15 @@ import type {
   ChatAnalytics,
   ViewerOverlap,
   TagPerformance,
+  TagPerformanceExtended,
+  TitlePerformance,
   RankingEntry,
   StreamSession,
   TimeRange,
   CategoryComparison,
+  WatchTimeDistribution,
+  FollowerFunnel,
+  AudienceInsights,
 } from '@/types/analytics';
 
 const API_BASE = '/twitch/api/v2';
@@ -189,6 +194,87 @@ export async function fetchCategoryComparison(
   days: TimeRange
 ): Promise<CategoryComparison> {
   return fetchApi('/category-comparison', {
+    streamer: streamer || '',
+    days,
+  });
+}
+
+// Watch Time Distribution
+export async function fetchWatchTimeDistribution(
+  streamer: string | null,
+  days: TimeRange
+): Promise<WatchTimeDistribution> {
+  return fetchApi<WatchTimeDistribution>('/watch-time-distribution', {
+    streamer: streamer || '',
+    days,
+  });
+}
+
+// Follower Funnel
+export async function fetchFollowerFunnel(
+  streamer: string | null,
+  days: TimeRange
+): Promise<FollowerFunnel> {
+  return fetchApi<FollowerFunnel>('/follower-funnel', {
+    streamer: streamer || '',
+    days,
+  });
+}
+
+// Extended Tag Analysis with Trends
+export async function fetchTagAnalysisExtended(
+  streamer: string | null,
+  days: TimeRange,
+  limit: number = 20
+): Promise<TagPerformanceExtended[]> {
+  return fetchApi<TagPerformanceExtended[]>('/tag-analysis-extended', {
+    streamer: streamer || '',
+    days,
+    limit,
+  });
+}
+
+// Title Performance Analysis
+export async function fetchTitlePerformance(
+  streamer: string | null,
+  days: TimeRange,
+  limit: number = 20
+): Promise<TitlePerformance[]> {
+  return fetchApi<TitlePerformance[]>('/title-performance', {
+    streamer: streamer || '',
+    days,
+    limit,
+  });
+}
+
+// Combined Audience Insights (all in one call)
+export async function fetchAudienceInsights(
+  streamer: string | null,
+  days: TimeRange
+): Promise<AudienceInsights> {
+  return fetchApi<AudienceInsights>('/audience-insights', {
+    streamer: streamer || '',
+    days,
+  });
+}
+
+// Audience Demographics
+export interface AudienceDemographicsResponse {
+  estimatedRegions: { region: string; percentage: number }[];
+  viewerTypes: { label: string; percentage: number }[];
+  activityPattern: 'weekend-heavy' | 'weekday-focused' | 'balanced';
+  primaryLanguage: string;
+  languageConfidence: number;
+  peakActivityHours: number[];
+  interactiveRate: number;
+  loyaltyScore: number;
+}
+
+export async function fetchAudienceDemographics(
+  streamer: string | null,
+  days: TimeRange
+): Promise<AudienceDemographicsResponse> {
+  return fetchApi<AudienceDemographicsResponse>('/audience-demographics', {
     streamer: streamer || '',
     days,
   });

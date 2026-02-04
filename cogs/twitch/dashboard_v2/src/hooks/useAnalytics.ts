@@ -10,11 +10,17 @@ import {
   fetchChatAnalytics,
   fetchViewerOverlap,
   fetchTagAnalysis,
+  fetchTagAnalysisExtended,
+  fetchTitlePerformance,
   fetchRankings,
   fetchSessionDetail,
   fetchStreamerList,
   fetchCategoryComparison,
   fetchAuthStatus,
+  fetchWatchTimeDistribution,
+  fetchFollowerFunnel,
+  fetchAudienceInsights,
+  fetchAudienceDemographics,
 } from '@/api/client';
 import type { TimeRange } from '@/types/analytics';
 
@@ -131,5 +137,65 @@ export function useAuthStatus() {
     queryFn: fetchAuthStatus,
     staleTime: 60 * 1000, // 1 minute
     retry: false,
+  });
+}
+
+// Watch Time Distribution Hook
+export function useWatchTimeDistribution(streamer: string | null, days: TimeRange) {
+  return useQuery({
+    queryKey: ['watch-time-distribution', streamer, days],
+    queryFn: () => fetchWatchTimeDistribution(streamer, days),
+    staleTime: STALE_TIME,
+    enabled: !!streamer,
+  });
+}
+
+// Follower Funnel Hook
+export function useFollowerFunnel(streamer: string | null, days: TimeRange) {
+  return useQuery({
+    queryKey: ['follower-funnel', streamer, days],
+    queryFn: () => fetchFollowerFunnel(streamer, days),
+    staleTime: STALE_TIME,
+    enabled: !!streamer,
+  });
+}
+
+// Extended Tag Analysis Hook
+export function useTagAnalysisExtended(streamer: string | null, days: TimeRange, limit = 20) {
+  return useQuery({
+    queryKey: ['tag-analysis-extended', streamer, days, limit],
+    queryFn: () => fetchTagAnalysisExtended(streamer, days, limit),
+    staleTime: STALE_TIME,
+    enabled: !!streamer,
+  });
+}
+
+// Title Performance Hook
+export function useTitlePerformance(streamer: string | null, days: TimeRange, limit = 20) {
+  return useQuery({
+    queryKey: ['title-performance', streamer, days, limit],
+    queryFn: () => fetchTitlePerformance(streamer, days, limit),
+    staleTime: STALE_TIME,
+    enabled: !!streamer,
+  });
+}
+
+// Combined Audience Insights Hook
+export function useAudienceInsights(streamer: string | null, days: TimeRange) {
+  return useQuery({
+    queryKey: ['audience-insights', streamer, days],
+    queryFn: () => fetchAudienceInsights(streamer, days),
+    staleTime: STALE_TIME,
+    enabled: !!streamer,
+  });
+}
+
+// Audience Demographics Hook
+export function useAudienceDemographics(streamer: string | null, days: TimeRange) {
+  return useQuery({
+    queryKey: ['audience-demographics', streamer, days],
+    queryFn: () => fetchAudienceDemographics(streamer, days),
+    staleTime: STALE_TIME,
+    enabled: !!streamer,
   });
 }

@@ -6,6 +6,7 @@ import { Overview } from '@/pages/Overview';
 import { Sessions } from '@/pages/Sessions';
 import { ChatAnalytics } from '@/pages/ChatAnalytics';
 import { Growth } from '@/pages/Growth';
+import { Audience } from '@/pages/Audience';
 import { Comparison } from '@/pages/Comparison';
 import { Schedule } from '@/pages/Schedule';
 import { useStreamerList, useAuthStatus } from '@/hooks/useAnalytics';
@@ -141,6 +142,10 @@ function Dashboard() {
 
         {activeTab === 'growth' && (
           <Growth streamer={streamer || ''} days={days} />
+        )}
+
+        {activeTab === 'audience' && (
+          <Audience streamer={streamer || ''} days={days} />
         )}
 
         {activeTab === 'compare' && (

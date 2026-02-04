@@ -63,6 +63,7 @@ export function Overview({ streamer, days, onSessionClick }: OverviewProps) {
           title="Ø Viewers"
           value={formatNumber(summary.avgViewers, 1)}
           subValue={`Peak: ${formatNumber(summary.peakViewers)}`}
+          trend={summary.avgViewersTrend}
           icon={Users}
           color="blue"
         />
@@ -79,6 +80,7 @@ export function Overview({ streamer, days, onSessionClick }: OverviewProps) {
           title="Follower"
           value={`+${formatNumber(summary.followersDelta)}`}
           subValue={`${summary.followersPerHour.toFixed(2)} / Stunde`}
+          trend={summary.followersTrend}
           icon={TrendingUp}
           color="green"
         />
@@ -87,6 +89,7 @@ export function Overview({ streamer, days, onSessionClick }: OverviewProps) {
           title="Retention (10m)"
           value={formatPercent(summary.retention10m)}
           subValue="Ziel: >40%"
+          trend={summary.retentionTrend}
           icon={Target}
           color="yellow"
         />

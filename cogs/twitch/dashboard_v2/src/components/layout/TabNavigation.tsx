@@ -6,9 +6,10 @@ import {
   BarChart3,
   Users,
   Calendar,
+  Target,
 } from 'lucide-react';
 
-export type TabId = 'overview' | 'streams' | 'chat' | 'growth' | 'compare' | 'schedule';
+export type TabId = 'overview' | 'streams' | 'chat' | 'growth' | 'audience' | 'compare' | 'schedule';
 
 interface Tab {
   id: TabId;
@@ -21,6 +22,7 @@ const tabs: Tab[] = [
   { id: 'streams', label: 'Streams', icon: TrendingUp },
   { id: 'chat', label: 'Chat', icon: MessageSquare },
   { id: 'growth', label: 'Wachstum', icon: BarChart3 },
+  { id: 'audience', label: 'Audience', icon: Target },
   { id: 'compare', label: 'Vergleich', icon: Users },
   { id: 'schedule', label: 'Zeitplan', icon: Calendar },
 ];

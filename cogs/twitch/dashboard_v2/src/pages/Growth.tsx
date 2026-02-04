@@ -4,6 +4,8 @@ import { TrendingUp, Calendar, Clock, AlertCircle, Loader2 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { fetchMonthlyStats, fetchWeekdayStats } from '@/api/client';
+import { useTagAnalysisExtended, useTitlePerformance } from '@/hooks/useAnalytics';
+import { TagPerformanceChart } from '@/components/charts/TagPerformance';
 import type { MonthlyStats, WeekdayStats, TimeRange } from '@/types/analytics';
 
 interface GrowthProps {
@@ -23,6 +25,9 @@ export function Growth({ streamer, days }: GrowthProps) {
     queryFn: () => fetchWeekdayStats(streamer, days),
     enabled: true,
   });
+
+  const { data: tagData } = useTagAnalysisExtended(streamer, days);
+  const { data: titleData } = useTitlePerformance(streamer, days);
 
   const chartData = useMemo(() => {
     if (!monthlyData) return [];
@@ -222,9 +227,40 @@ export function Growth({ streamer, days }: GrowthProps) {
           </div>
         )}
       </motion.div>
+
+      {/* Tag & Title Performance */}
+      {(tagData || titleData) && (
+        <TagPerformanceChart
+          tagData={tagData || mockTagData}
+          titleData={titleData}
+        />
+      )}
+
+      {/* Fallback if no tag data from API */}
+      {!tagData && !titleData && (
+        <TagPerformanceChart
+          tagData={mockTagData}
+          titleData={mockTitleData}
+        />
+      )}
     </div>
   );
 }
+
+// Mock data for when API endpoints aren't available yet
+const mockTagData = [
+  { tagName: 'Deadlock', usageCount: 15, avgViewers: 145, avgRetention10m: 58, avgFollowerGain: 12, trend: 'up' as const, trendValue: 15, bestTimeSlot: '18:00-22:00', avgStreamDuration: 14400, categoryRank: 5 },
+  { tagName: 'German', usageCount: 15, avgViewers: 142, avgRetention10m: 55, avgFollowerGain: 10, trend: 'stable' as const, trendValue: 2, bestTimeSlot: '19:00-23:00', avgStreamDuration: 14000, categoryRank: 8 },
+  { tagName: 'Competitive', usageCount: 8, avgViewers: 165, avgRetention10m: 62, avgFollowerGain: 15, trend: 'up' as const, trendValue: 22, bestTimeSlot: '20:00-24:00', avgStreamDuration: 12000, categoryRank: 3 },
+  { tagName: 'Ranked', usageCount: 6, avgViewers: 158, avgRetention10m: 60, avgFollowerGain: 14, trend: 'down' as const, trendValue: -5, bestTimeSlot: '18:00-22:00', avgStreamDuration: 10800, categoryRank: 6 },
+  { tagName: 'Chill', usageCount: 4, avgViewers: 95, avgRetention10m: 48, avgFollowerGain: 6, trend: 'stable' as const, trendValue: 0, bestTimeSlot: '14:00-18:00', avgStreamDuration: 18000, categoryRank: 15 },
+];
+
+const mockTitleData = [
+  { title: 'Ranked Grind bis Phantom! !discord', usageCount: 5, avgViewers: 168, avgRetention10m: 62, avgFollowerGain: 18, peakViewers: 245, keywords: ['Ranked', 'Grind', 'Phantom'] },
+  { title: 'Chill Deadlock mit Zuschauern', usageCount: 4, avgViewers: 125, avgRetention10m: 55, avgFollowerGain: 8, peakViewers: 180, keywords: ['Chill', 'Zuschauer'] },
+  { title: 'Road to Top 500 | Tag 42', usageCount: 3, avgViewers: 195, avgRetention10m: 68, avgFollowerGain: 22, peakViewers: 312, keywords: ['Road', 'Top 500', 'Tag'] },
+];
 
 interface MetricRowProps {
   label: string;

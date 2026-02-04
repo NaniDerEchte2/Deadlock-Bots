@@ -164,6 +164,11 @@ export interface DashboardOverview {
     retention10m: number;
     uniqueChatters: number;
     streamCount: number;
+    // Neue Trend-Felder
+    avgViewersTrend?: number;      // % Änderung vs. Vorperiode
+    peakViewersTrend?: number;
+    followersTrend?: number;
+    retentionTrend?: number;
   };
   sessions: StreamSession[];
   findings: Insight[];
@@ -177,6 +182,8 @@ export interface DashboardOverview {
     received: number;
     sentViewers: number;
   };
+  // Neue Audience Insights
+  audienceInsights?: AudienceInsights;
 }
 
 export interface Insight {
@@ -213,6 +220,67 @@ export interface AudienceBreakdown {
   interactionRate: number;
   estimatedLanguage: string;
   languageConfidence: number;
+}
+
+// Watch Time Distribution - Wie lange bleiben Viewer?
+export interface WatchTimeDistribution {
+  under5min: number;      // Schnelle Absprünge (%)
+  min5to15: number;       // Kurze Sessions (%)
+  min15to30: number;      // Mittlere Sessions (%)
+  min30to60: number;      // Längere Sessions (%)
+  over60min: number;      // Loyale Zuschauer (%)
+  avgWatchTime: number;   // Durchschnittliche Watch Time in Minuten
+  medianWatchTime: number; // Median Watch Time in Minuten
+}
+
+// Follower Conversion Funnel - Von Viewer zu Follower
+export interface FollowerFunnel {
+  uniqueViewers: number;        // Einzigartige Viewer im Zeitraum
+  returningViewers: number;     // Wiederkehrende Viewer (nicht gefolgt)
+  newFollowers: number;         // Neue Follower im Zeitraum
+  conversionRate: number;       // newFollowers / uniqueViewers * 100
+  avgTimeToFollow: number;      // Durchschnittliche Zeit bis Follow (Minuten)
+  followersBySource: {
+    organic: number;            // Direkt über Stream
+    raids: number;              // Über Raids
+    hosts: number;              // Über Hosts
+    other: number;              // Sonstige
+  };
+}
+
+// Erweiterte Tag Performance mit Trends
+export interface TagPerformanceExtended extends TagPerformance {
+  trend: 'up' | 'down' | 'stable';
+  trendValue: number;           // % Änderung
+  bestTimeSlot: string;         // z.B. "18:00-22:00"
+  avgStreamDuration: number;    // Durchschnittliche Stream-Dauer mit diesem Tag
+  categoryRank: number;         // Rang in der Kategorie für diesen Tag
+}
+
+// Title Performance - Welche Titel performen besser?
+export interface TitlePerformance {
+  title: string;
+  usageCount: number;
+  avgViewers: number;
+  avgRetention10m: number;
+  avgFollowerGain: number;
+  peakViewers: number;
+  keywords: string[];           // Extrahierte Keywords
+}
+
+// Kombinierte Funnel & Distribution Daten
+export interface AudienceInsights {
+  watchTimeDistribution: WatchTimeDistribution;
+  followerFunnel: FollowerFunnel;
+  tagPerformance: TagPerformanceExtended[];
+  titlePerformance: TitlePerformance[];
+  // Trends im Vergleich zur Vorperiode
+  trends: {
+    watchTimeChange: number;      // % Änderung avg watch time
+    conversionChange: number;     // % Änderung conversion rate
+    viewerReturnRate: number;     // % der Viewer die zurückkommen
+    viewerReturnChange: number;   // % Änderung return rate
+  };
 }
 
 // API Response Types
