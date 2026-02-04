@@ -781,202 +781,407 @@
             font-size: 0.85rem;
             margin-top: 0.15rem;
         }
+    
+        /* ─── Top Nav Override ─── */
+        .top-nav {
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .top-nav-left {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .top-nav-left input {
+            padding: 0.4rem 0.6rem;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.1);
+            background: #1f1f1f;
+            color: inherit;
+            width: 180px;
+            font-size: 0.85rem;
+        }
+        .top-nav-left strong {
+            color: #adb5bd;
+            font-size: 0.85rem;
+        }
+
+        /* ─── Bot Section (compact, grid) ─── */
+        .bot-section {
+            margin-bottom: 0.75rem;
+            background: #1c1c1c;
+            border-radius: 10px;
+            padding: 1rem 1.5rem;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 2rem;
+            align-items: center;
+        }
+        .bot-header {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            margin-bottom: 0.3rem;
+        }
+        .bot-name {
+            font-size: 1.1rem;
+            font-weight: 700;
+        }
+        .bot-details {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+            flex-wrap: wrap;
+            font-size: 0.88rem;
+            color: #ccc;
+            margin-bottom: 0.12rem;
+        }
+        .bot-sep {
+            color: rgba(255,255,255,0.18);
+            font-size: 0.72rem;
+        }
+        .bot-detail-muted {
+            color: #868e96;
+        }
+        .bot-actions-col {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            align-items: flex-end;
+        }
+        .bot-actions-col button {
+            width: 100%;
+            white-space: nowrap;
+        }
+
+        /* ─── Health Section ─── */
+        .health-section {
+            margin-bottom: 1.25rem;
+            background: #1c1c1c;
+            border-radius: 10px;
+            padding: 0.9rem 1.5rem;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+        }
+        .health-section h3 {
+            margin: 0 0 0.65rem 0;
+            font-size: 0.78rem;
+            color: #868e96;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 600;
+        }
+
+        /* ─── Tab Navigation ─── */
+        .tab-nav {
+            display: flex;
+            gap: 0;
+            border-bottom: 2px solid rgba(255,255,255,0.08);
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .tab-btn {
+            background: none;
+            border: none;
+            color: #868e96;
+            padding: 0.7rem 1.3rem;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.92rem;
+            border-bottom: 3px solid transparent;
+            margin: 0;
+            margin-bottom: -2px;
+            border-radius: 0;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .tab-btn:hover {
+            color: #fff;
+            border-bottom-color: rgba(77,171,247,0.4);
+        }
+        .tab-btn.active {
+            color: #fff;
+            border-bottom-color: #4dabf7;
+        }
+
+        /* ─── Tab Panels ─── */
+        .tab-panel {
+            display: none;
+        }
+        .tab-panel.active {
+            display: block;
+        }
+
+        /* ─── Services: Twitch card ─── */
+        .twitch-card {
+            background: #161616;
+            border-radius: 8px;
+            padding: 1rem;
+            border: 1px solid rgba(255,255,255,0.05);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-bottom: 1.5rem;
+        }
+        .twitch-card-left p {
+            margin: 0;
+            color: #adb5bd;
+            font-size: 0.9rem;
+        }
+        .twitch-card-right {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            flex-wrap: wrap;
+        }
     </style>
 </head>
 <body>
+    <!-- ─── Top Nav ─── -->
     <div class="top-nav">
-        <a href="{{TWITCH_URL}}" target="_blank" rel="noopener">Twitch Dashboard öffnen</a>
+        <div class="top-nav-left">
+            <strong>Token:</strong>
+            <input id="token-input" type="password" placeholder="Bearer Token">
+            <button id="apply-token">Apply</button>
+        </div>
+        <a href="{{TWITCH_URL}}" target="_blank" rel="noopener">Twitch Dashboard</a>
     </div>
-    <h1>Master Bot Dashboard</h1>
-    <section>
-        <div class="toolbar">
-            <div>
-                <strong>Auth Token:</strong>
-                <input id="token-input" type="password" placeholder="Bearer Token">
-                <button id="apply-token">Apply</button>
-            </div>
-            <div>
-                <button class="namespace" id="reload-all">Reload &amp; Discover All</button>
-                <button class="namespace" id="discover">Discover Cogs</button>
-            </div>
-        </div>
-        <div class="grid" style="margin-top:1rem;">
-            <div class="card">
-                <h2>Bot</h2>
-                <p id="bot-user">-</p>
-                <p id="bot-uptime">-</p>
-                <p id="bot-guilds">-</p>
-                <p id="bot-latency">-</p>
-                <div class="dashboard-meta">
-                    <div class="dashboard-row">
-                        <span class="status-pill" id="dashboard-status-pill">Status unbekannt</span>
-                        <span class="dashboard-last" id="dashboard-restart-info">Letzter Restart: –</span>
-                    </div>
-                    <div class="dashboard-row">
-                        <span class="dashboard-url" id="dashboard-listen">Listen: –</span>
-                        <span class="dashboard-url" id="dashboard-public">Public: –</span>
-                    </div>
-                    <div class="dashboard-row">
-                        <button class="namespace" id="dashboard-restart">Dashboard neu starten</button>
-                        <button class="namespace" id="bot-restart">Bot neu starten</button>
-                    </div>
-                    <div class="dashboard-row">
-                        <span class="dashboard-last" id="bot-restart-info">Bot Restart: –</span>
-                    </div>
-                </div>
-            </div>
-            <div class="card">
-                <h2>Twitch Module</h2>
-                <p>Steuerung für Twitch-Integration.</p>
-                <div class="dashboard-meta">
-                    <div class="dashboard-row">
-                        <button class="reload" id="twitch-reload">Twitch neu laden</button>
-                    </div>
-                    <div class="dashboard-row">
-                        <span class="dashboard-last" id="twitch-reload-info">Status: Bereit</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
 
-    <section>
-        <h2>Site Health</h2>
+    <!-- ─── Bot Status (always visible) ─── -->
+    <div class="bot-section">
+        <div class="bot-info-col">
+            <div class="bot-header">
+                <span class="status-pill" id="dashboard-status-pill">Status unbekannt</span>
+                <span class="bot-name" id="bot-user">-</span>
+            </div>
+            <div class="bot-details">
+                <span id="bot-uptime">-</span>
+                <span class="bot-sep">·</span>
+                <span id="bot-guilds">-</span>
+                <span class="bot-sep">·</span>
+                <span id="bot-latency">-</span>
+            </div>
+            <div class="bot-details">
+                <span id="dashboard-listen">Listen: –</span>
+                <span class="bot-sep">·</span>
+                <span id="dashboard-public">Public: –</span>
+            </div>
+            <div class="bot-details">
+                <span id="dashboard-restart-info" class="bot-detail-muted">Letzter Restart: –</span>
+                <span class="bot-sep">·</span>
+                <span id="bot-restart-info" class="bot-detail-muted">Bot Restart: –</span>
+            </div>
+        </div>
+        <div class="bot-actions-col">
+            <button class="namespace" id="dashboard-restart">Dashboard neu starten</button>
+            <button class="namespace" id="bot-restart">Bot neu starten</button>
+        </div>
+    </div>
+
+    <!-- ─── Site Health (always visible) ─── -->
+    <div class="health-section">
+        <h3>Site Health</h3>
         <div id="health-container" class="health-grid"></div>
-    </section>
+    </div>
 
-    
+    <!-- ─── Tab Navigation ─── -->
+    <nav class="tab-nav">
+        <button class="tab-btn active" data-tab="overview">Übersicht</button>
+        <button class="tab-btn" data-tab="activity">Aktivität</button>
+        <button class="tab-btn" data-tab="services">Dienste</button>
+        <button class="tab-btn" data-tab="cogs">Cogs</button>
+        <button class="tab-btn" data-tab="logs">Logs</button>
+    </nav>
 
-    <section>
-        <div class="section-header">
-            <h2>Voice Historie</h2>
-            <div class="section-actions">
-                <button class="reload" id="voice-history-refresh">Neu laden</button>
-                <span class="voice-meta" id="voice-history-updated">Letzte Aktualisierung: -</span>
-            </div>
-        </div>
-        <div class="voice-columns">
-            <div class="card">
-                <h3>Aktivität nach Stunde</h3>
-                <div class="filter-row">
-                    <div class="segmented" id="voice-mode-buttons">
-                        <button class="voice-mode-btn active" data-mode="hour">Stunde</button>
-                        <button class="voice-mode-btn" data-mode="day">Tag</button>
-                        <button class="voice-mode-btn" data-mode="week">Wochentag</button>
-                        <button class="voice-mode-btn" data-mode="month">Monat</button>
-                    </div>
-                    <input id="voice-history-user" type="text" placeholder="User ID (optional)" />
-                    <button class="reload" id="voice-user-apply">Anzeigen</button>
-                </div>
-                <div id="voice-user-summary" class="voice-user-grid" style="display:none;"></div>
-                <div class="chart-container">
-                    <canvas id="voice-hourly-chart"></canvas>
+    <!-- ════════════════════════════════════════════════
+         Tab: Übersicht  –  Server Stats + User Retention
+         ════════════════════════════════════════════════ -->
+    <div class="tab-panel active" data-tab="overview">
+
+        <section>
+            <div class="section-header">
+                <h2>Server Statistiken &amp; User Activity</h2>
+                <div class="section-actions">
+                    <button class="reload" id="server-stats-refresh">Neu laden</button>
+                    <span class="voice-meta" id="server-stats-updated">Letzte Aktualisierung: -</span>
                 </div>
             </div>
-        </div>
-    </section>
+            <div class="stats-grid">
+                <div class="card">
+                    <h3>Server Übersicht</h3>
+                    <div id="server-stats-summary" class="grid"></div>
+                </div>
+                <div class="card">
+                    <h3>Member Events (Letzte 50)</h3>
+                    <div id="member-events-container"></div>
+                </div>
+                <div class="card">
+                    <h3>Top Aktivste User (Messages)</h3>
+                    <div id="message-activity-container"></div>
+                </div>
+            </div>
+        </section>
 
-    <section>
-        <div class="section-header">
-            <h2>Server Statistiken & User Activity</h2>
-            <div class="section-actions">
-                <button class="reload" id="server-stats-refresh">Neu laden</button>
-                <span class="voice-meta" id="server-stats-updated">Letzte Aktualisierung: -</span>
+        <section>
+            <div class="section-header">
+                <h2>User Retention</h2>
+                <div class="section-actions">
+                    <button class="reload" id="retention-refresh">Neu laden</button>
+                    <span class="voice-meta" id="retention-updated">Letzte Aktualisierung: -</span>
+                </div>
             </div>
-        </div>
-        <div class="stats-grid">
-            <div class="card">
-                <h3>Server Übersicht</h3>
-                <div id="server-stats-summary" class="grid"></div>
+            <div class="retention-layout">
+                <div class="card">
+                    <h3>Übersicht</h3>
+                    <div id="retention-summary" class="retention-summary"></div>
+                </div>
+                <div class="card">
+                    <h3>AFK-Kandidaten (>=14 Tage)</h3>
+                    <div id="retention-recent"></div>
+                </div>
             </div>
-            <div class="card">
-                <h3>Member Events (Letzte 50)</h3>
-                <div id="member-events-container"></div>
-            </div>
-            <div class="card">
-                <h3>Top Aktivste User (Messages)</h3>
-                <div id="message-activity-container"></div>
-            </div>
-        </div>
-    </section>
+        </section>
 
-    <section>
-        <div class="section-header">
-            <h2>User Retention</h2>
-            <div class="section-actions">
-                <button class="reload" id="retention-refresh">Neu laden</button>
-                <span class="voice-meta" id="retention-updated">Letzte Aktualisierung: -</span>
-            </div>
-        </div>
-        <div class="retention-layout">
-            <div class="card">
-                <h3>Uebersicht</h3>
-                <div id="retention-summary" class="retention-summary"></div>
-            </div>
-            <div class="card">
-                <h3>AFK-Kandidaten (>=14 Tage)</h3>
-                <div id="retention-recent"></div>
-            </div>
-        </div>
-    </section>
+    </div><!-- end tab: overview -->
 
-    <section>
-        <h2>Standalone Dienste</h2>
-        <div id="standalone-container" class="standalone-grid"></div>
-    </section>
+    <!-- ════════════════════════════════════════════════
+         Tab: Aktivität  –  Voice History + Co-Player
+         ════════════════════════════════════════════════ -->
+    <div class="tab-panel" data-tab="activity">
 
-    <section>
-        <h2>Cog Management</h2>
-        <div class="card cog-management">
-            <h3>Management Tools</h3>
-            <div class="management-columns">
-                    <div class="tree-panel">
-                    <div class="tree-header">
-                        <div class="tree-header-text">
-                            <h4>Namespaces &amp; Cogs</h4>
-                            <span class="selection-info">Explorer mit direkter Steuerung</span>
+        <section>
+            <div class="section-header">
+                <h2>Voice Historie</h2>
+                <div class="section-actions">
+                    <button class="reload" id="voice-history-refresh">Neu laden</button>
+                    <span class="voice-meta" id="voice-history-updated">Letzte Aktualisierung: -</span>
+                </div>
+            </div>
+            <div class="voice-columns">
+                <div class="card">
+                    <h3>Aktivität nach Zeitraum</h3>
+                    <div class="filter-row">
+                        <div class="segmented" id="voice-mode-buttons">
+                            <button class="voice-mode-btn active" data-mode="hour">Stunde</button>
+                            <button class="voice-mode-btn" data-mode="day">Tag</button>
+                            <button class="voice-mode-btn" data-mode="week">Wochentag</button>
+                            <button class="voice-mode-btn" data-mode="month">Monat</button>
                         </div>
-                        <button class="namespace" id="toggle-unmanageable">Nicht-managebare Cogs einblenden</button>
+                        <input id="voice-history-user" type="text" placeholder="User ID (optional)" />
+                        <button class="reload" id="voice-user-apply">Anzeigen</button>
                     </div>
-                    <div id="tree-container" class="tree-container"></div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <section>
-        <h2>Recent Operations</h2>
-        <div class="log" id="operation-log"></div>
-    </section>
-
-    <section>
-        <div class="section-header">
-            <h2>Co-Player Netzwerk</h2>
-            <div class="section-actions">
-                <button class="reload" id="co-network-refresh">Neu laden</button>
-                <span class="voice-meta" id="co-network-meta">Letzte Aktualisierung: -</span>
-            </div>
-        </div>
-        <p class="voice-meta">Visualisiert, wer wie oft zusammenspielt (Datenquelle: user_co_players).</p>
-        <div class="network-layout">
-            <div class="network-visual">
-                <div class="network-meta">
-                    <div class="network-legend">
-                        <span class="network-chip">Dicke Linie = mehr Sessions</span>
-                        <span class="network-chip">Größerer Knoten = mehr gemeinsame Minuten</span>
+                    <div id="voice-user-summary" class="voice-user-grid" style="display:none;"></div>
+                    <div class="chart-container">
+                        <canvas id="voice-hourly-chart"></canvas>
                     </div>
-                    <span class="voice-meta" id="co-network-generated">-</span>
-                </div>
-                <div class="network-graph">
-                    <svg id="co-network-svg"></svg>
                 </div>
             </div>
-            <div class="network-side">
-                <h3>Top Verbindungen</h3>
-                <div id="co-network-list" class="network-list"></div>
+        </section>
+
+        <section>
+            <div class="section-header">
+                <h2>Co-Player Netzwerk</h2>
+                <div class="section-actions">
+                    <button class="reload" id="co-network-refresh">Neu laden</button>
+                    <span class="voice-meta" id="co-network-meta">Letzte Aktualisierung: -</span>
+                </div>
             </div>
-        </div>
-    </section>
+            <p class="voice-meta">Visualisiert, wer wie oft zusammenspielt (Datenquelle: user_co_players).</p>
+            <div class="network-layout">
+                <div class="network-visual">
+                    <div class="network-meta">
+                        <div class="network-legend">
+                            <span class="network-chip">Dicke Linie = mehr Sessions</span>
+                            <span class="network-chip">Größerer Knoten = mehr gemeinsame Minuten</span>
+                        </div>
+                        <span class="voice-meta" id="co-network-generated">-</span>
+                    </div>
+                    <div class="network-graph">
+                        <svg id="co-network-svg"></svg>
+                    </div>
+                </div>
+                <div class="network-side">
+                    <h3>Top Verbindungen</h3>
+                    <div id="co-network-list" class="network-list"></div>
+                </div>
+            </div>
+        </section>
+
+    </div><!-- end tab: activity -->
+
+    <!-- ════════════════════════════════════════════════
+         Tab: Dienste  –  Twitch + Standalone
+         ════════════════════════════════════════════════ -->
+    <div class="tab-panel" data-tab="services">
+
+        <section>
+            <div class="section-header">
+                <h2>Twitch Module</h2>
+            </div>
+            <div class="twitch-card">
+                <div class="twitch-card-left">
+                    <p>Steuerung für Twitch-Integration.</p>
+                    <span class="dashboard-last" id="twitch-reload-info">Status: Bereit</span>
+                </div>
+                <div class="twitch-card-right">
+                    <button class="reload" id="twitch-reload">Twitch neu laden</button>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>Standalone Dienste</h2>
+            <div id="standalone-container" class="standalone-grid"></div>
+        </section>
+
+    </div><!-- end tab: services -->
+
+    <!-- ════════════════════════════════════════════════
+         Tab: Cogs  –  Cog Management Tree
+         ════════════════════════════════════════════════ -->
+    <div class="tab-panel" data-tab="cogs">
+
+        <section>
+            <div class="section-header">
+                <h2>Cog Management</h2>
+                <div class="section-actions">
+                    <button class="namespace" id="reload-all">Reload &amp; Discover All</button>
+                    <button class="namespace" id="discover">Discover Cogs</button>
+                </div>
+            </div>
+            <div class="card cog-management">
+                <div class="management-columns">
+                    <div class="tree-panel">
+                        <div class="tree-header">
+                            <div class="tree-header-text">
+                                <h4>Namespaces &amp; Cogs</h4>
+                                <span class="selection-info">Explorer mit direkter Steuerung</span>
+                            </div>
+                            <button class="namespace" id="toggle-unmanageable">Nicht-managebare Cogs einblenden</button>
+                        </div>
+                        <div id="tree-container" class="tree-container"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </div><!-- end tab: cogs -->
+
+    <!-- ════════════════════════════════════════════════
+         Tab: Logs  –  Recent Operations
+         ════════════════════════════════════════════════ -->
+    <div class="tab-panel" data-tab="logs">
+
+        <section>
+            <h2>Recent Operations</h2>
+            <div class="log" id="operation-log"></div>
+        </section>
+
+    </div><!-- end tab: logs -->
+
 
     <script>
     const opLog = document.getElementById('operation-log');
@@ -3272,6 +3477,28 @@ async function fetchStandaloneLogs(key, limit = 200) {
         }
     });
 
+
+    // ─── Tab Switching ───────────────────────────────
+    (function() {
+        var btns = document.querySelectorAll('.tab-btn');
+        var panels = document.querySelectorAll('.tab-panel');
+        btns.forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var target = btn.dataset.tab;
+                btns.forEach(function(b) { b.classList.remove('active'); });
+                btn.classList.add('active');
+                panels.forEach(function(p) {
+                    p.classList.toggle('active', p.dataset.tab === target);
+                });
+                // Re-render charts when switching to activity tab (canvas needs visibility)
+                if (target === 'activity') {
+                    if (typeof loadVoiceHistory === 'function') loadVoiceHistory();
+                    if (typeof loadCoNetwork === 'function') loadCoNetwork();
+                }
+            });
+        });
+    })();
+
     loadStatus();
     setInterval(loadStatus, 15000);
     loadVoiceStats();
@@ -3298,6 +3525,6 @@ async function fetchStandaloneLogs(key, limit = 200) {
             loadCoNetwork();
         });
     }
-    </script>
+        </script>
 </body>
 </html>
