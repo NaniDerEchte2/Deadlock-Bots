@@ -17,7 +17,7 @@ from cogs import privacy_core as privacy
 
 log = logging.getLogger(__name__)
 
-PRIMARY_MODEL = os.getenv("DEADLOCK_ONBOARD_MODEL", "gpt-5")
+PRIMARY_MODEL = os.getenv("DEADLOCK_ONBOARD_MODEL", "gpt-5.2")
 MAX_OUTPUT_TOKENS = int(os.getenv("DEADLOCK_ONBOARD_TOKENS", "700") or "700")
 GUILD_ID = 1289721245281292288
 
@@ -26,6 +26,38 @@ LFG_CHANNEL_URL = f"https://discord.com/channels/{GUILD_ID}/1376335502919335936"
 TEMPVOICE_PANEL_URL = f"https://discord.com/channels/{GUILD_ID}/1371927143537315890"
 FEEDBACK_CHANNEL_URL = f"https://discord.com/channels/{GUILD_ID}/1289721245281292291"
 RULES_CHANNEL_URL = f"https://discord.com/channels/{GUILD_ID}/1315684135175716975"
+
+# Rollen-IDs (Discord Onboarding / Pings / Präferenzen)
+ROLE_IGNORE_ID = 1304216250649415771  # Unwichtig: ignorieren
+ROLE_STREAMER_ONBOARD_ID = 1468365558293598268
+ROLE_STREAMER_PARTNER_ID = 1411798947936342097
+ROLE_LFG_PING_ID = 1407086020331311144
+ROLE_CUSTOM_GAMES_PING_ID = 1407085699374649364
+ROLE_PATCHNOTES_PING_ID = 1330994309524357140
+ROLE_RANKED_ID = 1420466763262591120
+ROLE_CASUAL_ID = 1420466468746690621
+
+ROLE_LABELS: Dict[int, str] = {
+    ROLE_STREAMER_ONBOARD_ID: "Streamer Onboarding Rolle",
+    ROLE_STREAMER_PARTNER_ID: "Streamer Partner Rolle",
+    ROLE_LFG_PING_ID: "Spieler-Suche Ping Rolle",
+    ROLE_CUSTOM_GAMES_PING_ID: "Custom Games Ping Rolle",
+    ROLE_PATCHNOTES_PING_ID: "Patchnotes Ping Rolle",
+    ROLE_RANKED_ID: "Ranked/Rang-Spieler Rolle",
+    ROLE_CASUAL_ID: "Casual/Spaß-Spieler Rolle",
+}
+
+STREAMING_KEYWORDS = (
+    "stream",
+    "streamer",
+    "twitch",
+    "kick",
+    "youtube",
+    "yt",
+    "livestream",
+    "live gehen",
+    "obs",
+)
 
 SYSTEM_PROMPT = dedent(
     """
@@ -37,7 +69,10 @@ SYSTEM_PROMPT = dedent(
     - Spiegle grob den Stil des Users (locker/kurz/ggf. mit wenigen Emojis), bleibe aber immer positiv und einladend.
     - Gib eine kurze, personalisierte Tour, nur das Relevante aus dem Kontext auswählen.
     - Schlage 2–3 konkrete nächste Schritte vor (Kanäle/Befehle), passend zu den Antworten.
-    - Sei kompakt: 8–12 Sätze gesamt, kein Roman.
+    - Formatiere klar: kurze Absätze, keine Kanal-Listen als Fließtext.
+    - Nutze höchstens 4 relevante Kanäle insgesamt.
+    - Pro Bullet/Schritt maximal 1 Kanal.
+    - Sei kompakt: 6–9 Sätze gesamt, kein Roman.
     - Nutze nur den gegebenen Kontext, wenn du etwas nicht weißt, beantworte es nicht.
 
     """
@@ -60,6 +95,14 @@ SERVER_CONTEXT = dedent(
     - #🎟️ticket-eröffnen: Support Ticket aufmachen und mit einem Moderator über dein Anliegen sprechen 
     - #🗝️beta-zugang wenn die Person noch keinen zugang zu Deadlock hat aber ihn braucht1407085699374649364
     - #🧩custom-games-chat wenn wir Custom Games machen oder du welche vorschlagen willst :)
+
+    Rollen & Pings (optional):
+    - Patchnotes Ping Rolle: bekommt Benachrichtigungen zu #📝patchnotes
+    - Spieler-Suche Ping Rolle: passend zu #🎮spieler-suche (LFG)
+    - Custom Games Ping Rolle: passend zu #🧩custom-games-chat
+    - Ranked/Rang-Spieler Rolle: hilft bei Ranked/Competitiv Lanes
+    - Casual/Spaß-Spieler Rolle: passt zur Spaß Lane
+    - Streamer Onboarding / Streamer Partner: für Streamer-Setup via /streamer
     
     Sprachkanäle:
     - #📍Sammelpunkt - für die Custom Games zum Sammeln halt sammelpunkt
@@ -99,6 +142,73 @@ class UserAnswers:
             - Stil-Hinweis/Art zu schreiben: {self.style or '-'}
             """
         ).strip()
+
+
+def _looks_like_streamer(answers: UserAnswers) -> bool:
+    text = " ".join(
+        part.strip()
+        for part in (answers.interests, answers.expectations, answers.style)
+        if part and part.strip()
+    ).lower()
+    if not text:
+        return False
+    return any(keyword in text for keyword in STREAMING_KEYWORDS)
+
+
+def _build_role_context_block(user: discord.abc.User, answers: UserAnswers) -> str:
+    streaming_hint = _looks_like_streamer(answers)
+    member = user if isinstance(user, discord.Member) else None
+
+    if not member:
+        role_lines = ["- (Rollen nicht verfügbar)"]
+        hint_lines = []
+        if streaming_hint:
+            hint_lines.append("- Streaming erkannt: Streamer-Partner explizit vorschlagen und /streamer nennen.")
+        header = "Rollen-Kontext (Discord Onboarding):"
+        context = "\n".join(role_lines)
+        if hint_lines:
+            hints = "\n".join(hint_lines)
+            return f"{header}\n{context}\n\nHinweise:\n{hints}"
+        return f"{header}\n{context}"
+
+    role_ids = {role.id for role in member.roles}
+    role_ids.discard(ROLE_IGNORE_ID)
+
+    streamer_onboarding = ROLE_STREAMER_ONBOARD_ID in role_ids
+    streamer_partner = ROLE_STREAMER_PARTNER_ID in role_ids
+    lfg_ping = ROLE_LFG_PING_ID in role_ids
+    custom_games_ping = ROLE_CUSTOM_GAMES_PING_ID in role_ids
+    patchnotes_ping = ROLE_PATCHNOTES_PING_ID in role_ids
+    ranked_role = ROLE_RANKED_ID in role_ids
+    casual_role = ROLE_CASUAL_ID in role_ids
+
+    role_lines = []
+    for role_id, label in ROLE_LABELS.items():
+        if role_id in role_ids:
+            role_lines.append(f"- {label}: ja")
+    if not role_lines:
+        role_lines.append("- (keine relevanten Rollen erkannt)")
+
+    hint_lines = []
+    if (streaming_hint or streamer_onboarding) and not streamer_partner:
+        hint_lines.append("- Streaming erkannt: Streamer-Partner explizit vorschlagen und /streamer nennen.")
+    if lfg_ping:
+        hint_lines.append("- Spieler-Suche Ping: #🎮spieler-suche erwähnen.")
+    if custom_games_ping:
+        hint_lines.append("- Custom Games Ping: #🧩custom-games-chat und #📍Sammelpunkt erwähnen.")
+    if patchnotes_ping:
+        hint_lines.append("- Patchnotes Ping: #📝patchnotes erwähnen.")
+    if ranked_role:
+        hint_lines.append("- Ranked/Rang: #🏆rang-auswahl und Ranked/Competitiv Lane erwähnen.")
+    if casual_role:
+        hint_lines.append("- Casual/Spaß: Spaß Lane erwähnen.")
+
+    header = "Rollen-Kontext (Discord Onboarding):"
+    context = "\n".join(role_lines)
+    if hint_lines:
+        hints = "\n".join(hint_lines)
+        return f"{header}\n{context}\n\nHinweise:\n{hints}"
+    return f"{header}\n{context}"
 
 
 class QuickActionsView(discord.ui.View):
@@ -391,6 +501,7 @@ class AIOnboarding(commands.Cog):
         user: discord.abc.User,
     ) -> Tuple[str, Dict[str, Any]]:
         meta: Dict[str, Any] = {}
+        role_context = _build_role_context_block(user, answers)
 
         prompt = dedent(
             f"""
@@ -399,12 +510,16 @@ class AIOnboarding(commands.Cog):
 
             User:
             - Name: {getattr(user, "display_name", getattr(user, "name", "Nutzer"))}
+            {role_context}
             {answers.as_prompt_block()}
 
             Form:
-            - Schreibe fluessig, 8-12 Saetze, gern kurze Absaetze oder Bullets.
-            - Keine doppelten Einleitungen.
-            - Nenne nur Kanaele/Features aus dem Kontext.
+            - Ausgabe mit 3 Blöcken:
+              1) Begrüßung (1–2 Sätze)
+              2) "Kurz für dich" als 3–4 Bullets (je Bullet max. 1 Kanal)
+              3) "Nächste Schritte" als 2–3 nummerierte Punkte
+            - Keine doppelten Einleitungen, kein Fließtext mit vielen Kanälen.
+            - Maximal 4 Kanäle insgesamt, nur aus dem Kontext.
             """
         ).strip()
 
