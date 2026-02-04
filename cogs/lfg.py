@@ -17,9 +17,11 @@ log = logging.getLogger("SmartLFG")
 
 # --- Konfiguration ---
 
-# Test-Kanal für die neue Logik (User Request)
-LFG_CHANNEL_ID = 1374364800817303632 
-# LFG_CHANNEL_ID = 1376335502919335936  # Live Channel (aktuell deaktiviert für Tests)
+# LFG Eingangskanal (User schreibt hier)
+LFG_CHANNEL_ID = 1376335502919335936
+
+# Output-Kanal für Bot-Antworten
+OUTPUT_CHANNEL_ID = 1374364800817303632
 
 GUILD_ID = 1289721245281292288
 
@@ -67,7 +69,11 @@ class SmartLFGAgent(commands.Cog):
         self.cooldown_seconds = 60  # Kurzer Cooldown gegen Spam
 
     async def cog_load(self) -> None:
-        log.info("SmartLFGAgent geladen - Channel: %s", LFG_CHANNEL_ID)
+        log.info(
+            "SmartLFGAgent geladen - LFG Channel: %s | Output Channel: %s",
+            LFG_CHANNEL_ID,
+            OUTPUT_CHANNEL_ID,
+        )
 
     def _get_user_rank(self, member: discord.Member) -> Tuple[str, int]:
         """Ermittelt den höchsten Rang eines Users."""
@@ -153,6 +159,17 @@ class SmartLFGAgent(commands.Cog):
         """
         Verarbeitet die Anfrage via OpenAI (ChatGPT).
         """
+        output_channel = message.guild.get_channel(OUTPUT_CHANNEL_ID)
+        if not output_channel or not isinstance(output_channel, discord.abc.Messageable):
+            log.warning(
+                "Output-Channel %s nicht gefunden oder nicht messageable. Fallback auf LFG-Channel.",
+                OUTPUT_CHANNEL_ID,
+            )
+            output_channel = message.channel
+        prefix = ""
+        if output_channel.id != message.channel.id:
+            prefix = f"{message.author.mention} (LFG: {message.channel.mention}) "
+
         # 1. User Info
         rank_name, rank_val = self._get_user_rank(message.author)
         is_new_player = rank_val <= 5  # Unbekannt (0) bis Ritualist (5)
@@ -199,6 +216,7 @@ class SmartLFGAgent(commands.Cog):
             "Antworte kurz (2-3 Sätze). Verlinke den Voice Channel im Format `[ChannelName](URL)`. "
             "Erkläre kurz warum du diesen Channel empfiehlst (z.B. 'passender Rang', 'perfekt für Einsteiger'). "
             "Keine 'Hallo' Floskeln am Anfang, steig direkt ein wie in den Beispielen.\n"
+            "WICHIG: Wenn es kein LFG ist schreib nichts, wenn es eine Diskussion ist schreib nichts"
         )
 
         user_input = (
@@ -214,10 +232,10 @@ class SmartLFGAgent(commands.Cog):
         ai = getattr(self.bot, "get_cog", lambda name: None)("AIConnector")
         if not ai:
             log.error("AIConnector nicht gefunden!")
-            await message.reply("⚠️ AI Modul nicht geladen. Kann gerade nicht helfen.")
+            await output_channel.send(f"{prefix}⚠️ AI Modul nicht geladen. Kann gerade nicht helfen.")
             return
 
-        async with message.channel.typing():
+        async with output_channel.typing():
             response_text, _ = await ai.generate_text(
                 provider="openai",
                 prompt=user_input,
@@ -230,16 +248,16 @@ class SmartLFGAgent(commands.Cog):
         if response_text:
             # Clean up potential markdown code blocks provided by AI
             clean_text = response_text.replace("```markdown", "").replace("```", "").strip()
-            await message.reply(clean_text)
+            await output_channel.send(f"{prefix}{clean_text}")
         else:
-            await message.reply("🤔 Puh, gerade hakt's bei mir. Versuch's gleich nochmal.")
+            await output_channel.send(f"{prefix}🤔 Puh, gerade hakt's bei mir. Versuch's gleich nochmal.")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
             return
         
-        # Nur im konfigurierten Channel lauschen
+        # Nur im LFG-Channel lauschen
         if message.channel.id != LFG_CHANNEL_ID:
             return
 
