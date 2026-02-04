@@ -23,8 +23,8 @@ LFG_CHANNEL_ID = 1374364800817303632
 
 GUILD_ID = 1289721245281292288
 
-# AI Config
-GEMINI_MODEL = os.getenv("AI_GEMINI_MODEL", "gemini-2.0-flash")
+# AI Config (ChatGPT/OpenAI)
+OPENAI_MODEL = "gpt-5.2"
 
 # Spezielle Channel / Kategorien
 NEW_PLAYER_LANE_ID = 1465839460485697556
@@ -151,7 +151,7 @@ class SmartLFGAgent(commands.Cog):
 
     async def _handle_lfg_request(self, message: discord.Message):
         """
-        Verarbeitet die Anfrage via Gemini.
+        Verarbeitet die Anfrage via OpenAI (ChatGPT).
         """
         # 1. User Info
         rank_name, rank_val = self._get_user_rank(message.author)
@@ -219,10 +219,10 @@ class SmartLFGAgent(commands.Cog):
 
         async with message.channel.typing():
             response_text, _ = await ai.generate_text(
-                provider="gemini",
+                provider="openai",
                 prompt=user_input,
                 system_prompt=system_prompt,
-                model=GEMINI_MODEL,
+                model=OPENAI_MODEL,
                 max_output_tokens=250,
                 temperature=0.7
             )
