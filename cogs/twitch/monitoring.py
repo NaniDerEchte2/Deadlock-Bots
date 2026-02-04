@@ -711,14 +711,22 @@ class TwitchMonitoringMixin:
                 and not is_archived
             )
 
-            # Auto-Raid beim Offline-Gehen
+            # Auto-Raid beim Offline-Gehen (Throttle gemeinsam mit EventSub-Pfad)
             if should_auto_raid:
-                await self._handle_auto_raid_on_offline(
-                    login=login,
-                    twitch_user_id=twitch_user_id or previous_state.get("twitch_user_id"),
-                    previous_state=previous_state,
-                    streams_by_login=streams_by_login,
-                )
+                raid_uid = str(twitch_user_id or previous_state.get("twitch_user_id") or "")
+                throttle = getattr(self, "_eventsub_offline_throttle", None)
+                if throttle is None:
+                    throttle = {}
+                    setattr(self, "_eventsub_offline_throttle", throttle)
+                last_ts = throttle.get(raid_uid)
+                if not (last_ts and time.time() - last_ts < 90):
+                    throttle[raid_uid] = time.time()
+                    await self._handle_auto_raid_on_offline(
+                        login=login,
+                        twitch_user_id=raid_uid,
+                        previous_state=previous_state,
+                        streams_by_login=streams_by_login,
+                    )
 
             if ended_deadlock_posting:
                 display_name = (

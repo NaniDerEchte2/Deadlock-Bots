@@ -112,7 +112,9 @@ class TwitchBotTokenManager:
             if not self.access_token:
                 raise RuntimeError("No valid Twitch bot token available.")
 
-            return self.access_token, self.bot_id
+            # oauth:-Prefix entfernen – Helix-API erwartet reines Bearer-Token
+            clean_token = self.access_token.replace("oauth:", "").strip()
+            return clean_token, self.bot_id
 
     async def _validate_and_fetch_info(self) -> bool:
         """Validate the access token and fetch bot metadata."""

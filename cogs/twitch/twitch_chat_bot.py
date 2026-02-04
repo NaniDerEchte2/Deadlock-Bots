@@ -499,34 +499,40 @@ if TWITCHIO_AVAILABLE:
                 log.debug("follow_channel: Kein Bot-ID oder Token-Manager verfügbar")
                 return False
 
-            try:
-                tokens = await self._token_manager.get_valid_token()
-                if not tokens:
-                    return False
-                access_token, _ = tokens
-
-                import aiohttp
-                async with aiohttp.ClientSession() as session:
-                    headers = {
-                        "Client-ID": self._client_id,
-                        "Authorization": f"Bearer {access_token}",
-                        "Content-Type": "application/json",
-                    }
-                    payload = {"from_id": str(safe_bot_id), "to_id": str(broadcaster_id)}
-                    async with session.post(
-                        "https://api.twitch.tv/helix/users/follows",
-                        headers=headers,
-                        json=payload,
-                    ) as r:
-                        if r.status in {200, 204}:
-                            log.info("follow_channel: Bot folgt jetzt %s", broadcaster_id)
-                            return True
-                        txt = await r.text()
-                        log.debug("follow_channel: HTTP %s – %s", r.status, txt[:200])
+            import aiohttp
+            for attempt in range(2):
+                try:
+                    tokens = await self._token_manager.get_valid_token()
+                    if not tokens:
                         return False
-            except Exception:
-                log.debug("follow_channel: Exception", exc_info=True)
-                return False
+                    access_token, _ = tokens
+
+                    async with aiohttp.ClientSession() as session:
+                        headers = {
+                            "Client-ID": self._client_id,
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json",
+                        }
+                        payload = {"from_id": str(safe_bot_id), "to_id": str(broadcaster_id)}
+                        async with session.post(
+                            "https://api.twitch.tv/helix/users/follows",
+                            headers=headers,
+                            json=payload,
+                        ) as r:
+                            if r.status in {200, 204}:
+                                log.info("follow_channel: Bot folgt jetzt %s", broadcaster_id)
+                                return True
+                            if r.status == 401 and attempt == 0:
+                                log.debug("follow_channel: 401 für %s, triggere Token-Refresh", broadcaster_id)
+                                await self._token_manager.get_valid_token(force_refresh=True)
+                                continue
+                            txt = await r.text()
+                            log.debug("follow_channel: HTTP %s – %s", r.status, txt[:200])
+                            return False
+                except Exception:
+                    log.debug("follow_channel: Exception", exc_info=True)
+                    return False
+            return False
 
         async def event_message(self, message):
             """Wird bei jeder Chat-Nachricht aufgerufen."""
@@ -601,7 +607,7 @@ if TWITCHIO_AVAILABLE:
                 elif spam_score > 0:
                     channel_name = getattr(message.channel, "name", "unknown")
                     author_name = getattr(message.author, "name", "unknown")
-                    author_id = str(getattr(author, "id", ""))
+                    author_id = str(getattr(message.author, "id", ""))
                     
                     # Logge Verdacht in Datei für Feinabstimmung
                     reasons_str = ", ".join(spam_reasons)
@@ -759,38 +765,41 @@ if TWITCHIO_AVAILABLE:
                 safe_bot_id = self.bot_id_safe or self.bot_id
                 if b_id and safe_bot_id and self._token_manager:
                     # Nutze Helix API direkt (user:write:chat scope erforderlich)
-                    try:
-                        tokens = await self._token_manager.get_valid_token()
-                        if not tokens:
-                            log.debug("No valid bot token for Helix chat message")
-                            return False
-                        
-                        access_token, _ = tokens
-                        url = "https://api.twitch.tv/helix/chat/messages"
-                        headers = {
-                            "Client-ID": self._client_id,
-                            "Authorization": f"Bearer {access_token}",
-                            "Content-Type": "application/json"
-                        }
-                        payload = {
-                            "broadcaster_id": str(b_id),
-                            "sender_id": str(safe_bot_id),
-                            "message": text
-                        }
-                        
-                        # Nutze aiohttp direkt
-                        import aiohttp
-                        async with aiohttp.ClientSession() as session:
-                            async with session.post(url, headers=headers, json=payload) as r:
-                                if r.status in {200, 204}:
-                                    return True
-                                else:
+                    import aiohttp
+                    for attempt in range(2):
+                        try:
+                            tokens = await self._token_manager.get_valid_token()
+                            if not tokens:
+                                log.debug("No valid bot token for Helix chat message")
+                                return False
+
+                            access_token, _ = tokens
+                            url = "https://api.twitch.tv/helix/chat/messages"
+                            headers = {
+                                "Client-ID": self._client_id,
+                                "Authorization": f"Bearer {access_token}",
+                                "Content-Type": "application/json"
+                            }
+                            payload = {
+                                "broadcaster_id": str(b_id),
+                                "sender_id": str(safe_bot_id),
+                                "message": text
+                            }
+
+                            async with aiohttp.ClientSession() as session:
+                                async with session.post(url, headers=headers, json=payload) as r:
+                                    if r.status in {200, 204}:
+                                        return True
+                                    if r.status == 401 and attempt == 0:
+                                        log.debug("_send_chat_message: 401 in %s, triggere Token-Refresh", b_id)
+                                        await self._token_manager.get_valid_token(force_refresh=True)
+                                        continue
                                     txt = await r.text()
                                     log.warning("Twitch hat die Bot-Nachricht abgelehnt: HTTP %s - %s", r.status, txt)
                                     return False
-                    except Exception as e:
-                        log.error("Fehler beim Senden der Helix Chat-Nachricht: %s", e)
-                        return False
+                        except Exception as e:
+                            log.error("Fehler beim Senden der Helix Chat-Nachricht: %s", e)
+                            return False
 
             except Exception:
                 log.debug("Konnte Chat-Nachricht nicht senden", exc_info=True)

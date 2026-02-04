@@ -754,13 +754,18 @@ class TwitchBaseCog(commands.Cog):
             elif subs_result is None:
                 log.warning("Cleanup: fetch_eventsub_subscriptions returned None")
             else:
-                try:
-                    subs_list.extend(list(subs_result))
-                except TypeError:
-                    log.warning(
-                        "Cleanup: fetch_eventsub_subscriptions returned unexpected type: %s",
-                        type(subs_result),
-                    )
+                # TwitchIO 3.x gibt EventsubSubscriptions zurück – Einträge in .subscriptions
+                inner = getattr(subs_result, "subscriptions", None)
+                if inner is not None:
+                    subs_list.extend(list(inner))
+                else:
+                    try:
+                        subs_list.extend(list(subs_result))
+                    except TypeError:
+                        log.warning(
+                            "Cleanup: fetch_eventsub_subscriptions returned unexpected type: %s",
+                            type(subs_result),
+                        )
 
             for sub in subs_list:
                 try:
