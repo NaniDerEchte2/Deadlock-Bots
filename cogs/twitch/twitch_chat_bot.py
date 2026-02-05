@@ -12,10 +12,12 @@ import asyncio
 import logging
 import logging.handlers
 import os
+import random
 import re
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from httpx import stream
 
@@ -126,6 +128,22 @@ _SPAM_FRAGMENTS = (
 )
 _SPAM_MIN_MATCHES = 3
 
+# ---------------------------------------------------------------------------
+# Periodische Chat-Promos
+# ---------------------------------------------------------------------------
+_PROMO_MESSAGES: List[str] = [
+    "heyo! Falls ihr bock habt auf Deadlock und noch eine deutsche Community sucht – schau gerne mal vorbei: {invite}",
+    "Hey! Noch eine deutsche Deadlock-Community suchen? Wir sind hier: {invite} 🎮",
+    "Falls jemand eine deutsche Deadlock-Community kennt oder sucht – schau doch mal vorbei: {invite}",
+]
+
+_PROMO_DISCORD_INVITE: str = (os.getenv("RECRUIT_DISCORD_INVITE") or "").strip() or "https://discord.gg/z5TfVHuQq2"
+
+try:
+    _PROMO_INTERVAL_MIN: int = max(15, int((os.getenv("PROMO_CHAT_INTERVAL_MIN") or "30").strip()))
+except (ValueError, TypeError):
+    _PROMO_INTERVAL_MIN = 30
+
 
 if TWITCHIO_AVAILABLE:
     class RaidChatBot(twitchio_commands.Bot):
@@ -171,6 +189,10 @@ if TWITCHIO_AVAILABLE:
             # Key = channel_login (lowercase), Value = nächster erlaubter Zeitpunkt.
             self._mod_retry_cooldown: Dict[str, datetime] = {}
             self._autoban_log = Path("logs") / "twitch_autobans.log"
+            # Periodische Chat-Promos
+            self._channel_ids: Dict[str, str] = {}          # login -> broadcaster_id
+            self._last_promo_sent: Dict[str, float] = {}    # login -> monotonic timestamp
+            self._promo_task: Optional[asyncio.Task] = None
             log.info("Twitch Chat Bot initialized with %d initial channels", len(self._initial_channels))
 
         @property
@@ -248,6 +270,11 @@ if TWITCHIO_AVAILABLE:
                             await asyncio.sleep(0.2)  # Rate limiting
                     except Exception as e:
                         log.debug("Konnte initialem Channel %s nicht beitreten: %s", channel, e)
+
+            # Periodische Chat-Promo-Schleife starten
+            if _PROMO_DISCORD_INVITE:
+                self._promo_task = asyncio.create_task(self._periodic_promo_loop())
+                log.info("Chat-Promo-Loop gestartet (Intervall: %d min)", _PROMO_INTERVAL_MIN)
 
         async def event_command_error(self, payload):
             """Fehlerbehandlung für Commands."""
@@ -417,6 +444,7 @@ if TWITCHIO_AVAILABLE:
                 await self.subscribe_websocket(payload=payload)
 
                 self._monitored_streamers.add(normalized_login)
+                self._channel_ids[normalized_login] = str(channel_id)
                 return True
             except Exception as e:
                 msg = str(e)
@@ -438,6 +466,7 @@ if TWITCHIO_AVAILABLE:
                         )
                         await self.subscribe_websocket(payload=payload)
                         self._monitored_streamers.add(normalized_login)
+                        self._channel_ids[normalized_login] = str(channel_id)
                         log.info("join(): Retry erfolgreich für %s nach Token-Registrierung", channel_login)
                         return True
                     except Exception as retry_err:
@@ -467,6 +496,7 @@ if TWITCHIO_AVAILABLE:
                             )
                             await self.subscribe_websocket(payload=payload)
                             self._monitored_streamers.add(normalized_login)
+                            self._channel_ids[normalized_login] = str(channel_id)
                             log.info("join(): Retry erfolgreich für %s nach Mod-Autorisierung", channel_login)
                             return True
                         except Exception as retry_err:
@@ -1540,6 +1570,80 @@ if TWITCHIO_AVAILABLE:
                 access_token=access_token,
                 refresh_token=refresh_token,
             )
+
+        # ------------------------------------------------------------------
+        # Periodische Chat-Promos
+        # ------------------------------------------------------------------
+        async def _periodic_promo_loop(self) -> None:
+            """Hauptschleife: prüft alle 120 s, ob eine Promo gesendet werden soll."""
+            try:
+                while True:
+                    await asyncio.sleep(120)
+                    try:
+                        await self._send_promo_if_due()
+                    except Exception:
+                        log.debug("_send_promo_if_due fehlgeschlagen", exc_info=True)
+            except asyncio.CancelledError:
+                log.info("Chat-Promo-Loop wurde abgebrochen")
+
+        async def _send_promo_if_due(self) -> None:
+            """Sendet eine Promo in jeden live-Kanal, für den das Intervall abgelaufen ist."""
+            interval_sec = _PROMO_INTERVAL_MIN * 60
+            now = time.monotonic()
+
+            live_channels = await self._get_live_channels_for_promo()
+            for login, broadcaster_id in live_channels:
+                last = self._last_promo_sent.get(login)
+                if last is None:
+                    # Erstes Mal gesehen → Timestamp setzen, aber noch NICHT senden.
+                    # Damit wird ein voller Intervall-Zyklus abgewartet.
+                    self._last_promo_sent[login] = now
+                    continue
+
+                if now - last < interval_sec:
+                    continue
+
+                # Zufällige Nachricht wählen und senden
+                msg = random.choice(_PROMO_MESSAGES).format(invite=_PROMO_DISCORD_INVITE)
+
+                class _Channel:
+                    __slots__ = ("name", "id")
+                    def __init__(self, name: str, channel_id: str):
+                        self.name = name
+                        self.id = channel_id
+
+                ok = await self._send_chat_message(_Channel(login, broadcaster_id), msg)
+                if ok:
+                    self._last_promo_sent[login] = now
+                    log.info("Chat-Promo gesendet in %s", login)
+                else:
+                    log.debug("Chat-Promo in %s fehlgeschlagen", login)
+
+        async def _get_live_channels_for_promo(self) -> List[Tuple[str, str]]:
+            """Gibt alle live-Kanäle zurück, in denen der Bot aktiv ist (login, broadcaster_id)."""
+            if not self._channel_ids:
+                return []
+
+            logins = list(self._channel_ids.keys())
+            placeholders = ",".join("?" * len(logins))
+
+            try:
+                with get_conn() as conn:
+                    rows = conn.execute(
+                        f"""
+                        SELECT s.twitch_login, s.twitch_user_id
+                          FROM twitch_streamers s
+                          JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
+                         WHERE l.is_live = 1
+                           AND LOWER(s.twitch_login) IN ({placeholders})
+                        """,
+                        logins,
+                    ).fetchall()
+            except Exception:
+                log.debug("_get_live_channels_for_promo: DB-Query fehlgeschlagen", exc_info=True)
+                return []
+
+            return [(str(r[0]).lower(), str(r[1])) for r in rows if r[0] and r[1]]
 
         async def join_partner_channels(self):
             """Joint alle Kanäle, die live sind und den Bot autorisiert haben (Partner oder !traid)."""

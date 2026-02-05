@@ -41,12 +41,10 @@ log = logging.getLogger("StreamerOnboarding")
 try:
     from cogs.twitch import storage as twitch_storage
     from cogs.twitch.base import TwitchBaseCog
-    from cogs.twitch.verification import check_streamer_verification
 except Exception as exc:  # pragma: no cover - optional dependency
     log.warning("StreamerOnboarding: Twitch-Module nicht verfügbar: %s", exc, exc_info=True)
     twitch_storage = None  # type: ignore[assignment]
     TwitchBaseCog = None  # type: ignore[assignment]
-    check_streamer_verification = None  # type: ignore[assignment]
 
 import discord
 from discord.ext import commands
@@ -158,7 +156,6 @@ async def _assign_role_and_notify(
 ) -> Tuple[bool, str]:
     """
     Vergibt die Streamer-Rolle und pingt den Kontrollkanal.
-    Führt wenn möglich eine automatisierte Prüfung der Bio/Links durch.
     Gibt (ok, msg) zurück.
     """
     guild, member = await _resolve_guild_and_member(interaction)
@@ -178,49 +175,19 @@ async def _assign_role_and_notify(
         log.error("add_roles failed for %s: %r", member.id, e)
         return False, "Unerwarteter Fehler beim Zuweisen der Rolle. Bitte Team informieren."
 
-    # 2) Automatisierte Verifizierung (Bio / Social Links)
-    auto_verified = False
-    verification_reason = "Keine automatisierte Prüfung möglich."
-    
-    if twitch_login and check_streamer_verification:
-        try:
-            possible_cogs = ("TwitchStreamCog", "TwitchDeadlock", "TwitchBot", "Twitch")
-            twitch_cog = None
-            for name in possible_cogs:
-                twitch_cog = interaction.client.get_cog(name)  # type: ignore
-                if twitch_cog:
-                    break
-            
-            if twitch_cog and hasattr(twitch_cog, "api"):
-                # Gültige Invites aus dem Cog holen
-                valid_codes = set()
-                invite_dict = getattr(twitch_cog, "_invite_codes", {})
-                if guild.id in invite_dict:
-                    valid_codes = invite_dict[guild.id]
-                else:
-                    # Fallback: falls Cache leer, kurz laden
-                    try:
-                        invites = await guild.invites()
-                        valid_codes = {inv.code for inv in invites if inv.code}
-                    except Exception:
-                        log.debug("Konnte Invites für Auto-Check nicht laden")
+    # 2) Verifizierung (Chat-Promo aktiv → immer erfolgreich)
+    auto_verified = True
+    verification_reason = "Auto-verifiziert (Promonachricht im Chat aktiv)."
 
-                ok, reason = await check_streamer_verification(
-                    twitch_cog.api, 
-                    twitch_login, 
-                    valid_codes
+    if twitch_login and twitch_storage:
+        try:
+            with twitch_storage.get_conn() as conn:
+                conn.execute(
+                    "UPDATE twitch_streamers SET manual_verified_permanent=1, manual_verified_at=CURRENT_TIMESTAMP "
+                    "WHERE twitch_login=?",
+                    (twitch_login.lower(),)
                 )
-                auto_verified = ok
-                verification_reason = reason
-                
-                if auto_verified and twitch_storage:
-                    with twitch_storage.get_conn() as conn:
-                        conn.execute(
-                            "UPDATE twitch_streamers SET manual_verified_permanent=1, manual_verified_at=CURRENT_TIMESTAMP "
-                            "WHERE twitch_login=?",
-                            (twitch_login.lower(),)
-                        )
-                    log.info("Auto-verified streamer %s (Twitch: %s)", member.id, twitch_login)
+            log.info("Auto-verified streamer %s (Twitch: %s)", member.id, twitch_login)
         except Exception as e:
             log.exception("Fehler bei der automatisierten Streamer-Prüfung")
             verification_reason = f"Fehler bei der Prüfung: {e}"
@@ -273,10 +240,10 @@ async def _assign_role_and_notify(
         log.warning("Notify channel %s nicht gefunden/kein Textkanal.", STREAMER_NOTIFY_CHANNEL_ID)
 
     final_msg = (
-        "✅ **Automatisierte Prüfung erfolgreich!** Wir haben den Discord-Link auf deinem Twitch-Profil gefunden. "
-        "Du bist nun als Partner freigeschaltet."
+        "✅ **Verifizierung erfolgreich!** Du bist nun als Partner freigeschaltet. "
+        "Der Bot startet automatisch mit Chat-Promos, sobald du nächstes Mal live gehst."
         if auto_verified
-        else "Alles klar! Wir schauen uns dein Profil kurz manuell an und schalten dich dann frei. Falls wir Rückfragen haben, melden wir uns bei dir."
+        else "Alles klar! Wir schauen uns dein Setup kurz an und schalten dich dann frei. Falls wir Rückfragen haben, melden wir uns bei dir."
     )
 
     return (True, final_msg)
@@ -552,7 +519,12 @@ class StreamerIntroView(StepView):
                 "**4️⃣ Discord – Live-Stream Auto-Post**\n"
                 "• Sobald du **Deadlock** streamst, wird dein Stream automatisch im Discord gepostet (#🎥twitch)\n"
                 "→ Ergebnis: Mehr Sichtbarkeit in der Community, ohne dass du selbst posten musst.\n\n"
-                
+
+                "**5️⃣ Chat-Promos**\n"
+                "• Der Bot postet alle ~30 Minuten eine kurze Promo in deinem Chat\n"
+                "• Inhalt: Einladung zur deutschen Deadlock-Community + Discord-Link\n"
+                "→ Mehr Sichtbarkeit für die Community, vollautomatisch.\n\n"
+
                 "**Wenn du Lust hast, teste die Beta-Features direkt:**\n"
                 "Nutze #🎥streamer-austausch `!traid`, autorisiere den **Twitch-Bot** "
                 "und gib uns Feedback, wenn dir etwas auffällt oder du dir weitere Features wünschst.\n\n"
@@ -679,53 +651,43 @@ class StreamerRequirementsView(StepView):
         requirement_text = textwrap.dedent(
             """
             **📋 Voraussetzungen für Streamer-Partner:**
-            
-            **1️⃣ Discord-Invite erstellen**
-            So geht's:
-            • Rechtsklick auf den Server → *Leute einladen*
-            • **"Einladungslink bearbeiten"** anklicken
-            • Wichtig: `Läuft ab: Nie` · `Kein Limit`
-            
-            **2️⃣ Discord-Link auf Twitch eintragen**
-            Wo? Creator-Dashboard → Einstellungen → Kanal → Social-Media-Links
-            • **Titel:** `Deutsche Deadlock Community`
-            • **URL:** Dein Discord-Invite (z.B. `https://discord.gg/DEINCODE`)
-            • Nicht vergessen: **Speichern/Hinzufügen** klicken!
-            
-            *Alternative:* Wenn kein Platz mehr bei Social-Links → Als Panel hinzufügen
-            
-            **3️⃣ Twitch-Bot autorisieren (Pflicht)** 🎯
+
+            **1️⃣ Twitch-Bot autorisieren (Pflicht)** 🎯
             **Ohne Twitch-Bot-Autorisierung können wir dich nicht freischalten.**
-            
+
             **Twitch Bot-Update: Das passiert im Hintergrund**
             • **Auto-Raid Manager:** Wenn du offline gehst, raidet der Bot automatisch einen Partner
             • **Fallback:** Kein Partner live? → Raid zu deutschen Deadlock-Streamern
             • **Chat Guard:** Spam-Filter + erweiterbare Ban-Liste (Feedback inkl. exakter Nachricht hilft)
             • **Discord Auto-Post:** Live-Stream wird automatisch im Discord gepostet
             • **Analytics (WIP 03-05/26):** Retention, Unique Chatters, Kategorie-Vergleich (DE)
-            
+
             **Wie aktivieren?**
             Klick auf den Button unten → Autorisiere auf Twitch → Fertig! 🎉
-            
+
             **Berechtigungen des Bots:**
             ✓ Raids in deinem Namen starten
             ✓ Chat-Nachrichten lesen/senden (für Spam-Schutz)
             ✓ Follower-Liste einsehen (als Moderator)
-            
-            **4️⃣ Community-Support**
+
+            **2️⃣ Community-Promo (automatisch)** 🎮
+            Der Bot postet regelmäßig eine kurze Promo in deinem Chat – damit die deutsche Deadlock-Community sichtbar wird, ohne dass du selbst handeln musst.
+            • Intervall: alle ~30 Minuten (nur wenn du live bist)
+            • Inhalt: Einladung zur deutschen Community + Discord-Link
+            • Keine Aktion von dir nötig – läuft vollautomatisch ab der Autorisierung
+
+            **3️⃣ Community-Support**
             • Post deine Streams/Content gerne in den Promo-Kanälen
             • Erwähne den Server in deinem Stream/Chat
             • Lade interessierte Zuschauer ein
             *Eine Hand wäscht die andere – je aktiver die Community, desto mehr profitieren alle!*
-            
+
             ━━━━━━━━━━━━━━━━━━━━━━━━
             **💬 Eigener Discord? Kein Problem!**
             • Wir sehen uns nicht als Konkurrenz, sondern als zentralen Treffpunkt
             • Behalte deinen eigenen Server – schau einfach ab und zu bei uns vorbei
             • Spiele mit anderen aus der Community → mehr Sichtbarkeit für dich!
             • Die Leute lernen dich als aktiven Teil der Community kennen
-            
-            **⚠️ Wir prüfen alle Voraussetzungen manuell, bevor du freigeschaltet wirst.**
             """
         ).strip()
 

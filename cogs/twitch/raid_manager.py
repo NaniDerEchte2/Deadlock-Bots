@@ -12,6 +12,7 @@ import logging
 import time
 import secrets
 import asyncio
+import os
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlencode
@@ -41,6 +42,7 @@ RAID_SCOPES = [
 ]
 
 RAID_TARGET_COOLDOWN_DAYS = 7  # Avoid repeating the same raid target if alternatives exist
+RECRUIT_DISCORD_INVITE = (os.getenv("RECRUIT_DISCORD_INVITE") or "").strip() or "Server hinzufügen & Code eingeben: z5TfVHuQq2"
 
 log = logging.getLogger("TwitchStreams.RaidManager")
 
@@ -943,7 +945,7 @@ class RaidBot:
                 return
 
             # 3. Nachricht vorbereiten (mit Stats Teaser)
-            discord_invite = "discord.gg/z5TfVHuQq2"  # TODO: Aus ENV holen
+            discord_invite = RECRUIT_DISCORD_INVITE
 
             stats_teaser = ""
             try:
