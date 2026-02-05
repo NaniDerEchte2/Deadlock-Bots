@@ -271,10 +271,10 @@ if TWITCHIO_AVAILABLE:
                     except Exception as e:
                         log.debug("Konnte initialem Channel %s nicht beitreten: %s", channel, e)
 
-            # Periodische Chat-Promo-Schleife starten
-            if _PROMO_DISCORD_INVITE:
-                self._promo_task = asyncio.create_task(self._periodic_promo_loop())
-                log.info("Chat-Promo-Loop gestartet (Intervall: %d min)", _PROMO_INTERVAL_MIN)
+            # Periodische Chat-Promo-Schleife – aktuell deaktiviert
+            # if _PROMO_DISCORD_INVITE:
+            #     self._promo_task = asyncio.create_task(self._periodic_promo_loop())
+            #     log.info("Chat-Promo-Loop gestartet (Intervall: %d min)", _PROMO_INTERVAL_MIN)
 
         async def event_command_error(self, payload):
             """Fehlerbehandlung für Commands."""
