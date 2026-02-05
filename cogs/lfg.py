@@ -5,9 +5,11 @@ Analysiert Anfragen mit KI und routet Spieler basierend auf Skill, Modus und Ver
 
 from __future__ import annotations
 
+import json
 import logging
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from datetime import datetime, timedelta
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import aiosqlite
 import discord
@@ -39,6 +41,17 @@ PRESENCE_STALE_SECONDS = 300  # 5 Minuten
 # Rank-Matching: wie viele Ränge Unterschied sind erlaubt?
 RANK_TOLERANCE = 2  # +/- 2 Ränge
 MAX_MENTION_PINGS = 10
+ACTIVITY_LOOKBACK_DAYS = 14
+MIN_ACTIVITY_SCORE_SESSIONS = 3
+MIN_TIME_MATCH_SCORE = 0.5
+
+# Scoring Weights (Rank ist bewusst dominant)
+WEIGHT_RANK = 70
+WEIGHT_TIME = 10
+WEIGHT_LANE = 7
+WEIGHT_COPLAY = 7
+WEIGHT_PRESENCE = 4
+WEIGHT_ACTIVITY = 2
 
 # Spezielle Channel / Kategorien
 NEW_PLAYER_LANE_ID = 1465839460485697556
@@ -263,63 +276,231 @@ class SmartLFGAgent(commands.Cog):
 
         return online_map
 
+    def _chunked(self, items: Iterable[int], size: int = 400) -> Iterable[List[int]]:
+        chunk: List[int] = []
+        for item in items:
+            chunk.append(int(item))
+            if len(chunk) >= size:
+                yield chunk
+                chunk = []
+        if chunk:
+            yield chunk
+
+    def _parse_json_list(self, raw: Optional[str]) -> List[int]:
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [int(x) for x in parsed if str(x).isdigit() or isinstance(x, int)]
+        except Exception:
+            return []
+        return []
+
+    def _rank_score(self, diff: int) -> float:
+        if diff <= 0:
+            return 1.0
+        if diff == 1:
+            return 0.7
+        if diff == 2:
+            return 0.4
+        return 0.0
+
+    def _time_match_score(self, typical_hours: List[int], typical_days: List[int], now: datetime) -> float:
+        if not typical_hours and not typical_days:
+            return 0.0
+
+        hour_match = False
+        for typ_hour in typical_hours:
+            diff = abs(now.hour - int(typ_hour))
+            if diff <= 2 or diff >= 22:
+                hour_match = True
+                break
+
+        day_match = not typical_days or now.weekday() in typical_days
+
+        if hour_match and day_match:
+            return 1.0
+        if hour_match:
+            return 0.7
+        if day_match:
+            return 0.4
+        return 0.0
+
+    def _get_target_lane_channel_ids(
+        self,
+        guild: Optional[discord.Guild],
+        content_lower: str,
+        author_rank_value: int,
+    ) -> List[int]:
+        if not guild:
+            return []
+
+        if "street brawl" in content_lower:
+            return [STREET_BRAWL_LANE_ID]
+
+        if "ranked" in content_lower or "grind" in content_lower:
+            ranked_cat = guild.get_channel(RANKED_CATEGORY_ID)
+            if isinstance(ranked_cat, discord.CategoryChannel):
+                return [vc.id for vc in ranked_cat.voice_channels]
+            return []
+
+        if author_rank_value <= 5:
+            return [NEW_PLAYER_LANE_ID]
+
+        casual_cat = guild.get_channel(CASUAL_CATEGORY_ID)
+        if isinstance(casual_cat, discord.CategoryChannel):
+            return [vc.id for vc in casual_cat.voice_channels]
+
+        return []
+
+    async def _fetch_activity_patterns(
+        self,
+        user_ids: List[int],
+    ) -> Dict[int, Tuple[List[int], List[int], int]]:
+        await self._ensure_db()
+        if not self.db:
+            return {}
+        if not user_ids:
+            return {}
+
+        patterns: Dict[int, Tuple[List[int], List[int], int]] = {}
+        for chunk in self._chunked(user_ids):
+            placeholders = ",".join("?" for _ in chunk)
+            query = f"""
+                SELECT user_id, typical_hours, typical_days, activity_score_2w
+                FROM user_activity_patterns
+                WHERE user_id IN ({placeholders})
+            """
+            cursor = await self.db.execute(query, tuple(chunk))
+            rows = await cursor.fetchall()
+            await cursor.close()
+            for row in rows:
+                uid = int(row[0])
+                hours = self._parse_json_list(row[1])
+                days = self._parse_json_list(row[2])
+                score = int(row[3] or 0)
+                patterns[uid] = (hours, days, score)
+        return patterns
+
+    async def _fetch_co_player_stats(self, user_id: int) -> Dict[int, Tuple[int, int]]:
+        await self._ensure_db()
+        if not self.db:
+            return {}
+        cursor = await self.db.execute(
+            """
+            SELECT co_player_id, sessions_together, total_minutes_together
+            FROM user_co_players
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        stats: Dict[int, Tuple[int, int]] = {}
+        for row in rows:
+            stats[int(row[0])] = (int(row[1] or 0), int(row[2] or 0))
+        return stats
+
+    async def _fetch_lane_activity_users(
+        self,
+        user_ids: List[int],
+        channel_ids: List[int],
+        cutoff_str: str,
+    ) -> Set[int]:
+        await self._ensure_db()
+        if not self.db:
+            return set()
+        if not user_ids or not channel_ids:
+            return set()
+
+        result: Set[int] = set()
+        channel_placeholders = ",".join("?" for _ in channel_ids)
+        for chunk in self._chunked(user_ids):
+            user_placeholders = ",".join("?" for _ in chunk)
+            query = f"""
+                SELECT DISTINCT user_id
+                FROM voice_session_log
+                WHERE started_at >= ?
+                  AND user_id IN ({user_placeholders})
+                  AND channel_id IN ({channel_placeholders})
+            """
+            params = [cutoff_str] + list(chunk) + list(channel_ids)
+            cursor = await self.db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+            await cursor.close()
+            for row in rows:
+                result.add(int(row[0]))
+        return result
+
+    def _infer_target_rank_from_coplayers(
+        self,
+        guild: Optional[discord.Guild],
+        co_player_ids: List[int],
+    ) -> Optional[int]:
+        if not guild or not co_player_ids:
+            return None
+        ranks: List[int] = []
+        for co_id in co_player_ids:
+            member = guild.get_member(co_id)
+            if not member:
+                continue
+            _, r_val = self._get_user_rank(member)
+            if r_val > 0:
+                ranks.append(r_val)
+        if not ranks:
+            return None
+        avg = sum(ranks) / len(ranks)
+        return int(round(avg))
+
     async def _find_matching_players(
         self,
+        author: discord.Member,
+        message_content: str,
         author_rank_value: int,
-        author_id: int,
-        *,
-        min_rank: Optional[int] = None,
-        max_rank: Optional[int] = None,
-        include_unknown_until: Optional[int] = None,
-    ) -> List[Tuple[int, str, int, str, Optional[int]]]:
-        """
-        Findet Discord-User die:
-        1. Steam-Account verknüpft haben
-        2. Online in Deadlock sind (Lobby oder Match)
-        3. Rang im Toleranzbereich haben
-
-        Returns: [(discord_user_id, rank_name, rank_value, stage, minutes), ...]
-        """
-        if min_rank is None or max_rank is None:
-            min_rank = max(1, author_rank_value - RANK_TOLERANCE)
-            max_rank = min(11, author_rank_value + RANK_TOLERANCE)
-        else:
-            min_rank = max(1, min_rank)
-            max_rank = min(11, max_rank)
-
-        allow_unknown_matches = (
-            include_unknown_until is not None
-            and author_rank_value <= include_unknown_until
-        )
+    ) -> List[Dict[str, object]]:
+        guild = author.guild
+        if not guild:
+            return []
 
         steam_links = await self._get_all_steam_links()
+        if not steam_links:
+            return []
+
+        co_player_stats = await self._fetch_co_player_stats(author.id)
+
+        target_rank = author_rank_value
+        rank_strict = True
+        if target_rank == 0:
+            inferred = self._infer_target_rank_from_coplayers(guild, list(co_player_stats.keys()))
+            if inferred:
+                target_rank = inferred
+            else:
+                rank_strict = False
+
+        candidate_ids = list(steam_links.keys())
+        patterns = await self._fetch_activity_patterns(candidate_ids)
+
+        content_lower = (message_content or "").lower()
+        lane_channel_ids = self._get_target_lane_channel_ids(guild, content_lower, author_rank_value)
+        cutoff_str = (datetime.utcnow() - timedelta(days=ACTIVITY_LOOKBACK_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+        lane_active_users = await self._fetch_lane_activity_users(candidate_ids, lane_channel_ids, cutoff_str)
+
         all_steam_ids = {sid for sids in steam_links.values() for sid in sids}
         online_users = await self._get_online_steam_users(all_steam_ids)
 
-        if not online_users:
-            return []
-
-        guild = self.bot.get_guild(GUILD_ID)
-        if not guild:
-            log.warning("Guild %s nicht gefunden", GUILD_ID)
-            return []
-
-        matching_players: List[Tuple[int, str, int, str, Optional[int]]] = []
-
+        user_presence: Dict[int, Tuple[str, Optional[int]]] = {}
         for discord_id, steam_ids in steam_links.items():
-            if discord_id == author_id:
-                continue
-
-            user_online = False
-            user_stage = None
-            user_minutes = None
             for sid in steam_ids:
                 if sid in online_users:
-                    user_online = True
-                    user_stage, user_minutes = online_users[sid]
+                    user_presence[discord_id] = online_users[sid]
                     break
 
-            if not user_online:
+        now = datetime.utcnow()
+        candidates: List[Dict[str, object]] = []
+
+        for discord_id in candidate_ids:
+            if discord_id == author.id:
                 continue
 
             member = guild.get_member(discord_id)
@@ -330,34 +511,105 @@ class SmartLFGAgent(commands.Cog):
                 continue
 
             rank_name, rank_value = self._get_user_rank(member)
-            is_unknown_rank = rank_value == 0 and rank_name.lower() == UNKNOWN_RANK_NAME_LOWER
 
-            if allow_unknown_matches and is_unknown_rank:
-                matching_players.append((discord_id, rank_name, rank_value, user_stage, user_minutes))
-            elif min_rank <= rank_value <= max_rank:
-                matching_players.append((discord_id, rank_name, rank_value, user_stage, user_minutes))
+            if rank_strict and target_rank > 0 and rank_value > 0:
+                diff = abs(rank_value - target_rank)
+                if diff > RANK_TOLERANCE:
+                    continue
+                rank_score = self._rank_score(diff)
+            elif rank_strict and target_rank > 0 and rank_value == 0:
+                continue
+            else:
+                rank_score = 0.5
 
-        return matching_players
+            pattern = patterns.get(discord_id)
+            typical_hours = pattern[0] if pattern else []
+            typical_days = pattern[1] if pattern else []
+            activity_sessions = pattern[2] if pattern else 0
+
+            time_score = self._time_match_score(typical_hours, typical_days, now)
+            activity_score = min(1.0, activity_sessions / 10.0) if activity_sessions > 0 else 0.0
+
+            lane_score = 1.0 if discord_id in lane_active_users else 0.0
+
+            coplay_score = 0.0
+            if discord_id in co_player_stats:
+                sessions, minutes = co_player_stats[discord_id]
+                coplay_score = min(1.0, (sessions / 5.0) + (minutes / 300.0))
+
+            stage = None
+            minutes = None
+            presence_score = 0.0
+            presence = user_presence.get(discord_id)
+            if presence:
+                stage, minutes = presence
+                if stage == "lobby":
+                    presence_score = 1.0
+                elif stage == "match":
+                    presence_score = 0.7
+
+            if stage is None:
+                if activity_sessions < MIN_ACTIVITY_SCORE_SESSIONS and time_score < MIN_TIME_MATCH_SCORE:
+                    continue
+
+            score = (
+                rank_score * WEIGHT_RANK
+                + time_score * WEIGHT_TIME
+                + lane_score * WEIGHT_LANE
+                + coplay_score * WEIGHT_COPLAY
+                + presence_score * WEIGHT_PRESENCE
+                + activity_score * WEIGHT_ACTIVITY
+            )
+
+            candidates.append({
+                "user_id": discord_id,
+                "rank_name": rank_name,
+                "rank_value": rank_value,
+                "stage": stage,
+                "minutes": minutes,
+                "score": score,
+                "time_score": time_score,
+                "activity_sessions": activity_sessions,
+            })
+
+        candidates.sort(key=lambda c: float(c.get("score", 0.0)), reverse=True)
+
+        online = [c for c in candidates if c.get("stage") in ("lobby", "match")]
+        offline = [c for c in candidates if c.get("stage") not in ("lobby", "match")]
+
+        selected = online
+        if len(selected) < MAX_MENTION_PINGS:
+            selected += offline[: max(0, MAX_MENTION_PINGS - len(selected))]
+
+        return selected
 
     def _build_player_lines(
         self,
         guild: discord.Guild,
-        matching_players: List[Tuple[int, str, int, str, Optional[int]]],
+        candidates: List[Dict[str, object]],
     ) -> Tuple[List[str], int, int]:
         in_lobby: List[str] = []
         in_match: List[str] = []
+        in_active: List[str] = []
 
-        for discord_id, _rank_name, _rank_value, stage, minutes in matching_players:
+        for cand in candidates:
+            discord_id = int(cand.get("user_id", 0) or 0)
+            if not discord_id:
+                continue
             member = guild.get_member(discord_id)
             if not member:
                 continue
+            stage = cand.get("stage")
             if stage == "lobby":
                 in_lobby.append(member.mention)
             elif stage == "match":
+                minutes = cand.get("minutes")
                 if minutes is not None:
                     in_match.append(f"{member.mention} ({minutes}m)")
                 else:
                     in_match.append(member.mention)
+            else:
+                in_active.append(member.mention)
 
         lobby_count = len(in_lobby)
         match_count = len(in_match)
@@ -383,6 +635,14 @@ class SmartLFGAgent(commands.Cog):
                     lines.append(f"🎯 Match: {' '.join(shown)}{extra_txt}")
             else:
                 lines.append(f"🎯 Match: (+{len(in_match)})")
+
+        if in_active and remaining > 0:
+            shown = in_active[:remaining]
+            remaining -= len(shown)
+            extra = len(in_active) - len(shown)
+            extra_txt = f" (+{extra})" if extra > 0 else ""
+            if shown:
+                lines.append(f"🕒 Aktiv: {' '.join(shown)}{extra_txt}")
 
         return lines, lobby_count, match_count
 
@@ -473,19 +733,10 @@ class SmartLFGAgent(commands.Cog):
 
         player_lines: List[str] = []
         try:
-            is_unknown_rank = rank_val == 0 and rank_name.lower() == UNKNOWN_RANK_NAME_LOWER
-            search_min_rank = max(1, rank_val - RANK_TOLERANCE)
-            search_max_rank = min(11, rank_val + RANK_TOLERANCE)
-            if is_unknown_rank:
-                search_min_rank = 1
-                search_max_rank = UNKNOWN_MAX_MATCH_RANK
-
             matching_players = await self._find_matching_players(
+                message.author,
+                message.content,
                 rank_val,
-                message.author.id,
-                min_rank=search_min_rank,
-                max_rank=search_max_rank,
-                include_unknown_until=UNKNOWN_MAX_MATCH_RANK,
             )
             if message.guild:
                 player_lines, _lobby_count, _match_count = self._build_player_lines(
