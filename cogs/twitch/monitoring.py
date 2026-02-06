@@ -137,6 +137,7 @@ class TwitchMonitoringMixin:
             log.debug("EventSub: konnte tracked Logins nicht laden", exc_info=True)
             return []
 
+
     async def _fetch_streams_by_logins_quick(self, logins: List[str]) -> Dict[str, dict]:
         """Hol Live-Streams fœr angegebene Logins (reduziert auf einmal pro EventSub-Offline)."""
         if not getattr(self, "api", None):
@@ -232,7 +233,7 @@ class TwitchMonitoringMixin:
         # alle 30 Min erledigt. Zwei separate EventSub-WS-Sessions (TwitchIO + unser Listener)
         # auf derselben Client-ID führen zu 429 "total cost exceeded" bei Twitch.
         offline_streamers = self._get_raid_enabled_streamers_for_eventsub()
-        
+
         if not offline_streamers:
             log.info("EventSub WS: Keine stream.offline Subscriptions notwendig.")
             setattr(self, "_eventsub_ws_started", False)  # Reset flag
@@ -295,6 +296,41 @@ class TwitchMonitoringMixin:
             except Exception:
                 log.exception("EventSub WS: Online-Callback fehlgeschlagen für %s", login or bid)
 
+        async def _raid_cb(to_bid: str, to_login: str, event: dict):
+            """
+            Callback für channel.raid EventSub.
+
+            Wird gefeuert, wenn ein Raid beim Ziel-Broadcaster ankommt.
+            """
+            try:
+                raid_bot = getattr(self, "_raid_bot", None)
+                if not raid_bot:
+                    log.debug("EventSub WS: Raid-Bot nicht verfügbar für channel.raid von %s", to_login)
+                    return
+
+                from_login = (event.get("from_broadcaster_user_login") or "").strip().lower()
+                viewer_count = int(event.get("viewers") or 0)
+
+                if not from_login:
+                    log.warning("EventSub WS: channel.raid event ohne from_broadcaster_user_login")
+                    return
+
+                log.info(
+                    "EventSub WS: channel.raid Event empfangen: %s -> %s (%d viewers)",
+                    from_login,
+                    to_login,
+                    viewer_count
+                )
+
+                await raid_bot.on_raid_arrival(
+                    to_broadcaster_id=to_bid,
+                    to_broadcaster_login=to_login,
+                    from_broadcaster_login=from_login,
+                    viewer_count=viewer_count,
+                )
+            except Exception:
+                log.exception("EventSub WS: Raid-Callback fehlgeschlagen für %s", to_login or to_bid)
+
         def get_or_create_listener() -> Optional[EventSubWSListener]:
             # Versuche existierenden Listener mit Platz (< 20 cost)
             for l in listeners:
@@ -305,11 +341,13 @@ class TwitchMonitoringMixin:
                 new_l = EventSubWSListener(self.api, log, token_resolver=token_resolver)
                 new_l.set_callback("stream.offline", _offline_cb)
                 new_l.set_callback("stream.online", _online_cb)
+                new_l.set_callback("channel.raid", _raid_cb)
                 listeners.append(new_l)
                 return new_l
             return None
 
         # 3. Subscriptions verteilen (nur stream.offline)
+        # channel.raid wird dynamisch erstellt wenn ein Raid gestartet wird
         subs_added = 0
         for entry in offline_streamers:
             bid = entry.get("twitch_user_id")
@@ -342,6 +380,89 @@ class TwitchMonitoringMixin:
                 log.exception("EventSub WS: Ein oder mehrere Listener beendet mit Fehler")
                 setattr(self, "_eventsub_ws_started", False)
 
+
+    async def subscribe_raid_target_dynamic(self, broadcaster_id: str, broadcaster_login: str) -> bool:
+        """
+        Erstellt dynamisch eine channel.raid EventSub subscription für einen spezifischen Broadcaster.
+
+        Diese Methode wird aufgerufen, wenn wir einen Raid starten, um zu erkennen,
+        wann der Raid beim Ziel ankommt.
+
+        Returns:
+            True wenn die Subscription erfolgreich erstellt wurde, False sonst.
+        """
+        listeners: List[EventSubWSListener] = getattr(self, "_eventsub_ws_listeners", [])
+        if not listeners:
+            log.warning("EventSub: Keine aktiven Listener verfügbar für dynamische raid subscription")
+            return False
+
+        # Finde einen Listener mit Kapazität
+        target_listener = None
+        for l in listeners:
+            if l.has_capacity and not l.is_failed:
+                target_listener = l
+                break
+
+        if not target_listener:
+            log.error(
+                "EventSub: Kein verfügbarer Listener mit Kapazität für channel.raid subscription (target: %s)",
+                broadcaster_login
+            )
+            return False
+
+        # Hole Bot Token für die Subscription
+        bot_token_mgr = getattr(self, "_bot_token_manager", None)
+        if not bot_token_mgr:
+            log.error("EventSub: Kein Bot Token Manager verfügbar")
+            return False
+
+        try:
+            token, _ = await bot_token_mgr.get_valid_token()
+            if not token:
+                log.error("EventSub: Konnte Bot-Token nicht laden für channel.raid subscription")
+                return False
+
+            # Strip "oauth:" prefix wenn vorhanden
+            token = token.strip()
+            if token.lower().startswith("oauth:"):
+                token = token[6:]
+
+        except Exception:
+            log.exception("EventSub: Token-Abruf fehlgeschlagen für channel.raid subscription")
+            return False
+
+        # Session ID aus dem Listener holen (wir müssen das via API machen, nicht über den Listener)
+        # Da der Listener bereits läuft, müssen wir die subscription direkt via API hinzufügen
+        # Das ist ein Problem - wir brauchen die session_id, die der Listener hat
+
+        # Workaround: Wir nutzen die stored session_id vom letzten Connect
+        session_id = getattr(target_listener, "_session_id", None)
+        if not session_id:
+            log.error("EventSub: Listener hat keine session_id für dynamische subscription")
+            return False
+
+        try:
+            condition = {"broadcaster_user_id": str(broadcaster_id)}
+            await self.api.subscribe_eventsub_websocket(
+                session_id=session_id,
+                sub_type="channel.raid",
+                condition=condition,
+                oauth_token=token,
+            )
+            log.info(
+                "EventSub: Dynamische channel.raid subscription erstellt für %s (ID: %s)",
+                broadcaster_login,
+                broadcaster_id
+            )
+            return True
+
+        except Exception as e:
+            log.error(
+                "EventSub: Dynamische channel.raid subscription fehlgeschlagen für %s: %s",
+                broadcaster_login,
+                str(e)
+            )
+            return False
 
     async def _start_eventsub_offline_listener(self):
         """Kompatibilitäts-Stub (wird nun über _start_eventsub_listener erledigt)."""

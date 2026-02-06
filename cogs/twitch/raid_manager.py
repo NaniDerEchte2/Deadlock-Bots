@@ -735,6 +735,10 @@ class RaidBot:
         self.chat_bot = None  # Wird später gesetzt
         self._bot_id = None   # Wird bei set_chat_bot gesetzt als Fallback
         self._cleanup_counter = 0
+        self._cog = None  # Referenz zum TwitchStreamCog für EventSub subscriptions
+
+        # Pending Raids: {to_broadcaster_id: (from_broadcaster_login, target_stream_data, timestamp)}
+        self._pending_raids: Dict[str, Tuple[str, Optional[Dict], float]] = {}
 
         # Cleanup-Task starten
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
@@ -753,13 +757,15 @@ class RaidBot:
         Periodische Wartung:
         1. Cleanup abgelaufener Auth-States (alle 30min)
         2. Proaktiver Refresh von User-Tokens (alle 60min)
+        3. Cleanup alter pending raids (alle 2min)
         """
+        last_raid_cleanup = 0.0
         while True:
             await asyncio.sleep(1800)  # Alle 30 Minuten
             try:
                 # 1. State Cleanup
                 self.auth_manager.cleanup_states()
-                
+
                 # 2. Token Maintenance (nur bei jedem 2. Durchlauf = alle 60min)
                 # Einfache Implementierung: Wir machen es einfach alle 30min,
                 # die refresh_all_tokens Methode prüft ja die Expiry (2h Buffer).
@@ -771,6 +777,12 @@ class RaidBot:
                 self._cleanup_counter += 1
                 if self._cleanup_counter % 7 == 0:
                     self.auth_manager.token_error_handler.cleanup_old_entries(days=30)
+
+                # 3. Pending Raids Cleanup (alle 2min, aber wir sind hier alle 30min)
+                now = time.time()
+                if now - last_raid_cleanup > 120:
+                    self._cleanup_stale_pending_raids()
+                    last_raid_cleanup = now
 
             except Exception:
                 log.exception("Error during periodic raid bot maintenance")
@@ -794,6 +806,16 @@ class RaidBot:
         self.auth_manager.token_error_handler.discord_bot = discord_bot
         self.auth_manager._discord_bot = discord_bot
         log.info("Discord bot set for token error notifications")
+
+    def set_cog(self, cog):
+        """
+        Setzt die Cog-Referenz für dynamische EventSub subscriptions.
+
+        Args:
+            cog: TwitchStreamCog Instanz
+        """
+        self._cog = cog
+        log.debug("Cog reference set for dynamic EventSub subscriptions")
 
     async def complete_setup_for_streamer(self, twitch_user_id: str, twitch_login: str):
         """
@@ -876,7 +898,125 @@ class RaidBot:
             except Exception:
                 log.exception("Error sending auth success message to %s", twitch_login)
 
-    async def _send_recruitment_message(
+    def _cleanup_stale_pending_raids(self):
+        """
+        Entfernt pending raids, die älter als 5 Minuten sind (wahrscheinlich fehlgeschlagen).
+        """
+        now = time.time()
+        timeout = 300  # 5 Minuten
+        stale = [
+            to_id for to_id, (_, _, timestamp) in self._pending_raids.items()
+            if now - timestamp > timeout
+        ]
+        for to_id in stale:
+            from_login, _, timestamp = self._pending_raids.pop(to_id)
+            age = now - timestamp
+            log.warning(
+                "Pending raid timed out after %.0fs: %s -> (ID: %s). EventSub event never arrived.",
+                age,
+                from_login,
+                to_id
+            )
+
+    async def _register_pending_raid(
+        self,
+        from_broadcaster_login: str,
+        to_broadcaster_id: str,
+        to_broadcaster_login: str,
+        target_stream_data: Optional[Dict] = None,
+    ):
+        """
+        Registriert einen Raid, der auf EventSub Bestätigung wartet.
+
+        Wird aufgerufen nach erfolgreichem API-Call, bevor der Raid tatsächlich beim Ziel ankommt.
+        Erstellt dynamisch eine channel.raid EventSub subscription für das Ziel.
+        """
+        self._pending_raids[to_broadcaster_id] = (
+            from_broadcaster_login,
+            target_stream_data,
+            time.time()
+        )
+        log.info(
+            "Pending raid registered: %s -> %s (ID: %s). Creating EventSub subscription...",
+            from_broadcaster_login,
+            to_broadcaster_login,
+            to_broadcaster_id
+        )
+
+        # Dynamische EventSub subscription erstellen
+        if self._cog and hasattr(self._cog, "subscribe_raid_target_dynamic"):
+            try:
+                success = await self._cog.subscribe_raid_target_dynamic(
+                    to_broadcaster_id,
+                    to_broadcaster_login
+                )
+                if success:
+                    log.info(
+                        "EventSub channel.raid subscription created for %s",
+                        to_broadcaster_login
+                    )
+                else:
+                    log.warning(
+                        "Failed to create EventSub subscription for %s - raid message may not be sent",
+                        to_broadcaster_login
+                    )
+            except Exception:
+                log.exception(
+                    "Error creating dynamic EventSub subscription for %s",
+                    to_broadcaster_login
+                )
+        else:
+            log.warning(
+                "Cog reference not set - cannot create dynamic EventSub subscription for %s",
+                to_broadcaster_login
+            )
+
+    async def on_raid_arrival(
+        self,
+        to_broadcaster_id: str,
+        to_broadcaster_login: str,
+        from_broadcaster_login: str,
+        viewer_count: int,
+    ):
+        """
+        Wird aufgerufen, wenn ein channel.raid EventSub Event eintrifft.
+
+        Sendet die Recruitment-Message, falls dies ein pending raid von uns war.
+        """
+        pending = self._pending_raids.pop(to_broadcaster_id, None)
+        if not pending:
+            log.debug(
+                "Raid arrival ignored (not pending): %s -> %s",
+                from_broadcaster_login,
+                to_broadcaster_login
+            )
+            return
+
+        expected_from, target_stream_data, _ = pending
+
+        # Verify it's the same raid we started
+        if expected_from.lower() != from_broadcaster_login.lower():
+            log.warning(
+                "Raid arrival mismatch: expected from %s, got from %s",
+                expected_from,
+                from_broadcaster_login
+            )
+            return
+
+        log.info(
+            "✅ Raid arrival confirmed: %s -> %s (%d viewers). Sending recruitment message...",
+            from_broadcaster_login,
+            to_broadcaster_login,
+            viewer_count
+        )
+
+        await self._send_recruitment_message_now(
+            from_broadcaster_login=from_broadcaster_login,
+            to_broadcaster_login=to_broadcaster_login,
+            target_stream_data=target_stream_data,
+        )
+
+    async def _send_recruitment_message_now(
         self,
         from_broadcaster_login: str,
         to_broadcaster_login: str,
@@ -899,7 +1039,7 @@ class RaidBot:
             target_id = None
             if target_stream_data:
                 target_id = target_stream_data.get("user_id")
-            
+
             if not target_id:
                 # Fallback: ID über Login-Namen auflösen
                 users = await self.chat_bot.fetch_users(names=[to_broadcaster_login])
@@ -920,7 +1060,7 @@ class RaidBot:
 
         # 2. 15 Sekunden warten, damit der Streamer den Raid-Alert verarbeiten kann
         log.info("Warte 15s vor Senden der Recruitment-Message an %s...", to_broadcaster_login)
-        await asyncio.sleep(25.0)
+        await asyncio.sleep(15.0)
 
         try:
             # 2. Anti-Spam Check: Haben wir diesen Streamer schon "kürzlich" geraidet?
@@ -1294,10 +1434,11 @@ class RaidBot:
             )
 
             if success:
-                # Bei Nicht-Partner-Raid: Chat-Nachricht senden
+                # Bei Nicht-Partner-Raid: Pending Raid registrieren (Nachricht wird erst nach EventSub gesendet)
                 if not is_partner_raid:
-                    await self._send_recruitment_message(
+                    await self._register_pending_raid(
                         from_broadcaster_login=broadcaster_login,
+                        to_broadcaster_id=target_id,
                         to_broadcaster_login=target_login,
                         target_stream_data=target,
                     )

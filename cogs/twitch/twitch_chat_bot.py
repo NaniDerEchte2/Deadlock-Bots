@@ -126,6 +126,10 @@ _SPAM_FRAGMENTS = (
     "smmhype12.ru",
     "smmhype1.ru",
     "smmhype",
+    "topsmm3.ru",
+    "topsmm3 .ru",
+    "topsmm3 ru",
+    "topsmm3",
 )
 _SPAM_MIN_MATCHES = 3
 
@@ -730,31 +734,44 @@ if TWITCHIO_AVAILABLE:
 
             reasons = []
             raw = content.strip()
+            hits = 0
+
+            # Spam-Phrasen: +2 Punkte
             for phrase in _SPAM_PHRASES:
                 if phrase in raw:
-                    return 1, [f"Phrase(Exact): {phrase}"]
+                    hits += 2
+                    reasons.append(f"Phrase(Exact): {phrase}")
+                    break  # Nur einmal zählen
 
             lowered = raw.casefold()
-            for phrase in _SPAM_PHRASES:
-                if phrase.casefold() in lowered:
-                    return 1, [f"Phrase(Casefold): {phrase}"]
+            if hits == 0:  # Nur prüfen wenn noch keine exakte Phrase gefunden
+                for phrase in _SPAM_PHRASES:
+                    if phrase.casefold() in lowered:
+                        hits += 2
+                        reasons.append(f"Phrase(Casefold): {phrase}")
+                        break
 
-            # Prüfe Fragmente mit Wortgrenzen (\b), um Teiltreffer in längeren Wörtern zu vermeiden
-            hits = 0
+            # Prüfe Fragmente mit Wortgrenzen: +1 Punkt pro Fragment
             for frag in _SPAM_FRAGMENTS:
                 if re.search(r'\b' + re.escape(frag.casefold()) + r'\b', lowered):
                     hits += 1
                     reasons.append(f"Fragment: {frag}")
 
-            # Muster: "viewer [name]" (oft ein Merkmal von Bots)
+            # Muster: "viewer [name]": +1 Punkt
             if re.search(r"\bviewer\s+\w+", lowered):
                 hits += 1
                 reasons.append("Muster: viewer + name")
 
+            # Kompakte Form "streamboocom": +1 Punkt
             compact = re.sub(r"[^a-z0-9]", "", lowered)
             if "streamboocom" in compact:
                 hits += 1
                 reasons.append("Muster: streamboocom (kompakt)")
+
+            # NEU: Random @ String Pattern (z.B. @0kyuMlG8): +1 Punkt
+            if re.search(r"@[A-Za-z0-9]{8}\b", raw):
+                hits += 1
+                reasons.append("Muster: @ + 8 random chars")
 
             return hits, reasons
 
@@ -1551,11 +1568,12 @@ if TWITCHIO_AVAILABLE:
 
             if success:
                 await ctx.send(f"@{ctx.author.name} Raid auf {target_login} gestartet! (Twitch-Countdown ~90s)")
-                
-                # Bei Nicht-Partner-Raid: Chat-Nachricht senden
-                if not is_partner_raid and hasattr(self._raid_bot, "_send_recruitment_message"):
-                    await self._raid_bot._send_recruitment_message(
+
+                # Bei Nicht-Partner-Raid: Pending Raid registrieren (Nachricht wird erst nach EventSub gesendet)
+                if not is_partner_raid and hasattr(self._raid_bot, "_register_pending_raid"):
+                    await self._raid_bot._register_pending_raid(
                         from_broadcaster_login=twitch_login,
+                        to_broadcaster_id=target_id,
                         to_broadcaster_login=target_login,
                         target_stream_data=target,
                     )

@@ -153,6 +153,7 @@ class TwitchBaseCog(commands.Cog):
                     session=session,
                 )
                 self._raid_bot.set_discord_bot(self.bot)
+                self._raid_bot.set_cog(self)  # For dynamic EventSub subscriptions
                 log.info("Raid-Bot initialisiert (redirect_uri: %s)", redirect_uri)
 
                 # Twitch Chat Bot starten (falls Token vorhanden)

@@ -36,6 +36,7 @@ class EventSubWSListener:
         self._ws_url = "wss://eventsub.wss.twitch.tv/ws"
         self._subscriptions: List[Tuple[str, str, Dict]] = [] # (sub_type, broadcaster_id, condition)
         self._callbacks: Dict[str, EventCallback] = {} # sub_type -> callback
+        self._session_id: Optional[str] = None  # Stored for dynamic subscriptions
 
     @property
     def cost(self) -> int:
@@ -137,7 +138,13 @@ class EventSubWSListener:
         if meta.get("message_type") != "session_welcome":
             return None
         sess = data.get("payload", {}).get("session", {})
-        return sess.get("id")
+        session_id = sess.get("id")
+
+        # Store session_id for dynamic subscriptions
+        if session_id:
+            self._session_id = session_id
+
+        return session_id
 
     async def _resolve_token(self) -> Optional[str]:
         """Resolve the token to be used for all subscriptions on this WS."""
