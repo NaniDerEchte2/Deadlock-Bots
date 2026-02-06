@@ -140,7 +140,7 @@ _SPAM_MIN_MATCHES = 3
 _PROMO_MESSAGES: List[str] = [
     "heyo! Falls ihr bock habt auf Deadlock und noch eine deutsche Community sucht – schau gerne mal vorbei: {invite}",
     "Hey! Noch eine deutsche Deadlock-Community am suchen? Wir sind hier: {invite} 🎮",
-    "Falls jemand eine deutsche Deadlock-Community sucht – schau doch mal vorbei: {invite}",
+    "Falls du noch eine deutsche Deadlock-Community sucht – schau doch mal vorbei: {invite}",
 ]
 
 _PROMO_DISCORD_INVITE: str = "https://discord.gg/z5TfVHuQq2"
@@ -160,6 +160,26 @@ _PROMO_IGNORE_COMMANDS: bool = True
 
 if _PROMO_COOLDOWN_MAX < _PROMO_COOLDOWN_MIN:
     _PROMO_COOLDOWN_MAX = _PROMO_COOLDOWN_MIN
+
+# ---------------------------------------------------------------------------
+# Deadlock Zugangsfragen (Invite-Only Hinweise)
+# ---------------------------------------------------------------------------
+_DEADLOCK_INVITE_REPLY: str = (
+    "Wenn du Zugang möchtest, schau gerne auf unserem Discord vorbei, "
+    "dort bekommst du eine Einladung und Hilfe beim Einstieg :) {invite}"
+)
+_INVITE_QUESTION_CHANNEL_COOLDOWN_SEC: int = 120
+_INVITE_QUESTION_USER_COOLDOWN_SEC: int = 3600
+_INVITE_QUESTION_RE = re.compile(
+    r"\b(wie|wo|wann|wieso|warum|woher)\b"
+    r"|\b(kann|darf)\s+man\b"
+    r"|\b(bekomm|krieg|erhalt)\w*\s+(man|ich)\b",
+    re.IGNORECASE,
+)
+_INVITE_ACCESS_RE = re.compile(
+    r"\b(spielen|spiel|play|zugang|einladung|invite|beta|key|access|reinkomm\w*|rankomm\w*)\b",
+    re.IGNORECASE,
+)
 
 
 if TWITCHIO_AVAILABLE:
@@ -212,6 +232,8 @@ if TWITCHIO_AVAILABLE:
             self._last_promo_attempt: Dict[str, float] = {} # login -> monotonic timestamp
             self._promo_activity: Dict[str, Deque[Tuple[float, str]]] = {}
             self._promo_task: Optional[asyncio.Task] = None
+            self._last_invite_reply: Dict[str, float] = {}
+            self._last_invite_reply_user: Dict[Tuple[str, str], float] = {}
             self._register_inline_commands()
             log.info("Twitch Chat Bot initialized with %d initial channels", len(self._initial_channels))
 
@@ -693,7 +715,13 @@ if TWITCHIO_AVAILABLE:
             except Exception:
                 log.debug("Konnte Chat-Health nicht loggen", exc_info=True)
 
-            if _PROMO_ACTIVITY_ENABLED:
+            sent_invite = False
+            try:
+                sent_invite = await self._maybe_send_deadlock_access_hint(message)
+            except Exception:
+                log.debug("Deadlock-Invite-Check fehlgeschlagen", exc_info=True)
+
+            if _PROMO_ACTIVITY_ENABLED and not sent_invite:
                 try:
                     await self._maybe_send_activity_promo(message)
                 except Exception:
@@ -794,6 +822,57 @@ if TWITCHIO_AVAILABLE:
                 reasons.append("Muster: @ + 8 random chars")
 
             return hits, reasons
+
+        def _looks_like_deadlock_access_question(self, content: str) -> bool:
+            if not content:
+                return False
+            raw = content.strip().lower()
+            if "deadlock" not in raw:
+                return False
+            if not _INVITE_ACCESS_RE.search(raw):
+                return False
+            if "?" in raw or _INVITE_QUESTION_RE.search(raw):
+                return True
+            return False
+
+        async def _maybe_send_deadlock_access_hint(self, message) -> bool:
+            """Antwortet auf Deadlock-Zugangsfragen mit einem Discord-Invite (mit Cooldown)."""
+            content = message.content or ""
+            if not self._looks_like_deadlock_access_question(content):
+                return False
+            if content.strip().startswith(self.prefix or "!"):
+                return False
+
+            channel_name = getattr(message.channel, "name", "") or ""
+            login = channel_name.lstrip("#").lower()
+            if not login:
+                return False
+
+            now = time.monotonic()
+            last_channel = self._last_invite_reply.get(login)
+            if last_channel and (now - last_channel) < _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC:
+                return False
+
+            author = getattr(message, "author", None)
+            chatter_login = (getattr(author, "name", "") or "").lower()
+            if chatter_login:
+                user_key = (login, chatter_login)
+                last_user = self._last_invite_reply_user.get(user_key)
+                if last_user and (now - last_user) < _INVITE_QUESTION_USER_COOLDOWN_SEC:
+                    return False
+            else:
+                user_key = None
+
+            mention = f"@{getattr(author, 'name', '')} " if getattr(author, "name", None) else ""
+            msg = mention + _DEADLOCK_INVITE_REPLY.format(invite=_PROMO_DISCORD_INVITE)
+            ok = await self._send_chat_message(message.channel, msg)
+            if ok:
+                self._last_invite_reply[login] = now
+                if user_key:
+                    self._last_invite_reply_user[user_key] = now
+                # Verhindert direkt nach Invite-Hinweis eine zusaetzliche Promo
+                self._last_promo_sent[login] = now
+            return ok
 
         async def _get_moderation_context(self, twitch_user_id: str) -> tuple[Optional[object], Optional[dict]]:
             """Holt Session + Auth-Header für Moderationscalls."""
