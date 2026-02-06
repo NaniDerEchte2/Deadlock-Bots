@@ -134,8 +134,8 @@ _SPAM_MIN_MATCHES = 3
 # ---------------------------------------------------------------------------
 _PROMO_MESSAGES: List[str] = [
     "heyo! Falls ihr bock habt auf Deadlock und noch eine deutsche Community sucht – schau gerne mal vorbei: {invite}",
-    "Hey! Noch eine deutsche Deadlock-Community suchen? Wir sind hier: {invite} 🎮",
-    "Falls jemand eine deutsche Deadlock-Community kennt oder sucht – schau doch mal vorbei: {invite}",
+    "Hey! Noch eine deutsche Deadlock-Community am suchen? Wir sind hier: {invite} 🎮",
+    "Falls jemand eine deutsche Deadlock-Community sucht – schau doch mal vorbei: {invite}",
 ]
 
 _PROMO_DISCORD_INVITE: str = "https://discord.gg/z5TfVHuQq2"
@@ -146,10 +146,10 @@ _PROMO_ACTIVITY_ENABLED: bool = True
 _PROMO_CHANNEL_ALLOWLIST: Set[str] = set()
 _PROMO_ACTIVITY_WINDOW_MIN: int = 10
 _PROMO_ACTIVITY_MIN_MSGS: int = 12
-_PROMO_ACTIVITY_MIN_CHATTERS: int = 4
+_PROMO_ACTIVITY_MIN_CHATTERS: int = 2
 _PROMO_ACTIVITY_TARGET_MPM: float = 3.0
 _PROMO_COOLDOWN_MIN: int = 60
-_PROMO_COOLDOWN_MAX: int = 180
+_PROMO_COOLDOWN_MAX: int = 360
 _PROMO_ATTEMPT_COOLDOWN_MIN: int = 5
 _PROMO_IGNORE_COMMANDS: bool = True
 
