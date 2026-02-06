@@ -90,6 +90,10 @@ class DashboardRaidMixin:
         if not login:
             return web.Response(text="Invalid state token", status=400)
 
+        discord_user_id = None
+        if isinstance(login, str) and login.startswith("discord:"):
+            discord_user_id = login.split(":", 1)[1].strip() or None
+
         try:
             # Code gegen Token tauschen
             session = request.app["_http_session"]
@@ -122,6 +126,31 @@ class DashboardRaidMixin:
                 expires_in=token_data.get("expires_in", 3600),
                 scopes=token_data.get("scope", []),
             )
+
+            # Optional: Discord-User mit Twitch-Login verknüpfen (wenn im State mitgegeben)
+            if discord_user_id:
+                try:
+                    with get_conn() as conn:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO twitch_streamers (twitch_login) VALUES (?)",
+                            (twitch_login,),
+                        )
+                        conn.execute(
+                            """
+                            UPDATE twitch_streamers
+                               SET discord_user_id=?, is_on_discord=1, twitch_user_id=?
+                             WHERE lower(twitch_login)=lower(?)
+                            """,
+                            (discord_user_id, twitch_user_id, twitch_login),
+                        )
+                        conn.commit()
+                    log.info(
+                        "Linked Discord user %s to Twitch %s via OAuth state",
+                        _sanitize_log_value(discord_user_id),
+                        _sanitize_log_value(twitch_login),
+                    )
+                except Exception:
+                    log.exception("Failed to link Discord user to Twitch login from OAuth state")
 
             log.info("Raid auth successful for %s", _sanitize_log_value(twitch_login))
 
