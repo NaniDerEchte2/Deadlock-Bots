@@ -737,8 +737,8 @@ class RaidBot:
         self._cleanup_counter = 0
         self._cog = None  # Referenz zum TwitchStreamCog für EventSub subscriptions
 
-        # Pending Raids: {to_broadcaster_id: (from_broadcaster_login, target_stream_data, timestamp)}
-        self._pending_raids: Dict[str, Tuple[str, Optional[Dict], float]] = {}
+        # Pending Raids: {to_broadcaster_id: (from_broadcaster_login, target_stream_data, timestamp, is_partner_raid, viewer_count)}
+        self._pending_raids: Dict[str, Tuple[str, Optional[Dict], float, bool, int]] = {}
 
         # Cleanup-Task starten
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
@@ -905,11 +905,11 @@ class RaidBot:
         now = time.time()
         timeout = 300  # 5 Minuten
         stale = [
-            to_id for to_id, (_, _, timestamp) in self._pending_raids.items()
+            to_id for to_id, (_, _, timestamp, _, _) in self._pending_raids.items()
             if now - timestamp > timeout
         ]
         for to_id in stale:
-            from_login, _, timestamp = self._pending_raids.pop(to_id)
+            from_login, _, timestamp, _, _ = self._pending_raids.pop(to_id)
             age = now - timestamp
             log.warning(
                 "Pending raid timed out after %.0fs: %s -> (ID: %s). EventSub event never arrived.",
@@ -924,17 +924,29 @@ class RaidBot:
         to_broadcaster_id: str,
         to_broadcaster_login: str,
         target_stream_data: Optional[Dict] = None,
+        is_partner_raid: bool = False,
+        viewer_count: int = 0,
     ):
         """
         Registriert einen Raid, der auf EventSub Bestätigung wartet.
 
         Wird aufgerufen nach erfolgreichem API-Call, bevor der Raid tatsächlich beim Ziel ankommt.
         Erstellt dynamisch eine channel.raid EventSub subscription für das Ziel.
+
+        Args:
+            from_broadcaster_login: Login des Raiding-Streamers
+            to_broadcaster_id: User-ID des Raid-Ziels
+            to_broadcaster_login: Login des Raid-Ziels
+            target_stream_data: Stream-Daten des Ziels (optional)
+            is_partner_raid: True wenn es ein Partner-Raid ist (für Partner-Message)
+            viewer_count: Viewer-Count beim Raid-Start (für Partner-Message)
         """
         self._pending_raids[to_broadcaster_id] = (
             from_broadcaster_login,
             target_stream_data,
-            time.time()
+            time.time(),
+            is_partner_raid,
+            viewer_count,
         )
         log.info(
             "Pending raid registered: %s -> %s (ID: %s). Creating EventSub subscription...",
@@ -981,7 +993,9 @@ class RaidBot:
         """
         Wird aufgerufen, wenn ein channel.raid EventSub Event eintrifft.
 
-        Sendet die Recruitment-Message, falls dies ein pending raid von uns war.
+        Sendet entweder:
+        - Partner-Message (bei Partner-Raids)
+        - Recruitment-Message (bei Non-Partner-Raids)
         """
         pending = self._pending_raids.pop(to_broadcaster_id, None)
         if not pending:
@@ -992,7 +1006,7 @@ class RaidBot:
             )
             return
 
-        expected_from, target_stream_data, _ = pending
+        expected_from, target_stream_data, _, is_partner_raid, registered_viewer_count = pending
 
         # Verify it's the same raid we started
         if expected_from.lower() != from_broadcaster_login.lower():
@@ -1004,17 +1018,98 @@ class RaidBot:
             return
 
         log.info(
-            "✅ Raid arrival confirmed: %s -> %s (%d viewers). Sending recruitment message...",
+            "✅ Raid arrival confirmed: %s -> %s (%d viewers, partner_raid=%s)",
             from_broadcaster_login,
             to_broadcaster_login,
-            viewer_count
+            viewer_count,
+            is_partner_raid,
         )
 
-        await self._send_recruitment_message_now(
-            from_broadcaster_login=from_broadcaster_login,
-            to_broadcaster_login=to_broadcaster_login,
-            target_stream_data=target_stream_data,
-        )
+        # Partner-Raid: Sende Partner-Message
+        if is_partner_raid:
+            await self._send_partner_raid_message(
+                from_broadcaster_login=from_broadcaster_login,
+                to_broadcaster_login=to_broadcaster_login,
+                to_broadcaster_id=to_broadcaster_id,
+                viewer_count=viewer_count,
+            )
+        # Non-Partner-Raid: Sende Recruitment-Message
+        else:
+            await self._send_recruitment_message_now(
+                from_broadcaster_login=from_broadcaster_login,
+                to_broadcaster_login=to_broadcaster_login,
+                target_stream_data=target_stream_data,
+            )
+
+    async def _send_partner_raid_message(
+        self,
+        from_broadcaster_login: str,
+        to_broadcaster_login: str,
+        to_broadcaster_id: str,
+        viewer_count: int,
+    ):
+        """
+        Sendet eine Bestätigungs-Nachricht im Chat des geraideten Partners.
+
+        Diese Nachricht zeigt dem Partner-Streamer, dass der Raid durch
+        das Deadlock Streamer-Netzwerk kam, um den Mehrwert zu verdeutlichen.
+
+        Wird aufgerufen NACH dem EventSub channel.raid Event, d.h. der Raid
+        ist bereits beim Ziel angekommen.
+        """
+        if not self.chat_bot:
+            log.debug("Chat bot not available for partner raid message")
+            return
+
+        try:
+            # 1. Channel beitreten (falls noch nicht joined)
+            await self.chat_bot.join(to_broadcaster_login, channel_id=to_broadcaster_id)
+
+            # 2. Kurze Verzögerung, damit der Bot bereit ist und der Raid-Alert durch ist
+            await asyncio.sleep(5.0)
+
+            # 3. Nachricht vorbereiten
+            message = (
+                f"Hey @{to_broadcaster_login}! 🎮 "
+                f"Du wurdest gerade von @{from_broadcaster_login} mit {viewer_count} Viewern geraidet - "
+                f"Teil unseres Deadlock Streamer-Netzwerks! Gemeinsam wachsen wir stärker! ❤️"
+            )
+
+            # 4. Nachricht senden
+            if hasattr(self.chat_bot, "_send_chat_message"):
+                class MockChannel:
+                    def __init__(self, login, uid):
+                        self.name = login
+                        self.id = uid
+
+                success = await self.chat_bot._send_chat_message(
+                    MockChannel(to_broadcaster_login, to_broadcaster_id),
+                    message
+                )
+
+                if success:
+                    log.info(
+                        "✅ Sent partner raid message to %s (raided by %s with %d viewers)",
+                        to_broadcaster_login,
+                        from_broadcaster_login,
+                        viewer_count,
+                    )
+                else:
+                    log.warning(
+                        "Failed to send partner raid message to %s",
+                        to_broadcaster_login,
+                    )
+            else:
+                log.debug(
+                    "Chat bot does not have _send_chat_message method, skipping partner raid message to %s",
+                    to_broadcaster_login,
+                )
+        except Exception:
+            log.exception(
+                "Failed to send partner raid message to %s (raided by %s)",
+                to_broadcaster_login,
+                from_broadcaster_login,
+            )
 
     async def _send_recruitment_message_now(
         self,
@@ -1434,14 +1529,16 @@ class RaidBot:
             )
 
             if success:
-                # Bei Nicht-Partner-Raid: Pending Raid registrieren (Nachricht wird erst nach EventSub gesendet)
-                if not is_partner_raid:
-                    await self._register_pending_raid(
-                        from_broadcaster_login=broadcaster_login,
-                        to_broadcaster_id=target_id,
-                        to_broadcaster_login=target_login,
-                        target_stream_data=target,
-                    )
+                # Pending Raid registrieren (Nachricht wird erst nach EventSub gesendet)
+                # Funktioniert für Partner-Raids UND Non-Partner-Raids
+                await self._register_pending_raid(
+                    from_broadcaster_login=broadcaster_login,
+                    to_broadcaster_id=target_id,
+                    to_broadcaster_login=target_login,
+                    target_stream_data=target,
+                    is_partner_raid=is_partner_raid,
+                    viewer_count=viewer_count,
+                )
                 return target_login
 
             # Fehler-Behandlung
