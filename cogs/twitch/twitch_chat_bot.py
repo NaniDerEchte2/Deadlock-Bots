@@ -15,9 +15,10 @@ import os
 import random
 import re
 import time
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Deque, Dict, List, Optional, Set, Tuple
 
 from httpx import stream
 
@@ -137,12 +138,23 @@ _PROMO_MESSAGES: List[str] = [
     "Falls jemand eine deutsche Deadlock-Community kennt oder sucht – schau doch mal vorbei: {invite}",
 ]
 
-_PROMO_DISCORD_INVITE: str = (os.getenv("RECRUIT_DISCORD_INVITE") or "").strip() or "https://discord.gg/z5TfVHuQq2"
+_PROMO_DISCORD_INVITE: str = "https://discord.gg/z5TfVHuQq2"
+_PROMO_INTERVAL_MIN: int = 30
 
-try:
-    _PROMO_INTERVAL_MIN: int = max(15, int((os.getenv("PROMO_CHAT_INTERVAL_MIN") or "30").strip()))
-except (ValueError, TypeError):
-    _PROMO_INTERVAL_MIN = 30
+# Promo-Activity (ohne ENV; hier direkt konfigurieren)
+_PROMO_ACTIVITY_ENABLED: bool = True
+_PROMO_CHANNEL_ALLOWLIST: Set[str] = set()
+_PROMO_ACTIVITY_WINDOW_MIN: int = 10
+_PROMO_ACTIVITY_MIN_MSGS: int = 12
+_PROMO_ACTIVITY_MIN_CHATTERS: int = 4
+_PROMO_ACTIVITY_TARGET_MPM: float = 3.0
+_PROMO_COOLDOWN_MIN: int = 60
+_PROMO_COOLDOWN_MAX: int = 180
+_PROMO_ATTEMPT_COOLDOWN_MIN: int = 5
+_PROMO_IGNORE_COMMANDS: bool = True
+
+if _PROMO_COOLDOWN_MAX < _PROMO_COOLDOWN_MIN:
+    _PROMO_COOLDOWN_MAX = _PROMO_COOLDOWN_MIN
 
 
 if TWITCHIO_AVAILABLE:
@@ -192,6 +204,8 @@ if TWITCHIO_AVAILABLE:
             # Periodische Chat-Promos
             self._channel_ids: Dict[str, str] = {}          # login -> broadcaster_id
             self._last_promo_sent: Dict[str, float] = {}    # login -> monotonic timestamp
+            self._last_promo_attempt: Dict[str, float] = {} # login -> monotonic timestamp
+            self._promo_activity: Dict[str, Deque[Tuple[float, str]]] = {}
             self._promo_task: Optional[asyncio.Task] = None
             log.info("Twitch Chat Bot initialized with %d initial channels", len(self._initial_channels))
 
@@ -658,6 +672,12 @@ if TWITCHIO_AVAILABLE:
                 await self._track_chat_health(message)
             except Exception:
                 log.debug("Konnte Chat-Health nicht loggen", exc_info=True)
+
+            if _PROMO_ACTIVITY_ENABLED:
+                try:
+                    await self._maybe_send_activity_promo(message)
+                except Exception:
+                    log.debug("Promo-Activity-Check fehlgeschlagen", exc_info=True)
 
             # Verarbeite Commands
             await self.process_commands(message)
@@ -1571,6 +1591,113 @@ if TWITCHIO_AVAILABLE:
                 refresh_token=refresh_token,
             )
 
+        def _promo_channel_allowed(self, login: str) -> bool:
+            if not _PROMO_MESSAGES or not _PROMO_DISCORD_INVITE:
+                return False
+            if _PROMO_CHANNEL_ALLOWLIST and login not in _PROMO_CHANNEL_ALLOWLIST:
+                return False
+            return True
+
+        def _prune_promo_activity(self, bucket: Deque[Tuple[float, str]], now: float) -> None:
+            window_sec = _PROMO_ACTIVITY_WINDOW_MIN * 60
+            while bucket and now - bucket[0][0] > window_sec:
+                bucket.popleft()
+
+        def _record_promo_activity(self, login: str, chatter_login: str, now: float) -> None:
+            bucket = self._promo_activity.setdefault(login, deque())
+            bucket.append((now, chatter_login))
+            self._prune_promo_activity(bucket, now)
+
+        def _get_promo_activity_stats(self, login: str, now: float) -> Tuple[int, int, float]:
+            bucket = self._promo_activity.get(login)
+            if not bucket:
+                return 0, 0, 0.0
+            self._prune_promo_activity(bucket, now)
+            msg_count = len(bucket)
+            if msg_count <= 0:
+                return 0, 0, 0.0
+            unique_chatters = 0
+            if _PROMO_ACTIVITY_MIN_CHATTERS > 0:
+                unique_chatters = len({c for _, c in bucket})
+            msgs_per_min = msg_count / max(1.0, float(_PROMO_ACTIVITY_WINDOW_MIN))
+            return msg_count, unique_chatters, msgs_per_min
+
+        def _promo_cooldown_sec(self, msgs_per_min: float) -> float:
+            min_cd = float(_PROMO_COOLDOWN_MIN)
+            max_cd = float(_PROMO_COOLDOWN_MAX)
+            if max_cd < min_cd:
+                max_cd = min_cd
+            target = float(_PROMO_ACTIVITY_TARGET_MPM)
+            ratio = 1.0 if target <= 0 else min(1.0, msgs_per_min / target)
+            return (min_cd + (1.0 - ratio) * (max_cd - min_cd)) * 60.0
+
+        async def _maybe_send_promo_with_stats(self, login: str, channel_id: str, now: float) -> None:
+            if not self._promo_channel_allowed(login):
+                return
+
+            msg_count, unique_chatters, msgs_per_min = self._get_promo_activity_stats(login, now)
+            if _PROMO_ACTIVITY_MIN_MSGS > 0 and msg_count < _PROMO_ACTIVITY_MIN_MSGS:
+                return
+            if _PROMO_ACTIVITY_MIN_CHATTERS > 0 and unique_chatters < _PROMO_ACTIVITY_MIN_CHATTERS:
+                return
+
+            last_sent = self._last_promo_sent.get(login)
+            cooldown_sec = self._promo_cooldown_sec(msgs_per_min)
+            if last_sent is not None and now - last_sent < cooldown_sec:
+                return
+
+            last_attempt = self._last_promo_attempt.get(login)
+            if last_attempt is not None and now - last_attempt < (_PROMO_ATTEMPT_COOLDOWN_MIN * 60):
+                return
+            self._last_promo_attempt[login] = now
+
+            msg = random.choice(_PROMO_MESSAGES).format(invite=_PROMO_DISCORD_INVITE)
+
+            class _Channel:
+                __slots__ = ("name", "id")
+                def __init__(self, name: str, channel_id: str):
+                    self.name = name
+                    self.id = channel_id
+
+            ok = await self._send_chat_message(_Channel(login, channel_id), msg)
+            if ok:
+                self._last_promo_sent[login] = now
+                log.info(
+                    "Chat-Promo gesendet in %s (activity=%d msgs/%d chatters, cooldown=%.1f min)",
+                    login,
+                    msg_count,
+                    unique_chatters,
+                    cooldown_sec / 60.0,
+                )
+
+        async def _maybe_send_activity_promo(self, message) -> None:
+            if not _PROMO_ACTIVITY_ENABLED:
+                return
+
+            channel_name = getattr(message.channel, "name", "") or ""
+            login = channel_name.lstrip("#").lower()
+            if not login or not self._promo_channel_allowed(login):
+                return
+
+            if _PROMO_IGNORE_COMMANDS:
+                content = message.content or ""
+                if content.strip().startswith(self.prefix or "!"):
+                    return
+
+            author = getattr(message, "author", None)
+            chatter_login = (getattr(author, "name", "") or "").lower()
+            if not chatter_login:
+                return
+
+            now = time.monotonic()
+            self._record_promo_activity(login, chatter_login, now)
+
+            channel_id = getattr(message.channel, "id", None) or self._channel_ids.get(login)
+            if not channel_id:
+                return
+
+            await self._maybe_send_promo_with_stats(login, str(channel_id), now)
+
         # ------------------------------------------------------------------
         # Periodische Chat-Promos
         # ------------------------------------------------------------------
@@ -1588,22 +1715,26 @@ if TWITCHIO_AVAILABLE:
 
         async def _send_promo_if_due(self) -> None:
             """Sendet eine Promo in jeden live-Kanal, für den das Intervall abgelaufen ist."""
-            interval_sec = _PROMO_INTERVAL_MIN * 60
             now = time.monotonic()
-
             live_channels = await self._get_live_channels_for_promo()
+
+            if _PROMO_ACTIVITY_ENABLED:
+                for login, broadcaster_id in live_channels:
+                    if not self._promo_channel_allowed(login):
+                        continue
+                    await self._maybe_send_promo_with_stats(login, str(broadcaster_id), now)
+                return
+
+            interval_sec = _PROMO_INTERVAL_MIN * 60
             for login, broadcaster_id in live_channels:
                 last = self._last_promo_sent.get(login)
                 if last is None:
-                    # Erstes Mal gesehen → Timestamp setzen, aber noch NICHT senden.
-                    # Damit wird ein voller Intervall-Zyklus abgewartet.
                     self._last_promo_sent[login] = now
                     continue
 
                 if now - last < interval_sec:
                     continue
 
-                # Zufällige Nachricht wählen und senden
                 msg = random.choice(_PROMO_MESSAGES).format(invite=_PROMO_DISCORD_INVITE)
 
                 class _Channel:
