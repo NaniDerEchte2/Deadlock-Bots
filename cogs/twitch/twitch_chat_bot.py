@@ -1569,13 +1569,16 @@ if TWITCHIO_AVAILABLE:
             if success:
                 await ctx.send(f"@{ctx.author.name} Raid auf {target_login} gestartet! (Twitch-Countdown ~90s)")
 
-                # Bei Nicht-Partner-Raid: Pending Raid registrieren (Nachricht wird erst nach EventSub gesendet)
-                if not is_partner_raid and hasattr(self._raid_bot, "_register_pending_raid"):
+                # Pending Raid registrieren (Nachricht wird erst nach EventSub gesendet)
+                # Funktioniert für Partner-Raids UND Non-Partner-Raids
+                if hasattr(self._raid_bot, "_register_pending_raid"):
                     await self._raid_bot._register_pending_raid(
                         from_broadcaster_login=twitch_login,
                         to_broadcaster_id=target_id,
                         to_broadcaster_login=target_login,
                         target_stream_data=target,
+                        is_partner_raid=is_partner_raid,
+                        viewer_count=viewer_count,
                     )
             else:
                 await ctx.send(f"@{ctx.author.name} Raid fehlgeschlagen: {error or 'unbekannter Fehler'}")
