@@ -1,3 +1,4 @@
+
 # cogs/twitch/twitch_chat_bot.py
 """
 Twitch IRC Chat Bot für Twitch-Bot-Steuerung.
@@ -13,38 +14,40 @@ import copy
 import logging
 import logging.handlers
 import os
-import random
-import re
-import time
-from collections import deque
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Set, Tuple
-
-from httpx import stream
-
-try:
-    from twitchio import eventsub
-    from twitchio import web as twitchio_web
-    from twitchio.ext import commands as twitchio_commands
-    TWITCHIO_AVAILABLE = True
-except ImportError:
-    TWITCHIO_AVAILABLE = False
-    log = logging.getLogger("TwitchStreams.ChatBot")
-    log.warning(
-        "twitchio nicht installiert. Twitch Chat Bot wird nicht verfügbar sein. "
-        "Installation: pip install twitchio"
-    )
+from typing import Deque, Dict, Optional, Set, Tuple
 
 from .storage import get_conn
 from .token_manager import TwitchBotTokenManager
+from .twitch_chat_bot_commands import RaidCommandsMixin
+from .twitch_chat_bot_connection import ConnectionMixin
+from .twitch_chat_bot_constants import (
+    _PROMO_ACTIVITY_ENABLED,
+    _SPAM_MIN_MATCHES,
+    _WHITELISTED_BOTS,
+)
+from .twitch_chat_bot_deps import (
+    TWITCHIO_AVAILABLE,
+    twitchio_commands,
+    twitchio_web,
+)
+from .twitch_chat_bot_moderation import ModerationMixin
+from .twitch_chat_bot_promos import PromoMixin
+from .twitch_chat_bot_tokens import (
+    _KEYRING_SERVICE,
+    TokenPersistenceMixin,
+    load_bot_token,
+    load_bot_tokens,
+)
+
 
 # Dedizierter Twitch-Logger Setup
 def _setup_twitch_logging():
     twitch_log = logging.getLogger("TwitchStreams")
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
-    
+
     file_path = log_dir / "twitch_bot.log"
     # Prüfe ob Handler bereits existiert (um Duplikate bei Reloads zu vermeiden)
     exists = False
@@ -52,138 +55,33 @@ def _setup_twitch_logging():
         if isinstance(h, logging.handlers.RotatingFileHandler) and str(h.baseFilename).endswith("twitch_bot.log"):
             exists = True
             break
-            
+
     if not exists:
         handler = logging.handlers.RotatingFileHandler(
             file_path,
-            maxBytes=5 * 1024 * 1024, # 5MB
+            maxBytes=5 * 1024 * 1024,  # 5MB
             backupCount=5,
             encoding="utf-8"
         )
         formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         handler.setFormatter(formatter)
         twitch_log.addHandler(handler)
-        twitch_log.propagate = True # Auch weiterhin im Master-Log behalten
+        twitch_log.propagate = True  # Auch weiterhin im Master-Log behalten
+
 
 _setup_twitch_logging()
 log = logging.getLogger("TwitchStreams.ChatBot")
-_KEYRING_SERVICE = "DeadlockBot"
-# Whitelist für bekannte legitime Bots (keine Spam-Prüfung)
-_WHITELISTED_BOTS = {
-    "streamelements",
-    "nightbot",
-    "streamlabs",
-    "moobot",
-    "fossabot",
-    "wizebot",
-    "pretzelrocks",
-    "soundalerts",
-}
-
-_SPAM_PHRASES = (
-    "Best viewers streamboo.com",
-    "Best viewers streamboo .com",
-    "Best viewers streamboo com",
-    "Best viewers smmtop32.online",
-    "Best viewers smmtop32 .online",
-    "Best viewers smmtop32 online",
-    "Best viewers on",
-    "Best viewers",
-    "B̟est viewers",
-    "Cheap Viewers",
-    "Ch͟eap viewers",
-    "(remove the space)",
-    "Cool overlay \N{THUMBS UP SIGN} Honestly, it\N{RIGHT SINGLE QUOTATION MARK}s so hard to get found on the directory lately. I have small tips on beating the algorithm. Mind if I send you an share?",
-    "Mind if I send you an share",
-    " Viewers https://smmbest5.online",
-    "Viewers smmbest4.online",
-    "Viewers streamboo .com",
-    "Viewers smmhype12.ru",
-    "Viewers smmhype1.ru",
-    "Viewers smmhype",
-    "viewers on streamboo .com (remove the space)",
-    "Hey friend I really enjoy your content so I give you a follow I’d love to be a friend and of you feel free to Add me on Discord",
-)
-# Entferne "viewer" und "viewers" aus den Fragmenten - zu allgemein und führt zu False Positives
-_SPAM_FRAGMENTS = (
-    "best viewers",  # Nur die Kombination ist verdächtig
-    "cheap viewers",  # Nur die Kombination ist verdächtig
-    "streamboo.com",
-    "streamboo .com",
-    "streamboo com",
-    "streamboo",
-    "smmtop32.online",
-    "smmtop32 .online",
-    "smmtop32 online",
-    "smmtop32",
-    "remove the space",
-    "cool overlay",
-    "get found on the directory",
-    "beating the algorithm",
-    "d!sc",
-    "smmbest4.online",
-    "smmbest5.online",
-    "rookie",
-    "smmhype12.ru",
-    "smmhype1.ru",
-    "smmhype",
-    "topsmm3.ru",
-    "topsmm3 .ru",
-    "topsmm3 ru",
-    "topsmm3",
-)
-_SPAM_MIN_MATCHES = 3
-
-# ---------------------------------------------------------------------------
-# Periodische Chat-Promos
-# ---------------------------------------------------------------------------
-_PROMO_MESSAGES: List[str] = [
-    "heyo! Falls ihr bock habt auf Deadlock und noch eine deutsche Community sucht – schau gerne mal vorbei: {invite}",
-    "Hey! Noch eine deutsche Deadlock-Community am suchen? Wir sind hier: {invite} 🎮",
-    "Falls du noch eine deutsche Deadlock-Community sucht – schau doch mal vorbei: {invite}",
-]
-
-_PROMO_DISCORD_INVITE: str = "https://discord.gg/z5TfVHuQq2"
-_PROMO_INTERVAL_MIN: int = 30
-
-# Promo-Activity (ohne ENV; hier direkt konfigurieren)
-_PROMO_ACTIVITY_ENABLED: bool = True
-_PROMO_CHANNEL_ALLOWLIST: Set[str] = set()
-_PROMO_ACTIVITY_WINDOW_MIN: int = 10
-_PROMO_ACTIVITY_MIN_MSGS: int = 12
-_PROMO_ACTIVITY_MIN_CHATTERS: int = 2
-_PROMO_ACTIVITY_TARGET_MPM: float = 3.0
-_PROMO_COOLDOWN_MIN: int = 60
-_PROMO_COOLDOWN_MAX: int = 360
-_PROMO_ATTEMPT_COOLDOWN_MIN: int = 5
-_PROMO_IGNORE_COMMANDS: bool = True
-
-if _PROMO_COOLDOWN_MAX < _PROMO_COOLDOWN_MIN:
-    _PROMO_COOLDOWN_MAX = _PROMO_COOLDOWN_MIN
-
-# ---------------------------------------------------------------------------
-# Deadlock Zugangsfragen (Invite-Only Hinweise)
-# ---------------------------------------------------------------------------
-_DEADLOCK_INVITE_REPLY: str = (
-    "Wenn du Zugang möchtest, schau gerne auf unserem Discord vorbei, "
-    "dort bekommst du eine Einladung und Hilfe beim Einstieg :) {invite}"
-)
-_INVITE_QUESTION_CHANNEL_COOLDOWN_SEC: int = 120
-_INVITE_QUESTION_USER_COOLDOWN_SEC: int = 3600
-_INVITE_QUESTION_RE = re.compile(
-    r"\b(wie|wo|wann|wieso|warum|woher)\b"
-    r"|\b(kann|darf)\s+man\b"
-    r"|\b(bekomm|krieg|erhalt)\w*\s+(man|ich)\b",
-    re.IGNORECASE,
-)
-_INVITE_ACCESS_RE = re.compile(
-    r"\b(spielen|spiel|play|zugang|einladung|invite|beta|key|access|reinkomm\w*|rankomm\w*)\b",
-    re.IGNORECASE,
-)
 
 
 if TWITCHIO_AVAILABLE:
-    class RaidChatBot(twitchio_commands.Bot):
+    class RaidChatBot(
+        TokenPersistenceMixin,
+        ModerationMixin,
+        PromoMixin,
+        ConnectionMixin,
+        RaidCommandsMixin,
+        twitchio_commands.Bot,
+    ):
         """Twitch IRC Bot für Raid-Commands im Chat."""
 
         def __init__(
@@ -205,7 +103,7 @@ if TWITCHIO_AVAILABLE:
             super().__init__(
                 client_id=client_id,
                 client_secret=client_secret,
-                bot_id=bot_id or "", # Fallback auf leeren String falls None (für TwitchIO Kompatibilität)
+                bot_id=bot_id or "",  # Fallback auf leeren String falls None (für TwitchIO Kompatibilität)
                 prefix=prefix,
                 **base_kwargs,
             )
@@ -239,17 +137,18 @@ if TWITCHIO_AVAILABLE:
 
         def _register_inline_commands(self) -> None:
             """Register @command methods on the Bot class (TwitchIO 3.x does not auto-register)."""
-            for _, value in self.__class__.__dict__.items():
-                if not isinstance(value, twitchio_commands.Command):
-                    continue
-                if value.name in self.commands:
-                    continue
-                cmd = copy.copy(value)
-                cmd._injected = self
-                try:
-                    self.add_command(cmd)
-                except Exception:
-                    log.debug("Konnte Command nicht registrieren: %s", cmd.name, exc_info=True)
+            for cls in self.__class__.mro():
+                for _, value in cls.__dict__.items():
+                    if not isinstance(value, twitchio_commands.Command):
+                        continue
+                    if value.name in self.commands:
+                        continue
+                    cmd = copy.copy(value)
+                    cmd._injected = self
+                    try:
+                        self.add_command(cmd)
+                    except Exception:
+                        log.debug("Konnte Command nicht registrieren: %s", cmd.name, exc_info=True)
 
         @property
         def bot_id_safe(self) -> Optional[str]:
@@ -301,7 +200,7 @@ if TWITCHIO_AVAILABLE:
                     e,
                 )
                 # Wir machen weiter, damit der Bot zumindest "ready" wird und andere Cogs nicht blockiert
-            
+
             # Initial channels werden NICHT hier gejoined –
             # setup_hook() läuft vor event_ready(), die WS-Session von TwitchIO
             # ist noch nicht aufgebaut. Joins hier führen zu
@@ -341,17 +240,17 @@ if TWITCHIO_AVAILABLE:
                 # Kein Traceback für unbekannte Commands, nur Debug
                 log.debug("Command not found: %s", ctx.message.content)
                 return
-            
+
             # Andere Fehler loggen
             log.exception("Error invoking command %s: %s", ctx.command.name if ctx.command else "Unknown", error)
 
         async def event_token_refreshed(self, payload):
             """Persistiert erneuerte Bot-Tokens, sobald TwitchIO sie refreshed."""
             try:
-                # Wir speichern die ID intern, falls wir sie brauchen, 
+                # Wir speichern die ID intern, falls wir sie brauchen,
                 # aber vermeiden das Setzen der read-only Property bot_id
                 if payload.user_id:
-                    pass 
+                    pass
                 if self.bot_id and str(payload.user_id) != str(self.bot_id):
                     return  # Nur den Bot-Token persistieren, nicht Streamer-Tokens
                 self._bot_token = f"oauth:{payload.token}" if not payload.token.startswith("oauth:") else payload.token
@@ -386,265 +285,31 @@ if TWITCHIO_AVAILABLE:
             except Exception:
                 log.debug("Konnte refreshed Bot-Token nicht in TwitchIO registrieren", exc_info=True)
 
-        async def _ensure_bot_is_mod(self, broadcaster_id: str, broadcaster_login: str) -> bool:
-            """
-            Setzt den Bot als Moderator im Ziel-Channel über den Streamer-Token.
-            Wird aufgerufen wenn ein join() mit 403 fehlschlägt.
-            Gibt True zurück wenn der Bot erfolgreich als Mod gesetzt wurde.
-            """
-            raid_bot = getattr(self, "_raid_bot", None)
-            if not raid_bot or not hasattr(raid_bot, "auth_manager"):
-                log.debug("_ensure_bot_is_mod: Kein RaidManager verfügbar für %s", broadcaster_login)
-                return False
-
-            safe_bot_id = self.bot_id_safe or self.bot_id or ""
-            if not safe_bot_id:
-                log.debug("_ensure_bot_is_mod: Keine Bot-ID verfügbar")
-                return False
-
-            # Streamer-Token holen (wird bei Bedarf automatisch refreshed)
-            session = raid_bot.session if hasattr(raid_bot, "session") else None
-            if not session:
-                log.debug("_ensure_bot_is_mod: Keine HTTP-Session im RaidManager")
-                return False
-
-            tokens = await raid_bot.auth_manager.get_tokens_for_user(broadcaster_id, session)
-            if not tokens:
-                log.warning("_ensure_bot_is_mod: Kein gültiger Token für %s (uid=%s) – Token abgelaufen?", broadcaster_login, broadcaster_id)
-                return False
-
-            access_token, _ = tokens
-
-            try:
-                import aiohttp
-                url = "https://api.twitch.tv/helix/moderation/moderators"
-                params = {
-                    "broadcaster_id": str(broadcaster_id),
-                    "user_id": str(safe_bot_id),
-                }
-                headers = {
-                    "Client-ID": self._client_id,
-                    "Authorization": f"Bearer {access_token}",
-                }
-                # Eigene Session öffnen – raid_bot.session kann jederzeit geschlossen
-                # sein (Shutdown, Polling-Zyklus).  Konsistent mit _auto_ban_and_cleanup
-                # und _unban_user.
-                async with aiohttp.ClientSession() as mod_session:
-                    async with mod_session.post(url, headers=headers, params=params) as r:
-                        if r.status in {200, 204}:
-                            log.info("_ensure_bot_is_mod: Bot (ID: %s) ist jetzt Mod in %s (ID: %s)", safe_bot_id, broadcaster_login, broadcaster_id)
-                            return True
-                        elif r.status == 422:
-                            # 422 = Bot ist bereits Mod → sollte nicht vorkommen wenn 403 vorher kam
-                            log.info("_ensure_bot_is_mod: Bot ist bereits Mod in %s (422)", broadcaster_login)
-                            return True
-                        else:
-                            txt = await r.text()
-                            # 400 "user is banned" → Bot wurde im Channel gebannt,
-                            # Mod-Status kann nicht gesetzt werden bis der Ban aufgehoben wird.
-                            log.warning("_ensure_bot_is_mod: Fehler beim Setzen als Mod in %s: HTTP %s: %s", broadcaster_login, r.status, txt[:200])
-                            return False
-            except Exception:
-                log.exception("_ensure_bot_is_mod: Exception beim Setzen als Mod in %s", broadcaster_login)
-                return False
-
-        async def _ensure_bot_token_registered(self) -> None:
-            """Stellt sicher, dass der Bot-Token in TwitchIO registriert ist.
-
-            subscribe_websocket() nutzt intern den Token, der über add_token()
-            registriert wurde.  Falls setup_hook() noch nicht fertig war oder der
-            Token zwischenzeitlich refreshed wurde, kann dieser fehlen.  Wir
-            registrieren ihn hier nochmal, um die Fehlerquelle zu eliminieren.
-            """
-            api_token = (self._bot_token or "").replace("oauth:", "").strip()
-            if not api_token:
-                return
-            try:
-                await self.add_token(api_token, self._bot_refresh_token)
-            except Exception:
-                log.debug("_ensure_bot_token_registered: add_token fehlgeschlagen", exc_info=True)
-
-        async def join(self, channel_login: str, channel_id: Optional[str] = None):
-            """Joint einen Channel via EventSub (TwitchIO 3.x)."""
-            try:
-                normalized_login = channel_login.lower().lstrip("#")
-                
-                # Prüfe ZUERST, ob wir bereits subscribed sind
-                if normalized_login in self._monitored_streamers:
-                    log.debug("Channel %s already monitored, skipping subscribe", channel_login)
-                    return True
-                
-                if not channel_id:
-                    user = await self.fetch_user(login=channel_login.lstrip("#"))
-                    if not user:
-                        log.error("Could not find user ID for channel %s", channel_login)
-                        return False
-                    channel_id = str(user.id)
-
-                # Wir nutzen IMMER den Bot-Token für alle Channels.
-                # Das hält die Anzahl der WebSocket-Verbindungen auf 1 (Limit bei Twitch ist 3 pro Client ID).
-                # Voraussetzung: Der Bot muss Moderator im Ziel-Kanal sein.
-                safe_bot_id = self.bot_id_safe or self.bot_id or ""
-
-                # Token vor dem Subscribe sicherstellen – verhindert
-                # "invalid transport and auth combination" wenn setup_hook()
-                # noch nicht vollständig abgeschlossen war.
-                await self._ensure_bot_token_registered()
-
-                payload = eventsub.ChatMessageSubscription(
-                    broadcaster_user_id=str(channel_id), 
-                    user_id=str(safe_bot_id)
-                )
-                
-                # Wir abonnieren über den Standard-WebSocket des Bots
-                await self.subscribe_websocket(payload=payload)
-
-                self._monitored_streamers.add(normalized_login)
-                self._channel_ids[normalized_login] = str(channel_id)
-                return True
-            except Exception as e:
-                msg = str(e)
-                if "invalid transport and auth combination" in msg:
-                    # Token war zum Zeitpunkt des ersten Versuchs noch nicht
-                    # gebunden.  Kurz warten, Token nochmal registrieren und
-                    # einmal erneut versuchen.
-                    log.warning(
-                        "join(): 'invalid transport and auth combination' für %s – "
-                        "Token wird neu registriert und ein Retry folgt.",
-                        channel_login,
-                    )
-                    await asyncio.sleep(1)
-                    await self._ensure_bot_token_registered()
-                    try:
-                        payload = eventsub.ChatMessageSubscription(
-                            broadcaster_user_id=str(channel_id),
-                            user_id=str(safe_bot_id)
-                        )
-                        await self.subscribe_websocket(payload=payload)
-                        self._monitored_streamers.add(normalized_login)
-                        self._channel_ids[normalized_login] = str(channel_id)
-                        log.info("join(): Retry erfolgreich für %s nach Token-Registrierung", channel_login)
-                        return True
-                    except Exception as retry_err:
-                        log.error("join(): Retry für %s fehlgeschlagen: %s", channel_login, retry_err)
-                    return False
-                if "403" in msg and "subscription missing proper authorization" in msg:
-                    # Cooldown-Prüfung: Bei gebannen Bots nicht wiederholt versuchen
-                    cd_key = normalized_login
-                    cd_until = self._mod_retry_cooldown.get(cd_key)
-                    if cd_until and datetime.now(timezone.utc) < cd_until:
-                        log.debug("join(): Mod-Retry für %s auf Cooldown bis %s – überspringe", channel_login, cd_until.isoformat())
-                        return False
-
-                    # Automatischer Retry: Bot als Mod setzen und nochmal versuchen
-                    log.info(
-                        "join(): 403 für %s – versuche Bot automatisch als Mod zu setzen...",
-                        channel_login
-                    )
-                    mod_set = await self._ensure_bot_is_mod(str(channel_id), channel_login)
-                    if mod_set:
-                        # Kurze Pause damit Twitch den Mod-Status propagiert
-                        await asyncio.sleep(1)
-                        try:
-                            payload = eventsub.ChatMessageSubscription(
-                                broadcaster_user_id=str(channel_id),
-                                user_id=str(safe_bot_id)
-                            )
-                            await self.subscribe_websocket(payload=payload)
-                            self._monitored_streamers.add(normalized_login)
-                            self._channel_ids[normalized_login] = str(channel_id)
-                            log.info("join(): Retry erfolgreich für %s nach Mod-Autorisierung", channel_login)
-                            return True
-                        except Exception as retry_err:
-                            log.warning("join(): Retry für %s fehlgeschlagen nach Mod-Autorisierung: %s", channel_login, retry_err)
-                    else:
-                        # Cooldown setzen: Nächster Retry erst nach 10 Minuten
-                        self._mod_retry_cooldown[cd_key] = datetime.now(timezone.utc) + timedelta(minutes=10)
-                        log.warning(
-                            "join(): Konnte Bot nicht als Mod in %s setzen. "
-                            "Falls der Bot im Channel gebannt ist, muss er dort zuerst "
-                            "entbannt werden (/unban deutschedeadlockcommunity), "
-                            "danach /mod deutschedeadlockcommunity ausführen. "
-                            "Nächster Retry in 10 min.",
-                            channel_login
-                        )
-                elif "429" in msg or "transport limit exceeded" in msg.lower():
-                    log.error(
-                        "Cannot join chat for %s: WebSocket Transport Limit (429) reached. "
-                        "Ensure the bot uses only one WebSocket connection.",
-                        channel_login
-                    )
-                else:
-                    log.error("Failed to join channel %s: %s", channel_login, e)
-                return False
-
-        async def follow_channel(self, broadcaster_id: str) -> bool:
-            """Folgt einem Channel mit dem Bot-Account (nötig für Follower-only Chats)."""
-            safe_bot_id = self.bot_id_safe or self.bot_id
-            if not safe_bot_id or not self._token_manager:
-                log.debug("follow_channel: Kein Bot-ID oder Token-Manager verfügbar")
-                return False
-
-            import aiohttp
-            for attempt in range(2):
-                try:
-                    tokens = await self._token_manager.get_valid_token()
-                    if not tokens:
-                        return False
-                    access_token, _ = tokens
-
-                    async with aiohttp.ClientSession() as session:
-                        headers = {
-                            "Client-ID": self._client_id,
-                            "Authorization": f"Bearer {access_token}",
-                            "Content-Type": "application/json",
-                        }
-                        payload = {"from_id": str(safe_bot_id), "to_id": str(broadcaster_id)}
-                        async with session.post(
-                            "https://api.twitch.tv/helix/users/follows",
-                            headers=headers,
-                            json=payload,
-                        ) as r:
-                            if r.status in {200, 204}:
-                                log.info("follow_channel: Bot folgt jetzt %s", broadcaster_id)
-                                return True
-                            if r.status == 401 and attempt == 0:
-                                log.debug("follow_channel: 401 für %s, triggere Token-Refresh", broadcaster_id)
-                                await self._token_manager.get_valid_token(force_refresh=True)
-                                continue
-                            txt = await r.text()
-                            log.debug("follow_channel: HTTP %s – %s", r.status, txt[:200])
-                            return False
-                except Exception:
-                    log.debug("follow_channel: Exception", exc_info=True)
-                    return False
-            return False
-
         async def event_message(self, message):
             """Wird bei jeder Chat-Nachricht aufgerufen."""
             # Compatibility layer for TwitchIO 3.x EventSub
             if not hasattr(message, "echo"):
                 safe_bot_id = self.bot_id_safe or self.bot_id or ""
                 message.echo = str(getattr(message.chatter, "id", "")) == str(safe_bot_id)
-            
+
             if not hasattr(message, "content"):
                 message.content = getattr(message, "text", "")
-            
+
             if not hasattr(message, "author"):
                 message.author = message.chatter
-            
+
             # Mock channel object mit allen benötigten Attributen
             if not hasattr(message, "channel"):
                 broadcaster_login = getattr(message.broadcaster, "login", None) or getattr(message.broadcaster, "name", "unknown")
                 broadcaster_id = getattr(message.broadcaster, "id", None)
-                
+
                 class MockChannel:
                     def __init__(self, login, channel_id=None):
                         self.name = login
                         self.id = channel_id
                     def __str__(self):
                         return self.name
-                
+
                 message.channel = MockChannel(broadcaster_login, broadcaster_id)
 
             # Ignoriere Bot-Nachrichten
@@ -677,9 +342,9 @@ if TWITCHIO_AVAILABLE:
                                 created_at = users[0].created_at
                                 if created_at.tzinfo is None:
                                     created_at = created_at.replace(tzinfo=timezone.utc)
-                                
+
                                 age = datetime.now(timezone.utc) - created_at
-                                if age.days < 90: # Jünger als 3 Monate
+                                if age.days < 90:  # Jünger als 3 Monate
                                     spam_score += 2
                                     spam_reasons.append(f"Account-Alter: {age.days} Tage")
                     except Exception:
@@ -694,7 +359,7 @@ if TWITCHIO_AVAILABLE:
                     channel_name = getattr(message.channel, "name", "unknown")
                     author_name = getattr(message.author, "name", "unknown")
                     author_id = str(getattr(message.author, "id", ""))
-                    
+
                     # Logge Verdacht in Datei für Feinabstimmung
                     reasons_str = ", ".join(spam_reasons)
                     self._record_autoban(
@@ -705,7 +370,7 @@ if TWITCHIO_AVAILABLE:
                         status=f"SUSPICIOUS({spam_score})",
                         reason=reasons_str
                     )
-                    
+
                     log.info("Verdächtige Nachricht (Score %d, Treffer: %s) in %s von %s: %s", spam_score, reasons_str, channel_name, author_name, message.content)
             except Exception:
                 log.debug("Auto-Ban Prüfung fehlgeschlagen", exc_info=True)
@@ -775,1284 +440,17 @@ if TWITCHIO_AVAILABLE:
             self._session_cache[cache_key] = (session_id, now_ts)
             return session_id
 
-        def _calculate_spam_score(self, content: str) -> Tuple[int, list]:
-            """Berechnet einen Spam-Score. >= _SPAM_MIN_MATCHES ist ein Ban."""
-            if not content:
-                return 0, []
-
-            reasons = []
-            raw = content.strip()
-            hits = 0
-
-            # Spam-Phrasen: +2 Punkte
-            for phrase in _SPAM_PHRASES:
-                if phrase in raw:
-                    hits += 2
-                    reasons.append(f"Phrase(Exact): {phrase}")
-                    break  # Nur einmal zählen
-
-            lowered = raw.casefold()
-            if hits == 0:  # Nur prüfen wenn noch keine exakte Phrase gefunden
-                for phrase in _SPAM_PHRASES:
-                    if phrase.casefold() in lowered:
-                        hits += 2
-                        reasons.append(f"Phrase(Casefold): {phrase}")
-                        break
-
-            # Prüfe Fragmente mit Wortgrenzen: +1 Punkt pro Fragment
-            for frag in _SPAM_FRAGMENTS:
-                if re.search(r'\b' + re.escape(frag.casefold()) + r'\b', lowered):
-                    hits += 1
-                    reasons.append(f"Fragment: {frag}")
-
-            # Muster: "viewer [name]": +1 Punkt
-            if re.search(r"\bviewer\s+\w+", lowered):
-                hits += 1
-                reasons.append("Muster: viewer + name")
-
-            # Kompakte Form "streamboocom": +1 Punkt
-            compact = re.sub(r"[^a-z0-9]", "", lowered)
-            if "streamboocom" in compact:
-                hits += 1
-                reasons.append("Muster: streamboocom (kompakt)")
-
-            # NEU: Random @ String Pattern (z.B. @0kyuMlG8): +1 Punkt
-            if re.search(r"@[A-Za-z0-9]{8}\b", raw):
-                hits += 1
-                reasons.append("Muster: @ + 8 random chars")
-
-            return hits, reasons
-
-        def _looks_like_deadlock_access_question(self, content: str) -> bool:
-            if not content:
-                return False
-            raw = content.strip().lower()
-            if "deadlock" not in raw:
-                return False
-            if not _INVITE_ACCESS_RE.search(raw):
-                return False
-            if "?" in raw or _INVITE_QUESTION_RE.search(raw):
-                return True
-            return False
-
-        async def _maybe_send_deadlock_access_hint(self, message) -> bool:
-            """Antwortet auf Deadlock-Zugangsfragen mit einem Discord-Invite (mit Cooldown)."""
-            content = message.content or ""
-            if not self._looks_like_deadlock_access_question(content):
-                return False
-            if content.strip().startswith(self.prefix or "!"):
-                return False
-
-            channel_name = getattr(message.channel, "name", "") or ""
-            login = channel_name.lstrip("#").lower()
-            if not login:
-                return False
-
-            now = time.monotonic()
-            last_channel = self._last_invite_reply.get(login)
-            if last_channel and (now - last_channel) < _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC:
-                return False
-
-            author = getattr(message, "author", None)
-            chatter_login = (getattr(author, "name", "") or "").lower()
-            if chatter_login:
-                user_key = (login, chatter_login)
-                last_user = self._last_invite_reply_user.get(user_key)
-                if last_user and (now - last_user) < _INVITE_QUESTION_USER_COOLDOWN_SEC:
-                    return False
-            else:
-                user_key = None
-
-            mention = f"@{getattr(author, 'name', '')} " if getattr(author, "name", None) else ""
-            msg = mention + _DEADLOCK_INVITE_REPLY.format(invite=_PROMO_DISCORD_INVITE)
-            ok = await self._send_chat_message(message.channel, msg)
-            if ok:
-                self._last_invite_reply[login] = now
-                if user_key:
-                    self._last_invite_reply_user[user_key] = now
-                # Verhindert direkt nach Invite-Hinweis eine zusaetzliche Promo
-                self._last_promo_sent[login] = now
-            return ok
-
-        async def _get_moderation_context(self, twitch_user_id: str) -> tuple[Optional[object], Optional[dict]]:
-            """Holt Session + Auth-Header für Moderationscalls."""
-            auth_mgr = getattr(self._raid_bot, "auth_manager", None) if self._raid_bot else None
-            http_session = getattr(self._raid_bot, "session", None) if self._raid_bot else None
-            if not auth_mgr or not http_session:
-                return None, None
-            try:
-                tokens = await auth_mgr.get_tokens_for_user(str(twitch_user_id), http_session)
-                if not tokens:
-                    return None, None
-                access_token = tokens[0]
-                headers = {
-                    "Client-ID": self._client_id,
-                    "Authorization": f"Bearer {access_token}",
-                }
-                return http_session, headers
-            except Exception:
-                log.debug("Konnte Moderations-Kontext nicht laden (%s)", twitch_user_id, exc_info=True)
-                return None, None
-
-        def _record_autoban(self, *, channel_name: str, chatter_login: str, chatter_id: str, content: str, status: str = "BANNED", reason: str = "") -> None:
-            """Persistiert Auto-Ban-Ereignis oder Verdacht für spätere Review."""
-            try:
-                self._autoban_log.parent.mkdir(parents=True, exist_ok=True)
-                ts = datetime.now(timezone.utc).isoformat()
-                safe_content = content.replace("\n", " ")[:500]
-                line = f"{ts}\t[{status}]\t{channel_name}\t{chatter_login or '-'}\t{chatter_id}\t{reason or '-'}\t{safe_content}\n"
-                with self._autoban_log.open("a", encoding="utf-8") as f:
-                    f.write(line)
-            except Exception:
-                log.debug("Konnte Auto-Ban Review-Log nicht schreiben", exc_info=True)
-
-        async def _send_chat_message(self, channel, text: str) -> bool:
-            """Best-effort Chat-Nachricht senden (EventSub-kompatibel)."""
-            try:
-                # 1. Direktes .send() (z.B. Context, 2.x Channel oder 3.x Broadcaster)
-                if channel and hasattr(channel, "send"):
-                    await channel.send(text)
-                    return True
-                
-                # 2. Fallback: Direkte Helix API Call (TwitchIO 3.x kompatibel)
-                # Hinweis: send_message() existiert NICHT in TwitchIO 3.x
-                b_id = None
-                if hasattr(channel, "id"):
-                    b_id = str(channel.id)
-                elif hasattr(channel, "broadcaster") and hasattr(channel.broadcaster, "id"):
-                    b_id = str(channel.broadcaster.id)
-                
-                # Wenn wir keine ID haben, aber einen Namen (MockChannel), fetch_user
-                if not b_id and hasattr(channel, "name"):
-                    user = await self.fetch_user(login=channel.name.lstrip("#"))
-                    if user:
-                        b_id = str(user.id)
-
-                safe_bot_id = self.bot_id_safe or self.bot_id
-                if b_id and safe_bot_id and self._token_manager:
-                    # Nutze Helix API direkt (user:write:chat scope erforderlich)
-                    import aiohttp
-                    for attempt in range(2):
-                        try:
-                            tokens = await self._token_manager.get_valid_token()
-                            if not tokens:
-                                log.debug("No valid bot token for Helix chat message")
-                                return False
-
-                            access_token, _ = tokens
-                            url = "https://api.twitch.tv/helix/chat/messages"
-                            headers = {
-                                "Client-ID": self._client_id,
-                                "Authorization": f"Bearer {access_token}",
-                                "Content-Type": "application/json"
-                            }
-                            payload = {
-                                "broadcaster_id": str(b_id),
-                                "sender_id": str(safe_bot_id),
-                                "message": text
-                            }
-
-                            async with aiohttp.ClientSession() as session:
-                                async with session.post(url, headers=headers, json=payload) as r:
-                                    if r.status in {200, 204}:
-                                        return True
-                                    if r.status == 401 and attempt == 0:
-                                        log.debug("_send_chat_message: 401 in %s, triggere Token-Refresh", b_id)
-                                        await self._token_manager.get_valid_token(force_refresh=True)
-                                        continue
-                                    txt = await r.text()
-                                    log.warning("Twitch hat die Bot-Nachricht abgelehnt: HTTP %s - %s", r.status, txt)
-                                    return False
-                        except Exception as e:
-                            log.error("Fehler beim Senden der Helix Chat-Nachricht: %s", e)
-                            return False
-
-            except Exception:
-                log.debug("Konnte Chat-Nachricht nicht senden", exc_info=True)
-            return False
-
-        @staticmethod
-        def _extract_message_id(message) -> Optional[str]:
-            """Best-effort message_id Extraktion für Moderations-APIs."""
-            for attr in ("id", "message_id"):
-                msg_id = str(getattr(message, attr, "") or "").strip()
-                if msg_id:
-                    return msg_id
-            try:
-                tags = getattr(message, "tags", None)
-                if isinstance(tags, dict):
-                    msg_id = str(tags.get("id") or tags.get("message-id") or "").strip()
-                    if msg_id:
-                        return msg_id
-            except Exception as exc:
-                log.debug("Konnte message-id aus Tags nicht lesen", exc_info=exc)
-            return None
-
-        async def _auto_ban_and_cleanup(self, message) -> bool:
-            """Bannt erkannte Spam-Bots und löscht die Nachricht (als Bot)."""
-            channel_name = getattr(message.channel, "name", "") or ""
-            channel_key = self._normalize_channel_login(channel_name)
-            streamer_data = self._get_streamer_by_channel(channel_name)
-            if not streamer_data:
-                return False
-
-            twitch_login, twitch_user_id, _raid_enabled = streamer_data
-            author = getattr(message, "author", None)
-            chatter_login = getattr(author, "name", "") if author else ""
-            chatter_id = str(getattr(author, "id", "") or "")
-            original_content = message.content or ""
-
-            if not chatter_id:
-                return False
-            if chatter_id == str(twitch_user_id):
-                return False
-            if getattr(author, "is_mod", False) or getattr(author, "is_broadcaster", False):
-                return False
-
-            # --- ÄNDERUNG: Wir nutzen jetzt das BOT-Token für Moderation, nicht das Streamer-Token ---
-            safe_bot_id = self.bot_id_safe or self.bot_id
-            if not safe_bot_id or not self._token_manager:
-                log.warning("Spam erkannt in %s, aber kein Bot-ID oder Token-Manager für Auto-Ban verfügbar.", channel_name)
-                return False
-
-            for attempt in range(2): # Maximal 2 Versuche (Original + 1 Retry nach Refresh)
-                try:
-                    tokens = await self._token_manager.get_valid_token()
-                    if not tokens:
-                        log.warning("Spam erkannt in %s, aber kein valides Bot-Token für Auto-Ban verfügbar.", channel_name)
-                        return False
-                    access_token, _ = tokens
-                    
-                    headers = {
-                        "Client-ID": self._client_id,
-                        "Authorization": f"Bearer {access_token}",
-                        "Content-Type": "application/json"
-                    }
-                    
-                    # Wir nutzen eine temporäre Session für die API-Calls des Bots
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        
-                        # 1. Nachricht löschen
-                        message_id = self._extract_message_id(message)
-                        if message_id:
-                            try:
-                                async with session.delete(
-                                    "https://api.twitch.tv/helix/moderation/chat",
-                                    headers=headers,
-                                    params={
-                                        "broadcaster_id": twitch_user_id,
-                                        "moderator_id": safe_bot_id,  # Bot ist der Moderator
-                                        "message_id": message_id,
-                                    },
-                                ) as resp:
-                                    if resp.status == 401 and attempt == 0:
-                                        log.warning("Delete message 401 in %s, triggering refresh...", channel_name)
-                                        await self._token_manager.get_valid_token(force_refresh=True)
-                                        continue # Retry outer loop
-
-                                    if resp.status not in {200, 204}:
-                                        txt = await resp.text()
-                                        log.debug(
-                                            "Konnte Nachricht nicht löschen (Bot-Action) (%s/%s): HTTP %s %s",
-                                            channel_name,
-                                            message_id,
-                                            resp.status,
-                                            txt[:180].replace("\n", " "),
-                                        )
-                            except Exception:
-                                log.debug("Auto-Delete fehlgeschlagen (%s)", channel_name, exc_info=True)
-
-                        # 2. User bannen
-                        try:
-                            payload = {"data": {"user_id": chatter_id, "reason": "Automatischer Spam-Ban (Bot-Phrase)"}}
-                            async with session.post(
-                                "https://api.twitch.tv/helix/moderation/bans",
-                                headers=headers,
-                                params={"broadcaster_id": twitch_user_id, "moderator_id": safe_bot_id}, # Bot ist der Moderator
-                                json=payload,
-                            ) as resp:
-                                if resp.status in {200, 201, 202}:
-                                    log.info("Auto-Ban (durch Bot) ausgelöst in %s für %s", channel_name, chatter_login or chatter_id)
-                                    self._last_autoban[channel_key] = {
-                                        "user_id": chatter_id,
-                                        "login": chatter_login,
-                                        "content": original_content,
-                                        "ts": datetime.now(timezone.utc).isoformat(),
-                                    }
-                                    self._record_autoban(
-                                        channel_name=channel_name,
-                                        chatter_login=chatter_login,
-                                        chatter_id=chatter_id,
-                                        content=original_content,
-                                        status="BANNED"
-                                    )
-                                    # Nachricht an den Chat senden, WARUM gebannt wurde
-                                    await self._send_chat_message(
-                                        message.channel,
-                                        f"🛡️ Auto-Mod: {chatter_login} wurde wegen Spam-Verdacht gebannt. (!unban zum Rückgängigmachen)"
-                                    )
-                                    return True
-                                
-                                if resp.status == 401 and attempt == 0:
-                                    log.warning("Ban user 401 in %s, triggering refresh...", channel_name)
-                                    await self._token_manager.get_valid_token(force_refresh=True)
-                                    continue # Retry outer loop
-
-                                txt = await resp.text()
-                                if resp.status == 403:
-                                    log.warning("Auto-Ban fehlgeschlagen in %s (403 Forbidden): Bot ist wahrscheinlich kein Moderator!", channel_name)
-                                elif resp.status == 401:
-                                    log.warning("Auto-Ban fehlgeschlagen in %s (401 Unauthorized) nach Refresh!", channel_name)
-                                else:
-                                    log.warning(
-                                        "Auto-Ban fehlgeschlagen in %s (user=%s): HTTP %s %s",
-                                        channel_name,
-                                        chatter_id,
-                                        resp.status,
-                                        txt[:180].replace("\n", " "),
-                                    )
-                        except Exception:
-                            log.debug("Auto-Ban Exception in %s", channel_name, exc_info=True)
-                    
-                    # Wenn wir hier sind ohne return True, ist der Ban fehlgeschlagen (und kein 401 Retry möglich)
-                    break
-
-                except Exception:
-                    log.error("Fehler im Auto-Ban-Versuch %d", attempt + 1, exc_info=True)
-                    if attempt == 1: break
-
-            # Wenn wir hier sind, ist Ban fehlgeschlagen
-            return False
-
-        async def _unban_user(self, *, broadcaster_id: str, target_user_id: str, channel_name: str, login_hint: str = "") -> bool:
-            """Hebt einen Ban auf (als Bot)."""
-            safe_bot_id = self.bot_id_safe or self.bot_id
-            if not safe_bot_id or not self._token_manager:
-                log.warning("Unban nicht möglich: Kein Bot-Token/ID verfügbar in %s", channel_name)
-                return False
-
-            for attempt in range(2):
-                try:
-                    tokens = await self._token_manager.get_valid_token()
-                    if not tokens:
-                        log.warning("Kein valides Bot-Token für Unban verfügbar.")
-                        return False
-                    access_token, _ = tokens
-                    
-                    headers = {
-                        "Client-ID": self._client_id,
-                        "Authorization": f"Bearer {access_token}",
-                    }
-                    
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        async with session.delete(
-                            "https://api.twitch.tv/helix/moderation/bans",
-                            headers=headers,
-                            params={
-                                "broadcaster_id": broadcaster_id,
-                                "moderator_id": safe_bot_id,  # Bot ist der Moderator
-                                "user_id": target_user_id,
-                            },
-                        ) as resp:
-                            if resp.status in {200, 204}:
-                                log.info("Unban (durch Bot) ausgeführt in %s für %s", channel_name, login_hint or target_user_id)
-                                return True
-                            
-                            if resp.status == 401 and attempt == 0:
-                                log.warning("Unban 401 in %s, triggering refresh...", channel_name)
-                                await self._token_manager.get_valid_token(force_refresh=True)
-                                continue
-
-                            txt = await resp.text()
-                            log.warning(
-                                "Unban fehlgeschlagen in %s (user=%s): HTTP %s %s",
-                                channel_name,
-                                target_user_id,
-                                resp.status,
-                                txt[:180].replace("\n", " "),
-                            )
-                    break
-                except Exception:
-                    log.debug("Unban Exception in %s (Versuch %d)", channel_name, attempt + 1, exc_info=True)
-                    if attempt == 1: break
-            return False
-
-        async def _track_chat_health(self, message) -> None:
-            """Loggt Chat-Events für Chat-Gesundheit und Retention-Metriken."""
-            channel_name = getattr(message.channel, "name", "") or ""
-            login = channel_name.lstrip("#").lower()
-            if not login:
-                return
-
-            author = getattr(message, "author", None)
-            chatter_login = (getattr(author, "name", "") or "").lower()
-            if not chatter_login:
-                return
-            chatter_id = str(getattr(author, "id", "") or "") or None
-            content = message.content or ""
-            is_command = content.strip().startswith(self.prefix or "!")
-
-            session_id = self._resolve_session_id(login)
-            if session_id is None:
-                return
-
-            ts_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-            with get_conn() as conn:
-                # Rohes Chat-Event (ohne Nachrichtentext)
-                conn.execute(
-                    """
-                    INSERT INTO twitch_chat_messages (session_id, streamer_login, chatter_login, message_ts, is_command)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (session_id, login, chatter_login, ts_iso, 1 if is_command else 0),
-                )
-
-                # Rollup pro Session
-                existing = conn.execute(
-                    """
-                    SELECT messages, is_first_time_global
-                      FROM twitch_session_chatters
-                     WHERE session_id = ? AND chatter_login = ?
-                    """,
-                    (session_id, chatter_login),
-                ).fetchone()
-
-                rollup = conn.execute(
-                    """
-                    SELECT total_messages, total_sessions
-                      FROM twitch_chatter_rollup
-                     WHERE streamer_login = ? AND chatter_login = ?
-                    """,
-                    (login, chatter_login),
-                ).fetchone()
-
-                is_first_global = 0 if rollup else 1
-                if rollup:
-                    total_sessions_inc = 1 if existing is None else 0
-                    conn.execute(
-                        """
-                        UPDATE twitch_chatter_rollup
-                           SET total_messages = total_messages + 1,
-                               total_sessions = total_sessions + ?,
-                               last_seen_at = ?,
-                               chatter_id = COALESCE(chatter_id, ?)
-                         WHERE streamer_login = ? AND chatter_login = ?
-                        """,
-                        (total_sessions_inc, ts_iso, chatter_id, login, chatter_login),
-                    )
-                else:
-                    conn.execute(
-                        """
-                        INSERT INTO twitch_chatter_rollup (
-                            streamer_login, chatter_login, chatter_id, first_seen_at, last_seen_at,
-                            total_messages, total_sessions
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (login, chatter_login, chatter_id, ts_iso, ts_iso, 1, 1),
-                    )
-
-                if existing:
-                    conn.execute(
-                        """
-                        UPDATE twitch_session_chatters
-                           SET messages = messages + 1
-                         WHERE session_id = ? AND chatter_login = ?
-                        """,
-                        (session_id, chatter_login),
-                    )
-                else:
-                    conn.execute(
-                        """
-                        INSERT INTO twitch_session_chatters (
-                            session_id, streamer_login, chatter_login, chatter_id, first_message_at,
-                            messages, is_first_time_global
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            session_id,
-                            login,
-                            chatter_login,
-                            chatter_id,
-                            ts_iso,
-                            1,
-                            is_first_global,
-                ),
-            )
-
-        @twitchio_commands.command(name="raid_enable", aliases=["raidbot"])
-        async def cmd_raid_enable(self, ctx: twitchio_commands.Context):
-            """!raid_enable - Aktiviert den Auto-Raid-Bot."""
-            # Nur Broadcaster oder Mods dürfen den Bot steuern
-            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
-                await ctx.send(
-                    f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Twitch-Bot steuern."
-                )
-                return
-
-            channel_name = ctx.channel.name
-            streamer_data = self._get_streamer_by_channel(channel_name)
-
-            if not streamer_data:
-                await ctx.send(
-                    f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert. "
-                    "Kontaktiere einen Admin für Details."
-                )
-                return
-
-            twitch_login, twitch_user_id, raid_bot_enabled = streamer_data
-
-            # Prüfen, ob bereits autorisiert
-            with get_conn() as conn:
-                auth_row = conn.execute(
-                    "SELECT raid_enabled FROM twitch_raid_auth WHERE twitch_user_id = ?",
-                    (twitch_user_id,),
-                ).fetchone()
-
-            if not auth_row:
-                # Noch nicht autorisiert -> OAuth-Link senden
-                if not self._raid_bot:
-                    await ctx.send(
-                        f"@{ctx.author.name} Der Twitch-Bot ist derzeit nicht verfügbar. "
-                        "Kontaktiere einen Admin."
-                    )
-                    return
-
-                auth_url = self._raid_bot.auth_manager.generate_auth_url(twitch_login)
-                await ctx.send(
-                    f"@{ctx.author.name} OAuth fehlt – Anforderung: Twitch-Bot autorisieren (Pflicht für Streamer-Partner). "
-                    f"Link: {auth_url} | Auto-Raid, Chat Guard, Discord Auto-Post (Analytics WIP)"
-                )
-                log.info("Sent raid auth link to %s via chat", twitch_login)
-                return
-
-            # Bereits autorisiert -> aktivieren
-            raid_enabled = auth_row[0]
-            if raid_enabled:
-                await ctx.send(
-                    f"@{ctx.author.name} ✅ Auto-Raid ist bereits aktiviert! "
-                    "Der Twitch-Bot raidet automatisch andere Partner, wenn du offline gehst."
-                )
-                return
-
-            # Aktivieren
-            with get_conn() as conn:
-                conn.execute(
-                    "UPDATE twitch_raid_auth SET raid_enabled = 1 WHERE twitch_user_id = ?",
-                    (twitch_user_id,),
-                )
-                conn.execute(
-                    "UPDATE twitch_streamers SET raid_bot_enabled = 1 WHERE twitch_user_id = ?",
-                    (twitch_user_id,),
-                )
-                conn.commit()
-
-            await ctx.send(
-                f"@{ctx.author.name} ✅ Auto-Raid aktiviert! "
-                "Wenn du offline gehst, raidet der Twitch-Bot automatisch den Partner mit der kürzesten Stream-Zeit."
-            )
-            log.info("Enabled auto-raid for %s via chat", twitch_login)
-
-        @twitchio_commands.command(name="raid_disable", aliases=["raidbot_off"])
-        async def cmd_raid_disable(self, ctx: twitchio_commands.Context):
-            """!raid_disable - Deaktiviert den Auto-Raid-Bot."""
-            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
-                await ctx.send(
-                    f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Twitch-Bot steuern."
-                )
-                return
-
-            channel_name = ctx.channel.name
-            streamer_data = self._get_streamer_by_channel(channel_name)
-
-            if not streamer_data:
-                await ctx.send(
-                    f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert."
-                )
-                return
-
-            twitch_login, twitch_user_id, _ = streamer_data
-
-            with get_conn() as conn:
-                conn.execute(
-                    "UPDATE twitch_raid_auth SET raid_enabled = 0 WHERE twitch_user_id = ?",
-                    (twitch_user_id,),
-                )
-                conn.execute(
-                    "UPDATE twitch_streamers SET raid_bot_enabled = 0 WHERE twitch_user_id = ?",
-                    (twitch_user_id,),
-                )
-                conn.commit()
-
-            await ctx.send(
-                f"@{ctx.author.name} 🛑 Auto-Raid deaktiviert. "
-                "Du kannst es jederzeit mit !raid_enable wieder aktivieren."
-            )
-            log.info("Disabled auto-raid for %s via chat", twitch_login)
-
-        @twitchio_commands.command(name="raid_status", aliases=["raidbot_status"])
-        async def cmd_raid_status(self, ctx: twitchio_commands.Context):
-            """!raid_status - Zeigt den Twitch-Bot-Status an."""
-            channel_name = ctx.channel.name
-            streamer_data = self._get_streamer_by_channel(channel_name)
-
-            if not streamer_data:
-                await ctx.send(
-                    f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert."
-                )
-                return
-
-            twitch_login, twitch_user_id, raid_bot_enabled = streamer_data
-
-            with get_conn() as conn:
-                auth_row = conn.execute(
-                    """
-                    SELECT raid_enabled, authorized_at
-                    FROM twitch_raid_auth
-                    WHERE twitch_user_id = ?
-                    """,
-                    (twitch_user_id,),
-                ).fetchone()
-
-                # Statistiken
-                stats = conn.execute(
-                    """
-                    SELECT COUNT(*) as total, SUM(success) as successful
-                    FROM twitch_raid_history
-                    WHERE from_broadcaster_id = ?
-                    """,
-                    (twitch_user_id,),
-                ).fetchone()
-                total_raids, successful_raids = stats if stats else (0, 0)
-
-                # Letzter Raid
-                last_raid = conn.execute(
-                    """
-                    SELECT to_broadcaster_login, viewer_count, executed_at, success
-                    FROM twitch_raid_history
-                    WHERE from_broadcaster_id = ?
-                    ORDER BY executed_at DESC
-                    LIMIT 1
-                    """,
-                    (twitch_user_id,),
-                ).fetchone()
-
-            # Status bestimmen
-            if not auth_row:
-                status = "❌ Nicht autorisiert (OAuth fehlt)"
-                action = "Anforderung: Twitch-Bot autorisieren mit !raid_enable."
-            elif auth_row[0]:  # raid_enabled
-                status = "✅ Aktiv"
-                action = "Auto-Raids sind aktiviert."
-            else:
-                status = "🛑 Deaktiviert"
-                action = "Aktiviere mit !raid_enable."
-
-            # Nachricht zusammenstellen
-            message = f"@{ctx.author.name} Twitch-Bot Status: {status}. {action}"
-
-            if total_raids:
-                message += f" | Statistik: {total_raids} Raids ({successful_raids or 0} erfolgreich)"
-
-            if last_raid:
-                to_login, viewers, executed_at, success = last_raid
-                icon = "✅" if success else "❌"
-                time_str = executed_at[:16] if executed_at else "?"
-                message += f" | Letzter Raid {icon}: {to_login} ({viewers} Viewer) am {time_str}"
-
-            await ctx.send(message)
-
-        @twitchio_commands.command(name="uban", aliases=["unban"])
-        async def cmd_uban(self, ctx: twitchio_commands.Context):
-            """!uban / !unban - hebt den letzten Auto-Ban im aktuellen Channel auf."""
-            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
-                await ctx.send(f"@{ctx.author.name} Nur der Broadcaster oder Mods.")
-                return
-
-            channel_name = ctx.channel.name
-            streamer_data = self._get_streamer_by_channel(channel_name)
-            if not streamer_data:
-                await ctx.send(f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert.")
-                return
-
-            twitch_login, twitch_user_id, _ = streamer_data
-            channel_key = self._normalize_channel_login(channel_name)
-            last = self._last_autoban.get(channel_key)
-            if not last:
-                await ctx.send(f"@{ctx.author.name} Kein Auto-Ban-Eintrag zum Aufheben gefunden.")
-                return
-
-            target_user_id = last.get("user_id", "")
-            target_login = last.get("login") or target_user_id
-            if not target_user_id:
-                await ctx.send(f"@{ctx.author.name} Kein Nutzer gespeichert für Unban.")
-                return
-
-            success = await self._unban_user(
-                broadcaster_id=str(twitch_user_id),
-                target_user_id=str(target_user_id),
-                channel_name=channel_name,
-                login_hint=target_login,
-            )
-            if success:
-                await ctx.send(f"@{ctx.author.name} Unban ausgeführt für {target_login}.")
-            else:
-                await ctx.send(f"@{ctx.author.name} Unban fehlgeschlagen für {target_login}.")
-
-        @twitchio_commands.command(name="raid_history", aliases=["raidbot_history"])
-        async def cmd_raid_history(self, ctx: twitchio_commands.Context):
-            """!raid_history - Zeigt die letzten 3 Raids an."""
-            channel_name = ctx.channel.name
-            streamer_data = self._get_streamer_by_channel(channel_name)
-
-            if not streamer_data:
-                return
-
-            twitch_login, twitch_user_id, _ = streamer_data
-
-            with get_conn() as conn:
-                raids = conn.execute(
-                    """
-                    SELECT to_broadcaster_login, viewer_count, executed_at, success
-                    FROM twitch_raid_history
-                    WHERE from_broadcaster_id = ?
-                    ORDER BY executed_at DESC
-                    LIMIT 3
-                    """,
-                    (twitch_user_id,),
-                ).fetchall()
-
-            if not raids:
-                await ctx.send(f"@{ctx.author.name} Noch keine Raids durchgeführt.")
-                return
-
-            raids_text = " | ".join([
-                f"{'✅' if success else '❌'} {to_login} ({viewers}V, {executed_at[:10] if executed_at else '?'})"
-                for to_login, viewers, executed_at, success in raids
-            ])
-
-            await ctx.send(f"@{ctx.author.name} Letzte Raids: {raids_text}")
-
-        @twitchio_commands.command(name="raid")
-        async def cmd_raid(self, ctx: twitchio_commands.Context):
-            """!raid - Startet sofort einen Raid auf den bestmöglichen Partner (wie Auto-Raid)."""
-            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
-                await ctx.send(f"@{ctx.author.name} Nur Broadcaster oder Mods können !raid benutzen.")
-                return
-
-            channel_name = ctx.channel.name
-            streamer_data = self._get_streamer_by_channel(channel_name)
-            if not streamer_data:
-                return
-
-            twitch_login, twitch_user_id, _ = streamer_data
-
-            if not self._raid_bot or not self._raid_bot.auth_manager.has_enabled_auth(twitch_user_id):
-                await ctx.send(
-                    f"@{ctx.author.name} OAuth fehlt – Anforderung: Twitch-Bot autorisieren mit !raid_enable."
-                )
-                return
-
-            api_session = getattr(self._raid_bot, "session", None)
-            executor = getattr(self._raid_bot, "raid_executor", None)
-            if not api_session or not executor:
-                await ctx.send(f"@{ctx.author.name} Twitch-Bot nicht verfügbar.")
-                return
-
-            # Partner-Kandidaten laden (verifizierte Partner, Opt-out respektieren)
-            with get_conn() as conn:
-                partners = conn.execute(
-                    """
-                    SELECT twitch_login, twitch_user_id
-                      FROM twitch_streamers
-                     WHERE (manual_verified_permanent = 1
-                            OR manual_verified_until IS NOT NULL
-                            OR manual_verified_at IS NOT NULL)
-                       AND manual_partner_opt_out = 0
-                       AND twitch_user_id IS NOT NULL
-                       AND twitch_login IS NOT NULL
-                       AND twitch_user_id != ?
-                    """,
-                    (twitch_user_id,),
-                ).fetchall()
-
-            partner_logins = [str(r[0]).lower() for r in partners]
-
-            # Live-Streams holen
-            candidates = []
-            try:
-                from .twitch_api import TwitchAPI  # lokal importieren, um Zyklus zu vermeiden
-                api = TwitchAPI(self._raid_bot.auth_manager.client_id, self._raid_bot.auth_manager.client_secret, session=api_session)
-                streams = await api.get_streams_by_logins(partner_logins, language=None)
-                for stream in streams:
-                    user_id = str(stream.get("user_id") or "")
-                    user_login = (stream.get("user_login") or "").lower()
-                    started_at = stream.get("started_at") or ""
-                    candidates.append({
-                        "user_id": user_id,
-                        "user_login": user_login,
-                        "started_at": started_at,
-                        "viewer_count": int(stream.get("viewer_count") or 0),
-                    })
-            except Exception:
-                log.exception("Manual raid: konnte Streams nicht abrufen")
-
-            is_partner_raid = True
-            target = None
-            
-            if candidates:
-                # Auswahl nach niedrigsten Viewern wiederverwenden
-                target = await self._raid_bot._select_fairest_candidate(candidates, twitch_user_id)  # type: ignore[attr-defined]
-            
-            if not target:
-                # Fallback auf DE Deadlock-Streamer
-                try:
-                    from .constants import TWITCH_TARGET_GAME_NAME
-                    category_id = await api.get_category_id(TWITCH_TARGET_GAME_NAME)
-                    if category_id:
-                        de_streams = await api.get_streams_by_category(category_id, language="de", limit=50)
-                        # Filter out self
-                        de_streams = [s for s in de_streams if str(s.get("user_id")) != str(twitch_user_id)]
-                        if de_streams:
-                            is_partner_raid = False
-                            target = await self._raid_bot._select_fairest_candidate(de_streams, twitch_user_id)  # type: ignore[attr-defined]
-                            if not target:
-                                await ctx.send(f"@{ctx.author.name} Kein geeigneter Fallback-Streamer gefunden.")
-                                return
-                            # Normalisieren für executor
-                            if "user_login" not in target and "user_name" in target:
-                                target["user_login"] = target["user_name"].lower()
-                        else:
-                            await ctx.send(f"@{ctx.author.name} Weder Partner noch andere deutsche Deadlock-Streamer live.")
-                            return
-                    else:
-                        await ctx.send(f"@{ctx.author.name} Kein Partner live (Kategorie-ID nicht gefunden).")
-                        return
-                except Exception:
-                    log.exception("Manual raid fallback failed")
-                    await ctx.send(f"@{ctx.author.name} Kein Partner live und Fallback fehlgeschlagen.")
-                    return
-
-            target_id = target.get("user_id") or ""
-            target_login = target.get("user_login") or ""
-            target_started_at = target.get("started_at", "")
-            viewer_count = int(target.get("viewer_count") or 0)
-
-            # Streamdauer best-effort
-            stream_duration_sec = 0
-            try:
-                if target_started_at:
-                    from datetime import datetime, timezone
-                    started_dt = datetime.fromisoformat(target_started_at.replace("Z", "+00:00"))
-                    stream_duration_sec = int((datetime.now(timezone.utc) - started_dt).total_seconds())
-            except Exception as exc:
-                log.debug("Konnte Stream-Dauer nicht berechnen für %s", target_login, exc_info=exc)
-
-            try:
-                success, error = await executor.start_raid(
-                    from_broadcaster_id=twitch_user_id,
-                    from_broadcaster_login=twitch_login,
-                    to_broadcaster_id=target_id,
-                    to_broadcaster_login=target_login,
-                    viewer_count=viewer_count,
-                    stream_duration_sec=stream_duration_sec,
-                    target_stream_started_at=target_started_at,
-                    candidates_count=len(candidates) if is_partner_raid else 0,
-                    session=api_session,
-                )
-            except Exception as exc:
-                log.exception("Manual raid failed for %s -> %s", twitch_login, target_login)
-                await ctx.send(f"@{ctx.author.name} Raid fehlgeschlagen: {exc}")
-                return
-
-            if success:
-                await ctx.send(f"@{ctx.author.name} Raid auf {target_login} gestartet! (Twitch-Countdown ~90s)")
-
-                # Pending Raid registrieren (Nachricht wird erst nach EventSub gesendet)
-                # Funktioniert für Partner-Raids UND Non-Partner-Raids
-                if hasattr(self._raid_bot, "_register_pending_raid"):
-                    await self._raid_bot._register_pending_raid(
-                        from_broadcaster_login=twitch_login,
-                        to_broadcaster_id=target_id,
-                        to_broadcaster_login=target_login,
-                        target_stream_data=target,
-                        is_partner_raid=is_partner_raid,
-                        viewer_count=viewer_count,
-                    )
-            else:
-                await ctx.send(f"@{ctx.author.name} Raid fehlgeschlagen: {error or 'unbekannter Fehler'}")
-
-        async def _persist_bot_tokens(
-            self,
-            *,
-            access_token: str,
-            refresh_token: Optional[str],
-            expires_in: Optional[int],
-            scopes: Optional[list] = None,
-            user_id: Optional[str] = None,
-        ) -> None:
-            """Persist bot tokens in Windows Credential Manager (keyring)."""
-            if not access_token:
-                return
-
-            if self._token_manager:
-                self._token_manager.access_token = access_token
-                if refresh_token:
-                    self._token_manager.refresh_token = refresh_token
-                if user_id:
-                    self._token_manager.bot_id = str(user_id)
-                if expires_in:
-                    self._token_manager.expires_at = datetime.now() + timedelta(seconds=int(expires_in))
-                await self._token_manager._save_tokens()
-                return
-
-            await _save_bot_tokens_to_keyring(
-                access_token=access_token,
-                refresh_token=refresh_token,
-            )
-
-        def _promo_channel_allowed(self, login: str) -> bool:
-            if not _PROMO_MESSAGES or not _PROMO_DISCORD_INVITE:
-                return False
-            if _PROMO_CHANNEL_ALLOWLIST and login not in _PROMO_CHANNEL_ALLOWLIST:
-                return False
-            return True
-
-        def _prune_promo_activity(self, bucket: Deque[Tuple[float, str]], now: float) -> None:
-            window_sec = _PROMO_ACTIVITY_WINDOW_MIN * 60
-            while bucket and now - bucket[0][0] > window_sec:
-                bucket.popleft()
-
-        def _record_promo_activity(self, login: str, chatter_login: str, now: float) -> None:
-            bucket = self._promo_activity.setdefault(login, deque())
-            bucket.append((now, chatter_login))
-            self._prune_promo_activity(bucket, now)
-
-        def _get_promo_activity_stats(self, login: str, now: float) -> Tuple[int, int, float]:
-            bucket = self._promo_activity.get(login)
-            if not bucket:
-                return 0, 0, 0.0
-            self._prune_promo_activity(bucket, now)
-            msg_count = len(bucket)
-            if msg_count <= 0:
-                return 0, 0, 0.0
-            unique_chatters = 0
-            if _PROMO_ACTIVITY_MIN_CHATTERS > 0:
-                unique_chatters = len({c for _, c in bucket})
-            msgs_per_min = msg_count / max(1.0, float(_PROMO_ACTIVITY_WINDOW_MIN))
-            return msg_count, unique_chatters, msgs_per_min
-
-        def _promo_cooldown_sec(self, msgs_per_min: float) -> float:
-            min_cd = float(_PROMO_COOLDOWN_MIN)
-            max_cd = float(_PROMO_COOLDOWN_MAX)
-            if max_cd < min_cd:
-                max_cd = min_cd
-            target = float(_PROMO_ACTIVITY_TARGET_MPM)
-            ratio = 1.0 if target <= 0 else min(1.0, msgs_per_min / target)
-            return (min_cd + (1.0 - ratio) * (max_cd - min_cd)) * 60.0
-
-        async def _maybe_send_promo_with_stats(self, login: str, channel_id: str, now: float) -> None:
-            if not self._promo_channel_allowed(login):
-                return
-
-            msg_count, unique_chatters, msgs_per_min = self._get_promo_activity_stats(login, now)
-            if _PROMO_ACTIVITY_MIN_MSGS > 0 and msg_count < _PROMO_ACTIVITY_MIN_MSGS:
-                return
-            if _PROMO_ACTIVITY_MIN_CHATTERS > 0 and unique_chatters < _PROMO_ACTIVITY_MIN_CHATTERS:
-                return
-
-            last_sent = self._last_promo_sent.get(login)
-            cooldown_sec = self._promo_cooldown_sec(msgs_per_min)
-            if last_sent is not None and now - last_sent < cooldown_sec:
-                return
-
-            last_attempt = self._last_promo_attempt.get(login)
-            if last_attempt is not None and now - last_attempt < (_PROMO_ATTEMPT_COOLDOWN_MIN * 60):
-                return
-            self._last_promo_attempt[login] = now
-
-            msg = random.choice(_PROMO_MESSAGES).format(invite=_PROMO_DISCORD_INVITE)
-
-            class _Channel:
-                __slots__ = ("name", "id")
-                def __init__(self, name: str, channel_id: str):
-                    self.name = name
-                    self.id = channel_id
-
-            ok = await self._send_chat_message(_Channel(login, channel_id), msg)
-            if ok:
-                self._last_promo_sent[login] = now
-                log.info(
-                    "Chat-Promo gesendet in %s (activity=%d msgs/%d chatters, cooldown=%.1f min)",
-                    login,
-                    msg_count,
-                    unique_chatters,
-                    cooldown_sec / 60.0,
-                )
-
-        async def _maybe_send_activity_promo(self, message) -> None:
-            if not _PROMO_ACTIVITY_ENABLED:
-                return
-
-            channel_name = getattr(message.channel, "name", "") or ""
-            login = channel_name.lstrip("#").lower()
-            if not login or not self._promo_channel_allowed(login):
-                return
-
-            if _PROMO_IGNORE_COMMANDS:
-                content = message.content or ""
-                if content.strip().startswith(self.prefix or "!"):
-                    return
-
-            author = getattr(message, "author", None)
-            chatter_login = (getattr(author, "name", "") or "").lower()
-            if not chatter_login:
-                return
-
-            now = time.monotonic()
-            self._record_promo_activity(login, chatter_login, now)
-
-            channel_id = getattr(message.channel, "id", None) or self._channel_ids.get(login)
-            if not channel_id:
-                return
-
-            await self._maybe_send_promo_with_stats(login, str(channel_id), now)
-
-        # ------------------------------------------------------------------
-        # Periodische Chat-Promos
-        # ------------------------------------------------------------------
-        async def _periodic_promo_loop(self) -> None:
-            """Hauptschleife: prüft alle 120 s, ob eine Promo gesendet werden soll."""
-            try:
-                while True:
-                    await asyncio.sleep(120)
-                    try:
-                        await self._send_promo_if_due()
-                    except Exception:
-                        log.debug("_send_promo_if_due fehlgeschlagen", exc_info=True)
-            except asyncio.CancelledError:
-                log.info("Chat-Promo-Loop wurde abgebrochen")
-
-        async def _send_promo_if_due(self) -> None:
-            """Sendet eine Promo in jeden live-Kanal, für den das Intervall abgelaufen ist."""
-            now = time.monotonic()
-            live_channels = await self._get_live_channels_for_promo()
-
-            if _PROMO_ACTIVITY_ENABLED:
-                for login, broadcaster_id in live_channels:
-                    if not self._promo_channel_allowed(login):
-                        continue
-                    await self._maybe_send_promo_with_stats(login, str(broadcaster_id), now)
-                return
-
-            interval_sec = _PROMO_INTERVAL_MIN * 60
-            for login, broadcaster_id in live_channels:
-                last = self._last_promo_sent.get(login)
-                if last is None:
-                    self._last_promo_sent[login] = now
-                    continue
-
-                if now - last < interval_sec:
-                    continue
-
-                msg = random.choice(_PROMO_MESSAGES).format(invite=_PROMO_DISCORD_INVITE)
-
-                class _Channel:
-                    __slots__ = ("name", "id")
-                    def __init__(self, name: str, channel_id: str):
-                        self.name = name
-                        self.id = channel_id
-
-                ok = await self._send_chat_message(_Channel(login, broadcaster_id), msg)
-                if ok:
-                    self._last_promo_sent[login] = now
-                    log.info("Chat-Promo gesendet in %s", login)
-                else:
-                    log.debug("Chat-Promo in %s fehlgeschlagen", login)
-
-        async def _get_live_channels_for_promo(self) -> List[Tuple[str, str]]:
-            """Gibt alle live-Kanäle zurück, in denen der Bot aktiv ist (login, broadcaster_id)."""
-            if not self._channel_ids:
-                return []
-
-            logins = list(self._channel_ids.keys())
-            placeholders = ",".join("?" * len(logins))
-
-            try:
-                with get_conn() as conn:
-                    rows = conn.execute(
-                        f"""
-                        SELECT s.twitch_login, s.twitch_user_id
-                          FROM twitch_streamers s
-                          JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
-                         WHERE l.is_live = 1
-                           AND LOWER(s.twitch_login) IN ({placeholders})
-                        """,
-                        logins,
-                    ).fetchall()
-            except Exception:
-                log.debug("_get_live_channels_for_promo: DB-Query fehlgeschlagen", exc_info=True)
-                return []
-
-            return [(str(r[0]).lower(), str(r[1])) for r in rows if r[0] and r[1]]
-
-        async def join_partner_channels(self):
-            """Joint alle Kanäle, die live sind und den Bot autorisiert haben (Partner oder !traid)."""
-            with get_conn() as conn:
-                # Wir holen alle Partner ODER jeden, der raid_enabled = 1 in twitch_raid_auth hat
-                partners = conn.execute(
-                    """
-                    SELECT DISTINCT s.twitch_login, s.twitch_user_id, a.scopes, l.is_live
-                    FROM twitch_streamers s
-                    JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
-                    LEFT JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
-                    WHERE (
-                        (s.manual_verified_permanent = 1 OR s.manual_verified_until IS NOT NULL OR s.manual_verified_at IS NOT NULL)
-                        OR a.raid_enabled = 1
-                    )
-                    AND s.manual_partner_opt_out = 0
-                    """
-                ).fetchall()
-
-            channels_to_join = []
-            for login, uid, scopes_raw, is_live in partners:
-                login_norm = (login or "").strip()
-                if not login_norm:
-                    continue
-                scopes = [s.strip().lower() for s in (scopes_raw or "").split() if s.strip()]
-                has_chat_scope = any(
-                    s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"} for s in scopes
-                )
-                if not has_chat_scope:
-                    continue
-                if is_live is None or not bool(is_live):
-                    continue
-                # Normalisieren und prüfen
-                normalized_login = login_norm.lower().lstrip("#")
-                if normalized_login in self._monitored_streamers:
-                    continue
-                channels_to_join.append((login_norm, uid))
-
-            if channels_to_join:
-                log.info(
-                    "Joining %d new LIVE partner channels: %s",
-                    len(channels_to_join),
-                    ", ".join([c[0] for c in channels_to_join[:10]]),
-                )
-                for login, uid in channels_to_join:
-                    try:
-                        # Wir übergeben ID falls vorhanden, sonst wird sie in join() gefetched
-                        success = await self.join(login, channel_id=uid)
-                        if success:
-                            await asyncio.sleep(0.2)  # Rate limiting
-                    except Exception as e:
-                        log.exception("Unexpected error joining channel %s: %s", login, e)
-
-
-def _read_keyring_secret(key: str) -> Optional[str]:
-    """Read a secret from Windows Credential Manager."""
-    try:
-        import keyring  # type: ignore
-    except Exception:
-        return None
-
-    for service in (f"{key}@{_KEYRING_SERVICE}", _KEYRING_SERVICE):
-        try:
-            val = keyring.get_password(service, key)
-            if val:
-                return val
-        except Exception:
-            continue
-    return None
-
-
-async def _save_bot_tokens_to_keyring(*, access_token: str, refresh_token: Optional[str]) -> None:
-    """Persist access/refresh tokens to Windows Credential Manager."""
-    try:
-        import keyring  # type: ignore
-    except Exception:
-        log.debug("keyring nicht verfügbar – Tokens können nicht persistiert werden.")
-        return
-
-    async def _save_one(service: str, name: str, value: str) -> None:
-        await asyncio.to_thread(keyring.set_password, service, name, value)
-
-    tasks = []
-    saved_types = []
-    if access_token:
-        # Wir speichern nur noch im Format ZWECK@DeadlockBot
-        service_access = _KEYRING_SERVICE if _KEYRING_SERVICE.startswith("TWITCH_BOT_TOKEN@") else f"TWITCH_BOT_TOKEN@{_KEYRING_SERVICE}"
-        tasks.append(_save_one(service_access, "TWITCH_BOT_TOKEN", access_token))
-        saved_types.append("ACCESS_TOKEN")
-    if refresh_token:
-        # Wir speichern nur noch im Format ZWECK@DeadlockBot
-        service_refresh = _KEYRING_SERVICE if _KEYRING_SERVICE.startswith("TWITCH_BOT_REFRESH_TOKEN@") else f"TWITCH_BOT_REFRESH_TOKEN@{_KEYRING_SERVICE}"
-        tasks.append(_save_one(service_refresh, "TWITCH_BOT_REFRESH_TOKEN", refresh_token))
-        saved_types.append("REFRESH_TOKEN")
-
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-        log.info("Twitch Bot Tokens (%s) im Windows Credential Manager gespeichert (Dienst: %s).", "+".join(saved_types), _KEYRING_SERVICE)
-
-
-def load_bot_tokens(*, log_missing: bool = True) -> Tuple[Optional[str], Optional[str], Optional[int]]:
-    """
-    Load the Twitch bot OAuth token and refresh token from env/file/Windows keyring.
-
-    Returns:
-        (access_token, refresh_token, expiry_ts_utc)
-    """
-    raw_env = os.getenv("TWITCH_BOT_TOKEN", "") or ""
-    raw_refresh = os.getenv("TWITCH_BOT_REFRESH_TOKEN", "") or ""
-    token = raw_env.strip()
-    refresh = raw_refresh.strip() or None
-    expiry_ts: Optional[int] = None
-
-    if token:
-        return token, refresh, expiry_ts
-
-    token_file = (os.getenv("TWITCH_BOT_TOKEN_FILE") or "").strip()
-    if token_file:
-        try:
-            candidate = Path(token_file).read_text(encoding="utf-8").strip()
-            if candidate:
-                return candidate, refresh, expiry_ts
-            if log_missing:
-                log.warning("TWITCH_BOT_TOKEN_FILE gesetzt (%s), aber leer", token_file)
-        except Exception as exc:  # pragma: no cover - defensive logging
-            if log_missing:
-                log.warning("TWITCH_BOT_TOKEN_FILE konnte nicht gelesen werden (%s): %s", token_file, exc)
-
-    keyring_token = _read_keyring_secret("TWITCH_BOT_TOKEN")
-    keyring_refresh = _read_keyring_secret("TWITCH_BOT_REFRESH_TOKEN")
-    if keyring_token:
-        return keyring_token, keyring_refresh or refresh, expiry_ts
-
-    if log_missing:
-        log.warning(
-            "TWITCH_BOT_TOKEN nicht gesetzt. Twitch Chat Bot wird nicht gestartet. "
-            "Bitte setze ein OAuth-Token für den Bot-Account."
-        )
-    return None, None, None
-
-
-def load_bot_token(*, log_missing: bool = True) -> Optional[str]:
-    token, _, _ = load_bot_tokens(log_missing=log_missing)
-    return token
-
-
 if not TWITCHIO_AVAILABLE:
     class RaidChatBot:  # type: ignore[redefined-outer-name]
         """Stub, damit Import-Caller nicht crashen, wenn twitchio fehlt."""
         pass
 
+
 async def create_twitch_chat_bot(
     client_id: str,
     client_secret: str,
     redirect_uri: str,
-    raid_bot = None,
+    raid_bot=None,
     bot_token: Optional[str] = None,
     bot_refresh_token: Optional[str] = None,
     log_missing: bool = True,
@@ -2154,7 +552,7 @@ async def create_twitch_chat_bot(
             import aiohttp
             async with aiohttp.ClientSession() as session:
                 api_token = token.replace("oauth:", "")
-                
+
                 # 1. Versuch: id.twitch.tv/oauth2/validate (oft am tolerantesten für User-IDs)
                 # Wir probieren beide Header-Varianten
                 for auth_header in [f"OAuth {api_token}", f"Bearer {api_token}"]:
@@ -2165,7 +563,7 @@ async def create_twitch_chat_bot(
                             if bot_id:
                                 log.info("Validated Bot ID: %s", bot_id)
                                 break
-                    
+
                 # 2. Versuch: Helix users (falls validate fehlschlug)
                 if not bot_id:
                     headers = {
@@ -2222,7 +620,7 @@ async def create_twitch_chat_bot(
                 )
                 web_adapter = None
         except OSError:
-             # Verbindung fehlgeschlagen -> Port ist wahrscheinlich frei
+            # Verbindung fehlgeschlagen -> Port ist wahrscheinlich frei
             try:
                 web_adapter = twitchio_web.AiohttpAdapter(
                     host=adapter_host,
