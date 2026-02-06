@@ -9,6 +9,7 @@ Streamer können den Twitch-Bot direkt über Twitch-Chat-Commands steuern:
 - !raid_history - Zeigt die letzten Raids
 """
 import asyncio
+import copy
 import logging
 import logging.handlers
 import os
@@ -211,7 +212,22 @@ if TWITCHIO_AVAILABLE:
             self._last_promo_attempt: Dict[str, float] = {} # login -> monotonic timestamp
             self._promo_activity: Dict[str, Deque[Tuple[float, str]]] = {}
             self._promo_task: Optional[asyncio.Task] = None
+            self._register_inline_commands()
             log.info("Twitch Chat Bot initialized with %d initial channels", len(self._initial_channels))
+
+        def _register_inline_commands(self) -> None:
+            """Register @command methods on the Bot class (TwitchIO 3.x does not auto-register)."""
+            for _, value in self.__class__.__dict__.items():
+                if not isinstance(value, twitchio_commands.Command):
+                    continue
+                if value.name in self.commands:
+                    continue
+                cmd = copy.copy(value)
+                cmd._injected = self
+                try:
+                    self.add_command(cmd)
+                except Exception:
+                    log.debug("Konnte Command nicht registrieren: %s", cmd.name, exc_info=True)
 
         @property
         def bot_id_safe(self) -> Optional[str]:
@@ -688,7 +704,7 @@ if TWITCHIO_AVAILABLE:
 
         def _get_streamer_by_channel(self, channel_name: str) -> Optional[tuple]:
             """Findet Streamer-Daten anhand des Channel-Namens."""
-            normalized = channel_name.lower().lstrip("#")
+            normalized = self._normalize_channel_login(channel_name)
             with get_conn() as conn:
                 row = conn.execute(
                     """
@@ -699,6 +715,10 @@ if TWITCHIO_AVAILABLE:
                     (normalized,),
                 ).fetchone()
             return row
+
+        @staticmethod
+        def _normalize_channel_login(channel_name: str) -> str:
+            return (channel_name or "").lower().lstrip("#")
 
         def _resolve_session_id(self, login: str) -> Optional[int]:
             """Best-effort Mapping von Channel zu offener Twitch-Session."""
@@ -892,6 +912,7 @@ if TWITCHIO_AVAILABLE:
         async def _auto_ban_and_cleanup(self, message) -> bool:
             """Bannt erkannte Spam-Bots und löscht die Nachricht (als Bot)."""
             channel_name = getattr(message.channel, "name", "") or ""
+            channel_key = self._normalize_channel_login(channel_name)
             streamer_data = self._get_streamer_by_channel(channel_name)
             if not streamer_data:
                 return False
@@ -974,7 +995,7 @@ if TWITCHIO_AVAILABLE:
                             ) as resp:
                                 if resp.status in {200, 201, 202}:
                                     log.info("Auto-Ban (durch Bot) ausgelöst in %s für %s", channel_name, chatter_login or chatter_id)
-                                    self._last_autoban[channel_name.lower()] = {
+                                    self._last_autoban[channel_key] = {
                                         "user_id": chatter_id,
                                         "login": chatter_login,
                                         "content": original_content,
@@ -1378,7 +1399,8 @@ if TWITCHIO_AVAILABLE:
                 return
 
             twitch_login, twitch_user_id, _ = streamer_data
-            last = self._last_autoban.get(channel_name.lower())
+            channel_key = self._normalize_channel_login(channel_name)
+            last = self._last_autoban.get(channel_key)
             if not last:
                 await ctx.send(f"@{ctx.author.name} Kein Auto-Ban-Eintrag zum Aufheben gefunden.")
                 return
