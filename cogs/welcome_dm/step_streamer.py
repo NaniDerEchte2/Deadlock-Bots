@@ -11,7 +11,7 @@ Step 1  (StreamerIntroView):
 Step 2  (StreamerRequirementsView):
   Zeigt die Anforderungen und führt durch 3 Schritte:
     1. Voraussetzungen via Modal bestätigen ("bestätigen")
-    2. Twitch-Link eintragen (wird gespeichert, aber noch nicht freigeschaltet)
+    2. Twitch-Bot autorisieren (Kanal wird automatisch erkannt)
     3. Button "Verifizierung anstoßen" vergibt Rolle + Kontroll-Ping
   Zusätzlich: "Abbrechen" beendet ohne Änderungen.
 
@@ -31,20 +31,16 @@ from __future__ import annotations
 
 import os
 import logging
-import re
 import textwrap
 from typing import Optional, Tuple
-from urllib.parse import urlparse
 
 log = logging.getLogger("StreamerOnboarding")
 
 try:
     from cogs.twitch import storage as twitch_storage
-    from cogs.twitch.base import TwitchBaseCog
 except Exception as exc:  # pragma: no cover - optional dependency
     log.warning("StreamerOnboarding: Twitch-Module nicht verfügbar: %s", exc, exc_info=True)
     twitch_storage = None  # type: ignore[assignment]
-    TwitchBaseCog = None  # type: ignore[assignment]
 
 import discord
 from discord.ext import commands
@@ -305,88 +301,6 @@ async def _disable_all_and_edit(
         log.debug("response edit failed: %r", e)
 
 
-# ------------------------------
-# Twitch-Helper
-# ------------------------------
-def _normalize_twitch_login(raw: str) -> str:
-    if TwitchBaseCog is not None:
-        try:
-            normalized = TwitchBaseCog._normalize_login(raw)
-            if normalized:
-                return normalized
-        except Exception as exc:  # pragma: no cover - defensive fallback
-            log.debug("TwitchBaseCog._normalize_login failed: %r", exc)
-
-    value = (raw or "").strip()
-    if not value:
-        return ""
-
-    value = value.split("?")[0].split("#")[0].strip()
-    if "twitch.tv" in value.lower():
-        if "//" not in value:
-            value = f"https://{value}"
-        try:
-            parsed = urlparse(value)
-            path = (parsed.path or "").strip("/")
-            if path:
-                value = path.split("/")[0]
-        except Exception as exc:
-            log.debug("Twitch-URL konnte nicht geparst werden (%r): %s", value, exc)
-            return ""
-
-    value = value.strip().lstrip("@")
-    return re.sub(r"[^a-z0-9_]", "", value.lower())
-
-
-def _store_twitch_signup(
-    discord_user_id: int,
-    raw_input: str,
-    *,
-    discord_display_name: Optional[str] = None,
-) -> Tuple[bool, Optional[str], str]:
-    login = _normalize_twitch_login(raw_input)
-    if not login:
-        return False, None, "⚠️ Der eingegebene Twitch-Link oder Login wirkt ungültig. Bitte probiere es erneut."
-
-    if twitch_storage is None:
-        log.error("Twitch storage module unavailable – cannot persist signup for %s", discord_user_id)
-        return False, None, "⚠️ Interner Fehler beim Speichern deines Twitch-Profils. Bitte informiere das Team."
-
-    try:
-        with twitch_storage.get_conn() as conn:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO twitch_streamers (twitch_login) VALUES (?)",
-                (login,),
-            )
-            inserted = bool(cur.rowcount)
-
-            conn.execute(
-                "UPDATE twitch_streamers "
-                "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL, "
-                "    discord_user_id=?, discord_display_name=?, is_on_discord=1 "
-                "WHERE twitch_login=?",
-                (
-                    str(discord_user_id),
-                    str(discord_display_name or ""),
-                    login,
-                ),
-            )
-    except Exception as exc:  # pragma: no cover - robust gegen DB-Fehler
-        log.exception("Failed to persist Twitch signup for %s: %r", discord_user_id, exc)
-        return (
-            False,
-            None,
-            "⚠️ Dein Twitch-Profil konnte nicht gespeichert werden. Bitte versuche es später erneut oder melde dich beim Team.",
-        )
-
-    if inserted:
-        log.info("Twitch signup stored for user %s with login %s", discord_user_id, login)
-    else:
-        log.info("Twitch signup updated for user %s with existing login %s", discord_user_id, login)
-
-    return True, login, ""
-
-
 class StreamerRequirementsAcknowledgementModal(discord.ui.Modal):
     """Fragt aktiv ab, dass die Voraussetzungen verstanden wurden."""
 
@@ -423,58 +337,6 @@ class StreamerRequirementsAcknowledgementModal(discord.ui.Modal):
             )
         except Exception:
             log.debug("Ack modal error response failed", exc_info=True)
-
-
-class StreamerTwitchProfileModal(discord.ui.Modal):
-    """Fragt nach dem Twitch-Profil und speichert es direkt unverifiziert."""
-
-    def __init__(self, parent_view: "StreamerRequirementsView"):
-        super().__init__(title="Twitch-Profil angeben")
-        self.parent_view = parent_view
-        self.twitch_input = discord.ui.TextInput(
-            label="Dein Twitch-Profil oder Login",
-            placeholder="z. B. twitch.tv/DeinName",
-            required=True,
-            max_length=100,
-        )
-        self.add_item(self.twitch_input)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-
-        display_label = (
-            getattr(interaction.user, "global_name", None)
-            or getattr(interaction.user, "display_name", None)
-            or str(interaction.user)
-        )
-        ok, login, error_msg = _store_twitch_signup(
-            interaction.user.id,
-            str(self.twitch_input.value),
-            discord_display_name=display_label,
-        )
-        if not ok or not login:
-            await interaction.followup.send(error_msg, ephemeral=True)
-            return
-
-        if self.parent_view is not None:
-            await self.parent_view.mark_twitch_saved(interaction, twitch_login=login)
-
-        await _safe_send(
-            interaction,
-            content="✅ Dein Twitch-Profil wurde gespeichert. Starte jetzt die Verifizierung, sobald alles erfüllt ist.",
-            ephemeral=True,
-        )
-
-    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:  # pragma: no cover - defensive
-        log.exception("StreamerTwitchProfileModal failed: %r", error)
-        try:
-            await _safe_send(
-                interaction,
-                content="⚠️ Unerwarteter Fehler beim Speichern deines Twitch-Profils. Bitte probiere es später erneut.",
-                ephemeral=True,
-            )
-        except Exception:
-            log.debug("Modal error response failed", exc_info=True)
 
 
 # ------------------------------
@@ -613,7 +475,7 @@ class StreamerIntroView(StepView):
 # Schritt 2: Anforderungen + Abschluss
 # ------------------------------
 class StreamerRequirementsView(StepView):
-    """Mehrstufige Erfassung der Voraussetzungen, Twitch-Daten und finaler Start der Verifizierung."""
+    """Mehrstufige Erfassung der Voraussetzungen und finaler Start der Verifizierung."""
 
     def __init__(self):
         super().__init__()
@@ -633,15 +495,14 @@ class StreamerRequirementsView(StepView):
         verification_started: bool = False,
         verification_message: Optional[str] = None,
     ) -> discord.Embed:
-        twitch_entry = f"{'✅' if twitch_login else '⬜'} Twitch-Profil gespeichert"
-        if twitch_login:
-            twitch_entry += f" (**{twitch_login}**)"
-
         raid_entry = f"{'✅' if raid_bot_authorized else '⬜'} Twitch-Bot autorisiert (Pflicht)"
+        if twitch_login:
+            raid_entry += f" (**{twitch_login}**)"
+        else:
+            raid_entry += " (Kanal wird automatisch erkannt)"
 
         checklist = [
             f"{'✅' if acknowledged else '⬜'} Voraussetzungen bestätigt",
-            twitch_entry,
             raid_entry,
             f"{'✅' if verification_started else '⬜'} Verifizierung angestoßen",
         ]
@@ -664,6 +525,7 @@ class StreamerRequirementsView(StepView):
 
             **Wie aktivieren?**
             Klick auf den Button unten → Autorisiere auf Twitch → Fertig! 🎉
+            Dein **Twitch-Kanal wird automatisch erkannt** – kein manuelles Eingeben nötig.
 
             **Berechtigungen des Bots:**
             ✓ Raids in deinem Namen starten
@@ -693,7 +555,7 @@ class StreamerRequirementsView(StepView):
 
         if twitch_login:
             requirement_text = (
-                f"✅ **Twitch-Profil gespeichert:** **{twitch_login}**\n"
+                f"✅ **Twitch-Kanal erkannt:** **{twitch_login}**\n"
                 "Ein Team-Mitglied prüft dein Profil und schaltet dich nach erfolgreicher Kontrolle frei.\n\n"
                 f"{requirement_text}"
             )
@@ -711,9 +573,8 @@ class StreamerRequirementsView(StepView):
                 "\n\n**🎯 Nächste Schritte:**\n"
                 "Nutze die Buttons unten, um:\n"
                 "1️⃣ Voraussetzungen bestätigen\n"
-                "2️⃣ Twitch-Link angeben\n"
-                "3️⃣ Twitch-Bot autorisieren (Pflicht)\n"
-                "4️⃣ Verifizierung starten"
+                "2️⃣ Twitch-Bot autorisieren (Pflicht)\n"
+                "3️⃣ Verifizierung starten"
             )
 
         e = discord.Embed(
@@ -731,10 +592,8 @@ class StreamerRequirementsView(StepView):
 
             if child.custom_id == "wdm:streamer:req_ack":
                 child.disabled = self.acknowledged
-            elif child.custom_id == "wdm:streamer:req_twitch":
-                child.disabled = (not self.acknowledged) or self.verification_started
             elif child.custom_id == "wdm:streamer:req_raid_bot":
-                child.disabled = (not self.twitch_login) or self.raid_bot_authorized or self.verification_started
+                child.disabled = (not self.acknowledged) or self.raid_bot_authorized or self.verification_started
             elif child.custom_id == "wdm:streamer:req_verify":
                 child.disabled = not (self.acknowledged and self.twitch_login and self.raid_bot_authorized and not self.verification_started)
             elif child.custom_id == "wdm:streamer:req_cancel":
@@ -783,35 +642,11 @@ class StreamerRequirementsView(StepView):
         await interaction.response.send_modal(StreamerRequirementsAcknowledgementModal(self))
 
     @discord.ui.button(
-        label="2️⃣ Twitch-Link angeben",
-        style=discord.ButtonStyle.primary,
-        custom_id="wdm:streamer:req_twitch",
-    )
-    async def btn_twitch(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.acknowledged:
-            await _safe_send(
-                interaction,
-                content="⚠️ Bitte bestätige zuerst die Voraussetzungen (Button 1️⃣).",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.send_modal(StreamerTwitchProfileModal(self))
-
-    @discord.ui.button(
-        label="3️⃣ Twitch-Bot autorisieren",
+        label="2️⃣ Twitch-Bot autorisieren",
         style=discord.ButtonStyle.primary,
         custom_id="wdm:streamer:req_raid_bot",
     )
     async def btn_raid_bot(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.twitch_login:
-            await _safe_send(
-                interaction,
-                content="⚠️ Bitte gib zuerst deinen Twitch-Link an (Button 2️⃣).",
-                ephemeral=True,
-            )
-            return
-
         if self.raid_bot_authorized:
             await _safe_send(
                 interaction,
@@ -833,8 +668,9 @@ class StreamerRequirementsView(StepView):
                 )
                 return
 
-            # OAuth-URL generieren
-            auth_url = auth_mgr.generate_auth_url(self.twitch_login)
+            # OAuth-URL generieren (Discord-ID im State, Kanal wird automatisch erkannt)
+            state_payload = f"discord:{interaction.user.id}"
+            auth_url = auth_mgr.generate_auth_url(state_payload)
 
             # View mit Link-Button erstellen
             view = discord.ui.View()
@@ -849,8 +685,9 @@ class StreamerRequirementsView(StepView):
             await _safe_send(
                 interaction,
                 content=(
-                    f"**🎯 Twitch-Bot autorisieren für {self.twitch_login}**\n\n"
-                    "**Pflicht für Streamer-Partner:** Ohne OAuth keine Freischaltung.\n\n"
+                    "**🎯 Twitch-Bot autorisieren**\n\n"
+                    "**Pflicht für Streamer-Partner:** Ohne OAuth keine Freischaltung.\n"
+                    "Dein **Twitch-Kanal wird automatisch erkannt** – kein Link nötig.\n\n"
                     "**Was passiert jetzt?**\n"
                     "1. Klick auf den Button unten\n"
                     "2. Du wirst zu Twitch weitergeleitet\n"
@@ -899,41 +736,81 @@ class StreamerRequirementsView(StepView):
 
                 await btn_interaction.response.defer(ephemeral=True)
 
-                # Prüfe, ob Autorisierung in DB vorhanden
-                if twitch_storage:
-                    try:
-                        with twitch_storage.get_conn() as conn:
-                            row = conn.execute(
-                                "SELECT raid_enabled FROM twitch_raid_auth WHERE twitch_login = ?",
-                                (self.twitch_login,),
-                            ).fetchone()
+                # Prüfe, ob Autorisierung in DB vorhanden + Kanal automatisch erkannt
+                if not twitch_storage:
+                    await btn_interaction.followup.send(
+                        "⚠️ Twitch-Modul ist derzeit nicht verfügbar. Bitte informiere einen Admin.",
+                        ephemeral=True,
+                    )
+                    return
 
+                try:
+                    discord_user_id = str(btn_interaction.user.id)
+                    display_label = (
+                        getattr(btn_interaction.user, "global_name", None)
+                        or getattr(btn_interaction.user, "display_name", None)
+                        or str(btn_interaction.user)
+                    )
+
+                    with twitch_storage.get_conn() as conn:
+                        row = conn.execute(
+                            "SELECT twitch_login FROM twitch_streamers WHERE discord_user_id = ?",
+                            (discord_user_id,),
+                        ).fetchone()
+                        twitch_login = None
                         if row:
-                            self.raid_bot_authorized = True
-                            await self._update_message(btn_interaction)
+                            twitch_login = row["twitch_login"] if hasattr(row, "keys") else row[0]
+
+                        if not twitch_login:
                             await btn_interaction.followup.send(
-                                "✅ **Twitch-Bot erfolgreich autorisiert!**\n"
-                                "Du kannst jetzt die Verifizierung anstoßen (Button 4️⃣).",
-                                ephemeral=True
+                                "⚠️ **Kanal noch nicht erkannt**\n\n"
+                                "Falls du gerade autorisiert hast, warte bitte kurz (ca. 10 Sek.) "
+                                "und klicke den Button erneut.",
+                                ephemeral=True,
                             )
-                            confirm_button.disabled = True
-                            await btn_interaction.edit_original_response(view=confirm_view)
-                        else:
-                            await btn_interaction.followup.send(
-                                "⚠️ **Autorisierung noch nicht gefunden (OAuth fehlt)**\n\n"
-                                "Mögliche Gründe:\n"
-                                "• Du hast den Bot noch nicht auf Twitch autorisiert\n"
-                                "• Die Autorisierung wurde noch nicht synchronisiert (warte 10 Sek.)\n\n"
-                                "Wichtig: Ohne Twitch-Bot-Autorisierung keine Freischaltung.\n"
-                                "Stelle sicher, dass du auf Twitch autorisiert hast und versuche es dann erneut.",
-                                ephemeral=True
+                            return
+
+                        auth_row = conn.execute(
+                            "SELECT raid_enabled FROM twitch_raid_auth WHERE lower(twitch_login)=lower(?)",
+                            (twitch_login,),
+                        ).fetchone()
+
+                        if auth_row:
+                            conn.execute(
+                                "UPDATE twitch_streamers SET discord_display_name=?, is_on_discord=1 "
+                                "WHERE lower(twitch_login)=lower(?)",
+                                (display_label, twitch_login),
                             )
-                    except Exception as e:
-                        log.exception("Failed to check raid auth: %r", e)
+                            conn.commit()
+
+                    if auth_row:
+                        self.twitch_login = twitch_login
+                        self.raid_bot_authorized = True
+                        await self._update_message(btn_interaction)
                         await btn_interaction.followup.send(
-                            "⚠️ Fehler beim Prüfen der Autorisierung. Bitte versuche es erneut oder kontaktiere einen Admin.",
-                            ephemeral=True
+                            "✅ **Twitch-Bot erfolgreich autorisiert!**\n"
+                            f"**Kanal erkannt:** **{twitch_login}**\n"
+                            "Du kannst jetzt die Verifizierung anstoßen (Button 3️⃣).",
+                            ephemeral=True,
                         )
+                        confirm_button.disabled = True
+                        await btn_interaction.edit_original_response(view=confirm_view)
+                    else:
+                        await btn_interaction.followup.send(
+                            "⚠️ **Autorisierung noch nicht gefunden (OAuth fehlt)**\n\n"
+                            "Mögliche Gründe:\n"
+                            "• Du hast den Bot noch nicht auf Twitch autorisiert\n"
+                            "• Die Autorisierung wurde noch nicht synchronisiert (warte 10 Sek.)\n\n"
+                            "Wichtig: Ohne Twitch-Bot-Autorisierung keine Freischaltung.\n"
+                            "Stelle sicher, dass du auf Twitch autorisiert hast und versuche es dann erneut.",
+                            ephemeral=True,
+                        )
+                except Exception as e:
+                    log.exception("Failed to check raid auth: %r", e)
+                    await btn_interaction.followup.send(
+                        "⚠️ Fehler beim Prüfen der Autorisierung. Bitte versuche es erneut oder kontaktiere einen Admin.",
+                        ephemeral=True,
+                    )
 
             confirm_button.callback = confirm_callback
             confirm_view.add_item(confirm_button)
@@ -953,7 +830,7 @@ class StreamerRequirementsView(StepView):
             )
 
     @discord.ui.button(
-        label="4️⃣ Verifizierung starten",
+        label="3️⃣ Verifizierung starten",
         style=discord.ButtonStyle.success,
         custom_id="wdm:streamer:req_verify",
     )
@@ -962,10 +839,8 @@ class StreamerRequirementsView(StepView):
             missing = []
             if not self.acknowledged:
                 missing.append("1️⃣ Voraussetzungen bestätigen")
-            if not self.twitch_login:
-                missing.append("2️⃣ Twitch-Profil angeben")
-            if not self.raid_bot_authorized:
-                missing.append("3️⃣ Twitch-Bot autorisieren (Pflicht)")
+            if not self.raid_bot_authorized or not self.twitch_login:
+                missing.append("2️⃣ Twitch-Bot autorisieren (Pflicht)")
 
             await _safe_send(
                 interaction,
@@ -1020,14 +895,10 @@ class StreamerRequirementsView(StepView):
             content=(
                 "✅ **Voraussetzungen bestätigt!**\n\n"
                 "Wir schauen kurz, ob du alles erfüllst.\n"
-                "Als nächstes: Gib bitte deinen Twitch-Link an (Button 2️⃣)."
+                "Als nächstes: Autorisiere den Twitch-Bot (Button 2️⃣)."
             ),
             ephemeral=True,
         )
-
-    async def mark_twitch_saved(self, interaction: discord.Interaction, *, twitch_login: str) -> None:
-        self.twitch_login = twitch_login
-        await self._update_message(interaction)
 
 
 # ---------------------------------------------------------
