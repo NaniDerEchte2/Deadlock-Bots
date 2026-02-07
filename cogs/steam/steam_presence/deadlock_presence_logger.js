@@ -25,6 +25,13 @@ class DeadlockPresenceLogger {
     this.friendIds = new Set();
     this.started = false;
 
+    // Rich presence batching config to avoid Steam client timeouts
+    this.richPresenceBatchSize = Number.parseInt(options.richPresenceBatchSize || process.env.RICH_PRESENCE_BATCH_SIZE || '12', 10);
+    this.richPresenceBatchDelayMs = Number.parseInt(options.richPresenceBatchDelayMs || process.env.RICH_PRESENCE_BATCH_DELAY_MS || '800', 10);
+
+    if (this.richPresenceBatchSize < 1) this.richPresenceBatchSize = 12;
+    if (this.richPresenceBatchDelayMs < 100) this.richPresenceBatchDelayMs = 800;
+
     this.handlers = {
       loggedOn: this.handleLoggedOn.bind(this),
       friendsList: this.handleFriendsList.bind(this),
@@ -78,7 +85,16 @@ class DeadlockPresenceLogger {
     });
     this.friendIds = new Set(allFriends);
     if (!allFriends.length) return;
-    this.fetchPersonasAndRichPresence(allFriends);
+
+    // Batch friends to avoid Steam client timeouts with large friend lists
+    this.log('info', 'Loading friend presence data', {
+      total_friends: allFriends.length,
+      batch_size: this.richPresenceBatchSize,
+      batch_delay_ms: this.richPresenceBatchDelayMs,
+      estimated_duration_sec: Math.ceil(allFriends.length / this.richPresenceBatchSize) * (this.richPresenceBatchDelayMs / 1000)
+    });
+
+    this.fetchPersonasAndRichPresenceBatched(allFriends);
   }
 
   handleUser(steamID) {
@@ -99,6 +115,29 @@ class DeadlockPresenceLogger {
     };
     this.writeSnapshotForUser(sid, persona, pushRichObj);
     this.fetchAndWriteRichPresence([sid]);
+  }
+
+  fetchPersonasAndRichPresenceBatched(ids) {
+    const steamIds = Array.from(new Set(ids.map((sid) => this.toSteamId(sid)).filter(Boolean)));
+    if (!steamIds.length) return;
+
+    // Split into batches to avoid Steam client timeouts
+    const batches = [];
+    for (let i = 0; i < steamIds.length; i += this.richPresenceBatchSize) {
+      batches.push(steamIds.slice(i, i + this.richPresenceBatchSize));
+    }
+
+    // Process batches with delay between them
+    batches.forEach((batch, index) => {
+      setTimeout(() => {
+        this.log('debug', 'Processing friend presence batch', {
+          batch: index + 1,
+          total_batches: batches.length,
+          batch_size: batch.length
+        });
+        this.fetchPersonasAndRichPresence(batch);
+      }, index * this.richPresenceBatchDelayMs);
+    });
   }
 
   fetchPersonasAndRichPresence(ids) {
