@@ -68,6 +68,52 @@ class EventSubWSListener:
         cond = condition or {"broadcaster_user_id": str(broadcaster_id)}
         self._subscriptions.append((sub_type, str(broadcaster_id), cond))
 
+    async def add_subscription_dynamic(
+        self,
+        sub_type: str,
+        broadcaster_id: str,
+        condition: Optional[Dict] = None,
+        oauth_token: Optional[str] = None
+    ) -> bool:
+        """
+        Add and register a subscription dynamically while the listener is running.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        if not self._session_id:
+            self.log.error("EventSub WS: Keine Session ID verfügbar für dynamische Subscription")
+            return False
+
+        if self.cost >= 10:
+            self.log.error("EventSub WS: Listener ist voll (10/10), kann %s für %s nicht hinzufügen", sub_type, broadcaster_id)
+            return False
+
+        cond = condition or {"broadcaster_user_id": str(broadcaster_id)}
+
+        # Resolve token if not provided
+        token = oauth_token
+        if not token:
+            token = await self._resolve_token()
+        if not token:
+            self.log.error("EventSub WS: Kein Token verfügbar für dynamische Subscription")
+            return False
+
+        try:
+            await self.api.subscribe_eventsub_websocket(
+                session_id=self._session_id,
+                sub_type=sub_type,
+                condition=cond,
+                oauth_token=token,
+            )
+            # Add to tracking list
+            self._subscriptions.append((sub_type, str(broadcaster_id), cond))
+            self.log.info("EventSub WS: Dynamische Subscription hinzugefügt: %s für %s (%d/%d)", sub_type, broadcaster_id, self.cost, 10)
+            return True
+        except Exception as e:
+            self.log.error("EventSub WS: Dynamische Subscription fehlgeschlagen für %s (%s): %s", broadcaster_id, sub_type, e)
+            return False
+
     def set_callback(self, sub_type: str, callback: EventCallback):
         """Set callback for a specific subscription type."""
         self._callbacks[sub_type] = callback
@@ -123,28 +169,46 @@ class EventSubWSListener:
             raise ConnectionResetError("EventSub WS: Connection closed unexpectedly")
 
     async def _wait_for_welcome(self, ws) -> Optional[str]:
-        try:
-            msg = await ws.receive(timeout=10)
-        except asyncio.TimeoutError:
-            self.log.error("EventSub WS: Welcome timeout")
-            return None
-        if msg.type != aiohttp.WSMsgType.TEXT:
-            return None
-        try:
-            data = json.loads(msg.data)
-        except Exception:
-            return None
-        meta = data.get("metadata") or {}
-        if meta.get("message_type") != "session_welcome":
-            return None
-        sess = data.get("payload", {}).get("session", {})
-        session_id = sess.get("id")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 15
 
-        # Store session_id for dynamic subscriptions
-        if session_id:
-            self._session_id = session_id
+        while True:
+            timeout = max(0.0, deadline - loop.time())
+            if timeout <= 0:
+                self.log.error("EventSub WS: Welcome timeout")
+                return None
+            try:
+                msg = await ws.receive(timeout=timeout)
+            except asyncio.TimeoutError:
+                self.log.error("EventSub WS: Welcome timeout")
+                return None
 
-        return session_id
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                except Exception:
+                    continue
+                meta = data.get("metadata") or {}
+                mtype = meta.get("message_type")
+                if mtype == "session_welcome":
+                    sess = data.get("payload", {}).get("session", {})
+                    session_id = sess.get("id")
+
+                    # Store session_id for dynamic subscriptions
+                    if session_id:
+                        self._session_id = session_id
+
+                    return session_id
+                if mtype == "session_reconnect":
+                    target = data.get("payload", {}).get("session", {}).get("reconnect_url")
+                    self.log.info("EventSub WS: Reconnect requested to %s", target)
+                    raise EventSubReconnect(target)
+                if mtype == "session_keepalive":
+                    continue
+                continue
+
+            if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                return None
 
     async def _resolve_token(self) -> Optional[str]:
         """Resolve the token to be used for all subscriptions on this WS."""

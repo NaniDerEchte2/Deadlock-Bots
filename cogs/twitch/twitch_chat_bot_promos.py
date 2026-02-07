@@ -3,7 +3,7 @@ import logging
 import random
 import time
 from collections import deque
-from typing import Deque, List, Tuple
+from typing import Deque, List, Optional, Tuple
 
 from .storage import get_conn
 from .twitch_chat_bot_constants import (
@@ -27,11 +27,29 @@ log = logging.getLogger("TwitchStreams.ChatBot")
 
 class PromoMixin:
     def _promo_channel_allowed(self, login: str) -> bool:
-        if not _PROMO_MESSAGES or not _PROMO_DISCORD_INVITE:
+        if not _PROMO_MESSAGES:
             return False
         if _PROMO_CHANNEL_ALLOWLIST and login not in _PROMO_CHANNEL_ALLOWLIST:
             return False
         return True
+
+    async def _get_promo_invite(self, login: str) -> tuple[Optional[str], bool]:
+        resolver = getattr(self, "_resolve_streamer_invite", None)
+        if callable(resolver):
+            try:
+                result = await resolver(login)
+                if isinstance(result, tuple):
+                    invite, is_specific = result
+                else:
+                    invite, is_specific = result, True
+                if invite:
+                    return str(invite), bool(is_specific)
+            except Exception:
+                log.debug("_resolve_streamer_invite failed for %s", login, exc_info=True)
+
+        if _PROMO_DISCORD_INVITE:
+            return _PROMO_DISCORD_INVITE, False
+        return None, False
 
     def _prune_promo_activity(self, bucket: Deque[Tuple[float, str]], now: float) -> None:
         window_sec = _PROMO_ACTIVITY_WINDOW_MIN * 60
@@ -86,7 +104,10 @@ class PromoMixin:
             return
         self._last_promo_attempt[login] = now
 
-        msg = random.choice(_PROMO_MESSAGES).format(invite=_PROMO_DISCORD_INVITE)
+        invite, is_specific = await self._get_promo_invite(login)
+        if not invite:
+            return
+        msg = random.choice(_PROMO_MESSAGES).format(invite=invite)
 
         class _Channel:
             __slots__ = ("name", "id")
@@ -97,6 +118,10 @@ class PromoMixin:
         ok = await self._send_chat_message(_Channel(login, channel_id), msg)
         if ok:
             self._last_promo_sent[login] = now
+            if is_specific:
+                marker = getattr(self, "_mark_streamer_invite_sent", None)
+                if callable(marker):
+                    marker(login)
             log.info(
                 "Chat-Promo gesendet in %s (activity=%d msgs/%d chatters, cooldown=%.1f min)",
                 login,
@@ -170,7 +195,10 @@ class PromoMixin:
             if now - last < interval_sec:
                 continue
 
-            msg = random.choice(_PROMO_MESSAGES).format(invite=_PROMO_DISCORD_INVITE)
+            invite, is_specific = await self._get_promo_invite(login)
+            if not invite:
+                continue
+            msg = random.choice(_PROMO_MESSAGES).format(invite=invite)
 
             class _Channel:
                 __slots__ = ("name", "id")
@@ -181,6 +209,10 @@ class PromoMixin:
             ok = await self._send_chat_message(_Channel(login, broadcaster_id), msg)
             if ok:
                 self._last_promo_sent[login] = now
+                if is_specific:
+                    marker = getattr(self, "_mark_streamer_invite_sent", None)
+                    if callable(marker):
+                        marker(login)
                 log.info("Chat-Promo gesendet in %s", login)
             else:
                 log.debug("Chat-Promo in %s fehlgeschlagen", login)

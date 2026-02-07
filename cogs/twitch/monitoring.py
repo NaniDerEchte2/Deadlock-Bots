@@ -86,7 +86,7 @@ class TwitchMonitoringMixin:
             return []
 
     def _get_chat_scope_streamers_for_eventsub(self) -> List[Dict[str, str]]:
-        """Broadcaster mit OAuth + Chat-Scopes (für stream.online Listener)."""
+        """Broadcaster mit OAuth + Chat-Scopes (aktuell nicht für EventSub genutzt, nur für Info)."""
         try:
             with storage.get_conn() as c:
                 rows = c.execute(
@@ -229,15 +229,32 @@ class TwitchMonitoringMixin:
             return
 
         # 1. Broadcaster sammeln
-        # stream.online wird NICHT hier abonniert – das wird durch _periodic_channel_join
-        # alle 30 Min erledigt. Zwei separate EventSub-WS-Sessions (TwitchIO + unser Listener)
-        # auf derselben Client-ID führen zu 429 "total cost exceeded" bei Twitch.
-        offline_streamers = self._get_raid_enabled_streamers_for_eventsub()
+        # Strategie: Polling erkennt Go-Live (alle 15s), dann wird stream.offline dynamisch hinzugefügt
+        # Beim Start: Subscribe stream.offline NUR für aktuell live Streams
+        # So sparen wir Subscription-Slots: nur Live-Streams werden überwacht
+        raid_enabled_streamers = self._get_raid_enabled_streamers_for_eventsub()
 
-        if not offline_streamers:
-            log.info("EventSub WS: Keine stream.offline Subscriptions notwendig.")
+        if not raid_enabled_streamers:
+            log.info("EventSub WS: Keine Streamer für EventSub monitoring gefunden.")
             setattr(self, "_eventsub_ws_started", False)  # Reset flag
             return
+
+        # Hole aktuellen Live-Status für alle raid-enabled Streamer
+        raid_logins = [s["twitch_login"] for s in raid_enabled_streamers]
+        currently_live_streams = {}
+        try:
+            live_streams = await self.api.get_streams_by_logins(raid_logins)
+            for stream in live_streams:
+                login_lower = (stream.get("user_login") or "").lower()
+                if login_lower:
+                    currently_live_streams[login_lower] = stream
+            log.info(
+                "EventSub WS: %d von %d raid-enabled Streamern sind aktuell live",
+                len(currently_live_streams),
+                len(raid_enabled_streamers)
+            )
+        except Exception:
+            log.exception("EventSub WS: Konnte Live-Status nicht abrufen, subscribe keine stream.offline beim Start")
         
         # 2. Token Resolver vorbereiten
         token_resolver = None
@@ -264,37 +281,81 @@ class TwitchMonitoringMixin:
         async def _offline_cb(bid: str, login: str, _event: dict):
             try:
                 await self._on_eventsub_stream_offline(bid, login)
+                # stream.offline Subscription bleibt aktiv bis zum nächsten Restart
+                # oder bis der Stream wieder live geht (dann wird sie eh neu erstellt)
             except Exception:
                 log.exception("EventSub WS: Offline-Callback fehlgeschlagen für %s", login)
 
-        async def _online_cb(bid: str, login: str, _event: dict):
+        # stream.online wird NICHT mehr über EventSub überwacht!
+        # Polling (_tick) erkennt Go-Live und ruft dann _handle_stream_went_live() auf
+        async def _handle_stream_went_live(bid: str, login: str):
+            """
+            Wird vom Polling aufgerufen wenn ein Stream live geht.
+            Subscribed stream.offline und joined Chat-Bot.
+            """
             try:
+                # 1. Chat-Bot joinen (falls Partner mit Chat-Scope)
                 chat_bot = getattr(self, "_twitch_chat_bot", None)
-                if not chat_bot:
-                    log.debug("EventSub WS: Chat Bot nicht verfügbar für stream.online von %s", login)
-                    return
-                login_norm = login or ""
-                if not login_norm:
-                    try:
-                        with storage.get_conn() as c:
-                            row = c.execute(
-                                "SELECT twitch_login FROM twitch_streamers WHERE twitch_user_id = ?",
-                                (bid,)
-                            ).fetchone()
-                        if row:
-                            login_norm = str(row[0]).lower()
-                    except Exception:
-                        pass
-                if not login_norm:
-                    return
-                monitored = getattr(chat_bot, "_monitored_streamers", set())
-                if login_norm in monitored:
-                    return
-                success = await chat_bot.join(login_norm, channel_id=bid)
-                if success:
-                    log.info("EventSub WS: Chat-Bot joined %s (%s) nach Go-Live", login_norm, bid)
+                if chat_bot:
+                    login_norm = login or ""
+                    if not login_norm:
+                        try:
+                            with storage.get_conn() as c:
+                                row = c.execute(
+                                    "SELECT twitch_login FROM twitch_streamers WHERE twitch_user_id = ?",
+                                    (bid,)
+                                ).fetchone()
+                            if row:
+                                login_norm = str(row[0]).lower()
+                        except Exception:
+                            pass
+                    if login_norm:
+                        monitored = getattr(chat_bot, "_monitored_streamers", set())
+                        if login_norm not in monitored:
+                            success = await chat_bot.join(login_norm, channel_id=bid)
+                            if success:
+                                log.info("Polling: Chat-Bot joined %s (%s) nach Go-Live", login_norm, bid)
+
+                # 2. Dynamisch stream.offline Subscription hinzufügen
+                # Jetzt wo der Stream live ist, wollen wir wissen, wann er offline geht (für Auto-Raid)
+                listeners_list = getattr(self, "_eventsub_ws_listeners", [])
+                target_listener = None
+                for l in listeners_list:
+                    if l.has_capacity and not l.is_failed:
+                        target_listener = l
+                        break
+
+                if target_listener:
+                    # Hole Bot Token
+                    bot_token_mgr = getattr(self, "_bot_token_manager", None)
+                    if bot_token_mgr:
+                        try:
+                            token, _ = await bot_token_mgr.get_valid_token()
+                            if token:
+                                token = token.strip()
+                                if token.lower().startswith("oauth:"):
+                                    token = token[6:]
+
+                                success = await target_listener.add_subscription_dynamic(
+                                    sub_type="stream.offline",
+                                    broadcaster_id=bid,
+                                    oauth_token=token
+                                )
+                                if success:
+                                    log.info(
+                                        "Polling: stream.offline dynamisch hinzugefügt für %s (jetzt live → warte auf offline)",
+                                        login or bid
+                                    )
+                        except Exception:
+                            log.exception("Polling: Konnte stream.offline nicht dynamisch hinzufügen für %s", login or bid)
+                else:
+                    log.warning("Polling: Kein EventSub Listener mit Kapazität für stream.offline von %s", login or bid)
+
             except Exception:
-                log.exception("EventSub WS: Online-Callback fehlgeschlagen für %s", login or bid)
+                log.exception("Polling: Go-Live Handler fehlgeschlagen für %s", login or bid)
+
+        # Speichere Handler als Instanz-Attribut damit Polling darauf zugreifen kann
+        setattr(self, "_handle_stream_went_live", _handle_stream_went_live)
 
         async def _raid_cb(to_bid: str, to_login: str, event: dict):
             """
@@ -332,35 +393,42 @@ class TwitchMonitoringMixin:
                 log.exception("EventSub WS: Raid-Callback fehlgeschlagen für %s", to_login or to_bid)
 
         def get_or_create_listener() -> Optional[EventSubWSListener]:
-            # Versuche existierenden Listener mit Platz (< 20 cost)
+            # Versuche existierenden Listener mit Platz (< 10 cost per transport limit)
             for l in listeners:
-                if l.cost < 20:
+                if l.cost < 10:
                     return l
-            # Wenn kein Platz und < 10 Listener, erstelle neuen
-            if len(listeners) < 10:
+            # Wenn kein Platz und < 3 Listener (Twitch erlaubt max 3 WebSocket Transports), erstelle neuen
+            if len(listeners) < 3:
                 new_l = EventSubWSListener(self.api, log, token_resolver=token_resolver)
                 new_l.set_callback("stream.offline", _offline_cb)
-                new_l.set_callback("stream.online", _online_cb)
                 new_l.set_callback("channel.raid", _raid_cb)
                 listeners.append(new_l)
                 return new_l
             return None
 
-        # 3. Subscriptions verteilen (nur stream.offline)
+        # 3. Subscriptions verteilen (stream.offline NUR für aktuell live Streams)
+        # Go-Live Detection erfolgt über Polling (_tick), das dann _handle_stream_went_live() aufruft
         # channel.raid wird dynamisch erstellt wenn ein Raid gestartet wird
         subs_added = 0
-        for entry in offline_streamers:
+        for entry in raid_enabled_streamers:
             bid = entry.get("twitch_user_id")
-            if not bid: continue
-            l = get_or_create_listener()
-            if l:
-                l.add_subscription("stream.offline", str(bid))
-                subs_added += 1
-            else:
-                log.error("EventSub WS: Limit erreicht (3 Connections, alle voll). Konnte stream.offline für %s nicht abonnieren.", bid)
+            login = entry.get("twitch_login", "").lower()
+            if not bid:
+                continue
+
+            # Subscribe stream.offline NUR wenn Stream aktuell live ist
+            if login in currently_live_streams:
+                l = get_or_create_listener()
+                if l:
+                    l.add_subscription("stream.offline", str(bid))
+                    subs_added += 1
+                    log.debug("EventSub WS: stream.offline beim Start subscribed für %s (aktuell live)", login)
+                else:
+                    log.error("EventSub WS: Limit erreicht (3 Connections, alle voll). Konnte stream.offline für %s nicht abonnieren.", login)
 
         log.info(
-            "EventSub WS: %d stream.offline Subscriptions auf %d WebSocket(s) verteilt.",
+            "EventSub WS: %d stream.offline Subscriptions auf %d WebSocket(s) verteilt (nur für live Streams). "
+            "Go-Live Detection erfolgt via Polling.",
             subs_added, len(listeners)
         )
 
@@ -689,6 +757,27 @@ class TwitchMonitoringMixin:
             is_archived = bool(entry.get("is_archived"))
             was_live = bool(previous_state.get("is_live", 0))
             is_live = bool(stream)
+
+            # Go-Live Detection: Subscribe stream.offline für raid-enabled Streamer
+            if not was_live and is_live and twitch_user_id:
+                # Stream ist gerade live gegangen!
+                handler = getattr(self, "_handle_stream_went_live", None)
+                if handler:
+                    # Checke ob der Streamer raid_bot_enabled hat
+                    try:
+                        with storage.get_conn() as c:
+                            raid_enabled_row = c.execute(
+                                "SELECT raid_bot_enabled FROM twitch_streamers WHERE twitch_user_id = ?",
+                                (twitch_user_id,)
+                            ).fetchone()
+                        if raid_enabled_row and bool(raid_enabled_row[0]):
+                            # Asynchron aufrufen (fire-and-forget, blockiert nicht den Tick)
+                            asyncio.create_task(
+                                handler(twitch_user_id, login_lower),
+                                name=f"golive.{login_lower}"
+                            )
+                    except Exception:
+                        log.debug("Go-Live: Konnte raid_enabled Status nicht checken für %s", login_lower, exc_info=True)
 
             # Auto-Entarchivierung sobald jemand wieder streamt
             if is_live and is_archived:

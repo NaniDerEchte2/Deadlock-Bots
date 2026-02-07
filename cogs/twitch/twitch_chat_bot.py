@@ -18,6 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Deque, Dict, Optional, Set, Tuple
 
+import discord
+
+from .constants import TWITCH_NOTIFY_CHANNEL_ID
 from .storage import get_conn
 from .token_manager import TwitchBotTokenManager
 from .twitch_chat_bot_commands import RaidCommandsMixin
@@ -132,6 +135,9 @@ if TWITCHIO_AVAILABLE:
             self._promo_task: Optional[asyncio.Task] = None
             self._last_invite_reply: Dict[str, float] = {}
             self._last_invite_reply_user: Dict[Tuple[str, str], float] = {}
+            self._discord_bot: Optional[discord.Client] = None
+            self._discord_invite_channel_id: Optional[int] = None
+            self._promo_invite_cache: Dict[str, str] = {}
             self._register_inline_commands()
             log.info("Twitch Chat Bot initialized with %d initial channels", len(self._initial_channels))
 
@@ -165,6 +171,255 @@ if TWITCHIO_AVAILABLE:
         def set_raid_bot(self, raid_bot):
             """Setzt die RaidBot-Instanz für OAuth-URLs."""
             self._raid_bot = raid_bot
+
+        def set_discord_bot(
+            self,
+            discord_bot: Optional[discord.Client],
+            *,
+            invite_channel_id: Optional[int] = None,
+        ) -> None:
+            """Assign the Discord bot instance for promo invite creation."""
+            self._discord_bot = discord_bot
+            channel_id: Optional[int] = None
+            if invite_channel_id:
+                try:
+                    channel_id = int(invite_channel_id)
+                except (TypeError, ValueError):
+                    channel_id = None
+            if not channel_id:
+                try:
+                    default_id = int(TWITCH_NOTIFY_CHANNEL_ID or 0)
+                except (TypeError, ValueError):
+                    default_id = 0
+                if default_id:
+                    channel_id = default_id
+            self._discord_invite_channel_id = channel_id
+            log.info(
+                "Discord bot set for promo invites (channel_id=%s)",
+                str(channel_id) if channel_id else "-",
+            )
+
+        def _load_streamer_invite_from_db(self, login: str) -> Optional[str]:
+            login_norm = (login or "").strip().lower()
+            if not login_norm:
+                return None
+            try:
+                with get_conn() as conn:
+                    row = conn.execute(
+                        """
+                        SELECT invite_url, invite_code
+                          FROM twitch_streamer_invites
+                         WHERE streamer_login = ?
+                        """,
+                        (login_norm,),
+                    ).fetchone()
+                if not row:
+                    return None
+                invite_url = row["invite_url"] if hasattr(row, "keys") else row[0]
+                invite_code = row["invite_code"] if hasattr(row, "keys") else row[1]
+                if invite_url:
+                    return str(invite_url)
+                if invite_code:
+                    return f"https://discord.gg/{invite_code}"
+            except Exception:
+                log.debug("Promo invite DB lookup failed for %s", login_norm, exc_info=True)
+            return None
+
+        def _store_streamer_invite(
+            self,
+            login: str,
+            *,
+            guild_id: int,
+            channel_id: int,
+            invite_code: str,
+            invite_url: str,
+        ) -> None:
+            login_norm = (login or "").strip().lower()
+            if not login_norm:
+                return
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            try:
+                with get_conn() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO twitch_streamer_invites (
+                            streamer_login,
+                            guild_id,
+                            channel_id,
+                            invite_code,
+                            invite_url,
+                            created_at,
+                            last_sent_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(streamer_login) DO UPDATE SET
+                            guild_id = excluded.guild_id,
+                            channel_id = excluded.channel_id,
+                            invite_code = excluded.invite_code,
+                            invite_url = excluded.invite_url,
+                            created_at = excluded.created_at
+                        """,
+                        (
+                            login_norm,
+                            int(guild_id),
+                            int(channel_id),
+                            str(invite_code),
+                            str(invite_url),
+                            now,
+                            None,
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO discord_invite_codes (
+                            guild_id,
+                            invite_code,
+                            created_at,
+                            last_seen_at
+                        ) VALUES (?, ?, ?, ?)
+                        ON CONFLICT(guild_id, invite_code)
+                        DO UPDATE SET last_seen_at = excluded.last_seen_at
+                        """,
+                        (int(guild_id), str(invite_code), now, now),
+                    )
+                    conn.commit()
+            except Exception:
+                log.debug("Could not store promo invite for %s", login_norm, exc_info=True)
+
+        def _mark_streamer_invite_sent(self, login: str) -> None:
+            login_norm = (login or "").strip().lower()
+            if not login_norm:
+                return
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            try:
+                with get_conn() as conn:
+                    conn.execute(
+                        "UPDATE twitch_streamer_invites SET last_sent_at = ? WHERE streamer_login = ?",
+                        (now, login_norm),
+                    )
+                    conn.commit()
+            except Exception:
+                log.debug("Could not update promo invite last_sent_at for %s", login_norm, exc_info=True)
+
+        async def _candidate_invite_channels(self) -> list:
+            bot = self._discord_bot
+            if not bot:
+                return []
+
+            channels = []
+            seen = set()
+
+            def _add_channel(channel) -> None:
+                if not channel or not hasattr(channel, "create_invite"):
+                    return
+                cid = getattr(channel, "id", None)
+                if cid is None or cid in seen:
+                    return
+                seen.add(cid)
+                channels.append(channel)
+
+            if self._discord_invite_channel_id:
+                channel = bot.get_channel(self._discord_invite_channel_id)
+                if channel is None and hasattr(bot, "fetch_channel"):
+                    try:
+                        channel = await bot.fetch_channel(self._discord_invite_channel_id)
+                    except Exception:
+                        channel = None
+                _add_channel(channel)
+
+            for guild in getattr(bot, "guilds", []):
+                _add_channel(getattr(guild, "system_channel", None))
+
+            for guild in getattr(bot, "guilds", []):
+                for channel in getattr(guild, "text_channels", []):
+                    _add_channel(channel)
+
+            return channels
+
+        async def _create_streamer_invite(self, login: str) -> Optional[str]:
+            bot = self._discord_bot
+            if not bot:
+                return None
+
+            if hasattr(bot, "wait_until_ready"):
+                try:
+                    await bot.wait_until_ready()
+                except Exception:
+                    pass
+
+            candidates = await self._candidate_invite_channels()
+            if not candidates:
+                return None
+
+            for channel in candidates:
+                try:
+                    invite = await channel.create_invite(
+                        max_uses=0,
+                        max_age=0,
+                        unique=True,
+                        reason=f"Twitch promo invite for {login}",
+                    )
+                except discord.Forbidden:
+                    continue
+                except discord.HTTPException:
+                    continue
+                except Exception:
+                    log.debug(
+                        "Failed to create invite in channel %s for %s",
+                        getattr(channel, "id", "?"),
+                        login,
+                        exc_info=True,
+                    )
+                    continue
+
+                invite_code = str(getattr(invite, "code", "") or "").strip()
+                invite_url = str(getattr(invite, "url", "") or "").strip()
+                if not invite_url and invite_code:
+                    invite_url = f"https://discord.gg/{invite_code}"
+
+                guild = getattr(channel, "guild", None)
+                guild_id = getattr(guild, "id", None) if guild else None
+                channel_id = getattr(channel, "id", None)
+                if not invite_code or not invite_url or not guild_id or not channel_id:
+                    continue
+
+                self._store_streamer_invite(
+                    login,
+                    guild_id=int(guild_id),
+                    channel_id=int(channel_id),
+                    invite_code=invite_code,
+                    invite_url=invite_url,
+                )
+                log.info(
+                    "Created promo invite for %s (guild=%s, channel=%s, code=%s)",
+                    login,
+                    guild_id,
+                    channel_id,
+                    invite_code,
+                )
+                return invite_url
+
+            return None
+
+        async def _resolve_streamer_invite(self, login: str) -> tuple[Optional[str], bool]:
+            login_norm = (login or "").strip().lower()
+            if not login_norm:
+                return None, False
+
+            cached = self._promo_invite_cache.get(login_norm)
+            if cached:
+                return cached, True
+
+            invite_url = self._load_streamer_invite_from_db(login_norm)
+            if invite_url:
+                self._promo_invite_cache[login_norm] = invite_url
+                return invite_url, True
+
+            invite_url = await self._create_streamer_invite(login_norm)
+            if invite_url:
+                self._promo_invite_cache[login_norm] = invite_url
+                return invite_url, True
+
+            return None, False
 
         async def setup_hook(self):
             """Wird beim Starten aufgerufen, um initiales Setup zu machen."""

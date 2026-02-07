@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import re
 import socket
@@ -651,6 +652,15 @@ class TwitchBaseCog(commands.Cog):
                 if self._bot_token_manager:
                     self._twitch_bot_token = self._bot_token_manager.access_token or self._twitch_bot_token
                     self._twitch_bot_refresh_token = self._bot_token_manager.refresh_token or self._twitch_bot_refresh_token
+                try:
+                    if hasattr(self._twitch_chat_bot, "set_discord_bot"):
+                        invite_channel_id = self._notify_channel_id or None
+                        self._twitch_chat_bot.set_discord_bot(
+                            self.bot,
+                            invite_channel_id=invite_channel_id,
+                        )
+                except Exception:
+                    log.debug("Konnte Discord-Bot nicht an Chat-Bot binden", exc_info=True)
                 # Bot im Hintergrund laufen lassen
                 start_with_adapter = await self._should_start_chat_adapter()
                 asyncio.create_task(
@@ -745,28 +755,53 @@ class TwitchBaseCog(commands.Cog):
         try:
             subs_result = chat_bot.fetch_eventsub_subscriptions()
             # TwitchIO liefert je nach Version ein awaitable, das einen HTTPAsyncIterator zurückgibt.
-            if asyncio.iscoroutine(subs_result):
+            if inspect.isawaitable(subs_result):
                 subs_result = await subs_result
 
             subs_list = []
-            if hasattr(subs_result, "__aiter__"):
-                async for sub in subs_result:
-                    subs_list.append(sub)
-            elif subs_result is None:
+
+            async def _consume_async_iter(source) -> bool:
+                if source is None:
+                    return False
+                if hasattr(source, "__aiter__"):
+                    async for sub in source:
+                        subs_list.append(sub)
+                    return True
+                if hasattr(source, "__anext__"):
+                    while True:
+                        try:
+                            sub = await source.__anext__()
+                        except StopAsyncIteration:
+                            break
+                        subs_list.append(sub)
+                    return True
+                return False
+
+            if subs_result is None:
                 log.warning("Cleanup: fetch_eventsub_subscriptions returned None")
             else:
-                # TwitchIO 3.x gibt EventsubSubscriptions zurück – Einträge in .subscriptions
-                inner = getattr(subs_result, "subscriptions", None)
-                if inner is not None:
-                    subs_list.extend(list(inner))
-                else:
-                    try:
-                        subs_list.extend(list(subs_result))
-                    except TypeError:
-                        log.warning(
-                            "Cleanup: fetch_eventsub_subscriptions returned unexpected type: %s",
-                            type(subs_result),
-                        )
+                handled = await _consume_async_iter(subs_result)
+                if not handled:
+                    # TwitchIO 3.x gibt EventsubSubscriptions zurück – Einträge in .subscriptions
+                    inner = getattr(subs_result, "subscriptions", None)
+                    if inner is not None:
+                        handled = await _consume_async_iter(inner)
+                        if not handled:
+                            try:
+                                subs_list.extend(list(inner))
+                            except TypeError:
+                                log.warning(
+                                    "Cleanup: fetch_eventsub_subscriptions returned unexpected subscriptions type: %s",
+                                    type(inner),
+                                )
+                    else:
+                        try:
+                            subs_list.extend(list(subs_result))
+                        except TypeError:
+                            log.warning(
+                                "Cleanup: fetch_eventsub_subscriptions returned unexpected type: %s",
+                                type(subs_result),
+                            )
 
             for sub in subs_list:
                 try:
@@ -912,6 +947,24 @@ class TwitchBaseCog(commands.Cog):
                 last_error = str(exc)
                 continue
         return False, last_error
+
+    async def _send_alert_message(self, message: str) -> None:
+        """Send a warning to the configured alert channel (Discord)."""
+        channel_id = int(getattr(self, "_alert_channel_id", 0) or 0)
+        if not channel_id:
+            return
+        content = f"{self._alert_mention} {message}".strip() if self._alert_mention else message
+        try:
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                channel = await self.bot.fetch_channel(channel_id)
+            if channel is None or not hasattr(channel, "send"):
+                return
+            await channel.send(content=content)
+        except (Forbidden, HTTPException):
+            log.debug("Konnte Alert nicht senden (Discord-Zugriff verweigert).", exc_info=True)
+        except Exception:
+            log.debug("Konnte Alert nicht senden.", exc_info=True)
 
     # -------------------------------------------------------
     # Utils

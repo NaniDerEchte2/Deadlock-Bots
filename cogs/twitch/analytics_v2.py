@@ -1277,10 +1277,10 @@ class AnalyticsV2Mixin:
                 where = "AND LOWER(s.streamer_login) = ?" if streamer else ""
                 params = [since_date, streamer.lower()] if streamer else [since_date]
 
-                # Get tags from sessions (tags stored as JSON or comma-separated in stream_tags column)
+                # Get tags from sessions (tags stored as JSON or comma-separated in tags column)
                 rows = conn.execute(f"""
                     SELECT
-                        s.stream_tags,
+                        s.tags,
                         AVG(s.avg_viewers) as avg_viewers,
                         AVG(s.retention_10m) as avg_retention,
                         AVG(COALESCE(s.follower_delta, 0)) as avg_followers,
@@ -1288,8 +1288,8 @@ class AnalyticsV2Mixin:
                         AVG(s.duration_seconds) as avg_duration,
                         strftime('%H', s.started_at) as start_hour
                     FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ? AND s.ended_at IS NOT NULL AND s.stream_tags IS NOT NULL {where}
-                    GROUP BY s.stream_tags
+                    WHERE s.started_at >= ? AND s.ended_at IS NOT NULL AND s.tags IS NOT NULL {where}
+                    GROUP BY s.tags
                     ORDER BY avg_viewers DESC
                     LIMIT ?
                 """, params + [limit]).fetchall()

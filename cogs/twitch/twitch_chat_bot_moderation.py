@@ -11,7 +11,6 @@ from .twitch_chat_bot_constants import (
     _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC,
     _INVITE_QUESTION_RE,
     _INVITE_QUESTION_USER_COOLDOWN_SEC,
-    _PROMO_DISCORD_INVITE,
     _SPAM_FRAGMENTS,
     _SPAM_PHRASES,
 )
@@ -108,8 +107,12 @@ class ModerationMixin:
         else:
             user_key = None
 
+        invite, is_specific = await self._get_promo_invite(login)
+        if not invite:
+            return False
+
         mention = f"@{getattr(author, 'name', '')} " if getattr(author, "name", None) else ""
-        msg = mention + _DEADLOCK_INVITE_REPLY.format(invite=_PROMO_DISCORD_INVITE)
+        msg = mention + _DEADLOCK_INVITE_REPLY.format(invite=invite)
         ok = await self._send_chat_message(message.channel, msg)
         if ok:
             self._last_invite_reply[login] = now
@@ -117,6 +120,10 @@ class ModerationMixin:
                 self._last_invite_reply_user[user_key] = now
             # Verhindert direkt nach Invite-Hinweis eine zusaetzliche Promo
             self._last_promo_sent[login] = now
+            if is_specific:
+                marker = getattr(self, "_mark_streamer_invite_sent", None)
+                if callable(marker):
+                    marker(login)
         return ok
 
     async def _get_moderation_context(self, twitch_user_id: str) -> tuple[Optional[object], Optional[dict]]:
@@ -160,13 +167,74 @@ class ModerationMixin:
         except Exception:
             log.debug("Konnte Auto-Ban Review-Log nicht schreiben", exc_info=True)
 
-    async def _send_chat_message(self, channel, text: str) -> bool:
+    def _normalize_channel_login_safe(self, channel) -> str:
+        """Best-effort Normalisierung fuer Channel-Logins (lowercase, ohne #)."""
+        name = getattr(channel, "name", "") or ""
+        try:
+            if hasattr(self, "_normalize_channel_login"):
+                return self._normalize_channel_login(name)
+        except Exception:
+            pass
+        return name.lower().lstrip("#")
+
+    @staticmethod
+    def _looks_like_ban_error(status: Optional[int], text: str) -> bool:
+        if not text:
+            return False
+        lowered = text.lower()
+        if "banned" in lowered:
+            return True
+        # Fallback for older messages that might not include the word "banned"
+        if status in {400, 403} and "ban" in lowered:
+            return True
+        return False
+
+    def _blacklist_streamer_for_promo(self, channel, status: Optional[int], text: str) -> None:
+        """Blacklist a streamer when the bot gets banned due to auto-promo."""
+        login = self._normalize_channel_login_safe(channel)
+        if not login:
+            return
+
+        raw_id = str(getattr(channel, "id", "") or "").strip()
+        target_id = raw_id if raw_id else None
+        snippet = (text or "").replace("\n", " ").strip()[:180]
+        reason = "auto_promo_bot_banned"
+        if status is not None:
+            reason += f" (HTTP {status})"
+        if snippet:
+            reason += f": {snippet}"
+
+        raid_bot = getattr(self, "_raid_bot", None)
+        if raid_bot and hasattr(raid_bot, "_add_to_blacklist"):
+            raid_bot._add_to_blacklist(target_id, login, reason)
+        else:
+            try:
+                with get_conn() as conn:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO twitch_raid_blacklist (target_id, target_login, reason)
+                        VALUES (?, ?, ?)
+                        """,
+                        (target_id, login, reason),
+                    )
+                    conn.commit()
+            except Exception:
+                log.debug("Konnte Auto-Promo-Blacklist nicht schreiben fuer %s", login, exc_info=True)
+
+        log.warning("Auto-Promo Ban erkannt: %s auf Raid-Blacklist gesetzt.", login)
+
+    async def _send_chat_message(self, channel, text: str, source: Optional[str] = None) -> bool:
         """Best-effort Chat-Nachricht senden (EventSub-kompatibel)."""
         try:
             # 1. Direktes .send() (z.B. Context, 2.x Channel oder 3.x Broadcaster)
             if channel and hasattr(channel, "send"):
-                await channel.send(text)
-                return True
+                try:
+                    await channel.send(text)
+                    return True
+                except Exception as exc:
+                    if source == "promo" and self._looks_like_ban_error(None, str(exc)):
+                        self._blacklist_streamer_for_promo(channel, None, str(exc))
+                    raise
 
             # 2. Fallback: Direkte Helix API Call (TwitchIO 3.x kompatibel)
             # Hinweis: send_message() existiert NICHT in TwitchIO 3.x
@@ -215,6 +283,8 @@ class ModerationMixin:
                                     await self._token_manager.get_valid_token(force_refresh=True)
                                     continue
                                 txt = await r.text()
+                                if source == "promo" and self._looks_like_ban_error(r.status, txt):
+                                    self._blacklist_streamer_for_promo(channel, r.status, txt)
                                 log.warning("Twitch hat die Bot-Nachricht abgelehnt: HTTP %s - %s", r.status, txt)
                                 return False
                     except Exception as e:

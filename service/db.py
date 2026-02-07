@@ -102,6 +102,18 @@ log.debug("DB_PATH alias initialisiert: %s", DB_PATH)
 
 # ---------- Verbindung / PRAGMA / Schema ----------
 
+def _is_connection_alive(conn: sqlite3.Connection) -> bool:
+    """
+    Prüft, ob die Verbindung noch funktionsfähig ist.
+    Gibt False zurück, wenn die Connection geschlossen oder korrupt ist.
+    """
+    try:
+        conn.execute("SELECT 1").fetchone()
+        return True
+    except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+        return False
+
+
 def connect() -> sqlite3.Connection:
     """
     Stellt eine einzelne, thread-safe geteilte Verbindung her.
@@ -109,10 +121,15 @@ def connect() -> sqlite3.Connection:
     - Row-Factory = sqlite3.Row
     - PRAGMAs gesetzt
     - Schema (idempotent) initialisiert
+    - Auto-Recovery: Stellt bei korrupter Connection eine neue her
     """
     global _CONN, _DB_PATH_CACHED, DB_PATH
     if _CONN is not None:
-        return _CONN
+        if _is_connection_alive(_CONN):
+            return _CONN
+        else:
+            log.warning("Database connection is closed/corrupt. Reconnecting...")
+            _CONN = None  # Reset to force reconnection
 
     path = _resolve_db_path()
     _ensure_parent(path)
@@ -143,6 +160,7 @@ def connect() -> sqlite3.Connection:
 
         init_schema(_CONN)
 
+    log.info("SQLite connection established to %s", path)
     return _CONN
 
 

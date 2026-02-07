@@ -402,7 +402,29 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_discord_invites_guild ON discord_invite_codes(guild_id)"
     )
 
-    # 11) Partner-Outreach Tracking (autonome Ansprache frequenter Streamer)
+    # 11) Streamer-spezifische Discord-Invites (Promo-Tracking)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_streamer_invites (
+            streamer_login TEXT PRIMARY KEY,
+            guild_id       INTEGER NOT NULL,
+            channel_id     INTEGER NOT NULL,
+            invite_code    TEXT NOT NULL,
+            invite_url     TEXT NOT NULL,
+            created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_sent_at   TEXT
+        )
+        """
+    )
+    _add_column_if_missing(conn, "twitch_streamer_invites", "last_sent_at", "TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_twitch_streamer_invites_code ON twitch_streamer_invites(invite_code)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_streamer_invites_guild ON twitch_streamer_invites(guild_id)"
+    )
+
+    # 12) Partner-Outreach Tracking (autonome Ansprache frequenter Streamer)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS twitch_partner_outreach (

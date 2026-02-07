@@ -1399,6 +1399,23 @@ class RaidBot:
         except Exception:
             log.error("Error adding to blacklist", exc_info=True)
 
+    def _is_retryable_raid_error(self, error: Optional[str]) -> bool:
+        """Return True for raid target errors where we should try another target."""
+        if not error:
+            return False
+        msg = error.lower()
+        retryable_markers = (
+            "cannot be raided",
+            "does not allow you to raid",
+            "do not allow you to raid",
+            "not allow you to raid",
+            "settings do not allow you to raid",
+            "not accepting raids",
+            "does not allow raids",
+            "raids are disabled",
+        )
+        return any(marker in msg for marker in retryable_markers)
+
     async def handle_streamer_offline(
         self,
         broadcaster_id: str,
@@ -1544,13 +1561,19 @@ class RaidBot:
             # Fehler-Behandlung
             exclude_ids.add(target_id)  # Diesen Kandidaten nicht nochmal versuchen
 
-            # Check auf "Cannot be raided" (HTTP 400)
-            if error and "cannot be raided" in error:
-                log.warning(
-                    "Raid failed: Target %s does not allow raids. Blacklisting and retrying.",
-                    target_login,
-                )
-                self._add_to_blacklist(target_id, target_login, error)
+            # Check auf "Cannot be raided"/Raid-Settings (HTTP 400)
+            if self._is_retryable_raid_error(error):
+                if is_partner_raid:
+                    log.warning(
+                        "Raid failed: Partner target %s does not allow raids. Skipping without blacklist.",
+                        target_login,
+                    )
+                else:
+                    log.warning(
+                        "Raid failed: Target %s does not allow raids. Blacklisting and retrying.",
+                        target_login,
+                    )
+                    self._add_to_blacklist(target_id, target_login, error)
                 continue  # Nächster Versuch
 
             # Bei anderen Fehlern (z.B. API Down, Auth Error) brechen wir ab

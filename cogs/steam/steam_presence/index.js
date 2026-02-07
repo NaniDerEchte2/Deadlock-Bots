@@ -2263,10 +2263,12 @@ function handlePlaytestInviteResponse(appid, msgType, buffer) {
 
 function guardTypeFromDomain(domain) {
   const norm = String(domain || '').toLowerCase();
-  if (norm.includes('email')) return 'email';
+  if (norm.includes('email') || norm.includes('@')) return 'email';
   if (norm.includes('two-factor') || norm.includes('authenticator') || norm.includes('mobile')) return 'totp';
   if (norm.includes('device')) return 'device';
-  return norm || 'unknown';
+  // If it's a domain (contains a dot), assume it's email (e.g., "steam.earlysalty.com")
+  if (norm.includes('.')) return 'email';
+  return 'unknown';
 }
 
 function buildLoginOptions(overrides = {}) {
@@ -3199,9 +3201,14 @@ client.on('webSession', () => { log('debug', 'Steam web session established'); }
 client.on('steamGuard', (domain, callback, lastCodeWrong) => {
   pendingGuard = { domain, callback };
   const norm = String(domain || '').toLowerCase();
+
+  // Detect guard type based on domain
+  // Email: contains "email", "@", or is a domain like "steam.earlysalty.com"
+  const isEmail = norm.includes('email') || norm.includes('@') || (norm.includes('.') && !norm.includes('two-factor') && !norm.includes('authenticator') && !norm.includes('mobile') && !norm.includes('device'));
+
   runtimeState.guard_required = {
     domain: domain || null,
-    type: norm.includes('email') ? 'email' : (norm.includes('two-factor') || norm.includes('authenticator') || norm.includes('mobile')) ? 'totp' : (norm.includes('device') ? 'device' : 'unknown'),
+    type: isEmail ? 'email' : (norm.includes('two-factor') || norm.includes('authenticator') || norm.includes('mobile')) ? 'totp' : (norm.includes('device') ? 'device' : 'unknown'),
     last_code_wrong: Boolean(lastCodeWrong),
     requested_at: nowSeconds(),
   };
