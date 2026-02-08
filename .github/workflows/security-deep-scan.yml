@@ -217,7 +217,7 @@ jobs:
     if: needs.detect-languages.outputs.has_python == 'true' || needs.detect-languages.outputs.has_javascript == 'true'
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep:latest
+      image: semgrep/semgrep:1.151.0
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
