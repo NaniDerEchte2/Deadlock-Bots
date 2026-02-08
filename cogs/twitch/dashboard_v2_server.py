@@ -333,6 +333,28 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
             return TWITCH_OAUTH_AUTHORIZE_URL
         return candidate
 
+    @staticmethod
+    def _canonical_post_login_destination(next_path: Optional[str]) -> str:
+        fallback = "/twitch/dashboard-v2"
+        candidate = (next_path or "").strip()
+        if not candidate:
+            return fallback
+        try:
+            parts = urlsplit(candidate)
+        except Exception:
+            return fallback
+        if parts.scheme or parts.netloc:
+            return fallback
+
+        normalized_path = (parts.path or "").rstrip("/") or "/"
+        if normalized_path == "/twitch/stats":
+            return "/twitch/stats"
+        if normalized_path == "/twitch/dashboards":
+            return "/twitch/dashboards"
+        if normalized_path == "/twitch/dashboard-v2":
+            return "/twitch/dashboard-v2"
+        return fallback
+
     def _build_dashboard_login_url(self, request: web.Request) -> str:
         next_path = self._normalize_next_path(request.rel_url.path_qs if request.rel_url else "/twitch/dashboard-v2")
         return f"/twitch/auth/login?{urlencode({'next': next_path})}"
@@ -487,11 +509,7 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
     async def stats_entry(self, request: web.Request) -> web.StreamResponse:
         """Canonical public entrypoint that links old + beta analytics dashboards."""
         if not self._check_v2_auth(request):
-            login_url = self._safe_internal_redirect(
-                self._build_dashboard_login_url(request),
-                fallback="/twitch/auth/login?next=%2Ftwitch%2Fdashboard-v2",
-            )
-            raise web.HTTPFound(login_url)
+            raise web.HTTPFound("/twitch/auth/login?next=%2Ftwitch%2Fstats")
 
         legacy_url = self._resolve_legacy_stats_url()
         beta_url = "/twitch/dashboard-v2"
@@ -531,8 +549,8 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
         next_path = self._normalize_next_path(request.query.get("next"))
 
         if self._check_v2_auth(request):
-            safe_next_path = self._safe_internal_redirect(next_path, fallback="/twitch/dashboard-v2")
-            raise web.HTTPFound(safe_next_path)
+            destination = self._canonical_post_login_destination(next_path)
+            raise web.HTTPFound(destination)
 
         if not self._is_oauth_configured():
             return web.Response(
