@@ -235,32 +235,42 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
             return forwarded_proto == "https"
         return bool(request.secure)
 
-    def _get_external_base_url(self, request: web.Request) -> str:
-        proto = (request.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
-        if not proto:
-            proto = "https" if self._is_secure_request(request) else "http"
-        host = (
-            (request.headers.get("X-Forwarded-Host") or "").split(",")[0].strip()
-            or (request.headers.get("Host") or "").split(",")[0].strip()
-            or request.host
-        )
-        return f"{proto}://{host}"
-
-    def _build_oauth_redirect_uri(self, request: web.Request) -> str:
+    def _build_oauth_redirect_uri(self) -> Optional[str]:
         configured = (self._oauth_redirect_uri or "").strip()
-        if configured:
-            try:
-                parsed = urlparse(configured if "://" in configured else f"https://{configured}")
-                path = (parsed.path or "").rstrip("/")
-                if path != "/twitch/raid/callback":
-                    return configured
-                log.warning(
-                    "TWITCH_DASHBOARD_AUTH_REDIRECT_URI points to raid callback - falling back to /twitch/auth/callback",
-                )
-            except Exception:
-                # Keep compatibility for uncommon proxy setups that use custom URI formats.
-                return configured
-        return f"{self._get_external_base_url(request)}/twitch/auth/callback"
+        if not configured:
+            return None
+
+        candidate = configured if "://" in configured else f"https://{configured}"
+        try:
+            parsed = urlparse(candidate)
+        except Exception:
+            log.warning("TWITCH_DASHBOARD_AUTH_REDIRECT_URI is invalid and cannot be parsed")
+            return None
+
+        scheme = (parsed.scheme or "").strip().lower()
+        host = (parsed.hostname or "").strip().lower()
+        path = (parsed.path or "").rstrip("/")
+
+        if parsed.username or parsed.password:
+            log.warning("TWITCH_DASHBOARD_AUTH_REDIRECT_URI must not contain user info")
+            return None
+        if scheme not in {"https", "http"}:
+            log.warning("TWITCH_DASHBOARD_AUTH_REDIRECT_URI must use http(s)")
+            return None
+        if scheme == "http" and host not in {"127.0.0.1", "localhost", "::1"}:
+            log.warning("TWITCH_DASHBOARD_AUTH_REDIRECT_URI must use https unless host is localhost")
+            return None
+        if not parsed.netloc:
+            log.warning("TWITCH_DASHBOARD_AUTH_REDIRECT_URI is missing host")
+            return None
+        if path == "/twitch/raid/callback":
+            log.warning("TWITCH_DASHBOARD_AUTH_REDIRECT_URI points to raid callback and is not allowed")
+            return None
+        if path != "/twitch/auth/callback":
+            log.warning("TWITCH_DASHBOARD_AUTH_REDIRECT_URI must point to /twitch/auth/callback")
+            return None
+
+        return urlunsplit((scheme, parsed.netloc, "/twitch/auth/callback", "", ""))
 
     @staticmethod
     def _render_oauth_page(title: str, body_html: str) -> str:
@@ -531,7 +541,16 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
             )
 
         self._cleanup_auth_state()
-        redirect_uri = self._build_oauth_redirect_uri(request)
+        redirect_uri = self._build_oauth_redirect_uri()
+        if not redirect_uri:
+            return web.Response(
+                text=(
+                    "Twitch OAuth Redirect-URI ist nicht konfiguriert oder ungültig. "
+                    "Bitte TWITCH_DASHBOARD_AUTH_REDIRECT_URI auf "
+                    "https://<dein-host>/twitch/auth/callback setzen."
+                ),
+                status=503,
+            )
         state = secrets.token_urlsafe(24)
         self._oauth_states[state] = {
             "created_at": time.time(),

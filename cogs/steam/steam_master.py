@@ -94,12 +94,12 @@ class SteamTaskClient:
 
     def enqueue(self, task_type: str, payload: Optional[Dict[str, Any]] = None) -> int:
         payload_json = self._encode_payload(payload)
-        conn = db.connect()
-        cur = conn.execute(
-            "INSERT INTO steam_tasks(type, payload, status) VALUES(?, ?, 'PENDING')",
-            (task_type, payload_json),
-        )
-        task_id = int(cur.lastrowid)
+        with db.get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO steam_tasks(type, payload, status) VALUES(?, ?, 'PENDING')",
+                (task_type, payload_json),
+            )
+            task_id = int(cur.lastrowid)
         log.debug("Enqueued steam task", extra={"task_id": task_id, "type": task_type})
         return task_id
 
@@ -114,16 +114,16 @@ class SteamTaskClient:
             return result
 
     async def wait(self, task_id: int, *, timeout: Optional[float] = None) -> SteamTaskOutcome:
-        conn = db.connect()
         poll_interval = max(0.1, float(self.poll_interval))
         timeout = timeout if timeout is not None else self.default_timeout
         deadline = time.monotonic() + max(poll_interval, float(timeout))
 
         while True:
-            row = conn.execute(
-                "SELECT status, result, error FROM steam_tasks WHERE id = ?",
-                (task_id,),
-            ).fetchone()
+            with db.get_conn() as conn:
+                row = conn.execute(
+                    "SELECT status, result, error FROM steam_tasks WHERE id = ?",
+                    (task_id,),
+                ).fetchone()
 
             if row is None:
                 return SteamTaskOutcome(task_id, "MISSING", None, "Task nicht gefunden", timed_out=True)
@@ -181,7 +181,8 @@ def _determine_mode() -> SteamMasterMode:
 def _fetch_group_counts(sql: str) -> Dict[str, int]:
     stats: Dict[str, int] = defaultdict(int)
     try:
-        rows = db.connect().execute(sql).fetchall()
+        with db.get_conn() as conn:
+            rows = conn.execute(sql).fetchall()
         for row in rows:
             status = str(row[0]) if row[0] is not None else "unknown"
             try:
@@ -195,7 +196,8 @@ def _fetch_group_counts(sql: str) -> Dict[str, int]:
 
 def _count_single(sql: str) -> Optional[int]:
     try:
-        row = db.connect().execute(sql).fetchone()
+        with db.get_conn() as conn:
+            row = conn.execute(sql).fetchone()
         if not row:
             return 0
         return int(row[0])

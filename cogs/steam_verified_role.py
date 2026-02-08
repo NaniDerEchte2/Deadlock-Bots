@@ -18,7 +18,7 @@ class SteamVerifiedRole(commands.Cog):
         self.log_channel_id = int(os.getenv("VERIFIED_LOG_CHANNEL_ID", "1374364800817303632"))
         self.db_path = central_db.db_path()
         self.dry_run = os.getenv("DRY_RUN", "0") == "1"
-        interval_min = int(os.getenv("POLL_INTERVAL_MINUTES", "180"))
+        interval_min = int(os.getenv("POLL_INTERVAL_MINUTES", "15"))
         self._interval_seconds = max(60, interval_min * 60)
         self._task = None
         log.info("SteamVerifiedRole init: guild=%s role=%s db=%s every=%ss dry_run=%s log_ch=%s",

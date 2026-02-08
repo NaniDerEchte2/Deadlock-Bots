@@ -48,6 +48,8 @@ DEFAULT_DIR = _default_dir()
 DB_NAME     = "deadlock.sqlite3"
 # Maximal zugelassene Zeilen in der steam_tasks-Tabelle (älteste werden gekappt)
 STEAM_TASKS_MAX_ROWS = int(os.environ.get("STEAM_TASKS_MAX_ROWS", "1000"))
+STEAM_TASKS_KV_NS = "steam_tasks"
+STEAM_TASKS_KV_MAX_ROWS_KEY = "max_rows"
 
 # ---- Modulweiter Zustand ----
 _CONN: Optional[sqlite3.Connection] = None
@@ -150,7 +152,7 @@ def connect() -> sqlite3.Connection:
         _CONN.execute("PRAGMA journal_mode=WAL;")
         _CONN.execute("PRAGMA synchronous=NORMAL;")
         _CONN.execute("PRAGMA foreign_keys=ON;")
-        _CONN.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS};")
+        # sqlite3 connect(timeout=...) configures the lock-wait timeout per connection.
         _CONN.execute("PRAGMA wal_autocheckpoint=1000;")         # ~1000 Seiten
         _CONN.execute("PRAGMA journal_size_limit=104857600;")    # 100 MB
         _CONN.execute("PRAGMA temp_store=MEMORY;")
@@ -195,12 +197,22 @@ def _ensure_steam_tasks_cap_trigger(conn: sqlite3.Connection, max_rows: int) -> 
     Creates an AFTER INSERT trigger that trims steam_tasks to the newest N rows.
     Older rows (preferring finished ones) are deleted to keep the table bounded.
     """
-    if max_rows <= 0:
+    capped_max_rows = int(max_rows)
+    if capped_max_rows <= 0:
         log.warning("Steam task cap disabled because max_rows=%s <= 0", max_rows)
         return
 
     conn.execute(
-        f"""
+        """
+        INSERT INTO kv_store(ns, k, v)
+        VALUES (?, ?, ?)
+        ON CONFLICT(ns, k) DO UPDATE SET v = excluded.v
+        """,
+        (STEAM_TASKS_KV_NS, STEAM_TASKS_KV_MAX_ROWS_KEY, str(capped_max_rows)),
+    )
+
+    conn.execute(
+        """
         CREATE TRIGGER IF NOT EXISTS trg_cap_steam_tasks
         AFTER INSERT ON steam_tasks
         BEGIN
@@ -210,8 +222,20 @@ def _ensure_steam_tasks_cap_trigger(conn: sqlite3.Connection, max_rows: int) -> 
             WHERE status NOT IN ('PENDING','RUNNING')
             ORDER BY created_at ASC, id ASC
             LIMIT (
-              SELECT CASE WHEN total > {max_rows} THEN total - {max_rows} ELSE 0 END
-              FROM (SELECT COUNT(*) AS total FROM steam_tasks)
+              SELECT CASE WHEN total > max_rows THEN total - max_rows ELSE 0 END
+              FROM (
+                SELECT
+                  COUNT(*) AS total,
+                  COALESCE(
+                    (
+                      SELECT CAST(v AS INTEGER)
+                      FROM kv_store
+                      WHERE ns = 'steam_tasks' AND k = 'max_rows'
+                    ),
+                    0
+                  ) AS max_rows
+                FROM steam_tasks
+              )
             )
           );
         END;

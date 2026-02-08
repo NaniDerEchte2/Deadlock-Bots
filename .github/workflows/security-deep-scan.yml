@@ -219,7 +219,7 @@ jobs:
 
       # Filesystem Scan
       - name: Trivy Filesystem Scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@22438a435773de8c97dc0958cc0b823c45b064ac # master
         with:
           scan-type: 'fs'
           scan-ref: '.'

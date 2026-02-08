@@ -1222,6 +1222,9 @@ class BetaInviteFlow(commands.Cog):
             )
 
         if friend_ok:
+            # Bereits Freunde → sofort verified=1 + Rolle
+            await self._sync_verified_on_friendship(interaction.user.id, resolved)
+
             await self._send_invite_after_friend(
                 interaction,
                 record,
@@ -1543,36 +1546,54 @@ class BetaInviteFlow(commands.Cog):
                     candidate = str(result_error).strip()
                     if candidate:
                         error_text = candidate
-                        
+
                 data = invite_outcome.result.get("data")
                 if isinstance(data, dict):
                     response = data.get("response")
+                    # GC-Response ist doppelt verschachtelt: data.response.response
+                    inner_response = None
                     if isinstance(response, Mapping):
-                        formatted = _format_gc_response_error(response)
-                        if formatted:
-                            error_text = formatted
-                    
+                        inner_response = response.get("response")
+                        if isinstance(inner_response, Mapping):
+                            formatted = _format_gc_response_error(inner_response)
+                            if formatted:
+                                error_text = formatted
+                        else:
+                            formatted = _format_gc_response_error(response)
+                            if formatted:
+                                error_text = formatted
+
+                    # Sammle alle Error-Texte für pattern matching (inner response + outer error)
+                    gc_key = ""
+                    gc_message = ""
+                    if isinstance(inner_response, Mapping):
+                        gc_key = str(inner_response.get("key") or "").lower()
+                        gc_message = str(inner_response.get("message") or "").lower()
+                    all_error_text = f"{result_error or ''} {error_text} {gc_key} {gc_message}".lower()
+
                     # Spezielle Behandlung für bekannte Deadlock GC Probleme
-                    error_lower = str(result_error or error_text).lower()
-                    if "timeout" in error_lower or is_timeout:
-                        if "deadlock" in error_lower or "gc" in error_lower:
+                    if "timeout" in all_error_text or is_timeout:
+                        if "deadlock" in all_error_text or "gc" in all_error_text:
                             error_text = "⚠️ Deadlock Game Coordinator ist überlastet. Bitte versuche es in 10-15 Minuten erneut."
                         else:
                             error_text = "⚠️ Timeout beim Warten auf Steam-Antwort. Bitte versuche es erneut."
-                    elif "already has game" in error_lower or "already has access" in error_lower:
-                        error_text = "✅ Account besitzt bereits Deadlock-Zugang"
-                    elif "invite limit" in error_lower or "limit reached" in error_lower:
+                    elif "alreadyhasgame" in gc_key or "already has game" in all_error_text or "already has access" in all_error_text or "bereits" in gc_message:
+                        error_text = "✅ Account besitzt bereits Deadlock-Zugang. Prüfe deine Steam-Bibliothek."
+                    elif "invite limit" in all_error_text or "limit reached" in all_error_text:
                         error_text = "⚠️ Tägliches Invite-Limit erreicht. Bitte morgen erneut versuchen."
-                    elif "not friends long enough" in error_lower:
+                    elif "not friends long enough" in all_error_text:
                         error_text = "ℹ️ Steam-Freundschaft muss mindestens 30 Tage bestehen"
-                    elif "limited user" in error_lower or "restricted account" in error_lower:
+                    elif "limiteduser" in gc_key or "limited user" in all_error_text or "restricted account" in all_error_text or "eingeschränkt" in gc_message:
                         error_text = "⚠️ Steam-Account ist eingeschränkt (Limited User). Aktiviere deinen Account in Steam."
-                    elif "invalid friend" in error_lower:
+                    elif "invalid friend" in all_error_text:
                         error_text = "ℹ️ Accounts sind nicht als Steam-Freunde verknüpft"
             
             # Spezielle Behandlung für Timeout-Fälle
             if is_timeout and "timeout" not in error_text.lower():
                 error_text = f"⚠️ Timeout: {error_text}"
+
+            # AlreadyHasGame ist kein echter Fehler - User hat das Spiel schon
+            already_has_game = "bereits" in error_text.lower() or "already" in error_text.lower()
 
             details = {
                 "discord_id": record.discord_id,
@@ -1584,18 +1605,41 @@ class BetaInviteFlow(commands.Cog):
                 "task_result": invite_outcome.result,
                 "record_id": record.id,
                 "error_text": error_text,
+                "already_has_game": already_has_game,
             }
             try:
                 serialized_details = json.dumps(details, ensure_ascii=False, default=str)
             except TypeError:
                 serialized_details = str(details)
+
+            if already_has_game:
+                # Spiel ist schon vorhanden - als Erfolg werten
+                _failure_log.info("Invite not needed (already has game): %s", serialized_details)
+                _update_invite(
+                    record.id,
+                    status=STATUS_INVITE_SENT,
+                    invite_sent_at=now_ts,
+                    last_error=None,
+                )
+                self._record_successful_invite(interaction, record, now_ts)
+                msg = "✅ Dein Account besitzt bereits Deadlock-Zugang! Prüfe deine Steam-Bibliothek oder https://store.steampowered.com/account/playtestinvites ."
+                if isinstance(interaction, discord.Interaction) and interaction.response.is_done():
+                    try:
+                        await interaction.edit_original_response(content=msg, view=None)
+                    except Exception:
+                        await interaction.followup.send(msg, ephemeral=True)
+                else:
+                    await interaction.followup.send(msg, ephemeral=True)
+                await self._trigger_immediate_role_assignment(record.discord_id)
+                return True
+
             _failure_log.error("Invite task failed: %s", serialized_details)
             _update_invite(
                 record.id,
                 status=STATUS_ERROR,
                 last_error=str(error_text),
             )
-            
+
             err_msg = f"❌ Einladung fehlgeschlagen:\n**{error_text}**\n\nFalls du denkst, dass das ein Fehler ist, melde dich bitte bei {BETA_INVITE_SUPPORT_CONTACT}."
             if isinstance(interaction, discord.Interaction) and interaction.response.is_done():
                 try:
@@ -1754,6 +1798,9 @@ class BetaInviteFlow(commands.Cog):
                 )
                 return
 
+            # Freundschaft bestätigt → sofort verified=1 + Rolle
+            await self._sync_verified_on_friendship(record.discord_id, record.steam_id64)
+
             await self._send_invite_after_friend(
                 interaction,
                 record,
@@ -1795,14 +1842,35 @@ class BetaInviteFlow(commands.Cog):
         except asyncio.CancelledError:
             pass
 
+    async def _sync_verified_on_friendship(self, discord_id: int, steam_id64: str) -> None:
+        """Sofort-Sync wenn eine Steam-Freundschaft bestätigt wird: verified=1 setzen + Rolle geben."""
+        try:
+            with db.get_conn() as conn:
+                conn.execute(
+                    "UPDATE steam_links SET verified=1, updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND steam_id=?",
+                    (int(discord_id), steam_id64),
+                )
+            log.info("Friend-Sync: verified=1 gesetzt für discord=%s, steam=%s", discord_id, steam_id64)
+        except Exception:
+            log.exception("Friend-Sync: Konnte verified=1 nicht setzen für discord=%s", discord_id)
+
+        await self._trigger_immediate_role_assignment(discord_id)
+        _trace("friend_sync_verified", discord_id=discord_id, steam_id64=steam_id64)
+
     async def _trigger_immediate_role_assignment(self, user_id: int) -> None:
         """Versucht, dem Nutzer sofort die Steam-Verified Rolle zu geben."""
         try:
             verified_cog = self.bot.get_cog("SteamVerifiedRole")
             if verified_cog and hasattr(verified_cog, "assign_verified_role"):
-                await verified_cog.assign_verified_role(user_id)
+                result = await verified_cog.assign_verified_role(user_id)
+                if result:
+                    log.info("Sofort-Rollen-Zuweisung erfolgreich für User %s", user_id)
+                else:
+                    log.warning("Sofort-Rollen-Zuweisung fehlgeschlagen für User %s (assign returned False)", user_id)
+            else:
+                log.warning("SteamVerifiedRole Cog nicht gefunden - Sofort-Zuweisung nicht möglich für User %s", user_id)
         except Exception:
-            log.debug("Konnte Sofort-Rollen-Zuweisung nicht triggern", exc_info=True)
+            log.exception("Konnte Sofort-Rollen-Zuweisung nicht triggern für User %s", user_id)
 
     async def _start_betainvite_flow(self, interaction: discord.Interaction) -> None:
         stop_anim = asyncio.Event()
@@ -1856,16 +1924,7 @@ class BetaInviteFlow(commands.Cog):
                 return
 
             # Wenn verknüpft: Sofort verifiziert setzen und Rolle geben
-            try:
-                with db.get_conn() as conn:
-                    conn.execute(
-                        "UPDATE steam_links SET verified=1, updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND steam_id=?",
-                        (int(interaction.user.id), steam_id)
-                    )
-            except Exception:
-                log.debug("Konnte verified=1 nicht sofort in DB setzen", exc_info=True)
-            
-            await self._trigger_immediate_role_assignment(interaction.user.id)
+            await self._sync_verified_on_friendship(interaction.user.id, steam_id)
 
             # 2. Intent prüfen / abfragen
             intent_record = _get_intent_record(interaction.user.id)

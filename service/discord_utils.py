@@ -2,12 +2,14 @@
 Shared Discord/Database utilities - eliminiert Duplicate Code über Cogs hinweg.
 """
 import logging
+import re
 from typing import Optional, List
 import discord
 import aiosqlite
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 # ========= Discord Member/Role Resolution =========
@@ -77,11 +79,27 @@ async def connect_db(db_path: Path | str) -> aiosqlite.Connection:
 
 async def ensure_table_exists(
     db: aiosqlite.Connection,
-    table_name: str,
-    schema: str
+    create_table_sql_or_name: str,
+    schema: Optional[str] = None,
 ) -> None:
-    """Helper für idempotente Table-Creation."""
-    await db.execute(f"CREATE TABLE IF NOT EXISTS {table_name} {schema}")
+    """
+    Ensures a table exists.
+    Supports:
+    - full SQL: ensure_table_exists(db, "CREATE TABLE IF NOT EXISTS ...")
+    - legacy form: ensure_table_exists(db, "table_name", "(...)")
+    """
+    if schema is not None:
+        if not _SQL_IDENTIFIER_RE.fullmatch(create_table_sql_or_name):
+            raise ValueError(f"Unsafe SQL table name: {create_table_sql_or_name!r}")
+        create_table_sql = "CREATE TABLE IF NOT EXISTS " + create_table_sql_or_name + " " + schema
+    else:
+        create_table_sql = create_table_sql_or_name
+
+    normalized = " ".join(create_table_sql.strip().split())
+    if not normalized.upper().startswith("CREATE TABLE IF NOT EXISTS "):
+        raise ValueError("ensure_table_exists expects a CREATE TABLE IF NOT EXISTS statement")
+
+    await db.execute(create_table_sql)
     await db.commit()
 
 
