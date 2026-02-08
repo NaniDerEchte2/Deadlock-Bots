@@ -209,6 +209,66 @@ jobs:
           if-no-files-found: ignore
 
   # ============================================================================
+  # SEMGREP SAST - KEEPS GITHUB CODE SCANNING ALERTS IN SYNC
+  # ============================================================================
+  semgrep-sast:
+    name: 🔍 Semgrep OSS SAST
+    needs: detect-languages
+    if: needs.detect-languages.outputs.has_python == 'true' || needs.detect-languages.outputs.has_javascript == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep:latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Run Semgrep (JSON)
+        run: |
+          semgrep scan \
+            --config auto \
+            --json \
+            --output semgrep.json \
+            --exclude .venv \
+            --exclude venv \
+            --exclude node_modules \
+            --exclude dist \
+            --exclude build \
+            . || true
+        continue-on-error: true
+
+      - name: Run Semgrep (SARIF for Code Scanning)
+        run: |
+          semgrep scan \
+            --config auto \
+            --sarif \
+            --output semgrep.sarif \
+            --exclude .venv \
+            --exclude venv \
+            --exclude node_modules \
+            --exclude dist \
+            --exclude build \
+            . || true
+        continue-on-error: true
+
+      - name: Upload Semgrep Results to Security Tab
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
+        if: always() && hashFiles('semgrep.sarif') != ''
+        with:
+          sarif_file: semgrep.sarif
+          # Keep the historical category stable so existing Semgrep alerts can auto-close.
+          category: semgrep
+        continue-on-error: true
+
+      - name: Upload Semgrep Artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: semgrep-reports
+          path: |
+            semgrep.json
+            semgrep.sarif
+          if-no-files-found: ignore
+
+  # ============================================================================
   # TRIVY - FILESYSTEM SCAN (ALWAYS RUNS)
   # ============================================================================
   trivy-scan:
@@ -298,7 +358,7 @@ jobs:
   # ============================================================================
   generate-summary:
     name: 📋 Generate Summary
-    needs: [detect-languages, python-security, javascript-security, trivy-scan, dependency-analysis]
+    needs: [detect-languages, python-security, javascript-security, semgrep-sast, trivy-scan, dependency-analysis]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -315,6 +375,7 @@ jobs:
           echo "## Scans Executed:" >> $GITHUB_STEP_SUMMARY
           echo "- Python Security: ${{ needs.python-security.result == 'success' && '✅' || needs.python-security.result == 'skipped' && '⏭️ Skipped' || '❌' }}" >> $GITHUB_STEP_SUMMARY
           echo "- JavaScript Security: ${{ needs.javascript-security.result == 'success' && '✅' || needs.javascript-security.result == 'skipped' && '⏭️ Skipped' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Semgrep SAST: ${{ needs.semgrep-sast.result == 'success' && '✅' || needs.semgrep-sast.result == 'skipped' && '⏭️ Skipped' || '❌' }}" >> $GITHUB_STEP_SUMMARY
           echo "- Trivy Scan: ${{ needs.trivy-scan.result == 'success' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
           echo "- Dependency Analysis: ${{ needs.dependency-analysis.result == 'success' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
