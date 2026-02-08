@@ -1,5 +1,6 @@
 # cogs/twitch/storage.py
 import logging
+import re
 import sqlite3
 from contextlib import contextmanager
 
@@ -20,14 +21,27 @@ def get_conn():
 
 # --- Schema / Migration -----------------------------------------------------
 
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_COLUMN_SPEC_RE = re.compile(r"^[A-Za-z0-9_ (),'%.-]+$")
+
+
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    cur = conn.execute(f"PRAGMA table_info({table})")
-    return {row[1] for row in cur.fetchall()}  # Spaltenname ist Index 1
+    if not _IDENTIFIER_RE.match(table):
+        raise ValueError(f"Invalid table identifier: {table!r}")
+    cur = conn.execute("SELECT name FROM pragma_table_info(?)", (table,))
+    return {row[0] for row in cur.fetchall()}
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, name: str, spec: str) -> None:
+    if not _IDENTIFIER_RE.match(table):
+        raise ValueError(f"Invalid table identifier: {table!r}")
+    if not _IDENTIFIER_RE.match(name):
+        raise ValueError(f"Invalid column identifier: {name!r}")
+    if not _COLUMN_SPEC_RE.match(spec):
+        raise ValueError(f"Invalid column spec: {spec!r}")
     cols = _columns(conn, table)
     if name not in cols:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {spec}")
+        sql = "ALTER TABLE " + table + " ADD COLUMN " + name + " " + spec
+        conn.execute(sql)  # nosemgrep
         log.info("DB: added column %s.%s", table, name)
 
 

@@ -243,16 +243,16 @@ class SmartLFGAgent(commands.Cog):
             return {}
 
         now = int(time.time())
-        placeholders = ",".join("?" for _ in steam_ids)
-
-        query = f"""
+        steam_ids_json = json.dumps(sorted(steam_ids))
+        cursor = await self.db.execute(
+            """
             SELECT steam_id, deadlock_stage, deadlock_minutes, deadlock_updated_at, last_seen_ts
             FROM live_player_state
-            WHERE steam_id IN ({placeholders})
+            WHERE steam_id IN (SELECT value FROM json_each(?))
             AND (in_deadlock_now = 1 OR deadlock_stage IS NOT NULL)
-        """
-
-        cursor = await self.db.execute(query, tuple(steam_ids))
+            """,
+            (steam_ids_json,),
+        )
         rows = await cursor.fetchall()
         await cursor.close()
 
@@ -366,13 +366,15 @@ class SmartLFGAgent(commands.Cog):
 
         patterns: Dict[int, Tuple[List[int], List[int], int]] = {}
         for chunk in self._chunked(user_ids):
-            placeholders = ",".join("?" for _ in chunk)
-            query = f"""
+            chunk_json = json.dumps([int(uid) for uid in chunk])
+            cursor = await self.db.execute(
+                """
                 SELECT user_id, typical_hours, typical_days, activity_score_2w
                 FROM user_activity_patterns
-                WHERE user_id IN ({placeholders})
-            """
-            cursor = await self.db.execute(query, tuple(chunk))
+                WHERE user_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
+                """,
+                (chunk_json,),
+            )
             rows = await cursor.fetchall()
             await cursor.close()
             for row in rows:
@@ -415,18 +417,19 @@ class SmartLFGAgent(commands.Cog):
             return set()
 
         result: Set[int] = set()
-        channel_placeholders = ",".join("?" for _ in channel_ids)
+        channel_ids_json = json.dumps([int(cid) for cid in channel_ids])
         for chunk in self._chunked(user_ids):
-            user_placeholders = ",".join("?" for _ in chunk)
-            query = f"""
+            chunk_json = json.dumps([int(uid) for uid in chunk])
+            cursor = await self.db.execute(
+                """
                 SELECT DISTINCT user_id
                 FROM voice_session_log
                 WHERE started_at >= ?
-                  AND user_id IN ({user_placeholders})
-                  AND channel_id IN ({channel_placeholders})
-            """
-            params = [cutoff_str] + list(chunk) + list(channel_ids)
-            cursor = await self.db.execute(query, tuple(params))
+                  AND user_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
+                  AND channel_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
+                """,
+                (cutoff_str, chunk_json, channel_ids_json),
+            )
             rows = await cursor.fetchall()
             await cursor.close()
             for row in rows:

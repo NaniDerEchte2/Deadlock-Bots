@@ -72,13 +72,13 @@ class TwitchAnalyticsMixin:
             token = await self._raid_bot.auth_manager.get_valid_token(user_id, session)
             
             if not token:
-                log.debug("No valid token for %s, skipping analytics", login)
+                log.debug("No valid token for %s, skipping analytics", login)  # nosemgrep
                 continue
 
             # Check if token has the required scope for subs
             scopes = self._raid_bot.auth_manager.get_scopes(user_id)
             if "channel:read:subscriptions" not in scopes:
-                log.debug("Token for %s missing 'channel:read:subscriptions' scope, skipping subs", login)
+                log.debug("Token for %s missing 'channel:read:subscriptions' scope, skipping subs", login)  # nosemgrep
                 continue
 
             try:

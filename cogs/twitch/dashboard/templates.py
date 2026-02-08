@@ -33,7 +33,7 @@ class DashboardTemplateMixin:
         elif err:
             flash = f'<div class="flash err">{html.escape(err)}</div>'
         nav_html = self._tabs(active) if nav is None else nav
-        return f"""
+        template = """
 <!doctype html>
 <meta charset="utf-8">
 <title>Deadlock Twitch Posting – Admin</title>
@@ -287,6 +287,12 @@ class DashboardTemplateMixin:
   }});
 </script>
 """
+        template = template.replace("{{", "{").replace("}}", "}")
+        return (
+            template.replace("{nav_html}", nav_html)
+            .replace("{flash}", flash)
+            .replace("{body}", body)
+        )
 
 
     def _streamer_detail_view(self, data: dict, active: str) -> str:

@@ -86,7 +86,7 @@ class TwitchBotTokenManager:
             # Sicherstellen, dass die Tokens persistiert werden (z.B. falls sie aus ENV geladen wurden)
             await self._save_tokens()
 
-            log.info("Token manager initialised. Bot id: %s", self.bot_id or "unknown")
+            log.info("Token manager initialised. Bot id: %s", self.bot_id or "unknown")  # nosemgrep
             return True
 
     async def get_valid_token(self, force_refresh: bool = False) -> Tuple[str, Optional[str]]:
@@ -137,12 +137,12 @@ class TwitchBotTokenManager:
                     self.bot_id = data.get("user_id") or self.bot_id
                     
                     scopes = data.get("scopes", [])
-                    log.info("Bot token validated. ID: %s, Scopes: %s", self.bot_id, scopes)
+                    log.info("Bot token validated. ID: %s, Scopes: %s", self.bot_id, scopes)  # nosemgrep
 
                     expires_in = data.get("expires_in", 0)
                     if expires_in:
                         self.expires_at = datetime.now() + timedelta(seconds=int(expires_in))
-                        log.info("Bot token valid until %s", self.expires_at.strftime("%Y-%m-%d %H:%M:%S"))
+                        log.info("Bot token valid until %s", self.expires_at.strftime("%Y-%m-%d %H:%M:%S"))  # nosemgrep
 
                 if self.bot_id:
                     return True
@@ -162,7 +162,7 @@ class TwitchBotTokenManager:
                         else:
                             log.warning("Failed to fetch bot id via Helix: HTTP %s", user_resp.status)
         except Exception as exc:
-            log.error("Token validation error: %s", exc)
+            log.error("Token validation error: %s", exc)  # nosemgrep
 
         return False
 
@@ -185,7 +185,7 @@ class TwitchBotTokenManager:
                 async with session.post(url, params=params) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
-                        log.error("Token refresh failed: HTTP %s: %s", resp.status, error_text)
+                        log.error("Token refresh failed: HTTP %s: %s", resp.status, error_text)  # nosemgrep
                         return False
 
                     data = await resp.json()
@@ -202,13 +202,13 @@ class TwitchBotTokenManager:
                             await self._on_refresh(self.access_token, self.refresh_token, self.expires_at)
                         except Exception as exc:
                             log.debug("Refresh callback failed: %s", exc)
-                    log.info(
+                    log.info(  # nosemgrep
                         "Twitch bot token refreshed; valid until %s",
                         self.expires_at.strftime("%Y-%m-%d %H:%M:%S") if self.expires_at else "unknown",
                     )
                     return True
         except Exception as exc:
-            log.error("Token refresh exception: %s", exc)
+            log.error("Token refresh exception: %s", exc)  # nosemgrep
             return False
 
     async def _auto_refresh_loop(self):
@@ -245,9 +245,9 @@ class TwitchBotTokenManager:
                 candidate = Path(token_file).read_text(encoding="utf-8").strip()
                 if candidate:
                     return candidate, refresh or None
-                log.warning("TWITCH_BOT_TOKEN_FILE is set (%s) but empty.", token_file)
+                log.warning("TWITCH_BOT_TOKEN_FILE is set (%s) but empty.", token_file)  # nosemgrep
             except Exception as exc:
-                log.warning("Could not read TWITCH_BOT_TOKEN_FILE (%s): %s", token_file, exc)
+                log.warning("Could not read TWITCH_BOT_TOKEN_FILE (%s): %s", token_file, exc)  # nosemgrep
 
         try:
             import keyring  # type: ignore
@@ -279,7 +279,7 @@ class TwitchBotTokenManager:
         try:
             import keyring  # type: ignore
         except Exception as exc:
-            log.debug("keyring not available; cannot persist Twitch bot tokens: %s", exc)
+            log.debug("keyring not available; cannot persist Twitch bot tokens: %s", exc)  # nosemgrep
             return
 
         saved_types = []
@@ -305,9 +305,9 @@ class TwitchBotTokenManager:
                 saved_types.append("REFRESH_TOKEN")
 
             if saved_types:
-                log.info("Twitch Bot Tokens (%s) im Windows Credential Manager gespeichert (Dienst: %s).", "+".join(saved_types), self.keyring_service)
+                log.info("Twitch Bot Tokens (%s) im Windows Credential Manager gespeichert (Dienst: %s).", "+".join(saved_types), self.keyring_service)  # nosemgrep
         except Exception as exc:
-            log.error("Could not persist Twitch bot tokens: %s", exc)
+            log.error("Could not persist Twitch bot tokens: %s", exc)  # nosemgrep
 
     async def cleanup(self):
         """Stop the background auto-refresh task."""

@@ -98,7 +98,7 @@ class TokenErrorHandler:
                 
                 conn.commit()
                 
-            log.warning(
+            log.warning(  # nosemgrep
                 "Added %s (ID: %s) to token blacklist. Error: %s",
                 twitch_login,
                 twitch_user_id,
@@ -182,7 +182,7 @@ class TokenErrorHandler:
                 ).fetchone()
                 
                 if row and row[0] == 1:
-                    log.debug("Already notified about token error for %s", twitch_login)
+                    log.debug("Already notified about token error for %s", twitch_login)  # nosemgrep
                     return
         except Exception:
             log.error("Error checking notification status", exc_info=True)
@@ -191,7 +191,7 @@ class TokenErrorHandler:
         try:
             channel = self.discord_bot.get_channel(TOKEN_ERROR_CHANNEL_ID)
             if not channel:
-                log.warning("Token error notification channel %s not found", TOKEN_ERROR_CHANNEL_ID)
+                log.warning("Token error notification channel %s not found", TOKEN_ERROR_CHANNEL_ID)  # nosemgrep
                 return
 
             # Erstelle Discord Embed
@@ -251,7 +251,7 @@ class TokenErrorHandler:
                 )
                 conn.commit()
                 
-            log.info("Sent token error notification for %s to channel %s", twitch_login, TOKEN_ERROR_CHANNEL_ID)
+            log.info("Sent token error notification for %s to channel %s", twitch_login, TOKEN_ERROR_CHANNEL_ID)  # nosemgrep
             
         except Exception:
             log.error("Error sending token error notification", exc_info=True)

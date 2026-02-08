@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import asyncio
+import json
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -464,13 +465,18 @@ class TwitchDashboardMixin:
             msg_counts = {}
             if session_rows:
                 ids = [str(r["id"]) for r in session_rows]
-                placeholders = ",".join("?" * len(ids))
                 # Note: This might be heavy if >1000 sessions, but for 30d single streamer it's fine.
                 # If global view, limit strictly.
                 if len(ids) < 900:
+                    ids_json = json.dumps([int(session_id) for session_id in ids])
                     mc_rows = conn.execute(
-                        f"SELECT session_id, COUNT(*) as c FROM twitch_chat_messages WHERE session_id IN ({placeholders}) GROUP BY session_id",
-                        ids
+                        """
+                        SELECT session_id, COUNT(*) as c
+                        FROM twitch_chat_messages
+                        WHERE session_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
+                        GROUP BY session_id
+                        """,
+                        (ids_json,),
                     ).fetchall()
                     msg_counts = {r["session_id"]: r["c"] for r in mc_rows}
 
