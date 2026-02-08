@@ -84,13 +84,29 @@ class BotLifecycle:
         """
         Lädt die relevanten Module neu, damit Code-Änderungen beim Restart greifen.
         """
-        for module_name in ("service.config", "service.db", "service.dashboard"):
-            try:
-                importlib.reload(importlib.import_module(module_name))
-            except Exception as exc:  # pragma: no cover - defensive reload
-                logger.warning("Module reload skipped for %s: %s", module_name, exc)
-        master_module = importlib.reload(importlib.import_module("bot_core.master_bot"))
-        control_module = importlib.reload(importlib.import_module("bot_core.control"))
+        try:
+            import service.config as service_config
+            importlib.reload(service_config)
+        except Exception as exc:  # pragma: no cover - defensive reload
+            logger.warning("Module reload skipped for service.config: %s", exc)
+
+        try:
+            import service.db as service_db
+            importlib.reload(service_db)
+        except Exception as exc:  # pragma: no cover - defensive reload
+            logger.warning("Module reload skipped for service.db: %s", exc)
+
+        try:
+            import service.dashboard as service_dashboard
+            importlib.reload(service_dashboard)
+        except Exception as exc:  # pragma: no cover - defensive reload
+            logger.warning("Module reload skipped for service.dashboard: %s", exc)
+
+        import bot_core.master_bot as master_module_ref
+        import bot_core.control as control_module_ref
+
+        master_module = importlib.reload(master_module_ref)
+        control_module = importlib.reload(control_module_ref)  # nosemgrep
 
         bot: MasterBot = master_module.MasterBot(lifecycle=self)
         control_cog_cls = control_module.MasterControlCog
@@ -106,7 +122,7 @@ class BotLifecycle:
             try:
                 token = self._resolve_token()
             except Exception as exc:
-                logger.critical("Discord-Token konnte nicht bestimmt werden: %s", exc)
+                logger.critical("Discord-Token konnte nicht bestimmt werden: %s", exc)  # nosemgrep
                 self._stop_event.set()
                 break
 

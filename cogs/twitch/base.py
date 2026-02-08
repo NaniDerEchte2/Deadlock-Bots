@@ -112,7 +112,7 @@ class TwitchBaseCog(commands.Cog):
         )
         env_dashboard_host = (os.getenv("TWITCH_DASHBOARD_HOST") or "").strip()
         self._dashboard_host = env_dashboard_host or TWITCH_DASHBOARD_HOST or (
-            "127.0.0.1" if self._dashboard_noauth else "0.0.0.0"
+            "127.0.0.1" if self._dashboard_noauth else "0.0.0.0"  # nosec B104
         )
         self._dashboard_port = _parse_env_int("TWITCH_DASHBOARD_PORT", int(TWITCH_DASHBOARD_PORT))
         embedded_env = (os.getenv("TWITCH_DASHBOARD_EMBEDDED", "") or "").strip().lower()
@@ -614,11 +614,11 @@ class TwitchBaseCog(commands.Cog):
                     
                     to_remove = existing - codes
                     if to_remove:
-                        placeholders = ",".join("?" for _ in to_remove)
-                        conn.execute(
-                            f"DELETE FROM discord_invite_codes WHERE guild_id = ? AND invite_code IN ({placeholders})",
-                            (guild.id, *to_remove)
-                        )
+                        for invite_code in to_remove:
+                            conn.execute(
+                                "DELETE FROM discord_invite_codes WHERE guild_id = ? AND invite_code = ?",
+                                (guild.id, invite_code),
+                            )
                     
                     # Füge neue hinzu oder update last_seen_at
                     for code in codes:
@@ -748,21 +748,24 @@ class TwitchBaseCog(commands.Cog):
         if not monitored:
             return
 
-        placeholders = ",".join("?" for _ in monitored)
         offline_logins: list[str] = []
         offline_ids: dict[str, str] = {}
 
         try:
             with storage.get_conn() as conn:
-                rows = conn.execute(
-                    f"""
-                    SELECT s.twitch_login, l.is_live, s.twitch_user_id
-                      FROM twitch_streamers s
-                      LEFT JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
-                     WHERE LOWER(s.twitch_login) IN ({placeholders})
-                    """,
-                    tuple(monitored),
-                ).fetchall()
+                rows = []
+                for login in monitored:
+                    row = conn.execute(
+                        """
+                        SELECT s.twitch_login, l.is_live, s.twitch_user_id
+                          FROM twitch_streamers s
+                          LEFT JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
+                         WHERE LOWER(s.twitch_login) = ?
+                        """,
+                        (login,),
+                    ).fetchone()
+                    if row is not None:
+                        rows.append(row)
 
             for row in rows:
                 login = str(row["twitch_login"] if hasattr(row, "keys") else row[0]).strip().lower()

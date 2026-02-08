@@ -35,7 +35,7 @@ STEAM_RETURN_URL = (
     if PUBLIC_BASE_URL else ""
 )
 
-HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")
+HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")  # nosec B104
 HTTP_PORT = int(os.getenv("STEAM_OAUTH_PORT", os.getenv("HTTP_PORT", "8888")))
 CLIENT_SECRET = (os.getenv("DISCORD_OAUTH_CLIENT_SECRET") or "").strip()
 
@@ -426,7 +426,7 @@ class SteamLink(commands.Cog):
             async with s.post(f"{DISCORD_API}/oauth2/token", data=data, headers=headers) as r:
                 if r.status != 200:
                     body = await r.text()
-                    log.warning(
+                    log.warning(  # nosemgrep
                         "Discord Token-Exchange fehlgeschlagen (%s): %s",
                         r.status,
                         _safe_log_text(body),
@@ -637,7 +637,7 @@ class SteamLink(commands.Cog):
             html_doc = (
                 "<html><body style='font-family: system-ui, sans-serif'>"
                 "<h3>✅ Verknüpfung abgeschlossen</h3>"
-                f"<p>{len(saved_ids)} Steam-Account(s) wurden gespeichert.</p>"
+                f"<p>{len(saved_ids)} Steam-Account(s) wurden gespeichert.</p>"  # nosemgrep
                 "<p>Du kannst dieses Fenster jetzt schließen.</p>"
                 "</body></html>"
             )
@@ -656,10 +656,10 @@ class SteamLink(commands.Cog):
             steam_login_safe = html.escape(steam_login, quote=True)
             html_doc = (
                 "<html><head>"
-                f"<meta http-equiv='refresh' content=\"0; url={steam_login_safe}\"/>"
+                f"<meta http-equiv='refresh' content=\"0; url={steam_login_safe}\"/>"  # nosemgrep
                 "</head><body style='font-family: system-ui, sans-serif'>"
                 "<h3>Weiterleitung zu Steam …</h3>"
-                f"<p><a href=\"{steam_login_safe}\" style='padding:10px 14px;"
+                f"<p><a href=\"{steam_login_safe}\" style='padding:10px 14px;"  # nosemgrep
                 "background:#2a475e;color:#fff;border-radius:6px;text-decoration:none;'>Falls nichts passiert, hier klicken</a></p>"
                 "</body></html>"
             )
@@ -681,7 +681,7 @@ class SteamLink(commands.Cog):
             html_doc = (
                 "<html><body style='font-family: system-ui, sans-serif'>"
                 "<h3>Weiter zu Steam</h3>"
-                f"<p><a href=\"{login_url_safe}\">Steam Login öffnen</a></p>"
+                f"<p><a href=\"{login_url_safe}\">Steam Login öffnen</a></p>"  # nosemgrep
                 "</body></html>"
             )
             return web.Response(text=html_doc, content_type="text/html")

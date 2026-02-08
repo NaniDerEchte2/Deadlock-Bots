@@ -508,23 +508,54 @@ def _create_or_reset_invite(discord_id: int, steam_id64: str, account_id: Option
 
 
 def _update_invite(record_id: int, **fields) -> Optional[BetaInviteRecord]:
-    assignments = []
-    params = []
-    for key, value in fields.items():
-        if key not in _ALLOWED_UPDATE_FIELDS:
-            continue
-        assignments.append(f"{key} = ?")
-        params.append(value)
-    if not assignments:
+    filtered = {k: v for k, v in fields.items() if k in _ALLOWED_UPDATE_FIELDS}
+    if not filtered:
         return _fetch_invite_by_id(record_id)
 
-    assignments.append("updated_at = strftime('%s','now')")
-    params.append(int(record_id))
+    def _flag_and_value(key: str):
+        if key in filtered:
+            return 1, filtered[key]
+        return 0, None
 
     with db.get_conn() as conn:
+        status_set, status_val = _flag_and_value("status")
+        last_error_set, last_error_val = _flag_and_value("last_error")
+        friend_requested_set, friend_requested_val = _flag_and_value("friend_requested_at")
+        friend_confirmed_set, friend_confirmed_val = _flag_and_value("friend_confirmed_at")
+        invite_sent_set, invite_sent_val = _flag_and_value("invite_sent_at")
+        last_notified_set, last_notified_val = _flag_and_value("last_notified_at")
+        account_id_set, account_id_val = _flag_and_value("account_id")
+
         conn.execute(
-            f"UPDATE steam_beta_invites SET {', '.join(assignments)} WHERE id = ?",
-            params,
+            """
+            UPDATE steam_beta_invites
+               SET status = CASE WHEN ? THEN ? ELSE status END,
+                   last_error = CASE WHEN ? THEN ? ELSE last_error END,
+                   friend_requested_at = CASE WHEN ? THEN ? ELSE friend_requested_at END,
+                   friend_confirmed_at = CASE WHEN ? THEN ? ELSE friend_confirmed_at END,
+                   invite_sent_at = CASE WHEN ? THEN ? ELSE invite_sent_at END,
+                   last_notified_at = CASE WHEN ? THEN ? ELSE last_notified_at END,
+                   account_id = CASE WHEN ? THEN ? ELSE account_id END,
+                   updated_at = strftime('%s','now')
+             WHERE id = ?
+            """,
+            (
+                status_set,
+                status_val,
+                last_error_set,
+                last_error_val,
+                friend_requested_set,
+                friend_requested_val,
+                friend_confirmed_set,
+                friend_confirmed_val,
+                invite_sent_set,
+                invite_sent_val,
+                last_notified_set,
+                last_notified_val,
+                account_id_set,
+                account_id_val,
+                int(record_id),
+            ),
         )
         row = conn.execute(
             "SELECT * FROM steam_beta_invites WHERE id = ?",

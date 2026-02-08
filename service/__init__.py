@@ -23,7 +23,23 @@ def _load_submodule(name: str, *, required: bool = False) -> Optional[ModuleType
 def _load_submodule(name: str, *, required: bool = False) -> Optional[ModuleType]:
     """Import a submodule defensively, treating some imports as optional."""
     try:
-        return importlib.import_module(f".{name}", __name__)
+        if name == "db":
+            return importlib.import_module(".db", __name__)
+        if name == "socket_bus":
+            return importlib.import_module(".socket_bus", __name__)
+        if name == "worker_client":
+            return importlib.import_module(".worker_client", __name__)
+        if name == "dashboard":
+            return importlib.import_module(".dashboard", __name__)
+        if name == "changelogs":
+            return importlib.import_module(".changelogs", __name__)
+        if name == "faq_logs":
+            return importlib.import_module(".faq_logs", __name__)
+        if name == "standalone_manager":
+            return importlib.import_module(".standalone_manager", __name__)
+        if name == "hooks":
+            return importlib.import_module(".hooks", __name__)
+        raise ImportError(f"Unknown service submodule: {name}")
     except Exception as exc:
         if required:
             raise

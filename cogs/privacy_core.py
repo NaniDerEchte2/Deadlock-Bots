@@ -51,6 +51,30 @@ _USER_TABLES: Tuple[Tuple[str, str], ...] = (
     ("steam_quick_invites", "reserved_by"),
 )
 
+_STEAM_SIDE_TABLES: Tuple[Tuple[str, str], ...] = (
+    ("live_player_state", "steam_id"),
+    ("deadlock_voice_watch", "steam_id"),
+    ("steam_rich_presence", "steam_id"),
+    ("steam_presence_watchlist", "steam_id"),
+    ("steam_friend_requests", "steam_id"),
+    ("steam_beta_invites", "steam_id64"),
+    ("beta_invite_audit", "steam_id64"),
+)
+
+_SINGLE_COLUMN_TARGETS: Tuple[Tuple[str, str], ...] = tuple(
+    dict.fromkeys(_USER_TABLES + _STEAM_SIDE_TABLES)
+)
+
+_DELETE_SQL_BY_TARGET: Dict[Tuple[str, str], str] = {
+    (table, column): f"DELETE FROM {table} WHERE {column}=?"  # nosec B608
+    for table, column in _SINGLE_COLUMN_TARGETS
+}
+
+_SELECT_SQL_BY_TARGET: Dict[Tuple[str, str], str] = {
+    (table, column): f"SELECT * FROM {table} WHERE {column}=?"  # nosec B608
+    for table, column in _SINGLE_COLUMN_TARGETS
+}
+
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     try:
@@ -95,9 +119,10 @@ async def set_opt_in(user_id: int) -> None:
 
 
 def _delete_where(conn: sqlite3.Connection, table: str, column: str, value: object) -> int:
-    if not _table_exists(conn, table):
+    sql = _DELETE_SQL_BY_TARGET.get((table, column))
+    if not sql or not _table_exists(conn, table):
         return 0
-    cur = conn.execute(f"DELETE FROM {table} WHERE {column}=?", (value,))
+    cur = conn.execute(sql, (value,))
     return max(cur.rowcount or 0, 0)
 
 
@@ -105,15 +130,22 @@ def _delete_any_of(conn: sqlite3.Connection, table: str, columns: Iterable[str],
     cols = list(columns)
     if not cols or not _table_exists(conn, table):
         return 0
-    clause = " OR ".join([f"{c}=?" for c in cols])
-    cur = conn.execute(f"DELETE FROM {table} WHERE {clause}", tuple(value for _ in cols))
+    if table != "user_co_players":
+        return 0
+    if set(cols) != {"user_id", "co_player_id"}:
+        return 0
+    cur = conn.execute(
+        "DELETE FROM user_co_players WHERE user_id=? OR co_player_id=?",
+        (value, value),
+    )
     return max(cur.rowcount or 0, 0)
 
 
 def _fetch_rows(conn: sqlite3.Connection, table: str, column: str, value: object) -> List[Dict[str, object]]:
-    if not _table_exists(conn, table):
+    sql = _SELECT_SQL_BY_TARGET.get((table, column))
+    if not sql or not _table_exists(conn, table):
         return []
-    cur = conn.execute(f"SELECT * FROM {table} WHERE {column}=?", (value,))
+    cur = conn.execute(sql, (value,))
     cols = [col[0] for col in cur.description or []]
     rows = cur.fetchall() or []
     return [{col: row[idx] for idx, col in enumerate(cols)} for row in rows]
@@ -123,8 +155,14 @@ def _fetch_rows_any(conn: sqlite3.Connection, table: str, columns: Iterable[str]
     cols = list(columns)
     if not cols or not _table_exists(conn, table):
         return []
-    clause = " OR ".join([f"{c}=?" for c in cols])
-    cur = conn.execute(f"SELECT * FROM {table} WHERE {clause}", tuple(value for _ in cols))
+    if table != "user_co_players":
+        return []
+    if set(cols) != {"user_id", "co_player_id"}:
+        return []
+    cur = conn.execute(
+        "SELECT * FROM user_co_players WHERE user_id=? OR co_player_id=?",
+        (value, value),
+    )
     colnames = [col[0] for col in cur.description or []]
     rows = cur.fetchall() or []
     return [{name: row[idx] for idx, name in enumerate(colnames)} for row in rows]

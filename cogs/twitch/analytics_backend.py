@@ -33,23 +33,28 @@ class AnalyticsBackend:
             with storage.get_conn() as conn:
                 # Determine filter
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-                
+
+                # Check if we have any data
                 if streamer_login:
                     normalized_login = streamer_login.lower().strip()
-                    where_clause = "AND LOWER(s.streamer_login) = ?"
-                    params = [since_date, normalized_login]
+                    row = conn.execute(
+                        """
+                        SELECT COUNT(*) as cnt
+                        FROM twitch_stream_sessions s
+                        WHERE s.started_at >= ?
+                          AND LOWER(s.streamer_login) = ?
+                        """,
+                        [since_date, normalized_login],
+                    ).fetchone()
                 else:
-                    where_clause = ""
-                    params = [since_date]
-                
-                # Check if we have any data
-                count_query = f"""
-                    SELECT COUNT(*) as cnt
-                    FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ?
-                    {where_clause}
-                """
-                row = conn.execute(count_query, params).fetchone()
+                    row = conn.execute(
+                        """
+                        SELECT COUNT(*) as cnt
+                        FROM twitch_stream_sessions s
+                        WHERE s.started_at >= ?
+                        """,
+                        [since_date],
+                    ).fetchone()
                 session_count = row[0] if row else 0
                 
                 if session_count == 0:
@@ -81,22 +86,38 @@ class AnalyticsBackend:
     @staticmethod
     def _calculate_metrics(conn, since_date: str, streamer_login: Optional[str]) -> Dict[str, Any]:
         """Calculate summary metrics for KPI cards."""
-        where_clause = "AND LOWER(s.streamer_login) = ?" if streamer_login else ""
-        params = [since_date, streamer_login.lower().strip()] if streamer_login else [since_date]
+        normalized_login = streamer_login.lower().strip() if streamer_login else None
         
         # Retention metrics
-        retention_query = f"""
-            SELECT 
-                AVG(s.retention_5m) as avg_ret_5m,
-                AVG(s.retention_10m) as avg_ret_10m,
-                AVG(s.retention_20m) as avg_ret_20m,
-                AVG(s.dropoff_pct) as avg_dropoff
-            FROM twitch_stream_sessions s
-            WHERE s.started_at >= ?
-              AND s.retention_5m IS NOT NULL
-            {where_clause}
-        """
-        row = conn.execute(retention_query, params).fetchone()
+        if normalized_login:
+            row = conn.execute(
+                """
+                SELECT
+                    AVG(s.retention_5m) as avg_ret_5m,
+                    AVG(s.retention_10m) as avg_ret_10m,
+                    AVG(s.retention_20m) as avg_ret_20m,
+                    AVG(s.dropoff_pct) as avg_dropoff
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.retention_5m IS NOT NULL
+                  AND LOWER(s.streamer_login) = ?
+                """,
+                [since_date, normalized_login],
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT
+                    AVG(s.retention_5m) as avg_ret_5m,
+                    AVG(s.retention_10m) as avg_ret_10m,
+                    AVG(s.retention_20m) as avg_ret_20m,
+                    AVG(s.dropoff_pct) as avg_dropoff
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.retention_5m IS NOT NULL
+                """,
+                [since_date],
+            ).fetchone()
         
         ret_5m = float(row[0]) if row and row[0] else 0.0
         ret_10m = float(row[1]) if row and row[1] else 0.0
@@ -104,18 +125,35 @@ class AnalyticsBackend:
         avg_dropoff = float(row[3]) if row and row[3] else 0.0
         
         # Discovery metrics
-        discovery_query = f"""
-            SELECT 
-                AVG(s.peak_viewers) as avg_peak,
-                SUM(COALESCE(s.follower_delta, 0)) as total_followers,
-                COUNT(*) as session_count,
-                SUM(s.duration_seconds) as total_duration_sec
-            FROM twitch_stream_sessions s
-            WHERE s.started_at >= ?
-              AND s.ended_at IS NOT NULL
-            {where_clause}
-        """
-        row = conn.execute(discovery_query, params).fetchone()
+        if normalized_login:
+            row = conn.execute(
+                """
+                SELECT
+                    AVG(s.peak_viewers) as avg_peak,
+                    SUM(COALESCE(s.follower_delta, 0)) as total_followers,
+                    COUNT(*) as session_count,
+                    SUM(s.duration_seconds) as total_duration_sec
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.ended_at IS NOT NULL
+                  AND LOWER(s.streamer_login) = ?
+                """,
+                [since_date, normalized_login],
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT
+                    AVG(s.peak_viewers) as avg_peak,
+                    SUM(COALESCE(s.follower_delta, 0)) as total_followers,
+                    COUNT(*) as session_count,
+                    SUM(s.duration_seconds) as total_duration_sec
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.ended_at IS NOT NULL
+                """,
+                [since_date],
+            ).fetchone()
         
         avg_peak = float(row[0]) if row and row[0] else 0.0
         total_followers = int(row[1]) if row and row[1] else 0
@@ -126,19 +164,37 @@ class AnalyticsBackend:
         followers_per_hour = total_followers / total_duration_hours if total_duration_hours > 0 else 0.0
         
         # Chat metrics
-        chat_query = f"""
-            SELECT 
-                AVG(s.unique_chatters) as avg_unique,
-                AVG(CASE WHEN s.avg_viewers > 0 THEN (s.unique_chatters * 100.0 / s.avg_viewers) ELSE 0 END) as chat_per_100,
-                SUM(s.first_time_chatters) as total_first_time,
-                SUM(s.returning_chatters) as total_returning
-            FROM twitch_stream_sessions s
-            WHERE s.started_at >= ?
-              AND s.ended_at IS NOT NULL
-              AND s.avg_viewers > 0
-            {where_clause}
-        """
-        row = conn.execute(chat_query, params).fetchone()
+        if normalized_login:
+            row = conn.execute(
+                """
+                SELECT
+                    AVG(s.unique_chatters) as avg_unique,
+                    AVG(CASE WHEN s.avg_viewers > 0 THEN (s.unique_chatters * 100.0 / s.avg_viewers) ELSE 0 END) as chat_per_100,
+                    SUM(s.first_time_chatters) as total_first_time,
+                    SUM(s.returning_chatters) as total_returning
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.ended_at IS NOT NULL
+                  AND s.avg_viewers > 0
+                  AND LOWER(s.streamer_login) = ?
+                """,
+                [since_date, normalized_login],
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT
+                    AVG(s.unique_chatters) as avg_unique,
+                    AVG(CASE WHEN s.avg_viewers > 0 THEN (s.unique_chatters * 100.0 / s.avg_viewers) ELSE 0 END) as chat_per_100,
+                    SUM(s.first_time_chatters) as total_first_time,
+                    SUM(s.returning_chatters) as total_returning
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.ended_at IS NOT NULL
+                  AND s.avg_viewers > 0
+                """,
+                [since_date],
+            ).fetchone()
         
         avg_unique_chatters = float(row[0]) if row and row[0] else 0.0
         chat_per_100 = float(row[1]) if row and row[1] else 0.0
@@ -147,16 +203,27 @@ class AnalyticsBackend:
         
         # Calculate trends (compare to previous period)
         prev_since = (datetime.fromisoformat(since_date.replace('Z', '+00:00')) - timedelta(days=30)).isoformat()
-        prev_params = [prev_since, since_date] + ([streamer_login.lower().strip()] if streamer_login else [])
-        
-        prev_retention_query = f"""
-            SELECT AVG(s.retention_5m) as avg_ret_5m
-            FROM twitch_stream_sessions s
-            WHERE s.started_at >= ? AND s.started_at < ?
-              AND s.retention_5m IS NOT NULL
-            {where_clause}
-        """
-        prev_row = conn.execute(prev_retention_query, prev_params).fetchone()
+        if normalized_login:
+            prev_row = conn.execute(
+                """
+                SELECT AVG(s.retention_5m) as avg_ret_5m
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ? AND s.started_at < ?
+                  AND s.retention_5m IS NOT NULL
+                  AND LOWER(s.streamer_login) = ?
+                """,
+                [prev_since, since_date, normalized_login],
+            ).fetchone()
+        else:
+            prev_row = conn.execute(
+                """
+                SELECT AVG(s.retention_5m) as avg_ret_5m
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ? AND s.started_at < ?
+                  AND s.retention_5m IS NOT NULL
+                """,
+                [prev_since, since_date],
+            ).fetchone()
         prev_ret_5m = float(prev_row[0]) if prev_row and prev_row[0] else 0.0
         
         retention_trend = ((ret_5m - prev_ret_5m) / prev_ret_5m * 100) if prev_ret_5m > 0 else 0.0
@@ -183,25 +250,41 @@ class AnalyticsBackend:
     @staticmethod
     def _get_retention_timeline(conn, since_date: str, streamer_login: Optional[str], days: int) -> List[Dict[str, Any]]:
         """Get daily retention metrics timeline."""
-        where_clause = "AND LOWER(s.streamer_login) = ?" if streamer_login else ""
-        params = [since_date, streamer_login.lower().strip()] if streamer_login else [since_date]
-        
-        query = f"""
-            SELECT 
-                DATE(s.started_at) as date,
-                AVG(s.retention_5m) as ret_5m,
-                AVG(s.retention_10m) as ret_10m,
-                AVG(s.retention_20m) as ret_20m,
-                AVG(s.dropoff_pct) as dropoff
-            FROM twitch_stream_sessions s
-            WHERE s.started_at >= ?
-              AND s.retention_5m IS NOT NULL
-            {where_clause}
-            GROUP BY DATE(s.started_at)
-            ORDER BY date ASC
-        """
-        
-        rows = conn.execute(query, params).fetchall()
+        if streamer_login:
+            rows = conn.execute(
+                """
+                SELECT
+                    DATE(s.started_at) as date,
+                    AVG(s.retention_5m) as ret_5m,
+                    AVG(s.retention_10m) as ret_10m,
+                    AVG(s.retention_20m) as ret_20m,
+                    AVG(s.dropoff_pct) as dropoff
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.retention_5m IS NOT NULL
+                  AND LOWER(s.streamer_login) = ?
+                GROUP BY DATE(s.started_at)
+                ORDER BY date ASC
+                """,
+                [since_date, streamer_login.lower().strip()],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT
+                    DATE(s.started_at) as date,
+                    AVG(s.retention_5m) as ret_5m,
+                    AVG(s.retention_10m) as ret_10m,
+                    AVG(s.retention_20m) as ret_20m,
+                    AVG(s.dropoff_pct) as dropoff
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.retention_5m IS NOT NULL
+                GROUP BY DATE(s.started_at)
+                ORDER BY date ASC
+                """,
+                [since_date],
+            ).fetchall()
         
         timeline = []
         for row in rows:
@@ -218,24 +301,39 @@ class AnalyticsBackend:
     @staticmethod
     def _get_discovery_timeline(conn, since_date: str, streamer_login: Optional[str], days: int) -> List[Dict[str, Any]]:
         """Get daily discovery/growth metrics timeline."""
-        where_clause = "AND LOWER(s.streamer_login) = ?" if streamer_login else ""
-        params = [since_date, streamer_login.lower().strip()] if streamer_login else [since_date]
-        
-        query = f"""
-            SELECT 
-                DATE(s.started_at) as date,
-                AVG(s.peak_viewers) as peak_viewers,
-                SUM(COALESCE(s.follower_delta, 0)) as followers_delta,
-                AVG(s.avg_viewers) as avg_viewers
-            FROM twitch_stream_sessions s
-            WHERE s.started_at >= ?
-              AND s.ended_at IS NOT NULL
-            {where_clause}
-            GROUP BY DATE(s.started_at)
-            ORDER BY date ASC
-        """
-        
-        rows = conn.execute(query, params).fetchall()
+        if streamer_login:
+            rows = conn.execute(
+                """
+                SELECT
+                    DATE(s.started_at) as date,
+                    AVG(s.peak_viewers) as peak_viewers,
+                    SUM(COALESCE(s.follower_delta, 0)) as followers_delta,
+                    AVG(s.avg_viewers) as avg_viewers
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.ended_at IS NOT NULL
+                  AND LOWER(s.streamer_login) = ?
+                GROUP BY DATE(s.started_at)
+                ORDER BY date ASC
+                """,
+                [since_date, streamer_login.lower().strip()],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT
+                    DATE(s.started_at) as date,
+                    AVG(s.peak_viewers) as peak_viewers,
+                    SUM(COALESCE(s.follower_delta, 0)) as followers_delta,
+                    AVG(s.avg_viewers) as avg_viewers
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.ended_at IS NOT NULL
+                GROUP BY DATE(s.started_at)
+                ORDER BY date ASC
+                """,
+                [since_date],
+            ).fetchall()
         
         timeline = []
         for row in rows:
@@ -251,26 +349,43 @@ class AnalyticsBackend:
     @staticmethod
     def _get_chat_timeline(conn, since_date: str, streamer_login: Optional[str], days: int) -> List[Dict[str, Any]]:
         """Get daily chat health metrics timeline."""
-        where_clause = "AND LOWER(s.streamer_login) = ?" if streamer_login else ""
-        params = [since_date, streamer_login.lower().strip()] if streamer_login else [since_date]
-        
-        query = f"""
-            SELECT 
-                DATE(s.started_at) as date,
-                AVG(s.unique_chatters) as unique_chatters,
-                AVG(CASE WHEN s.avg_viewers > 0 THEN (s.unique_chatters * 100.0 / s.avg_viewers) ELSE 0 END) as chat_per_100,
-                SUM(s.first_time_chatters) as first_time,
-                SUM(s.returning_chatters) as returning_chatters
-            FROM twitch_stream_sessions s
-            WHERE s.started_at >= ?
-              AND s.ended_at IS NOT NULL
-              AND s.avg_viewers > 0
-            {where_clause}
-            GROUP BY DATE(s.started_at)
-            ORDER BY date ASC
-        """
-        
-        rows = conn.execute(query, params).fetchall()
+        if streamer_login:
+            rows = conn.execute(
+                """
+                SELECT
+                    DATE(s.started_at) as date,
+                    AVG(s.unique_chatters) as unique_chatters,
+                    AVG(CASE WHEN s.avg_viewers > 0 THEN (s.unique_chatters * 100.0 / s.avg_viewers) ELSE 0 END) as chat_per_100,
+                    SUM(s.first_time_chatters) as first_time,
+                    SUM(s.returning_chatters) as returning_chatters
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.ended_at IS NOT NULL
+                  AND s.avg_viewers > 0
+                  AND LOWER(s.streamer_login) = ?
+                GROUP BY DATE(s.started_at)
+                ORDER BY date ASC
+                """,
+                [since_date, streamer_login.lower().strip()],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT
+                    DATE(s.started_at) as date,
+                    AVG(s.unique_chatters) as unique_chatters,
+                    AVG(CASE WHEN s.avg_viewers > 0 THEN (s.unique_chatters * 100.0 / s.avg_viewers) ELSE 0 END) as chat_per_100,
+                    SUM(s.first_time_chatters) as first_time,
+                    SUM(s.returning_chatters) as returning_chatters
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.ended_at IS NOT NULL
+                  AND s.avg_viewers > 0
+                GROUP BY DATE(s.started_at)
+                ORDER BY date ASC
+                """,
+                [since_date],
+            ).fetchall()
         
         timeline = []
         for row in rows:

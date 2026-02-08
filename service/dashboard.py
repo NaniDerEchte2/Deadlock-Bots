@@ -1010,21 +1010,7 @@ class DashboardServer:
                 raise web.HTTPBadRequest(text="user_id must be an integer")
 
         cutoff = f"-{days} day"
-        where_clauses = ["started_at >= datetime('now', ?)"]
-        params: list[Any] = [cutoff]
-        if user_id is not None:
-            where_clauses.append("user_id = ?")
-            params.append(user_id)
-        where_sql = " AND ".join(where_clauses)
-
-        def _group_sql() -> str:
-            if mode == "hour":
-                return "strftime('%H', started_at)"
-            if mode == "day":
-                return "strftime('%w', started_at)"
-            if mode == "week":
-                return "strftime('%Y-%W', started_at)"
-            return "strftime('%Y-%m', started_at)"
+        user_filter = user_id
 
         try:
             daily_rows = db.query_all(
@@ -1048,25 +1034,39 @@ class DashboardServer:
                        SUM(points) AS total_points,
                        COUNT(*) AS sessions
                 FROM voice_session_log
-                WHERE """ + where_sql + """
+                WHERE started_at >= datetime('now', ?)
+                  AND (? IS NULL OR user_id = ?)
                 GROUP BY user_id
                 ORDER BY total_seconds DESC, total_points DESC
                 LIMIT ?
                 """,
-                (*params, top_limit),
+                (cutoff, user_filter, user_filter, top_limit),
             )
             hourly_rows = db.query_all(
                 """
-                SELECT """ + _group_sql() + """ AS bucket,
+                WITH grouped AS (
+                    SELECT
+                        CASE
+                            WHEN ? = 'hour' THEN strftime('%H', started_at)
+                            WHEN ? = 'day' THEN strftime('%w', started_at)
+                            WHEN ? = 'week' THEN strftime('%Y-%W', started_at)
+                            ELSE strftime('%Y-%m', started_at)
+                        END AS bucket,
+                        duration_seconds,
+                        COALESCE(peak_users, 0) AS peak_users
+                    FROM voice_session_log
+                    WHERE started_at >= datetime('now', ?)
+                      AND (? IS NULL OR user_id = ?)
+                )
+                SELECT bucket,
                        SUM(duration_seconds) AS total_seconds,
                        COUNT(*) AS sessions,
-                       SUM(COALESCE(peak_users, 0)) AS sum_peak
-                FROM voice_session_log
-                WHERE """ + where_sql + """
+                       SUM(peak_users) AS sum_peak
+                FROM grouped
                 GROUP BY bucket
                 ORDER BY bucket
                 """,
-                tuple(params),
+                (mode, mode, mode, cutoff, user_filter, user_filter),
             )
         except Exception as exc:  # noqa: BLE001
             logging.exception("Failed to load voice history: %s", exc)
@@ -1158,9 +1158,10 @@ class DashboardServer:
                            COUNT(DISTINCT date(started_at)) AS active_days,
                            MAX(ended_at) AS last_session
                     FROM voice_session_log
-                    WHERE """ + where_sql + """
+                    WHERE started_at >= datetime('now', ?)
+                      AND (? IS NULL OR user_id = ?)
                     """,
-                    tuple(params),
+                    (cutoff, user_filter, user_filter),
                 )
                 lifetime_stats = db.query_one(
                     """
@@ -1365,15 +1366,14 @@ class DashboardServer:
             else:
                 select_fields.append("NULL AS miss_you_count")
 
-            candidate_rows_raw = db.query_all(
-                f"""
-                SELECT {", ".join(select_fields)}
-                FROM user_retention_tracking urt
-                WHERE {candidate_where_sql}
-                ORDER BY days_inactive DESC
-                """,
-                tuple(candidate_params),
+            candidate_select_sql = ", ".join(select_fields)
+            candidate_sql = (
+                "SELECT " + candidate_select_sql + "\n"  # nosec B608
+                "FROM user_retention_tracking urt\n"
+                "WHERE " + candidate_where_sql + "\n"
+                "ORDER BY days_inactive DESC"
             )
+            candidate_rows_raw = db.query_all(candidate_sql, tuple(candidate_params))
 
             filtered_rows = [
                 row
@@ -1471,31 +1471,21 @@ class DashboardServer:
                 raise web.HTTPBadRequest(text="guild_id must be an integer")
 
         try:
-            # Query für Events
-            where_clauses = []
-            params = []
-
-            if guild_id:
-                where_clauses.append("guild_id = ?")
-                params.append(guild_id)
-
-            if event_type:
-                where_clauses.append("event_type = ?")
-                params.append(event_type)
-
-            where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+            guild_filter = guild_id if guild_id else None
+            event_filter = (event_type or "").strip() or None
 
             # Hole Events
             events = db.query_all(
-                f"""
+                """
                 SELECT id, user_id, guild_id, event_type, timestamp,
                        display_name, account_created_at, join_position, metadata
                 FROM member_events
-                WHERE {where_sql}
+                WHERE (? IS NULL OR guild_id = ?)
+                  AND (? IS NULL OR event_type = ?)
                 ORDER BY timestamp DESC
                 LIMIT ?
                 """,
-                (*params, limit)
+                (guild_filter, guild_filter, event_filter, event_filter, limit),
             )
 
             # Event-Type Counts
@@ -1503,14 +1493,13 @@ class DashboardServer:
                 """
                 SELECT event_type, COUNT(*) as count
                 FROM member_events
-                WHERE """ + (where_sql if where_clauses else "1=1") + """
+                WHERE (? IS NULL OR guild_id = ?)
+                  AND (? IS NULL OR event_type = ?)
                 GROUP BY event_type
                 ORDER BY count DESC
                 """,
-                tuple(params)
+                (guild_filter, guild_filter, event_filter, event_filter),
             )
-
-            guild_filter = guild_id if guild_id else None
 
             # Recent Joins (letzten 7 Tage)
             recent_joins = db.query_one(
@@ -1590,33 +1579,32 @@ class DashboardServer:
                 raise web.HTTPBadRequest(text="guild_id must be an integer")
 
         try:
-            where_sql = "guild_id = ?" if guild_id else "1=1"
-            params = (guild_id,) if guild_id else ()
+            guild_filter = guild_id if guild_id else None
 
             # Top Users by Message Count
             top_users = db.query_all(
-                f"""
+                """
                 SELECT user_id, guild_id, channel_id, message_count,
                        last_message_at, first_message_at
                 FROM message_activity
-                WHERE {where_sql}
+                WHERE (? IS NULL OR guild_id = ?)
                 ORDER BY message_count DESC
                 LIMIT ?
                 """,
-                (*params, limit)
+                (guild_filter, guild_filter, limit),
             )
 
             # Summary
             summary = db.query_one(
-                f"""
+                """
                 SELECT
                     COUNT(*) as total_users,
                     SUM(message_count) as total_messages,
                     AVG(message_count) as avg_per_user
                 FROM message_activity
-                WHERE {where_sql}
+                WHERE (? IS NULL OR guild_id = ?)
                 """,
-                params
+                (guild_filter, guild_filter),
             )
 
             # Resolve display names
@@ -1843,62 +1831,61 @@ class DashboardServer:
                 raise web.HTTPBadRequest(text="guild_id must be an integer")
 
         try:
-            where_sql = "guild_id = ?" if guild_id else "1=1"
-            params = (guild_id,) if guild_id else ()
+            guild_filter = guild_id if guild_id else None
 
             # Member Events Summary
             member_events_summary = db.query_all(
-                f"""
+                """
                 SELECT event_type, COUNT(*) as count
                 FROM member_events
-                WHERE {where_sql}
+                WHERE (? IS NULL OR guild_id = ?)
                 GROUP BY event_type
                 """,
-                params
+                (guild_filter, guild_filter),
             )
 
             # Message Activity Summary
             message_summary = db.query_one(
-                f"""
+                """
                 SELECT SUM(message_count) as total
                 FROM message_activity
-                WHERE {where_sql}
+                WHERE (? IS NULL OR guild_id = ?)
                 """,
-                params
+                (guild_filter, guild_filter),
             )
 
             # Voice Activity Summary
             voice_summary = db.query_one(
-                f"""
+                """
                 SELECT SUM(duration_seconds) as total_seconds
                 FROM voice_session_log
-                WHERE {where_sql if guild_id else "1=1"}
+                WHERE (? IS NULL OR guild_id = ?)
                 """,
-                (guild_id,) if guild_id else ()
+                (guild_filter, guild_filter),
             )
 
             # Active Users (last 7 days)
             active_users_7d = db.query_one(
-                f"""
+                """
                 SELECT COUNT(DISTINCT user_id) as count
                 FROM message_activity
-                WHERE {where_sql}
+                WHERE (? IS NULL OR guild_id = ?)
                   AND last_message_at >= datetime('now', '-7 days')
                 """,
-                params
+                (guild_filter, guild_filter),
             )
 
             # Growth (Joins vs Leaves last 30 days)
             growth = db.query_one(
-                f"""
+                """
                 SELECT
                     SUM(CASE WHEN event_type = 'join' THEN 1 ELSE 0 END) as joins,
                     SUM(CASE WHEN event_type = 'leave' THEN 1 ELSE 0 END) as leaves
                 FROM member_events
-                WHERE {where_sql}
+                WHERE (? IS NULL OR guild_id = ?)
                   AND timestamp >= datetime('now', '-30 days')
                 """,
-                params
+                (guild_filter, guild_filter),
             )
 
             payload = {
