@@ -25,6 +25,7 @@ STAGING_CHANNEL_IDS: Set[int] = {
 }
 FIXED_LANE_IDS: Set[int] = {
     1411391356278018245,  # Dauerhafter Voice-Channel (nicht von TempVoice verwalten)
+    1470126503252721845,  # Ausgenommen: nie von TempVoice verwalten/loeschen
 }
 MINRANK_CATEGORY_IDS: Set[int] = {
     1412804540994162789,  # Grind Lanes

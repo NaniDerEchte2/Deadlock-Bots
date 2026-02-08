@@ -4,7 +4,7 @@ import logging
 import asyncio
 from discord.ext import commands
 from typing import Optional
-from .core import MINRANK_CATEGORY_IDS, RANK_ORDER
+from .core import FIXED_LANE_IDS, MINRANK_CATEGORY_IDS, RANK_ORDER
 
 logger = logging.getLogger("cogs.tempvoice.interface")
 
@@ -385,7 +385,12 @@ class MainView(discord.ui.View):
     @staticmethod
     def lane_of(itx: discord.Interaction) -> Optional[discord.VoiceChannel]:
         m: discord.Member = itx.user  # type: ignore
-        return m.voice.channel if (m.voice and isinstance(m.voice.channel, discord.VoiceChannel)) else None
+        lane = m.voice.channel if (m.voice and isinstance(m.voice.channel, discord.VoiceChannel)) else None
+        if lane is None:
+            return None
+        if lane.id in FIXED_LANE_IDS:
+            return None
+        return lane
 
 
 class RegionDEButton(discord.ui.Button):
@@ -566,10 +571,10 @@ class MinRankSelect(discord.ui.Select):
         super().__init__(placeholder="Mindest-Rang (Lane, falls aktiviert)", min_values=1, max_values=1, options=options, row=2, custom_id="tv_minrank")
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
-        if not (m.voice and isinstance(m.voice.channel, discord.VoiceChannel)):
+        lane = MainView.lane_of(itx)
+        if not lane:
             await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
             return
-        lane: discord.VoiceChannel = m.voice.channel
         if getattr(self.core, "is_min_rank_blocked", None) and self.core.is_min_rank_blocked(lane):  # type: ignore[attr-defined]
             await itx.response.send_message("Mindest-Rang ist hier deaktiviert.", ephemeral=True)
             return
