@@ -333,20 +333,18 @@ class AnalyticsV2Mixin:
             since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
             prev_since_date = (datetime.now(timezone.utc) - timedelta(days=days * 2)).isoformat()
 
-            # Build WHERE clause
-            if streamer:
-                where = "AND LOWER(s.streamer_login) = ?"
-                params = [since_date, streamer.lower()]
-                prev_params = [prev_since_date, since_date, streamer.lower()]
-            else:
-                where = ""
-                params = [since_date]
-                prev_params = [prev_since_date, since_date]
+            streamer_login = streamer.lower() if streamer else None
 
             # Check data exists
-            count = conn.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                f"SELECT COUNT(*) FROM twitch_stream_sessions s WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}",  # nosec B608
-                params
+            count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM twitch_stream_sessions s
+                WHERE s.started_at >= ?
+                  AND s.ended_at IS NOT NULL
+                  AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+                """,
+                [since_date, streamer_login, streamer_login],
             ).fetchone()[0]
 
             if count == 0:
@@ -359,20 +357,25 @@ class AnalyticsV2Mixin:
             metrics = self._calculate_overview_metrics(conn, since_date, streamer)
 
             # Calculate previous period metrics for trends
-            prev_where = where.replace("s.started_at >= ?", "s.started_at >= ? AND s.started_at < ?")
-            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-            prev_metrics = conn.execute(f"""
+            prev_metrics = conn.execute(
+                """
                 SELECT
                     AVG(s.avg_viewers) as avg_viewers,
-                    {self._FOLLOWER_DELTA_SUM} as followers,
+                    SUM(CASE WHEN s.follower_delta IS NOT NULL
+                         AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+                         THEN s.follower_delta ELSE 0 END) as followers,
                     AVG(CASE
                         WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0
                         THEN MIN(s.retention_10m, s.avg_viewers * 1.0 / s.peak_viewers, 1.0)
                         ELSE NULL
                     END) as retention
                 FROM twitch_stream_sessions s
-                WHERE s.started_at >= ? AND s.started_at < ? AND s.ended_at IS NOT NULL {where}
-            """, prev_params).fetchone()
+                WHERE s.started_at >= ? AND s.started_at < ?
+                  AND s.ended_at IS NOT NULL
+                  AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+                """,
+                [prev_since_date, since_date, streamer_login, streamer_login],
+            ).fetchone()
 
             # Calculate trends
             def calc_trend(curr, prev):
@@ -451,11 +454,9 @@ class AnalyticsV2Mixin:
 
     def _get_sessions(self, conn, since_date: str, streamer: Optional[str], limit: int = 50) -> List[Dict]:
         """Get list of sessions with metrics."""
-        where = "AND LOWER(s.streamer_login) = ?" if streamer else ""
-        params = [since_date, streamer.lower()] if streamer else [since_date]
-
-        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-        rows = conn.execute(f"""
+        streamer_login = streamer.lower() if streamer else None
+        rows = conn.execute(
+            """
             SELECT
                 s.id, DATE(s.started_at), TIME(s.started_at), s.duration_seconds,
                 s.start_viewers, s.peak_viewers, s.end_viewers, s.avg_viewers,
@@ -465,10 +466,14 @@ class AnalyticsV2Mixin:
                 COALESCE(s.followers_start, 0), COALESCE(s.followers_end, 0),
                 COALESCE(s.stream_title, '')
             FROM twitch_stream_sessions s
-            WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}
+            WHERE s.started_at >= ?
+              AND s.ended_at IS NOT NULL
+              AND (? IS NULL OR LOWER(s.streamer_login) = ?)
             ORDER BY s.started_at DESC
-            LIMIT {limit}
-        """, params).fetchall()
+            LIMIT ?
+        """,
+            [since_date, streamer_login, streamer_login, limit],
+        ).fetchall()
 
         sessions: List[Dict[str, Any]] = []
         for r in rows:
@@ -508,17 +513,18 @@ class AnalyticsV2Mixin:
 
     def _calculate_overview_metrics(self, conn, since_date: str, streamer: Optional[str]) -> Dict[str, Any]:
         """Calculate all overview metrics."""
-        where = "AND LOWER(s.streamer_login) = ?" if streamer else ""
-        params = [since_date, streamer.lower()] if streamer else [since_date]
+        streamer_login = streamer.lower() if streamer else None
 
-        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-        row = conn.execute(f"""
+        row = conn.execute(
+            """
             SELECT
                 AVG(s.avg_viewers) as avg_avg_viewers,
                 MAX(s.peak_viewers) as max_peak_viewers,
                 SUM(s.avg_viewers * s.duration_seconds / 3600.0) as total_hours_watched,
                 SUM(s.duration_seconds / 3600.0) as total_airtime_hours,
-                {self._FOLLOWER_DELTA_SUM} as total_followers,
+                SUM(CASE WHEN s.follower_delta IS NOT NULL
+                     AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+                     THEN s.follower_delta ELSE 0 END) as total_followers,
                 AVG(CASE
                     WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0
                     THEN MIN(s.retention_5m, s.avg_viewers * 1.0 / s.peak_viewers, 1.0)
@@ -542,21 +548,29 @@ class AnalyticsV2Mixin:
                     ELSE NULL
                 END) as chat_per_100
             FROM twitch_stream_sessions s
-            WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}
-        """, params).fetchone()
+            WHERE s.started_at >= ?
+              AND s.ended_at IS NOT NULL
+              AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+        """,
+            [since_date, streamer_login, streamer_login],
+        ).fetchone()
 
         total_airtime = float(row[3]) if row[3] else 0
         total_followers = int(row[4]) if row[4] else 0  # NET (can be negative)
 
         # Gained followers = only positive session deltas (ignores unfollows)
-        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-        gained_row = conn.execute(f"""
+        gained_row = conn.execute(
+            """
             SELECT COALESCE(SUM(CASE WHEN s.follower_delta > 0
                  AND NOT (s.followers_end = 0 AND s.followers_start > 0)
                  THEN s.follower_delta ELSE 0 END), 0)
             FROM twitch_stream_sessions s
-            WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}
-        """, params).fetchone()
+            WHERE s.started_at >= ?
+              AND s.ended_at IS NOT NULL
+              AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+        """,
+            [since_date, streamer_login, streamer_login],
+        ).fetchone()
         gained_followers = int(gained_row[0]) if gained_row and gained_row[0] else 0
 
         # True unique chatters from rollup table (not SUM of per-session counts)
@@ -572,8 +586,8 @@ class AnalyticsV2Mixin:
             unique_chatters = unique_chatters_sum
 
         # Sample counts for data quality gating
-        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-        sample_row = conn.execute(f"""
+        sample_row = conn.execute(
+            """
             SELECT
                 COUNT(CASE
                     WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0 AND s.retention_10m IS NOT NULL THEN 1
@@ -584,8 +598,12 @@ class AnalyticsV2Mixin:
                 COUNT(CASE WHEN s.follower_delta IS NOT NULL
                      AND NOT (s.followers_end = 0 AND s.followers_start > 0) THEN 1 END)
             FROM twitch_stream_sessions s
-            WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}
-        """, params).fetchone()
+            WHERE s.started_at >= ?
+              AND s.ended_at IS NOT NULL
+              AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+        """,
+            [since_date, streamer_login, streamer_login],
+        ).fetchone()
         retention_sample_count = int(sample_row[0]) if sample_row else 0
         chat_sample_count = int(sample_row[1]) if sample_row else 0
         follower_valid_count = int(sample_row[2]) if sample_row else 0
@@ -860,11 +878,9 @@ class AnalyticsV2Mixin:
         try:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-                where = "AND LOWER(s.streamer_login) = ?" if streamer else ""
-                params = [since_date, streamer.lower()] if streamer else [since_date]
-
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                rows = conn.execute(f"""
+                streamer_login = streamer.lower() if streamer else None
+                rows = conn.execute(
+                    """
                     SELECT
                         CAST(strftime('%w', s.started_at) AS INTEGER) as weekday,
                         CAST(strftime('%H', s.started_at) AS INTEGER) as hour,
@@ -872,9 +888,13 @@ class AnalyticsV2Mixin:
                         AVG(s.avg_viewers) as avg_viewers,
                         AVG(s.peak_viewers) as avg_peak
                     FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}
+                    WHERE s.started_at >= ?
+                      AND s.ended_at IS NOT NULL
+                      AND (? IS NULL OR LOWER(s.streamer_login) = ?)
                     GROUP BY weekday, hour
-                """, params).fetchall()
+                """,
+                    [since_date, streamer_login, streamer_login],
+                ).fetchall()
 
                 data = [
                     {
@@ -902,19 +922,21 @@ class AnalyticsV2Mixin:
         try:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-                where = "AND LOWER(s.streamer_login) = ?" if streamer else ""
-                params = [since_date, streamer.lower()] if streamer else [since_date]
-
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                rows = conn.execute(f"""
+                streamer_login = streamer.lower() if streamer else None
+                rows = conn.execute(
+                    """
                     SELECT
                         DATE(s.started_at) as date,
                         COUNT(*) as stream_count,
                         SUM(s.avg_viewers * s.duration_seconds / 3600.0) as hours_watched
                     FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}
+                    WHERE s.started_at >= ?
+                      AND s.ended_at IS NOT NULL
+                      AND (? IS NULL OR LOWER(s.streamer_login) = ?)
                     GROUP BY DATE(s.started_at)
-                """, params).fetchall()
+                """,
+                    [since_date, streamer_login, streamer_login],
+                ).fetchall()
 
                 data = [
                     {
@@ -941,11 +963,9 @@ class AnalyticsV2Mixin:
         try:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=months * 30)).isoformat()
-                where = "AND LOWER(s.streamer_login) = ?" if streamer else ""
-                params = [since_date, streamer.lower()] if streamer else [since_date]
-
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                rows = conn.execute(f"""
+                streamer_login = streamer.lower() if streamer else None
+                rows = conn.execute(
+                    """
                     SELECT
                         CAST(strftime('%Y', s.started_at) AS INTEGER) as year,
                         CAST(strftime('%m', s.started_at) AS INTEGER) as month,
@@ -953,14 +973,20 @@ class AnalyticsV2Mixin:
                         SUM(s.duration_seconds / 3600.0) as airtime,
                         AVG(s.avg_viewers) as avg_viewers,
                         MAX(s.peak_viewers) as peak_viewers,
-                        {self._FOLLOWER_DELTA_SUM} as follower_delta,
+                        SUM(CASE WHEN s.follower_delta IS NOT NULL
+                             AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+                             THEN s.follower_delta ELSE 0 END) as follower_delta,
                         SUM(s.unique_chatters) as unique_chatters,
                         COUNT(*) as stream_count
                     FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}
+                    WHERE s.started_at >= ?
+                      AND s.ended_at IS NOT NULL
+                      AND (? IS NULL OR LOWER(s.streamer_login) = ?)
                     GROUP BY year, month
                     ORDER BY year DESC, month DESC
-                """, params).fetchall()
+                """,
+                    [since_date, streamer_login, streamer_login],
+                ).fetchall()
 
                 month_names = ["", "Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
                 data = [
@@ -994,23 +1020,27 @@ class AnalyticsV2Mixin:
         try:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-                where = "AND LOWER(s.streamer_login) = ?" if streamer else ""
-                params = [since_date, streamer.lower()] if streamer else [since_date]
-
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                rows = conn.execute(f"""
+                streamer_login = streamer.lower() if streamer else None
+                rows = conn.execute(
+                    """
                     SELECT
                         CAST(strftime('%w', s.started_at) AS INTEGER) as weekday,
                         COUNT(*) as stream_count,
                         AVG(s.duration_seconds / 3600.0) as avg_hours,
                         AVG(s.avg_viewers) as avg_viewers,
                         AVG(s.peak_viewers) as avg_peak,
-                        {self._FOLLOWER_DELTA_SUM} as total_followers
+                        SUM(CASE WHEN s.follower_delta IS NOT NULL
+                             AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+                             THEN s.follower_delta ELSE 0 END) as total_followers
                     FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}
+                    WHERE s.started_at >= ?
+                      AND s.ended_at IS NOT NULL
+                      AND (? IS NULL OR LOWER(s.streamer_login) = ?)
                     GROUP BY weekday
                     ORDER BY weekday
-                """, params).fetchall()
+                """,
+                    [since_date, streamer_login, streamer_login],
+                ).fetchall()
 
                 weekday_names = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"]
                 data = [
@@ -1170,27 +1200,47 @@ class AnalyticsV2Mixin:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
-                if metric == "viewers":
-                    order_by = "AVG(s.avg_viewers)"
-                elif metric == "retention":
-                    order_by = "AVG(s.retention_10m)"
-                elif metric == "growth":
-                    order_by = self._FOLLOWER_DELTA_SUM
-                else:
-                    order_by = "AVG(s.avg_viewers)"
-
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                rows = conn.execute(f"""
+                if metric == "retention":
+                    ranking_sql = """
                     SELECT
                         s.streamer_login,
-                        {order_by} as value
+                        AVG(s.retention_10m) as value
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND s.ended_at IS NOT NULL
                     GROUP BY s.streamer_login
                     HAVING COUNT(*) >= 3
                     ORDER BY value DESC
                     LIMIT ?
-                """, [since_date, limit]).fetchall()
+                    """
+                elif metric == "growth":
+                    ranking_sql = """
+                    SELECT
+                        s.streamer_login,
+                        SUM(CASE WHEN s.follower_delta IS NOT NULL
+                             AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+                             THEN s.follower_delta ELSE 0 END) as value
+                    FROM twitch_stream_sessions s
+                    WHERE s.started_at >= ? AND s.ended_at IS NOT NULL
+                    GROUP BY s.streamer_login
+                    HAVING COUNT(*) >= 3
+                    ORDER BY value DESC
+                    LIMIT ?
+                    """
+                else:
+                    metric = "viewers"
+                    ranking_sql = """
+                    SELECT
+                        s.streamer_login,
+                        AVG(s.avg_viewers) as value
+                    FROM twitch_stream_sessions s
+                    WHERE s.started_at >= ? AND s.ended_at IS NOT NULL
+                    GROUP BY s.streamer_login
+                    HAVING COUNT(*) >= 3
+                    ORDER BY value DESC
+                    LIMIT ?
+                    """
+
+                rows = conn.execute(ranking_sql, [since_date, limit]).fetchall()
 
                 data = [
                     {
@@ -1544,24 +1594,27 @@ class AnalyticsV2Mixin:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
                 prev_since_date = (datetime.now(timezone.utc) - timedelta(days=days * 2)).isoformat()
 
-                session_cols = """s.duration_seconds, s.retention_5m, s.retention_10m,
-                           s.retention_20m, s.avg_viewers, s.start_viewers, s.end_viewers"""
-
                 # Current period
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                current_sessions = conn.execute(f"""
-                    SELECT {session_cols}
+                current_sessions = conn.execute(
+                    """
+                    SELECT s.duration_seconds, s.retention_5m, s.retention_10m,
+                           s.retention_20m, s.avg_viewers, s.start_viewers, s.end_viewers
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
-                """, [since_date, streamer.lower()]).fetchall()
+                """,
+                    [since_date, streamer.lower()],
+                ).fetchall()
 
                 # Previous period
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                prev_sessions = conn.execute(f"""
-                    SELECT {session_cols}
+                prev_sessions = conn.execute(
+                    """
+                    SELECT s.duration_seconds, s.retention_5m, s.retention_10m,
+                           s.retention_20m, s.avg_viewers, s.start_viewers, s.end_viewers
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND s.started_at < ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
-                """, [prev_since_date, since_date, streamer.lower()]).fetchall()
+                """,
+                    [prev_since_date, since_date, streamer.lower()],
+                ).fetchall()
 
                 current = self._calc_watch_distribution(current_sessions)
                 previous = self._calc_watch_distribution(prev_sessions)
@@ -1600,12 +1653,14 @@ class AnalyticsV2Mixin:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
                 # Get session stats — separate net delta from gained-only
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                stats = conn.execute(f"""
+                stats = conn.execute(
+                    """
                     SELECT
                         SUM(s.unique_chatters) as total_chatters,
                         SUM(s.returning_chatters) as returning_chatters,
-                        {self._FOLLOWER_DELTA_SUM} as net_followers,
+                        SUM(CASE WHEN s.follower_delta IS NOT NULL
+                             AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+                             THEN s.follower_delta ELSE 0 END) as net_followers,
                         SUM(CASE WHEN s.follower_delta > 0
                              AND NOT (s.followers_end = 0 AND s.followers_start > 0)
                              THEN s.follower_delta ELSE 0 END) as gained_followers,
@@ -1614,7 +1669,9 @@ class AnalyticsV2Mixin:
                         COUNT(*) as session_count
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
-                """, [since_date, streamer.lower()]).fetchone()
+                """,
+                    [since_date, streamer.lower()],
+                ).fetchone()
 
                 if not stats or not stats[0]:
                     return web.json_response({
@@ -1689,28 +1746,32 @@ class AnalyticsV2Mixin:
         try:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-                prev_since = (datetime.now(timezone.utc) - timedelta(days=days * 2)).isoformat()
-
-                where = "AND LOWER(s.streamer_login) = ?" if streamer else ""
-                params = [since_date, streamer.lower()] if streamer else [since_date]
+                streamer_login = streamer.lower() if streamer else None
 
                 # Get tags from sessions (tags stored as JSON or comma-separated in tags column)
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                rows = conn.execute(f"""
+                rows = conn.execute(
+                    """
                     SELECT
                         s.tags,
                         AVG(s.avg_viewers) as avg_viewers,
                         AVG(s.retention_10m) as avg_retention,
-                        {self._FOLLOWER_DELTA_AVG} as avg_followers,
+                        AVG(CASE WHEN s.follower_delta IS NOT NULL
+                             AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+                             THEN s.follower_delta ELSE NULL END) as avg_followers,
                         COUNT(*) as usage_count,
                         AVG(s.duration_seconds) as avg_duration,
                         strftime('%H', s.started_at) as start_hour
                     FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ? AND s.ended_at IS NOT NULL AND s.tags IS NOT NULL {where}
+                    WHERE s.started_at >= ?
+                      AND s.ended_at IS NOT NULL
+                      AND s.tags IS NOT NULL
+                      AND (? IS NULL OR LOWER(s.streamer_login) = ?)
                     GROUP BY s.tags
                     ORDER BY avg_viewers DESC
                     LIMIT ?
-                """, params + [limit]).fetchall()
+                """,
+                    [since_date, streamer_login, streamer_login, limit],
+                ).fetchall()
 
                 # Parse and aggregate tags
                 tag_stats: Dict[str, Dict[str, Any]] = {}
@@ -1796,14 +1857,16 @@ class AnalyticsV2Mixin:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                rows = conn.execute(f"""
+                rows = conn.execute(
+                    """
                     SELECT
                         s.stream_title,
                         COUNT(*) as usage_count,
                         AVG(s.avg_viewers) as avg_viewers,
                         AVG(s.retention_10m) as avg_retention,
-                        {self._FOLLOWER_DELTA_AVG} as avg_followers,
+                        AVG(CASE WHEN s.follower_delta IS NOT NULL
+                             AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+                             THEN s.follower_delta ELSE NULL END) as avg_followers,
                         MAX(s.peak_viewers) as peak_viewers
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ?
@@ -1811,7 +1874,9 @@ class AnalyticsV2Mixin:
                     GROUP BY s.stream_title
                     ORDER BY avg_viewers DESC
                     LIMIT ?
-                """, [since_date, streamer.lower(), limit]).fetchall()
+                """,
+                    [since_date, streamer.lower(), limit],
+                ).fetchall()
 
                 def extract_keywords(title: str) -> List[str]:
                     """Extract meaningful keywords from title."""
@@ -1867,28 +1932,36 @@ class AnalyticsV2Mixin:
                 prev_since = (datetime.now(timezone.utc) - timedelta(days=days * 2)).isoformat()
 
                 # Current period metrics
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                current = conn.execute(f"""
+                current = conn.execute(
+                    """
                     SELECT
                         AVG(s.retention_10m) as retention,
-                        {self._FOLLOWER_DELTA_SUM} as followers,
+                        SUM(CASE WHEN s.follower_delta IS NOT NULL
+                             AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+                             THEN s.follower_delta ELSE 0 END) as followers,
                         SUM(s.returning_chatters) as returning,
                         SUM(s.unique_chatters) as unique_chatters
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
-                """, [since_date, streamer.lower()]).fetchone()
+                """,
+                    [since_date, streamer.lower()],
+                ).fetchone()
 
                 # Previous period for comparison
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                prev = conn.execute(f"""
+                prev = conn.execute(
+                    """
                     SELECT
                         AVG(s.retention_10m) as retention,
-                        {self._FOLLOWER_DELTA_SUM} as followers,
+                        SUM(CASE WHEN s.follower_delta IS NOT NULL
+                             AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+                             THEN s.follower_delta ELSE 0 END) as followers,
                         SUM(s.returning_chatters) as returning,
                         SUM(s.unique_chatters) as unique_chatters
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND s.started_at < ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
-                """, [prev_since, since_date, streamer.lower()]).fetchone()
+                """,
+                    [prev_since, since_date, streamer.lower()],
+                ).fetchone()
 
                 # Calculate trends
                 def calc_trend(curr, prev):
@@ -2063,20 +2136,11 @@ class AnalyticsV2Mixin:
                 else:
                     bucket_minutes = 60
 
-                # Use SQLite strftime to bucket timestamps
-                # For 5-min: floor to 5-min intervals; for 30-min/60-min: use hour or half-hour
+                # Use static SQL variants per bucket size to avoid dynamic query construction.
                 if bucket_minutes == 5:
-                    # Group by 5-minute intervals: YYYY-MM-DD HH:M0 where M0 = (minute/5)*5
-                    bucket_expr = "strftime('%Y-%m-%d %H:', ts_utc) || PRINTF('%02d', (CAST(strftime('%M', ts_utc) AS INTEGER) / 5) * 5)"
-                elif bucket_minutes == 30:
-                    bucket_expr = "strftime('%Y-%m-%d %H:', ts_utc) || CASE WHEN CAST(strftime('%M', ts_utc) AS INTEGER) < 30 THEN '00' ELSE '30' END"
-                else:
-                    bucket_expr = "strftime('%Y-%m-%d %H:00', ts_utc)"
-
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                rows = conn.execute(f"""
+                    timeline_sql = """
                     SELECT
-                        {bucket_expr} as bucket,
+                        strftime('%Y-%m-%d %H:', ts_utc) || PRINTF('%02d', (CAST(strftime('%M', ts_utc) AS INTEGER) / 5) * 5) as bucket,
                         AVG(viewer_count) as avg_vc,
                         MAX(viewer_count) as peak_vc,
                         MIN(viewer_count) as min_vc,
@@ -2085,7 +2149,35 @@ class AnalyticsV2Mixin:
                     WHERE ts_utc >= ? AND LOWER(streamer) = ?
                     GROUP BY bucket
                     ORDER BY bucket
-                """, [since_date, streamer.lower()]).fetchall()
+                    """
+                elif bucket_minutes == 30:
+                    timeline_sql = """
+                    SELECT
+                        strftime('%Y-%m-%d %H:', ts_utc) || CASE WHEN CAST(strftime('%M', ts_utc) AS INTEGER) < 30 THEN '00' ELSE '30' END as bucket,
+                        AVG(viewer_count) as avg_vc,
+                        MAX(viewer_count) as peak_vc,
+                        MIN(viewer_count) as min_vc,
+                        COUNT(*) as samples
+                    FROM twitch_stats_tracked
+                    WHERE ts_utc >= ? AND LOWER(streamer) = ?
+                    GROUP BY bucket
+                    ORDER BY bucket
+                    """
+                else:
+                    timeline_sql = """
+                    SELECT
+                        strftime('%Y-%m-%d %H:00', ts_utc) as bucket,
+                        AVG(viewer_count) as avg_vc,
+                        MAX(viewer_count) as peak_vc,
+                        MIN(viewer_count) as min_vc,
+                        COUNT(*) as samples
+                    FROM twitch_stats_tracked
+                    WHERE ts_utc >= ? AND LOWER(streamer) = ?
+                    GROUP BY bucket
+                    ORDER BY bucket
+                    """
+
+                rows = conn.execute(timeline_sql, [since_date, streamer.lower()]).fetchall()
 
                 data = [
                     {
@@ -2116,10 +2208,8 @@ class AnalyticsV2Mixin:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
-                order_col = "avg_vc" if sort == "avg" else "peak_vc"
-
-                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-                rows = conn.execute(f"""
+                if sort == "peak":
+                    leaderboard_sql = """
                     SELECT
                         c.streamer,
                         AVG(c.viewer_count) as avg_vc,
@@ -2128,8 +2218,23 @@ class AnalyticsV2Mixin:
                     FROM twitch_stats_category c
                     WHERE c.ts_utc >= ?
                     GROUP BY c.streamer
-                    ORDER BY {order_col} DESC
-                """, [since_date]).fetchall()
+                    ORDER BY peak_vc DESC
+                    """
+                else:
+                    sort = "avg"
+                    leaderboard_sql = """
+                    SELECT
+                        c.streamer,
+                        AVG(c.viewer_count) as avg_vc,
+                        MAX(c.viewer_count) as peak_vc,
+                        MAX(c.is_partner) as is_partner
+                    FROM twitch_stats_category c
+                    WHERE c.ts_utc >= ?
+                    GROUP BY c.streamer
+                    ORDER BY avg_vc DESC
+                    """
+
+                rows = conn.execute(leaderboard_sql, [since_date]).fetchall()
 
                 total_streamers = len(rows)
 

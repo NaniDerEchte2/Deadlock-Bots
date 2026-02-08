@@ -591,8 +591,9 @@ class TwitchLeaderboardMixin:
         start_hour = _normalize_hour(hour_from)
         end_hour = _normalize_hour(hour_to)
         if start_hour is None and end_hour is None:
-            hour_clause = ""
-            hour_params: List[int] = []
+            hour_filter_mode = "none"
+            hour_start = 0
+            hour_end = 0
         else:
             if start_hour is None:
                 start_hour = end_hour
@@ -601,14 +602,21 @@ class TwitchLeaderboardMixin:
             assert start_hour is not None
             assert end_hour is not None
             if start_hour <= end_hour:
-                hour_clause = " AND CAST(strftime('%H', ts_utc) AS INTEGER) BETWEEN ? AND ?"
-                hour_params = [start_hour, end_hour]
+                hour_filter_mode = "between"
             else:
-                hour_clause = (
-                    " AND (CAST(strftime('%H', ts_utc) AS INTEGER) >= ?"
-                    " OR CAST(strftime('%H', ts_utc) AS INTEGER) <= ?)"
-                )
-                hour_params = [start_hour, end_hour]
+                hour_filter_mode = "wrap"
+            hour_start = start_hour
+            hour_end = end_hour
+
+        hour_filter_params: Tuple[Any, ...] = (
+            hour_filter_mode,
+            hour_filter_mode,
+            hour_start,
+            hour_end,
+            hour_filter_mode,
+            hour_start,
+            hour_end,
+        )
 
         def _aggregate(sql: str, params: Sequence[object]) -> List[dict]:
             try:
@@ -619,34 +627,166 @@ class TwitchLeaderboardMixin:
                 log.exception("Fehler bei Stats-Aggregation")
                 return []
 
-        tracked_sql = (
-            """
+        top_sql = """
+        WITH source_rows AS (
+            SELECT 'tracked' AS source_key, streamer, viewer_count, is_partner, ts_utc
+            FROM twitch_stats_tracked
+            UNION ALL
+            SELECT 'category' AS source_key, streamer, viewer_count, is_partner, ts_utc
+            FROM twitch_stats_category
+        )
         SELECT streamer,
                AVG(viewer_count) AS avg_viewers,
                MAX(viewer_count) AS max_viewers,
                COUNT(*)          AS samples,
                MAX(is_partner)   AS is_partner
-        FROM twitch_stats_tracked
-        WHERE ts_utc >= datetime('now', '-30 days')
-        {hour_clause}
-        GROUP BY streamer
-        ORDER BY avg_viewers DESC
+          FROM source_rows
+         WHERE source_key = ?
+           AND ts_utc >= datetime('now', '-30 days')
+           AND (
+                ? = 'none'
+                OR (? = 'between' AND CAST(strftime('%H', ts_utc) AS INTEGER) BETWEEN ? AND ?)
+                OR (? = 'wrap' AND (
+                        CAST(strftime('%H', ts_utc) AS INTEGER) >= ?
+                        OR CAST(strftime('%H', ts_utc) AS INTEGER) <= ?
+                    ))
+           )
+         GROUP BY streamer
+         ORDER BY avg_viewers DESC
         """
-        ).format(hour_clause=hour_clause)
-        category_sql = (
-            """
+        hourly_sql = """
+        WITH source_rows AS (
+            SELECT 'tracked' AS source_key, streamer, viewer_count, is_partner, ts_utc
+            FROM twitch_stats_tracked
+            UNION ALL
+            SELECT 'category' AS source_key, streamer, viewer_count, is_partner, ts_utc
+            FROM twitch_stats_category
+        )
+        SELECT CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM source_rows
+         WHERE source_key = ?
+           AND ts_utc >= datetime('now', '-30 days')
+           AND (
+                ? = 'none'
+                OR (? = 'between' AND CAST(strftime('%H', ts_utc) AS INTEGER) BETWEEN ? AND ?)
+                OR (? = 'wrap' AND (
+                        CAST(strftime('%H', ts_utc) AS INTEGER) >= ?
+                        OR CAST(strftime('%H', ts_utc) AS INTEGER) <= ?
+                    ))
+           )
+         GROUP BY hour
+         ORDER BY hour
+        """
+        weekday_sql = """
+        WITH source_rows AS (
+            SELECT 'tracked' AS source_key, streamer, viewer_count, is_partner, ts_utc
+            FROM twitch_stats_tracked
+            UNION ALL
+            SELECT 'category' AS source_key, streamer, viewer_count, is_partner, ts_utc
+            FROM twitch_stats_category
+        )
+        SELECT CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM source_rows
+         WHERE source_key = ?
+           AND ts_utc >= datetime('now', '-30 days')
+           AND (
+                ? = 'none'
+                OR (? = 'between' AND CAST(strftime('%H', ts_utc) AS INTEGER) BETWEEN ? AND ?)
+                OR (? = 'wrap' AND (
+                        CAST(strftime('%H', ts_utc) AS INTEGER) >= ?
+                        OR CAST(strftime('%H', ts_utc) AS INTEGER) <= ?
+                    ))
+           )
+         GROUP BY weekday
+         ORDER BY weekday
+        """
+        user_top_sql = """
+        WITH source_rows AS (
+            SELECT 'tracked' AS source_key, streamer, viewer_count, is_partner, ts_utc
+            FROM twitch_stats_tracked
+            UNION ALL
+            SELECT 'category' AS source_key, streamer, viewer_count, is_partner, ts_utc
+            FROM twitch_stats_category
+        )
         SELECT streamer,
                AVG(viewer_count) AS avg_viewers,
                MAX(viewer_count) AS max_viewers,
                COUNT(*)          AS samples,
                MAX(is_partner)   AS is_partner
-        FROM twitch_stats_category
-        WHERE ts_utc >= datetime('now', '-30 days')
-        {hour_clause}
-        GROUP BY streamer
-        ORDER BY avg_viewers DESC
+          FROM source_rows
+         WHERE source_key = ?
+           AND ts_utc >= datetime('now', '-30 days')
+           AND streamer = ?
+           AND (
+                ? = 'none'
+                OR (? = 'between' AND CAST(strftime('%H', ts_utc) AS INTEGER) BETWEEN ? AND ?)
+                OR (? = 'wrap' AND (
+                        CAST(strftime('%H', ts_utc) AS INTEGER) >= ?
+                        OR CAST(strftime('%H', ts_utc) AS INTEGER) <= ?
+                    ))
+           )
+         GROUP BY streamer
         """
-        ).format(hour_clause=hour_clause)
+        user_hourly_sql = """
+        WITH source_rows AS (
+            SELECT 'tracked' AS source_key, streamer, viewer_count, is_partner, ts_utc
+            FROM twitch_stats_tracked
+            UNION ALL
+            SELECT 'category' AS source_key, streamer, viewer_count, is_partner, ts_utc
+            FROM twitch_stats_category
+        )
+        SELECT CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM source_rows
+         WHERE source_key = ?
+           AND ts_utc >= datetime('now', '-30 days')
+           AND streamer = ?
+           AND (
+                ? = 'none'
+                OR (? = 'between' AND CAST(strftime('%H', ts_utc) AS INTEGER) BETWEEN ? AND ?)
+                OR (? = 'wrap' AND (
+                        CAST(strftime('%H', ts_utc) AS INTEGER) >= ?
+                        OR CAST(strftime('%H', ts_utc) AS INTEGER) <= ?
+                    ))
+           )
+         GROUP BY hour
+         ORDER BY hour
+        """
+        user_weekday_sql = """
+        WITH source_rows AS (
+            SELECT 'tracked' AS source_key, streamer, viewer_count, is_partner, ts_utc
+            FROM twitch_stats_tracked
+            UNION ALL
+            SELECT 'category' AS source_key, streamer, viewer_count, is_partner, ts_utc
+            FROM twitch_stats_category
+        )
+        SELECT CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
+               AVG(viewer_count) AS avg_viewers,
+               MAX(viewer_count) AS max_viewers,
+               COUNT(*)          AS samples
+          FROM source_rows
+         WHERE source_key = ?
+           AND ts_utc >= datetime('now', '-30 days')
+           AND streamer = ?
+           AND (
+                ? = 'none'
+                OR (? = 'between' AND CAST(strftime('%H', ts_utc) AS INTEGER) BETWEEN ? AND ?)
+                OR (? = 'wrap' AND (
+                        CAST(strftime('%H', ts_utc) AS INTEGER) >= ?
+                        OR CAST(strftime('%H', ts_utc) AS INTEGER) <= ?
+                    ))
+           )
+         GROUP BY weekday
+         ORDER BY weekday
+        """
 
         def _apply_partner_flag(items: List[dict]) -> List[dict]:
             if not tracked_logins:
@@ -681,72 +821,18 @@ class TwitchLeaderboardMixin:
             return items
 
         out["tracked"]["top"] = _apply_discord_info(
-            _apply_partner_flag(_aggregate(tracked_sql, hour_params)),
+            _apply_partner_flag(_aggregate(top_sql, ("tracked", *hour_filter_params))),
             assume_members=verified_logins,
         )
         out["category"]["top"] = _apply_discord_info(
-            _apply_partner_flag(_aggregate(category_sql, hour_params)),
+            _apply_partner_flag(_aggregate(top_sql, ("category", *hour_filter_params))),
             assume_members=verified_logins,
         )
 
-        tracked_hourly_sql = (
-            """
-        SELECT CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
-               AVG(viewer_count) AS avg_viewers,
-               MAX(viewer_count) AS max_viewers,
-               COUNT(*)          AS samples
-          FROM twitch_stats_tracked
-         WHERE ts_utc >= datetime('now', '-30 days')
-        {hour_clause}
-         GROUP BY hour
-         ORDER BY hour
-        """
-        ).format(hour_clause=hour_clause)
-        category_hourly_sql = (
-            """
-        SELECT CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
-               AVG(viewer_count) AS avg_viewers,
-               MAX(viewer_count) AS max_viewers,
-               COUNT(*)          AS samples
-          FROM twitch_stats_category
-         WHERE ts_utc >= datetime('now', '-30 days')
-        {hour_clause}
-         GROUP BY hour
-         ORDER BY hour
-        """
-        ).format(hour_clause=hour_clause)
-
-        tracked_weekday_sql = (
-            """
-        SELECT CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
-               AVG(viewer_count) AS avg_viewers,
-               MAX(viewer_count) AS max_viewers,
-               COUNT(*)          AS samples
-          FROM twitch_stats_tracked
-         WHERE ts_utc >= datetime('now', '-30 days')
-        {hour_clause}
-         GROUP BY weekday
-         ORDER BY weekday
-        """
-        ).format(hour_clause=hour_clause)
-        category_weekday_sql = (
-            """
-        SELECT CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
-               AVG(viewer_count) AS avg_viewers,
-               MAX(viewer_count) AS max_viewers,
-               COUNT(*)          AS samples
-          FROM twitch_stats_category
-         WHERE ts_utc >= datetime('now', '-30 days')
-        {hour_clause}
-         GROUP BY weekday
-         ORDER BY weekday
-        """
-        ).format(hour_clause=hour_clause)
-
-        out["tracked"]["hourly"] = _aggregate(tracked_hourly_sql, hour_params)
-        out["category"]["hourly"] = _aggregate(category_hourly_sql, hour_params)
-        out["tracked"]["weekday"] = _aggregate(tracked_weekday_sql, hour_params)
-        out["category"]["weekday"] = _aggregate(category_weekday_sql, hour_params)
+        out["tracked"]["hourly"] = _aggregate(hourly_sql, ("tracked", *hour_filter_params))
+        out["category"]["hourly"] = _aggregate(hourly_sql, ("category", *hour_filter_params))
+        out["tracked"]["weekday"] = _aggregate(weekday_sql, ("tracked", *hour_filter_params))
+        out["category"]["weekday"] = _aggregate(weekday_sql, ("category", *hour_filter_params))
 
         if streamer is not None:
             normalized_login = self._normalize_login(streamer)
@@ -817,66 +903,21 @@ class TwitchLeaderboardMixin:
                 except Exception:
                     log.exception("Failed to fetch extended user stats (subs/shared)")
 
-                sources = (
-                    ("tracked", "twitch_stats_tracked"),
-                    ("category", "twitch_stats_category"),
-                )
+                sources = ("tracked", "category")
                 user_payload: Optional[Dict[str, Any]] = None
-                for source_key, table_name in sources:
-                    summary_sql = (
-                        """
-        SELECT streamer,
-               AVG(viewer_count) AS avg_viewers,
-               MAX(viewer_count) AS max_viewers,
-               COUNT(*)          AS samples,
-               MAX(is_partner)   AS is_partner
-          FROM {table}
-         WHERE ts_utc >= datetime('now', '-30 days')
-           AND streamer = ?
-        {hour_clause}
-         GROUP BY streamer
-                        """
-                    ).format(table=table_name, hour_clause=hour_clause)
-                    params = [normalized_login, *hour_params]
-                    summary_rows = _aggregate(summary_sql, params)
+                for source_key in sources:
+                    params = [source_key, normalized_login, *hour_filter_params]
+                    summary_rows = _aggregate(user_top_sql, params)
                     if not summary_rows:
                         continue
                     summary_row = dict(summary_rows[0])
                     samples = int(summary_row.get("samples") or 0)
                     if samples <= 0:
                         continue
-                    hourly_sql = (
-                        """
-        SELECT CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
-               AVG(viewer_count) AS avg_viewers,
-               MAX(viewer_count) AS max_viewers,
-               COUNT(*)          AS samples
-          FROM {table}
-         WHERE ts_utc >= datetime('now', '-30 days')
-           AND streamer = ?
-        {hour_clause}
-         GROUP BY hour
-         ORDER BY hour
-                        """
-                    ).format(table=table_name, hour_clause=hour_clause)
-                    weekday_sql = (
-                        """
-        SELECT CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
-               AVG(viewer_count) AS avg_viewers,
-               MAX(viewer_count) AS max_viewers,
-               COUNT(*)          AS samples
-          FROM {table}
-         WHERE ts_utc >= datetime('now', '-30 days')
-           AND streamer = ?
-        {hour_clause}
-         GROUP BY weekday
-         ORDER BY weekday
-                        """
-                    ).format(table=table_name, hour_clause=hour_clause)
                     user_payload = {
                         "summary": summary_row,
-                        "hourly": _aggregate(hourly_sql, params),
-                        "weekday": _aggregate(weekday_sql, params),
+                        "hourly": _aggregate(user_hourly_sql, params),
+                        "weekday": _aggregate(user_weekday_sql, params),
                         "source": source_key,
                     }
                     break
