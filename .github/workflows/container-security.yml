@@ -47,6 +47,85 @@ jobs:
           fi
 
   # ============================================================================
+  # CONTAINER SAST SCANNERS (RESTORED CORE COVERAGE)
+  # ============================================================================
+  container-sast:
+    name: 🔒 Container SAST Scanners
+    needs: detect-container-files
+    if: needs.detect-container-files.outputs.has_dockerfile == 'true' || needs.detect-container-files.outputs.has_compose == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Checkov Dockerfile Scan
+        if: needs.detect-container-files.outputs.has_dockerfile == 'true'
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: dockerfile
+          output_format: sarif
+          output_file_path: checkov-docker.sarif
+          soft_fail: true
+        continue-on-error: true
+
+      - name: Upload Checkov Dockerfile SARIF
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
+        if: always() && hashFiles('checkov-docker.sarif') != ''
+        with:
+          sarif_file: checkov-docker.sarif
+          category: checkov-docker
+        continue-on-error: true
+
+      - name: Checkov Compose Scan
+        if: needs.detect-container-files.outputs.has_compose == 'true'
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: docker_compose
+          output_format: sarif
+          output_file_path: checkov-compose.sarif
+          soft_fail: true
+        continue-on-error: true
+
+      - name: Upload Checkov Compose SARIF
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
+        if: always() && hashFiles('checkov-compose.sarif') != ''
+        with:
+          sarif_file: checkov-compose.sarif
+          category: checkov-compose
+        continue-on-error: true
+
+      - name: Trivy Container Filesystem Scan (SARIF)
+        uses: aquasecurity/trivy-action@22438a435773de8c97dc0958cc0b823c45b064ac # master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-docker.sarif
+          severity: HIGH,CRITICAL
+          exit-code: 0
+        continue-on-error: true
+
+      - name: Upload Trivy Container SARIF
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
+        if: always() && hashFiles('trivy-docker.sarif') != ''
+        with:
+          sarif_file: trivy-docker.sarif
+          category: trivy-docker
+        continue-on-error: true
+
+      - name: Upload Container SAST Artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: container-sast-reports
+          path: |
+            checkov-docker.sarif
+            checkov-compose.sarif
+            trivy-docker.sarif
+          if-no-files-found: ignore
+
+  # ============================================================================
   # DOCKERFILE LINTING - ONLY IF DOCKERFILE EXISTS
   # ============================================================================
   dockerfile-lint:
@@ -165,7 +244,7 @@ jobs:
   # ============================================================================
   summary:
     name: 📊 Container Security Summary
-    needs: [detect-container-files, dockerfile-lint, compose-validate, best-practices]
+    needs: [detect-container-files, container-sast, dockerfile-lint, compose-validate, best-practices]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -184,6 +263,7 @@ jobs:
             echo "To enable container scanning, add a Dockerfile to your repository." >> $GITHUB_STEP_SUMMARY
           else
             echo "## Scans Executed:" >> $GITHUB_STEP_SUMMARY
+            echo "- Container SAST: ${{ needs.container-sast.result == 'success' && '✅' || needs.container-sast.result == 'skipped' && '⏭️' || '❌' }}" >> $GITHUB_STEP_SUMMARY
             echo "- Dockerfile Linting: ${{ needs.dockerfile-lint.result == 'success' && '✅' || needs.dockerfile-lint.result == 'skipped' && '⏭️' || '❌' }}" >> $GITHUB_STEP_SUMMARY
             echo "- Compose Validation: ${{ needs.compose-validate.result == 'success' && '✅' || needs.compose-validate.result == 'skipped' && '⏭️' || '❌' }}" >> $GITHUB_STEP_SUMMARY
             echo "- Best Practices: ${{ needs.best-practices.result == 'success' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY

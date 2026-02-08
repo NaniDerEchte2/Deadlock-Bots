@@ -65,6 +65,135 @@ jobs:
           echo "has_any=$has_any" >> $GITHUB_OUTPUT
 
   # ============================================================================
+  # IAC SAST SCANNERS (RESTORED CORE COVERAGE)
+  # ============================================================================
+  iac-sast:
+    name: 🔒 IaC SAST Scanners
+    needs: detect-iac
+    if: needs.detect-iac.outputs.has_any == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Checkov IaC Scan (SARIF)
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: terraform,kubernetes,dockerfile,cloudformation
+          output_format: sarif
+          output_file_path: checkov-iac.sarif
+          soft_fail: true
+        continue-on-error: true
+
+      - name: Upload Checkov SARIF
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
+        if: always() && hashFiles('checkov-iac.sarif') != ''
+        with:
+          sarif_file: checkov-iac.sarif
+          category: checkov-iac
+        continue-on-error: true
+
+      - name: tfsec Terraform Scan (SARIF)
+        if: needs.detect-iac.outputs.has_terraform == 'true'
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: .
+          format: sarif
+          soft_fail: true
+          output_file: tfsec.sarif
+        continue-on-error: true
+
+      - name: Upload tfsec SARIF
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
+        if: always() && hashFiles('tfsec.sarif') != ''
+        with:
+          sarif_file: tfsec.sarif
+          category: tfsec
+        continue-on-error: true
+
+      - name: KubeLinter Scan (SARIF)
+        if: needs.detect-iac.outputs.has_kubernetes == 'true'
+        uses: stackrox/kube-linter-action@v1.0.4
+        with:
+          directory: .
+          format: sarif
+          output-file: kubelinter.sarif
+        continue-on-error: true
+
+      - name: Upload KubeLinter SARIF
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
+        if: always() && hashFiles('kubelinter.sarif') != ''
+        with:
+          sarif_file: kubelinter.sarif
+          category: kubelinter
+        continue-on-error: true
+
+      - name: KICS IaC Scan (SARIF)
+        uses: checkmarx/kics-github-action@v1.7.0
+        with:
+          path: .
+          output_path: kics-results
+          output_formats: sarif
+          fail_on: high
+        continue-on-error: true
+
+      - name: Upload KICS SARIF
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
+        if: always() && hashFiles('kics-results/results.sarif') != ''
+        with:
+          sarif_file: kics-results/results.sarif
+          category: kics
+        continue-on-error: true
+
+      - name: Ansible Lint (SARIF)
+        if: hashFiles('**/ansible/**/*.yml', '**/ansible/**/*.yaml', '**/playbook*.yml', '**/playbook*.yaml') != ''
+        uses: ansible/ansible-lint@main
+        with:
+          args: "--sarif-file ansible-lint.sarif"
+        continue-on-error: true
+
+      - name: Upload Ansible Lint SARIF
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
+        if: always() && hashFiles('ansible-lint.sarif') != ''
+        with:
+          sarif_file: ansible-lint.sarif
+          category: ansible-lint
+        continue-on-error: true
+
+      - name: Trivy Config Scan (SARIF)
+        uses: aquasecurity/trivy-action@22438a435773de8c97dc0958cc0b823c45b064ac # master
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: trivy-config.sarif
+          severity: LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: 0
+        continue-on-error: true
+
+      - name: Upload Trivy Config SARIF
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
+        if: always() && hashFiles('trivy-config.sarif') != ''
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
+        continue-on-error: true
+
+      - name: Upload IaC SAST Artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: iac-sast-reports
+          path: |
+            checkov-iac.sarif
+            tfsec.sarif
+            kubelinter.sarif
+            kics-results/
+            ansible-lint.sarif
+            trivy-config.sarif
+          if-no-files-found: ignore
+
+  # ============================================================================
   # GENERAL IAC BEST PRACTICES (ALWAYS RUNS)
   # ============================================================================
   iac-best-practices:
@@ -157,7 +286,7 @@ jobs:
   # ============================================================================
   summary:
     name: 📊 IaC Summary
-    needs: [detect-iac, iac-best-practices, config-security]
+    needs: [detect-iac, iac-sast, iac-best-practices, config-security]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -179,5 +308,6 @@ jobs:
           
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Checks Executed:" >> $GITHUB_STEP_SUMMARY
+          echo "- IaC SAST: ${{ needs.iac-sast.result == 'success' && '✅' || needs.iac-sast.result == 'skipped' && '⏭️ Skipped' || '❌' }}" >> $GITHUB_STEP_SUMMARY
           echo "- Best Practices: ✅" >> $GITHUB_STEP_SUMMARY
           echo "- Config Security: ✅" >> $GITHUB_STEP_SUMMARY

@@ -81,6 +81,7 @@ jobs:
           echo "- 🛡️ **Deep Security Scan** - Comprehensive security analysis" >> $GITHUB_STEP_SUMMARY
           echo "- 🔍 **Secret Scanning** - Credential detection" >> $GITHUB_STEP_SUMMARY
           echo "- 📦 **Dependency Review** - Vulnerability scanning" >> $GITHUB_STEP_SUMMARY
+          echo "- 🌐 **Dashboard DAST** - Dynamic endpoint security tests" >> $GITHUB_STEP_SUMMARY
           echo "- 🐳 **Container Security** - Docker analysis" >> $GITHUB_STEP_SUMMARY
           echo "- 🏗️ **IaC Security** - Infrastructure checks" >> $GITHUB_STEP_SUMMARY
           echo "- ⚡ **Performance Analysis** - Performance profiling" >> $GITHUB_STEP_SUMMARY
@@ -165,6 +166,7 @@ jobs:
               "security-deep-scan.yml",
               "secret-scanning.yml",
               "dependency-review.yml",
+              "dashboard-dast.yml",
               "container-security.yml",
               "iac-security.yml",
               "performance-analysis.yml",

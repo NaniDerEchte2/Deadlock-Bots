@@ -50,22 +50,27 @@ jobs:
             echo "ℹ️ No JavaScript files found"
           fi
           
-          # Check for requirements.txt
-          if [ -f requirements.txt ]; then
+          # Check for Python dependency manifests recursively
+          if find . -type f -name "requirements*.txt" \
+            -not -path "*/.venv/*" \
+            -not -path "*/venv/*" \
+            -not -path "*/.git/*" | grep -q .; then
             echo "has_requirements=true" >> $GITHUB_OUTPUT
-            echo "✅ requirements.txt found"
+            echo "✅ requirements*.txt files found"
           else
             echo "has_requirements=false" >> $GITHUB_OUTPUT
-            echo "ℹ️ No requirements.txt found"
+            echo "ℹ️ No requirements*.txt files found"
           fi
           
-          # Check for package.json
-          if [ -f package.json ]; then
+          # Check for package.json recursively
+          if find . -type f -name "package.json" \
+            -not -path "*/node_modules/*" \
+            -not -path "*/.git/*" | grep -q .; then
             echo "has_package_json=true" >> $GITHUB_OUTPUT
-            echo "✅ package.json found"
+            echo "✅ package.json files found"
           else
             echo "has_package_json=false" >> $GITHUB_OUTPUT
-            echo "ℹ️ No package.json found"
+            echo "ℹ️ No package.json files found"
           fi
 
   # ============================================================================
@@ -89,7 +94,7 @@ jobs:
       - name: Install Analysis Tools
         run: |
           pip install --upgrade pip
-          pip install bandit safety pip-audit radon vulture
+          pip install bandit safety pip-audit radon vulture dodgy
         continue-on-error: true
 
       # Bandit - Security Issues
@@ -103,26 +108,53 @@ jobs:
           fi
         continue-on-error: true
 
-      # Safety - Known Vulnerabilities (only if requirements.txt exists)
+      # Safety - Known Vulnerabilities (recursive requirements scan)
       - name: Safety Vulnerability Check
         if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
-          echo "Running Safety vulnerability check..."
-          safety check --json --output safety-report.json || true
-          if [ -f safety-report.json ]; then
-            echo "✅ Safety check completed"
-            safety check --full-report || echo "⚠️ Vulnerabilities found (check artifact)"
+          echo "Running Safety vulnerability check (recursive requirements scan)..."
+          mkdir -p safety-reports
+          found=0
+          while IFS= read -r req_file; do
+            found=1
+            rel_path="${req_file#./}"
+            safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
+            echo "Safety scan for $req_file"
+            safety check -r "$req_file" --json > "safety-reports/${safe_name}.json" || true
+          done < <(find . -type f -name "requirements*.txt" \
+            -not -path "*/.venv/*" \
+            -not -path "*/venv/*" \
+            -not -path "*/.git/*" | sort)
+
+          if [ "$found" -eq 0 ]; then
+            echo "ℹ️ No requirements*.txt files found for Safety scan"
+          else
+            echo "✅ Safety recursive scan completed"
           fi
         continue-on-error: true
 
-      # Pip-Audit (only if requirements.txt exists)
+      # Pip-Audit (recursive requirements scan)
       - name: Pip-Audit Deep Scan
         if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
-          echo "Running pip-audit..."
-          pip-audit -r requirements.txt --format json --output pip-audit.json || true
-          if [ -f pip-audit.json ]; then
-            echo "✅ Pip-audit completed"
+          echo "Running pip-audit (recursive requirements scan)..."
+          mkdir -p pip-audit-reports
+          found=0
+          while IFS= read -r req_file; do
+            found=1
+            rel_path="${req_file#./}"
+            safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
+            echo "pip-audit for $req_file"
+            pip-audit -r "$req_file" --format json --output "pip-audit-reports/${safe_name}.json" || true
+          done < <(find . -type f -name "requirements*.txt" \
+            -not -path "*/.venv/*" \
+            -not -path "*/venv/*" \
+            -not -path "*/.git/*" | sort)
+
+          if [ "$found" -eq 0 ]; then
+            echo "ℹ️ No requirements*.txt files found for pip-audit"
+          else
+            echo "✅ Pip-audit recursive scan completed"
           fi
         continue-on-error: true
 
@@ -146,6 +178,13 @@ jobs:
           fi
         continue-on-error: true
 
+      # Dodgy - Suspicious code patterns
+      - name: Dodgy Suspicious Pattern Check
+        run: |
+          echo "Running dodgy..."
+          dodgy > dodgy-report.txt || true
+        continue-on-error: true
+
       - name: Upload Python Security Reports
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
@@ -153,10 +192,11 @@ jobs:
           name: python-security-reports
           path: |
             bandit-report.json
-            safety-report.json
-            pip-audit.json
+            safety-reports/*.json
+            pip-audit-reports/*.json
             radon-*.txt
             vulture-report.txt
+            dodgy-report.txt
           if-no-files-found: ignore
 
   # ============================================================================
@@ -175,15 +215,31 @@ jobs:
         with:
           node-version: '20'
 
-      # NPM Audit - Only if package-lock.json exists
+      # NPM Audit - recursive lockfile scan
       - name: NPM Audit
-        if: hashFiles('**/package-lock.json') != ''
+        if: hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != ''
         run: |
-          echo "Running NPM audit..."
-          npm audit --json > npm-audit.json || true
-          if [ -f npm-audit.json ]; then
-            echo "✅ NPM audit completed"
-            npm audit --audit-level=moderate || echo "⚠️ Vulnerabilities found"
+          echo "Running NPM audit (recursive lockfile scan)..."
+          mkdir -p npm-audit-reports
+          found=0
+          while IFS= read -r lock_file; do
+            found=1
+            dir_path="$(dirname "$lock_file")"
+            rel_dir="${dir_path#./}"
+            safe_name="$(echo "${rel_dir:-root}" | sed 's#[^A-Za-z0-9._-]#_#g')"
+            echo "NPM audit for $dir_path"
+            (
+              cd "$dir_path"
+              npm audit --json > "$GITHUB_WORKSPACE/npm-audit-reports/${safe_name}.json" || true
+            )
+          done < <(find . -type f \( -name "package-lock.json" -o -name "npm-shrinkwrap.json" \) \
+            -not -path "*/node_modules/*" \
+            -not -path "*/.git/*" | sort)
+
+          if [ "$found" -eq 0 ]; then
+            echo "ℹ️ No npm lockfiles found for recursive audit"
+          else
+            echo "✅ NPM recursive audit completed"
           fi
         continue-on-error: true
 
@@ -198,14 +254,35 @@ jobs:
           fi
         continue-on-error: true
 
+      # ESLint Security Plugin
+      - name: ESLint Security Scan
+        if: hashFiles('**/package.json') != ''
+        run: |
+          npm install -g eslint eslint-plugin-security eslint-plugin-no-secrets || true
+          eslint . --ext .js,.ts,.jsx,.tsx --format json --output-file eslint-security.json || true
+        continue-on-error: true
+
+      # Snyk Scan (optional, requires repository secret SNYK_TOKEN)
+      - name: Snyk Security Scan
+        if: hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != '' && secrets.SNYK_TOKEN != ''
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          npm install -g snyk || true
+          snyk auth "$SNYK_TOKEN" || true
+          snyk test --all-projects --severity-threshold=low --json-file-output=snyk-report.json || true
+        continue-on-error: true
+
       - name: Upload JS Security Reports
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: javascript-security-reports
           path: |
-            npm-audit.json
+            npm-audit-reports/*.json
             retirejs-report.json
+            eslint-security.json
+            snyk-report.json
           if-no-files-found: ignore
 
   # ============================================================================
@@ -315,13 +392,38 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Set up Python
+        if: needs.detect-languages.outputs.has_requirements == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Node.js
+        if: needs.detect-languages.outputs.has_package_json == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
       # Python Dependencies
       - name: Python Dependency Tree
         if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
           pip install pipdeptree
-          pipdeptree --json > python-deps-tree.json || true
-          pipdeptree || true
+          mkdir -p dependency-analysis/python-deps
+          found=0
+          while IFS= read -r req_file; do
+            found=1
+            rel_path="${req_file#./}"
+            safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
+            pip install -r "$req_file" || true
+            pipdeptree --json > "dependency-analysis/python-deps/${safe_name}.json" || true
+          done < <(find . -type f -name "requirements*.txt" \
+            -not -path "*/.venv/*" \
+            -not -path "*/venv/*" \
+            -not -path "*/.git/*" | sort)
+          if [ "$found" -eq 0 ]; then
+            echo "ℹ️ No requirements*.txt files found for dependency tree"
+          fi
         continue-on-error: true
 
       # License Scanner for Python
@@ -329,18 +431,47 @@ jobs:
         if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
           pip install pip-licenses
-          pip install -r requirements.txt || true
-          pip-licenses --format=json --with-urls > python-licenses.json || true
-          pip-licenses --format=markdown > python-licenses.md || true
+          mkdir -p dependency-analysis/python-licenses
+          found=0
+          while IFS= read -r req_file; do
+            found=1
+            rel_path="${req_file#./}"
+            safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
+            pip install -r "$req_file" || true
+            pip-licenses --format=json --with-urls > "dependency-analysis/python-licenses/${safe_name}.json" || true
+            pip-licenses --format=markdown > "dependency-analysis/python-licenses/${safe_name}.md" || true
+          done < <(find . -type f -name "requirements*.txt" \
+            -not -path "*/.venv/*" \
+            -not -path "*/venv/*" \
+            -not -path "*/.git/*" | sort)
+          if [ "$found" -eq 0 ]; then
+            echo "ℹ️ No requirements*.txt files found for license scan"
+          fi
         continue-on-error: true
 
       # NPM License Check
       - name: NPM License Scanner
-        if: needs.detect-languages.outputs.has_package_json == 'true' && hashFiles('**/package-lock.json') != ''
+        if: needs.detect-languages.outputs.has_package_json == 'true' && hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != ''
         run: |
           npm install -g license-checker
-          license-checker --json > npm-licenses.json || true
-          license-checker --summary || true
+          mkdir -p dependency-analysis/npm-licenses
+          found=0
+          while IFS= read -r lock_file; do
+            found=1
+            dir_path="$(dirname "$lock_file")"
+            rel_dir="${dir_path#./}"
+            safe_name="$(echo "${rel_dir:-root}" | sed 's#[^A-Za-z0-9._-]#_#g')"
+            (
+              cd "$dir_path"
+              license-checker --json > "$GITHUB_WORKSPACE/dependency-analysis/npm-licenses/${safe_name}.json" || true
+              license-checker --summary > "$GITHUB_WORKSPACE/dependency-analysis/npm-licenses/${safe_name}.txt" || true
+            )
+          done < <(find . -type f \( -name "package-lock.json" -o -name "npm-shrinkwrap.json" \) \
+            -not -path "*/node_modules/*" \
+            -not -path "*/.git/*" | sort)
+          if [ "$found" -eq 0 ]; then
+            echo "ℹ️ No npm lockfiles found for license scan"
+          fi
         continue-on-error: true
 
       - name: Upload Dependency Reports
@@ -349,8 +480,47 @@ jobs:
         with:
           name: dependency-analysis
           path: |
-            *-deps*.json
-            *-licenses.*
+            dependency-analysis/
+          if-no-files-found: ignore
+
+  # ============================================================================
+  # OSSF SCORECARD (RESTORED)
+  # ============================================================================
+  security-scorecard:
+    name: 🏆 OSSF Security Scorecard
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@0864cf19026789058feabb7e87baa5f140aac865 # v2.4.2
+        with:
+          results_file: scorecard-results.sarif
+          results_format: sarif
+          publish_results: true
+        continue-on-error: true
+
+      - name: Upload Scorecard SARIF
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
+        if: always() && hashFiles('scorecard-results.sarif') != ''
+        with:
+          sarif_file: scorecard-results.sarif
+          category: scorecard
+        continue-on-error: true
+
+      - name: Upload Scorecard Artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: scorecard-report
+          path: scorecard-results.sarif
           if-no-files-found: ignore
 
   # ============================================================================
@@ -358,7 +528,7 @@ jobs:
   # ============================================================================
   generate-summary:
     name: 📋 Generate Summary
-    needs: [detect-languages, python-security, javascript-security, semgrep-sast, trivy-scan, dependency-analysis]
+    needs: [detect-languages, python-security, javascript-security, semgrep-sast, trivy-scan, dependency-analysis, security-scorecard]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -378,5 +548,6 @@ jobs:
           echo "- Semgrep SAST: ${{ needs.semgrep-sast.result == 'success' && '✅' || needs.semgrep-sast.result == 'skipped' && '⏭️ Skipped' || '❌' }}" >> $GITHUB_STEP_SUMMARY
           echo "- Trivy Scan: ${{ needs.trivy-scan.result == 'success' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
           echo "- Dependency Analysis: ${{ needs.dependency-analysis.result == 'success' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- OSSF Scorecard: ${{ needs.security-scorecard.result == 'success' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "📥 **Check artifacts for detailed reports**" >> $GITHUB_STEP_SUMMARY

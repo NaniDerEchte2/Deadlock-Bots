@@ -5,6 +5,7 @@ on:
     branches: [ main, master, develop ]
   schedule:
     - cron: '0 3 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -41,14 +42,105 @@ jobs:
         if: github.event_name == 'schedule' || (github.event_name == 'push' && github.event.before == '0000000000000000000000000000000000000000')
         run: |
           echo "Skipping dependency-review-action: no PR context and no valid base/head diff available."
-          
-      - name: 'NPM Audit'
-        if: hashFiles('**/package-lock.json') != ''
+
+      - name: 'Setup Node.js'
+        if: hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: 'NPM Audit (Recursive Lockfile Scan)'
+        if: hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != ''
         run: |
-          npm audit --audit-level=low
-          
-      - name: 'Python Safety Check'
-        if: hashFiles('**/requirements.txt') != '' || hashFiles('**/Pipfile.lock') != ''
+          mkdir -p dependency-reports/npm
+          found=0
+          audit_fail=0
+
+          while IFS= read -r lock_file; do
+            found=1
+            dir_path="$(dirname "$lock_file")"
+            rel_dir="${dir_path#./}"
+            safe_name="$(echo "${rel_dir:-root}" | sed 's#[^A-Za-z0-9._-]#_#g')"
+            echo "Auditing Node dependencies in: $dir_path"
+            if ! (
+              cd "$dir_path"
+              npm audit --audit-level=low --json > "$GITHUB_WORKSPACE/dependency-reports/npm/${safe_name}.json"
+            ); then
+              audit_fail=1
+            fi
+          done < <(find . -type f \( -name "package-lock.json" -o -name "npm-shrinkwrap.json" \) \
+            -not -path "*/node_modules/*" \
+            -not -path "*/.git/*" | sort)
+
+          if [ "$found" -eq 0 ]; then
+            echo "No npm lockfiles found for recursive audit."
+          fi
+
+          if [ "$audit_fail" -ne 0 ]; then
+            echo "NPM audit found vulnerabilities (see dependency-reports/npm)."
+            exit 1
+          fi
+
+      - name: 'Set up Python'
+        if: hashFiles('**/requirements*.txt') != ''
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: 'Install Python Dependency Scanners'
+        if: hashFiles('**/requirements*.txt') != ''
         run: |
-          pip install safety
-          safety check --json
+          pip install --upgrade pip
+          pip install pip-audit safety
+
+      - name: 'Python Dependency Scan (Recursive)'
+        if: hashFiles('**/requirements*.txt') != ''
+        run: |
+          mkdir -p dependency-reports/python
+          found=0
+          audit_fail=0
+
+          while IFS= read -r req_file; do
+            found=1
+            rel_path="${req_file#./}"
+            safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
+            echo "Auditing Python dependencies in: $req_file"
+
+            if ! pip-audit -r "$req_file" --format json --output "dependency-reports/python/${safe_name}.pip-audit.json"; then
+              audit_fail=1
+            fi
+
+            if ! safety check -r "$req_file" --json > "dependency-reports/python/${safe_name}.safety.json"; then
+              audit_fail=1
+            fi
+          done < <(find . -type f -name "requirements*.txt" \
+            -not -path "*/.venv/*" \
+            -not -path "*/venv/*" \
+            -not -path "*/.git/*" | sort)
+
+          if [ "$found" -eq 0 ]; then
+            echo "No requirements*.txt files found for recursive Python scan."
+          fi
+
+          if [ "$audit_fail" -ne 0 ]; then
+            echo "Python dependency scan found vulnerabilities (see dependency-reports/python)."
+            exit 1
+          fi
+
+      - name: 'Record Additional Python Lockfiles'
+        if: hashFiles('**/Pipfile.lock', '**/poetry.lock', '**/pyproject.toml') != ''
+        run: |
+          mkdir -p dependency-reports/python
+          find . -type f \( -name "Pipfile.lock" -o -name "poetry.lock" -o -name "pyproject.toml" \) \
+            -not -path "*/.venv/*" \
+            -not -path "*/venv/*" \
+            -not -path "*/.git/*" | sort > dependency-reports/python/additional-lockfiles.txt
+          cat dependency-reports/python/additional-lockfiles.txt
+
+      - name: 'Upload Dependency Reports'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: dependency-reports
+          path: dependency-reports/
+          if-no-files-found: ignore
