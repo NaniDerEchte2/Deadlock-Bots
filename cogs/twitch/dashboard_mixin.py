@@ -1237,6 +1237,15 @@ class TwitchDashboardMixin:
                     noauth=self._dashboard_noauth,
                     token=self._dashboard_token,
                     partner_token=self._partner_dashboard_token,
+                    oauth_client_id=self.client_id or None,
+                    oauth_client_secret=self.client_secret or None,
+                    oauth_redirect_uri=getattr(self, "_dashboard_auth_redirect_uri", None),
+                    session_ttl_seconds=getattr(self, "_dashboard_session_ttl", 12 * 3600),
+                    legacy_stats_url=getattr(self, "_legacy_stats_url", None),
+                    list_cb=self._dashboard_list,
+                    stats_cb=self._dashboard_stats,
+                    discord_profile_cb=self._dashboard_save_discord_profile,
+                    raid_bot=getattr(self, "_raid_bot", None),
                     reload_cb=self._reload_twitch_cog,
                 )
                 runner = web.AppRunner(app)

@@ -59,6 +59,17 @@ async function fetchApi<T>(endpoint: string, params: Record<string, string | num
     },
   });
 
+  if (response.status === 401) {
+    const unauthorized = await response.json().catch(() => null) as
+      | { error?: string; loginUrl?: string }
+      | null;
+    if (unauthorized?.loginUrl) {
+      window.location.href = unauthorized.loginUrl;
+      throw new Error('Redirecting to Twitch login');
+    }
+    throw new Error(unauthorized?.error || 'Unauthorized');
+  }
+
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unknown error' }));
     throw new Error(error.error || `HTTP ${response.status}`);
@@ -178,6 +189,8 @@ export interface AuthStatus {
   isAdmin: boolean;
   isLocalhost: boolean;
   canViewAllStreamers: boolean;
+  twitchLogin?: string | null;
+  displayName?: string | null;
   permissions: {
     viewAllStreamers: boolean;
     viewComparison: boolean;

@@ -4,9 +4,12 @@ Analytics API v2 - Backend endpoints for the new React TypeScript dashboard.
 
 from __future__ import annotations
 
+import ipaddress
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 from aiohttp import web
 
@@ -15,33 +18,60 @@ from . import storage
 log = logging.getLogger("TwitchStreams.AnalyticsV2")
 
 
+def _is_loopback_host(raw_value: str) -> bool:
+    value = (raw_value or "").strip()
+    if not value:
+        return False
+
+    token = value.split(",")[0].strip()
+    if token.startswith("["):
+        end = token.find("]")
+        if end != -1:
+            token = token[1:end]
+    elif token.count(":") == 1:
+        host_part, port_part = token.rsplit(":", 1)
+        if port_part.isdigit():
+            token = host_part
+
+    token = token.strip().lower()
+    if token == "localhost":
+        return True
+
+    try:
+        return ipaddress.ip_address(token).is_loopback
+    except ValueError:
+        return False
+
+
 def _is_localhost(request: web.Request) -> bool:
     """Check if request comes from localhost."""
+    context_header = (request.headers.get("X-Dashboard-Context") or "").strip().lower()
+    if context_header == "public":
+        return False
+    if context_header == "local":
+        return True
+
+    forwarded_for = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    if forwarded_for:
+        return _is_loopback_host(forwarded_for)
+
     host_header = (
         request.headers.get("X-Forwarded-Host")
         or request.headers.get("Host")
         or request.host
         or ""
     )
-    # Extract host without port
-    host = host_header.split(",")[0].strip().lower()
-    if ":" in host and not host.startswith("["):
-        host = host.split(":")[0]
-    elif host.startswith("["):
-        end = host.find("]")
-        if end != -1:
-            host = host[1:end]
-
-    if host in {"127.0.0.1", "localhost", "::1"}:
+    host = host_header.split(",")[0].strip()
+    if _is_loopback_host(host):
         return True
 
-    # Also check peer address
+    # Peer address fallback is only relevant for direct (non-proxied) requests.
     transport = getattr(request, "transport", None)
     if transport is not None:
         peer = transport.get_extra_info("peername")
         if isinstance(peer, tuple) and peer:
-            peer_host = str(peer[0]).lower()
-            if peer_host in {"127.0.0.1", "localhost", "::1"}:
+            peer_host = str(peer[0]).strip()
+            if _is_loopback_host(peer_host):
                 return True
     return False
 
@@ -57,12 +87,36 @@ class AnalyticsV2Mixin:
          AND NOT (s.followers_end = 0 AND s.followers_start > 0)
          THEN s.follower_delta ELSE NULL END)"""
 
+    def _get_dashboard_session(self, request: web.Request) -> Optional[Dict[str, Any]]:
+        getter = getattr(self, "_get_dashboard_auth_session", None)
+        if not callable(getter):
+            return None
+        try:
+            session = getter(request)
+        except Exception:
+            log.debug("Could not resolve dashboard OAuth session", exc_info=True)
+            return None
+        return session if isinstance(session, dict) else None
+
+    def _get_dashboard_login_url(self, request: web.Request) -> str:
+        builder = getattr(self, "_build_dashboard_login_url", None)
+        if callable(builder):
+            try:
+                url = builder(request)
+                if url:
+                    return str(url)
+            except Exception:
+                log.debug("Could not build dashboard login URL via host class", exc_info=True)
+        next_path = request.rel_url.path_qs if request.rel_url else "/twitch/dashboard-v2"
+        return f"/twitch/auth/login?{urlencode({'next': next_path})}"
+
     def _check_v2_auth(self, request: web.Request) -> bool:
         """Check if request is authorized for v2 API.
 
         Returns True if:
         - Request is from localhost (no auth needed)
         - noauth mode is enabled
+        - Valid Twitch OAuth partner session exists
         - Valid partner_token or admin token is provided
         """
         # Localhost = always allowed (dev mode)
@@ -71,6 +125,10 @@ class AnalyticsV2Mixin:
 
         # Check noauth mode from parent
         if getattr(self, "_noauth", False):
+            return True
+
+        # Twitch OAuth session (partner access)
+        if self._get_dashboard_session(request):
             return True
 
         # Check tokens
@@ -97,7 +155,16 @@ class AnalyticsV2Mixin:
     def _require_v2_auth(self, request: web.Request):
         """Require authentication for v2 API, but allow localhost."""
         if not self._check_v2_auth(request):
-            raise web.HTTPUnauthorized(text="Authentication required. Use partner_token or access from localhost.")
+            login_url = self._get_dashboard_login_url(request)
+            if request.path.startswith("/twitch/api/"):
+                login_url = f"/twitch/auth/login?{urlencode({'next': '/twitch/dashboard-v2'})}"
+            payload = {
+                "error": "Authentication required. Use Twitch login, partner_token, or access from localhost.",
+                "loginUrl": login_url,
+            }
+            if request.path.startswith("/twitch/api/"):
+                raise web.HTTPUnauthorized(text=json.dumps(payload), content_type="application/json")
+            raise web.HTTPUnauthorized(text=payload["error"])
 
     def _get_auth_level(self, request: web.Request) -> str:
         """Get the authentication level for the request.
@@ -115,6 +182,9 @@ class AnalyticsV2Mixin:
         # Check noauth mode
         if getattr(self, "_noauth", False):
             return "localhost"
+
+        if self._get_dashboard_session(request):
+            return "partner"
 
         admin_token = getattr(self, "_token", None)
         partner_token = getattr(self, "_partner_token", None)
@@ -165,7 +235,8 @@ class AnalyticsV2Mixin:
 
     async def _serve_dashboard_v2(self, request: web.Request) -> web.Response:
         """Serve the main dashboard HTML."""
-        self._require_v2_auth(request)
+        if not self._check_v2_auth(request):
+            raise web.HTTPFound(self._get_dashboard_login_url(request))
         import pathlib
         dist_path = pathlib.Path(__file__).parent / "dashboard_v2" / "dist" / "index.html"
         if dist_path.exists():
@@ -175,10 +246,37 @@ class AnalyticsV2Mixin:
     async def _serve_dashboard_v2_assets(self, request: web.Request) -> web.Response:
         """Serve static assets for the dashboard."""
         import pathlib
-        path = request.match_info.get("path", "")
-        dist_path = pathlib.Path(__file__).parent / "dashboard_v2" / "dist" / path
-        if dist_path.exists() and dist_path.is_file():
-            return web.FileResponse(dist_path)
+        raw_path = request.match_info.get("path", "")
+        if not raw_path:
+            return web.Response(text="Not found", status=404)
+
+        dist_root = (pathlib.Path(__file__).resolve().parent / "dashboard_v2" / "dist").resolve()
+        candidate: pathlib.Path = dist_root
+
+        # Resolve each path segment against actual directory entries to avoid
+        # using untrusted input directly in filesystem path expressions.
+        for segment in raw_path.split("/"):
+            if not segment or segment in {".", ".."} or "\\" in segment:
+                return web.Response(text="Not found", status=404)
+            if not candidate.is_dir():
+                return web.Response(text="Not found", status=404)
+
+            next_candidate = None
+            for entry in candidate.iterdir():
+                if entry.name == segment:
+                    next_candidate = entry
+                    break
+            if next_candidate is None:
+                return web.Response(text="Not found", status=404)
+            candidate = next_candidate
+
+        try:
+            candidate.resolve().relative_to(dist_root)
+        except ValueError:
+            return web.Response(text="Not found", status=404)
+
+        if candidate.is_file():
+            return web.FileResponse(candidate)
         return web.Response(text="Not found", status=404)
 
     async def _api_v2_overview(self, request: web.Request) -> web.Response:
@@ -1313,18 +1411,23 @@ class AnalyticsV2Mixin:
     async def _api_v2_auth_status(self, request: web.Request) -> web.Response:
         """Get current authentication status and permissions."""
         auth_level = self._get_auth_level(request)
+        session = self._get_dashboard_session(request) or {}
+        is_authenticated = auth_level != "none"
+        can_view_all_streamers = is_authenticated
 
         return web.json_response({
-            "authenticated": auth_level != "none",
+            "authenticated": is_authenticated,
             "level": auth_level,
             "isAdmin": auth_level in ("localhost", "admin"),
             "isLocalhost": auth_level == "localhost",
-            "canViewAllStreamers": auth_level in ("localhost", "admin"),
+            "canViewAllStreamers": can_view_all_streamers,
+            "twitchLogin": session.get("twitch_login"),
+            "displayName": session.get("display_name"),
             "permissions": {
-                "viewAllStreamers": auth_level in ("localhost", "admin"),
-                "viewComparison": True,
-                "viewChatAnalytics": True,
-                "viewOverlap": auth_level in ("localhost", "admin"),
+                "viewAllStreamers": can_view_all_streamers,
+                "viewComparison": is_authenticated,
+                "viewChatAnalytics": is_authenticated,
+                "viewOverlap": is_authenticated,
             }
         })
 

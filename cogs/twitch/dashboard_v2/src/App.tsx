@@ -165,7 +165,7 @@ function Dashboard() {
           onStreamerChange={setStreamer}
           onDaysChange={setDays}
           isLoading={loadingStreamers}
-          isAdmin={authStatus?.isAdmin || authStatus?.isLocalhost || false}
+          canViewAllStreamers={authStatus?.permissions?.viewAllStreamers || false}
         />
 
         <TabNavigation activeTab={activeTab} onTabChange={setActiveTab} />

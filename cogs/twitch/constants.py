@@ -4,7 +4,7 @@
 # 🛠️ CONFIG — EDIT HERE
 # ============================
 # ⚠️ Secrets (Client-ID/Secret) KOMMEN NICHT HIER REIN, sondern aus ENV (siehe unten)!
-TWITCH_DASHBOARD_NOAUTH = True                     # ohne Token (nur lokal empfohlen)
+TWITCH_DASHBOARD_NOAUTH = False                    # ohne Token nur per ENV-Override aktivieren
 TWITCH_DASHBOARD_HOST = "127.0.0.1"
 TWITCH_DASHBOARD_PORT = 8765
 TWITCH_RAID_REDIRECT_URI = "https://raid.earlysalty.com/twitch/raid/callback"

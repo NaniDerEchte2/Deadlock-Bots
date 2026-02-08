@@ -37,6 +37,27 @@ from .twitch_chat_bot import TWITCHIO_AVAILABLE, create_twitch_chat_bot, load_bo
 from .token_manager import TwitchBotTokenManager
 
 
+def _parse_env_bool(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _parse_env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 class TwitchBaseCog(commands.Cog):
     """Handle shared initialisation, shutdown and utility helpers."""
 
@@ -84,19 +105,31 @@ class TwitchBaseCog(commands.Cog):
         self._target_game_lower = self._target_game_name.lower()
 
         # Dashboard/Auth (aus Config-Header)
-        self._dashboard_token = os.getenv("TWITCH_DASHBOARD_TOKEN") or None
-        self._dashboard_noauth = bool(TWITCH_DASHBOARD_NOAUTH)
-        self._dashboard_host = TWITCH_DASHBOARD_HOST or (
+        self._dashboard_token = (os.getenv("TWITCH_DASHBOARD_TOKEN") or "").strip() or None
+        self._dashboard_noauth = _parse_env_bool(
+            "TWITCH_DASHBOARD_NOAUTH",
+            bool(TWITCH_DASHBOARD_NOAUTH),
+        )
+        env_dashboard_host = (os.getenv("TWITCH_DASHBOARD_HOST") or "").strip()
+        self._dashboard_host = env_dashboard_host or TWITCH_DASHBOARD_HOST or (
             "127.0.0.1" if self._dashboard_noauth else "0.0.0.0"
         )
-        self._dashboard_port = int(TWITCH_DASHBOARD_PORT)
+        self._dashboard_port = _parse_env_int("TWITCH_DASHBOARD_PORT", int(TWITCH_DASHBOARD_PORT))
         embedded_env = (os.getenv("TWITCH_DASHBOARD_EMBEDDED", "") or "").strip().lower()
         self._dashboard_embedded = embedded_env not in {"0", "false", "no", "off"}
         if not self._dashboard_embedded:
             log.info(
                 "TWITCH_DASHBOARD_EMBEDDED disabled - assuming external reverse proxy serves the dashboard"
             )
-        self._partner_dashboard_token = os.getenv("TWITCH_PARTNER_TOKEN") or None
+        self._partner_dashboard_token = (os.getenv("TWITCH_PARTNER_TOKEN") or "").strip() or None
+        self._dashboard_auth_redirect_uri = (
+            (os.getenv("TWITCH_DASHBOARD_AUTH_REDIRECT_URI") or "").strip() or None
+        )
+        self._dashboard_session_ttl = max(
+            1800,
+            _parse_env_int("TWITCH_DASHBOARD_SESSION_TTL_SEC", 12 * 3600),
+        )
+        self._legacy_stats_url = (os.getenv("TWITCH_LEGACY_STATS_URL") or "").strip() or None
         self._required_marker_default = TWITCH_REQUIRED_DISCORD_MARKER or None
 
         if not self.client_id:

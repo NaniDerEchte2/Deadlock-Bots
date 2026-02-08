@@ -9,7 +9,7 @@ interface HeaderProps {
   onStreamerChange: (streamer: string | null) => void;
   onDaysChange: (days: TimeRange) => void;
   isLoading?: boolean;
-  isAdmin?: boolean;
+  canViewAllStreamers?: boolean;
 }
 
 export function Header({
@@ -19,7 +19,7 @@ export function Header({
   onStreamerChange,
   onDaysChange,
   isLoading,
-  isAdmin = false,
+  canViewAllStreamers = false,
 }: HeaderProps) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
@@ -31,10 +31,11 @@ export function Header({
 
   const partners = streamers.filter(s => s.isPartner);
   const others = streamers.filter(s => !s.isPartner);
+  const allLabel = canViewAllStreamers ? 'Alle Streamer' : 'Alle Partner';
 
-  // Non-admins only see partners (or their own channel)
+  // In Beta: Partner koennen vorerst alle Streamer sehen.
   const visiblePartners = partners;
-  const visibleOthers = isAdmin ? others : [];
+  const visibleOthers = canViewAllStreamers ? others : [];
 
   return (
     <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
@@ -51,7 +52,7 @@ export function Header({
             )}
           </h1>
           <p className="text-text-secondary text-sm">
-            {streamer || 'Alle Partner'} • Letzte {days} Tage
+            {streamer || allLabel} • Letzte {days} Tage
           </p>
         </div>
       </div>
@@ -65,7 +66,7 @@ export function Header({
             className="flex items-center gap-2 px-4 py-2 bg-card rounded-lg border border-border hover:border-border-hover transition-colors"
           >
             <span className="text-white">
-              {streamer || 'Alle Partner'}
+              {streamer || allLabel}
             </span>
             <ChevronDown className="w-4 h-4 text-text-secondary" />
           </button>
@@ -87,7 +88,7 @@ export function Header({
                     !streamer ? 'bg-accent/20 text-accent' : 'text-white'
                   }`}
                 >
-                  Alle Partner
+                  {allLabel}
                 </button>
 
                 {/* Partners */}
@@ -117,7 +118,7 @@ export function Header({
                 {visibleOthers.length > 0 && (
                   <>
                     <div className="px-4 py-1 text-xs text-text-secondary uppercase tracking-wider bg-black/20">
-                      Weitere (Admin)
+                      Weitere Streamer
                     </div>
                     {visibleOthers.map(s => (
                       <button
