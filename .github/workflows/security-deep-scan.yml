@@ -27,7 +27,7 @@ jobs:
       has_requirements: ${{ steps.check.outputs.has_requirements }}
       has_package_json: ${{ steps.check.outputs.has_package_json }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       
       - name: Check Project Structure
         id: check
@@ -77,12 +77,12 @@ jobs:
     if: needs.detect-languages.outputs.has_python == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -147,7 +147,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Python Security Reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: python-security-reports
@@ -168,10 +168,10 @@ jobs:
     if: needs.detect-languages.outputs.has_javascript == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
@@ -199,7 +199,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload JS Security Reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: javascript-security-reports
@@ -215,7 +215,7 @@ jobs:
     name: 🛡️ Trivy Security Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       # Filesystem Scan
       - name: Trivy Filesystem Scan
@@ -230,7 +230,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Trivy Results to Security Tab
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
         if: always() && hashFiles('trivy-fs.sarif') != ''
         with:
           sarif_file: 'trivy-fs.sarif'
@@ -238,7 +238,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Trivy Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: trivy-reports
@@ -253,7 +253,7 @@ jobs:
     needs: detect-languages
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       # Python Dependencies
       - name: Python Dependency Tree
@@ -284,7 +284,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Dependency Reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: dependency-analysis

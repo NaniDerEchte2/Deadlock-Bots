@@ -25,7 +25,7 @@ jobs:
       has_cloudformation: ${{ steps.check.outputs.has_cloudformation }}
       has_any: ${{ steps.check.outputs.has_any }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       
       - name: Check for IaC Files
         id: check
@@ -71,7 +71,7 @@ jobs:
     name: 📋 IaC Best Practices
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Check Best Practices
         run: |
@@ -108,7 +108,7 @@ jobs:
           cat iac-analysis.md
 
       - name: Upload Analysis
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: iac-best-practices
@@ -122,7 +122,7 @@ jobs:
     name: 🔧 Configuration Security
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Scan Config Files
         run: |
@@ -145,7 +145,7 @@ jobs:
           cat config-security.md
 
       - name: Upload Config Security
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: config-security

@@ -23,7 +23,7 @@ jobs:
       has_dockerfile: ${{ steps.check.outputs.has_dockerfile }}
       has_compose: ${{ steps.check.outputs.has_compose }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       
       - name: Check for Container Files
         id: check
@@ -55,7 +55,7 @@ jobs:
     if: needs.detect-container-files.outputs.has_dockerfile == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       # Hadolint - Dockerfile Linter
       - name: Hadolint Dockerfile Scan
@@ -68,7 +68,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Hadolint SARIF
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
         if: always() && hashFiles('hadolint.sarif') != ''
         with:
           sarif_file: hadolint.sarif
@@ -76,7 +76,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Hadolint Report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: hadolint-report
@@ -92,7 +92,7 @@ jobs:
     if: needs.detect-container-files.outputs.has_compose == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Validate Docker Compose
         run: |
@@ -115,7 +115,7 @@ jobs:
     if: needs.detect-container-files.outputs.has_dockerfile == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Check Security Best Practices
         run: |
@@ -153,7 +153,7 @@ jobs:
           cat container-analysis.md
 
       - name: Upload Analysis
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: container-best-practices
