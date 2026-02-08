@@ -95,11 +95,21 @@ async def ensure_table_exists(
     else:
         create_table_sql = create_table_sql_or_name
 
-    normalized = " ".join(create_table_sql.strip().split())
+    stripped = create_table_sql.strip()
+    # Reject multi-statement payloads; only one CREATE TABLE statement is allowed.
+    if ";" in stripped.rstrip(";"):
+        raise ValueError("ensure_table_exists expects a single SQL statement")
+
+    normalized = " ".join(stripped.rstrip(";").split())
     if not normalized.upper().startswith("CREATE TABLE IF NOT EXISTS "):
         raise ValueError("ensure_table_exists expects a CREATE TABLE IF NOT EXISTS statement")
 
-    await db.execute(create_table_sql)
+    remainder = normalized[len("CREATE TABLE IF NOT EXISTS "):]
+    name_match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\s|\()", remainder)
+    if not name_match:
+        raise ValueError("ensure_table_exists could not parse a safe table name")
+
+    await db.executescript(stripped if stripped.endswith(";") else stripped + ";")
     await db.commit()
 
 

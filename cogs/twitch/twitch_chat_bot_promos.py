@@ -5,6 +5,8 @@ import time
 from collections import deque
 from typing import Deque, List, Optional, Tuple
 
+from service import db
+
 from .storage import get_conn
 from .twitch_chat_bot_constants import (
     _PROMO_ACTIVITY_ENABLED,
@@ -222,23 +224,30 @@ class PromoMixin:
         if not self._channel_ids:
             return []
 
-        logins = list(self._channel_ids.keys())
-        placeholders = ",".join("?" * len(logins))
+        allowed_logins = {str(login).lower() for login in self._channel_ids if login}
+        if not allowed_logins:
+            return []
 
         try:
-            with get_conn() as conn:
-                rows = conn.execute(
-                    f"""
+            # Uses storage.get_conn() so twitch_* schema is ensured before querying.
+            with get_conn():
+                rows = db.query_all(
+                    """
                     SELECT s.twitch_login, s.twitch_user_id
                       FROM twitch_streamers s
                       JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
                      WHERE l.is_live = 1
-                       AND LOWER(s.twitch_login) IN ({placeholders})
-                    """,
-                    logins,
-                ).fetchall()
+                    """
+                )
         except Exception:
             log.debug("_get_live_channels_for_promo: DB-Query fehlgeschlagen", exc_info=True)
             return []
 
-        return [(str(r[0]).lower(), str(r[1])) for r in rows if r[0] and r[1]]
+        channels: List[Tuple[str, str]] = []
+        for row in rows:
+            if not row[0] or not row[1]:
+                continue
+            login = str(row[0]).lower()
+            if login in allowed_logins:
+                channels.append((login, str(row[1])))
+        return channels

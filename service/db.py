@@ -149,13 +149,17 @@ def connect() -> sqlite3.Connection:
 
     with _LOCK:
         # PRAGMAs: stabil & praxiserprobt
-        _CONN.execute("PRAGMA journal_mode=WAL;")
-        _CONN.execute("PRAGMA synchronous=NORMAL;")
-        _CONN.execute("PRAGMA foreign_keys=ON;")
+        _CONN.executescript(
+            """
+            PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=NORMAL;
+            PRAGMA foreign_keys=ON;
+            PRAGMA wal_autocheckpoint=1000;
+            PRAGMA journal_size_limit=104857600;
+            PRAGMA temp_store=MEMORY;
+            """
+        )
         # sqlite3 connect(timeout=...) configures the lock-wait timeout per connection.
-        _CONN.execute("PRAGMA wal_autocheckpoint=1000;")         # ~1000 Seiten
-        _CONN.execute("PRAGMA journal_size_limit=104857600;")    # 100 MB
-        _CONN.execute("PRAGMA temp_store=MEMORY;")
         # Optional tunable:
         # _CONN.execute("PRAGMA cache_size=-20000;")             # ~20MB
         # _CONN.execute('PRAGMA mmap_size=268435456;')           # 256MB (falls Filesystem erlaubt)
@@ -202,16 +206,16 @@ def _ensure_steam_tasks_cap_trigger(conn: sqlite3.Connection, max_rows: int) -> 
         log.warning("Steam task cap disabled because max_rows=%s <= 0", max_rows)
         return
 
-    conn.execute(
+    conn.executemany(
         """
         INSERT INTO kv_store(ns, k, v)
         VALUES (?, ?, ?)
         ON CONFLICT(ns, k) DO UPDATE SET v = excluded.v
         """,
-        (STEAM_TASKS_KV_NS, STEAM_TASKS_KV_MAX_ROWS_KEY, str(capped_max_rows)),
+        [(STEAM_TASKS_KV_NS, STEAM_TASKS_KV_MAX_ROWS_KEY, str(capped_max_rows))],
     )
 
-    conn.execute(
+    conn.executescript(
         """
         CREATE TRIGGER IF NOT EXISTS trg_cap_steam_tasks
         AFTER INSERT ON steam_tasks

@@ -1510,6 +1510,8 @@ class DashboardServer:
                 tuple(params)
             )
 
+            guild_filter = guild_id if guild_id else None
+
             # Recent Joins (letzten 7 Tage)
             recent_joins = db.query_one(
                 """
@@ -1517,7 +1519,9 @@ class DashboardServer:
                 FROM member_events
                 WHERE event_type = 'join'
                   AND timestamp >= datetime('now', '-7 days')
-                """ + (f" AND guild_id = {guild_id}" if guild_id else ""),
+                  AND (? IS NULL OR guild_id = ?)
+                """,
+                (guild_filter, guild_filter),
             )
 
             # Recent Leaves (letzten 7 Tage)
@@ -1527,7 +1531,9 @@ class DashboardServer:
                 FROM member_events
                 WHERE event_type = 'leave'
                   AND timestamp >= datetime('now', '-7 days')
-                """ + (f" AND guild_id = {guild_id}" if guild_id else ""),
+                  AND (? IS NULL OR guild_id = ?)
+                """,
+                (guild_filter, guild_filter),
             )
 
             events_list = []
