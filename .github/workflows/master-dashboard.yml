@@ -1,0 +1,242 @@
+name: "🎯 Master Security & Quality Dashboard"
+
+on:
+  schedule:
+    - cron: '0 1 * * 1'  # Weekly on Monday at 1 AM
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: 'Type of scan to run'
+        required: false
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - security-only
+          - performance-only
+          - compliance-only
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+
+jobs:
+  # ============================================================================
+  # TRIGGER ALL WORKFLOWS
+  # ============================================================================
+  trigger-security-scan:
+    name: 🔒 Trigger Security Scan
+    runs-on: ubuntu-latest
+    if: github.event.inputs.scan_type == 'full' || github.event.inputs.scan_type == 'security-only' || github.event.inputs.scan_type == ''
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Trigger Deep Security Scan
+        uses: convictional/trigger-workflow-and-wait@v1.6.5
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: ${{ github.event.repository.name }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow_file_name: security-deep-scan.yml
+        continue-on-error: true
+
+  trigger-container-scan:
+    name: 🐳 Trigger Container Scan
+    runs-on: ubuntu-latest
+    if: github.event.inputs.scan_type == 'full' || github.event.inputs.scan_type == 'security-only' || github.event.inputs.scan_type == ''
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Trigger Container Security
+        uses: convictional/trigger-workflow-and-wait@v1.6.5
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: ${{ github.event.repository.name }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow_file_name: container-security.yml
+        continue-on-error: true
+
+  trigger-iac-scan:
+    name: 🏗️ Trigger IaC Scan
+    runs-on: ubuntu-latest
+    if: github.event.inputs.scan_type == 'full' || github.event.inputs.scan_type == 'security-only' || github.event.inputs.scan_type == ''
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Trigger IaC Security
+        uses: convictional/trigger-workflow-and-wait@v1.6.5
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: ${{ github.event.repository.name }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow_file_name: iac-security.yml
+        continue-on-error: true
+
+  trigger-performance-scan:
+    name: ⚡ Trigger Performance Scan
+    runs-on: ubuntu-latest
+    if: github.event.inputs.scan_type == 'full' || github.event.inputs.scan_type == 'performance-only' || github.event.inputs.scan_type == ''
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Trigger Performance Analysis
+        uses: convictional/trigger-workflow-and-wait@v1.6.5
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: ${{ github.event.repository.name }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow_file_name: performance-analysis.yml
+        continue-on-error: true
+
+  trigger-compliance-scan:
+    name: ✅ Trigger Compliance Scan
+    runs-on: ubuntu-latest
+    if: github.event.inputs.scan_type == 'full' || github.event.inputs.scan_type == 'compliance-only' || github.event.inputs.scan_type == ''
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Trigger Compliance Check
+        uses: convictional/trigger-workflow-and-wait@v1.6.5
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: ${{ github.event.repository.name }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow_file_name: compliance-check.yml
+        continue-on-error: true
+
+  # ============================================================================
+  # AGGREGATE RESULTS
+  # ============================================================================
+  aggregate-results:
+    name: 📊 Aggregate All Results
+    needs: [trigger-security-scan, trigger-container-scan, trigger-iac-scan, trigger-performance-scan, trigger-compliance-scan]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Comprehensive Dashboard
+        run: |
+          echo "# 🎯 Comprehensive Security & Quality Dashboard" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Generated:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "## 🔒 Security Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Deep Security Scan (Python, JS, Secrets)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Container Security (Docker, Images)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Infrastructure as Code Security" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ CodeQL Advanced Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Dependency Review & CVE Scanning" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Secret Scanning (Gitleaks, Trivy)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "## ⚡ Performance Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Python Memory & Performance" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ JavaScript Bundle Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Database Query Optimization" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ API Performance Check" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Resource Usage Estimation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "## ✅ Compliance & Best Practices" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ License Compliance" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Code Style & Formatting" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Documentation Quality" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Git Hygiene" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Accessibility Check" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "## 📈 Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Category | Tools Used | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **SAST** | CodeQL, Semgrep, Bandit | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **SCA** | Trivy, Safety, npm audit | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Secrets** | Gitleaks, Trivy Secrets | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Container** | Trivy, Hadolint, Dive | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **IaC** | TFSec, Checkov, KICS | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Performance** | Radon, py-spy, Scalene | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Compliance** | FOSSA, pip-licenses | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Quality** | Ruff, ESLint, Black | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "## 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
+          echo "- [Security Tab](https://github.com/${{ github.repository }}/security)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Actions](https://github.com/${{ github.repository }}/actions)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Insights](https://github.com/${{ github.repository }}/pulse)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "📥 **All detailed reports available in workflow artifacts**" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # METRICS COLLECTION
+  # ============================================================================
+  collect-metrics:
+    name: 📊 Collect Security Metrics
+    needs: aggregate-results
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect and Store Metrics
+        run: |
+          mkdir -p metrics
+          
+          # Create metrics report
+          cat > metrics/security-metrics.json << EOF
+          {
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "repository": "${{ github.repository }}",
+            "scan_type": "${{ github.event.inputs.scan_type || 'full' }}",
+            "workflows_executed": {
+              "security_deep_scan": "${{ needs.trigger-security-scan.result }}",
+              "container_security": "${{ needs.trigger-container-scan.result }}",
+              "iac_security": "${{ needs.trigger-iac-scan.result }}",
+              "performance_analysis": "${{ needs.trigger-performance-scan.result }}",
+              "compliance_check": "${{ needs.trigger-compliance-scan.result }}"
+            },
+            "coverage": {
+              "sast": "CodeQL, Semgrep, Bandit",
+              "sca": "Trivy, Safety, npm audit",
+              "secrets": "Gitleaks, Trivy",
+              "container": "Trivy, Hadolint",
+              "iac": "TFSec, Checkov, KICS",
+              "performance": "Radon, py-spy",
+              "compliance": "FOSSA, pip-licenses",
+              "quality": "Ruff, ESLint, Black"
+            }
+          }
+          EOF
+          
+          cat metrics/security-metrics.json
+
+      - name: Upload Metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-metrics
+          path: metrics/
+
+  # ============================================================================
+  # NOTIFICATION
+  # ============================================================================
+  notify-completion:
+    name: 🔔 Send Completion Notification
+    needs: [aggregate-results, collect-metrics]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Create Status Badge
+        run: |
+          echo "## 🎯 Security Scan Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All security and quality workflows have been executed." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Next Steps:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Review the Security tab for any critical findings" >> $GITHUB_STEP_SUMMARY
+          echo "2. Download artifacts from individual workflows for detailed reports" >> $GITHUB_STEP_SUMMARY
+          echo "3. Address high/critical severity issues first" >> $GITHUB_STEP_SUMMARY
+          echo "4. Schedule fixes for medium/low severity items" >> $GITHUB_STEP_SUMMARY

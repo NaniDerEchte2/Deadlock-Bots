@@ -255,8 +255,7 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
                 if path != "/twitch/raid/callback":
                     return configured
                 log.warning(
-                    "TWITCH_DASHBOARD_AUTH_REDIRECT_URI points to raid callback (%s) - falling back to /twitch/auth/callback",
-                    configured,
+                    "TWITCH_DASHBOARD_AUTH_REDIRECT_URI points to raid callback - falling back to /twitch/auth/callback",
                 )
             except Exception:
                 # Keep compatibility for uncommon proxy setups that use custom URI formats.
@@ -293,6 +292,35 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
             return fallback
         if not candidate.startswith("/twitch"):
             return fallback
+        return candidate
+
+    @staticmethod
+    def _safe_internal_redirect(location: Optional[str], *, fallback: str = "/twitch/dashboard-v2") -> str:
+        candidate = (location or "").strip()
+        if not candidate:
+            return fallback
+        try:
+            parts = urlsplit(candidate)
+        except Exception:
+            return fallback
+        if parts.scheme or parts.netloc:
+            return fallback
+        if not candidate.startswith("/"):
+            return fallback
+        return candidate
+
+    @staticmethod
+    def _safe_oauth_authorize_redirect(location: Optional[str]) -> str:
+        candidate = (location or "").strip()
+        if not candidate:
+            return TWITCH_OAUTH_AUTHORIZE_URL
+        try:
+            parts = urlsplit(candidate)
+        except Exception:
+            return TWITCH_OAUTH_AUTHORIZE_URL
+        host = (parts.netloc or "").split("@")[-1].split(":", 1)[0].strip().lower()
+        if parts.scheme != "https" or host != "id.twitch.tv" or parts.path != "/oauth2/authorize":
+            return TWITCH_OAUTH_AUTHORIZE_URL
         return candidate
 
     def _build_dashboard_login_url(self, request: web.Request) -> str:
@@ -443,12 +471,17 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
         destination = "/twitch/dashboards"
         if request.query_string:
             destination = f"{destination}?{request.query_string}"
-        raise web.HTTPFound(destination)
+        safe_destination = self._safe_internal_redirect(destination, fallback="/twitch/dashboards")
+        raise web.HTTPFound(safe_destination)
 
     async def stats_entry(self, request: web.Request) -> web.StreamResponse:
         """Canonical public entrypoint that links old + beta analytics dashboards."""
         if not self._check_v2_auth(request):
-            raise web.HTTPFound(self._build_dashboard_login_url(request))
+            login_url = self._safe_internal_redirect(
+                self._build_dashboard_login_url(request),
+                fallback="/twitch/auth/login?next=%2Ftwitch%2Fdashboard-v2",
+            )
+            raise web.HTTPFound(login_url)
 
         legacy_url = self._resolve_legacy_stats_url()
         beta_url = "/twitch/dashboard-v2"
@@ -488,7 +521,8 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
         next_path = self._normalize_next_path(request.query.get("next"))
 
         if self._check_v2_auth(request):
-            raise web.HTTPFound(next_path)
+            safe_next_path = self._safe_internal_redirect(next_path, fallback="/twitch/dashboard-v2")
+            raise web.HTTPFound(safe_next_path)
 
         if not self._is_oauth_configured():
             return web.Response(
@@ -505,7 +539,8 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
             "redirect_uri": redirect_uri,
         }
         auth_url = f"{TWITCH_OAUTH_AUTHORIZE_URL}?{urlencode({'client_id': self._oauth_client_id, 'redirect_uri': redirect_uri, 'response_type': 'code', 'state': state})}"
-        raise web.HTTPFound(auth_url)
+        safe_auth_url = self._safe_oauth_authorize_redirect(auth_url)
+        raise web.HTTPFound(safe_auth_url)
 
     async def auth_callback(self, request: web.Request) -> web.StreamResponse:
         """Handle Twitch OAuth callback, verify partner status, and create session."""
@@ -552,7 +587,10 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
             twitch_user_id=partner.get("twitch_user_id") or user.get("twitch_user_id") or "",
             display_name=user.get("display_name") or "",
         )
-        destination = self._normalize_next_path(state_data.get("next_path"))
+        destination = self._safe_internal_redirect(
+            self._normalize_next_path(state_data.get("next_path")),
+            fallback="/twitch/dashboard-v2",
+        )
         response = web.HTTPFound(destination)
         self._set_session_cookie(response, request, session_id)
         raise response
@@ -719,7 +757,8 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
         self._require_token(request)
         if not callable(self._discord_profile):
             location = self._redirect_location(request, err="Discord-Link ist aktuell nicht verfügbar")
-            raise web.HTTPFound(location=location)
+            safe_location = self._safe_internal_redirect(location, fallback="/twitch/stats")
+            raise web.HTTPFound(location=safe_location)
 
         data = await request.post()
         login = (data.get("login") or "").strip()
@@ -741,7 +780,8 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
         except Exception:
             log.exception("dashboard discord_link failed")
             location = self._redirect_location(request, err="Discord-Daten konnten nicht gespeichert werden")
-        raise web.HTTPFound(location=location)
+        safe_location = self._safe_internal_redirect(location, fallback="/twitch/stats")
+        raise web.HTTPFound(location=safe_location)
 
     async def reload_cog(self, request: web.Request) -> web.Response:
         """Optional reload endpoint for admin tooling compatibility."""

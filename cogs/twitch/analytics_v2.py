@@ -9,7 +9,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from aiohttp import web
 
@@ -98,17 +98,51 @@ class AnalyticsV2Mixin:
             return None
         return session if isinstance(session, dict) else None
 
+    @staticmethod
+    def _normalize_dashboard_next_path(raw_path: Optional[str]) -> str:
+        fallback = "/twitch/dashboard-v2"
+        candidate = (raw_path or "").strip()
+        if not candidate:
+            return fallback
+        try:
+            parts = urlsplit(candidate)
+        except Exception:
+            return fallback
+        if parts.scheme or parts.netloc:
+            return fallback
+        if not candidate.startswith("/") or not candidate.startswith("/twitch"):
+            return fallback
+        return candidate
+
+    @staticmethod
+    def _safe_internal_login_redirect(candidate: Optional[str]) -> str:
+        fallback = "/twitch/auth/login?next=%2Ftwitch%2Fdashboard-v2"
+        value = (candidate or "").strip()
+        if not value:
+            return fallback
+        try:
+            parts = urlsplit(value)
+        except Exception:
+            return fallback
+        if parts.scheme or parts.netloc:
+            return fallback
+        if not value.startswith("/"):
+            return fallback
+        return value
+
     def _get_dashboard_login_url(self, request: web.Request) -> str:
         builder = getattr(self, "_build_dashboard_login_url", None)
         if callable(builder):
             try:
                 url = builder(request)
                 if url:
-                    return str(url)
+                    return self._safe_internal_login_redirect(str(url))
             except Exception:
                 log.debug("Could not build dashboard login URL via host class", exc_info=True)
-        next_path = request.rel_url.path_qs if request.rel_url else "/twitch/dashboard-v2"
-        return f"/twitch/auth/login?{urlencode({'next': next_path})}"
+        next_path = self._normalize_dashboard_next_path(
+            request.rel_url.path_qs if request.rel_url else "/twitch/dashboard-v2"
+        )
+        return self._safe_internal_login_redirect(f"/twitch/auth/login?{urlencode({'next': next_path})}")
 
     def _check_v2_auth(self, request: web.Request) -> bool:
         """Check if request is authorized for v2 API.
@@ -236,7 +270,8 @@ class AnalyticsV2Mixin:
     async def _serve_dashboard_v2(self, request: web.Request) -> web.Response:
         """Serve the main dashboard HTML."""
         if not self._check_v2_auth(request):
-            raise web.HTTPFound(self._get_dashboard_login_url(request))
+            login_url = self._safe_internal_login_redirect(self._get_dashboard_login_url(request))
+            raise web.HTTPFound(login_url)
         import pathlib
         dist_path = pathlib.Path(__file__).parent / "dashboard_v2" / "dist" / "index.html"
         if dist_path.exists():

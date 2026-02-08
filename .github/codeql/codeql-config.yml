@@ -1,20 +1,30 @@
-name: "Repository CodeQL Configuration"
+name: "Maximum Security & Quality Analysis"
 
-# Maximiert die Security-Abdeckung ohne manuelle Pflege.
+# Alle Query-Suites
 queries:
   - uses: security-extended
   - uses: security-and-quality
 
-# Keine paths-Whitelist: gesamtes Repo wird betrachtet.
-# Wenn du später Rauschen reduzieren willst, kannst du hier gezielt
-# build-/dist-/venv-Verzeichnisse ignorieren. Vorläufig: Vollabdeckung.
+# Query-Packs für alle Sprachen
+packs:
+  python:
+    - codeql/python-queries
+  javascript-typescript:
+    - codeql/javascript-queries
+  go:
+    - codeql/go-queries
+  java-kotlin:
+    - codeql/java-queries
+  csharp:
+    - codeql/csharp-queries
+  ruby:
+    - codeql/ruby-queries
+  rust:
+    - codeql/rust-queries
+  c-cpp:
+    - codeql/cpp-queries
+  swift:
+    - codeql/swift-queries
 
-# paths-ignore:
-#   - "**/node_modules/**"
-#   - "**/dist/**"
-#   - "**/build/**"
-#   - "**/.venv/**"
-#   - "**/venv/**"
-#   - "**/__pycache__/**"
-#   - "**/*.min.js"
-#   - "**/*.map"
+# KEINE Pfade ausschließen - ALLES analysieren
+# paths-ignore: (absichtlich leer)
