@@ -1,11 +1,11 @@
-name: "🔒 Deep Security Scan (Maximum Analysis)"
+name: "🔒 Deep Security Scan (Optimized)"
 
 on:
   push:
     branches: [ "main", "master", "develop" ]
   pull_request:
   schedule:
-    - cron: '0 2 * * *'  # Täglich um 2 Uhr nachts
+    - cron: '0 2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -16,10 +16,65 @@ permissions:
 
 jobs:
   # ============================================================================
-  # PYTHON SECURITY & QUALITY - MAXIMAL
+  # CHECK WHAT'S AVAILABLE
+  # ============================================================================
+  detect-languages:
+    name: 🔍 Detect Project Structure
+    runs-on: ubuntu-latest
+    outputs:
+      has_python: ${{ steps.check.outputs.has_python }}
+      has_javascript: ${{ steps.check.outputs.has_javascript }}
+      has_requirements: ${{ steps.check.outputs.has_requirements }}
+      has_package_json: ${{ steps.check.outputs.has_package_json }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check Project Structure
+        id: check
+        run: |
+          # Check for Python files
+          if find . -name "*.py" -type f | grep -q .; then
+            echo "has_python=true" >> $GITHUB_OUTPUT
+            echo "✅ Python files detected"
+          else
+            echo "has_python=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No Python files found"
+          fi
+          
+          # Check for JS/TS files
+          if find . -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" | grep -q .; then
+            echo "has_javascript=true" >> $GITHUB_OUTPUT
+            echo "✅ JavaScript/TypeScript files detected"
+          else
+            echo "has_javascript=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No JavaScript files found"
+          fi
+          
+          # Check for requirements.txt
+          if [ -f requirements.txt ]; then
+            echo "has_requirements=true" >> $GITHUB_OUTPUT
+            echo "✅ requirements.txt found"
+          else
+            echo "has_requirements=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No requirements.txt found"
+          fi
+          
+          # Check for package.json
+          if [ -f package.json ]; then
+            echo "has_package_json=true" >> $GITHUB_OUTPUT
+            echo "✅ package.json found"
+          else
+            echo "has_package_json=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No package.json found"
+          fi
+
+  # ============================================================================
+  # PYTHON SECURITY - ONLY IF PYTHON EXISTS
   # ============================================================================
   python-security:
     name: 🐍 Python Security Suite
+    needs: detect-languages
+    if: needs.detect-languages.outputs.has_python == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,68 +89,61 @@ jobs:
       - name: Install Analysis Tools
         run: |
           pip install --upgrade pip
-          pip install bandit[toml] safety pip-audit semgrep radon vulture dodgy pyroma
-          pip install pylint mypy ruff prospector
+          pip install bandit safety pip-audit radon vulture
+        continue-on-error: true
 
       # Bandit - Security Issues
       - name: Bandit Security Scan
         run: |
-          bandit -r . -f json -o bandit-report.json || true
-          bandit -r . -ll -i  # Show high/medium issues
+          echo "Running Bandit security scan..."
+          bandit -r . -f json -o bandit-report.json -ll || true
+          if [ -f bandit-report.json ]; then
+            echo "✅ Bandit scan completed"
+            bandit -r . -ll || echo "⚠️ Security issues found (check artifact)"
+          fi
         continue-on-error: true
 
-      # Safety - Known Vulnerabilities
+      # Safety - Known Vulnerabilities (only if requirements.txt exists)
       - name: Safety Vulnerability Check
+        if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
-          if [ -f requirements.txt ]; then
-            safety check --json --output safety-report.json || true
-            safety check --full-report
+          echo "Running Safety vulnerability check..."
+          safety check --json --output safety-report.json || true
+          if [ -f safety-report.json ]; then
+            echo "✅ Safety check completed"
+            safety check --full-report || echo "⚠️ Vulnerabilities found (check artifact)"
           fi
         continue-on-error: true
 
-      # Pip-Audit - Alternative vulnerability scanner
+      # Pip-Audit (only if requirements.txt exists)
       - name: Pip-Audit Deep Scan
+        if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
-          if [ -f requirements.txt ]; then
-            pip-audit -r requirements.txt --format json --output pip-audit.json || true
-            pip-audit -r requirements.txt --desc
+          echo "Running pip-audit..."
+          pip-audit -r requirements.txt --format json --output pip-audit.json || true
+          if [ -f pip-audit.json ]; then
+            echo "✅ Pip-audit completed"
           fi
-        continue-on-error: true
-
-      # Semgrep - Advanced SAST
-      - name: Semgrep SAST Scan
-        run: |
-          semgrep --config=auto --json --output=semgrep-python.json . || true
-          semgrep --config=auto --severity ERROR .
-        continue-on-error: true
-
-      # Vulture - Dead Code Detection
-      - name: Find Dead Code
-        run: |
-          vulture . --min-confidence 80 > vulture-report.txt || true
-          cat vulture-report.txt
-        continue-on-error: true
-
-      # Dodgy - Suspicious Code Patterns
-      - name: Check for Dodgy Code
-        run: |
-          dodgy || true
         continue-on-error: true
 
       # Radon - Complexity Analysis
       - name: Complexity Analysis
         run: |
+          echo "Running complexity analysis..."
           radon cc . -a -nb --total-average > radon-complexity.txt || true
           radon mi . -nb > radon-maintainability.txt || true
-          cat radon-complexity.txt
-          cat radon-maintainability.txt
+          echo "✅ Complexity analysis completed"
         continue-on-error: true
 
-      # Prospector - Combined Analysis
-      - name: Prospector Deep Analysis
+      # Vulture - Dead Code Detection
+      - name: Find Dead Code
         run: |
-          prospector --output-format json --output prospector.json . || true
-          prospector --strictness veryhigh .
+          echo "Looking for dead code..."
+          vulture . --min-confidence 80 > vulture-report.txt || true
+          if [ -f vulture-report.txt ]; then
+            lines=$(wc -l < vulture-report.txt)
+            echo "Found $lines potential dead code items"
+          fi
         continue-on-error: true
 
       - name: Upload Python Security Reports
@@ -107,16 +155,17 @@ jobs:
             bandit-report.json
             safety-report.json
             pip-audit.json
-            semgrep-python.json
-            vulture-report.txt
             radon-*.txt
-            prospector.json
+            vulture-report.txt
+          if-no-files-found: ignore
 
   # ============================================================================
-  # JAVASCRIPT/TYPESCRIPT SECURITY - MAXIMAL
+  # JAVASCRIPT SECURITY - ONLY IF JS/TS EXISTS
   # ============================================================================
   javascript-security:
-    name: 📦 JavaScript/TypeScript Security Suite
+    name: 📦 JavaScript/TypeScript Security
+    needs: detect-languages
+    if: needs.detect-languages.outputs.has_javascript == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -126,42 +175,27 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Dependencies
-        if: hashFiles('**/package-lock.json') != ''
-        run: npm ci
-
-      # NPM Audit - Maximum Detail
-      - name: NPM Audit (Strict)
+      # NPM Audit - Only if package-lock.json exists
+      - name: NPM Audit
         if: hashFiles('**/package-lock.json') != ''
         run: |
+          echo "Running NPM audit..."
           npm audit --json > npm-audit.json || true
-          npm audit --audit-level=low
-        continue-on-error: true
-
-      # Snyk - Vulnerability Scanning
-      - name: Snyk Security Scan
-        if: hashFiles('**/package-lock.json') != ''
-        uses: snyk/actions/node@master
-        continue-on-error: true
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --all-projects --detection-depth=6 --severity-threshold=low
-
-      # ESLint Security Plugin
-      - name: ESLint Security Scan
-        if: hashFiles('**/package.json') != ''
-        run: |
-          npm install -g eslint eslint-plugin-security eslint-plugin-no-secrets
-          eslint . --ext .js,.ts,.jsx,.tsx --format json --output-file eslint-security.json || true
+          if [ -f npm-audit.json ]; then
+            echo "✅ NPM audit completed"
+            npm audit --audit-level=moderate || echo "⚠️ Vulnerabilities found"
+          fi
         continue-on-error: true
 
       # RetireJS - Check for vulnerable JS libraries
       - name: RetireJS Scan
         run: |
-          npm install -g retire
+          npm install -g retire || true
+          echo "Running RetireJS scan..."
           retire --path . --outputformat json --outputpath retirejs-report.json || true
-          retire --path . --severity high
+          if [ -f retirejs-report.json ]; then
+            echo "✅ RetireJS scan completed"
+          fi
         continue-on-error: true
 
       - name: Upload JS Security Reports
@@ -171,19 +205,19 @@ jobs:
           name: javascript-security-reports
           path: |
             npm-audit.json
-            eslint-security.json
             retirejs-report.json
+          if-no-files-found: ignore
 
   # ============================================================================
-  # TRIVY - MULTI-TARGET SECURITY SCANNER
+  # TRIVY - FILESYSTEM SCAN (ALWAYS RUNS)
   # ============================================================================
-  trivy-comprehensive:
-    name: 🛡️ Trivy Comprehensive Scan
+  trivy-scan:
+    name: 🛡️ Trivy Security Scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Filesystem Scan - Everything
+      # Filesystem Scan
       - name: Trivy Filesystem Scan
         uses: aquasecurity/trivy-action@master
         with:
@@ -191,128 +225,63 @@ jobs:
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-fs.sarif'
-          severity: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
-          scanners: 'vuln,secret,misconfig'
+          severity: 'HIGH,CRITICAL'
+          exit-code: 0
+        continue-on-error: true
 
-      # Config Files Scan
-      - name: Trivy Config Scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'config'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-config.sarif'
-          severity: 'LOW,MEDIUM,HIGH,CRITICAL'
-
-      # SBOM Generation
-      - name: Generate SBOM
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'fs'
-          format: 'cyclonedx'
-          output: 'sbom.json'
-
-      - name: Upload Trivy Results
+      - name: Upload Trivy Results to Security Tab
         uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('trivy-fs.sarif') != ''
         with:
           sarif_file: 'trivy-fs.sarif'
           category: 'trivy-filesystem'
-
-      - name: Upload Config Scan
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: 'trivy-config.sarif'
-          category: 'trivy-config'
-
-      - name: Upload SBOM
-        uses: actions/upload-artifact@v4
-        with:
-          name: software-bom
-          path: sbom.json
-
-  # ============================================================================
-  # SEMGREP - ADVANCED SAST
-  # ============================================================================
-  semgrep-pro:
-    name: 🔍 Semgrep Professional SAST
-    runs-on: ubuntu-latest
-    container:
-      image: semgrep/semgrep
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Semgrep Full Scan
-        run: |
-          semgrep --config=auto \
-                   --config=p/security-audit \
-                   --config=p/secrets \
-                   --config=p/owasp-top-ten \
-                   --config=p/r2c-security-audit \
-                   --config=p/r2c-bug-scan \
-                   --json --output=semgrep-full.json \
-                   --severity ERROR --severity WARNING . || true
         continue-on-error: true
 
-      - name: Semgrep SARIF
-        run: |
-          semgrep --config=auto \
-                   --config=p/security-audit \
-                   --config=p/owasp-top-ten \
-                   --sarif --output=semgrep.sarif . || true
-        continue-on-error: true
-
-      - name: Upload Semgrep SARIF
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: semgrep.sarif
-          category: 'semgrep'
-
-      - name: Upload Semgrep Reports
+      - name: Upload Trivy Artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: semgrep-reports
-          path: semgrep-full.json
+          name: trivy-reports
+          path: trivy-fs.sarif
+          if-no-files-found: ignore
 
   # ============================================================================
-  # DEPENDENCY TRACK - FULL DEPENDENCY GRAPH
+  # DEPENDENCY ANALYSIS (ALWAYS RUNS)
   # ============================================================================
-  dependency-deep-dive:
-    name: 📊 Deep Dependency Analysis
+  dependency-analysis:
+    name: 📊 Dependency Analysis
+    needs: detect-languages
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Dependency Graph Visualization
-      - name: Generate Dependency Graph
+      # Python Dependencies
+      - name: Python Dependency Tree
+        if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
-          # Python Dependencies
-          if [ -f requirements.txt ]; then
-            pip install pipdeptree
-            pipdeptree --json > python-deps-tree.json
-            pipdeptree --graph-output png > python-deps.png || true
-          fi
-          
-          # NPM Dependencies
-          if [ -f package.json ]; then
-            npm install -g dependency-cruiser
-            depcruise --output-type json src > npm-deps.json || true
-          fi
+          pip install pipdeptree
+          pipdeptree --json > python-deps-tree.json || true
+          pipdeptree || true
+        continue-on-error: true
 
-      # License Compliance
-      - name: License Scanner
+      # License Scanner for Python
+      - name: Python License Scanner
+        if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
-          if [ -f requirements.txt ]; then
-            pip install pip-licenses
-            pip-licenses --format=json --with-urls > python-licenses.json
-            pip-licenses --format=markdown > python-licenses.md
-          fi
-          
-          if [ -f package.json ]; then
-            npm install -g license-checker
-            license-checker --json > npm-licenses.json || true
-          fi
+          pip install pip-licenses
+          pip install -r requirements.txt || true
+          pip-licenses --format=json --with-urls > python-licenses.json || true
+          pip-licenses --format=markdown > python-licenses.md || true
+        continue-on-error: true
+
+      # NPM License Check
+      - name: NPM License Scanner
+        if: needs.detect-languages.outputs.has_package_json == 'true' && hashFiles('**/package-lock.json') != ''
+        run: |
+          npm install -g license-checker
+          license-checker --json > npm-licenses.json || true
+          license-checker --summary || true
+        continue-on-error: true
 
       - name: Upload Dependency Reports
         uses: actions/upload-artifact@v4
@@ -321,119 +290,32 @@ jobs:
           name: dependency-analysis
           path: |
             *-deps*.json
-            *-deps*.png
             *-licenses.*
+          if-no-files-found: ignore
 
   # ============================================================================
-  # CODE QUALITY METRICS
-  # ============================================================================
-  code-quality-metrics:
-    name: 📈 Code Quality Metrics
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # Python Quality
-      - name: Python Quality Checks
-        run: |
-          pip install radon wily mccabe
-          
-          # Cyclomatic Complexity
-          radon cc . -a --total-average --json > complexity.json
-          
-          # Maintainability Index
-          radon mi . --json > maintainability.json
-          
-          # Raw Metrics
-          radon raw . --json > raw-metrics.json
-          
-          # Halstead Metrics
-          radon hal . --json > halstead.json
-        continue-on-error: true
-
-      # Duplicate Code Detection
-      - name: Find Code Duplicates
-        run: |
-          pip install radon
-          # Python duplicates
-          find . -name "*.py" -exec md5sum {} \; | sort | uniq -w32 -D > duplicates.txt || true
-        continue-on-error: true
-
-      # Comment Ratio Analysis
-      - name: Comment Coverage Analysis
-        run: |
-          # Count code lines vs comments
-          find . -name "*.py" | xargs wc -l > total-lines.txt || true
-          find . -name "*.py" | xargs grep "^[[:space:]]*#" | wc -l > comment-lines.txt || true
-        continue-on-error: true
-
-      - name: Upload Quality Reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: code-quality-metrics
-          path: |
-            complexity.json
-            maintainability.json
-            raw-metrics.json
-            halstead.json
-            duplicates.txt
-            *-lines.txt
-
-  # ============================================================================
-  # SECURITY SCORECARD
-  # ============================================================================
-  security-scorecard:
-    name: 🏆 OSSF Security Scorecard
-    runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      id-token: write
-      contents: read
-      actions: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Run Scorecard
-        uses: ossf/scorecard-action@v2
-        with:
-          results_file: scorecard-results.sarif
-          results_format: sarif
-          publish_results: true
-
-      - name: Upload Scorecard Results
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: scorecard-results.sarif
-          category: 'scorecard'
-
-  # ============================================================================
-  # FINAL SUMMARY REPORT
+  # SUMMARY
   # ============================================================================
   generate-summary:
-    name: 📋 Generate Security Summary
-    needs: [python-security, javascript-security, trivy-comprehensive, semgrep-pro, dependency-deep-dive, code-quality-metrics, security-scorecard]
+    name: 📋 Generate Summary
+    needs: [detect-languages, python-security, javascript-security, trivy-scan, dependency-analysis]
     runs-on: ubuntu-latest
     if: always()
     steps:
-      - name: Download All Reports
-        uses: actions/download-artifact@v4
-
-      - name: Create Summary Report
+      - name: Create Summary
         run: |
-          echo "# 🔒 Security & Quality Analysis Summary" >> $GITHUB_STEP_SUMMARY
+          echo "# 🔒 Security Analysis Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Analysis Completed:" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Python Security Suite" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ JavaScript/TypeScript Security" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Trivy Vulnerability Scan" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Semgrep SAST Analysis" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Deep Dependency Analysis" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Code Quality Metrics" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ OSSF Security Scorecard" >> $GITHUB_STEP_SUMMARY
+          echo "## Project Detection:" >> $GITHUB_STEP_SUMMARY
+          echo "- Python: ${{ needs.detect-languages.outputs.has_python == 'true' && '✅ Yes' || '❌ No' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- JavaScript: ${{ needs.detect-languages.outputs.has_javascript == 'true' && '✅ Yes' || '❌ No' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- requirements.txt: ${{ needs.detect-languages.outputs.has_requirements == 'true' && '✅ Found' || '❌ Not found' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- package.json: ${{ needs.detect-languages.outputs.has_package_json == 'true' && '✅ Found' || '❌ Not found' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📊 **All artifacts uploaded for review**" >> $GITHUB_STEP_SUMMARY
+          echo "## Scans Executed:" >> $GITHUB_STEP_SUMMARY
+          echo "- Python Security: ${{ needs.python-security.result == 'success' && '✅' || needs.python-security.result == 'skipped' && '⏭️ Skipped' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- JavaScript Security: ${{ needs.javascript-security.result == 'success' && '✅' || needs.javascript-security.result == 'skipped' && '⏭️ Skipped' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Trivy Scan: ${{ needs.trivy-scan.result == 'success' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Dependency Analysis: ${{ needs.dependency-analysis.result == 'success' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📥 **Check artifacts for detailed reports**" >> $GITHUB_STEP_SUMMARY

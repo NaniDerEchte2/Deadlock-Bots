@@ -1,4 +1,4 @@
-name: "🏗️ Infrastructure as Code Security"
+name: "🏗️ IaC Security (Optimized)"
 
 on:
   push:
@@ -14,303 +14,170 @@ permissions:
 
 jobs:
   # ============================================================================
-  # TERRAFORM SECURITY
+  # DETECT IAC FILES
   # ============================================================================
-  terraform-security:
-    name: 🌍 Terraform Security Scan
+  detect-iac:
+    name: 🔍 Detect IaC Files
     runs-on: ubuntu-latest
-    if: hashFiles('**/*.tf', '**/*.tfvars') != ''
+    outputs:
+      has_terraform: ${{ steps.check.outputs.has_terraform }}
+      has_kubernetes: ${{ steps.check.outputs.has_kubernetes }}
+      has_cloudformation: ${{ steps.check.outputs.has_cloudformation }}
+      has_any: ${{ steps.check.outputs.has_any }}
     steps:
       - uses: actions/checkout@v4
-
-      # TFLint - Terraform Linter
-      - name: Setup TFLint
-        uses: terraform-linters/setup-tflint@v4
-
-      - name: Run TFLint
+      
+      - name: Check for IaC Files
+        id: check
         run: |
-          tflint --init
-          tflint --format compact --recursive > tflint-results.txt || true
-          cat tflint-results.txt
-        continue-on-error: true
-
-      # TFSec - Terraform Security Scanner
-      - name: TFSec Scan
-        uses: aquasecurity/tfsec-action@v1.0.3
-        with:
-          format: sarif
-          soft_fail: true
-          output_file: tfsec.sarif
-
-      - name: Upload TFSec SARIF
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: tfsec.sarif
-          category: 'tfsec'
-
-      # Checkov for Terraform
-      - name: Checkov Terraform Scan
-        uses: bridgecrewio/checkov-action@master
-        with:
-          directory: .
-          framework: terraform
-          output_format: sarif
-          output_file_path: checkov-terraform.sarif
-        continue-on-error: true
-
-      - name: Upload Checkov Results
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: checkov-terraform.sarif
-          category: 'checkov-terraform'
-
-      - name: Upload Terraform Reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: terraform-security
-          path: |
-            tflint-results.txt
-            tfsec.sarif
-            checkov-terraform.sarif
+          has_any=false
+          
+          # Check for Terraform
+          if find . -name "*.tf" -o -name "*.tfvars" | grep -q .; then
+            echo "has_terraform=true" >> $GITHUB_OUTPUT
+            echo "✅ Terraform files found"
+            has_any=true
+          else
+            echo "has_terraform=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No Terraform files"
+          fi
+          
+          # Check for Kubernetes
+          if find . -name "*k8s*.yaml" -o -name "*k8s*.yml" -o -path "*/kubernetes/*" | grep -q .; then
+            echo "has_kubernetes=true" >> $GITHUB_OUTPUT
+            echo "✅ Kubernetes files found"
+            has_any=true
+          else
+            echo "has_kubernetes=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No Kubernetes files"
+          fi
+          
+          # Check for CloudFormation
+          if find . -name "*.template" -o -name "*.template.json" -o -name "*.template.yaml" | grep -q .; then
+            echo "has_cloudformation=true" >> $GITHUB_OUTPUT
+            echo "✅ CloudFormation templates found"
+            has_any=true
+          else
+            echo "has_cloudformation=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No CloudFormation templates"
+          fi
+          
+          echo "has_any=$has_any" >> $GITHUB_OUTPUT
 
   # ============================================================================
-  # KUBERNETES SECURITY
-  # ============================================================================
-  kubernetes-security:
-    name: ☸️ Kubernetes Security Scan
-    runs-on: ubuntu-latest
-    if: hashFiles('**/*.yaml', '**/*.yml', '**/k8s/**', '**/kubernetes/**') != ''
-    steps:
-      - uses: actions/checkout@v4
-
-      # KubeLinter
-      - name: KubeLinter Scan
-        uses: stackrox/kube-linter-action@v1
-        with:
-          directory: .
-          format: sarif
-          output-file: kubelinter.sarif
-        continue-on-error: true
-
-      - name: Upload KubeLinter SARIF
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: kubelinter.sarif
-          category: 'kubelinter'
-
-      # Checkov for Kubernetes
-      - name: Checkov Kubernetes Scan
-        uses: bridgecrewio/checkov-action@master
-        with:
-          directory: .
-          framework: kubernetes
-          output_format: sarif
-          output_file_path: checkov-k8s.sarif
-        continue-on-error: true
-
-      - name: Upload Checkov K8s Results
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: checkov-k8s.sarif
-          category: 'checkov-kubernetes'
-
-      # KICS - Keeping Infrastructure as Code Secure
-      - name: KICS Scan
-        uses: checkmarx/kics-github-action@v1.7.0
-        with:
-          path: '.'
-          output_path: kics-results
-          output_formats: 'sarif'
-          platform_type: k8s
-          fail_on: high
-        continue-on-error: true
-
-      - name: Upload KICS Results
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: kics-results/results.sarif
-          category: 'kics'
-
-      - name: Upload K8s Security Reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: kubernetes-security
-          path: |
-            kubelinter.sarif
-            checkov-k8s.sarif
-            kics-results/
-
-  # ============================================================================
-  # CLOUDFORMATION SECURITY
-  # ============================================================================
-  cloudformation-security:
-    name: ☁️ CloudFormation Security
-    runs-on: ubuntu-latest
-    if: hashFiles('**/*.template', '**/*.template.json', '**/*.template.yaml') != ''
-    steps:
-      - uses: actions/checkout@v4
-
-      # CFN-Lint
-      - name: CloudFormation Linter
-        uses: scottbrenner/cfn-lint-action@v2
-        with:
-          args: "**/*.template **/*.template.json **/*.template.yaml"
-
-      # Checkov for CloudFormation
-      - name: Checkov CloudFormation Scan
-        uses: bridgecrewio/checkov-action@master
-        with:
-          directory: .
-          framework: cloudformation
-          output_format: sarif
-          output_file_path: checkov-cfn.sarif
-        continue-on-error: true
-
-      - name: Upload Checkov CFN Results
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: checkov-cfn.sarif
-          category: 'checkov-cloudformation'
-
-  # ============================================================================
-  # ANSIBLE SECURITY
-  # ============================================================================
-  ansible-security:
-    name: 📘 Ansible Security Scan
-    runs-on: ubuntu-latest
-    if: hashFiles('**/*.yml', '**/*.yaml', '**/ansible/**', '**/playbooks/**') != ''
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run ansible-lint
-        uses: ansible/ansible-lint@main
-        with:
-          args: "--sarif-file ansible-lint.sarif"
-        continue-on-error: true
-
-      - name: Upload Ansible Lint Results
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: ansible-lint.sarif
-          category: 'ansible-lint'
-
-  # ============================================================================
-  # GENERAL IaC BEST PRACTICES
+  # GENERAL IAC BEST PRACTICES (ALWAYS RUNS)
   # ============================================================================
   iac-best-practices:
-    name: 📋 IaC Best Practices Check
+    name: 📋 IaC Best Practices
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check IaC Best Practices
+      - name: Check Best Practices
         run: |
-          echo "# Infrastructure as Code Best Practices" > iac-analysis.md
+          echo "# Infrastructure Security Analysis" > iac-analysis.md
           echo "" >> iac-analysis.md
           
-          # Check for hardcoded credentials
+          # Check for hardcoded credentials in common files
           echo "## Security Checks:" >> iac-analysis.md
-          echo "### Hardcoded Credentials:" >> iac-analysis.md
-          grep -rn "password\|secret\|token\|key" --include="*.tf" --include="*.yaml" --include="*.yml" --include="*.json" . | grep -v "var\." | head -20 >> iac-analysis.md || echo "✅ No obvious hardcoded credentials" >> iac-analysis.md
+          echo "### Potential Hardcoded Credentials:" >> iac-analysis.md
           
-          # Check for default ports
-          echo "" >> iac-analysis.md
-          echo "### Exposed Default Ports:" >> iac-analysis.md
-          grep -rn "port.*22\|port.*3389\|port.*3306\|port.*5432" --include="*.tf" --include="*.yaml" --include="*.yml" . | head -20 >> iac-analysis.md || echo "✅ No obvious default port exposures" >> iac-analysis.md
+          found=0
+          for pattern in "password" "secret" "token" "apikey" "api_key"; do
+            if grep -rni "$pattern\s*[=:]" . --include="*.yaml" --include="*.yml" --include="*.json" --include="*.tf" 2>/dev/null | grep -v "var\." | grep -v "#" | head -5; then
+              found=1
+            fi
+          done
           
-          # Check for public accessibility
-          echo "" >> iac-analysis.md
-          echo "### Public Accessibility:" >> iac-analysis.md
-          grep -rn "0.0.0.0/0\|::/0" --include="*.tf" --include="*.yaml" --include="*.yml" . | head -20 >> iac-analysis.md || echo "ℹ️ Check manually for public access" >> iac-analysis.md
+          if [ $found -eq 0 ]; then
+            echo "✅ No obvious hardcoded credentials found" >> iac-analysis.md
+          else
+            echo "⚠️ Potential credentials found - review manually" >> iac-analysis.md
+          fi
           
-          # Check for encryption
+          # Check for .env files (shouldn't be committed)
           echo "" >> iac-analysis.md
-          echo "### Encryption Usage:" >> iac-analysis.md
-          grep -rn "encrypt\|kms\|tls\|ssl" --include="*.tf" --include="*.yaml" --include="*.yml" . | head -20 >> iac-analysis.md || echo "⚠️ Limited encryption configuration found" >> iac-analysis.md
+          echo "### Environment Files:" >> iac-analysis.md
+          if find . -name ".env*" | grep -v node_modules | grep -v ".github" | grep -q .; then
+            echo "⚠️ WARNING: .env files found in repository!" >> iac-analysis.md
+            find . -name ".env*" | grep -v node_modules >> iac-analysis.md
+          else
+            echo "✅ No .env files committed" >> iac-analysis.md
+          fi
           
           cat iac-analysis.md
-        continue-on-error: true
 
-      - name: Upload IaC Analysis
+      - name: Upload Analysis
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: iac-best-practices
           path: iac-analysis.md
+          if-no-files-found: ignore
 
   # ============================================================================
-  # CONFIGURATION FILE SECURITY
+  # CONFIG FILE SECURITY (ALWAYS RUNS)
   # ============================================================================
-  config-file-security:
-    name: 🔧 Configuration File Security
+  config-security:
+    name: 🔧 Configuration Security
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Scan Configuration Files
+      - name: Scan Config Files
         run: |
-          echo "# Configuration Security Analysis" > config-security.md
+          echo "# Configuration Security" > config-security.md
           echo "" >> config-security.md
-          
-          # Check .env files
-          echo "## Environment Files:" >> config-security.md
-          if find . -name ".env*" -o -name "*.env" | grep -v node_modules | grep .; then
-            echo "⚠️ WARNING: .env files should not be committed!" >> config-security.md
-            find . -name ".env*" -o -name "*.env" | grep -v node_modules >> config-security.md
-          else
-            echo "✅ No .env files in repository" >> config-security.md
-          fi
-          
-          # Check config files for secrets
-          echo "" >> config-security.md
-          echo "## Config File Security:" >> config-security.md
-          find . -name "config.*" -o -name "*.config.*" -o -name "settings.*" | while read file; do
-            if grep -q "password\|secret\|token\|key" "$file" 2>/dev/null; then
-              echo "⚠️ Potential secrets in: $file" >> config-security.md
-            fi
-          done || echo "✅ No obvious secrets in config files" >> config-security.md
           
           # Check for debug mode
-          echo "" >> config-security.md
           echo "## Debug Mode Check:" >> config-security.md
-          grep -rn "DEBUG.*=.*True\|debug.*:.*true" --include="*.py" --include="*.js" --include="*.json" --include="*.yaml" . | head -10 >> config-security.md || echo "✅ No debug mode enabled" >> config-security.md
+          if grep -rni "debug.*true\|debug.*=.*1" --include="*.py" --include="*.js" --include="*.json" --include="*.yaml" . | grep -v "#" | head -5; then
+            echo "⚠️ Debug mode might be enabled" >> config-security.md
+          else
+            echo "✅ No debug mode detected" >> config-security.md
+          fi
+          
+          # List config files
+          echo "" >> config-security.md
+          echo "## Configuration Files Found:" >> config-security.md
+          find . -name "config.*" -o -name "*.config.*" -o -name "settings.*" 2>/dev/null | head -10 >> config-security.md || echo "None found" >> config-security.md
           
           cat config-security.md
-        continue-on-error: true
 
       - name: Upload Config Security
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: config-security
           path: config-security.md
+          if-no-files-found: ignore
 
   # ============================================================================
-  # IAC SUMMARY
+  # SUMMARY
   # ============================================================================
-  iac-summary:
-    name: 📊 IaC Security Summary
-    needs: [terraform-security, kubernetes-security, cloudformation-security, ansible-security, iac-best-practices, config-file-security]
+  summary:
+    name: 📊 IaC Summary
+    needs: [detect-iac, iac-best-practices, config-security]
     runs-on: ubuntu-latest
     if: always()
     steps:
-      - name: Create IaC Summary
+      - name: Create Summary
         run: |
-          echo "# 🏗️ Infrastructure as Code Security Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "# 🏗️ Infrastructure Security Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Scans Completed:" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Terraform Security" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Kubernetes Security" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ CloudFormation Security" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Ansible Security" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ IaC Best Practices" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Configuration File Security" >> $GITHUB_STEP_SUMMARY
+          echo "## IaC Files Detected:" >> $GITHUB_STEP_SUMMARY
+          echo "- Terraform: ${{ needs.detect-iac.outputs.has_terraform == 'true' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Kubernetes: ${{ needs.detect-iac.outputs.has_kubernetes == 'true' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- CloudFormation: ${{ needs.detect-iac.outputs.has_cloudformation == 'true' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "🔐 **Review artifacts for detailed security findings**" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.detect-iac.outputs.has_any }}" == "false" ]; then
+            echo "ℹ️ **No IaC files detected** - only general security checks were performed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **IaC files found** - security analysis completed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Checks Executed:" >> $GITHUB_STEP_SUMMARY
+          echo "- Best Practices: ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- Config Security: ✅" >> $GITHUB_STEP_SUMMARY

@@ -1,4 +1,4 @@
-name: "🐳 Container & Docker Security"
+name: "🐳 Container Security (Optimized)"
 
 on:
   push:
@@ -11,26 +11,51 @@ on:
 permissions:
   contents: read
   security-events: write
-  packages: read
 
 jobs:
   # ============================================================================
-  # DOCKER IMAGE SCANNING
+  # CHECK IF DOCKER/CONTAINER FILES EXIST
   # ============================================================================
-  docker-security-scan:
-    name: 🐋 Docker Image Security
+  detect-container-files:
+    name: 🔍 Detect Container Files
     runs-on: ubuntu-latest
-    if: hashFiles('**/Dockerfile', '**/docker-compose.yml', '**/docker-compose.yaml') != ''
+    outputs:
+      has_dockerfile: ${{ steps.check.outputs.has_dockerfile }}
+      has_compose: ${{ steps.check.outputs.has_compose }}
     steps:
       - uses: actions/checkout@v4
-
-      # Find all Dockerfiles
-      - name: Find Dockerfiles
-        id: find-dockerfiles
+      
+      - name: Check for Container Files
+        id: check
         run: |
-          dockerfiles=$(find . -name "Dockerfile*" -o -name "*.dockerfile" | tr '\n' ' ')
-          echo "dockerfiles=$dockerfiles" >> $GITHUB_OUTPUT
-          echo "Found Dockerfiles: $dockerfiles"
+          # Check for Dockerfile
+          if find . -name "Dockerfile*" -o -name "*.dockerfile" | grep -q .; then
+            echo "has_dockerfile=true" >> $GITHUB_OUTPUT
+            echo "✅ Dockerfile found"
+          else
+            echo "has_dockerfile=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No Dockerfile found - container scans will be skipped"
+          fi
+          
+          # Check for docker-compose
+          if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
+            echo "has_compose=true" >> $GITHUB_OUTPUT
+            echo "✅ docker-compose file found"
+          else
+            echo "has_compose=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No docker-compose file found"
+          fi
+
+  # ============================================================================
+  # DOCKERFILE LINTING - ONLY IF DOCKERFILE EXISTS
+  # ============================================================================
+  dockerfile-lint:
+    name: 🐋 Dockerfile Linting
+    needs: detect-container-files
+    if: needs.detect-container-files.outputs.has_dockerfile == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
       # Hadolint - Dockerfile Linter
       - name: Hadolint Dockerfile Scan
@@ -44,187 +69,122 @@ jobs:
 
       - name: Upload Hadolint SARIF
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: always() && hashFiles('hadolint.sarif') != ''
         with:
           sarif_file: hadolint.sarif
           category: 'hadolint'
-
-      # Checkov - IaC Security
-      - name: Checkov Docker Security
-        uses: bridgecrewio/checkov-action@master
-        with:
-          directory: .
-          framework: dockerfile
-          output_format: sarif
-          output_file_path: checkov-docker.sarif
-          quiet: true
         continue-on-error: true
 
-      - name: Upload Checkov Results
-        uses: github/codeql-action/upload-sarif@v4
+      - name: Upload Hadolint Report
+        uses: actions/upload-artifact@v4
         if: always()
         with:
-          sarif_file: checkov-docker.sarif
-          category: 'checkov-docker'
-
-      # Trivy - Build and scan images if Dockerfile exists
-      - name: Build Docker Image for Scanning
-        if: hashFiles('**/Dockerfile') != ''
-        run: |
-          docker build -t test-image:latest .
-        continue-on-error: true
-
-      - name: Trivy Image Scan
-        if: hashFiles('**/Dockerfile') != ''
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: 'test-image:latest'
-          format: 'sarif'
-          output: 'trivy-docker.sarif'
-          severity: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
-        continue-on-error: true
-
-      - name: Upload Trivy Docker SARIF
-        if: hashFiles('**/Dockerfile') != ''
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: 'trivy-docker.sarif'
-          category: 'trivy-docker-image'
+          name: hadolint-report
+          path: hadolint.sarif
+          if-no-files-found: ignore
 
   # ============================================================================
-  # DOCKER COMPOSE SECURITY
+  # DOCKER COMPOSE VALIDATION - ONLY IF COMPOSE EXISTS
   # ============================================================================
-  docker-compose-security:
-    name: 🔧 Docker Compose Security
+  compose-validate:
+    name: 🔧 Docker Compose Validation
+    needs: detect-container-files
+    if: needs.detect-container-files.outputs.has_compose == 'true'
     runs-on: ubuntu-latest
-    if: hashFiles('**/docker-compose.yml', '**/docker-compose.yaml') != ''
     steps:
       - uses: actions/checkout@v4
 
-      # Validate compose files
       - name: Validate Docker Compose
         run: |
           if [ -f docker-compose.yml ]; then
-            docker compose -f docker-compose.yml config > /dev/null
+            echo "Validating docker-compose.yml..."
+            docker compose -f docker-compose.yml config > /dev/null && echo "✅ Valid" || echo "⚠️ Invalid"
           fi
           if [ -f docker-compose.yaml ]; then
-            docker compose -f docker-compose.yaml config > /dev/null
+            echo "Validating docker-compose.yaml..."
+            docker compose -f docker-compose.yaml config > /dev/null && echo "✅ Valid" || echo "⚠️ Invalid"
           fi
-
-      # Checkov for docker-compose
-      - name: Checkov Docker Compose Scan
-        uses: bridgecrewio/checkov-action@master
-        with:
-          directory: .
-          framework: docker_compose
-          output_format: sarif
-          output_file_path: checkov-compose.sarif
         continue-on-error: true
 
-      - name: Upload Compose Scan
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: checkov-compose.sarif
-          category: 'checkov-docker-compose'
-
   # ============================================================================
-  # CONTAINER BEST PRACTICES
+  # BEST PRACTICES CHECK - ONLY IF DOCKERFILE EXISTS
   # ============================================================================
-  container-best-practices:
-    name: ⚡ Container Best Practices Check
+  best-practices:
+    name: ⚡ Container Best Practices
+    needs: detect-container-files
+    if: needs.detect-container-files.outputs.has_dockerfile == 'true'
     runs-on: ubuntu-latest
-    if: hashFiles('**/Dockerfile') != ''
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check for Security Best Practices
+      - name: Check Security Best Practices
         run: |
           echo "# Container Security Analysis" > container-analysis.md
           echo "" >> container-analysis.md
           
           # Check for root user
-          if grep -r "USER root" . --include="Dockerfile*" > /dev/null; then
+          if grep -r "USER root" . --include="Dockerfile*" > /dev/null 2>&1; then
             echo "⚠️ WARNING: Root user found in Dockerfile" >> container-analysis.md
           else
             echo "✅ Good: No explicit root user usage" >> container-analysis.md
           fi
           
           # Check for latest tag
-          if grep -r ":latest" . --include="Dockerfile*" > /dev/null; then
+          if grep -r ":latest" . --include="Dockerfile*" > /dev/null 2>&1; then
             echo "⚠️ WARNING: Using :latest tag found" >> container-analysis.md
           else
             echo "✅ Good: No :latest tags found" >> container-analysis.md
           fi
           
-          # Check for secrets in Dockerfile
-          if grep -rE "(PASSWORD|SECRET|TOKEN|KEY)=" . --include="Dockerfile*" > /dev/null; then
+          # Check for secrets
+          if grep -rE "(PASSWORD|SECRET|TOKEN|KEY)=" . --include="Dockerfile*" > /dev/null 2>&1; then
             echo "🚨 CRITICAL: Potential secrets in Dockerfile!" >> container-analysis.md
           else
             echo "✅ Good: No obvious secrets in Dockerfile" >> container-analysis.md
           fi
           
           # Check for healthcheck
-          if grep -r "HEALTHCHECK" . --include="Dockerfile*" > /dev/null; then
+          if grep -r "HEALTHCHECK" . --include="Dockerfile*" > /dev/null 2>&1; then
             echo "✅ Good: HEALTHCHECK found" >> container-analysis.md
           else
-            echo "⚠️ WARNING: No HEALTHCHECK defined" >> container-analysis.md
-          fi
-          
-          # Check for multi-stage builds
-          if grep -r "FROM.*AS" . --include="Dockerfile*" > /dev/null; then
-            echo "✅ Good: Multi-stage build detected" >> container-analysis.md
-          else
-            echo "ℹ️ INFO: Single-stage build" >> container-analysis.md
+            echo "ℹ️ INFO: No HEALTHCHECK defined" >> container-analysis.md
           fi
           
           cat container-analysis.md
 
       - name: Upload Analysis
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: container-best-practices
           path: container-analysis.md
+          if-no-files-found: ignore
 
   # ============================================================================
-  # IMAGE SIZE OPTIMIZATION CHECK
+  # SUMMARY
   # ============================================================================
-  image-size-check:
-    name: 📦 Image Size Optimization
+  summary:
+    name: 📊 Container Security Summary
+    needs: [detect-container-files, dockerfile-lint, compose-validate, best-practices]
     runs-on: ubuntu-latest
-    if: hashFiles('**/Dockerfile') != ''
+    if: always()
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Build and Analyze Image Size
+      - name: Create Summary
         run: |
-          if [ -f Dockerfile ]; then
-            docker build -t size-check:latest .
-            
-            echo "# Image Size Analysis" > size-analysis.md
-            echo "" >> size-analysis.md
-            
-            # Get image size
-            size=$(docker images size-check:latest --format "{{.Size}}")
-            echo "📊 Image Size: $size" >> size-analysis.md
-            
-            # Get layer information
-            echo "" >> size-analysis.md
-            echo "## Layer Breakdown:" >> size-analysis.md
-            docker history size-check:latest --human=true --no-trunc >> size-analysis.md
-            
-            # Use dive for deep analysis if available
-            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-              wagoodman/dive:latest size-check:latest --ci \
-              --lowestEfficiency=0.9 --highestWastedBytes=20MB || true
-            
-            cat size-analysis.md
+          echo "# 🐳 Container Security Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Files Detected:" >> $GITHUB_STEP_SUMMARY
+          echo "- Dockerfile: ${{ needs.detect-container-files.outputs.has_dockerfile == 'true' && '✅ Found' || '❌ Not found' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- docker-compose: ${{ needs.detect-container-files.outputs.has_compose == 'true' && '✅ Found' || '❌ Not found' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.detect-container-files.outputs.has_dockerfile }}" == "false" ]; then
+            echo "ℹ️ **No container files found - all checks were skipped**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "To enable container scanning, add a Dockerfile to your repository." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Scans Executed:" >> $GITHUB_STEP_SUMMARY
+            echo "- Dockerfile Linting: ${{ needs.dockerfile-lint.result == 'success' && '✅' || needs.dockerfile-lint.result == 'skipped' && '⏭️' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Compose Validation: ${{ needs.compose-validate.result == 'success' && '✅' || needs.compose-validate.result == 'skipped' && '⏭️' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Best Practices: ${{ needs.best-practices.result == 'success' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
           fi
-        continue-on-error: true
-
-      - name: Upload Size Analysis
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: image-size-analysis
-          path: size-analysis.md

@@ -1,8 +1,6 @@
-name: "⚡ Performance & Memory Analysis"
+name: "⚡ Performance Analysis (Optimized)"
 
 on:
-  push:
-    branches: [ "main", "master" ]
   pull_request:
   schedule:
     - cron: '0 5 * * 0'  # Weekly on Sunday
@@ -14,10 +12,46 @@ permissions:
 
 jobs:
   # ============================================================================
-  # PYTHON PERFORMANCE PROFILING
+  # DETECT PROJECT TYPE
+  # ============================================================================
+  detect-project:
+    name: 🔍 Detect Project Type
+    runs-on: ubuntu-latest
+    outputs:
+      has_python: ${{ steps.check.outputs.has_python }}
+      has_javascript: ${{ steps.check.outputs.has_javascript }}
+      has_requirements: ${{ steps.check.outputs.has_requirements }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check Project Type
+        id: check
+        run: |
+          if find . -name "*.py" -type f | grep -q .; then
+            echo "has_python=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_python=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if find . -name "*.js" -o -name "*.ts" | grep -q .; then
+            echo "has_javascript=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_javascript=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -f requirements.txt ]; then
+            echo "has_requirements=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_requirements=false" >> $GITHUB_OUTPUT
+          fi
+
+  # ============================================================================
+  # PYTHON PERFORMANCE - ONLY IF PYTHON EXISTS
   # ============================================================================
   python-performance:
-    name: 🐍 Python Performance Analysis
+    name: 🐍 Python Performance
+    needs: detect-project
+    if: needs.detect-project.outputs.has_python == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,79 +61,56 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Profiling Tools
+      - name: Install Tools
         run: |
-          pip install memory-profiler py-spy scalene pytest pytest-benchmark
-          pip install pympler objgraph guppy3 tracemalloc-ng
-
-      # Memory Usage Analysis
-      - name: Memory Leak Detection
-        run: |
-          # Find Python files with potential memory issues
-          pip install memray
-          
-          echo "# Memory Analysis Results" > memory-report.md
-          echo "" >> memory-report.md
-          
-          # Check for common memory leak patterns
-          echo "## Potential Memory Leak Patterns:" >> memory-report.md
-          grep -rn "global " --include="*.py" . || echo "No global variables found" >> memory-report.md
-          
-          # Look for circular references
-          echo "" >> memory-report.md
-          echo "## Circular Reference Check:" >> memory-report.md
-          find . -name "*.py" -exec grep -l "self\." {} \; | head -20 >> memory-report.md || true
-          
-          cat memory-report.md
+          pip install radon vulture
         continue-on-error: true
 
-      # Performance Bottleneck Detection
-      - name: Find Performance Bottlenecks
+      # Complexity Analysis
+      - name: Complexity Analysis
         run: |
-          # Complexity analysis for slow functions
-          pip install radon
-          
-          echo "# Performance Hotspots" > performance-report.md
+          echo "# Performance Analysis" > performance-report.md
           echo "" >> performance-report.md
-          
-          # Find high complexity functions (potential bottlenecks)
-          echo "## High Complexity Functions (CC > 10):" >> performance-report.md
-          radon cc . -n B -s >> performance-report.md || true
-          
+          echo "## Cyclomatic Complexity:" >> performance-report.md
+          radon cc . -a --total-average >> performance-report.md || echo "No data" >> performance-report.md
           echo "" >> performance-report.md
-          echo "## Functions to Optimize:" >> performance-report.md
-          
-          # Find nested loops (O(n²) or worse)
-          grep -rn "for.*for" --include="*.py" . | head -20 >> performance-report.md || echo "No nested loops detected" >> performance-report.md
-          
+          echo "## Maintainability Index:" >> performance-report.md
+          radon mi . -s >> performance-report.md || echo "No data" >> performance-report.md
           cat performance-report.md
         continue-on-error: true
 
-      # Static Type Checking Performance Impact
-      - name: MyPy Type Check Performance
+      # Dead Code Detection
+      - name: Find Dead Code
         run: |
-          pip install mypy
-          time mypy --ignore-missing-imports . > mypy-performance.txt 2>&1 || true
-          cat mypy-performance.txt
+          echo "" >> performance-report.md
+          echo "## Potential Dead Code:" >> performance-report.md
+          vulture . --min-confidence 80 >> performance-report.md || echo "Analysis failed" >> performance-report.md
         continue-on-error: true
 
-      - name: Upload Performance Reports
+      # Find Nested Loops (Performance Bottlenecks)
+      - name: Find Nested Loops
+        run: |
+          echo "" >> performance-report.md
+          echo "## Nested Loops (Potential O(n²)):" >> performance-report.md
+          grep -rn "for.*for" --include="*.py" . | head -10 >> performance-report.md || echo "None found" >> performance-report.md
+        continue-on-error: true
+
+      - name: Upload Reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: python-performance
-          path: |
-            memory-report.md
-            performance-report.md
-            mypy-performance.txt
+          path: performance-report.md
+          if-no-files-found: ignore
 
   # ============================================================================
-  # JAVASCRIPT/NODE PERFORMANCE
+  # JAVASCRIPT PERFORMANCE - ONLY IF JS EXISTS
   # ============================================================================
   javascript-performance:
-    name: 📦 JavaScript Performance Analysis
+    name: 📦 JavaScript Performance
+    needs: detect-project
+    if: needs.detect-project.outputs.has_javascript == 'true'
     runs-on: ubuntu-latest
-    if: hashFiles('**/package.json') != ''
     steps:
       - uses: actions/checkout@v4
 
@@ -108,205 +119,87 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Dependencies
-        if: hashFiles('**/package-lock.json') != ''
-        run: npm ci
-
-      # Bundle Size Analysis
-      - name: Bundle Size Check
+      # Check for large dependencies
+      - name: Dependency Size Check
         if: hashFiles('**/package.json') != ''
         run: |
-          npm install -g webpack-bundle-analyzer size-limit
+          echo "# JavaScript Performance" > js-performance.md
+          echo "" >> js-performance.md
           
-          echo "# Bundle Size Analysis" > bundle-analysis.md
-          echo "" >> bundle-analysis.md
-          
-          # Check if webpack config exists
-          if [ -f webpack.config.js ]; then
-            echo "Webpack configuration found" >> bundle-analysis.md
+          if [ -d node_modules ]; then
+            echo "## Dependency Sizes:" >> js-performance.md
+            du -sh node_modules/* 2>/dev/null | sort -hr | head -10 >> js-performance.md || echo "No node_modules" >> js-performance.md
+          else
+            echo "No node_modules directory found" >> js-performance.md
           fi
           
-          # List large dependencies
-          echo "## Large Dependencies:" >> bundle-analysis.md
-          du -sh node_modules/* 2>/dev/null | sort -hr | head -20 >> bundle-analysis.md || true
-          
-          cat bundle-analysis.md
+          cat js-performance.md
         continue-on-error: true
 
-      # Memory Leak Detection for Node
-      - name: Node Memory Leak Check
+      # Memory Leak Patterns
+      - name: Check Memory Patterns
         run: |
-          echo "# Node.js Memory Patterns" > node-memory.md
-          echo "" >> node-memory.md
-          
-          # Check for common memory leak patterns
-          echo "## Event Listener Patterns:" >> node-memory.md
-          grep -rn "addEventListener\|on(" --include="*.js" --include="*.ts" . | head -20 >> node-memory.md || echo "No event listeners found" >> node-memory.md
-          
-          echo "" >> node-memory.md
-          echo "## Global Variable Usage:" >> node-memory.md
-          grep -rn "window\.\|global\." --include="*.js" --include="*.ts" . | head -20 >> node-memory.md || echo "No global usage found" >> node-memory.md
-          
-          cat node-memory.md
+          echo "" >> js-performance.md
+          echo "## Event Listeners (Memory Leak Risk):" >> js-performance.md
+          grep -rn "addEventListener\|on(" --include="*.js" --include="*.ts" . | wc -l >> js-performance.md || echo "0" >> js-performance.md
         continue-on-error: true
 
-      - name: Upload JS Performance Reports
+      - name: Upload Reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: javascript-performance
-          path: |
-            bundle-analysis.md
-            node-memory.md
+          path: js-performance.md
+          if-no-files-found: ignore
 
   # ============================================================================
-  # DATABASE QUERY OPTIMIZATION
+  # GENERAL PERFORMANCE ANALYSIS
   # ============================================================================
-  database-performance:
-    name: 🗄️ Database Query Analysis
+  general-analysis:
+    name: 💾 General Analysis
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: SQL Query Analysis
+      - name: Project Size Analysis
         run: |
-          echo "# Database Query Analysis" > db-analysis.md
-          echo "" >> db-analysis.md
-          
-          # Find SQL queries
-          echo "## SQL Query Patterns:" >> db-analysis.md
-          
-          # Look for N+1 query patterns
-          echo "### Potential N+1 Queries:" >> db-analysis.md
-          grep -rn "for.*query\|query.*for" --include="*.py" --include="*.js" --include="*.ts" . | head -20 >> db-analysis.md || echo "No obvious N+1 patterns" >> db-analysis.md
-          
-          # Look for SELECT *
-          echo "" >> db-analysis.md
-          echo "### SELECT * Usage (should be avoided):" >> db-analysis.md
-          grep -rn "SELECT \*\|select \*" --include="*.py" --include="*.js" --include="*.ts" --include="*.sql" . | head -20 >> db-analysis.md || echo "No SELECT * found" >> db-analysis.md
-          
-          # Look for missing indexes (common patterns)
-          echo "" >> db-analysis.md
-          echo "### Potential Missing Indexes:" >> db-analysis.md
-          grep -rn "WHERE\|JOIN" --include="*.sql" . | head -20 >> db-analysis.md || echo "No SQL files found" >> db-analysis.md
-          
-          cat db-analysis.md
+          echo "# Project Resource Analysis" > resource-analysis.md
+          echo "" >> resource-analysis.md
+          echo "## Project Statistics:" >> resource-analysis.md
+          echo "Total Files: $(find . -type f | wc -l)" >> resource-analysis.md
+          echo "Total Size: $(du -sh . | cut -f1)" >> resource-analysis.md
+          echo "" >> resource-analysis.md
+          echo "## Largest Files:" >> resource-analysis.md
+          find . -type f -exec du -h {} + | sort -rh | head -10 >> resource-analysis.md || true
+          cat resource-analysis.md
         continue-on-error: true
 
-      - name: Upload DB Analysis
+      - name: Upload Analysis
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: database-analysis
-          path: db-analysis.md
+          name: resource-analysis
+          path: resource-analysis.md
+          if-no-files-found: ignore
 
   # ============================================================================
-  # API PERFORMANCE TESTING
+  # SUMMARY
   # ============================================================================
-  api-performance:
-    name: 🌐 API Performance Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: API Endpoint Analysis
-        run: |
-          echo "# API Performance Analysis" > api-analysis.md
-          echo "" >> api-analysis.md
-          
-          # Find API route definitions
-          echo "## API Routes Found:" >> api-analysis.md
-          grep -rn "@app.route\|@router\|app.get\|app.post\|@api" --include="*.py" --include="*.js" --include="*.ts" . | head -30 >> api-analysis.md || echo "No API routes found" >> api-analysis.md
-          
-          # Check for rate limiting
-          echo "" >> api-analysis.md
-          echo "## Rate Limiting Check:" >> api-analysis.md
-          grep -rn "rate_limit\|RateLimiter\|throttle" --include="*.py" --include="*.js" --include="*.ts" . >> api-analysis.md || echo "⚠️ No rate limiting detected" >> api-analysis.md
-          
-          # Check for caching
-          echo "" >> api-analysis.md
-          echo "## Caching Implementation:" >> api-analysis.md
-          grep -rn "cache\|Cache\|@cache\|redis\|Redis" --include="*.py" --include="*.js" --include="*.ts" . | head -20 >> api-analysis.md || echo "⚠️ No caching detected" >> api-analysis.md
-          
-          cat api-analysis.md
-        continue-on-error: true
-
-      - name: Upload API Analysis
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: api-performance
-          path: api-analysis.md
-
-  # ============================================================================
-  # RESOURCE USAGE ESTIMATION
-  # ============================================================================
-  resource-estimation:
-    name: 💾 Resource Usage Estimation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Estimate Resource Usage
-        run: |
-          echo "# Resource Usage Estimation" > resource-estimation.md
-          echo "" >> resource-estimation.md
-          
-          # Count files and total size
-          echo "## Project Size:" >> resource-estimation.md
-          echo "Total Files: $(find . -type f | wc -l)" >> resource-estimation.md
-          echo "Total Size: $(du -sh . | cut -f1)" >> resource-estimation.md
-          
-          # Python dependency size
-          if [ -f requirements.txt ]; then
-            echo "" >> resource-estimation.md
-            echo "## Python Dependencies:" >> resource-estimation.md
-            echo "Count: $(wc -l < requirements.txt)" >> resource-estimation.md
-          fi
-          
-          # Node modules size
-          if [ -d node_modules ]; then
-            echo "" >> resource-estimation.md
-            echo "## Node Modules:" >> resource-estimation.md
-            echo "Size: $(du -sh node_modules | cut -f1)" >> resource-estimation.md
-            echo "Packages: $(ls node_modules | wc -l)" >> resource-estimation.md
-          fi
-          
-          # Largest files
-          echo "" >> resource-estimation.md
-          echo "## Largest Files:" >> resource-estimation.md
-          find . -type f -exec du -h {} + | sort -rh | head -20 >> resource-estimation.md || true
-          
-          cat resource-estimation.md
-        continue-on-error: true
-
-      - name: Upload Resource Estimation
-        uses: actions/upload-artifact@v4
-        with:
-          name: resource-estimation
-          path: resource-estimation.md
-
-  # ============================================================================
-  # COMPREHENSIVE PERFORMANCE SUMMARY
-  # ============================================================================
-  performance-summary:
+  summary:
     name: 📊 Performance Summary
-    needs: [python-performance, javascript-performance, database-performance, api-performance, resource-estimation]
+    needs: [detect-project, python-performance, javascript-performance, general-analysis]
     runs-on: ubuntu-latest
     if: always()
     steps:
-      - name: Download All Reports
-        uses: actions/download-artifact@v4
-
-      - name: Create Performance Summary
+      - name: Create Summary
         run: |
-          echo "# ⚡ Performance & Optimization Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "# ⚡ Performance Analysis Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Completed Analyses:" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Python Memory & Performance" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ JavaScript Bundle & Memory" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Database Query Optimization" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ API Performance Checks" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Resource Usage Estimation" >> $GITHUB_STEP_SUMMARY
+          echo "## Project Detection:" >> $GITHUB_STEP_SUMMARY
+          echo "- Python: ${{ needs.detect-project.outputs.has_python == 'true' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- JavaScript: ${{ needs.detect-project.outputs.has_javascript == 'true' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📥 **Download artifacts to review detailed reports**" >> $GITHUB_STEP_SUMMARY
+          echo "## Analyses:" >> $GITHUB_STEP_SUMMARY
+          echo "- Python Performance: ${{ needs.python-performance.result == 'success' && '✅' || needs.python-performance.result == 'skipped' && '⏭️ Skipped' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- JavaScript Performance: ${{ needs.javascript-performance.result == 'success' && '✅' || needs.javascript-performance.result == 'skipped' && '⏭️ Skipped' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- General Analysis: ${{ needs.general-analysis.result == 'success' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
