@@ -18,13 +18,29 @@ jobs:
       - name: 'Checkout Repository'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         
-      - name: 'Dependency Review'
+      - name: 'Dependency Review (PR context)'
+        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
         uses: actions/dependency-review-action@3c4e3dcb1aa7874d2c16be7d79418e9b7efd6261 # v4
         with:
           # Maximale Strenge - alle Vulnerabilities blocken
           fail-on-severity: low
           fail-on-scopes: runtime,development
           deny-licenses: GPL-3.0, AGPL-3.0
+
+      - name: 'Dependency Review (push comparison)'
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        uses: actions/dependency-review-action@3c4e3dcb1aa7874d2c16be7d79418e9b7efd6261 # v4
+        with:
+          base-ref: ${{ github.event.before }}
+          head-ref: ${{ github.sha }}
+          fail-on-severity: low
+          fail-on-scopes: runtime,development
+          deny-licenses: GPL-3.0, AGPL-3.0
+
+      - name: 'Dependency Review (skip without diff context)'
+        if: github.event_name == 'schedule' || (github.event_name == 'push' && github.event.before == '0000000000000000000000000000000000000000')
+        run: |
+          echo "Skipping dependency-review-action: no PR context and no valid base/head diff available."
           
       - name: 'NPM Audit'
         if: hashFiles('**/package-lock.json') != ''
