@@ -539,7 +539,7 @@ jobs:
           echo "## Project Detection:" >> $GITHUB_STEP_SUMMARY
           echo "- Python: ${{ needs.detect-languages.outputs.has_python == 'true' && '✅ Yes' || '❌ No' }}" >> $GITHUB_STEP_SUMMARY
           echo "- JavaScript: ${{ needs.detect-languages.outputs.has_javascript == 'true' && '✅ Yes' || '❌ No' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- requirements.txt: ${{ needs.detect-languages.outputs.has_requirements == 'true' && '✅ Found' || '❌ Not found' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- requirements*.txt: ${{ needs.detect-languages.outputs.has_requirements == 'true' && '✅ Found' || '❌ Not found' }}" >> $GITHUB_STEP_SUMMARY
           echo "- package.json: ${{ needs.detect-languages.outputs.has_package_json == 'true' && '✅ Found' || '❌ Not found' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Scans Executed:" >> $GITHUB_STEP_SUMMARY
