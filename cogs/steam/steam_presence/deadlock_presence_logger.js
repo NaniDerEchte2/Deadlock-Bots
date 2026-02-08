@@ -24,13 +24,16 @@ class DeadlockPresenceLogger {
     this.sessionStart = new Map();
     this.friendIds = new Set();
     this.started = false;
+    this.initialLoadComplete = false;
 
     // Rich presence batching config to avoid Steam client timeouts
-    this.richPresenceBatchSize = Number.parseInt(options.richPresenceBatchSize || process.env.RICH_PRESENCE_BATCH_SIZE || '12', 10);
-    this.richPresenceBatchDelayMs = Number.parseInt(options.richPresenceBatchDelayMs || process.env.RICH_PRESENCE_BATCH_DELAY_MS || '800', 10);
+    // Ultra-conservative defaults: 3 friends per batch, 1000ms delay between batches
+    // Each batch takes ~3-4 seconds to process (getPersonas + richPresence + wait time)
+    this.richPresenceBatchSize = Number.parseInt(options.richPresenceBatchSize || process.env.RICH_PRESENCE_BATCH_SIZE || '3', 10);
+    this.richPresenceBatchDelayMs = Number.parseInt(options.richPresenceBatchDelayMs || process.env.RICH_PRESENCE_BATCH_DELAY_MS || '1000', 10);
 
-    if (this.richPresenceBatchSize < 1) this.richPresenceBatchSize = 12;
-    if (this.richPresenceBatchDelayMs < 100) this.richPresenceBatchDelayMs = 800;
+    if (this.richPresenceBatchSize < 1) this.richPresenceBatchSize = 3;
+    if (this.richPresenceBatchDelayMs < 100) this.richPresenceBatchDelayMs = 1000;
 
     this.handlers = {
       loggedOn: this.handleLoggedOn.bind(this),
@@ -65,6 +68,7 @@ class DeadlockPresenceLogger {
     this.log('debug', 'Presence logger received loggedOn');
     this.sessionStart.clear();
     this.friendIds.clear();
+    this.initialLoadComplete = false;
   }
 
   handleRelationship(steamID, relationship) {
@@ -84,7 +88,10 @@ class DeadlockPresenceLogger {
       return this.client.myFriends[sid] === SteamUser.EFriendRelationship.Friend;
     });
     this.friendIds = new Set(allFriends);
-    if (!allFriends.length) return;
+    if (!allFriends.length) {
+      this.initialLoadComplete = true;
+      return;
+    }
 
     // Batch friends to avoid Steam client timeouts with large friend lists
     this.log('info', 'Loading friend presence data', {
@@ -94,13 +101,29 @@ class DeadlockPresenceLogger {
       estimated_duration_sec: Math.ceil(allFriends.length / this.richPresenceBatchSize) * (this.richPresenceBatchDelayMs / 1000)
     });
 
-    this.fetchPersonasAndRichPresenceBatched(allFriends);
+    // Wait 15 seconds after friendsList event before starting batch processing
+    // This gives the Steam client time to:
+    // - Complete Friend/DB sync (~8-9 seconds)
+    // - Establish stable GC connection
+    // - Initialize internal request queues (~5-6 seconds additional)
+    // Testing shows first batch had timeouts with 10s delay, but batch 2+ worked perfectly
+    setTimeout(() => {
+      this.log('info', 'Starting friend presence batch processing');
+      this.fetchPersonasAndRichPresenceBatched(allFriends);
+    }, 15000);
   }
 
   handleUser(steamID) {
     const sid = this.toSteamId(steamID);
     if (!sid) return;
     if (this.friendIds.size && !this.friendIds.has(sid)) return;
+
+    // Skip individual fetches during initial batch load to prevent 109 simultaneous requests
+    if (!this.initialLoadComplete) {
+      this.log('debug', 'Skipping handleUser fetch during initial load', { steamId: sid });
+      return;
+    }
+
     this.fetchPersonasAndRichPresence([sid]);
   }
 
@@ -117,7 +140,7 @@ class DeadlockPresenceLogger {
     this.fetchAndWriteRichPresence([sid]);
   }
 
-  fetchPersonasAndRichPresenceBatched(ids) {
+  async fetchPersonasAndRichPresenceBatched(ids) {
     const steamIds = Array.from(new Set(ids.map((sid) => this.toSteamId(sid)).filter(Boolean)));
     if (!steamIds.length) return;
 
@@ -127,16 +150,69 @@ class DeadlockPresenceLogger {
       batches.push(steamIds.slice(i, i + this.richPresenceBatchSize));
     }
 
-    // Process batches with delay between them
-    batches.forEach((batch, index) => {
-      setTimeout(() => {
-        this.log('debug', 'Processing friend presence batch', {
-          batch: index + 1,
-          total_batches: batches.length,
-          batch_size: batch.length
+    // Process batches sequentially - wait for each to complete before starting next
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      this.log('info', 'Processing friend presence batch', {
+        batch: i + 1,
+        total_batches: batches.length,
+        batch_size: batch.length
+      });
+
+      // Call and WAIT for completion before next batch
+      await this.fetchPersonasAndRichPresenceAsync(batch);
+
+      // Delay before next batch (except for last one)
+      if (i < batches.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, this.richPresenceBatchDelayMs));
+      }
+    }
+
+    this.log('info', 'Friend presence batch processing completed', {
+      total_batches: batches.length,
+      total_friends: steamIds.length
+    });
+
+    // Mark initial load as complete - now handleUser can respond to real-time updates
+    this.initialLoadComplete = true;
+    this.log('info', 'Initial friend load complete - real-time presence updates enabled');
+  }
+
+  fetchPersonasAndRichPresenceAsync(ids) {
+    return new Promise((resolve) => {
+      const steamIds = Array.from(new Set(ids.map((sid) => this.toSteamId(sid)).filter(Boolean)));
+      if (!steamIds.length) {
+        resolve();
+        return;
+      }
+
+      if (!this.isClientReady()) {
+        this.log('debug', 'Presence logger skipped fetch (client not ready)', { count: steamIds.length });
+        resolve();
+        return;
+      }
+
+      try {
+        this.log('debug', 'Requesting personas for presence snapshot', { count: steamIds.length });
+        this.client.getPersonas(steamIds, (err) => {
+          if (err) {
+            this.log('warn', 'getPersonas failed', { error: err.message || String(err) });
+            // Wait a bit before continuing on error to avoid hammering the client
+            setTimeout(resolve, 1000);
+            return;
+          }
+
+          // Now request rich presence data
+          this.fetchAndWriteRichPresence(steamIds);
+
+          // Wait 3 seconds for rich presence requests to complete
+          // Rich presence requests can take up to 10s to timeout, so we need adequate wait time
+          setTimeout(resolve, 3000);
         });
-        this.fetchPersonasAndRichPresence(batch);
-      }, index * this.richPresenceBatchDelayMs);
+      } catch (err) {
+        this.log('warn', 'getPersonas threw', { error: err.message || String(err) });
+        setTimeout(resolve, 1000);
+      }
     });
   }
 

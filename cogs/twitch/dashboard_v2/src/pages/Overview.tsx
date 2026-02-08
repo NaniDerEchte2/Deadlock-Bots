@@ -1,14 +1,16 @@
 import { Users, TrendingUp, Clock, MessageSquare, Target } from 'lucide-react';
-import { useOverview, useHourlyHeatmap, useCalendarHeatmap } from '@/hooks/useAnalytics';
+import { useOverview, useHourlyHeatmap, useCalendarHeatmap, useViewerTimeline } from '@/hooks/useAnalytics';
 import { KpiCard } from '@/components/cards/KpiCard';
 import { HealthScoreCard } from '@/components/cards/HealthScoreCard';
 import { ScoreGauge } from '@/components/cards/ScoreGauge';
 import { ViewerTrendChart } from '@/components/charts/ViewerTrendChart';
+import { ViewerTimelineChart } from '@/components/charts/ViewerTimelineChart';
 import { RetentionRadar } from '@/components/charts/RetentionRadar';
 import { SessionTable } from '@/components/tables/SessionTable';
 import { HourlyHeatmap } from '@/components/heatmaps/HourlyHeatmap';
 import { CalendarHeatmap } from '@/components/heatmaps/CalendarHeatmap';
 import { InsightsPanel } from '@/components/cards/InsightsPanel';
+import { CategoryRankBadge } from '@/components/cards/CategoryRankBadge';
 import { formatNumber, formatPercent, formatHours } from '@/utils/formatters';
 import type { TimeRange } from '@/types/analytics';
 
@@ -22,6 +24,7 @@ export function Overview({ streamer, days, onSessionClick }: OverviewProps) {
   const { data: overview, isLoading, error } = useOverview(streamer, days);
   const { data: hourlyData } = useHourlyHeatmap(streamer, days);
   const { data: calendarData } = useCalendarHeatmap(streamer, 365);
+  const { data: timelineData } = useViewerTimeline(streamer, days);
 
   if (isLoading) {
     return (
@@ -43,10 +46,10 @@ export function Overview({ streamer, days, onSessionClick }: OverviewProps) {
     );
   }
 
-  if (!overview) {
+  if (!overview || overview.empty) {
     return (
       <div className="p-8 text-center text-text-secondary">
-        Keine Daten verfügbar
+        {overview?.error || 'Keine Daten verfügbar'}
       </div>
     );
   }
@@ -76,10 +79,16 @@ export function Overview({ streamer, days, onSessionClick }: OverviewProps) {
           color="purple"
         />
 
+        {/* TODO(human): Add conditional display when follower data is unreliable
+            Options: frontend heuristic or backend flag like retentionReliable */}
         <KpiCard
           title="Follower"
-          value={`+${formatNumber(summary.followersDelta)}`}
-          subValue={`${summary.followersPerHour.toFixed(2)} / Stunde`}
+          value={`${summary.followersDelta >= 0 ? '+' : ''}${formatNumber(summary.followersDelta)}`}
+          subValue={
+            summary.followersGained && summary.followersGained !== summary.followersDelta
+              ? `+${formatNumber(summary.followersGained)} gewonnen · ${summary.followersPerHour >= 0 ? '+' : ''}${summary.followersPerHour.toFixed(2)}/h netto`
+              : `${summary.followersPerHour >= 0 ? '+' : ''}${summary.followersPerHour.toFixed(2)} / Stunde`
+          }
           trend={summary.followersTrend}
           icon={TrendingUp}
           color="green"
@@ -87,13 +96,18 @@ export function Overview({ streamer, days, onSessionClick }: OverviewProps) {
 
         <KpiCard
           title="Retention (10m)"
-          value={formatPercent(summary.retention10m)}
-          subValue="Ziel: >40%"
-          trend={summary.retentionTrend}
+          value={summary.retentionReliable === false ? '—' : formatPercent(summary.retention10m)}
+          subValue={summary.retentionReliable === false ? 'Zu wenig Daten' : 'Ziel: >40%'}
+          trend={summary.retentionReliable === false ? undefined : summary.retentionTrend}
           icon={Target}
           color="yellow"
         />
       </div>
+
+      {/* Category Rank Badge */}
+      {overview.categoryRank != null && overview.categoryTotal != null && (
+        <CategoryRankBadge rank={overview.categoryRank} total={overview.categoryTotal} />
+      )}
 
       {/* Insights */}
       {findings && findings.length > 0 && (
@@ -103,7 +117,11 @@ export function Overview({ streamer, days, onSessionClick }: OverviewProps) {
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">
-          <ViewerTrendChart sessions={sessions} title="Viewer Entwicklung" />
+          {timelineData && timelineData.length > 0 ? (
+            <ViewerTimelineChart data={timelineData} title="Viewer Timeline (Live-Daten)" />
+          ) : (
+            <ViewerTrendChart sessions={sessions} title="Viewer Entwicklung" />
+          )}
         </div>
         <div>
           <RetentionRadar scores={scores} title="Performance Mix" />

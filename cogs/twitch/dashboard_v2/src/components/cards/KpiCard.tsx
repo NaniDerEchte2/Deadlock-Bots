@@ -60,7 +60,7 @@ export function KpiCard({
         <span className={`font-bold text-white ${size === 'large' ? 'text-4xl' : 'text-3xl'}`}>
           {value}
         </span>
-        {trend !== undefined && (
+        {trend != null && (
           <span className={`text-sm font-medium mb-1 flex items-center gap-1 ${trendColor}`}>
             <TrendIcon className="w-3 h-3" />
             {Math.abs(trend).toFixed(1)}%

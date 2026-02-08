@@ -113,9 +113,12 @@ export interface CategoryComparison {
   };
   percentiles: {
     avgViewers: number;
+    peakViewers?: number;
     retention10m: number;
     chatHealth: number;
   };
+  categoryRank?: number;
+  categoryTotal?: number;
 }
 
 export interface TagPerformance {
@@ -153,6 +156,8 @@ export interface HealthScore {
 export interface DashboardOverview {
   streamer: string;
   days: number;
+  empty?: boolean;
+  error?: string;
   scores: HealthScore;
   summary: {
     avgViewers: number;
@@ -160,8 +165,11 @@ export interface DashboardOverview {
     totalHoursWatched: number;
     totalAirtime: number;
     followersDelta: number;
+    followersGained?: number;
     followersPerHour: number;
+    followersGainedPerHour?: number;
     retention10m: number;
+    retentionReliable?: boolean;
     uniqueChatters: number;
     streamCount: number;
     // Neue Trend-Felder
@@ -182,6 +190,9 @@ export interface DashboardOverview {
     received: number;
     sentViewers: number;
   };
+  // Category Ranking
+  categoryRank?: number;
+  categoryTotal?: number;
   // Neue Audience Insights
   audienceInsights?: AudienceInsights;
 }
@@ -231,13 +242,33 @@ export interface WatchTimeDistribution {
   over60min: number;      // Loyale Zuschauer (%)
   avgWatchTime: number;   // Durchschnittliche Watch Time in Minuten
   medianWatchTime: number; // Median Watch Time in Minuten
+  sessionCount?: number;
+  previous?: {
+    under5min: number;
+    min5to15: number;
+    min15to30: number;
+    min30to60: number;
+    over60min: number;
+    avgWatchTime: number;
+    medianWatchTime: number;
+    sessionCount?: number;
+  };
+  deltas?: {
+    under5min: number | null;
+    min5to15: number | null;
+    min15to30: number | null;
+    min30to60: number | null;
+    over60min: number | null;
+    avgWatchTime: number | null;
+  };
 }
 
 // Follower Conversion Funnel - Von Viewer zu Follower
 export interface FollowerFunnel {
   uniqueViewers: number;        // Einzigartige Viewer im Zeitraum
   returningViewers: number;     // Wiederkehrende Viewer (nicht gefolgt)
-  newFollowers: number;         // Neue Follower im Zeitraum
+  newFollowers: number;         // Gewonnene Follower (nur positive Session-Deltas)
+  netFollowerDelta: number;     // Netto-Änderung (kann negativ sein: Follows - Unfollows)
   conversionRate: number;       // newFollowers / uniqueViewers * 100
   avgTimeToFollow: number;      // Durchschnittliche Zeit bis Follow (Minuten)
   followersBySource: {
@@ -288,6 +319,31 @@ export interface ApiResponse<T> {
   data: T;
   error?: string;
   empty?: boolean;
+}
+
+// Viewer Timeline (from twitch_stats_tracked)
+export interface ViewerTimelinePoint {
+  timestamp: string;
+  avgViewers: number;
+  peakViewers: number;
+  minViewers: number;
+  samples: number;
+}
+
+// Category Leaderboard (from twitch_stats_category)
+export interface LeaderboardEntry {
+  rank: number;
+  streamer: string;
+  avgViewers: number;
+  peakViewers: number;
+  isPartner: boolean;
+  isYou?: boolean;
+}
+
+export interface CategoryLeaderboard {
+  leaderboard: LeaderboardEntry[];
+  totalStreamers: number;
+  yourRank: number | null;
 }
 
 export type TimeRange = 7 | 30 | 90 | 365;

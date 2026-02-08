@@ -28,7 +28,7 @@ export function Sessions({ streamer, days }: SessionsProps) {
     );
   }
 
-  if (!data || !data.sessions || data.sessions.length === 0) {
+  if (!data || data.empty || !data.sessions || data.sessions.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-64">
         <AlertCircle className="w-12 h-12 text-text-secondary mb-4" />

@@ -510,7 +510,7 @@ class TwitchMonitoringMixin:
             return False
 
         try:
-            condition = {"broadcaster_user_id": str(broadcaster_id)}
+            condition = {"to_broadcaster_user_id": str(broadcaster_id)}
             await self.api.subscribe_eventsub_websocket(
                 session_id=session_id,
                 sub_type="channel.raid",
@@ -757,6 +757,7 @@ class TwitchMonitoringMixin:
             is_archived = bool(entry.get("is_archived"))
             was_live = bool(previous_state.get("is_live", 0))
             is_live = bool(stream)
+            twitch_user_id = str(entry.get("twitch_user_id") or "").strip() or None
 
             # Go-Live Detection: Subscribe stream.offline für raid-enabled Streamer
             if not was_live and is_live and twitch_user_id:
@@ -790,7 +791,6 @@ class TwitchMonitoringMixin:
             previous_game = (previous_state.get("last_game") or "").strip()
             previous_game_lower = previous_game.lower()
             was_deadlock = previous_game_lower == target_game_lower
-            twitch_user_id = str(entry.get("twitch_user_id") or "").strip() or None
             stream_started_at_value = self._extract_stream_start(stream, previous_state)
             previous_stream_id = (previous_state.get("last_stream_id") or "").strip()
             current_stream_id_raw = stream.get("id") if stream else ""
@@ -1435,8 +1435,18 @@ class TwitchMonitoringMixin:
             viewer_rows = []
 
         def _retention_at(minutes: int, start_viewers: int) -> Optional[float]:
-            if start_viewers <= 0:
+            if not viewer_rows:
                 return None
+            # Find peak viewer count BEFORE the target minute as baseline
+            peak_before = start_viewers
+            for row in viewer_rows:
+                mins = int(_row_val(row, "minutes_from_start", 0, 0) or 0)
+                val = int(_row_val(row, "viewer_count", 1, 0) or 0)
+                if mins < minutes:
+                    peak_before = max(peak_before, val)
+            if peak_before <= 0:
+                return None
+            # Find closest viewer count AT or AFTER target minute
             best: Optional[tuple[int, int]] = None
             for row in viewer_rows:
                 mins = int(_row_val(row, "minutes_from_start", 0, 0) or 0)
@@ -1445,7 +1455,8 @@ class TwitchMonitoringMixin:
                     continue
                 if best is None or mins < best[0]:
                     best = (mins, val)
-            if best is None and viewer_rows:
+            # Fallback to last data point if stream ended before target
+            if best is None:
                 last = viewer_rows[-1]
                 best = (
                     int(_row_val(last, "minutes_from_start", 0, 0) or 0),
@@ -1453,7 +1464,7 @@ class TwitchMonitoringMixin:
                 )
             if best is None:
                 return None
-            return max(0.0, min(1.0, best[1] / start_viewers))
+            return max(0.0, min(1.0, best[1] / peak_before))
 
         start_viewers = int(_row_val(session_row, "start_viewers", 6, 0) or 0)
         end_viewers = int(_row_val(session_row, "end_viewers", 8, 0) or 0)
@@ -1535,7 +1546,12 @@ class TwitchMonitoringMixin:
         )
         follower_delta = None
         if followers_start is not None and followers_end is not None:
-            follower_delta = int(followers_end) - int(followers_start)
+            if int(followers_end) == 0 and int(followers_start) > 0:
+                # API returned 0 without user token — treat as missing data
+                followers_end = None
+                follower_delta = None
+            else:
+                follower_delta = int(followers_end) - int(followers_start)
 
         target_game_lower = self._get_target_game_lower()
         last_game_lower = (last_game_value or "").strip().lower() if last_game_value else ""

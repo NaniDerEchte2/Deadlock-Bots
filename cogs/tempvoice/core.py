@@ -40,7 +40,7 @@ STAGING_RULES: Dict[int, Dict[str, Any]] = {
         "disable_rank_caps": True,
         "disable_min_rank": True,
     },
-    CASUAL_STAGING_ID: {  # Chill Lanes: Prefix per Owner-Rang
+    CASUAL_STAGING_ID: {  # Chill Lanes: Prefix per berechnetem Lane-Schnitt
         "prefix_from_rank": True,
     },
 }
@@ -140,8 +140,14 @@ def _age_seconds(ch: discord.VoiceChannel) -> float:
 
 def _rank_prefix_for(member: discord.Member) -> Optional[str]:
     """Ermittle den höchsten Rang des Members anhand der Rollen-Namen."""
+    best_idx = _member_rank_index(member)
+    if best_idx > 0:
+        return RANK_ORDER[best_idx].capitalize()
+    return None
+
+def _member_rank_index(member: discord.Member) -> int:
+    """Ermittelt den höchsten Rangindex eines Members (unknown=0)."""
     best_idx = 0
-    best_label: Optional[str] = None
     for role in getattr(member, "roles", []):
         try:
             role_name = str(role.name).lower()
@@ -150,11 +156,7 @@ def _rank_prefix_for(member: discord.Member) -> Optional[str]:
         idx = _rank_index(role_name)
         if idx > best_idx:
             best_idx = idx
-            # Nutze kanonischen Namen aus RANK_ORDER für konsistente Schreibweise
-            best_label = RANK_ORDER[idx]
-    if best_idx > 0 and best_label:
-        return best_label.capitalize()
-    return None
+    return best_idx
 
 # --------- Ban-Store ---------
 class AsyncBanStore:
@@ -315,8 +317,29 @@ class TempVoiceCore(commands.Cog):
             return None
         return self.category_to_staging.get(int(category.id))
 
+    def _average_rank_prefix_for_lane(self, lane: discord.VoiceChannel) -> Optional[str]:
+        """Berechnet den Durchschnittsrang der Lane-Mitglieder (Minimum Initiate=1)."""
+        members = [m for m in getattr(lane, "members", []) if isinstance(m, discord.Member)]
+        if not members:
+            return None
+        total = 0
+        count = 0
+        for member in members:
+            idx = _member_rank_index(member)
+            # Unknown (0) soll den Schnitt nicht unter Initiate (1) ziehen.
+            total += max(1, idx)
+            count += 1
+        if count <= 0:
+            return None
+        avg_idx = int((total / count) + 0.5)
+        avg_idx = max(1, min(avg_idx, len(RANK_ORDER) - 1))
+        return RANK_ORDER[avg_idx].capitalize()
+
     def _desired_prefix_for_rules(self, lane: discord.VoiceChannel, rules: Dict[str, Any]) -> str:
         if rules.get("prefix_from_rank"):
+            avg_prefix = self._average_rank_prefix_for_lane(lane)
+            if avg_prefix:
+                return avg_prefix
             owner_id = self.lane_owner.get(lane.id)
             member = lane.guild.get_member(int(owner_id)) if owner_id else None
             prefix = _rank_prefix_for(member) if member else None
@@ -1019,7 +1042,11 @@ class TempVoiceCore(commands.Cog):
             log.debug("TempVoice: update lane base failed (%s): %r", lane_id, e)
 
     def _compose_name(self, lane: discord.VoiceChannel) -> str:
-        base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
+        rules = self.lane_rules.get(lane.id) or self._rules_for_category(lane.category)
+        if rules.get("prefix_from_rank"):
+            base = self._desired_prefix_for_rules(lane, rules)
+        else:
+            base = self.lane_base.get(lane.id) or _strip_suffixes(lane.name)
         parts = [base]
         if lane.category_id in MINRANK_CATEGORY_IDS:
             min_rank = self.lane_min_rank.get(lane.id, "unknown")
@@ -1034,7 +1061,9 @@ class TempVoiceCore(commands.Cog):
         # Schutz: Nie rumpfuschen, wenn LiveMatch-Suffix dran ist oder Channel nicht frisch ist
         if _has_live_suffix(lane.name):
             return
-        if ONLY_SET_NAME_ON_CREATE and _age_seconds(lane) > CREATE_RENAME_WINDOW_SEC:
+        rules = self.lane_rules.get(lane.id) or self._rules_for_category(lane.category)
+        dynamic_rank_prefix = bool(rules.get("prefix_from_rank"))
+        if ONLY_SET_NAME_ON_CREATE and _age_seconds(lane) > CREATE_RENAME_WINDOW_SEC and not dynamic_rank_prefix:
             return
         
         # Prüfe ob der Name überhaupt geändert werden muss - verhindert redundante API-Calls
@@ -1255,7 +1284,7 @@ class TempVoiceCore(commands.Cog):
                 cat = staging.category
                 prefix = str(rules.get("prefix") or "Lane")
                 if rules.get("prefix_from_rank"):
-                    prefix = _rank_prefix_for(member) or CASUAL_RANK_FALLBACK
+                    prefix = RANK_ORDER[max(1, _member_rank_index(member))].capitalize()
                     base = prefix
                 else:
                     base = await self._next_name(cat, prefix)
@@ -1481,6 +1510,9 @@ class TempVoiceCore(commands.Cog):
                     else:
                         lane_id = int(ch.id)
                         await self._cleanup_lane(lane_id, channel=ch, reason="TempVoice: Lane leer")
+
+                if _is_managed_lane(ch) and len(ch.members) > 0:
+                    await self._refresh_name(ch)
         except Exception as e:
             log.debug("owner/cleanup flow failed: %r", e)
 

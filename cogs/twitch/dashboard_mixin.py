@@ -13,7 +13,7 @@ import discord
 from aiohttp import web
 
 from . import storage
-from .dashboard import Dashboard
+from .dashboard_v2_server import build_v2_app
 from .logger import log
 from .constants import TWITCH_TARGET_GAME_NAME
 from .analytics_backend_extended import AnalyticsBackendExtended
@@ -1233,28 +1233,11 @@ class TwitchDashboardMixin:
         
         for attempt in range(max_retries):
             try:
-                app = Dashboard.build_app(
+                app = build_v2_app(
                     noauth=self._dashboard_noauth,
                     token=self._dashboard_token,
                     partner_token=self._partner_dashboard_token,
-                    add_cb=self._dashboard_add,
-                    remove_cb=self._dashboard_remove,
-                    list_cb=self._dashboard_list,
-                    stats_cb=self._dashboard_stats,
-                    verify_cb=self._dashboard_verify,
-                    archive_cb=self._dashboard_archive,
-                    discord_flag_cb=self._dashboard_set_discord_flag,
-                    discord_profile_cb=self._dashboard_save_discord_profile,
-                    raid_history_cb=self._dashboard_raid_history if hasattr(self, "_dashboard_raid_history") else None,
-                    streamer_overview_cb=self._dashboard_streamer_overview,
-                    session_detail_cb=self._dashboard_session_detail,
-                    comparison_stats_cb=self._dashboard_comparison_stats,
-                    streamer_analytics_data_cb=self._dashboard_streamer_analytics_data,
-                    analytics_suggestions_cb=self._dashboard_analytics_suggestions,
-                    raid_bot=getattr(self, "_raid_bot", None),
                     reload_cb=self._reload_twitch_cog,
-                    http_session=self.api.get_http_session() if self.api else None,
-                    redirect_uri=getattr(self, "_raid_redirect_uri", ""),
                 )
                 runner = web.AppRunner(app)
                 await runner.setup()

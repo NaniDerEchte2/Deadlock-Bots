@@ -49,6 +49,14 @@ def _is_localhost(request: web.Request) -> bool:
 class AnalyticsV2Mixin:
     """Mixin providing v2 analytics API endpoints for the dashboard."""
 
+    # Reusable SQL: filter out sessions where Twitch API returned 0 followers (missing token)
+    _FOLLOWER_DELTA_SUM = """SUM(CASE WHEN s.follower_delta IS NOT NULL
+         AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+         THEN s.follower_delta ELSE 0 END)"""
+    _FOLLOWER_DELTA_AVG = """AVG(CASE WHEN s.follower_delta IS NOT NULL
+         AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+         THEN s.follower_delta ELSE NULL END)"""
+
     def _check_v2_auth(self, request: web.Request) -> bool:
         """Check if request is authorized for v2 API.
 
@@ -148,6 +156,9 @@ class AnalyticsV2Mixin:
         router.add_get("/twitch/api/v2/title-performance", self._api_v2_title_performance)
         router.add_get("/twitch/api/v2/audience-insights", self._api_v2_audience_insights)
         router.add_get("/twitch/api/v2/audience-demographics", self._api_v2_audience_demographics)
+        # Stats-Data Endpoints (from twitch_stats_tracked / twitch_stats_category)
+        router.add_get("/twitch/api/v2/viewer-timeline", self._api_v2_viewer_timeline)
+        router.add_get("/twitch/api/v2/category-leaderboard", self._api_v2_category_leaderboard)
         # Serve the dashboard
         router.add_get("/twitch/dashboard-v2", self._serve_dashboard_v2)
         router.add_get("/twitch/dashboard-v2/{path:.*}", self._serve_dashboard_v2_assets)
@@ -220,8 +231,8 @@ class AnalyticsV2Mixin:
             prev_metrics = conn.execute(f"""
                 SELECT
                     AVG(s.avg_viewers) as avg_viewers,
-                    SUM(COALESCE(s.follower_delta, 0)) as followers,
-                    AVG(s.retention_10m) as retention
+                    {self._FOLLOWER_DELTA_SUM} as followers,
+                    AVG(CASE WHEN s.avg_viewers >= 3 THEN s.retention_10m ELSE NULL END) as retention
                 FROM twitch_stream_sessions s
                 WHERE s.started_at >= ? AND s.started_at < ? AND s.ended_at IS NOT NULL {where}
             """, prev_params).fetchone()
@@ -230,18 +241,33 @@ class AnalyticsV2Mixin:
             def calc_trend(curr, prev):
                 if not prev or prev == 0:
                     return None
-                return round(((curr - prev) / prev) * 100, 1)
+                return round(((curr - prev) / abs(prev)) * 100, 1)
 
             prev_avg = float(prev_metrics[0]) if prev_metrics and prev_metrics[0] else 0
             prev_fol = int(prev_metrics[1]) if prev_metrics and prev_metrics[1] else 0
-            prev_ret = float(prev_metrics[2]) if prev_metrics and prev_metrics[2] else 0
+            prev_ret = float(prev_metrics[2]) * 100 if prev_metrics and prev_metrics[2] else 0
 
             avg_viewers_trend = calc_trend(metrics.get("avg_avg_viewers", 0), prev_avg)
+            # Follower trend: use abs(prev) to avoid inversion with negative base
             followers_trend = calc_trend(metrics.get("total_followers", 0), prev_fol)
             retention_trend = calc_trend(metrics.get("avg_retention_10m", 0), prev_ret)
 
+            # Calculate category percentile for health score
+            category_percentile = None
+            category_rank = None
+            category_total = None
+            if streamer:
+                cat_data = self._get_category_percentiles(conn, since_date)
+                if cat_data["sorted_avgs"]:
+                    streamer_avg = cat_data["streamer_map"].get(streamer.lower())
+                    if streamer_avg is not None:
+                        category_percentile = self._percentile_of(cat_data["sorted_avgs"], streamer_avg)
+                        category_total = cat_data["total"]
+                        # Rank = total - position (1 = best)
+                        category_rank = category_total - int(category_percentile * category_total)
+
             # Calculate scores
-            scores = self._calculate_health_scores(metrics)
+            scores = self._calculate_health_scores(metrics, category_percentile)
 
             # Generate insights
             findings = self._generate_insights(metrics)
@@ -253,7 +279,7 @@ class AnalyticsV2Mixin:
             # Correlations
             correlations = self._calculate_correlations(sessions)
 
-            return {
+            result: Dict[str, Any] = {
                 "streamer": streamer,
                 "days": days,
                 "scores": scores,
@@ -263,8 +289,11 @@ class AnalyticsV2Mixin:
                     "totalHoursWatched": metrics.get("total_hours_watched", 0),
                     "totalAirtime": metrics.get("total_airtime_hours", 0),
                     "followersDelta": metrics.get("total_followers", 0),
+                    "followersGained": metrics.get("gained_followers", 0),
                     "followersPerHour": metrics.get("followers_per_hour", 0),
+                    "followersGainedPerHour": metrics.get("gained_followers_per_hour", 0),
                     "retention10m": metrics.get("avg_retention_10m", 0),
+                    "retentionReliable": metrics.get("retention_sample_count", 0) >= 3,
                     "uniqueChatters": metrics.get("total_unique_chatters", 0),
                     "streamCount": count,
                     # Trend indicators
@@ -278,6 +307,10 @@ class AnalyticsV2Mixin:
                 "correlations": correlations,
                 "network": network,
             }
+            if category_rank is not None:
+                result["categoryRank"] = category_rank
+                result["categoryTotal"] = category_total
+            return result
 
     def _get_sessions(self, conn, since_date: str, streamer: Optional[str], limit: int = 50) -> List[Dict]:
         """Get list of sessions with metrics."""
@@ -309,10 +342,10 @@ class AnalyticsV2Mixin:
                 "peakViewers": r[5] or 0,
                 "endViewers": r[6] or 0,
                 "avgViewers": float(r[7]) if r[7] else 0,
-                "retention5m": float(r[8]) if r[8] else 0,
-                "retention10m": float(r[9]) if r[9] else 0,
-                "retention20m": float(r[10]) if r[10] else 0,
-                "dropoffPct": float(r[11]) if r[11] else 0,
+                "retention5m": float(r[8]) * 100 if r[8] else 0,
+                "retention10m": float(r[9]) * 100 if r[9] else 0,
+                "retention20m": float(r[10]) * 100 if r[10] else 0,
+                "dropoffPct": float(r[11]) * 100 if r[11] else 0,
                 "uniqueChatters": r[12] or 0,
                 "firstTimeChatters": r[13] or 0,
                 "returningChatters": r[14] or 0,
@@ -334,19 +367,55 @@ class AnalyticsV2Mixin:
                 MAX(s.peak_viewers) as max_peak_viewers,
                 SUM(s.avg_viewers * s.duration_seconds / 3600.0) as total_hours_watched,
                 SUM(s.duration_seconds / 3600.0) as total_airtime_hours,
-                SUM(COALESCE(s.follower_delta, 0)) as total_followers,
-                AVG(s.retention_5m) as avg_retention_5m,
-                AVG(s.retention_10m) as avg_retention_10m,
-                AVG(s.retention_20m) as avg_retention_20m,
+                {self._FOLLOWER_DELTA_SUM} as total_followers,
+                AVG(CASE WHEN s.avg_viewers >= 3 THEN s.retention_5m ELSE NULL END) as avg_retention_5m,
+                AVG(CASE WHEN s.avg_viewers >= 3 THEN s.retention_10m ELSE NULL END) as avg_retention_10m,
+                AVG(CASE WHEN s.avg_viewers >= 3 THEN s.retention_20m ELSE NULL END) as avg_retention_20m,
                 AVG(s.dropoff_pct) as avg_dropoff,
                 SUM(s.unique_chatters) as total_unique_chatters,
-                AVG(CASE WHEN s.avg_viewers > 0 THEN s.unique_chatters * 100.0 / s.avg_viewers ELSE 0 END) as chat_per_100
+                AVG(CASE WHEN s.avg_viewers >= 3 THEN MIN(s.unique_chatters * 100.0 / s.avg_viewers, 100.0) ELSE NULL END) as chat_per_100
             FROM twitch_stream_sessions s
             WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}
         """, params).fetchone()
 
         total_airtime = float(row[3]) if row[3] else 0
-        total_followers = int(row[4]) if row[4] else 0
+        total_followers = int(row[4]) if row[4] else 0  # NET (can be negative)
+
+        # Gained followers = only positive session deltas (ignores unfollows)
+        gained_row = conn.execute(f"""
+            SELECT COALESCE(SUM(CASE WHEN s.follower_delta > 0
+                 AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+                 THEN s.follower_delta ELSE 0 END), 0)
+            FROM twitch_stream_sessions s
+            WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}
+        """, params).fetchone()
+        gained_followers = int(gained_row[0]) if gained_row and gained_row[0] else 0
+
+        # True unique chatters from rollup table (not SUM of per-session counts)
+        unique_chatters_sum = int(row[9]) if row[9] else 0
+        if streamer:
+            true_unique = conn.execute("""
+                SELECT COUNT(DISTINCT chatter_login)
+                FROM twitch_chatter_rollup
+                WHERE LOWER(streamer_login) = ?
+            """, [streamer.lower()]).fetchone()
+            unique_chatters = int(true_unique[0]) if true_unique and true_unique[0] else unique_chatters_sum
+        else:
+            unique_chatters = unique_chatters_sum
+
+        # Sample counts for data quality gating
+        sample_row = conn.execute(f"""
+            SELECT
+                COUNT(CASE WHEN s.avg_viewers >= 3 AND s.retention_10m IS NOT NULL THEN 1 END),
+                COUNT(CASE WHEN s.avg_viewers >= 3 AND s.unique_chatters IS NOT NULL THEN 1 END),
+                COUNT(CASE WHEN s.follower_delta IS NOT NULL
+                     AND NOT (s.followers_end = 0 AND s.followers_start > 0) THEN 1 END)
+            FROM twitch_stream_sessions s
+            WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}
+        """, params).fetchone()
+        retention_sample_count = int(sample_row[0]) if sample_row else 0
+        chat_sample_count = int(sample_row[1]) if sample_row else 0
+        follower_valid_count = int(sample_row[2]) if sample_row else 0
 
         return {
             "avg_avg_viewers": float(row[0]) if row[0] else 0,
@@ -354,35 +423,74 @@ class AnalyticsV2Mixin:
             "total_hours_watched": float(row[2]) if row[2] else 0,
             "total_airtime_hours": total_airtime,
             "total_followers": total_followers,
+            "gained_followers": gained_followers,
             "followers_per_hour": total_followers / total_airtime if total_airtime > 0 else 0,
-            "avg_retention_5m": float(row[5]) if row[5] else 0,
-            "avg_retention_10m": float(row[6]) if row[6] else 0,
-            "avg_retention_20m": float(row[7]) if row[7] else 0,
-            "avg_dropoff": float(row[8]) if row[8] else 0,
-            "total_unique_chatters": int(row[9]) if row[9] else 0,
+            "gained_followers_per_hour": gained_followers / total_airtime if total_airtime > 0 else 0,
+            "avg_retention_5m": float(row[5]) * 100 if row[5] else 0,
+            "avg_retention_10m": float(row[6]) * 100 if row[6] else 0,
+            "avg_retention_20m": float(row[7]) * 100 if row[7] else 0,
+            "avg_dropoff": float(row[8]) * 100 if row[8] else 0,
+            "total_unique_chatters": unique_chatters,
             "chat_per_100": float(row[10]) if row[10] else 0,
+            "retention_sample_count": retention_sample_count,
+            "chat_sample_count": chat_sample_count,
+            "follower_valid_count": follower_valid_count,
         }
 
-    def _calculate_health_scores(self, metrics: Dict[str, Any]) -> Dict[str, int]:
+    def _get_category_percentiles(self, conn, since_date: str) -> Dict[str, Any]:
+        """Get per-streamer AVG viewer_count from stats_category and compute percentiles."""
+        rows = conn.execute("""
+            SELECT streamer, AVG(viewer_count) as avg_vc
+            FROM twitch_stats_category
+            WHERE ts_utc >= ?
+            GROUP BY streamer
+            ORDER BY avg_vc
+        """, [since_date]).fetchall()
+
+        if not rows:
+            return {"sorted_avgs": [], "streamer_map": {}, "total": 0}
+
+        sorted_avgs = [float(r[1]) for r in rows]
+        streamer_map = {r[0].lower(): float(r[1]) for r in rows}
+        return {"sorted_avgs": sorted_avgs, "streamer_map": streamer_map, "total": len(rows)}
+
+    def _percentile_of(self, sorted_avgs: List[float], value: float) -> float:
+        """Return the percentile (0-1) of value within sorted_avgs."""
+        if not sorted_avgs:
+            return 0.5
+        below = sum(1 for v in sorted_avgs if v < value)
+        return below / len(sorted_avgs)
+
+    def _calculate_health_scores(self, metrics: Dict[str, Any], category_percentile: Optional[float] = None) -> Dict[str, int]:
         """Calculate health scores from metrics."""
-        # Reach: Based on avg viewers (normalized to 0-100)
         avg_viewers = metrics.get("avg_avg_viewers", 0)
-        reach = min(100, int(avg_viewers / 5))  # 500 viewers = 100
 
-        # Retention: Based on 10m retention
+        # Reach: Based on percentile ranking in category if available, else fallback
+        if category_percentile is not None:
+            reach = min(100, int(20 + category_percentile * 80))
+        else:
+            reach = min(100, int(avg_viewers / 5))  # fallback
+
+        # Retention: Based on 10m retention (neutral if insufficient data)
         ret_10m = metrics.get("avg_retention_10m", 0)
-        retention = min(100, int(ret_10m * 1.5))  # 66% = 100
+        if metrics.get("retention_sample_count", 0) < 3:
+            retention = 50
+        else:
+            retention = min(100, int(ret_10m * 1.5))  # 66% = 100
 
-        # Engagement: Based on chat per 100 viewers
+        # Engagement: Based on chat per 100 viewers (neutral if insufficient data)
         chat_100 = metrics.get("chat_per_100", 0)
-        engagement = min(100, int(chat_100 * 5))  # 20 chatters/100 = 100
+        if metrics.get("chat_sample_count", 0) < 3:
+            engagement = 50
+        else:
+            engagement = min(100, int(chat_100 * 5))  # 20 chatters/100 = 100
 
-        # Growth: Based on followers per hour
-        fph = metrics.get("followers_per_hour", 0)
+        # Growth: Based on followers per hour (floor at 0, negative fph = 0 growth)
+        fph = max(0, metrics.get("followers_per_hour", 0))
         growth = min(100, int(fph * 20))  # 5 fph = 100
 
         # Monetization: Placeholder (would need sub data)
-        monetization = min(100, int(avg_viewers / 10))
+        monetization = min(100, max(0, int(avg_viewers / 10)))
 
         # Network: Placeholder
         network = 50
@@ -413,7 +521,13 @@ class AnalyticsV2Mixin:
 
         # Retention
         ret_10m = metrics.get("avg_retention_10m", 0)
-        if ret_10m < 40:
+        if metrics.get("retention_sample_count", 0) < 3:
+            insights.append({
+                "type": "info",
+                "title": "Retention-Daten unzureichend",
+                "text": "Zu wenige Sessions mit ≥3 Viewern für aussagekräftige Retention-Werte."
+            })
+        elif ret_10m < 40:
             insights.append({
                 "type": "neg",
                 "title": "Niedrige Retention",
@@ -428,7 +542,13 @@ class AnalyticsV2Mixin:
 
         # Chat
         chat_100 = metrics.get("chat_per_100", 0)
-        if chat_100 < 5:
+        if metrics.get("chat_sample_count", 0) < 3:
+            insights.append({
+                "type": "info",
+                "title": "Chat-Daten unzureichend",
+                "text": "Zu wenige Sessions mit ≥3 Viewern für aussagekräftige Chat-Metriken."
+            })
+        elif chat_100 < 5:
             insights.append({
                 "type": "warn",
                 "title": "Niedrige Chat-Aktivität",
@@ -441,9 +561,20 @@ class AnalyticsV2Mixin:
                 "text": f"{chat_100:.1f} Chatter/100 Viewer - sehr engagiert!"
             })
 
-        # Followers
+        # Followers (skip when no valid follower data)
         fph = metrics.get("followers_per_hour", 0)
-        if fph < 0.5:
+        gained_fph = metrics.get("gained_followers_per_hour", 0)
+        follower_data_valid = metrics.get("follower_valid_count", 0) > 0
+        if not follower_data_valid:
+            pass  # No reliable follower data — skip all follower insights
+        elif fph < 0:
+            insights.append({
+                "type": "neg",
+                "title": "Follower-Verlust",
+                "text": f"Netto {fph:.2f} Follower/Stunde ({metrics.get('total_followers', 0):+d} gesamt). "
+                        f"Gewonnen: {gained_fph:.2f}/h. Unfollows überwiegen."
+            })
+        elif fph < 0.5:
             insights.append({
                 "type": "warn",
                 "title": "Langsames Follower-Wachstum",
@@ -463,7 +594,7 @@ class AnalyticsV2Mixin:
         actions = []
 
         ret_10m = metrics.get("avg_retention_10m", 0)
-        if ret_10m < 50:
+        if metrics.get("retention_sample_count", 0) >= 3 and ret_10m < 50:
             actions.append({
                 "tag": "Retention",
                 "text": "Starte mit einem starken Hook in den ersten 2 Minuten.",
@@ -471,7 +602,7 @@ class AnalyticsV2Mixin:
             })
 
         chat_100 = metrics.get("chat_per_100", 0)
-        if chat_100 < 10:
+        if metrics.get("chat_sample_count", 0) >= 3 and chat_100 < 10:
             actions.append({
                 "tag": "Engagement",
                 "text": "Stelle alle 5-10 Minuten eine direkte Frage an den Chat.",
@@ -479,7 +610,14 @@ class AnalyticsV2Mixin:
             })
 
         fph = metrics.get("followers_per_hour", 0)
-        if fph < 1:
+        follower_data_valid = metrics.get("follower_valid_count", 0) > 0
+        if follower_data_valid and fph < 0:
+            actions.append({
+                "tag": "Growth",
+                "text": "Follower-Verlust! Prüfe ob Content-Wechsel oder lange Pausen Unfollows verursachen.",
+                "priority": "high"
+            })
+        elif follower_data_valid and fph < 1:
             actions.append({
                 "tag": "Growth",
                 "text": "Erinnere alle 20-30 Minuten an Follow mit konkretem Grund.",
@@ -639,7 +777,7 @@ class AnalyticsV2Mixin:
                         SUM(s.duration_seconds / 3600.0) as airtime,
                         AVG(s.avg_viewers) as avg_viewers,
                         MAX(s.peak_viewers) as peak_viewers,
-                        SUM(COALESCE(s.follower_delta, 0)) as follower_delta,
+                        {self._FOLLOWER_DELTA_SUM} as follower_delta,
                         SUM(s.unique_chatters) as unique_chatters,
                         COUNT(*) as stream_count
                     FROM twitch_stream_sessions s
@@ -690,7 +828,7 @@ class AnalyticsV2Mixin:
                         AVG(s.duration_seconds / 3600.0) as avg_hours,
                         AVG(s.avg_viewers) as avg_viewers,
                         AVG(s.peak_viewers) as avg_peak,
-                        SUM(COALESCE(s.follower_delta, 0)) as total_followers
+                        {self._FOLLOWER_DELTA_SUM} as total_followers
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}
                     GROUP BY weekday
@@ -860,7 +998,7 @@ class AnalyticsV2Mixin:
                 elif metric == "retention":
                     order_by = "AVG(s.retention_10m)"
                 elif metric == "growth":
-                    order_by = "SUM(COALESCE(s.follower_delta, 0))"
+                    order_by = self._FOLLOWER_DELTA_SUM
                 else:
                     order_by = "AVG(s.avg_viewers)"
 
@@ -880,7 +1018,7 @@ class AnalyticsV2Mixin:
                     {
                         "rank": i + 1,
                         "login": r[0],
-                        "value": float(r[1]) if r[1] else 0,
+                        "value": (float(r[1]) * 100 if metric == "retention" else float(r[1])) if r[1] else 0,
                         "trend": "same",
                         "trendValue": 0,
                     }
@@ -906,57 +1044,121 @@ class AnalyticsV2Mixin:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
-                # Your stats
-                your = conn.execute("""
+                # Your stats from stats_tracked (higher accuracy for tracked streamers)
+                your_tracked = conn.execute("""
+                    SELECT AVG(viewer_count), MAX(viewer_count)
+                    FROM twitch_stats_tracked
+                    WHERE ts_utc >= ? AND LOWER(streamer) = ?
+                """, [since_date, streamer.lower()]).fetchone()
+
+                # Fallback to session data
+                your_session = conn.execute("""
                     SELECT
                         AVG(s.avg_viewers) as avg_viewers,
-                        AVG(s.peak_viewers) as peak_viewers,
+                        MAX(s.peak_viewers) as peak_viewers,
                         AVG(s.retention_10m) as retention10m,
                         AVG(CASE WHEN s.avg_viewers > 0 THEN s.unique_chatters * 100.0 / s.avg_viewers ELSE 0 END) as chat_health
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
                 """, [since_date, streamer.lower()]).fetchone()
 
-                # Category averages (from twitch_stats_category)
-                cat = conn.execute("""
-                    SELECT AVG(viewer_count) as avg_viewers
+                # Use tracked data if available, else session data
+                your_avg = float(your_tracked[0]) if your_tracked and your_tracked[0] else (float(your_session[0]) if your_session and your_session[0] else 0)
+                your_peak = int(your_tracked[1]) if your_tracked and your_tracked[1] else (int(your_session[1]) if your_session and your_session[1] else 0)
+                your_ret = float(your_session[2]) * 100 if your_session and your_session[2] else 0
+                your_chat = float(your_session[3]) if your_session and your_session[3] else 0
+
+                # Category stats from stats_category (per-streamer aggregates)
+                cat_data = self._get_category_percentiles(conn, since_date)
+                sorted_avgs = cat_data["sorted_avgs"]
+                category_total = cat_data["total"]
+
+                # Category averages
+                cat_avg_viewers = sum(sorted_avgs) / len(sorted_avgs) if sorted_avgs else 0
+
+                # Peak viewers per streamer from category
+                cat_peak = conn.execute("""
+                    SELECT AVG(max_vc) FROM (
+                        SELECT MAX(viewer_count) as max_vc
+                        FROM twitch_stats_category
+                        WHERE ts_utc >= ?
+                        GROUP BY streamer
+                    )
+                """, [since_date]).fetchone()
+                cat_avg_peak = float(cat_peak[0]) if cat_peak and cat_peak[0] else 0
+
+                # Category-wide retention and chat health from session data
+                cat_session_avgs = conn.execute("""
+                    SELECT
+                        AVG(s.retention_10m) as avg_ret,
+                        AVG(CASE WHEN s.avg_viewers > 0 THEN s.unique_chatters * 100.0 / s.avg_viewers ELSE 0 END) as avg_chat
+                    FROM twitch_stream_sessions s
+                    WHERE s.started_at >= ? AND s.ended_at IS NOT NULL
+                """, [since_date]).fetchone()
+                cat_avg_ret = float(cat_session_avgs[0]) * 100 if cat_session_avgs and cat_session_avgs[0] else 0
+                cat_avg_chat = float(cat_session_avgs[1]) if cat_session_avgs and cat_session_avgs[1] else 0
+
+                # Per-streamer retention and chat for percentile ranking
+                per_streamer_ret = conn.execute("""
+                    SELECT AVG(s.retention_10m) as ret
+                    FROM twitch_stream_sessions s
+                    WHERE s.started_at >= ? AND s.ended_at IS NOT NULL
+                    GROUP BY LOWER(s.streamer_login)
+                    ORDER BY ret
+                """, [since_date]).fetchall()
+                ret_sorted = [float(r[0]) * 100 for r in per_streamer_ret if r[0] is not None]
+
+                per_streamer_chat = conn.execute("""
+                    SELECT AVG(CASE WHEN s.avg_viewers > 0 THEN s.unique_chatters * 100.0 / s.avg_viewers ELSE 0 END) as ch
+                    FROM twitch_stream_sessions s
+                    WHERE s.started_at >= ? AND s.ended_at IS NOT NULL
+                    GROUP BY LOWER(s.streamer_login)
+                    ORDER BY ch
+                """, [since_date]).fetchall()
+                chat_sorted = [float(r[0]) for r in per_streamer_chat if r[0] is not None]
+
+                # Percentiles for avgViewers
+                avg_percentile = int(self._percentile_of(sorted_avgs, your_avg) * 100) if sorted_avgs else 0
+
+                # Percentile for peakViewers
+                peak_avgs = conn.execute("""
+                    SELECT MAX(viewer_count) as peak
                     FROM twitch_stats_category
                     WHERE ts_utc >= ?
-                """, [since_date]).fetchone()
-
-                # Calculate percentiles
-                all_viewers = conn.execute("""
-                    SELECT AVG(avg_viewers) as val
-                    FROM twitch_stream_sessions
-                    WHERE started_at >= ? AND ended_at IS NOT NULL
-                    GROUP BY streamer_login
-                    ORDER BY val
+                    GROUP BY streamer
+                    ORDER BY peak
                 """, [since_date]).fetchall()
+                peak_sorted = [float(r[0]) for r in peak_avgs] if peak_avgs else []
+                peak_percentile = int(self._percentile_of(peak_sorted, your_peak) * 100) if peak_sorted else 50
 
-                your_avg = float(your[0]) if your and your[0] else 0
-                percentile = 0
-                if all_viewers:
-                    below = sum(1 for r in all_viewers if r[0] and r[0] < your_avg)
-                    percentile = int(below / len(all_viewers) * 100)
+                # Percentiles for retention and chat
+                ret_percentile = int(self._percentile_of(ret_sorted, your_ret) * 100) if ret_sorted else 50
+                chat_percentile = int(self._percentile_of(chat_sorted, your_chat) * 100) if chat_sorted else 50
+
+                # Category rank (1 = best)
+                category_rank = category_total - int(avg_percentile / 100 * category_total) if category_total else 0
 
                 return web.json_response({
                     "yourStats": {
-                        "avgViewers": float(your[0]) if your and your[0] else 0,
-                        "peakViewers": float(your[1]) if your and your[1] else 0,
-                        "retention10m": float(your[2]) if your and your[2] else 0,
-                        "chatHealth": float(your[3]) if your and your[3] else 0,
+                        "avgViewers": round(your_avg, 1),
+                        "peakViewers": your_peak,
+                        "retention10m": round(your_ret, 1),
+                        "chatHealth": round(your_chat, 1),
                     },
                     "categoryAvg": {
-                        "avgViewers": float(cat[0]) if cat and cat[0] else 0,
-                        "peakViewers": 0,
-                        "retention10m": 50,  # Benchmark
-                        "chatHealth": 8,
+                        "avgViewers": round(cat_avg_viewers, 1),
+                        "peakViewers": round(cat_avg_peak, 0),
+                        "retention10m": round(cat_avg_ret, 1),
+                        "chatHealth": round(cat_avg_chat, 1),
                     },
                     "percentiles": {
-                        "avgViewers": percentile,
-                        "retention10m": 50,
-                        "chatHealth": 50,
-                    }
+                        "avgViewers": avg_percentile,
+                        "peakViewers": peak_percentile,
+                        "retention10m": ret_percentile,
+                        "chatHealth": chat_percentile,
+                    },
+                    "categoryRank": category_rank,
+                    "categoryTotal": category_total,
                 })
         except Exception as exc:
             log.exception("Error in category comparison API")
@@ -1057,10 +1259,10 @@ class AnalyticsV2Mixin:
                     "peakViewers": row[6] or 0,
                     "endViewers": row[7] or 0,
                     "avgViewers": float(row[8]) if row[8] else 0,
-                    "retention5m": float(row[9]) if row[9] else 0,
-                    "retention10m": float(row[10]) if row[10] else 0,
-                    "retention20m": float(row[11]) if row[11] else 0,
-                    "dropoffPct": float(row[12]) if row[12] else 0,
+                    "retention5m": float(row[9]) * 100 if row[9] else 0,
+                    "retention10m": float(row[10]) * 100 if row[10] else 0,
+                    "retention20m": float(row[11]) * 100 if row[11] else 0,
+                    "dropoffPct": float(row[12]) * 100 if row[12] else 0,
                     "uniqueChatters": row[13] or 0,
                     "firstTimeChatters": row[14] or 0,
                     "returningChatters": row[15] or 0,
@@ -1092,8 +1294,60 @@ class AnalyticsV2Mixin:
 
     # ==================== NEW AUDIENCE ANALYTICS ENDPOINTS ====================
 
+    def _calc_watch_distribution(self, sessions) -> Dict[str, Any]:
+        """Calculate watch time distribution from session retention data."""
+        if not sessions:
+            return {
+                "under5min": 0, "min5to15": 0, "min15to30": 0,
+                "min30to60": 0, "over60min": 0,
+                "avgWatchTime": 0, "medianWatchTime": 0,
+                "sessionCount": 0,
+            }
+
+        total_sessions = len(sessions)
+        ret_5m_avg = sum((s[1] or 0) * 100 for s in sessions) / total_sessions
+        ret_10m_avg = sum((s[2] or 0) * 100 for s in sessions) / total_sessions
+        ret_20m_avg = sum((s[3] or 0) * 100 for s in sessions) / total_sessions
+
+        # Clamp to 0 — noisy data can invert retention values (10m > 5m)
+        under_5min = max(0, 100 - ret_5m_avg)
+        min_5_to_15 = max(0, ret_5m_avg - ret_10m_avg)
+        min_15_to_30 = max(0, ret_10m_avg - ret_20m_avg)
+        min_30_to_60 = max(0, ret_20m_avg * 0.4)
+        over_60min = max(0, ret_20m_avg * 0.6)
+
+        total = under_5min + min_5_to_15 + min_15_to_30 + min_30_to_60 + over_60min
+        if total > 0:
+            under_5min = (under_5min / total) * 100
+            min_5_to_15 = (min_5_to_15 / total) * 100
+            min_15_to_30 = (min_15_to_30 / total) * 100
+            min_30_to_60 = (min_30_to_60 / total) * 100
+            over_60min = (over_60min / total) * 100
+
+        avg_durations = [s[0] or 0 for s in sessions]
+        avg_duration_mins = sum(avg_durations) / len(avg_durations) / 60 if avg_durations else 0
+
+        avg_watch_time = (
+            (under_5min / 100) * 2.5 +
+            (min_5_to_15 / 100) * 10 +
+            (min_15_to_30 / 100) * 22.5 +
+            (min_30_to_60 / 100) * 45 +
+            (over_60min / 100) * min(90, avg_duration_mins)
+        )
+
+        return {
+            "under5min": round(max(0, under_5min), 1),
+            "min5to15": round(max(0, min_5_to_15), 1),
+            "min15to30": round(max(0, min_15_to_30), 1),
+            "min30to60": round(max(0, min_30_to_60), 1),
+            "over60min": round(max(0, over_60min), 1),
+            "avgWatchTime": round(avg_watch_time, 1),
+            "medianWatchTime": round(avg_watch_time * 0.85, 1),  # Estimate: ~85% of avg
+            "sessionCount": total_sessions,
+        }
+
     async def _api_v2_watch_time_distribution(self, request: web.Request) -> web.Response:
-        """Get watch time distribution - how long do viewers stay?"""
+        """Get watch time distribution with previous period comparison."""
         self._require_v2_auth(request)
 
         streamer = request.query.get("streamer", "").strip() or None
@@ -1105,74 +1359,42 @@ class AnalyticsV2Mixin:
         try:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+                prev_since_date = (datetime.now(timezone.utc) - timedelta(days=days * 2)).isoformat()
 
-                # Get retention data from sessions to estimate watch time distribution
-                sessions = conn.execute("""
-                    SELECT
-                        s.duration_seconds,
-                        s.retention_5m,
-                        s.retention_10m,
-                        s.retention_20m,
-                        s.avg_viewers,
-                        s.start_viewers,
-                        s.end_viewers
+                session_cols = """s.duration_seconds, s.retention_5m, s.retention_10m,
+                           s.retention_20m, s.avg_viewers, s.start_viewers, s.end_viewers"""
+
+                # Current period
+                current_sessions = conn.execute(f"""
+                    SELECT {session_cols}
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
                 """, [since_date, streamer.lower()]).fetchall()
 
-                if not sessions:
-                    return web.json_response({
-                        "under5min": 0, "min5to15": 0, "min15to30": 0,
-                        "min30to60": 0, "over60min": 0,
-                        "avgWatchTime": 0, "medianWatchTime": 0
-                    })
+                # Previous period
+                prev_sessions = conn.execute(f"""
+                    SELECT {session_cols}
+                    FROM twitch_stream_sessions s
+                    WHERE s.started_at >= ? AND s.started_at < ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
+                """, [prev_since_date, since_date, streamer.lower()]).fetchall()
 
-                # Calculate distribution based on retention metrics
-                # Viewers who leave = 100% - retention at each milestone
-                total_sessions = len(sessions)
-                ret_5m_avg = sum(s[1] or 0 for s in sessions) / total_sessions if total_sessions else 0
-                ret_10m_avg = sum(s[2] or 0 for s in sessions) / total_sessions if total_sessions else 0
-                ret_20m_avg = sum(s[3] or 0 for s in sessions) / total_sessions if total_sessions else 0
+                current = self._calc_watch_distribution(current_sessions)
+                previous = self._calc_watch_distribution(prev_sessions)
 
-                # Estimate distribution from retention decay
-                under_5min = 100 - ret_5m_avg  # Left before 5 min
-                min_5_to_15 = ret_5m_avg - ret_10m_avg  # Left between 5-15 min (using 10m as proxy)
-                min_15_to_30 = ret_10m_avg - ret_20m_avg  # Left between 15-30 min
-                min_30_to_60 = ret_20m_avg * 0.4  # Estimate 40% of remaining leave in 30-60
-                over_60min = ret_20m_avg * 0.6  # Remaining 60% stay over 60min
-
-                # Normalize to ensure they sum to ~100
-                total = under_5min + min_5_to_15 + min_15_to_30 + min_30_to_60 + over_60min
-                if total > 0:
-                    under_5min = (under_5min / total) * 100
-                    min_5_to_15 = (min_5_to_15 / total) * 100
-                    min_15_to_30 = (min_15_to_30 / total) * 100
-                    min_30_to_60 = (min_30_to_60 / total) * 100
-                    over_60min = (over_60min / total) * 100
-
-                # Calculate average watch time estimation
-                # Weight: avg duration * retention factor
-                avg_durations = [s[0] or 0 for s in sessions]
-                avg_duration_mins = sum(avg_durations) / len(avg_durations) / 60 if avg_durations else 0
-
-                # Estimate avg watch time based on retention
-                # If 60% retention at 10m, avg viewer watches ~15-20 min
-                avg_watch_time = (
-                    (under_5min / 100) * 2.5 +  # Avg 2.5 min for <5 group
-                    (min_5_to_15 / 100) * 10 +   # Avg 10 min for 5-15 group
-                    (min_15_to_30 / 100) * 22.5 +  # Avg 22.5 min for 15-30 group
-                    (min_30_to_60 / 100) * 45 +  # Avg 45 min for 30-60 group
-                    (over_60min / 100) * min(90, avg_duration_mins)  # Avg for 60+ capped at stream duration
-                )
+                # Calculate deltas
+                deltas = {}
+                for key in ["under5min", "min5to15", "min15to30", "min30to60", "over60min", "avgWatchTime"]:
+                    curr_val = current.get(key, 0)
+                    prev_val = previous.get(key, 0)
+                    if prev_val > 0:
+                        deltas[key] = round(((curr_val - prev_val) / prev_val) * 100, 1)
+                    else:
+                        deltas[key] = None
 
                 return web.json_response({
-                    "under5min": round(max(0, under_5min), 1),
-                    "min5to15": round(max(0, min_5_to_15), 1),
-                    "min15to30": round(max(0, min_15_to_30), 1),
-                    "min30to60": round(max(0, min_30_to_60), 1),
-                    "over60min": round(max(0, over_60min), 1),
-                    "avgWatchTime": round(avg_watch_time, 1),
-                    "medianWatchTime": round(avg_watch_time * 0.85, 1),  # Median usually lower
+                    **current,
+                    "previous": previous,
+                    "deltas": deltas,
                 })
         except Exception as exc:
             log.exception("Error in watch time distribution API")
@@ -1192,12 +1414,15 @@ class AnalyticsV2Mixin:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
-                # Get session stats
-                stats = conn.execute("""
+                # Get session stats — separate net delta from gained-only
+                stats = conn.execute(f"""
                     SELECT
                         SUM(s.unique_chatters) as total_chatters,
                         SUM(s.returning_chatters) as returning_chatters,
-                        SUM(COALESCE(s.follower_delta, 0)) as new_followers,
+                        {self._FOLLOWER_DELTA_SUM} as net_followers,
+                        SUM(CASE WHEN s.follower_delta > 0
+                             AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+                             THEN s.follower_delta ELSE 0 END) as gained_followers,
                         SUM(s.duration_seconds) as total_duration,
                         AVG(s.avg_viewers) as avg_viewers,
                         COUNT(*) as session_count
@@ -1208,25 +1433,30 @@ class AnalyticsV2Mixin:
                 if not stats or not stats[0]:
                     return web.json_response({
                         "uniqueViewers": 0, "returningViewers": 0, "newFollowers": 0,
+                        "netFollowerDelta": 0,
                         "conversionRate": 0, "avgTimeToFollow": 0,
                         "followersBySource": {"organic": 0, "raids": 0, "hosts": 0, "other": 0}
                     })
 
                 total_chatters = int(stats[0]) if stats[0] else 0
                 returning = int(stats[1]) if stats[1] else 0
-                new_followers = int(stats[2]) if stats[2] else 0
-                total_duration = float(stats[3]) if stats[3] else 0
-                avg_viewers = float(stats[4]) if stats[4] else 0
+                net_followers = int(stats[2]) if stats[2] else 0
+                gained_followers = int(stats[3]) if stats[3] else 0
+                total_duration = float(stats[4]) if stats[4] else 0
+                avg_viewers = float(stats[5]) if stats[5] else 0
+                session_count = int(stats[6]) if stats[6] else 1
 
-                # Estimate unique viewers (chatters are a proxy, multiply by factor)
-                # Typically only 5-15% of viewers chat
-                unique_viewers = int(total_chatters * 8)  # Estimate 12.5% chat rate
+                # Unique viewer estimation:
+                # avg_viewers = average concurrent viewers per session
+                # Multiply by ~2.5 for viewer turnover (people join/leave during stream)
+                viewer_estimate = int(avg_viewers * 2.5)
+                chatter_estimate = total_chatters * 6
+                unique_viewers = max(viewer_estimate, chatter_estimate, 1)
 
-                # Conversion rate
-                conversion_rate = (new_followers / unique_viewers * 100) if unique_viewers > 0 else 0
+                # Conversion rate uses gained followers only (not net delta)
+                conversion_rate = (gained_followers / unique_viewers * 100) if unique_viewers > 0 else 0
 
                 # Estimate time to follow (based on avg session length)
-                session_count = int(stats[5]) if stats[5] else 1
                 avg_session_mins = (total_duration / session_count / 60) if session_count > 0 else 60
                 avg_time_to_follow = min(avg_session_mins * 0.4, 45)  # Usually in first 40% of stream
 
@@ -1240,14 +1470,15 @@ class AnalyticsV2Mixin:
                 raid_count = raids_received[0] if raids_received else 0
                 raid_viewers = int(raids_received[1]) if raids_received else 0
 
-                # Estimate follower sources
-                raid_followers = int(raid_viewers * 0.05)  # ~5% of raid viewers follow
-                organic_followers = max(0, new_followers - raid_followers)
+                # Estimate follower sources (based on gained, not net)
+                raid_followers = min(int(raid_viewers * 0.05), gained_followers)
+                organic_followers = max(0, gained_followers - raid_followers)
 
                 return web.json_response({
                     "uniqueViewers": unique_viewers,
                     "returningViewers": returning,
-                    "newFollowers": new_followers,
+                    "newFollowers": gained_followers,
+                    "netFollowerDelta": net_followers,
                     "conversionRate": round(conversion_rate, 2),
                     "avgTimeToFollow": round(avg_time_to_follow, 0),
                     "followersBySource": {
@@ -1283,7 +1514,7 @@ class AnalyticsV2Mixin:
                         s.tags,
                         AVG(s.avg_viewers) as avg_viewers,
                         AVG(s.retention_10m) as avg_retention,
-                        AVG(COALESCE(s.follower_delta, 0)) as avg_followers,
+                        {self._FOLLOWER_DELTA_AVG} as avg_followers,
                         COUNT(*) as usage_count,
                         AVG(s.duration_seconds) as avg_duration,
                         strftime('%H', s.started_at) as start_hour
@@ -1315,7 +1546,7 @@ class AnalyticsV2Mixin:
                                 "count": 0, "durations": [], "hours": []
                             }
                         tag_stats[tag]["viewers"].append(float(row[1]) if row[1] else 0)
-                        tag_stats[tag]["retention"].append(float(row[2]) if row[2] else 0)
+                        tag_stats[tag]["retention"].append(float(row[2]) * 100 if row[2] else 0)
                         tag_stats[tag]["followers"].append(float(row[3]) if row[3] else 0)
                         tag_stats[tag]["count"] += row[4] or 1
                         tag_stats[tag]["durations"].append(float(row[5]) if row[5] else 0)
@@ -1378,13 +1609,13 @@ class AnalyticsV2Mixin:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
-                rows = conn.execute("""
+                rows = conn.execute(f"""
                     SELECT
                         s.stream_title,
                         COUNT(*) as usage_count,
                         AVG(s.avg_viewers) as avg_viewers,
                         AVG(s.retention_10m) as avg_retention,
-                        AVG(COALESCE(s.follower_delta, 0)) as avg_followers,
+                        {self._FOLLOWER_DELTA_AVG} as avg_followers,
                         MAX(s.peak_viewers) as peak_viewers
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ?
@@ -1408,7 +1639,7 @@ class AnalyticsV2Mixin:
                         "title": row[0] or "",
                         "usageCount": row[1],
                         "avgViewers": round(float(row[2]), 1) if row[2] else 0,
-                        "avgRetention10m": round(float(row[3]), 1) if row[3] else 0,
+                        "avgRetention10m": round(float(row[3]) * 100, 1) if row[3] else 0,
                         "avgFollowerGain": round(float(row[4]), 1) if row[4] else 0,
                         "peakViewers": int(row[5]) if row[5] else 0,
                         "keywords": extract_keywords(row[0] or ""),
@@ -1448,10 +1679,10 @@ class AnalyticsV2Mixin:
                 prev_since = (datetime.now(timezone.utc) - timedelta(days=days * 2)).isoformat()
 
                 # Current period metrics
-                current = conn.execute("""
+                current = conn.execute(f"""
                     SELECT
                         AVG(s.retention_10m) as retention,
-                        SUM(COALESCE(s.follower_delta, 0)) as followers,
+                        {self._FOLLOWER_DELTA_SUM} as followers,
                         SUM(s.returning_chatters) as returning,
                         SUM(s.unique_chatters) as unique_chatters
                     FROM twitch_stream_sessions s
@@ -1459,10 +1690,10 @@ class AnalyticsV2Mixin:
                 """, [since_date, streamer.lower()]).fetchone()
 
                 # Previous period for comparison
-                prev = conn.execute("""
+                prev = conn.execute(f"""
                     SELECT
                         AVG(s.retention_10m) as retention,
-                        SUM(COALESCE(s.follower_delta, 0)) as followers,
+                        {self._FOLLOWER_DELTA_SUM} as followers,
                         SUM(s.returning_chatters) as returning,
                         SUM(s.unique_chatters) as unique_chatters
                     FROM twitch_stream_sessions s
@@ -1475,8 +1706,8 @@ class AnalyticsV2Mixin:
                         return 0
                     return round(((curr - prev) / prev) * 100, 1)
 
-                curr_retention = float(current[0]) if current and current[0] else 0
-                prev_retention = float(prev[0]) if prev and prev[0] else 0
+                curr_retention = float(current[0]) * 100 if current and current[0] else 0
+                prev_retention = float(prev[0]) * 100 if prev and prev[0] else 0
                 curr_unique = int(current[3]) if current and current[3] else 0
                 prev_unique = int(prev[3]) if prev and prev[3] else 0
                 curr_returning = int(current[2]) if current and current[2] else 0
@@ -1614,6 +1845,135 @@ class AnalyticsV2Mixin:
                 })
         except Exception as exc:
             log.exception("Error in audience demographics API")
+            return web.json_response({"error": str(exc)}, status=500)
+
+
+    # ==================== STATS-DATA ENDPOINTS ====================
+
+    async def _api_v2_viewer_timeline(self, request: web.Request) -> web.Response:
+        """Return bucketed viewer data from twitch_stats_tracked."""
+        self._require_v2_auth(request)
+
+        streamer = request.query.get("streamer", "").strip()
+        days = min(max(int(request.query.get("days", "7")), 1), 365)
+
+        if not streamer:
+            return web.json_response({"error": "Streamer required"}, status=400)
+
+        try:
+            with storage.get_conn() as conn:
+                since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+                # Determine bucket size based on range
+                if days <= 7:
+                    bucket_minutes = 5
+                    bucket_fmt = "%Y-%m-%d %H:" + "00"  # will be refined below
+                elif days <= 30:
+                    bucket_minutes = 30
+                else:
+                    bucket_minutes = 60
+
+                # Use SQLite strftime to bucket timestamps
+                # For 5-min: floor to 5-min intervals; for 30-min/60-min: use hour or half-hour
+                if bucket_minutes == 5:
+                    # Group by 5-minute intervals: YYYY-MM-DD HH:M0 where M0 = (minute/5)*5
+                    bucket_expr = "strftime('%Y-%m-%d %H:', ts_utc) || PRINTF('%02d', (CAST(strftime('%M', ts_utc) AS INTEGER) / 5) * 5)"
+                elif bucket_minutes == 30:
+                    bucket_expr = "strftime('%Y-%m-%d %H:', ts_utc) || CASE WHEN CAST(strftime('%M', ts_utc) AS INTEGER) < 30 THEN '00' ELSE '30' END"
+                else:
+                    bucket_expr = "strftime('%Y-%m-%d %H:00', ts_utc)"
+
+                rows = conn.execute(f"""
+                    SELECT
+                        {bucket_expr} as bucket,
+                        AVG(viewer_count) as avg_vc,
+                        MAX(viewer_count) as peak_vc,
+                        MIN(viewer_count) as min_vc,
+                        COUNT(*) as samples
+                    FROM twitch_stats_tracked
+                    WHERE ts_utc >= ? AND LOWER(streamer) = ?
+                    GROUP BY bucket
+                    ORDER BY bucket
+                """, [since_date, streamer.lower()]).fetchall()
+
+                data = [
+                    {
+                        "timestamp": r[0],
+                        "avgViewers": round(float(r[1]), 1) if r[1] else 0,
+                        "peakViewers": int(r[2]) if r[2] else 0,
+                        "minViewers": int(r[3]) if r[3] else 0,
+                        "samples": r[4] or 0,
+                    }
+                    for r in rows
+                ]
+
+                return web.json_response(data)
+        except Exception as exc:
+            log.exception("Error in viewer timeline API")
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def _api_v2_category_leaderboard(self, request: web.Request) -> web.Response:
+        """Top-N streamers from twitch_stats_category."""
+        self._require_v2_auth(request)
+
+        streamer = request.query.get("streamer", "").strip()
+        days = min(max(int(request.query.get("days", "30")), 1), 365)
+        limit = min(max(int(request.query.get("limit", "25")), 5), 100)
+        sort = request.query.get("sort", "avg")  # avg or peak
+
+        try:
+            with storage.get_conn() as conn:
+                since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+                order_col = "avg_vc" if sort == "avg" else "peak_vc"
+
+                rows = conn.execute(f"""
+                    SELECT
+                        c.streamer,
+                        AVG(c.viewer_count) as avg_vc,
+                        MAX(c.viewer_count) as peak_vc,
+                        MAX(c.is_partner) as is_partner
+                    FROM twitch_stats_category c
+                    WHERE c.ts_utc >= ?
+                    GROUP BY c.streamer
+                    ORDER BY {order_col} DESC
+                """, [since_date]).fetchall()
+
+                total_streamers = len(rows)
+
+                # Build ranked list
+                leaderboard = []
+                your_rank = None
+                streamer_lower = streamer.lower() if streamer else ""
+                your_entry = None
+
+                for i, r in enumerate(rows):
+                    rank = i + 1
+                    entry = {
+                        "rank": rank,
+                        "streamer": r[0],
+                        "avgViewers": round(float(r[1]), 1) if r[1] else 0,
+                        "peakViewers": int(r[2]) if r[2] else 0,
+                        "isPartner": bool(r[3]),
+                        "isYou": r[0].lower() == streamer_lower,
+                    }
+                    if r[0].lower() == streamer_lower:
+                        your_rank = rank
+                        your_entry = entry
+                    if rank <= limit:
+                        leaderboard.append(entry)
+
+                # If streamer is not in top-N, append them
+                if your_entry and your_rank and your_rank > limit:
+                    leaderboard.append(your_entry)
+
+                return web.json_response({
+                    "leaderboard": leaderboard,
+                    "totalStreamers": total_streamers,
+                    "yourRank": your_rank,
+                })
+        except Exception as exc:
+            log.exception("Error in category leaderboard API")
             return web.json_response({"error": str(exc)}, status=500)
 
 

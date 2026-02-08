@@ -58,7 +58,7 @@ export function ChatAnalytics({ streamer, days }: ChatAnalyticsProps) {
           icon={<TrendingUp className="w-5 h-5" />}
           label="Erstmalige Chatter"
           value={data.firstTimeChatters.toLocaleString('de-DE')}
-          subtext={`${((data.firstTimeChatters / data.uniqueChatters) * 100).toFixed(1)}%`}
+          subtext={data.uniqueChatters > 0 ? `${((data.firstTimeChatters / data.uniqueChatters) * 100).toFixed(1)}%` : '-'}
           color="accent"
         />
         <StatCard

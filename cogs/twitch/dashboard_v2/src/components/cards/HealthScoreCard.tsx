@@ -29,7 +29,7 @@ export function HealthScoreCard({ scores }: HealthScoreCardProps) {
       </h2>
 
       {/* Main Score */}
-      <div className="relative mb-2">
+      <div className="flex items-baseline justify-center gap-1 mb-2">
         <motion.span
           className="text-6xl font-bold text-white"
           initial={{ opacity: 0, y: 20 }}
@@ -38,7 +38,7 @@ export function HealthScoreCard({ scores }: HealthScoreCardProps) {
         >
           {scores.total}
         </motion.span>
-        <span className="text-xl text-accent absolute -top-1 -right-6">/100</span>
+        <span className="text-xl text-accent">/100</span>
       </div>
 
       {/* Sub Scores */}

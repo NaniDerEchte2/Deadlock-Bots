@@ -53,6 +53,7 @@ export function Audience({ streamer, days }: AudienceProps) {
     uniqueViewers: 1250,
     returningViewers: 480,
     newFollowers: 85,
+    netFollowerDelta: 85,
     conversionRate: 6.8,
     avgTimeToFollow: 45,
     followersBySource: {

@@ -1,26 +1,26 @@
 import { motion } from 'framer-motion';
-import { Clock, TrendingUp, TrendingDown, Minus, Users, Timer } from 'lucide-react';
+import { Clock, TrendingUp, TrendingDown, Users, Timer } from 'lucide-react';
 import type { WatchTimeDistribution as WatchTimeDistributionType } from '@/types/analytics';
 
 interface WatchTimeDistributionProps {
   data: WatchTimeDistributionType;
-  previousPeriodAvg?: number; // Für Trend-Vergleich
 }
 
-export function WatchTimeDistribution({ data, previousPeriodAvg }: WatchTimeDistributionProps) {
-  const segments = [
-    { label: '< 5 Min', value: data.under5min, color: 'from-red-500 to-red-600', description: 'Schnelle Absprünge' },
-    { label: '5-15 Min', value: data.min5to15, color: 'from-orange-500 to-orange-600', description: 'Kurze Sessions' },
-    { label: '15-30 Min', value: data.min15to30, color: 'from-yellow-500 to-yellow-600', description: 'Mittlere Sessions' },
-    { label: '30-60 Min', value: data.min30to60, color: 'from-green-500 to-green-600', description: 'Längere Sessions' },
-    { label: '> 60 Min', value: data.over60min, color: 'from-emerald-500 to-emerald-600', description: 'Loyale Zuschauer' },
-  ];
+const SEGMENTS = [
+  { key: 'under5min' as const, label: '< 5 Min', shortLabel: '<5m', color: '#ef4444', description: 'Schnelle Absprünge' },
+  { key: 'min5to15' as const, label: '5-15 Min', shortLabel: '5-15m', color: '#f97316', description: 'Kurze Sessions' },
+  { key: 'min15to30' as const, label: '15-30 Min', shortLabel: '15-30m', color: '#eab308', description: 'Mittlere Sessions' },
+  { key: 'min30to60' as const, label: '30-60 Min', shortLabel: '30-60m', color: '#22c55e', description: 'Längere Sessions' },
+  { key: 'over60min' as const, label: '> 60 Min', shortLabel: '60m+', color: '#10b981', description: 'Loyale Zuschauer' },
+] as const;
 
+export function WatchTimeDistribution({ data }: WatchTimeDistributionProps) {
   const totalLoyalViewers = data.min30to60 + data.over60min;
-  const trend = previousPeriodAvg ? ((data.avgWatchTime - previousPeriodAvg) / previousPeriodAvg) * 100 : null;
+  const hasPrevious = data.previous && data.previous.sessionCount !== undefined && data.previous.sessionCount > 0;
+  const prevLoyalViewers = hasPrevious ? (data.previous!.min30to60 + data.previous!.over60min) : 0;
 
-  const TrendIcon = trend === null ? Minus : trend >= 0 ? TrendingUp : TrendingDown;
-  const trendColor = trend === null ? 'text-text-secondary' : trend >= 0 ? 'text-success' : 'text-error';
+  const avgDelta = data.deltas?.avgWatchTime;
+  const avgTrendUp = avgDelta != null && avgDelta >= 0;
 
   return (
     <motion.div
@@ -38,6 +38,11 @@ export function WatchTimeDistribution({ data, previousPeriodAvg }: WatchTimeDist
             <p className="text-sm text-text-secondary">Wie lange bleiben deine Viewer?</p>
           </div>
         </div>
+        {hasPrevious && (
+          <div className="text-xs text-text-secondary bg-background px-2 py-1 rounded">
+            vs. Vorperiode ({data.previous!.sessionCount} Sessions)
+          </div>
+        )}
       </div>
 
       {/* Main Stats */}
@@ -50,13 +55,18 @@ export function WatchTimeDistribution({ data, previousPeriodAvg }: WatchTimeDist
           <div className="flex items-baseline gap-2">
             <span className="text-2xl font-bold text-white">{data.avgWatchTime.toFixed(1)}</span>
             <span className="text-text-secondary">Min</span>
-            {trend !== null && (
-              <span className={`flex items-center gap-1 text-sm ${trendColor}`}>
-                <TrendIcon className="w-4 h-4" />
-                {Math.abs(trend).toFixed(1)}%
+            {avgDelta != null && (
+              <span className={`flex items-center gap-1 text-sm ${avgTrendUp ? 'text-success' : 'text-error'}`}>
+                {avgTrendUp ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
+                {Math.abs(avgDelta).toFixed(1)}%
               </span>
             )}
           </div>
+          {hasPrevious && (
+            <div className="text-xs text-text-secondary mt-1">
+              Vorher: {data.previous!.avgWatchTime.toFixed(1)} Min
+            </div>
+          )}
         </div>
         <div className="bg-background rounded-lg p-4">
           <div className="flex items-center gap-2 text-text-secondary text-sm mb-1">
@@ -67,53 +77,106 @@ export function WatchTimeDistribution({ data, previousPeriodAvg }: WatchTimeDist
             <span className="text-2xl font-bold text-success">{totalLoyalViewers.toFixed(1)}%</span>
             <span className="text-text-secondary text-sm">&gt; 30 Min</span>
           </div>
+          {hasPrevious && (
+            <div className="text-xs text-text-secondary mt-1">
+              Vorher: {prevLoyalViewers.toFixed(1)}%
+              {totalLoyalViewers !== prevLoyalViewers && (
+                <span className={totalLoyalViewers > prevLoyalViewers ? 'text-success ml-1' : 'text-error ml-1'}>
+                  ({totalLoyalViewers > prevLoyalViewers ? '+' : ''}{(totalLoyalViewers - prevLoyalViewers).toFixed(1)}pp)
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Distribution Bar */}
-      <div className="mb-4">
-        <div className="flex h-8 rounded-lg overflow-hidden">
-          {segments.map((segment, i) => (
+      {/* Distribution Comparison Bars */}
+      <div className="space-y-3 mb-6">
+        {SEGMENTS.map((segment, i) => {
+          const currVal = data[segment.key];
+          const prevVal = hasPrevious ? data.previous![segment.key] : null;
+          const maxVal = Math.max(
+            currVal,
+            prevVal ?? 0,
+            ...SEGMENTS.map(s => data[s.key]),
+            ...(hasPrevious ? SEGMENTS.map(s => data.previous![s.key]) : [0]),
+          );
+          const barMax = Math.max(maxVal, 1);
+
+          return (
             <motion.div
-              key={segment.label}
-              initial={{ width: 0 }}
-              animate={{ width: `${segment.value}%` }}
-              transition={{ delay: i * 0.1, duration: 0.5 }}
-              className={`bg-gradient-to-r ${segment.color} relative group cursor-pointer`}
-              style={{ minWidth: segment.value > 0 ? '2px' : '0' }}
+              key={segment.key}
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: i * 0.06 }}
             >
-              {/* Tooltip */}
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 opacity-0 group-hover:opacity-100 transition-opacity z-20 pointer-events-none">
-                <div className="bg-card border border-border rounded-lg px-3 py-2 text-xs whitespace-nowrap shadow-xl">
-                  <div className="font-medium text-white">{segment.label}</div>
-                  <div className="text-text-secondary">{segment.value.toFixed(1)}% der Viewer</div>
-                  <div className="text-text-secondary">{segment.description}</div>
+              <div className="flex items-center gap-3">
+                {/* Label */}
+                <div className="w-16 text-xs text-text-secondary text-right shrink-0">
+                  {segment.shortLabel}
+                </div>
+
+                {/* Bars container */}
+                <div className="flex-1 space-y-1">
+                  {/* Current bar */}
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-5 bg-background rounded overflow-hidden">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${(currVal / barMax) * 100}%` }}
+                        transition={{ delay: 0.2 + i * 0.06, duration: 0.5 }}
+                        className="h-full rounded"
+                        style={{ backgroundColor: segment.color, minWidth: currVal > 0 ? '2px' : '0' }}
+                      />
+                    </div>
+                    <span className="text-xs font-medium text-white w-12 text-right">{currVal.toFixed(1)}%</span>
+                  </div>
+
+                  {/* Previous bar (if available) */}
+                  {hasPrevious && prevVal != null && (
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-3 bg-background rounded overflow-hidden">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${(prevVal / barMax) * 100}%` }}
+                          transition={{ delay: 0.3 + i * 0.06, duration: 0.5 }}
+                          className="h-full rounded opacity-35"
+                          style={{ backgroundColor: segment.color, minWidth: prevVal > 0 ? '2px' : '0' }}
+                        />
+                      </div>
+                      <span className="text-[10px] text-text-secondary w-12 text-right">{prevVal.toFixed(1)}%</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Delta */}
+                <div className="w-14 text-right shrink-0">
+                  {hasPrevious && prevVal != null && prevVal > 0 ? (
+                    <DeltaBadge current={currVal} previous={prevVal} inverted={segment.key === 'under5min'} />
+                  ) : (
+                    <span className="text-xs text-text-secondary">—</span>
+                  )}
                 </div>
               </div>
             </motion.div>
-          ))}
-        </div>
+          );
+        })}
       </div>
 
       {/* Legend */}
-      <div className="grid grid-cols-5 gap-2">
-        {segments.map((segment, i) => (
-          <motion.div
-            key={segment.label}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 + i * 0.05 }}
-            className="text-center"
-          >
-            <div className={`w-3 h-3 rounded-full bg-gradient-to-r ${segment.color} mx-auto mb-1`} />
-            <div className="text-xs text-text-secondary">{segment.label}</div>
-            <div className="text-sm font-medium text-white">{segment.value.toFixed(1)}%</div>
-          </motion.div>
-        ))}
-      </div>
+      {hasPrevious && (
+        <div className="flex items-center gap-4 text-xs text-text-secondary mb-4">
+          <span className="flex items-center gap-1.5">
+            <div className="w-3 h-3 rounded bg-primary" /> Aktuell ({data.sessionCount ?? '?'} Sessions)
+          </span>
+          <span className="flex items-center gap-1.5">
+            <div className="w-3 h-2 rounded bg-primary opacity-35" /> Vorperiode ({data.previous!.sessionCount ?? '?'} Sessions)
+          </span>
+        </div>
+      )}
 
       {/* Insights */}
-      <div className="mt-6 pt-4 border-t border-border">
+      <div className="pt-4 border-t border-border">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {data.under5min > 30 && (
             <InsightBadge
@@ -127,10 +190,16 @@ export function WatchTimeDistribution({ data, previousPeriodAvg }: WatchTimeDist
               text={`${totalLoyalViewers.toFixed(0)}% bleiben über 30 Min - starke Community-Bindung!`}
             />
           )}
-          {data.over60min > 20 && (
+          {hasPrevious && avgDelta != null && avgDelta > 10 && (
             <InsightBadge
               type="success"
-              text={`${data.over60min.toFixed(0)}% schauen über 1h - deine Hardcore-Fans!`}
+              text={`Watch Time um ${avgDelta.toFixed(0)}% gestiegen vs. Vorperiode!`}
+            />
+          )}
+          {hasPrevious && avgDelta != null && avgDelta < -10 && (
+            <InsightBadge
+              type="warning"
+              text={`Watch Time um ${Math.abs(avgDelta).toFixed(0)}% gesunken - prüfe was sich geändert hat.`}
             />
           )}
           {data.avgWatchTime < 15 && (
@@ -142,6 +211,19 @@ export function WatchTimeDistribution({ data, previousPeriodAvg }: WatchTimeDist
         </div>
       </div>
     </motion.div>
+  );
+}
+
+function DeltaBadge({ current, previous, inverted = false }: { current: number; previous: number; inverted?: boolean }) {
+  const diff = current - previous;
+  // For "under5min", less is better (inverted)
+  const isPositive = inverted ? diff < 0 : diff > 0;
+  const color = Math.abs(diff) < 0.5 ? 'text-text-secondary' : isPositive ? 'text-success' : 'text-error';
+
+  return (
+    <span className={`text-[11px] font-medium ${color}`}>
+      {diff > 0 ? '+' : ''}{diff.toFixed(1)}pp
+    </span>
   );
 }
 

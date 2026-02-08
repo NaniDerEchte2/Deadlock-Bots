@@ -18,6 +18,8 @@ import type {
   WatchTimeDistribution,
   FollowerFunnel,
   AudienceInsights,
+  ViewerTimelinePoint,
+  CategoryLeaderboard,
 } from '@/types/analytics';
 
 const API_BASE = '/twitch/api/v2';
@@ -277,5 +279,31 @@ export async function fetchAudienceDemographics(
   return fetchApi<AudienceDemographicsResponse>('/audience-demographics', {
     streamer: streamer || '',
     days,
+  });
+}
+
+// Viewer Timeline (bucketed stats_tracked data)
+export async function fetchViewerTimeline(
+  streamer: string | null,
+  days: number
+): Promise<ViewerTimelinePoint[]> {
+  return fetchApi<ViewerTimelinePoint[]>('/viewer-timeline', {
+    streamer: streamer || '',
+    days,
+  });
+}
+
+// Category Leaderboard (top-N from stats_category)
+export async function fetchCategoryLeaderboard(
+  streamer: string | null,
+  days: number,
+  limit: number = 25,
+  sort: 'avg' | 'peak' = 'avg'
+): Promise<CategoryLeaderboard> {
+  return fetchApi<CategoryLeaderboard>('/category-leaderboard', {
+    streamer: streamer || '',
+    days,
+    limit,
+    sort,
   });
 }

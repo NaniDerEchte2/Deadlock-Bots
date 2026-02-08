@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { TrendingUp, Calendar, Clock, AlertCircle, Loader2 } from 'lucide-react';
+import { TrendingUp, Calendar, Clock, AlertCircle, Loader2, Crown, Users, Play } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { fetchMonthlyStats, fetchWeekdayStats } from '@/api/client';
 import { useTagAnalysisExtended, useTitlePerformance } from '@/hooks/useAnalytics';
 import { TagPerformanceChart } from '@/components/charts/TagPerformance';
@@ -159,40 +159,7 @@ export function Growth({ streamer, days }: GrowthProps) {
         </div>
 
         {weeklyData && weeklyData.length > 0 ? (
-          <>
-            <div className="h-[250px] mb-6">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={weeklyData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                  <XAxis dataKey="weekdayLabel" stroke="#9ca3af" fontSize={12} />
-                  <YAxis stroke="#9ca3af" fontSize={12} />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: '#1f2937',
-                      border: '1px solid #374151',
-                      borderRadius: '8px',
-                    }}
-                    labelStyle={{ color: '#fff' }}
-                  />
-                  <Legend />
-                  <Bar dataKey="avgViewers" name="Ø Viewer" fill="#7c3aed" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="streamCount" name="Streams" fill="#f59e0b" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              {getBestWorstDays(weeklyData).map((item, i) => (
-                <div key={i} className={`p-4 rounded-lg ${item.type === 'best' ? 'bg-success/10' : 'bg-warning/10'}`}>
-                  <div className={`text-sm ${item.type === 'best' ? 'text-success' : 'text-warning'}`}>
-                    {item.label}
-                  </div>
-                  <div className="text-lg font-bold text-white mt-1">{item.day}</div>
-                  <div className="text-sm text-text-secondary">{item.value}</div>
-                </div>
-              ))}
-            </div>
-          </>
+          <WeekdayCards data={weeklyData} />
         ) : (
           <div className="text-center py-8 text-text-secondary">
             <Calendar className="w-12 h-12 mx-auto mb-3 opacity-50" />
@@ -280,22 +247,98 @@ function MetricRow({ label, value, unit, isPositive }: MetricRowProps) {
   );
 }
 
-function getBestWorstDays(data: WeekdayStats[]) {
-  if (!data.length) return [];
+function WeekdayCards({ data }: { data: WeekdayStats[] }) {
+  const maxViewers = Math.max(...data.map(d => d.avgViewers), 1);
+  const bestDay = data.reduce((a, b) => a.avgViewers > b.avgViewers ? a : b);
 
-  const sorted = [...data].sort((a, b) => b.avgViewers - a.avgViewers);
-  const best = sorted[0];
-  const worst = sorted[sorted.length - 1];
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+      {data.map((day, i) => {
+        const viewerPct = (day.avgViewers / maxViewers) * 100;
+        const isBest = day.weekdayLabel === bestDay.weekdayLabel;
+        const hasStreams = day.streamCount > 0;
 
-  const sortedByStreams = [...data].sort((a, b) => b.streamCount - a.streamCount);
-  const mostActive = sortedByStreams[0];
+        return (
+          <motion.div
+            key={day.weekdayLabel}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.05 * i }}
+            className={`relative p-4 rounded-xl border transition-all ${
+              isBest
+                ? 'bg-gradient-to-b from-accent/20 to-card border-accent/40 ring-1 ring-accent/20'
+                : hasStreams
+                ? 'bg-background border-border hover:border-border-hover'
+                : 'bg-background/50 border-border/50 opacity-60'
+            }`}
+          >
+            {/* Crown for best day */}
+            {isBest && (
+              <div className="absolute -top-2.5 left-1/2 -translate-x-1/2">
+                <div className="bg-accent/20 border border-accent/30 rounded-full p-1">
+                  <Crown className="w-3 h-3 text-accent" />
+                </div>
+              </div>
+            )}
 
-  return [
-    { type: 'best', label: 'Beste Viewer', day: best.weekdayLabel, value: `Ø ${Math.round(best.avgViewers)}` },
-    { type: 'worst', label: 'Schwächste Viewer', day: worst.weekdayLabel, value: `Ø ${Math.round(worst.avgViewers)}` },
-    { type: 'best', label: 'Meist gestreamt', day: mostActive.weekdayLabel, value: `${mostActive.streamCount} Streams` },
-    { type: 'best', label: 'Längste Streams', day: data.reduce((a, b) => a.avgHours > b.avgHours ? a : b).weekdayLabel, value: `Ø ${data.reduce((a, b) => a.avgHours > b.avgHours ? a : b).avgHours.toFixed(1)}h` },
-  ];
+            {/* Day name */}
+            <div className={`text-center text-sm font-semibold mb-3 ${isBest ? 'text-accent' : 'text-text-secondary'}`}>
+              {day.weekdayLabel}
+            </div>
+
+            {/* Viewer bar */}
+            <div className="h-24 flex items-end justify-center mb-3">
+              <motion.div
+                initial={{ height: 0 }}
+                animate={{ height: `${Math.max(hasStreams ? 8 : 0, viewerPct)}%` }}
+                transition={{ delay: 0.2 + i * 0.05, duration: 0.5, ease: 'easeOut' }}
+                className={`w-8 rounded-t-lg ${
+                  isBest
+                    ? 'bg-gradient-to-t from-accent/60 to-accent'
+                    : hasStreams
+                    ? 'bg-gradient-to-t from-primary/40 to-primary/70'
+                    : 'bg-border/30'
+                }`}
+              />
+            </div>
+
+            {/* Viewer count */}
+            <div className="text-center">
+              <div className={`text-lg font-bold ${isBest ? 'text-white' : hasStreams ? 'text-white' : 'text-text-secondary'}`}>
+                {hasStreams ? Math.round(day.avgViewers) : '-'}
+              </div>
+              <div className="text-[10px] text-text-secondary uppercase tracking-wider">
+                <Users className="w-3 h-3 inline mr-0.5 -mt-0.5" />
+                Ø Viewer
+              </div>
+            </div>
+
+            {/* Meta info */}
+            <div className="mt-3 pt-3 border-t border-border/50 space-y-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-text-secondary flex items-center gap-1">
+                  <Play className="w-3 h-3" />Streams
+                </span>
+                <span className="text-white font-medium">{day.streamCount}</span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-text-secondary flex items-center gap-1">
+                  <Clock className="w-3 h-3" />Ø Dauer
+                </span>
+                <span className="text-white font-medium">{day.avgHours > 0 ? `${day.avgHours.toFixed(1)}h` : '-'}</span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-text-secondary flex items-center gap-1">
+                  <TrendingUp className="w-3 h-3" />Peak
+                </span>
+                <span className="text-white font-medium">{day.avgPeak > 0 ? Math.round(day.avgPeak) : '-'}</span>
+              </div>
+            </div>
+          </motion.div>
+        );
+      })}
+    </div>
+  );
 }
 
 function generateScheduleInsights(data: WeekdayStats[]) {

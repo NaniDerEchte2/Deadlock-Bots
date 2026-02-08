@@ -1,8 +1,9 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Scale, Users, TrendingUp, Target, AlertCircle, Loader2 } from 'lucide-react';
+import { Scale, Users, TrendingUp, Target, AlertCircle, Loader2, Crown } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { fetchCategoryComparison, fetchViewerOverlap } from '@/api/client';
-import type { CategoryComparison, ViewerOverlap } from '@/types/analytics';
+import { fetchCategoryComparison, fetchViewerOverlap, fetchCategoryLeaderboard } from '@/api/client';
+import type { CategoryComparison, ViewerOverlap, CategoryLeaderboard } from '@/types/analytics';
 
 import type { TimeRange } from '@/types/analytics';
 
@@ -12,6 +13,8 @@ interface ComparisonProps {
 }
 
 export function Comparison({ streamer, days }: ComparisonProps) {
+  const [leaderboardSort, setLeaderboardSort] = useState<'avg' | 'peak'>('avg');
+
   const { data: comparison, isLoading: loadingComparison } = useQuery<CategoryComparison>({
     queryKey: ['categoryComparison', streamer, days],
     queryFn: () => fetchCategoryComparison(streamer, days),
@@ -21,6 +24,12 @@ export function Comparison({ streamer, days }: ComparisonProps) {
   const { data: overlap, isLoading: loadingOverlap } = useQuery<ViewerOverlap[]>({
     queryKey: ['viewerOverlap', streamer],
     queryFn: () => fetchViewerOverlap(streamer, 20),
+    enabled: !!streamer,
+  });
+
+  const { data: leaderboard } = useQuery<CategoryLeaderboard>({
+    queryKey: ['categoryLeaderboard', streamer, days, leaderboardSort],
+    queryFn: () => fetchCategoryLeaderboard(streamer, days, 25, leaderboardSort),
     enabled: !!streamer,
   });
 
@@ -155,6 +164,67 @@ export function Comparison({ streamer, days }: ComparisonProps) {
           </div>
         )}
       </motion.div>
+
+      {/* Category Leaderboard */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.3 }}
+        className="bg-card rounded-xl border border-border p-6"
+      >
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
+            <Crown className="w-6 h-6 text-yellow-400" />
+            <h2 className="text-xl font-bold text-white">Kategorie-Leaderboard</h2>
+            {leaderboard && (
+              <span className="text-sm text-text-secondary">
+                ({leaderboard.totalStreamers} Streamer)
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setLeaderboardSort('avg')}
+              className={`px-3 py-1 rounded-lg text-sm transition-colors ${
+                leaderboardSort === 'avg'
+                  ? 'bg-primary text-white'
+                  : 'bg-background text-text-secondary hover:text-white'
+              }`}
+            >
+              Ø Viewer
+            </button>
+            <button
+              onClick={() => setLeaderboardSort('peak')}
+              className={`px-3 py-1 rounded-lg text-sm transition-colors ${
+                leaderboardSort === 'peak'
+                  ? 'bg-primary text-white'
+                  : 'bg-background text-text-secondary hover:text-white'
+              }`}
+            >
+              Peak
+            </button>
+          </div>
+        </div>
+
+        {leaderboard && leaderboard.leaderboard.length > 0 ? (
+          <div className="space-y-2">
+            {leaderboard.leaderboard.map((entry) => (
+              <LeaderboardRow key={entry.streamer} entry={entry} sort={leaderboardSort} />
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-8 text-text-secondary">
+            <Crown className="w-12 h-12 mx-auto mb-3 opacity-50" />
+            <p>Keine Leaderboard-Daten vorhanden</p>
+          </div>
+        )}
+
+        {leaderboard?.yourRank && (
+          <div className="mt-4 p-3 bg-primary/10 rounded-lg border border-primary/20 text-sm text-text-secondary">
+            Dein Platz: <span className="text-white font-bold">#{leaderboard.yourRank}</span> von {leaderboard.totalStreamers}
+          </div>
+        )}
+      </motion.div>
     </div>
   );
 }
@@ -253,6 +323,65 @@ function OverlapBar({ rank, streamer, sharedChatters, percentage }: OverlapBarPr
 
       <div className="w-16 text-right">
         <span className="text-sm font-medium text-white">{percentage.toFixed(1)}%</span>
+      </div>
+    </motion.div>
+  );
+}
+
+interface LeaderboardRowProps {
+  entry: {
+    rank: number;
+    streamer: string;
+    avgViewers: number;
+    peakViewers: number;
+    isPartner: boolean;
+    isYou?: boolean;
+  };
+  sort: 'avg' | 'peak';
+}
+
+function LeaderboardRow({ entry, sort }: LeaderboardRowProps) {
+  const mainValue = sort === 'avg' ? entry.avgViewers : entry.peakViewers;
+  const subValue = sort === 'avg' ? entry.peakViewers : entry.avgViewers;
+  const subLabel = sort === 'avg' ? 'Peak' : 'Avg';
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -10 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ delay: Math.min(entry.rank * 0.03, 0.5) }}
+      className={`flex items-center gap-3 p-3 rounded-lg ${
+        entry.isYou
+          ? 'bg-primary/15 border border-primary/30'
+          : 'bg-background hover:bg-background/80'
+      }`}
+    >
+      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${
+        entry.rank === 1 ? 'bg-gradient-to-br from-yellow-400 to-amber-600 text-white' :
+        entry.rank === 2 ? 'bg-gradient-to-br from-gray-300 to-gray-500 text-white' :
+        entry.rank === 3 ? 'bg-gradient-to-br from-amber-600 to-amber-800 text-white' :
+        'bg-border text-text-secondary'
+      }`}>
+        {entry.rank}
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className={`font-medium truncate ${entry.isYou ? 'text-primary' : 'text-white'}`}>
+            {entry.streamer}
+          </span>
+          {entry.isPartner && (
+            <span className="text-xs px-1.5 py-0.5 bg-accent/20 text-accent rounded">Partner</span>
+          )}
+          {entry.isYou && (
+            <span className="text-xs px-1.5 py-0.5 bg-primary/20 text-primary rounded">Du</span>
+          )}
+        </div>
+      </div>
+
+      <div className="text-right shrink-0">
+        <div className="text-white font-bold">{mainValue.toLocaleString('de-DE', { maximumFractionDigits: 0 })}</div>
+        <div className="text-xs text-text-secondary">{subLabel}: {subValue.toLocaleString('de-DE', { maximumFractionDigits: 0 })}</div>
       </div>
     </motion.div>
   );

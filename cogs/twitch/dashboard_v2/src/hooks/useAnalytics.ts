@@ -21,6 +21,8 @@ import {
   fetchFollowerFunnel,
   fetchAudienceInsights,
   fetchAudienceDemographics,
+  fetchViewerTimeline,
+  fetchCategoryLeaderboard,
 } from '@/api/client';
 import type { TimeRange } from '@/types/analytics';
 
@@ -197,5 +199,29 @@ export function useAudienceDemographics(streamer: string | null, days: TimeRange
     queryFn: () => fetchAudienceDemographics(streamer, days),
     staleTime: STALE_TIME,
     enabled: !!streamer,
+  });
+}
+
+// Viewer Timeline Hook (stats_tracked bucketed data)
+export function useViewerTimeline(streamer: string | null, days: number) {
+  return useQuery({
+    queryKey: ['viewer-timeline', streamer, days],
+    queryFn: () => fetchViewerTimeline(streamer, days),
+    staleTime: STALE_TIME,
+    enabled: !!streamer,
+  });
+}
+
+// Category Leaderboard Hook
+export function useCategoryLeaderboard(
+  streamer: string | null,
+  days: number,
+  limit = 25,
+  sort: 'avg' | 'peak' = 'avg'
+) {
+  return useQuery({
+    queryKey: ['category-leaderboard', streamer, days, limit, sort],
+    queryFn: () => fetchCategoryLeaderboard(streamer, days, limit, sort),
+    staleTime: STALE_TIME,
   });
 }

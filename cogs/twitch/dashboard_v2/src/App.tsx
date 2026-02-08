@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Component, type ReactNode, type ErrorInfo } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Header } from '@/components/layout/Header';
 import { TabNavigation, type TabId } from '@/components/layout/TabNavigation';
@@ -11,7 +11,54 @@ import { Comparison } from '@/pages/Comparison';
 import { Schedule } from '@/pages/Schedule';
 import { useStreamerList, useAuthStatus } from '@/hooks/useAnalytics';
 import type { TimeRange } from '@/types/analytics';
-import { Shield, ShieldCheck, ShieldAlert, Wifi } from 'lucide-react';
+import { Shield, ShieldCheck, ShieldAlert, Wifi, AlertTriangle } from 'lucide-react';
+
+// Error Boundary to prevent white screen on crashes
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Dashboard Error:', error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-bg flex items-center justify-center p-8">
+          <div className="bg-card border border-border rounded-xl p-8 max-w-lg text-center">
+            <AlertTriangle className="w-12 h-12 text-warning mx-auto mb-4" />
+            <h2 className="text-xl font-bold text-white mb-2">Dashboard-Fehler</h2>
+            <p className="text-text-secondary mb-4">
+              {this.state.error?.message || 'Ein unerwarteter Fehler ist aufgetreten.'}
+            </p>
+            <button
+              onClick={() => this.setState({ hasError: false, error: null })}
+              className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/80 transition-colors"
+            >
+              Erneut versuchen
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // Create QueryClient
 const queryClient = new QueryClient({
@@ -163,7 +210,9 @@ function Dashboard() {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <Dashboard />
+      <ErrorBoundary>
+        <Dashboard />
+      </ErrorBoundary>
     </QueryClientProvider>
   );
 }
