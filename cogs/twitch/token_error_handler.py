@@ -98,11 +98,10 @@ class TokenErrorHandler:
                 
                 conn.commit()
                 
-            log.warning(  # nosemgrep
-                "Added %s (ID: %s) to token blacklist. Error: %s",
+            log.warning(
+                "Blocked auto-refresh for %s (ID: %s) after auth failure.",
                 twitch_login,
                 twitch_user_id,
-                error_message[:100],
             )
             
             # Deaktiviere Auto-Raid für diesen Streamer
@@ -182,7 +181,7 @@ class TokenErrorHandler:
                 ).fetchone()
                 
                 if row and row[0] == 1:
-                    log.debug("Already notified about token error for %s", twitch_login)  # nosemgrep
+                    log.debug("Already notified about auth error for %s", twitch_login)
                     return
         except Exception:
             log.error("Error checking notification status", exc_info=True)
@@ -191,7 +190,7 @@ class TokenErrorHandler:
         try:
             channel = self.discord_bot.get_channel(TOKEN_ERROR_CHANNEL_ID)
             if not channel:
-                log.warning("Token error notification channel %s not found", TOKEN_ERROR_CHANNEL_ID)  # nosemgrep
+                log.warning("Auth error notification channel %s not found", TOKEN_ERROR_CHANNEL_ID)
                 return
 
             # Erstelle Discord Embed
@@ -251,7 +250,7 @@ class TokenErrorHandler:
                 )
                 conn.commit()
                 
-            log.info("Sent token error notification for %s to channel %s", twitch_login, TOKEN_ERROR_CHANNEL_ID)  # nosemgrep
+            log.info("Sent auth error notification for %s to channel %s", twitch_login, TOKEN_ERROR_CHANNEL_ID)
             
         except Exception:
             log.error("Error sending token error notification", exc_info=True)

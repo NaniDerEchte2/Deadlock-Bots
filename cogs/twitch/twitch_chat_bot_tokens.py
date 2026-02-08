@@ -53,7 +53,7 @@ async def _save_bot_tokens_to_keyring(*, access_token: str, refresh_token: Optio
 
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
-        log.info("Twitch Bot Tokens (%s) im Windows Credential Manager gespeichert (Dienst: %s).", "+".join(saved_types), _KEYRING_SERVICE)  # nosemgrep
+        log.info("Bot auth saved in Windows vault (types: %s, service: %s).", "+".join(saved_types), _KEYRING_SERVICE)
 
 
 def load_bot_tokens(*, log_missing: bool = True) -> Tuple[Optional[str], Optional[str], Optional[int]]:
@@ -79,10 +79,10 @@ def load_bot_tokens(*, log_missing: bool = True) -> Tuple[Optional[str], Optiona
             if candidate:
                 return candidate, refresh, expiry_ts
             if log_missing:
-                log.warning("TWITCH_BOT_TOKEN_FILE gesetzt (%s), aber leer", token_file)  # nosemgrep
-        except Exception as exc:  # pragma: no cover - defensive logging
+                log.warning("Konfigurierte Bot-Auth-Datei ist leer.")
+        except Exception:  # pragma: no cover - defensive logging
             if log_missing:
-                log.warning("TWITCH_BOT_TOKEN_FILE konnte nicht gelesen werden (%s): %s", token_file, exc)  # nosemgrep
+                log.warning("Konfigurierte Bot-Auth-Datei konnte nicht gelesen werden.", exc_info=True)
 
     keyring_token = _read_keyring_secret("TWITCH_BOT_TOKEN")
     keyring_refresh = _read_keyring_secret("TWITCH_BOT_REFRESH_TOKEN")

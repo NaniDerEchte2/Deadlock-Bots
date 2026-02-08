@@ -461,7 +461,7 @@ class ModerationMixin:
         """Hebt einen Ban auf (als Bot)."""
         safe_bot_id = self.bot_id_safe or self.bot_id
         if not safe_bot_id or not self._token_manager:
-            log.warning("Unban nicht möglich: Kein Bot-Token/ID verfügbar in %s", channel_name)  # nosemgrep
+            log.warning("Unban nicht möglich: Keine Bot-Auth/ID verfügbar in %s", channel_name)
             return False
 
         for attempt in range(2):
