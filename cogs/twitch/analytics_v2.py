@@ -232,7 +232,11 @@ class AnalyticsV2Mixin:
                 SELECT
                     AVG(s.avg_viewers) as avg_viewers,
                     {self._FOLLOWER_DELTA_SUM} as followers,
-                    AVG(CASE WHEN s.avg_viewers >= 3 THEN s.retention_10m ELSE NULL END) as retention
+                    AVG(CASE
+                        WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0
+                        THEN MIN(s.retention_10m, s.avg_viewers * 1.0 / s.peak_viewers, 1.0)
+                        ELSE NULL
+                    END) as retention
                 FROM twitch_stream_sessions s
                 WHERE s.started_at >= ? AND s.started_at < ? AND s.ended_at IS NOT NULL {where}
             """, prev_params).fetchone()
@@ -332,19 +336,31 @@ class AnalyticsV2Mixin:
             LIMIT {limit}
         """, params).fetchall()
 
-        return [
-            {
+        sessions: List[Dict[str, Any]] = []
+        for r in rows:
+            peak_viewers = int(r[5]) if r[5] else 0
+            avg_viewers = float(r[7]) if r[7] else 0.0
+            retention_cap = min(1.0, max(0.0, (avg_viewers / peak_viewers))) if peak_viewers > 0 else 1.0
+
+            raw_ret_5m = float(r[8]) if r[8] else 0.0
+            raw_ret_10m = float(r[9]) if r[9] else 0.0
+            raw_ret_20m = float(r[10]) if r[10] else 0.0
+            ret_5m = max(0.0, min(raw_ret_5m, retention_cap))
+            ret_10m = max(0.0, min(raw_ret_10m, retention_cap))
+            ret_20m = max(0.0, min(raw_ret_20m, retention_cap))
+
+            sessions.append({
                 "id": r[0],
                 "date": r[1] or "",
                 "startTime": r[2] or "",
                 "duration": r[3] or 0,
                 "startViewers": r[4] or 0,
-                "peakViewers": r[5] or 0,
+                "peakViewers": peak_viewers,
                 "endViewers": r[6] or 0,
-                "avgViewers": float(r[7]) if r[7] else 0,
-                "retention5m": float(r[8]) * 100 if r[8] else 0,
-                "retention10m": float(r[9]) * 100 if r[9] else 0,
-                "retention20m": float(r[10]) * 100 if r[10] else 0,
+                "avgViewers": avg_viewers,
+                "retention5m": ret_5m * 100,
+                "retention10m": ret_10m * 100,
+                "retention20m": ret_20m * 100,
                 "dropoffPct": float(r[11]) * 100 if r[11] else 0,
                 "uniqueChatters": r[12] or 0,
                 "firstTimeChatters": r[13] or 0,
@@ -352,9 +368,9 @@ class AnalyticsV2Mixin:
                 "followersStart": r[15] or 0,
                 "followersEnd": r[16] or 0,
                 "title": r[17] or "",
-            }
-            for r in rows
-        ]
+            })
+
+        return sessions
 
     def _calculate_overview_metrics(self, conn, since_date: str, streamer: Optional[str]) -> Dict[str, Any]:
         """Calculate all overview metrics."""
@@ -368,12 +384,28 @@ class AnalyticsV2Mixin:
                 SUM(s.avg_viewers * s.duration_seconds / 3600.0) as total_hours_watched,
                 SUM(s.duration_seconds / 3600.0) as total_airtime_hours,
                 {self._FOLLOWER_DELTA_SUM} as total_followers,
-                AVG(CASE WHEN s.avg_viewers >= 3 THEN s.retention_5m ELSE NULL END) as avg_retention_5m,
-                AVG(CASE WHEN s.avg_viewers >= 3 THEN s.retention_10m ELSE NULL END) as avg_retention_10m,
-                AVG(CASE WHEN s.avg_viewers >= 3 THEN s.retention_20m ELSE NULL END) as avg_retention_20m,
+                AVG(CASE
+                    WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0
+                    THEN MIN(s.retention_5m, s.avg_viewers * 1.0 / s.peak_viewers, 1.0)
+                    ELSE NULL
+                END) as avg_retention_5m,
+                AVG(CASE
+                    WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0
+                    THEN MIN(s.retention_10m, s.avg_viewers * 1.0 / s.peak_viewers, 1.0)
+                    ELSE NULL
+                END) as avg_retention_10m,
+                AVG(CASE
+                    WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0
+                    THEN MIN(s.retention_20m, s.avg_viewers * 1.0 / s.peak_viewers, 1.0)
+                    ELSE NULL
+                END) as avg_retention_20m,
                 AVG(s.dropoff_pct) as avg_dropoff,
                 SUM(s.unique_chatters) as total_unique_chatters,
-                AVG(CASE WHEN s.avg_viewers >= 3 THEN MIN(s.unique_chatters * 100.0 / s.avg_viewers, 100.0) ELSE NULL END) as chat_per_100
+                AVG(CASE
+                    WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0
+                    THEN MIN(s.unique_chatters * 100.0 / s.peak_viewers, 100.0)
+                    ELSE NULL
+                END) as chat_per_100
             FROM twitch_stream_sessions s
             WHERE s.started_at >= ? AND s.ended_at IS NOT NULL {where}
         """, params).fetchone()
@@ -406,8 +438,12 @@ class AnalyticsV2Mixin:
         # Sample counts for data quality gating
         sample_row = conn.execute(f"""
             SELECT
-                COUNT(CASE WHEN s.avg_viewers >= 3 AND s.retention_10m IS NOT NULL THEN 1 END),
-                COUNT(CASE WHEN s.avg_viewers >= 3 AND s.unique_chatters IS NOT NULL THEN 1 END),
+                COUNT(CASE
+                    WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0 AND s.retention_10m IS NOT NULL THEN 1
+                END),
+                COUNT(CASE
+                    WHEN s.avg_viewers >= 3 AND s.peak_viewers > 0 AND s.unique_chatters IS NOT NULL THEN 1
+                END),
                 COUNT(CASE WHEN s.follower_delta IS NOT NULL
                      AND NOT (s.followers_end = 0 AND s.followers_start > 0) THEN 1 END)
             FROM twitch_stream_sessions s
@@ -483,7 +519,7 @@ class AnalyticsV2Mixin:
         if metrics.get("chat_sample_count", 0) < 3:
             engagement = 50
         else:
-            engagement = min(100, int(chat_100 * 5))  # 20 chatters/100 = 100
+            engagement = min(100, int(chat_100 * 3))  # ~33 chatters/100 peak-viewer = 100
 
         # Growth: Based on followers per hour (floor at 0, negative fph = 0 growth)
         fph = max(0, metrics.get("followers_per_hour", 0))
@@ -552,13 +588,13 @@ class AnalyticsV2Mixin:
             insights.append({
                 "type": "warn",
                 "title": "Niedrige Chat-Aktivität",
-                "text": f"Nur {chat_100:.1f} Chatter/100 Viewer. Mehr Interaktion fördern!"
+                "text": f"Nur {chat_100:.1f} Chatter/100 Peak-Viewer (Proxy). Mehr Interaktion fördern!"
             })
-        elif chat_100 > 15:
+        elif chat_100 > 30:
             insights.append({
                 "type": "pos",
                 "title": "Aktive Community",
-                "text": f"{chat_100:.1f} Chatter/100 Viewer - sehr engagiert!"
+                "text": f"{chat_100:.1f} Chatter/100 Peak-Viewer (Proxy) - sehr engagiert!"
             })
 
         # Followers (skip when no valid follower data)
