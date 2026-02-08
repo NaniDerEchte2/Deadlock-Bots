@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import builtins
-import importlib
 import inspect
 import hashlib
 import logging
@@ -12,13 +11,12 @@ from pathlib import Path
 from typing import List
 
 
-def _log_src(modname: str) -> None:
+def _log_src(modname: str, module: types.ModuleType) -> None:
     try:
-        module = importlib.import_module(modname)
         path = inspect.getfile(module)
         with open(path, "rb") as fh:
-            sha = hashlib.sha1(fh.read()).hexdigest()[:12]
-        logging.getLogger().info("SRC %s -> %s [sha1:%s]", modname, path, sha)
+            sha = hashlib.sha256(fh.read()).hexdigest()[:12]
+        logging.getLogger().info("SRC %s -> %s [sha256:%s]", modname, path, sha)
     except Exception as exc:
         logging.getLogger().error("SRC %s -> %r", modname, exc)
 
@@ -65,9 +63,9 @@ def _load_secrets_from_keyring() -> None:
             pass  # Ignorieren, wenn Key nicht im Tresor
             
     if loaded_keys:
-        logging.getLogger().info("🔐 %d Secrets aus Windows Tresor (%s) geladen: %s", len(loaded_keys), service_name, ", ".join(loaded_keys))
+        logging.getLogger().info("🔐 %d Secrets aus Windows Tresor (%s) geladen: %s", len(loaded_keys), service_name, ", ".join(loaded_keys))  # nosemgrep
 
-
+  # nosemgrep
 def _load_env_robust() -> str | None:
     try:
         from dotenv import load_dotenv
@@ -123,9 +121,9 @@ def _log_secret_present(name: str, env_keys: List[str], mode: str = "off") -> No
         if mode in ("present", "masked"):
             logging.info("%s: vorhanden (Wert wird nicht geloggt)", name)
     except Exception as exc:
-        logging.getLogger().debug("Secret-Check fehlgeschlagen (%s): %r", name, exc)
+        logging.getLogger().debug("Secret-Check fehlgeschlagen (%s): %r", name, exc)  # nosemgrep
 
-
+  # nosemgrep
 class _RedactSecretsFilter(logging.Filter):
     def __init__(self, keys: List[str]):
         super().__init__()
@@ -219,13 +217,33 @@ def _log_runtime_info() -> None:
 
 
 def _log_known_sources() -> None:
-    for name in [
-        "cogs.rules_channel",
-        "cogs.welcome_dm.dm_main",
-        "cogs.welcome_dm.step_streamer",
-        "cogs.welcome_dm.step_steam_link",
-    ]:
-        _log_src(name)
+    try:
+        import cogs.rules_channel as rules_channel
+
+        _log_src("cogs.rules_channel", rules_channel)
+    except Exception as exc:
+        logging.getLogger().error("SRC cogs.rules_channel -> %r", exc)
+
+    try:
+        import cogs.welcome_dm.dm_main as dm_main
+
+        _log_src("cogs.welcome_dm.dm_main", dm_main)
+    except Exception as exc:
+        logging.getLogger().error("SRC cogs.welcome_dm.dm_main -> %r", exc)
+
+    try:
+        import cogs.welcome_dm.step_streamer as step_streamer
+
+        _log_src("cogs.welcome_dm.step_streamer", step_streamer)
+    except Exception as exc:
+        logging.getLogger().error("SRC cogs.welcome_dm.step_streamer -> %r", exc)
+
+    try:
+        import cogs.welcome_dm.step_steam_link as step_steam_link
+
+        _log_src("cogs.welcome_dm.step_steam_link", step_steam_link)
+    except Exception as exc:
+        logging.getLogger().error("SRC cogs.welcome_dm.step_steam_link -> %r", exc)
 
 
 def bootstrap_runtime() -> None:

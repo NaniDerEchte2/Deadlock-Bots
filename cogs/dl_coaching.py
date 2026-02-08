@@ -142,21 +142,61 @@ class DlCoachingCog(commands.Cog):
     async def _db_upsert(self, user_id: int, **fields: Any):
         """Insert/Update Session row for user."""
         assert self.db
-        keys = list(fields.keys())
-        vals = [fields[k] for k in keys]
-        placeholders = ", ".join([f"{k}=?" for k in keys])
-
-        cur = await self.db.execute(
-            f"UPDATE coaching_sessions SET {placeholders}, updated_at=CURRENT_TIMESTAMP WHERE user_id=?",
-            (*vals, user_id),
+        allowed_fields = (
+            "thread_id",
+            "match_id",
+            "rank",
+            "subrank",
+            "hero",
+            "comment",
+            "step",
+            "is_active",
         )
-        if cur.rowcount == 0:
-            cols = ", ".join(["user_id"] + keys)
-            qmarks = ", ".join(["?"] * (len(keys) + 1))
-            await self.db.execute(
-                f"INSERT INTO coaching_sessions ({cols}) VALUES ({qmarks})",
-                (user_id, *vals),
+        sanitized_fields = {k: v for k, v in fields.items() if k in allowed_fields}
+        if not sanitized_fields:
+            return
+
+        existing = await self._db_get(user_id)
+        merged: Dict[str, Any] = {}
+        for key in allowed_fields:
+            if key in sanitized_fields:
+                merged[key] = sanitized_fields[key]
+            elif existing is not None and key in existing.keys():
+                merged[key] = existing[key]
+            elif key == "is_active":
+                merged[key] = 1
+            else:
+                merged[key] = None
+
+        await self.db.execute(
+            """
+            INSERT INTO coaching_sessions (
+                user_id, thread_id, match_id, rank, subrank, hero, comment, step, is_active, updated_at
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+                thread_id = excluded.thread_id,
+                match_id = excluded.match_id,
+                rank = excluded.rank,
+                subrank = excluded.subrank,
+                hero = excluded.hero,
+                comment = excluded.comment,
+                step = excluded.step,
+                is_active = excluded.is_active,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                user_id,
+                merged["thread_id"],
+                merged["match_id"],
+                merged["rank"],
+                merged["subrank"],
+                merged["hero"],
+                merged["comment"],
+                merged["step"],
+                merged["is_active"],
+            ),
+        )
         await self.db.commit()
 
     async def _db_get(self, user_id: int) -> Optional[aiosqlite.Row]:

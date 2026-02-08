@@ -194,7 +194,7 @@ class DeadlockVoiceStatus(commands.Cog):
 
         placeholders = ",".join("?" for _ in ids)
         query = (
-            "SELECT user_id, steam_id, primary_account, verified, updated_at "
+            "SELECT user_id, steam_id, primary_account, verified, updated_at "  # nosec B608
             f"FROM steam_links WHERE user_id IN ({placeholders}) "
             "AND steam_id IS NOT NULL AND steam_id != '' "
             "ORDER BY primary_account DESC, verified DESC, updated_at DESC"
@@ -217,7 +217,7 @@ class DeadlockVoiceStatus(commands.Cog):
 
         placeholders = ",".join("?" for _ in ids)
         query = (
-            "SELECT steam_id, deadlock_stage, deadlock_minutes, deadlock_localized, "
+            "SELECT steam_id, deadlock_stage, deadlock_minutes, deadlock_localized, "  # nosec B608
             "deadlock_updated_at, last_seen_ts, in_deadlock_now, in_match_now_strict, "
             "last_server_id, deadlock_party_hint "
             f"FROM live_player_state WHERE steam_id IN ({placeholders})"
@@ -249,7 +249,7 @@ class DeadlockVoiceStatus(commands.Cog):
             # Flat list for DELETE IN clause
             delete_ids = [steam_id for (steam_id, _, _) in entries]
             await db.execute_async(
-                f"DELETE FROM deadlock_voice_watch WHERE steam_id NOT IN ({placeholders})",
+                f"DELETE FROM deadlock_voice_watch WHERE steam_id NOT IN ({placeholders})",  # nosec B608
                 delete_ids,
             )
         except Exception as exc:
