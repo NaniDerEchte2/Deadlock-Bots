@@ -76,7 +76,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Checkov IaC Scan (SARIF)
-        uses: bridgecrewio/checkov-action@master
+        uses: bridgecrewio/checkov-action@f34885219720066007f948b843e747bb136aa223 # master
         with:
           directory: .
           framework: terraform,kubernetes,dockerfile,cloudformation
@@ -95,7 +95,7 @@ jobs:
 
       - name: tfsec Terraform Scan (SARIF)
         if: needs.detect-iac.outputs.has_terraform == 'true'
-        uses: aquasecurity/tfsec-action@v1.0.3
+        uses: aquasecurity/tfsec-action@b466648d6e39e7c75324f25d83891162a721f2d6 # v1.0.3
         with:
           working_directory: .
           format: sarif
@@ -113,7 +113,7 @@ jobs:
 
       - name: KubeLinter Scan (SARIF)
         if: needs.detect-iac.outputs.has_kubernetes == 'true'
-        uses: stackrox/kube-linter-action@v1.0.4
+        uses: stackrox/kube-linter-action@ca0d55b925470deb5b04b556e6c4276ea94d03c3 # v1.0.4
         with:
           directory: .
           format: sarif
@@ -129,7 +129,7 @@ jobs:
         continue-on-error: true
 
       - name: KICS IaC Scan (SARIF)
-        uses: checkmarx/kics-github-action@v1.7.0
+        uses: checkmarx/kics-github-action@8a44970e3d2eca668be41abe9d4e06709c3b3609 # v1.7.0
         with:
           path: .
           output_path: kics-results
@@ -147,7 +147,7 @@ jobs:
 
       - name: Ansible Lint (SARIF)
         if: hashFiles('**/ansible/**/*.yml', '**/ansible/**/*.yaml', '**/playbook*.yml', '**/playbook*.yaml') != ''
-        uses: ansible/ansible-lint@main
+        uses: ansible/ansible-lint@7fe29007f249933300ef40ebbc03ba799c1ff068 # main
         with:
           args: "--sarif-file ansible-lint.sarif"
         continue-on-error: true
