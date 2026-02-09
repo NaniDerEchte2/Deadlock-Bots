@@ -275,15 +275,12 @@ class SteamGuardAuto(commands.Cog):
 
             # Clear old token
             import json
-            conn = db.connect()
-            try:
+            with db.get_conn() as conn:
                 task_id = conn.execute(
                     "INSERT INTO steam_tasks(type, payload, status) VALUES(?, ?, 'PENDING')",
                     ('AUTH_LOGOUT', None)
                 ).lastrowid
                 conn.commit()
-            finally:
-                conn.close()
 
             log.info(f"Enqueued AUTH_LOGOUT task #{task_id}")
             await asyncio.sleep(3)
@@ -296,8 +293,7 @@ class SteamGuardAuto(commands.Cog):
                 log.info("Deleted old refresh.token")
 
             # Start new login (this will trigger Steam Guard email)
-            conn = db.connect()
-            try:
+            with db.get_conn() as conn:
                 payload = {
                     'force_credentials': True,
                     'account_name': steam_account,
@@ -308,8 +304,6 @@ class SteamGuardAuto(commands.Cog):
                     ('AUTH_LOGIN', json.dumps(payload))
                 ).lastrowid
                 conn.commit()
-            finally:
-                conn.close()
 
             log.info(f"✅ Enqueued AUTH_LOGIN task #{task_id} - email monitor will handle Guard code")
 
@@ -391,14 +385,11 @@ class SteamGuardAuto(commands.Cog):
             # Check standalone_bot_state for guard_required
             import json
 
-            conn = db.connect()
-            try:
+            with db.get_conn() as conn:
                 cursor = conn.execute(
                     "SELECT payload FROM standalone_bot_state WHERE bot = 'steam' LIMIT 1"
                 )
                 row = cursor.fetchone()
-            finally:
-                conn.close()
 
             if not row:
                 return
@@ -436,16 +427,13 @@ class SteamGuardAuto(commands.Cog):
             # Submit code via Steam task
             log.info(f"📧 Auto-submitting Steam Guard code: {code}")
 
-            task_conn = db.connect()
-            try:
+            with db.get_conn() as task_conn:
                 cursor = task_conn.execute(
                     "INSERT INTO steam_tasks(type, payload, status) VALUES(?, ?, 'PENDING')",
                     ('AUTH_GUARD_CODE', json.dumps({'code': code}))
                 )
                 task_id = cursor.lastrowid
                 task_conn.commit()
-            finally:
-                task_conn.close()
 
             log.info(f"✅ Enqueued AUTH_GUARD_CODE task #{task_id}")
 
@@ -453,15 +441,12 @@ class SteamGuardAuto(commands.Cog):
             await asyncio.sleep(5)
 
             # Check if it worked
-            result_conn = db.connect()
-            try:
+            with db.get_conn() as result_conn:
                 cursor = result_conn.execute(
                     "SELECT status, error FROM steam_tasks WHERE id = ? LIMIT 1",
                     (task_id,)
                 )
                 result_row = cursor.fetchone()
-            finally:
-                result_conn.close()
 
             if result_row:
                 status, error = result_row
