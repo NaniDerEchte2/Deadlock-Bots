@@ -1254,8 +1254,7 @@ class DashboardServer:
             # Ermittele vorhandene Spalten, um kompatibel mit evtl. aelterem Schema zu sein
             retention_columns = set()
             try:
-                conn = db.connect()
-                rows = conn.execute("PRAGMA table_info(user_retention_tracking)").fetchall()
+                rows = db.query_all("PRAGMA table_info(user_retention_tracking)")
                 for r in rows:
                     # sqlite3.Row oder tuple
                     name = r["name"] if hasattr(r, "__getitem__") else r[1]

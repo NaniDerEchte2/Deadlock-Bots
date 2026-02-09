@@ -11,11 +11,10 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-import aiosqlite
 import discord
 from discord.ext import commands
 
-from service.db import db_path
+from service import db
 
 log = logging.getLogger("SmartLFG")
 
@@ -93,12 +92,10 @@ class SmartLFGAgent(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.db: Optional[aiosqlite.Connection] = None
         self.lfg_cooldowns: Dict[int, float] = {}
         self.cooldown_seconds = 60  # Kurzer Cooldown gegen Spam
 
     async def cog_load(self) -> None:
-        await self._ensure_db()
         log.info(
             "SmartLFGAgent geladen - LFG Channel: %s | Output Channel: %s",
             LFG_CHANNEL_ID,
@@ -106,16 +103,7 @@ class SmartLFGAgent(commands.Cog):
         )
 
     async def cog_unload(self) -> None:
-        if self.db:
-            await self.db.close()
-            self.db = None
         log.info("SmartLFGAgent entladen")
-
-    async def _ensure_db(self) -> None:
-        if self.db:
-            return
-        self.db = await aiosqlite.connect(str(db_path()))
-        self.db.row_factory = aiosqlite.Row
 
     def _get_user_rank(self, member: discord.Member) -> Tuple[str, int]:
         """Ermittelt den höchsten Rang eines Users."""
@@ -208,10 +196,6 @@ class SmartLFGAgent(commands.Cog):
         Holt alle Discord User -> Steam ID Mappings.
         Returns: {discord_user_id: [steam_id1, steam_id2, ...]}
         """
-        await self._ensure_db()
-        if not self.db:
-            return {}
-
         query = """
             SELECT user_id, steam_id
             FROM steam_links
@@ -219,9 +203,7 @@ class SmartLFGAgent(commands.Cog):
             AND verified = 1
             ORDER BY primary_account DESC, updated_at DESC
         """
-        cursor = await self.db.execute(query)
-        rows = await cursor.fetchall()
-        await cursor.close()
+        rows = await db.query_all_async(query)
 
         mapping: Dict[int, List[str]] = {}
         for row in rows:
@@ -238,13 +220,12 @@ class SmartLFGAgent(commands.Cog):
         stage: 'lobby' oder 'match'
         minutes: Spielminuten bei 'match', None bei 'lobby'
         """
-        await self._ensure_db()
-        if not self.db or not steam_ids:
+        if not steam_ids:
             return {}
 
         now = int(time.time())
         steam_ids_json = json.dumps(sorted(steam_ids))
-        cursor = await self.db.execute(
+        rows = await db.query_all_async(
             """
             SELECT steam_id, deadlock_stage, deadlock_minutes, deadlock_updated_at, last_seen_ts
             FROM live_player_state
@@ -253,8 +234,6 @@ class SmartLFGAgent(commands.Cog):
             """,
             (steam_ids_json,),
         )
-        rows = await cursor.fetchall()
-        await cursor.close()
 
         online_map: Dict[str, Tuple[str, Optional[int]]] = {}
 
@@ -358,16 +337,13 @@ class SmartLFGAgent(commands.Cog):
         self,
         user_ids: List[int],
     ) -> Dict[int, Tuple[List[int], List[int], int]]:
-        await self._ensure_db()
-        if not self.db:
-            return {}
         if not user_ids:
             return {}
 
         patterns: Dict[int, Tuple[List[int], List[int], int]] = {}
         for chunk in self._chunked(user_ids):
             chunk_json = json.dumps([int(uid) for uid in chunk])
-            cursor = await self.db.execute(
+            rows = await db.query_all_async(
                 """
                 SELECT user_id, typical_hours, typical_days, activity_score_2w
                 FROM user_activity_patterns
@@ -375,8 +351,6 @@ class SmartLFGAgent(commands.Cog):
                 """,
                 (chunk_json,),
             )
-            rows = await cursor.fetchall()
-            await cursor.close()
             for row in rows:
                 uid = int(row[0])
                 hours = self._parse_json_list(row[1])
@@ -386,10 +360,7 @@ class SmartLFGAgent(commands.Cog):
         return patterns
 
     async def _fetch_co_player_stats(self, user_id: int) -> Dict[int, Tuple[int, int]]:
-        await self._ensure_db()
-        if not self.db:
-            return {}
-        cursor = await self.db.execute(
+        rows = await db.query_all_async(
             """
             SELECT co_player_id, sessions_together, total_minutes_together
             FROM user_co_players
@@ -397,8 +368,6 @@ class SmartLFGAgent(commands.Cog):
             """,
             (user_id,),
         )
-        rows = await cursor.fetchall()
-        await cursor.close()
         stats: Dict[int, Tuple[int, int]] = {}
         for row in rows:
             stats[int(row[0])] = (int(row[1] or 0), int(row[2] or 0))
@@ -410,9 +379,6 @@ class SmartLFGAgent(commands.Cog):
         channel_ids: List[int],
         cutoff_str: str,
     ) -> Set[int]:
-        await self._ensure_db()
-        if not self.db:
-            return set()
         if not user_ids or not channel_ids:
             return set()
 
@@ -420,7 +386,7 @@ class SmartLFGAgent(commands.Cog):
         channel_ids_json = json.dumps([int(cid) for cid in channel_ids])
         for chunk in self._chunked(user_ids):
             chunk_json = json.dumps([int(uid) for uid in chunk])
-            cursor = await self.db.execute(
+            rows = await db.query_all_async(
                 """
                 SELECT DISTINCT user_id
                 FROM voice_session_log
@@ -430,8 +396,6 @@ class SmartLFGAgent(commands.Cog):
                 """,
                 (cutoff_str, chunk_json, channel_ids_json),
             )
-            rows = await cursor.fetchall()
-            await cursor.close()
             for row in rows:
                 result.add(int(row[0]))
         return result

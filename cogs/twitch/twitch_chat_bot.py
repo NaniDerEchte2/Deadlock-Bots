@@ -27,6 +27,8 @@ from .twitch_chat_bot_commands import RaidCommandsMixin
 from .twitch_chat_bot_connection import ConnectionMixin
 from .twitch_chat_bot_constants import (
     _PROMO_ACTIVITY_ENABLED,
+    _PROMO_MESSAGES,
+    _PROMO_VIEWER_SPIKE_ENABLED,
     _SPAM_MIN_MATCHES,
     _WHITELISTED_BOTS,
 )
@@ -132,6 +134,8 @@ if TWITCHIO_AVAILABLE:
             self._last_promo_sent: Dict[str, float] = {}    # login -> monotonic timestamp
             self._last_promo_attempt: Dict[str, float] = {} # login -> monotonic timestamp
             self._promo_activity: Dict[str, Deque[Tuple[float, str]]] = {}
+            self._promo_chatter_dedupe: Dict[str, Dict[str, float]] = {}
+            self._last_promo_viewer_spike: Dict[str, float] = {}
             self._promo_task: Optional[asyncio.Task] = None
             self._last_invite_reply: Dict[str, float] = {}
             self._last_invite_reply_user: Dict[Tuple[str, str], float] = {}
@@ -481,10 +485,26 @@ if TWITCHIO_AVAILABLE:
                     except Exception as e:
                         log.debug("Konnte initialem Channel %s nicht beitreten: %s", channel, e)
 
-            # Periodische Chat-Promo-Schleife – aktuell deaktiviert
-            # if _PROMO_DISCORD_INVITE:
-            #     self._promo_task = asyncio.create_task(self._periodic_promo_loop())
-            #     log.info("Chat-Promo-Loop gestartet (Intervall: %d min)", _PROMO_INTERVAL_MIN)
+            if _PROMO_MESSAGES and (_PROMO_ACTIVITY_ENABLED or _PROMO_VIEWER_SPIKE_ENABLED):
+                if not self._promo_task or self._promo_task.done():
+                    self._promo_task = asyncio.create_task(
+                        self._periodic_promo_loop(),
+                        name="twitch.chat_bot.promos",
+                    )
+                    log.info("Chat-Promo-Loop gestartet (Check alle 120s)")
+
+        async def close(self):
+            promo_task = self._promo_task
+            self._promo_task = None
+            if promo_task and not promo_task.done():
+                promo_task.cancel()
+                try:
+                    await promo_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    log.debug("Promo-Task konnte nicht sauber beendet werden", exc_info=True)
+            await super().close()
 
         async def event_command_error(self, payload):
             """Fehlerbehandlung für Commands."""

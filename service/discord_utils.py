@@ -1,12 +1,15 @@
 """
 Shared Discord/Database utilities - eliminiert Duplicate Code über Cogs hinweg.
 """
+import asyncio
 import logging
 import re
-from typing import Optional, List
-import discord
-import aiosqlite
 from pathlib import Path
+from typing import Iterable, List, Optional
+
+import discord
+
+from service import db as central_db
 
 logger = logging.getLogger(__name__)
 _SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -65,20 +68,100 @@ async def resolve_member(
 
 # ========= Database Connection Helpers =========
 
-async def connect_db(db_path: Path | str) -> aiosqlite.Connection:
+class _BufferedAsyncCursor:
+    """Buffered async cursor compatibility layer for legacy utilities."""
+
+    def __init__(self, rows, rowcount: int, lastrowid: int) -> None:
+        self._rows = list(rows or [])
+        self._idx = 0
+        self.rowcount = rowcount
+        self.lastrowid = lastrowid
+
+    async def fetchone(self):
+        if self._idx >= len(self._rows):
+            return None
+        row = self._rows[self._idx]
+        self._idx += 1
+        return row
+
+    async def fetchall(self):
+        if self._idx >= len(self._rows):
+            return []
+        rows = self._rows[self._idx :]
+        self._idx = len(self._rows)
+        return rows
+
+    async def fetchmany(self, size: int):
+        if size <= 0 or self._idx >= len(self._rows):
+            return []
+        end = min(self._idx + size, len(self._rows))
+        rows = self._rows[self._idx : end]
+        self._idx = end
+        return rows
+
+    async def close(self) -> None:
+        return None
+
+
+class _CentralAsyncDBAdapter:
     """
-    Standard DB-Connection mit WAL mode & NORMAL sync.
+    Async compatibility adapter over service.db.
+    Avoids direct sqlite/aiosqlite connections outside service/db.py.
+    """
+
+    async def execute(self, sql: str, params: Iterable = ()) -> _BufferedAsyncCursor:
+        def _run():
+            with central_db.get_conn() as conn:
+                cur = conn.execute(sql, tuple(params))
+                rows = cur.fetchall() if cur.description else []
+                return rows, int(cur.rowcount or 0), int(cur.lastrowid or 0)
+
+        rows, rowcount, lastrowid = await asyncio.to_thread(_run)
+        return _BufferedAsyncCursor(rows, rowcount, lastrowid)
+
+    async def executemany(self, sql: str, seq_of_params: Iterable[Iterable]) -> _BufferedAsyncCursor:
+        def _run():
+            with central_db.get_conn() as conn:
+                cur = conn.executemany(sql, seq_of_params)
+                return [], int(cur.rowcount or 0), int(cur.lastrowid or 0)
+
+        rows, rowcount, lastrowid = await asyncio.to_thread(_run)
+        return _BufferedAsyncCursor(rows, rowcount, lastrowid)
+
+    async def executescript(self, sql_script: str) -> _BufferedAsyncCursor:
+        def _run():
+            with central_db.get_conn() as conn:
+                cur = conn.executescript(sql_script)
+                return [], int(cur.rowcount or 0), int(cur.lastrowid or 0)
+
+        rows, rowcount, lastrowid = await asyncio.to_thread(_run)
+        return _BufferedAsyncCursor(rows, rowcount, lastrowid)
+
+    async def commit(self) -> None:
+        # service.db runs in autocommit mode; kept for API compatibility.
+        return None
+
+    async def close(self) -> None:
+        # shared connection lifecycle is handled by service.db
+        return None
+
+
+async def connect_db(db_path: Path | str) -> _CentralAsyncDBAdapter:
+    """
+    Legacy async DB connector.
+    Returns an async adapter backed by the shared central service.db connection.
     Genutzt von: deadlock_voice_status.py, rank_voice_manager.py, tempvoice/core.py
     """
-    db = await aiosqlite.connect(str(db_path))
-    db.row_factory = aiosqlite.Row
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA synchronous=NORMAL")
-    return db
+    requested = str(Path(db_path))
+    active = str(Path(central_db.db_path()))
+    if requested != active:
+        logger.warning("connect_db ignored requested path %s (active central DB is %s)", requested, active)
+    await asyncio.to_thread(central_db.connect)
+    return _CentralAsyncDBAdapter()
 
 
 async def ensure_table_exists(
-    db: aiosqlite.Connection,
+    db: _CentralAsyncDBAdapter,
     create_table_sql_or_name: str,
     schema: Optional[str] = None,
 ) -> None:

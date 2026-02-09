@@ -518,7 +518,7 @@ class UserActivityAnalyzer(commands.Cog):
         # Die Tabellen werden bereits in service/db.py::init_schema erstellt
         # Dieser Call sorgt nur dafür dass init_schema nochmal läuft falls nötig
         try:
-            central_db.connect()
+            central_db.init_schema()
             logger.info("Member & Message tracking tables initialized")
         except Exception as e:
             logger.error(f"Error initializing new tables: {e}", exc_info=True)

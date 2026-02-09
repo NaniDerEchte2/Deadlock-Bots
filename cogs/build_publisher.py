@@ -91,7 +91,7 @@ class BuildPublisher(commands.Cog):
         async with self._lock:
             stats = {"checked": 0, "queued": 0, "skipped": 0, "errors": 0, "cancelled_excess": 0}
             # Check if Steam bridge is ready
-            conn = db.connect()
+            conn = db.connect_proxy()
             cursor = conn.execute("""
                 SELECT payload FROM standalone_bot_state
                 WHERE bot='steam' LIMIT 1
@@ -295,7 +295,7 @@ class BuildPublisher(commands.Cog):
         """Monitor running BUILD_PUBLISH tasks and update clone status."""
         stats = {"checked": 0, "completed": 0, "failed": 0, "reset_stale": 0}
 
-        conn = db.connect()
+        conn = db.connect_proxy()
 
         # First, reset stale processing builds (stuck for > 30 minutes)
         stale_threshold = int(time.time()) - (30 * 60)

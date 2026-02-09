@@ -63,6 +63,119 @@ Row = sqlite3.Row  # Typalias für Konsumenten
 _TX_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("deadlock_db_tx_depth", default=0)
 
 
+class DBCursorProxy:
+    """Small compatibility wrapper around sqlite3.Cursor."""
+
+    __slots__ = ("_cursor", "_lock")
+
+    def __init__(self, cursor: sqlite3.Cursor, lock: Optional[threading.RLock] = None) -> None:
+        self._cursor = cursor
+        self._lock = lock
+
+    def _run(self, fn, *args):
+        if self._lock is None:
+            return fn(*args)
+        with self._lock:
+            return fn(*args)
+
+    def execute(self, sql: str, params: Iterable[Any] = ()) -> "DBCursorProxy":
+        self._run(self._cursor.execute, sql, params)
+        return self
+
+    def executemany(self, sql: str, seq_of_params: Iterable[Iterable[Any]]) -> "DBCursorProxy":
+        self._run(self._cursor.executemany, sql, seq_of_params)
+        return self
+
+    def fetchone(self):
+        return self._run(self._cursor.fetchone)
+
+    def fetchall(self):
+        return self._run(self._cursor.fetchall)
+
+    def fetchmany(self, size: Optional[int] = None):
+        if size is None:
+            return self._run(self._cursor.fetchmany)
+        return self._run(self._cursor.fetchmany, size)
+
+    def close(self) -> None:
+        self._run(self._cursor.close)
+
+    @property
+    def rowcount(self) -> int:
+        return self._run(lambda: self._cursor.rowcount)
+
+    @property
+    def lastrowid(self) -> int:
+        return self._run(lambda: self._cursor.lastrowid)
+
+    @property
+    def description(self):
+        return self._run(lambda: self._cursor.description)
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+    def __getattr__(self, name: str):
+        return getattr(self._cursor, name)
+
+
+class DBConnectionProxy:
+    """
+    Controlled DB session for external callers.
+    SQL is still executed via the single shared connection managed by this module.
+    """
+
+    __slots__ = ("_conn", "_lock_per_call")
+
+    def __init__(self, conn: sqlite3.Connection, *, lock_per_call: bool = False) -> None:
+        self._conn = conn
+        self._lock_per_call = lock_per_call
+
+    def _run(self, fn, *args):
+        if not self._lock_per_call:
+            return fn(*args)
+        with _LOCK:
+            return fn(*args)
+
+    def execute(self, sql: str, params: Iterable[Any] = ()) -> DBCursorProxy:
+        cur = self._run(self._conn.execute, sql, params)
+        return DBCursorProxy(cur, lock=_LOCK if self._lock_per_call else None)
+
+    def executemany(self, sql: str, seq_of_params: Iterable[Iterable[Any]]) -> DBCursorProxy:
+        cur = self._run(self._conn.executemany, sql, seq_of_params)
+        return DBCursorProxy(cur, lock=_LOCK if self._lock_per_call else None)
+
+    def executescript(self, sql_script: str) -> DBCursorProxy:
+        cur = self._run(self._conn.executescript, sql_script)
+        return DBCursorProxy(cur, lock=_LOCK if self._lock_per_call else None)
+
+    def cursor(self) -> DBCursorProxy:
+        cur = self._run(self._conn.cursor)
+        return DBCursorProxy(cur, lock=_LOCK if self._lock_per_call else None)
+
+    def commit(self) -> None:
+        self._run(self._conn.commit)
+
+    def rollback(self) -> None:
+        self._run(self._conn.rollback)
+
+    def close(self) -> None:
+        # Shared connection lifecycle is managed by service.db.close_connection().
+        logger.debug("Ignored close() call on shared DB proxy")
+
+    @property
+    def row_factory(self):
+        return self._run(lambda: self._conn.row_factory)
+
+    @row_factory.setter
+    def row_factory(self, value) -> None:
+        self._run(setattr, self._conn, "row_factory", value)
+
+    @property
+    def total_changes(self) -> int:
+        return self._run(lambda: self._conn.total_changes)
+
+
 # ---------- Pfad-Auflösung ----------
 
 def _resolve_db_path() -> str:
@@ -168,6 +281,14 @@ def connect() -> sqlite3.Connection:
 
     log.info("SQLite connection established to %s", path)
     return _CONN
+
+
+def connect_proxy() -> DBConnectionProxy:
+    """
+    Returns a guarded connection proxy for external callers.
+    Each operation is serialized through the module lock.
+    """
+    return DBConnectionProxy(connect(), lock_per_call=True)
 
 
 def is_connected() -> bool:
@@ -282,11 +403,11 @@ def prune_steam_tasks(limit: Optional[int] = None, *, conn: Optional[sqlite3.Con
 
 
 @contextmanager
-def get_conn() -> Iterator[sqlite3.Connection]:
+def get_conn() -> Iterator[DBConnectionProxy]:
     """Contextmanager, der die zentrale Verbindung thread-safe bereitstellt."""
     conn = connect()
     with _LOCK:
-        yield conn
+        yield DBConnectionProxy(conn, lock_per_call=False)
 
 
 def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
@@ -803,7 +924,7 @@ def get_kv(ns: str, k: str) -> Optional[str]:
 # ---------- Transactions (async) ----------
 
 @asynccontextmanager
-async def transaction() -> AsyncIterator[sqlite3.Connection]:
+async def transaction() -> AsyncIterator[DBConnectionProxy]:
     """
     Einfache async Transaction (BEGIN/COMMIT/ROLLBACK) auf der gemeinsamen Verbindung.
     - serialisiert den Zugriff �ber _LOCK
@@ -819,7 +940,7 @@ async def transaction() -> AsyncIterator[sqlite3.Connection]:
         conn.execute("BEGIN;")
 
     try:
-        yield connect()
+        yield DBConnectionProxy(connect(), lock_per_call=False)
         if outermost:
             connect().execute("COMMIT;")
     except Exception:

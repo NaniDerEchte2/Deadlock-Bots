@@ -42,7 +42,7 @@ class DBHelperCog(commands.Cog):
             log.error("service.db reload failed (%s): %s", reason, exc)
             return
         try:
-            db.connect()
+            db.query_one("SELECT 1")
             log.info("service.db connection ready (%s) at %s", reason, db.db_path())
         except Exception as exc:
             log.error("service.db connect failed after reload (%s): %s", reason, exc)

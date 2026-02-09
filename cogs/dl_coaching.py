@@ -1,5 +1,5 @@
 # ============================================================
-# DL Coaching System – DB-first (aiosqlite, utils.deadlock_db.DB_PATH)
+# DL Coaching System – DB-first (zentrale service.db API)
 # Datei: cogs/dl_coaching.py
 # Tables (werden automatisch erstellt):
 #   coaching_sessions(
@@ -94,8 +94,8 @@ class DlCoachingCog(commands.Cog):
         self.bot = bot
         self.cfg = CoachingConfig()
 
-        # DB connection
-        self.db: Optional[aiosqlite.Connection] = None
+        # DB schema init flag
+        self._db_ready = False
 
         # persistente View (Start-Button)
         self.bot.add_view(self.StartView(self))
@@ -105,19 +105,13 @@ class DlCoachingCog(commands.Cog):
 
     # ----------------- DB helpers -----------------
     async def _db_connect(self):
-        if self.db:
+        if self._db_ready:
             return
-        # NOTE: PRAGMAs (journal_mode, cache_size, etc.) are already set by the
-        # central DB manager (service/db.py). Setting them again causes connection
-        # corruption. DO NOT add PRAGMA calls here.
-        # TODO: Refactor to use service.db async API (see REFACTORING_PLAN.md)
-        self.db = await aiosqlite.connect(str(db.db_path()))
-        self.db.row_factory = aiosqlite.Row
         await self._db_ensure_schema()
+        self._db_ready = True
 
     async def _db_ensure_schema(self):
-        assert self.db
-        await self.db.execute(
+        await db.execute_async(
             """
             CREATE TABLE IF NOT EXISTS coaching_sessions (
                 user_id     INTEGER PRIMARY KEY,
@@ -134,14 +128,12 @@ class DlCoachingCog(commands.Cog):
             )
             """
         )
-        await self.db.execute(
+        await db.execute_async(
             "CREATE INDEX IF NOT EXISTS idx_coaching_thread ON coaching_sessions (thread_id)"
         )
-        await self.db.commit()
 
     async def _db_upsert(self, user_id: int, **fields: Any):
         """Insert/Update Session row for user."""
-        assert self.db
         allowed_fields = (
             "thread_id",
             "match_id",
@@ -168,7 +160,7 @@ class DlCoachingCog(commands.Cog):
             else:
                 merged[key] = None
 
-        await self.db.execute(
+        await db.execute_async(
             """
             INSERT INTO coaching_sessions (
                 user_id, thread_id, match_id, rank, subrank, hero, comment, step, is_active, updated_at
@@ -197,29 +189,22 @@ class DlCoachingCog(commands.Cog):
                 merged["is_active"],
             ),
         )
-        await self.db.commit()
 
-    async def _db_get(self, user_id: int) -> Optional[aiosqlite.Row]:
-        assert self.db
-        cur = await self.db.execute(
+    async def _db_get(self, user_id: int) -> Optional[db.Row]:
+        return await db.query_one_async(
             "SELECT * FROM coaching_sessions WHERE user_id=?", (user_id,)
         )
-        return await cur.fetchone()
 
-    async def _db_get_by_thread(self, thread_id: int) -> Optional[aiosqlite.Row]:
-        assert self.db
-        cur = await self.db.execute(
+    async def _db_get_by_thread(self, thread_id: int) -> Optional[db.Row]:
+        return await db.query_one_async(
             "SELECT * FROM coaching_sessions WHERE thread_id=?", (thread_id,)
         )
-        return await cur.fetchone()
 
     async def _db_close_session(self, user_id: int):
-        assert self.db
-        await self.db.execute(
+        await db.execute_async(
             "UPDATE coaching_sessions SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE user_id=?",
             (user_id,),
         )
-        await self.db.commit()
 
     # ----------------- Emoji helpers -----------------
     @staticmethod
@@ -562,11 +547,9 @@ class DlCoachingCog(commands.Cog):
         # DB-basiert: inaktive Sessions schließen
         try:
             await self._db_connect()
-            assert self.db
-            cur = await self.db.execute(
+            rows = await db.query_all_async(
                 "SELECT user_id, thread_id, updated_at FROM coaching_sessions WHERE is_active=1"
             )
-            rows = await cur.fetchall()
             now = datetime.datetime.utcnow()
             for r in rows:
                 try:
@@ -639,14 +622,12 @@ class DlCoachingCog(commands.Cog):
                 self._timeout_loop.cancel()
         except Exception as e:
             logger.debug("timeout loop cancel failed: %r", e)
-        if self.db:
-            asyncio.create_task(self.db.close())
 
 
 # ----------------- kleine Utils -----------------
 def _parse_ts(val) -> datetime.datetime:
     """
-    aiosqlite liefert TIMESTAMP als str (SQLite). Wir interpretieren beide Varianten.
+    SQLite liefert TIMESTAMP oft als str. Wir interpretieren beide Varianten.
     """
     if isinstance(val, datetime.datetime):
         return val
