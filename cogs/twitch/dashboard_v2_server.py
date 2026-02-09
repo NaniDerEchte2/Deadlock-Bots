@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import ipaddress
 import re
 import secrets
 import time
@@ -128,32 +129,53 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             host = host.split(":", 1)[0]
         return host.lower()
 
-    def _is_local_request(self, request: web.Request) -> bool:
-        context_header = request.headers.get("X-Dashboard-Context")
-        if context_header:
-            lowered = context_header.strip().lower()
-            if lowered == "local":
-                return True
-            if lowered == "public":
-                return False
-
-        host_header = (
-            request.headers.get("X-Forwarded-Host")
-            or request.headers.get("Host")
-            or request.host
-            or ""
-        )
-        host = self._host_without_port(host_header)
-        if host in {"127.0.0.1", "localhost", "::1"}:
+    @staticmethod
+    def _is_loopback_host(raw: Optional[str]) -> bool:
+        host = DashboardV2Server._host_without_port(raw)
+        if not host:
+            return False
+        if host == "localhost":
             return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _peer_host(request: web.Request) -> str:
+        remote = (request.remote or "").strip() if hasattr(request, "remote") else ""
+        if remote:
+            return remote
         transport = getattr(request, "transport", None)
-        if transport is not None:
-            peer = transport.get_extra_info("peername")
-            if isinstance(peer, tuple) and peer:
-                peer_host = self._host_without_port(str(peer[0]))
-                if peer_host in {"127.0.0.1", "localhost", "::1"}:
-                    return True
-        return False
+        if transport is None:
+            return ""
+        peer = transport.get_extra_info("peername")
+        if isinstance(peer, tuple) and peer:
+            return str(peer[0]).strip()
+        if isinstance(peer, str):
+            return peer.strip()
+        return ""
+
+    def _effective_client_host(self, request: web.Request, peer_host: str) -> str:
+        normalized_peer = self._host_without_port(peer_host)
+        if self._is_loopback_host(normalized_peer):
+            real_ip = (request.headers.get("X-Real-IP") or "").split(",")[0].strip()
+            normalized_real = self._host_without_port(real_ip)
+            if normalized_real:
+                return normalized_real
+        return normalized_peer
+
+    def _is_local_request(self, request: web.Request) -> bool:
+        host_header = request.headers.get("Host") or request.host or ""
+        request_host = self._host_without_port(host_header)
+        if not self._is_loopback_host(request_host):
+            return False
+
+        peer_host = self._peer_host(request)
+        if not peer_host:
+            return False
+        client_host = self._effective_client_host(request, peer_host)
+        return self._is_loopback_host(client_host)
 
     @staticmethod
     def _normalize_login(value: str) -> Optional[str]:
@@ -214,9 +236,6 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
                 return
             raise web.HTTPForbidden(text="admin dashboard is localhost-only")
 
-        context_header = (request.headers.get("X-Dashboard-Context") or "").strip().lower()
-        if context_header == "public" and request.method == "GET" and request.path.startswith("/twitch/stats"):
-            return
         if self._check_v2_auth(request):
             return
         token = request.headers.get("X-Admin-Token") or request.query.get("token")
@@ -225,9 +244,6 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         raise web.HTTPUnauthorized(text="missing or invalid token")
 
     def _require_partner_token(self, request: web.Request) -> None:
-        context_header = (request.headers.get("X-Dashboard-Context") or "").strip().lower()
-        if context_header == "public" and request.method == "GET" and request.path.startswith("/twitch/partners"):
-            return
         if self._check_v2_auth(request):
             return
         if self._noauth:
