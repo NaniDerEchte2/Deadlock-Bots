@@ -48,12 +48,15 @@ class RaidCommandsMixin:
             )
             return
 
-        embed = build_raid_requirements_embed(twitch_login)
         view = RaidAuthGenerateView(
             auth_manager=self._raid_bot.auth_manager,
             twitch_login=twitch_login,
         )
-        await ctx.send(embed=embed, view=view, ephemeral=True)
+        await ctx.send(
+            "Klicke auf den Button, um einen frischen Twitch-OAuth-Link zu erzeugen.",
+            view=view,
+            ephemeral=True,
+        )
         log.info("Sent traid auth link to %s (discord_id=%s)", twitch_login, discord_user_id)
 
     @commands.hybrid_command(name="raid_enable", aliases=["raidbot"])

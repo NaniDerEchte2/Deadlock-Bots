@@ -15,8 +15,8 @@ log = logging.getLogger("TwitchStreams.Analytics")
 
 class TwitchAnalyticsMixin:
     """
-    Mixin for periodic analytics collection (Subs, etc.).
-    Requires authorized OAuth tokens (channel:read:subscriptions).
+    Mixin for periodic analytics collection (Subs, Ads, etc.).
+    Requires authorized OAuth tokens and matching scopes.
     """
 
     def __init__(self, *args, **kwargs):
@@ -41,7 +41,7 @@ class TwitchAnalyticsMixin:
         except Exception:
             return
 
-        log.info("Starting analytics collection (Subs)...")
+        log.info("Starting analytics collection (Subs + Ads)...")
         
         # Get authorized users with raid_enabled=1 (assuming they granted scopes)
         # Note: We should actually check if they have the specific scope, 
@@ -59,7 +59,9 @@ class TwitchAnalyticsMixin:
             log.exception("Failed to load authorized users for analytics")
             return
 
-        count = 0
+        users_processed = 0
+        subs_snapshots = 0
+        ads_snapshots = 0
         for row in rows:
             user_id = row[0] if not hasattr(row, "keys") else row["twitch_user_id"]
             login = row[1] if not hasattr(row, "keys") else row["twitch_login"]
@@ -75,28 +77,44 @@ class TwitchAnalyticsMixin:
                 log.debug("Skipping analytics collection: no valid authorization available.")
                 continue
 
-            # Check if token has the required scope for subs
-            scopes = self._raid_bot.auth_manager.get_scopes(user_id)
-            if "channel:read:subscriptions" not in scopes:
-                log.debug("Skipping subscriptions metrics: required scope is missing.")
-                continue
+            scopes = {s.lower() for s in self._raid_bot.auth_manager.get_scopes(user_id)}
+            did_collect_for_user = False
 
             try:
-                await self._collect_subs_for_user(user_id, login, token)
-                count += 1
+                if "channel:read:subscriptions" in scopes:
+                    if await self._collect_subs_for_user(user_id, login, token):
+                        subs_snapshots += 1
+                        did_collect_for_user = True
+
+                if "channel:read:ads" in scopes:
+                    if await self._collect_ads_schedule_for_user(user_id, login, token):
+                        ads_snapshots += 1
+                        did_collect_for_user = True
             except Exception:
                 log.exception("Failed to collect analytics for %s", login)
-                
-            # Sleep to be nice to the API
-            await asyncio.sleep(2)
 
-        log.info("Analytics collection finished. Processed %d users.", count)
+            if did_collect_for_user:
+                users_processed += 1
+                # Sleep to be nice to the API
+                await asyncio.sleep(2)
+            else:
+                log.debug(
+                    "Skipping analytics metrics for %s: missing scopes (need channel:read:subscriptions and/or channel:read:ads).",
+                    login,
+                )
 
-    async def _collect_subs_for_user(self, user_id: str, login: str, token: str):
+        log.info(
+            "Analytics collection finished. users=%d, subs_snapshots=%d, ads_snapshots=%d",
+            users_processed,
+            subs_snapshots,
+            ads_snapshots,
+        )
+
+    async def _collect_subs_for_user(self, user_id: str, login: str, token: str) -> bool:
         """Fetch and store subscription data."""
         data = await self.api.get_broadcaster_subscriptions(user_id, token)
         if not data:
-            return
+            return False
 
         total = int(data.get("total", 0))
         points = int(data.get("points", 0))
@@ -123,6 +141,53 @@ class TwitchAnalyticsMixin:
                 """,
                 (user_id, login, total, points, now_iso)
             )
+        return True
+
+    async def _collect_ads_schedule_for_user(self, user_id: str, login: str, token: str) -> bool:
+        """Fetch and store ad schedule data."""
+        data = await self.api.get_ad_schedule(user_id, token)
+        if not data:
+            return False
+
+        def _safe_int(value):
+            if value is None:
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        next_ad_at = (data.get("next_ad_at") or "").strip() or None
+        last_ad_at = (data.get("last_ad_at") or "").strip() or None
+        duration = _safe_int(data.get("duration"))
+        preroll_free_time = _safe_int(data.get("preroll_free_time"))
+        snooze_count = _safe_int(data.get("snooze_count"))
+        snooze_refresh_at = (data.get("snooze_refresh_at") or "").strip() or None
+
+        with storage.get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO twitch_ads_schedule_snapshot
+                (
+                    twitch_user_id, twitch_login, next_ad_at, last_ad_at,
+                    duration, preroll_free_time, snooze_count, snooze_refresh_at, snapshot_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    login,
+                    next_ad_at,
+                    last_ad_at,
+                    duration,
+                    preroll_free_time,
+                    snooze_count,
+                    snooze_refresh_at,
+                    now_iso,
+                ),
+            )
+        return True
 
     @collect_analytics_data.before_loop
     async def _before_analytics(self):

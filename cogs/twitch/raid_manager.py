@@ -39,6 +39,7 @@ RAID_SCOPES = [
     "channel:bot",
     "chat:read",
     "chat:edit",
+    "channel:read:ads",
 ]
 
 RAID_TARGET_COOLDOWN_DAYS = 7  # Avoid repeating the same raid target if alternatives exist

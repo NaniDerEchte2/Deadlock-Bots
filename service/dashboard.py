@@ -557,7 +557,7 @@ class DashboardServer:
             port = 8765
 
         base = self._format_base_url(host, port, scheme)
-        return f"{base.rstrip('/')}/twitch"
+        return f"{base.rstrip('/')}/twitch/admin"
 
     def _derive_steam_return_url(self) -> Optional[str]:
         base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")

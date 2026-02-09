@@ -11,13 +11,16 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlsplit, urlunsplit
 
 import aiohttp
+import discord
 from aiohttp import web
 
 from . import storage
 from .analytics_v2 import AnalyticsV2Mixin
+from .dashboard.live import DashboardLiveMixin
 from .dashboard.stats import DashboardStatsMixin
 from .dashboard.templates import DashboardTemplateMixin
 from .logger import log
+from .raid_views import RaidAuthGenerateView, build_raid_requirements_embed
 
 TWITCH_OAUTH_AUTHORIZE_URL = "https://id.twitch.tv/oauth2/authorize"
 TWITCH_OAUTH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
@@ -25,7 +28,7 @@ TWITCH_HELIX_USERS_URL = "https://api.twitch.tv/helix/users"
 LOGIN_RE = re.compile(r"^[A-Za-z0-9_]{3,25}$")
 
 
-class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2Mixin):
+class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2Mixin):
     """Minimal dashboard server exposing only v2 routes and APIs."""
 
     def __init__(
@@ -39,9 +42,15 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
         oauth_redirect_uri: Optional[str] = None,
         session_ttl_seconds: int = 12 * 3600,
         legacy_stats_url: Optional[str] = None,
+        add_cb: Optional[Callable[[str, bool], Awaitable[str]]] = None,
+        remove_cb: Optional[Callable[[str], Awaitable[str]]] = None,
         list_cb: Optional[Callable[[], Awaitable[List[dict]]]] = None,
         stats_cb: Optional[Callable[..., Awaitable[dict]]] = None,
+        verify_cb: Optional[Callable[[str, str], Awaitable[str]]] = None,
+        archive_cb: Optional[Callable[[str, str], Awaitable[str]]] = None,
+        discord_flag_cb: Optional[Callable[[str, bool], Awaitable[str]]] = None,
         discord_profile_cb: Optional[Callable[[str, Optional[str], Optional[str], bool], Awaitable[str]]] = None,
+        raid_history_cb: Optional[Callable[..., Awaitable[List[dict]]]] = None,
         raid_bot: Optional[Any] = None,
         reload_cb: Optional[Callable[[], Awaitable[str]]] = None,
     ) -> None:
@@ -58,17 +67,44 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
         self._oauth_states: Dict[str, Dict[str, Any]] = {}
         self._auth_sessions: Dict[str, Dict[str, Any]] = {}
         self._oauth_state_ttl_seconds = 600
+        self._add = add_cb if callable(add_cb) else self._empty_add
+        self._remove = remove_cb if callable(remove_cb) else self._empty_remove
         self._list = list_cb if callable(list_cb) else self._empty_list
         self._stats = stats_cb if callable(stats_cb) else self._empty_stats
+        self._verify = verify_cb if callable(verify_cb) else self._empty_verify
+        self._archive = archive_cb if callable(archive_cb) else self._empty_archive
+        self._discord_flag = discord_flag_cb if callable(discord_flag_cb) else self._empty_discord_flag
         self._discord_profile = discord_profile_cb
+        self._raid_history_cb = raid_history_cb if callable(raid_history_cb) else self._empty_raid_history
         self._raid_bot = raid_bot
+        self._redirect_uri = (
+            str(getattr(getattr(raid_bot, "auth_manager", None), "redirect_uri", "") or "").strip()
+        )
         self._master_dashboard_href = "/admin"
+
+    async def _empty_add(self, _: str, __: bool) -> str:
+        return "Add-Funktion ist aktuell nicht verfügbar"
+
+    async def _empty_remove(self, _: str) -> str:
+        return "Remove-Funktion ist aktuell nicht verfügbar"
 
     async def _empty_list(self) -> List[dict]:
         return []
 
     async def _empty_stats(self, **_: Any) -> dict:
         return {"tracked": {}, "category": {}}
+
+    async def _empty_verify(self, _: str, __: str) -> str:
+        return "Verify-Funktion ist aktuell nicht verfügbar"
+
+    async def _empty_archive(self, _: str, __: str) -> str:
+        return "Archive-Funktion ist aktuell nicht verfügbar"
+
+    async def _empty_discord_flag(self, _: str, __: bool) -> str:
+        return "Discord-Flag-Funktion ist aktuell nicht verfügbar"
+
+    async def _empty_raid_history(self, **_: Any) -> List[dict]:
+        return []
 
     def _check_admin_token(self, token: Optional[str]) -> bool:
         if self._noauth:
@@ -143,7 +179,41 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
             return s
         return None
 
+    @staticmethod
+    def _sanitize_log_value(value: Any) -> str:
+        text = "" if value is None else str(value)
+        return text.replace("\r", "\\r").replace("\n", "\\n")
+
+    async def _do_add(self, raw: str) -> str:
+        login = self._normalize_login(raw)
+        if not login:
+            raise web.HTTPBadRequest(text="invalid twitch login or url")
+        msg = await self._add(login, False)
+        return msg or "added"
+
     def _require_token(self, request: web.Request) -> None:
+        admin_only_prefixes = (
+            "/twitch/admin",
+            "/twitch/live",
+            "/twitch/add_any",
+            "/twitch/add_url",
+            "/twitch/add_login",
+            "/twitch/add_streamer",
+            "/twitch/remove",
+            "/twitch/verify",
+            "/twitch/archive",
+            "/twitch/discord_flag",
+            "/twitch/discord_link",
+            "/twitch/raid/auth",
+            "/twitch/raid/requirements",
+            "/twitch/raid/history",
+            "/twitch/reload",
+        )
+        if request.path.startswith(admin_only_prefixes):
+            if self._is_local_request(request):
+                return
+            raise web.HTTPForbidden(text="admin dashboard is localhost-only")
+
         context_header = (request.headers.get("X-Dashboard-Context") or "").strip().lower()
         if context_header == "public" and request.method == "GET" and request.path.startswith("/twitch/stats"):
             return
@@ -181,8 +251,27 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
         *,
         ok: Optional[str] = None,
         err: Optional[str] = None,
+        default_path: str = "/twitch/stats",
     ) -> str:
-        default_path = "/twitch/stats"
+        if default_path == "/twitch/stats":
+            admin_action_prefixes = (
+                "/twitch/admin",
+                "/twitch/live",
+                "/twitch/add_any",
+                "/twitch/add_url",
+                "/twitch/add_login",
+                "/twitch/add_streamer",
+                "/twitch/remove",
+                "/twitch/verify",
+                "/twitch/archive",
+                "/twitch/discord_flag",
+                "/twitch/raid/auth",
+                "/twitch/raid/requirements",
+                "/twitch/raid/history",
+            )
+            if request.path.startswith(admin_action_prefixes):
+                default_path = "/twitch/admin"
+
         referer = request.headers.get("Referer")
         if referer:
             try:
@@ -497,12 +586,196 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
         }
 
     async def index(self, request: web.Request) -> web.StreamResponse:
-        """Public entrypoint for the dashboard selection page."""
-        destination = "/twitch/dashboards"
+        """Entrypoint with local-first admin behavior.
+
+        Local requests should land directly in the legacy stats/admin UI.
+        Public/proxied requests keep the dashboard selection page.
+        """
+        if self._is_local_request(request):
+            destination = "/twitch/admin"
+            fallback = "/twitch/admin"
+        else:
+            destination = "/twitch/dashboards"
+            fallback = "/twitch/dashboards"
         if request.query_string:
             destination = f"{destination}?{request.query_string}"
-        safe_destination = self._safe_internal_redirect(destination, fallback="/twitch/dashboards")
+        safe_destination = self._safe_internal_redirect(destination, fallback=fallback)
         raise web.HTTPFound(safe_destination)
+
+    async def admin(self, request: web.Request) -> web.StreamResponse:
+        """Legacy partner admin surface (streamer management)."""
+        return await DashboardLiveMixin.index(self, request)
+
+    async def raid_auth_start(self, request: web.Request) -> web.StreamResponse:
+        """Create OAuth URL for raid bot authorization."""
+        self._require_token(request)
+        login = (request.query.get("login") or "").strip().lower()
+        if not login:
+            return web.Response(text="Missing login parameter", status=400)
+
+        auth_manager = getattr(getattr(self, "_raid_bot", None), "auth_manager", None)
+        if not auth_manager:
+            return web.Response(text="Raid bot not initialized", status=503)
+
+        auth_url = str(auth_manager.generate_auth_url(login))
+        return web.Response(
+            text=(
+                "<html><head><title>Raid Bot Autorisierung</title></head>"
+                "<body style='font-family: sans-serif; max-width: 680px; margin: 48px auto;'>"
+                "<h1>Raid Bot Autorisierung</h1>"
+                f"<p>Streamer: <strong>{html.escape(login, quote=True)}</strong></p>"
+                "<p>Klicke auf den Link unten, um den Raid Bot zu autorisieren:</p>"
+                f"<p><a href='{html.escape(auth_url, quote=True)}' "
+                "style='padding: 10px 20px; background: #9146FF; color: white; text-decoration: none; border-radius: 5px;'>"
+                "Auf Twitch autorisieren</a></p>"
+                "<p style='color: #666; font-size: 0.9em;'>"
+                "Der Raid Bot kann dann automatisch in deinem Namen raiden, wenn du offline gehst."
+                "</p></body></html>"
+            ),
+            content_type="text/html",
+        )
+
+    async def raid_requirements(self, request: web.Request) -> web.StreamResponse:
+        """Send raid OAuth requirement DM with one-click fresh link generation."""
+        self._require_token(request)
+
+        login = (request.query.get("login") or "").strip().lower()
+        if not login:
+            return web.Response(text="Missing login parameter", status=400)
+
+        auth_manager = getattr(getattr(self, "_raid_bot", None), "auth_manager", None)
+        if not auth_manager:
+            return web.Response(text="Raid bot not initialized", status=503)
+
+        try:
+            with storage.get_conn() as conn:
+                row = conn.execute(
+                    """
+                    SELECT discord_user_id
+                    FROM twitch_streamers
+                    WHERE lower(twitch_login) = lower(?)
+                    """,
+                    (login,),
+                ).fetchone()
+        except Exception:
+            log.exception(
+                "Failed to load Discord link for raid requirements (%s)",
+                self._sanitize_log_value(login),
+            )
+            return web.Response(text="Failed to load Discord link", status=500)
+
+        if not row:
+            return web.Response(text="Streamer not found", status=404)
+
+        discord_user_id = str(row["discord_user_id"] if hasattr(row, "keys") else row[0] or "").strip()
+        if not discord_user_id:
+            return web.Response(text="No Discord user linked for this streamer", status=404)
+
+        try:
+            user_id_int = int(discord_user_id)
+        except (TypeError, ValueError):
+            return web.Response(text="Invalid Discord user id", status=400)
+
+        discord_bot = getattr(auth_manager, "_discord_bot", None)
+        if not discord_bot:
+            return web.Response(text="Discord bot not available", status=503)
+
+        user = discord_bot.get_user(user_id_int)
+        if user is None:
+            try:
+                user = await discord_bot.fetch_user(user_id_int)
+            except discord.NotFound:
+                user = None
+            except discord.HTTPException:
+                log.exception(
+                    "Failed to fetch Discord user %s for %s",
+                    user_id_int,
+                    self._sanitize_log_value(login),
+                )
+                user = None
+
+        if user is None:
+            return web.Response(text="Discord user not found", status=404)
+
+        embed = build_raid_requirements_embed(login)
+        view = RaidAuthGenerateView(auth_manager=auth_manager, twitch_login=login)
+
+        try:
+            await user.send(embed=embed, view=view)
+        except discord.Forbidden:
+            log.warning(
+                "Discord DM blocked for %s (%s)",
+                self._sanitize_log_value(login),
+                user_id_int,
+            )
+            return web.Response(text="Discord DM blocked", status=403)
+        except discord.HTTPException:
+            log.exception(
+                "Failed to send raid requirements DM to %s (%s)",
+                self._sanitize_log_value(login),
+                user_id_int,
+            )
+            return web.Response(text="Failed to send Discord DM", status=502)
+
+        ok_message = f"Anforderungen per Discord an @{login} gesendet"
+        location = self._redirect_location(request, ok=ok_message, default_path="/twitch/admin")
+        safe_location = self._safe_internal_redirect(location, fallback="/twitch/admin")
+        raise web.HTTPFound(location=safe_location)
+
+    async def raid_history(self, request: web.Request) -> web.StreamResponse:
+        """Render raid history table for dashboard operators."""
+        self._require_token(request)
+
+        try:
+            limit = int((request.query.get("limit") or "50").strip())
+        except ValueError:
+            limit = 50
+        limit = max(1, min(limit, 500))
+        from_broadcaster = (request.query.get("from") or "").strip().lower()
+
+        history = await self._raid_history_cb(limit=limit, from_broadcaster=from_broadcaster)
+
+        rows_html = ""
+        for entry in history:
+            success_icon = "OK" if entry.get("success") else "X"
+            executed_at = str(entry.get("executed_at") or "")[:19]
+            try:
+                stream_duration_min = int(entry.get("stream_duration_sec") or 0) // 60
+            except (TypeError, ValueError):
+                stream_duration_min = 0
+            rows_html += (
+                "<tr>"
+                f"<td>{html.escape(success_icon)}</td>"
+                f"<td>{html.escape(executed_at)}</td>"
+                f"<td><strong>{html.escape(str(entry.get('from_broadcaster_login') or ''))}</strong></td>"
+                f"<td><strong>{html.escape(str(entry.get('to_broadcaster_login') or ''))}</strong></td>"
+                f"<td>{html.escape(str(entry.get('viewer_count') or 0))}</td>"
+                f"<td>{html.escape(str(stream_duration_min))} min</td>"
+                f"<td>{html.escape(str(entry.get('candidates_count') or 0))}</td>"
+                f"<td style='color: red; font-size: 0.85em;'>{html.escape(str(entry.get('error_message') or ''))}</td>"
+                "</tr>"
+            )
+
+        return web.Response(
+            text=(
+                "<html><head><title>Raid History</title><style>"
+                "body { font-family: sans-serif; margin: 32px; }"
+                "table { border-collapse: collapse; width: 100%; }"
+                "th, td { border: 1px solid #ddd; padding: 12px 10px; text-align: left; }"
+                "th { background-color: #9146FF; color: white; }"
+                "tr:nth-child(even) { background-color: #f2f2f2; }"
+                "</style></head><body>"
+                "<h1>Raid History</h1>"
+                "<p><a href='/twitch/admin'>Zurueck zum Dashboard</a></p>"
+                "<table><thead><tr>"
+                "<th>Status</th><th>Zeitpunkt</th><th>Von</th><th>Nach</th>"
+                "<th>Viewer</th><th>Stream-Dauer</th><th>Kandidaten</th><th>Fehler</th>"
+                "</tr></thead><tbody>"
+                + (rows_html if rows_html else "<tr><td colspan='8'>Keine Raids gefunden</td></tr>")
+                + "</tbody></table></body></html>"
+            ),
+            content_type="text/html",
+        )
 
     async def stats_entry(self, request: web.Request) -> web.StreamResponse:
         """Canonical public entrypoint that links old + beta analytics dashboards."""
@@ -834,9 +1107,22 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
             web.get("/", self.index),
             web.get("/twitch", self.index),
             web.get("/twitch/", self.index),
+            web.get("/twitch/admin", self.admin),
+            web.get("/twitch/live", self.admin),
+            web.get("/twitch/add_any", self.add_any),
+            web.get("/twitch/add_url", self.add_url),
+            web.get("/twitch/add_login/{login}", self.add_login),
+            web.post("/twitch/add_streamer", self.add_streamer),
+            web.post("/twitch/remove", self.remove),
+            web.post("/twitch/verify", self.verify),
+            web.post("/twitch/archive", self.archive),
+            web.post("/twitch/discord_flag", self.discord_flag),
             web.get("/twitch/stats", self.stats),
             web.get("/twitch/partners", self.partner_stats),
             web.get("/twitch/dashboards", self.stats_entry),
+            web.get("/twitch/raid/auth", self.raid_auth_start),
+            web.get("/twitch/raid/requirements", self.raid_requirements),
+            web.get("/twitch/raid/history", self.raid_history),
             web.get("/twitch/auth/login", self.auth_login),
             web.get("/twitch/auth/callback", self.auth_callback),
             web.get("/twitch/auth/logout", self.auth_logout),
@@ -857,9 +1143,15 @@ def build_v2_app(
     oauth_redirect_uri: Optional[str] = None,
     session_ttl_seconds: int = 12 * 3600,
     legacy_stats_url: Optional[str] = None,
+    add_cb: Optional[Callable[[str, bool], Awaitable[str]]] = None,
+    remove_cb: Optional[Callable[[str], Awaitable[str]]] = None,
     list_cb: Optional[Callable[[], Awaitable[List[dict]]]] = None,
     stats_cb: Optional[Callable[..., Awaitable[dict]]] = None,
+    verify_cb: Optional[Callable[[str, str], Awaitable[str]]] = None,
+    archive_cb: Optional[Callable[[str, str], Awaitable[str]]] = None,
+    discord_flag_cb: Optional[Callable[[str, bool], Awaitable[str]]] = None,
     discord_profile_cb: Optional[Callable[[str, Optional[str], Optional[str], bool], Awaitable[str]]] = None,
+    raid_history_cb: Optional[Callable[..., Awaitable[List[dict]]]] = None,
     raid_bot: Optional[Any] = None,
     reload_cb: Optional[Callable[[], Awaitable[str]]] = None,
 ) -> web.Application:
@@ -873,9 +1165,15 @@ def build_v2_app(
         oauth_redirect_uri=oauth_redirect_uri,
         session_ttl_seconds=session_ttl_seconds,
         legacy_stats_url=legacy_stats_url,
+        add_cb=add_cb,
+        remove_cb=remove_cb,
         list_cb=list_cb,
         stats_cb=stats_cb,
+        verify_cb=verify_cb,
+        archive_cb=archive_cb,
+        discord_flag_cb=discord_flag_cb,
         discord_profile_cb=discord_profile_cb,
+        raid_history_cb=raid_history_cb,
         raid_bot=raid_bot,
         reload_cb=reload_cb,
     ).attach(app)

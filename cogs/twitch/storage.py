@@ -144,7 +144,13 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     _add_column_if_missing(conn, "twitch_stats_tracked", "is_partner", "INTEGER DEFAULT 0")
+    _add_column_if_missing(conn, "twitch_stats_tracked", "game_name", "TEXT")
+    _add_column_if_missing(conn, "twitch_stats_tracked", "stream_title", "TEXT")
+    _add_column_if_missing(conn, "twitch_stats_tracked", "tags", "TEXT")
     _add_column_if_missing(conn, "twitch_stats_category", "is_partner", "INTEGER DEFAULT 0")
+    _add_column_if_missing(conn, "twitch_stats_category", "game_name", "TEXT")
+    _add_column_if_missing(conn, "twitch_stats_category", "stream_title", "TEXT")
+    _add_column_if_missing(conn, "twitch_stats_category", "tags", "TEXT")
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_twitch_stats_tracked_streamer ON twitch_stats_tracked(streamer)"
@@ -398,6 +404,27 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_twitch_subs_user_ts ON twitch_subscriptions_snapshot(twitch_user_id, snapshot_at)"
+    )
+
+    # 8b) Ads Schedule Snapshots
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_ads_schedule_snapshot (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            twitch_user_id     TEXT NOT NULL,
+            twitch_login       TEXT,
+            next_ad_at         TEXT,
+            last_ad_at         TEXT,
+            duration           INTEGER,
+            preroll_free_time  INTEGER,
+            snooze_count       INTEGER,
+            snooze_refresh_at  TEXT,
+            snapshot_at        TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_ads_user_ts ON twitch_ads_schedule_snapshot(twitch_user_id, snapshot_at)"
     )
 
     # 9) Token Blacklist

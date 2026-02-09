@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 import sqlite3
 import time
@@ -47,6 +48,24 @@ class TwitchMonitoringMixin:
             return False
         game_name = (stream.get("game_name") or "").strip().lower()
         return game_name == target_game_lower
+
+    @staticmethod
+    def _normalize_stream_meta(stream: dict) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        game_name = (stream.get("game_name") or "").strip() or None
+        stream_title = (stream.get("title") or "").strip() or None
+
+        tags_raw = stream.get("tags")
+        tags_serialized: Optional[str] = None
+        if isinstance(tags_raw, list):
+            clean_tags = [str(tag).strip() for tag in tags_raw if str(tag).strip()]
+            if clean_tags:
+                tags_serialized = json.dumps(clean_tags, ensure_ascii=True, separators=(",", ":"))
+        elif isinstance(tags_raw, str):
+            tag_value = tags_raw.strip()
+            if tag_value:
+                tags_serialized = tag_value
+
+        return game_name, stream_title, tags_serialized
 
     def _language_filter_values(self) -> List[Optional[str]]:
         filters: Optional[List[str]] = getattr(self, "_language_filters", None)
@@ -1661,9 +1680,14 @@ class TwitchMonitoringMixin:
                     login = (stream.get("user_login") or "").lower()
                     viewers = int(stream.get("viewer_count") or 0)
                     is_partner = 1 if stream.get("is_partner") else 0
+                    game_name, stream_title, tags = self._normalize_stream_meta(stream)
                     c.execute(
-                        "INSERT INTO twitch_stats_tracked (ts_utc, streamer, viewer_count, is_partner) VALUES (?, ?, ?, ?)",
-                        (now_utc, login, viewers, is_partner),
+                        """
+                        INSERT INTO twitch_stats_tracked (
+                            ts_utc, streamer, viewer_count, is_partner, game_name, stream_title, tags
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (now_utc, login, viewers, is_partner, game_name, stream_title, tags),
                     )
         except Exception:
             log.exception("Konnte tracked-Stats nicht loggen")
@@ -1683,9 +1707,14 @@ class TwitchMonitoringMixin:
                     login = (stream.get("user_login") or "").lower()
                     viewers = int(stream.get("viewer_count") or 0)
                     is_partner = 1 if stream.get("is_partner") else 0
+                    game_name, stream_title, tags = self._normalize_stream_meta(stream)
                     c.execute(
-                        "INSERT INTO twitch_stats_category (ts_utc, streamer, viewer_count, is_partner) VALUES (?, ?, ?, ?)",
-                        (now_utc, login, viewers, is_partner),
+                        """
+                        INSERT INTO twitch_stats_category (
+                            ts_utc, streamer, viewer_count, is_partner, game_name, stream_title, tags
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (now_utc, login, viewers, is_partner, game_name, stream_title, tags),
                     )
         except Exception:
             log.exception("Konnte category-Stats nicht loggen")

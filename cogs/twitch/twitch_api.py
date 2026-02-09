@@ -436,6 +436,43 @@ class TwitchAPI:
             self._log.debug("get_broadcaster_subscriptions failed for %s", user_id, exc_info=True)
             return None
 
+    async def get_ad_schedule(self, user_id: str, user_token: str) -> Optional[Dict]:
+        """
+        Liefert den aktuellen Ads-Schedule eines Broadcasters.
+        Benötigt Scope: channel:read:ads
+        """
+        if not user_id or not user_token:
+            return None
+        try:
+            token = user_token.strip()
+            if token.lower().startswith("oauth:"):
+                token = token.split(":", 1)[1]
+            self._ensure_session()
+            assert self._session is not None
+            url = f"{TWITCH_API_BASE}/channels/ads"
+            async with self._session.get(
+                url,
+                headers={"Client-ID": self.client_id, "Authorization": f"Bearer {token}"},
+                params={"broadcaster_id": user_id},
+            ) as r:
+                if r.status != 200:
+                    txt = await r.text()
+                    self._log.debug(
+                        "GET /channels/ads failed: HTTP %s: %s",
+                        r.status,
+                        txt[:180].replace("\n", " "),
+                    )
+                    return None
+                js = await r.json()
+                data = js.get("data", []) or []
+                if not data:
+                    return None
+                first = data[0]
+                return first if isinstance(first, dict) else None
+        except Exception:
+            self._log.debug("get_ad_schedule failed for %s", user_id, exc_info=True)
+            return None
+
     async def subscribe_eventsub_websocket(
         self,
         *,
