@@ -158,9 +158,10 @@ class PromoMixin:
             return False
 
         msg = random.choice(_PROMO_MESSAGES).format(invite=invite)
-        ok = await self._send_chat_message(
+        ok = await self._send_announcement(
             self._make_promo_channel(login, channel_id),
             msg,
+            color="purple",
             source="promo",
         )
         if not ok:

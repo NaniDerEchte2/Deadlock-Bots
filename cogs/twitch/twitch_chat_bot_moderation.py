@@ -223,6 +223,72 @@ class ModerationMixin:
 
         log.warning("Auto-Promo Ban erkannt: %s auf Raid-Blacklist gesetzt.", login)
 
+    async def _send_announcement(self, channel, text: str, color: str = "purple", source: Optional[str] = None) -> bool:
+        """Sendet eine Announcement (hervorgehobene Nachricht) via Helix API.
+
+        Erfordert ``moderator:manage:announcements`` Scope.
+        Fallback: normale Chat-Nachricht, falls Announcement fehlschlägt.
+        """
+        b_id = None
+        if hasattr(channel, "id"):
+            b_id = str(channel.id)
+        elif hasattr(channel, "broadcaster") and hasattr(channel.broadcaster, "id"):
+            b_id = str(channel.broadcaster.id)
+        if not b_id and hasattr(channel, "name"):
+            try:
+                user = await self.fetch_user(login=channel.name.lstrip("#"))
+                if user:
+                    b_id = str(user.id)
+            except Exception:
+                pass
+
+        safe_bot_id = self.bot_id_safe or self.bot_id
+        if not (b_id and safe_bot_id and self._token_manager):
+            log.debug("_send_announcement: fehlende IDs oder Token-Manager, Fallback auf normale Nachricht")
+            return await self._send_chat_message(channel, text, source=source)
+
+        import aiohttp
+        for attempt in range(2):
+            try:
+                tokens = await self._token_manager.get_valid_token()
+                if not tokens:
+                    log.debug("_send_announcement: kein gültiger Token")
+                    return await self._send_chat_message(channel, text, source=source)
+
+                access_token, _ = tokens
+                url = (
+                    f"https://api.twitch.tv/helix/chat/announcements"
+                    f"?broadcaster_id={b_id}&moderator_id={safe_bot_id}"
+                )
+                headers = {
+                    "Client-ID": self._client_id,
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                }
+                payload = {"message": text, "color": color}
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, headers=headers, json=payload) as r:
+                        if r.status in {200, 204}:
+                            return True
+                        if r.status == 401 and attempt == 0:
+                            log.debug("_send_announcement: 401, triggere Token-Refresh")
+                            await self._token_manager.get_valid_token(force_refresh=True)
+                            continue
+                        txt = await r.text()
+                        if source == "promo" and self._looks_like_ban_error(r.status, txt):
+                            self._blacklist_streamer_for_promo(channel, r.status, txt)
+                        log.warning(
+                            "_send_announcement fehlgeschlagen: HTTP %s - %s, Fallback auf normale Nachricht",
+                            r.status, txt,
+                        )
+                        return await self._send_chat_message(channel, text, source=source)
+            except Exception as e:
+                log.error("Fehler bei _send_announcement: %s, Fallback auf normale Nachricht", e)
+                return await self._send_chat_message(channel, text, source=source)
+
+        return await self._send_chat_message(channel, text, source=source)
+
     async def _send_chat_message(self, channel, text: str, source: Optional[str] = None) -> bool:
         """Best-effort Chat-Nachricht senden (EventSub-kompatibel)."""
         try:

@@ -17,7 +17,7 @@ def _read_keyring_secret(key: str) -> Optional[str]:
     except Exception:
         return None
 
-    for service in (f"{key}@{_KEYRING_SERVICE}", _KEYRING_SERVICE):
+    for service in (_KEYRING_SERVICE, f"{key}@{_KEYRING_SERVICE}"):
         try:
             val = keyring.get_password(service, key)
             if val:
@@ -41,14 +41,10 @@ async def _save_bot_tokens_to_keyring(*, access_token: str, refresh_token: Optio
     tasks = []
     saved_types = []
     if access_token:
-        # Wir speichern nur noch im Format ZWECK@DeadlockBot
-        service_access = _KEYRING_SERVICE if _KEYRING_SERVICE.startswith("TWITCH_BOT_TOKEN@") else f"TWITCH_BOT_TOKEN@{_KEYRING_SERVICE}"
-        tasks.append(_save_one(service_access, "TWITCH_BOT_TOKEN", access_token))
+        tasks.append(_save_one(_KEYRING_SERVICE, "TWITCH_BOT_TOKEN", access_token))
         saved_types.append("ACCESS_TOKEN")
     if refresh_token:
-        # Wir speichern nur noch im Format ZWECK@DeadlockBot
-        service_refresh = _KEYRING_SERVICE if _KEYRING_SERVICE.startswith("TWITCH_BOT_REFRESH_TOKEN@") else f"TWITCH_BOT_REFRESH_TOKEN@{_KEYRING_SERVICE}"
-        tasks.append(_save_one(service_refresh, "TWITCH_BOT_REFRESH_TOKEN", refresh_token))
+        tasks.append(_save_one(_KEYRING_SERVICE, "TWITCH_BOT_REFRESH_TOKEN", refresh_token))
         saved_types.append("REFRESH_TOKEN")
 
     if tasks:
