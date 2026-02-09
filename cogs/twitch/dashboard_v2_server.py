@@ -466,8 +466,7 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
                 },
             ) as token_resp:
                 if token_resp.status != 200:
-                    body = await token_resp.text()
-                    log.warning("Dashboard OAuth token exchange failed (%s): %s", token_resp.status, body[:300])  # nosemgrep
+                    log.warning("Dashboard OAuth exchange failed with status %s", token_resp.status)
                     return None
                 token_data = await token_resp.json()
 
@@ -483,8 +482,7 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
                 },
             ) as user_resp:
                 if user_resp.status != 200:
-                    body = await user_resp.text()
-                    log.warning("Dashboard OAuth user lookup failed (%s): %s", user_resp.status, body[:300])
+                    log.warning("Dashboard OAuth user lookup failed with status %s", user_resp.status)
                     return None
                 user_data = await user_resp.json()
 
@@ -655,7 +653,7 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
                 )
             else:
                 message = (
-                    f"<p>OAuth-Fehler: <code>{html.escape(error, quote=True)}</code></p>"  # nosemgrep
+                    "<p>OAuth-Fehler beim Autorisieren.</p>"
                     "<p>Bitte die Autorisierung erneut starten.</p>"
                 )
             return web.Response(
@@ -757,7 +755,7 @@ class DashboardV2Server(DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2
 
             log.info("Raid auth successful for %s", twitch_login)
             success_html = (
-                f"<p>Der Raid-Bot wurde erfolgreich für <strong>{html.escape(twitch_login)}</strong> autorisiert.</p>"  # nosemgrep
+                "<p>Der Raid-Bot wurde erfolgreich autorisiert.</p>"
                 "<p>Du kannst dieses Fenster jetzt schließen.</p>"
             )
             return web.Response(

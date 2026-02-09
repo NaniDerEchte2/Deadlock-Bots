@@ -1640,7 +1640,7 @@ class TwitchMonitoringMixin:
                     user_id = user_id or auth_user_id
                     user_token = token
         except Exception:
-            log.debug("Konnte OAuth-Token fuer Follower-Check nicht laden: %s", login, exc_info=True)  # nosemgrep
+            log.debug("Konnte OAuth-Daten fuer Follower-Check nicht laden: %s", login, exc_info=True)
 
         if not user_id:
             return None

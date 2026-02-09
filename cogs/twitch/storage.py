@@ -25,23 +25,27 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _COLUMN_SPEC_RE = re.compile(r"^[A-Za-z0-9_ (),'%.-]+$")
 
 
+def _quote_identifier(identifier: str) -> str:
+    if not _IDENTIFIER_RE.match(identifier):
+        raise ValueError(f"Invalid identifier: {identifier!r}")
+    return f'"{identifier}"'
+
+
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    if not _IDENTIFIER_RE.match(table):
-        raise ValueError(f"Invalid table identifier: {table!r}")
+    _quote_identifier(table)
     cur = conn.execute("SELECT name FROM pragma_table_info(?)", (table,))
     return {row[0] for row in cur.fetchall()}
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, name: str, spec: str) -> None:
-    if not _IDENTIFIER_RE.match(table):
-        raise ValueError(f"Invalid table identifier: {table!r}")
-    if not _IDENTIFIER_RE.match(name):
-        raise ValueError(f"Invalid column identifier: {name!r}")
+    table_ident = _quote_identifier(table)
+    name_ident = _quote_identifier(name)
     if not _COLUMN_SPEC_RE.match(spec):
         raise ValueError(f"Invalid column spec: {spec!r}")
     cols = _columns(conn, table)
     if name not in cols:
-        sql = "ALTER TABLE " + table + " ADD COLUMN " + name + " " + spec
-        conn.execute(sql)  # nosemgrep
+        conn.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query, python.lang.security.audit.formatted-sql-query.formatted-sql-query
+            f"ALTER TABLE {table_ident} ADD COLUMN {name_ident} {spec}"
+        )
         log.info("DB: added column %s.%s", table, name)
 
 

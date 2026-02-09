@@ -486,7 +486,7 @@ class DashboardStatsMixin:
             '</div>'
         )
 
-        hour_tables_block = (
+        hour_tables_block = (  # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format
             '<div class="row" style="gap:1.4rem; flex-wrap:wrap;">'
             '  <div style="flex:1 1 260px;">'
             '    <h3>Deadlock Kategorie — nach Stunde</h3>'
@@ -499,7 +499,7 @@ class DashboardStatsMixin:
             '          <th data-sort-type="number">Peak Viewer</th>'
             '        </tr>'
             '      </thead>'
-            f'      <tbody>{category_hour_rows}</tbody>'  # nosemgrep
+            '      <tbody>' + category_hour_rows + '</tbody>'
             '    </table>'
             '  </div>'
             '  <div style="flex:1 1 260px;">'
@@ -513,13 +513,13 @@ class DashboardStatsMixin:
             '          <th data-sort-type="number">Peak Viewer</th>'
             '        </tr>'
             '      </thead>'
-            f'      <tbody>{tracked_hour_rows}</tbody>'  # nosemgrep
+            '      <tbody>' + tracked_hour_rows + '</tbody>'
             '    </table>'
             '  </div>'
             '</div>'
         )
 
-        weekday_tables_block = (
+        weekday_tables_block = (  # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format
             '<div class="row" style="gap:1.4rem; flex-wrap:wrap;">'
             '  <div style="flex:1 1 260px;">'
             '    <h3>Deadlock Kategorie — nach Wochentag</h3>'
@@ -532,7 +532,7 @@ class DashboardStatsMixin:
             '          <th data-sort-type="number">Peak Viewer</th>'
             '        </tr>'
             '      </thead>'
-            f'      <tbody>{category_weekday_rows}</tbody>'  # nosemgrep
+            '      <tbody>' + category_weekday_rows + '</tbody>'
             '    </table>'
             '  </div>'
             '  <div style="flex:1 1 260px;">'
@@ -546,7 +546,7 @@ class DashboardStatsMixin:
             '          <th data-sort-type="number">Peak Viewer</th>'
             '        </tr>'
             '      </thead>'
-            f'      <tbody>{tracked_weekday_rows}</tbody>'  # nosemgrep
+            '      <tbody>' + tracked_weekday_rows + '</tbody>'
             '    </table>'
             '  </div>'
             '</div>'

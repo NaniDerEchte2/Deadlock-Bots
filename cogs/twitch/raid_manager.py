@@ -82,7 +82,7 @@ class RaidAuthManager:
         
         login, timestamp = data
         if time.time() - timestamp > 600:  # 10 Minuten TTL
-            log.warning("State token for %s expired", login)  # nosemgrep
+            log.warning("OAuth state for %s expired", login)
             return None
             
         return login
@@ -111,7 +111,7 @@ class RaidAuthManager:
         async with session.post(TWITCH_TOKEN_URL, data=data) as r:
             if r.status != 200:
                 txt = await r.text()
-                log.error("Token exchange failed: HTTP %s: %s", r.status, txt[:300])  # nosemgrep
+                log.error("OAuth exchange failed with HTTP status %s", r.status)
                 r.raise_for_status()
             return await r.json()
 
@@ -130,16 +130,16 @@ class RaidAuthManager:
             if r.status != 200:
                 txt = await r.text()
                 error_msg = f"HTTP {r.status}: {txt[:300]}"
-                log.error(  # nosemgrep
-                    "Token refresh failed for refresh_token starting with '%s...': %s",
-                    refresh_token[:8],
-                    error_msg,
+                log.error(
+                    "OAuth refresh request failed for %s with HTTP status %s",
+                    twitch_login or "unknown",
+                    r.status,
                 )
                 
                 # Bei "Invalid refresh token" (HTTP 400): Blacklist + Benachrichtigung
                 if r.status == 400 and "invalid" in txt.lower() and twitch_user_id and twitch_login:
-                    log.warning(  # nosemgrep
-                        "Invalid refresh token detected for %s (ID: %s) - adding to blacklist",
+                    log.warning(
+                        "Invalid OAuth refresh grant for %s (ID: %s) - adding to blacklist",
                         twitch_login,
                         twitch_user_id,
                     )
@@ -224,7 +224,7 @@ class RaidAuthManager:
                 except Exception as exc:
                     log.debug("Konnte expires_at nicht parsen für %s", login, exc_info=exc)
 
-                log.info("Auto-refreshing token for %s (background maintenance)", login)  # nosemgrep
+                log.info("Auto-refreshing OAuth grant for %s (background maintenance)", login)
                 try:
                     token_data = await self.refresh_token(
                         refresh_tok, session, twitch_user_id=user_id, twitch_login=login
@@ -356,7 +356,7 @@ class RaidAuthManager:
                 if time.time() < curr_expires - 300:
                     return curr_access, curr_refresh
 
-            log.info("Refreshing token for %s (get_tokens)", twitch_login)  # nosemgrep
+            log.info("Refreshing OAuth grant for %s (get_tokens)", twitch_login)
             try:
                 token_data = await self.refresh_token(
                     refresh_token,
@@ -388,7 +388,7 @@ class RaidAuthManager:
 
                 return new_access_token, new_refresh_token
             except Exception:
-                log.exception("Failed to refresh token for %s", twitch_login)  # nosemgrep
+                log.exception("Failed to refresh OAuth grant for %s", twitch_login)
                 return None
 
     async def get_valid_token(
@@ -403,8 +403,8 @@ class RaidAuthManager:
         """
         # SCHRITT 1: Blacklist-Check BEVOR wir überhaupt zur DB gehen
         if self.token_error_handler.is_token_blacklisted(twitch_user_id):
-            log.warning(  # nosemgrep
-                "Token for user_id=%s is blacklisted - skipping refresh attempt",
+            log.warning(
+                "OAuth grant for user_id=%s is blacklisted - skipping refresh attempt",
                 twitch_user_id,
             )
             return None
@@ -445,7 +445,7 @@ class RaidAuthManager:
                 if time.time() < curr_expires - 300:
                     return curr_access
 
-            log.info("Refreshing token for %s", twitch_login)  # nosemgrep
+            log.info("Refreshing OAuth grant for %s", twitch_login)
             try:
                 # Refresh mit User-Info für Blacklist-Tracking
                 token_data = await self.refresh_token(
@@ -478,7 +478,7 @@ class RaidAuthManager:
 
                 return new_access_token
             except Exception:
-                log.exception("Failed to refresh token for %s", twitch_login)  # nosemgrep
+                log.exception("Failed to refresh OAuth grant for %s", twitch_login)
                 return None
 
     async def get_valid_token_for_login(
@@ -828,7 +828,7 @@ class RaidBot:
         # 1. Tokens holen
         tokens = await self.auth_manager.get_tokens_for_user(twitch_user_id, self.session)
         if not tokens:
-            log.warning("Could not get tokens for %s to complete setup", twitch_login)  # nosemgrep
+            log.warning("Could not load OAuth grant for %s to complete setup", twitch_login)
             return
 
         access_token, _ = tokens

@@ -481,7 +481,6 @@ class LimitModal(discord.ui.Modal, title="Limit setzen"):
         if val < 0 or val > 99:
             await itx.response.send_message("Limit muss 0-99 sein.", ephemeral=True)
             return
-        enforced_val = val
         try:
             enforced_val = self.core.enforce_limit(self.lane, val)  # type: ignore[attr-defined]
         except Exception:
