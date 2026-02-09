@@ -123,7 +123,8 @@ class TwitchBaseCog(commands.Cog):
             )
         self._partner_dashboard_token = (os.getenv("TWITCH_PARTNER_TOKEN") or "").strip() or None
         self._dashboard_auth_redirect_uri = (
-            (os.getenv("TWITCH_DASHBOARD_AUTH_REDIRECT_URI") or "").strip() or None
+            (os.getenv("TWITCH_DASHBOARD_AUTH_REDIRECT_URI") or "").strip()
+            or "https://twitch.earlysalty.com/twitch/auth/callback"
         )
         self._dashboard_session_ttl = max(
             1800,
