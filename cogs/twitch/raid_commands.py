@@ -2,12 +2,14 @@
 """Discord Commands für Twitch-Bot-Steuerung durch Streamer."""
 
 import logging
+import random
 
 import discord
 from discord.ext import commands
 
 from .storage import get_conn
 from .raid_views import build_raid_requirements_embed, RaidAuthGenerateView
+from .twitch_chat_bot_constants import _PROMO_MESSAGES
 
 log = logging.getLogger("TwitchStreams.RaidCommands")
 
@@ -332,3 +334,53 @@ class RaidCommandsMixin:
             )
 
         await ctx.send(embed=embed, ephemeral=True)
+
+    @commands.hybrid_command(name="sendchatpromo")
+    @commands.has_permissions(administrator=True)
+    async def cmd_sendchatpromo(self, ctx: commands.Context, streamer: str):
+        """Sendet testweise eine Chat-Promo an einen Twitch-Streamer."""
+        chat_bot = getattr(self, "_twitch_chat_bot", None)
+        if not chat_bot:
+            await ctx.send("Der Twitch Chat Bot ist nicht aktiv.", ephemeral=True)
+            return
+
+        login = streamer.strip().lower().lstrip("@#")
+        if not login:
+            await ctx.send("Bitte einen Streamer-Namen angeben.", ephemeral=True)
+            return
+
+        # Streamer-ID aus DB holen
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT twitch_user_id FROM twitch_streamers WHERE LOWER(twitch_login) = ?",
+                (login,),
+            ).fetchone()
+
+        if not row or not row[0]:
+            await ctx.send(f"Streamer **{login}** nicht in der DB gefunden.", ephemeral=True)
+            return
+
+        channel_id = str(row[0])
+
+        # Invite ermitteln
+        invite, is_specific = await chat_bot._get_promo_invite(login)
+        if not invite:
+            await ctx.send(f"Kein Discord-Invite für **{login}** verfügbar.", ephemeral=True)
+            return
+
+        msg = random.choice(_PROMO_MESSAGES).format(invite=invite)
+
+        # Nachricht senden via Announcement (Fallback auf normale Message)
+        ok = await chat_bot._send_announcement(
+            chat_bot._make_promo_channel(login, channel_id),
+            msg,
+            color="purple",
+            source="promo",
+        )
+
+        if ok:
+            await ctx.send(f"Promo an **{login}** gesendet:\n> {msg}", ephemeral=True)
+            log.info("Manual promo sent to %s by %s", login, ctx.author)
+        else:
+            await ctx.send(f"Promo an **{login}** konnte nicht gesendet werden.", ephemeral=True)
+            log.warning("Manual promo to %s failed (triggered by %s)", login, ctx.author)
