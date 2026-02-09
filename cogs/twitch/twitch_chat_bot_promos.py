@@ -23,6 +23,7 @@ from .twitch_chat_bot_constants import (
     _PROMO_IGNORE_COMMANDS,
     _PROMO_INTERVAL_MIN,
     _PROMO_MESSAGES,
+    _PROMO_OVERALL_COOLDOWN_MIN,
     _PROMO_VIEWER_SPIKE_COOLDOWN_MIN,
     _PROMO_VIEWER_SPIKE_ENABLED,
     _PROMO_VIEWER_SPIKE_MIN_DELTA,
@@ -120,6 +121,18 @@ class PromoMixin:
         target = float(_PROMO_ACTIVITY_TARGET_MPM)
         ratio = 1.0 if target <= 0 else min(1.0, msgs_per_min / target)
         return (min_cd + (1.0 - ratio) * (max_cd - min_cd)) * 60.0
+
+    def _overall_promo_cooldown_sec(self) -> float:
+        return max(0.0, float(_PROMO_OVERALL_COOLDOWN_MIN) * 60.0)
+
+    def _overall_promo_ready(self, login: str, now: float) -> bool:
+        overall_sec = self._overall_promo_cooldown_sec()
+        if overall_sec <= 0:
+            return True
+        last_sent = self._last_promo_sent.get(login)
+        if last_sent is None:
+            return True
+        return (now - float(last_sent)) >= overall_sec
 
     def _promo_attempt_allowed(self, login: str, now: float) -> bool:
         last_attempt = self._last_promo_attempt.get(login)
@@ -257,6 +270,8 @@ class PromoMixin:
     async def _maybe_send_promo_with_stats(self, login: str, channel_id: str, now: float) -> bool:
         if not self._promo_channel_allowed(login):
             return False
+        if not self._overall_promo_ready(login, now):
+            return False
 
         msg_count, unique_chatters, msgs_per_min = self._get_promo_activity_stats(login, now)
         if _PROMO_ACTIVITY_MIN_MSGS > 0 and msg_count < _PROMO_ACTIVITY_MIN_MSGS:
@@ -287,6 +302,8 @@ class PromoMixin:
         if not _PROMO_VIEWER_SPIKE_ENABLED:
             return False
         if not self._promo_channel_allowed(login):
+            return False
+        if not self._overall_promo_ready(login, now):
             return False
         if self._has_recent_chat_activity(login, now):
             return False
@@ -385,7 +402,7 @@ class PromoMixin:
                     await self._maybe_send_viewer_spike_promo(login, str(broadcaster_id), now)
             return
 
-        interval_sec = _PROMO_INTERVAL_MIN * 60
+        interval_sec = max(_PROMO_INTERVAL_MIN * 60, self._overall_promo_cooldown_sec())
         for login, broadcaster_id in live_channels:
             last = self._last_promo_sent.get(login)
             if last is None:
