@@ -264,10 +264,14 @@ jobs:
 
       # Snyk Scan (optional, requires repository secret SNYK_TOKEN)
       - name: Snyk Security Scan
-        if: hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != '' && secrets.SNYK_TOKEN != ''
+        if: hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != ''
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
+          if [ -z "${SNYK_TOKEN:-}" ]; then
+            echo "ℹ️ SNYK_TOKEN not configured; skipping Snyk scan."
+            exit 0
+          fi
           npm install -g snyk || true
           snyk auth "$SNYK_TOKEN" || true
           snyk test --all-projects --severity-threshold=low --json-file-output=snyk-report.json || true
