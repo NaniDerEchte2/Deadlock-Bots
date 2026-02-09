@@ -868,7 +868,19 @@ class RaidBot:
                         log.info("Bot (ID: %s) is already moderator in %s's channel", bot_id, twitch_login)
                     else:
                         txt = await r.text()
-                        log.warning("Failed to add bot as moderator in %s: HTTP %s: %s (used broadcaster token)", twitch_login, r.status, txt)
+                        if r.status == 400 and "already a mod" in txt.lower():
+                            log.info(
+                                "Bot (ID: %s) is already moderator in %s's channel (HTTP 400 variant)",
+                                bot_id,
+                                twitch_login,
+                            )
+                        else:
+                            log.warning(
+                                "Failed to add bot as moderator in %s: HTTP %s: %s (used broadcaster token)",
+                                twitch_login,
+                                r.status,
+                                txt,
+                            )
             except Exception:
                 log.exception("Error adding bot as moderator for %s", twitch_login)
 
