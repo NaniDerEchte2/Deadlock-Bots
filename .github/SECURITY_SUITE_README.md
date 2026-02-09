@@ -20,32 +20,38 @@ Diese Suite führt automatisch folgende Analysen durch:
    - **SAST**: Semgrep Professional (OWASP Top 10, Security Audit)
    - **OSSF Security Scorecard**
 
-3. **Container Security** (`container-security.yml`)
+3. **Dashboard Auth Guardrails** (`dashboard-auth-guard.yml`)
+   - Startet den Twitch-Dashboard-Server im CI-Job
+   - Prüft harte Access-Control-Regeln für `/twitch/admin`
+   - Testet Header-Spoofing (`X-Dashboard-Context`, `X-Forwarded-*`)
+   - Verhindert Auth-Bypass-Regressionen
+
+4. **Container Security** (`container-security.yml`)
    - Dockerfile Security: Hadolint, Checkov
    - Image Scanning: Trivy
    - Docker Compose Security
    - Best Practices Check
    - Image Size Optimization (Dive)
 
-4. **Infrastructure as Code** (`iac-security.yml`)
+5. **Infrastructure as Code** (`iac-security.yml`)
    - **Terraform**: TFLint, TFSec, Checkov
    - **Kubernetes**: KubeLinter, KICS
    - **CloudFormation**: CFN-Lint, Checkov
    - **Ansible**: ansible-lint
    - Configuration File Security
 
-5. **Secret Scanning** (`secret-scanning.yml`)
+6. **Secret Scanning** (`secret-scanning.yml`)
    - Gitleaks: Git history scanning
    - Trivy Secrets: Filesystem scanning
 
-6. **Dependency Review** (`dependency-review.yml`)
+7. **Dependency Review** (`dependency-review.yml`)
    - GitHub Dependency Review
    - NPM Audit
    - Python Safety Check
 
 ### ⚡ **Performance Workflows**
 
-7. **Performance Analysis** (`performance-analysis.yml`)
+8. **Performance Analysis** (`performance-analysis.yml`)
    - **Python**: Memory profiling, Leak detection, Complexity analysis
    - **JavaScript**: Bundle size, Memory patterns
    - **Database**: Query optimization, N+1 detection
@@ -54,7 +60,7 @@ Diese Suite führt automatisch folgende Analysen durch:
 
 ### ✅ **Compliance Workflows**
 
-8. **Compliance Check** (`compliance-check.yml`)
+9. **Compliance Check** (`compliance-check.yml`)
    - **License Compliance**: Python (pip-licenses), Node (license-checker), FOSSA
    - **Code Style**: Black, Ruff, isort, Flake8, Prettier, ESLint
    - **Documentation**: README, CONTRIBUTING, LICENSE, CODE_OF_CONDUCT checks
@@ -63,7 +69,7 @@ Diese Suite führt automatisch folgende Analysen durch:
 
 ### 🎯 **Master Workflow**
 
-9. **Master Dashboard** (`master-dashboard.yml`)
+10. **Master Dashboard** (`master-dashboard.yml`)
    - Orchestriert alle Workflows
    - Aggregiert Ergebnisse
    - Erstellt umfassendes Dashboard

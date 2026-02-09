@@ -1,0 +1,53 @@
+rules:
+  - id: python.auth.untrusted-dashboard-context-header
+    message: >
+      Untrusted header X-Dashboard-Context is used in an auth/local/admin decision.
+      Request headers are client-controlled unless stripped and re-set by a trusted proxy.
+      Do not grant local/admin access based on this header alone.
+    languages:
+      - python
+    severity: ERROR
+    metadata:
+      category: security
+      cwe:
+        - "CWE-290: Authentication Bypass by Spoofing"
+      confidence: MEDIUM
+      technology:
+        - python
+        - aiohttp
+    patterns:
+      - pattern: $REQ.headers.get("X-Dashboard-Context")
+      - pattern-inside: |
+          def $FUNC(...):
+              ...
+      - metavariable-regex:
+          metavariable: $FUNC
+          regex: (?i).*(auth|token|local|admin|require|check|gate).*
+
+  - id: python.auth.untrusted-forwarded-headers
+    message: >
+      Forwarded headers are used in an auth/local/admin decision.
+      Only trust X-Forwarded-For/X-Real-IP/X-Forwarded-Host after verifying the direct peer
+      is a trusted local reverse proxy and headers are sanitized.
+    languages:
+      - python
+    severity: WARNING
+    metadata:
+      category: security
+      cwe:
+        - "CWE-807: Reliance on Untrusted Inputs in a Security Decision"
+      confidence: MEDIUM
+      technology:
+        - python
+        - aiohttp
+    patterns:
+      - pattern-either:
+          - pattern: $REQ.headers.get("X-Forwarded-For")
+          - pattern: $REQ.headers.get("X-Real-IP")
+          - pattern: $REQ.headers.get("X-Forwarded-Host")
+      - pattern-inside: |
+          def $FUNC(...):
+              ...
+      - metavariable-regex:
+          metavariable: $FUNC
+          regex: (?i).*(auth|token|local|admin|require|check|gate).*

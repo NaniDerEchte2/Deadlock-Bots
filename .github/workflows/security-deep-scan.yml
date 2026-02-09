@@ -330,6 +330,21 @@ jobs:
             . || true
         continue-on-error: true
 
+      - name: Run Semgrep (Custom Auth Header Guardrails)
+        if: hashFiles('.semgrep/rules/*.yml', '.semgrep/rules/*.yaml') != ''
+        run: |
+          semgrep scan \
+            --config .semgrep/rules \
+            --sarif \
+            --output semgrep-custom.sarif \
+            --exclude .venv \
+            --exclude venv \
+            --exclude node_modules \
+            --exclude dist \
+            --exclude build \
+            . || true
+        continue-on-error: true
+
       - name: Upload Semgrep Results to Security Tab
         uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
         if: always() && hashFiles('semgrep.sarif') != ''
@@ -337,6 +352,14 @@ jobs:
           sarif_file: semgrep.sarif
           # Keep the historical category stable so existing Semgrep alerts can auto-close.
           category: semgrep
+        continue-on-error: true
+
+      - name: Upload Custom Semgrep Results to Security Tab
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4
+        if: always() && hashFiles('semgrep-custom.sarif') != ''
+        with:
+          sarif_file: semgrep-custom.sarif
+          category: semgrep-custom-auth
         continue-on-error: true
 
       - name: Upload Semgrep Artifact
@@ -347,6 +370,7 @@ jobs:
           path: |
             semgrep.json
             semgrep.sarif
+            semgrep-custom.sarif
           if-no-files-found: ignore
 
   # ============================================================================

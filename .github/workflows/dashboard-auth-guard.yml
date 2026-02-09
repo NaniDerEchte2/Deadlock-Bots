@@ -1,0 +1,133 @@
+name: "🛡️ Dashboard Auth Guardrails"
+
+on:
+  push:
+    branches: [ "main", "master", "develop" ]
+  pull_request:
+  schedule:
+    - cron: '20 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  auth-guard:
+    name: "🚧 Admin Access Regression Guard"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Runtime Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install aiohttp discord.py
+
+      - name: Start Dashboard Guard Test Server
+        env:
+          DEADLOCK_DB_PATH: ${{ github.workspace }}/.auth-guard/deadlock.sqlite3
+        run: |
+          mkdir -p .github/tmp .auth-guard
+          cat > .github/tmp/run_dashboard_auth_guard.py <<'PY'
+          from aiohttp import web
+          from cogs.twitch.dashboard_v2_server import build_v2_app
+
+          app = build_v2_app(
+              noauth=False,
+              token="auth-guard-admin-token",
+              partner_token="auth-guard-partner-token",
+          )
+          web.run_app(app, host="127.0.0.1", port=8788, access_log=None)
+          PY
+
+          python .github/tmp/run_dashboard_auth_guard.py > dashboard-auth-guard.log 2>&1 &
+          echo $! > dashboard-auth-guard.pid
+
+      - name: Wait for Dashboard Readiness
+        run: |
+          for i in $(seq 1 40); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: 127.0.0.1" http://127.0.0.1:8788/twitch/admin || true)
+            if [ "$code" = "200" ]; then
+              echo "Dashboard auth-guard server is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Dashboard auth-guard server did not become ready in time"
+          cat dashboard-auth-guard.log || true
+          exit 1
+
+      - name: Verify Admin Access Guardrails
+        run: |
+          probe_expect() {
+            name="$1"
+            expected="$2"
+            shift 2
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$@" || true)
+            echo "$name -> HTTP $code"
+            if [ "$code" != "$expected" ]; then
+              echo "::error::$name expected HTTP $expected but got $code"
+              exit 1
+            fi
+          }
+
+          probe_not_200() {
+            name="$1"
+            shift
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$@" || true)
+            echo "$name -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "::error::$name must not return HTTP 200"
+              exit 1
+            fi
+          }
+
+          # True localhost access should still work.
+          probe_expect "localhost-admin-access" 200 \
+            -H "Host: 127.0.0.1" \
+            http://127.0.0.1:8788/twitch/admin
+
+          # External host-style request must be blocked.
+          probe_expect "external-host-admin-blocked" 403 \
+            -H "Host: twitch.earlysalty.com" \
+            http://127.0.0.1:8788/twitch/admin
+
+          # Header spoofing must not bypass the block.
+          probe_expect "spoofed-headers-admin-blocked" 403 \
+            -H "Host: twitch.earlysalty.com" \
+            -H "X-Dashboard-Context: local" \
+            -H "X-Forwarded-For: 127.0.0.1" \
+            -H "X-Real-IP: 127.0.0.1" \
+            -H "X-Forwarded-Host: localhost" \
+            http://127.0.0.1:8788/twitch/admin
+
+          # Encoded/variant path must never open admin externally.
+          probe_not_200 "encoded-admin-path-not-open" \
+            -H "Host: twitch.earlysalty.com" \
+            http://127.0.0.1:8788/twitch/%61dmin
+
+          # Public-style stats access without auth must not become implicitly admin.
+          probe_not_200 "unauthenticated-stats-not-open" \
+            -H "Host: twitch.earlysalty.com" \
+            http://127.0.0.1:8788/twitch/stats
+
+      - name: Upload Auth Guard Server Log
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: dashboard-auth-guard-log
+          path: dashboard-auth-guard.log
+          if-no-files-found: ignore
+
+      - name: Stop Dashboard Guard Test Server
+        if: always()
+        run: |
+          if [ -f dashboard-auth-guard.pid ]; then
+            kill "$(cat dashboard-auth-guard.pid)" || true
+          fi
