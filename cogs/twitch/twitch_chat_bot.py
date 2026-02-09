@@ -20,7 +20,7 @@ from typing import Deque, Dict, Optional, Set, Tuple
 
 import discord
 
-from .constants import TWITCH_NOTIFY_CHANNEL_ID
+from .constants import TWITCH_NOTIFY_CHANNEL_ID, TWITCH_TARGET_GAME_NAME
 from .storage import get_conn
 from .token_manager import TwitchBotTokenManager
 from .twitch_chat_bot_commands import RaidCommandsMixin
@@ -129,6 +129,10 @@ if TWITCHIO_AVAILABLE:
             # Key = channel_login (lowercase), Value = nächster erlaubter Zeitpunkt.
             self._mod_retry_cooldown: Dict[str, datetime] = {}
             self._autoban_log = Path("logs") / "twitch_autobans.log"
+            self._target_game_lower = (TWITCH_TARGET_GAME_NAME or "").strip().lower()
+            # Cache for category checks in chat tracking (login -> (monotonic_ts, is_target_game))
+            self._chat_category_cache: Dict[str, Tuple[float, bool]] = {}
+            self._chat_category_cache_ttl_sec = 15.0
             # Periodische Chat-Promos
             self._channel_ids: Dict[str, str] = {}          # login -> broadcaster_id
             self._last_promo_sent: Dict[str, float] = {}    # login -> monotonic timestamp

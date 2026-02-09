@@ -578,6 +578,75 @@ class ModerationMixin:
                     break
         return False
 
+    def _is_target_game_live_for_chat(self, login: str, session_id: Optional[int]) -> bool:
+        """Returns True when chat persistence should run for the channel."""
+        target_game_lower = (getattr(self, "_target_game_lower", "") or "").strip().lower()
+        if not target_game_lower:
+            return True
+
+        now_mono = time.monotonic()
+        cache = getattr(self, "_chat_category_cache", None)
+        cache_ttl = float(getattr(self, "_chat_category_cache_ttl_sec", 15.0) or 15.0)
+        cached = cache.get(login) if isinstance(cache, dict) else None
+        if isinstance(cached, tuple) and len(cached) == 2:
+            cached_ts, cached_value = cached
+            if now_mono - float(cached_ts) <= cache_ttl:
+                return bool(cached_value)
+
+        should_track = False
+        try:
+            with get_conn() as conn:
+                state_row = conn.execute(
+                    """
+                    SELECT is_live, last_game
+                      FROM twitch_live_state
+                     WHERE streamer_login = ?
+                    """,
+                    (login,),
+                ).fetchone()
+
+                if state_row:
+                    is_live = bool(
+                        int((state_row["is_live"] if hasattr(state_row, "keys") else state_row[0]) or 0)
+                    )
+                    last_game = str(
+                        (state_row["last_game"] if hasattr(state_row, "keys") else state_row[1]) or ""
+                    ).strip().lower()
+                    should_track = is_live and last_game == target_game_lower
+                elif session_id is not None:
+                    session_row = conn.execute(
+                        """
+                        SELECT game_name
+                          FROM twitch_stream_sessions
+                         WHERE id = ? AND ended_at IS NULL
+                        """,
+                        (session_id,),
+                    ).fetchone()
+                    if session_row:
+                        game_name = str(
+                            (session_row["game_name"] if hasattr(session_row, "keys") else session_row[0]) or ""
+                        ).strip().lower()
+                        should_track = game_name == target_game_lower
+        except Exception:
+            log.debug("Konnte Chat-Kategorie-Filter nicht pruefen fuer %s", login, exc_info=True)
+            return False
+
+        if isinstance(cache, dict):
+            cache[login] = (now_mono, should_track)
+            if len(cache) > 2048:
+                stale_before = now_mono - max(cache_ttl * 4.0, 30.0)
+                stale_keys = [
+                    key
+                    for key, value in cache.items()
+                    if not isinstance(value, tuple)
+                    or len(value) != 2
+                    or float(value[0]) < stale_before
+                ]
+                for key in stale_keys:
+                    cache.pop(key, None)
+
+        return should_track
+
     async def _track_chat_health(self, message) -> None:
         """Loggt Chat-Events für Chat-Gesundheit und Retention-Metriken."""
         channel_name = getattr(message.channel, "name", "") or ""
@@ -595,6 +664,8 @@ class ModerationMixin:
 
         session_id = self._resolve_session_id(login)
         if session_id is None:
+            return
+        if not self._is_target_game_live_for_chat(login, session_id):
             return
 
         ts_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
