@@ -54,10 +54,6 @@ STEAM_BUTTON_LABEL = (os.getenv("STEAM_BUTTON_LABEL") or "Direkt bei Steam anmel
 __all__ = ("get_public_urls", "start_urls_for")
 
 
-def _safe_log_text(value: str) -> str:
-    """Escape control characters before logging external/user-provided text."""
-    return str(sanitize_log_value(value))
-
 def _safe_log_repr(value: Any) -> str:
     """Return a repr-style string with control chars escaped for safe logging."""
     return repr(sanitize_log_value(value))
@@ -425,12 +421,7 @@ class SteamLink(commands.Cog):
         async with aiohttp.ClientSession() as s:
             async with s.post(f"{DISCORD_API}/oauth2/token", data=data, headers=headers) as r:
                 if r.status != 200:
-                    body = await r.text()
-                    log.warning(  # nosemgrep
-                        "Discord Token-Exchange fehlgeschlagen (%s): %s",
-                        r.status,
-                        _safe_log_text(body),
-                    )
+                    log.warning("Discord OAuth exchange failed (HTTP %s).", r.status)
                     return None
                 return await r.json()
 
@@ -439,12 +430,7 @@ class SteamLink(commands.Cog):
         async with aiohttp.ClientSession() as s:
             async with s.get(f"{DISCORD_API}/users/@me/connections", headers=headers) as r:
                 if r.status != 200:
-                    body = await r.text()
-                    log.warning(
-                        "Discord Connections-API fehlgeschlagen (%s): %s",
-                        r.status,
-                        _safe_log_text(body),
-                    )
+                    log.warning("Discord Connections-API fehlgeschlagen (HTTP %s).", r.status)
                     return None
                 return await r.json()
 
@@ -560,11 +546,7 @@ class SteamLink(commands.Cog):
             async with session.post(STEAM_OPENID_ENDPOINT, data=verify_params, timeout=15) as resp:
                 body = await resp.text()
                 if resp.status != 200 or "is_valid:true" not in body:
-                    log.warning(
-                        "Steam OpenID verify fehlgeschlagen: HTTP=%s body=%s",
-                        resp.status,
-                        _safe_log_text(body),
-                    )
+                    log.warning("Steam OpenID verify fehlgeschlagen (HTTP %s).", resp.status)
                     return None
 
         claimed_id = query.get("openid.claimed_id", "")
@@ -637,7 +619,7 @@ class SteamLink(commands.Cog):
             html_doc = (
                 "<html><body style='font-family: system-ui, sans-serif'>"
                 "<h3>✅ Verknüpfung abgeschlossen</h3>"
-                f"<p>{len(saved_ids)} Steam-Account(s) wurden gespeichert.</p>"  # nosemgrep
+                "<p>Steam-Account(s) wurden gespeichert.</p>"
                 "<p>Du kannst dieses Fenster jetzt schließen.</p>"
                 "</body></html>"
             )
@@ -651,19 +633,17 @@ class SteamLink(commands.Cog):
         except web.HTTPFound:
             raise
         except Exception:
-            steam_state = self._mk_state(uid)
-            steam_login = self._build_steam_login_url(steam_state) if PUBLIC_BASE_URL else "#"
-            steam_login_safe = html.escape(steam_login, quote=True)
-            html_doc = (
-                "<html><head>"
-                f"<meta http-equiv='refresh' content=\"0; url={steam_login_safe}\"/>"  # nosemgrep
-                "</head><body style='font-family: system-ui, sans-serif'>"
-                "<h3>Weiterleitung zu Steam …</h3>"
-                f"<p><a href=\"{steam_login_safe}\" style='padding:10px 14px;"  # nosemgrep
-                "background:#2a475e;color:#fff;border-radius:6px;text-decoration:none;'>Falls nichts passiert, hier klicken</a></p>"
-                "</body></html>"
+            log.exception("Discord callback: Weiterleitung zu Steam fehlgeschlagen")
+            return web.Response(
+                text=(
+                    "<html><body style='font-family: system-ui, sans-serif'>"
+                    "<h3>❌ Weiterleitung fehlgeschlagen</h3>"
+                    "<p>Bitte starte den Link-Vorgang in Discord erneut.</p>"
+                    "</body></html>"
+                ),
+                content_type="text/html",
+                status=500,
             )
-            return web.Response(text=html_doc, content_type="text/html")
 
     async def handle_steam_login(self, request: web.Request) -> web.Response:
         uid_q = request.query.get("uid")
@@ -677,14 +657,8 @@ class SteamLink(commands.Cog):
         except web.HTTPFound:
             raise
         except Exception:
-            login_url_safe = html.escape(login_url, quote=True)
-            html_doc = (
-                "<html><body style='font-family: system-ui, sans-serif'>"
-                "<h3>Weiter zu Steam</h3>"
-                f"<p><a href=\"{login_url_safe}\">Steam Login öffnen</a></p>"  # nosemgrep
-                "</body></html>"
-            )
-            return web.Response(text=html_doc, content_type="text/html")
+            log.exception("Steam login redirect failed")
+            return web.Response(text="failed to start steam login", status=500)
 
     async def handle_steam_return(self, request: web.Request) -> web.Response:
         try:

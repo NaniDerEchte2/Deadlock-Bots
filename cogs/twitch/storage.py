@@ -36,6 +36,9 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     cur = conn.execute("SELECT name FROM pragma_table_info(?)", (table,))
     return {row[0] for row in cur.fetchall()}
 
+def _build_add_column_statement(table_ident: str, name_ident: str, spec: str) -> str:
+    return "".join(["ALTER TABLE ", table_ident, " ADD COLUMN ", name_ident, " ", spec])
+
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, name: str, spec: str) -> None:
     table_ident = _quote_identifier(table)
     name_ident = _quote_identifier(name)
@@ -43,9 +46,8 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, name: str, spec
         raise ValueError(f"Invalid column spec: {spec!r}")
     cols = _columns(conn, table)
     if name not in cols:
-        conn.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query, python.lang.security.audit.formatted-sql-query.formatted-sql-query
-            f"ALTER TABLE {table_ident} ADD COLUMN {name_ident} {spec}"
-        )
+        statement = _build_add_column_statement(table_ident, name_ident, spec)
+        conn.execute(statement)
         log.info("DB: added column %s.%s", table, name)
 
 

@@ -63,7 +63,11 @@ def _load_secrets_from_keyring() -> None:
             pass  # Ignorieren, wenn Key nicht im Tresor
             
     if loaded_keys:
-        logging.getLogger().info("🔐 %d Secrets aus Windows Tresor (%s) geladen: %s", len(loaded_keys), service_name, ", ".join(loaded_keys))  # nosemgrep
+        logging.getLogger().info(
+            "🔐 %d Einträge aus Windows Tresor (%s) geladen.",
+            len(loaded_keys),
+            service_name,
+        )
 
   # nosemgrep
 def _load_env_robust() -> str | None:

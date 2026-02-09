@@ -1779,7 +1779,6 @@ class AnalyticsV2Mixin:
                     tags_str = row[0] or ""
                     # Handle JSON array or comma-separated
                     if tags_str.startswith("["):
-                        import json
                         try:
                             tags = json.loads(tags_str)
                         except:
@@ -2130,7 +2129,6 @@ class AnalyticsV2Mixin:
                 # Determine bucket size based on range
                 if days <= 7:
                     bucket_minutes = 5
-                    bucket_fmt = "%Y-%m-%d %H:" + "00"  # will be refined below
                 elif days <= 30:
                     bucket_minutes = 30
                 else:
@@ -2202,13 +2200,13 @@ class AnalyticsV2Mixin:
         streamer = request.query.get("streamer", "").strip()
         days = min(max(int(request.query.get("days", "30")), 1), 365)
         limit = min(max(int(request.query.get("limit", "25")), 5), 100)
-        sort = request.query.get("sort", "avg")  # avg or peak
+        sort_mode = request.query.get("sort", "avg")  # avg or peak
 
         try:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
-                if sort == "peak":
+                if sort_mode == "peak":
                     leaderboard_sql = """
                     SELECT
                         c.streamer,
@@ -2221,7 +2219,6 @@ class AnalyticsV2Mixin:
                     ORDER BY peak_vc DESC
                     """
                 else:
-                    sort = "avg"
                     leaderboard_sql = """
                     SELECT
                         c.streamer,

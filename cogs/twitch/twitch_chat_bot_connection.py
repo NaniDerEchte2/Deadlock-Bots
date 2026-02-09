@@ -34,7 +34,10 @@ class ConnectionMixin:
 
         tokens = await raid_bot.auth_manager.get_tokens_for_user(broadcaster_id, session)
         if not tokens:
-            log.warning("_ensure_bot_is_mod: Kein gültiger Token für %s (uid=%s) – Token abgelaufen?", broadcaster_login, broadcaster_id)  # nosemgrep
+            log.warning(
+                "_ensure_bot_is_mod: Keine gültige Autorisierung für %s verfügbar.",
+                broadcaster_login,
+            )
             return False
 
         access_token, _ = tokens

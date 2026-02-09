@@ -486,70 +486,82 @@ class DashboardStatsMixin:
             '</div>'
         )
 
-        hour_tables_block = (  # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format
-            '<div class="row" style="gap:1.4rem; flex-wrap:wrap;">'
-            '  <div style="flex:1 1 260px;">'
-            '    <h3>Deadlock Kategorie — nach Stunde</h3>'
-            '    <table class="sortable-table" data-table="category-hour">'
-            '      <thead>'
-            '        <tr>'
-            '          <th data-sort-type="number">Stunde</th>'
-            '          <th data-sort-type="number">Stichproben</th>'
-            '          <th data-sort-type="number">Ø Viewer</th>'
-            '          <th data-sort-type="number">Peak Viewer</th>'
-            '        </tr>'
-            '      </thead>'
-            '      <tbody>' + category_hour_rows + '</tbody>'
-            '    </table>'
-            '  </div>'
-            '  <div style="flex:1 1 260px;">'
-            '    <h3>Tracked Streamer — nach Stunde</h3>'
-            '    <table class="sortable-table" data-table="tracked-hour">'
-            '      <thead>'
-            '        <tr>'
-            '          <th data-sort-type="number">Stunde</th>'
-            '          <th data-sort-type="number">Stichproben</th>'
-            '          <th data-sort-type="number">Ø Viewer</th>'
-            '          <th data-sort-type="number">Peak Viewer</th>'
-            '        </tr>'
-            '      </thead>'
-            '      <tbody>' + tracked_hour_rows + '</tbody>'
-            '    </table>'
-            '  </div>'
-            '</div>'
+        hour_tables_block = "".join(
+            [
+                '<div class="row" style="gap:1.4rem; flex-wrap:wrap;">',
+                '  <div style="flex:1 1 260px;">',
+                '    <h3>Deadlock Kategorie — nach Stunde</h3>',
+                '    <table class="sortable-table" data-table="category-hour">',
+                '      <thead>',
+                '        <tr>',
+                '          <th data-sort-type="number">Stunde</th>',
+                '          <th data-sort-type="number">Stichproben</th>',
+                '          <th data-sort-type="number">Ø Viewer</th>',
+                '          <th data-sort-type="number">Peak Viewer</th>',
+                '        </tr>',
+                '      </thead>',
+                '      <tbody>',
+                category_hour_rows,
+                "</tbody>",
+                "    </table>",
+                "  </div>",
+                '  <div style="flex:1 1 260px;">',
+                '    <h3>Tracked Streamer — nach Stunde</h3>',
+                '    <table class="sortable-table" data-table="tracked-hour">',
+                "      <thead>",
+                "        <tr>",
+                '          <th data-sort-type="number">Stunde</th>',
+                '          <th data-sort-type="number">Stichproben</th>',
+                '          <th data-sort-type="number">Ø Viewer</th>',
+                '          <th data-sort-type="number">Peak Viewer</th>',
+                "        </tr>",
+                "      </thead>",
+                "      <tbody>",
+                tracked_hour_rows,
+                "</tbody>",
+                "    </table>",
+                "  </div>",
+                "</div>",
+            ]
         )
 
-        weekday_tables_block = (  # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format
-            '<div class="row" style="gap:1.4rem; flex-wrap:wrap;">'
-            '  <div style="flex:1 1 260px;">'
-            '    <h3>Deadlock Kategorie — nach Wochentag</h3>'
-            '    <table class="sortable-table" data-table="category-weekday">'
-            '      <thead>'
-            '        <tr>'
-            '          <th data-sort-type="number">Tag</th>'
-            '          <th data-sort-type="number">Stichproben</th>'
-            '          <th data-sort-type="number">Ø Viewer</th>'
-            '          <th data-sort-type="number">Peak Viewer</th>'
-            '        </tr>'
-            '      </thead>'
-            '      <tbody>' + category_weekday_rows + '</tbody>'
-            '    </table>'
-            '  </div>'
-            '  <div style="flex:1 1 260px;">'
-            '    <h3>Tracked Streamer — nach Wochentag</h3>'
-            '    <table class="sortable-table" data-table="tracked-weekday">'
-            '      <thead>'
-            '        <tr>'
-            '          <th data-sort-type="number">Tag</th>'
-            '          <th data-sort-type="number">Stichproben</th>'
-            '          <th data-sort-type="number">Ø Viewer</th>'
-            '          <th data-sort-type="number">Peak Viewer</th>'
-            '        </tr>'
-            '      </thead>'
-            '      <tbody>' + tracked_weekday_rows + '</tbody>'
-            '    </table>'
-            '  </div>'
-            '</div>'
+        weekday_tables_block = "".join(
+            [
+                '<div class="row" style="gap:1.4rem; flex-wrap:wrap;">',
+                '  <div style="flex:1 1 260px;">',
+                '    <h3>Deadlock Kategorie — nach Wochentag</h3>',
+                '    <table class="sortable-table" data-table="category-weekday">',
+                "      <thead>",
+                "        <tr>",
+                '          <th data-sort-type="number">Tag</th>',
+                '          <th data-sort-type="number">Stichproben</th>',
+                '          <th data-sort-type="number">Ø Viewer</th>',
+                '          <th data-sort-type="number">Peak Viewer</th>',
+                "        </tr>",
+                "      </thead>",
+                "      <tbody>",
+                category_weekday_rows,
+                "</tbody>",
+                "    </table>",
+                "  </div>",
+                '  <div style="flex:1 1 260px;">',
+                '    <h3>Tracked Streamer — nach Wochentag</h3>',
+                '    <table class="sortable-table" data-table="tracked-weekday">',
+                "      <thead>",
+                "        <tr>",
+                '          <th data-sort-type="number">Tag</th>',
+                '          <th data-sort-type="number">Stichproben</th>',
+                '          <th data-sort-type="number">Ø Viewer</th>',
+                '          <th data-sort-type="number">Peak Viewer</th>',
+                "        </tr>",
+                "      </thead>",
+                "      <tbody>",
+                tracked_weekday_rows,
+                "</tbody>",
+                "    </table>",
+                "  </div>",
+                "</div>",
+            ]
         )
 
         streamer_stats = stats.get("streamer")

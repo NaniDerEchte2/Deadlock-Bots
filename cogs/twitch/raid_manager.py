@@ -110,7 +110,6 @@ class RaidAuthManager:
 
         async with session.post(TWITCH_TOKEN_URL, data=data) as r:
             if r.status != 200:
-                txt = await r.text()
                 log.error("OAuth exchange failed with HTTP status %s", r.status)
                 r.raise_for_status()
             return await r.json()

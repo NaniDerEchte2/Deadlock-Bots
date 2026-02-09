@@ -122,7 +122,10 @@ class BotLifecycle:
             try:
                 token = self._resolve_token()
             except Exception as exc:
-                logger.critical("Discord-Token konnte nicht bestimmt werden: %s", exc)  # nosemgrep
+                logger.critical(
+                    "Discord-Anmeldedaten konnten nicht bestimmt werden (%s).",
+                    exc.__class__.__name__,
+                )
                 self._stop_event.set()
                 break
 
