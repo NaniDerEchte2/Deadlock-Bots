@@ -14,6 +14,11 @@ import aiohttp
 log = logging.getLogger("TwitchStreams.TokenManager")
 
 
+def _exc_name(exc: BaseException) -> str:
+    """Return exception class name for safe logging without secret-bearing payloads."""
+    return exc.__class__.__name__
+
+
 class TwitchBotTokenManager:
     """
     Manages Twitch bot tokens with automatic refresh and persistence.
@@ -142,7 +147,7 @@ class TwitchBotTokenManager:
                     expires_in = data.get("expires_in", 0)
                     if expires_in:
                         self.expires_at = datetime.now() + timedelta(seconds=int(expires_in))
-                        log.info("Bot auth valid until %s", self.expires_at.strftime("%Y-%m-%d %H:%M:%S"))
+                        log.info("Bot auth valid until %s", self.expires_at.strftime("%Y-%m-%d %H:%M:%S"))  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
 
                 if self.bot_id:
                     return True
@@ -161,8 +166,8 @@ class TwitchBotTokenManager:
                                 return True
                         else:
                             log.warning("Failed to fetch bot id via Helix: HTTP %s", user_resp.status)
-        except Exception:
-            log.error("Auth validation failed.", exc_info=True)
+        except Exception as exc:
+            log.error("Auth validation failed (%s).", _exc_name(exc))  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
 
         return False
 
@@ -174,7 +179,7 @@ class TwitchBotTokenManager:
 
         try:
             url = "https://id.twitch.tv/oauth2/token"
-            params = {
+            form_data = {
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
                 "grant_type": "refresh_token",
@@ -182,9 +187,9 @@ class TwitchBotTokenManager:
             }
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, params=params) as resp:
+                async with session.post(url, data=form_data) as resp:
                     if resp.status != 200:
-                        log.error("Auth refresh failed: HTTP %s", resp.status)
+                        log.error("Auth refresh failed: HTTP %s", resp.status)  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                         return False
 
                     data = await resp.json()
@@ -200,14 +205,14 @@ class TwitchBotTokenManager:
                         try:
                             await self._on_refresh(self.access_token, self.refresh_token, self.expires_at)
                         except Exception as exc:
-                            log.debug("Refresh callback failed: %s", exc)
+                            log.debug("Refresh callback failed (%s).", _exc_name(exc))
                     log.info(
                         "Bot auth refreshed; valid until %s",
                         self.expires_at.strftime("%Y-%m-%d %H:%M:%S") if self.expires_at else "unknown",
-                    )
+                    )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                     return True
-        except Exception:
-            log.error("Auth refresh exception.", exc_info=True)
+        except Exception as exc:
+            log.error("Auth refresh exception (%s).", _exc_name(exc))  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
             return False
 
     async def _auto_refresh_loop(self):
@@ -225,7 +230,7 @@ class TwitchBotTokenManager:
                     else:
                         log.debug("Auto-refresh: bot token valid for another %.1fh", time_until_expiry / 3600)
             except Exception as exc:
-                log.error("Auto-refresh loop error: %s", exc)
+                log.error("Auto-refresh loop error (%s).", _exc_name(exc))
                 await asyncio.sleep(300)
 
     async def _load_tokens(self) -> Tuple[Optional[str], Optional[str]]:
@@ -244,9 +249,9 @@ class TwitchBotTokenManager:
                 candidate = Path(token_file).read_text(encoding="utf-8").strip()
                 if candidate:
                     return candidate, refresh or None
-                log.warning("Configured bot auth file is empty.")
-            except Exception:
-                log.warning("Configured bot auth file could not be read.", exc_info=True)
+                log.warning("Configured bot auth file is empty.")  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+            except Exception as exc:
+                log.warning("Configured bot auth file could not be read (%s).", _exc_name(exc))  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
 
         try:
             import keyring  # type: ignore
@@ -269,7 +274,7 @@ class TwitchBotTokenManager:
         except ImportError:
             log.debug("keyring not available; skipping credential manager.")
         except Exception as exc:
-            log.debug("keyring lookup failed: %s", exc)
+            log.debug("keyring lookup failed (%s).", _exc_name(exc))
 
         return None, None
 
@@ -277,8 +282,8 @@ class TwitchBotTokenManager:
         """Persist tokens to Windows Credential Manager (if available)."""
         try:
             import keyring  # type: ignore
-        except Exception:
-            log.debug("keyring unavailable; bot auth not persisted.", exc_info=True)
+        except Exception as exc:
+            log.debug("keyring unavailable; bot auth not persisted (%s).", _exc_name(exc))  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
             return
 
         saved_types = []
@@ -304,9 +309,9 @@ class TwitchBotTokenManager:
                 saved_types.append("REFRESH_TOKEN")
 
             if saved_types:
-                log.info("Bot auth saved in Windows vault (types: %s, service: %s).", "+".join(saved_types), self.keyring_service)
-        except Exception:
-            log.error("Could not persist bot auth in Windows vault.", exc_info=True)
+                log.info("Bot auth saved in Windows vault (types: %s, service: %s).", "+".join(saved_types), self.keyring_service)  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+        except Exception as exc:
+            log.error("Could not persist bot auth in Windows vault (%s).", _exc_name(exc))  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
 
     async def cleanup(self):
         """Stop the background auto-refresh task."""
@@ -331,7 +336,7 @@ async def generate_oauth_tokens(client_id: str, client_secret: str, authorizatio
         }
     """
     url = "https://id.twitch.tv/oauth2/token"
-    params = {
+    form_data = {
         "client_id": client_id,
         "client_secret": client_secret,
         "code": authorization_code,
@@ -340,7 +345,7 @@ async def generate_oauth_tokens(client_id: str, client_secret: str, authorizatio
     }
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, params=params) as resp:
+        async with session.post(url, data=form_data) as resp:
             if resp.status != 200:
                 error = await resp.text()
                 raise Exception(f"OAuth token exchange failed: {error}")

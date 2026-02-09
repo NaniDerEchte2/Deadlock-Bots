@@ -441,7 +441,7 @@ if TWITCHIO_AVAILABLE:
                     # Wir fügen den Token hinzu. Refresh-Token ist bei TMI-Tokens meist nicht vorhanden (None).
                     # ABER: Wenn wir einen haben (aus ENV/Tresor), übergeben wir ihn, damit TwitchIO refreshen kann.
                     await self.add_token(api_token, self._bot_refresh_token)
-                    log.info("Bot auth added (refresh available: %s).", "yes" if self._bot_refresh_token else "no")
+                    log.info("Bot auth added (refresh available: %s).", "yes" if self._bot_refresh_token else "no")  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                     await self._persist_bot_tokens(
                         access_token=self._bot_token,
                         refresh_token=self._bot_refresh_token,

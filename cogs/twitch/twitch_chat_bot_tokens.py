@@ -79,10 +79,13 @@ def load_bot_tokens(*, log_missing: bool = True) -> Tuple[Optional[str], Optiona
             if candidate:
                 return candidate, refresh, expiry_ts
             if log_missing:
-                log.warning("Konfigurierte Bot-Auth-Datei ist leer.")
-        except Exception:  # pragma: no cover - defensive logging
+                log.warning("Konfigurierte Bot-Auth-Datei ist leer.")  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+        except Exception as exc:  # pragma: no cover - defensive logging
             if log_missing:
-                log.warning("Konfigurierte Bot-Auth-Datei konnte nicht gelesen werden.", exc_info=True)
+                log.warning(
+                    "Konfigurierte Bot-Auth-Datei konnte nicht gelesen werden (%s).",
+                    exc.__class__.__name__,
+                )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
 
     keyring_token = _read_keyring_secret("TWITCH_BOT_TOKEN")
     keyring_refresh = _read_keyring_secret("TWITCH_BOT_REFRESH_TOKEN")
