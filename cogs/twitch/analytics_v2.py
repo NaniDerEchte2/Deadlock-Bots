@@ -44,28 +44,15 @@ def _is_loopback_host(raw_value: str) -> bool:
 
 
 def _is_localhost(request: web.Request) -> bool:
-    """Check if request comes from localhost."""
-    context_header = (request.headers.get("X-Dashboard-Context") or "").strip().lower()
-    if context_header == "public":
+    """Allow localhost bypass only for local host+peer socket metadata."""
+    host_header = request.headers.get("Host") or request.host or ""
+    if not _is_loopback_host(host_header):
         return False
-    if context_header == "local":
+
+    remote = (request.remote or "").strip() if hasattr(request, "remote") else ""
+    if remote and _is_loopback_host(remote):
         return True
 
-    forwarded_for = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-    if forwarded_for:
-        return _is_loopback_host(forwarded_for)
-
-    host_header = (
-        request.headers.get("X-Forwarded-Host")
-        or request.headers.get("Host")
-        or request.host
-        or ""
-    )
-    host = host_header.split(",")[0].strip()
-    if _is_loopback_host(host):
-        return True
-
-    # Peer address fallback is only relevant for direct (non-proxied) requests.
     transport = getattr(request, "transport", None)
     if transport is not None:
         peer = transport.get_extra_info("peername")
@@ -73,6 +60,8 @@ def _is_localhost(request: web.Request) -> bool:
             peer_host = str(peer[0]).strip()
             if _is_loopback_host(peer_host):
                 return True
+        if isinstance(peer, str) and _is_loopback_host(peer.strip()):
+            return True
     return False
 
 

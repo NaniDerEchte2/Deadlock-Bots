@@ -622,6 +622,99 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         """Legacy partner admin surface (streamer management)."""
         return await DashboardLiveMixin.index(self, request)
 
+    @staticmethod
+    def _build_raid_auth_start_html(login: str, auth_url: str) -> str:
+        safe_login = html.escape(login, quote=True)
+        safe_auth_url = html.escape(auth_url, quote=True)
+        return "".join(
+            [
+                "<html><head><title>Raid Bot Autorisierung</title></head>",
+                "<body style='font-family: sans-serif; max-width: 680px; margin: 48px auto;'>",
+                "<h1>Raid Bot Autorisierung</h1>",
+                "<p>Streamer: <strong>",
+                safe_login,
+                "</strong></p>",
+                "<p>Klicke auf den Link unten, um den Raid Bot zu autorisieren:</p>",
+                "<p><a href='",
+                safe_auth_url,
+                "' style='padding: 10px 20px; background: #9146FF; color: white; text-decoration: none; border-radius: 5px;'>",
+                "Auf Twitch autorisieren</a></p>",
+                "<p style='color: #666; font-size: 0.9em;'>",
+                "Der Raid Bot kann dann automatisch in deinem Namen raiden, wenn du offline gehst.",
+                "</p></body></html>",
+            ]
+        )
+
+    @staticmethod
+    def _build_raid_history_rows(history: List[dict]) -> str:
+        rows: List[str] = []
+        for entry in history:
+            success_icon = "OK" if entry.get("success") else "X"
+            executed_at = str(entry.get("executed_at") or "")[:19]
+            try:
+                stream_duration_min = int(entry.get("stream_duration_sec") or 0) // 60
+            except (TypeError, ValueError):
+                stream_duration_min = 0
+
+            rows.append(
+                "".join(
+                    [
+                        "<tr>",
+                        "<td>",
+                        html.escape(success_icon, quote=True),
+                        "</td>",
+                        "<td>",
+                        html.escape(executed_at, quote=True),
+                        "</td>",
+                        "<td><strong>",
+                        html.escape(str(entry.get("from_broadcaster_login") or ""), quote=True),
+                        "</strong></td>",
+                        "<td><strong>",
+                        html.escape(str(entry.get("to_broadcaster_login") or ""), quote=True),
+                        "</strong></td>",
+                        "<td>",
+                        html.escape(str(entry.get("viewer_count") or 0), quote=True),
+                        "</td>",
+                        "<td>",
+                        html.escape(str(stream_duration_min), quote=True),
+                        " min</td>",
+                        "<td>",
+                        html.escape(str(entry.get("candidates_count") or 0), quote=True),
+                        "</td>",
+                        "<td style='color: red; font-size: 0.85em;'>",
+                        html.escape(str(entry.get("error_message") or ""), quote=True),
+                        "</td>",
+                        "</tr>",
+                    ]
+                )
+            )
+
+        if rows:
+            return "".join(rows)
+        return "<tr><td colspan='8'>Keine Raids gefunden</td></tr>"
+
+    @staticmethod
+    def _build_raid_history_page(rows_html: str) -> str:
+        return "".join(
+            [
+                "<html><head><title>Raid History</title><style>",
+                "body { font-family: sans-serif; margin: 32px; }",
+                "table { border-collapse: collapse; width: 100%; }",
+                "th, td { border: 1px solid #ddd; padding: 12px 10px; text-align: left; }",
+                "th { background-color: #9146FF; color: white; }",
+                "tr:nth-child(even) { background-color: #f2f2f2; }",
+                "</style></head><body>",
+                "<h1>Raid History</h1>",
+                "<p><a href='/twitch/admin'>Zurueck zum Dashboard</a></p>",
+                "<table><thead><tr>",
+                "<th>Status</th><th>Zeitpunkt</th><th>Von</th><th>Nach</th>",
+                "<th>Viewer</th><th>Stream-Dauer</th><th>Kandidaten</th><th>Fehler</th>",
+                "</tr></thead><tbody>",
+                rows_html,
+                "</tbody></table></body></html>",
+            ]
+        )
+
     async def raid_auth_start(self, request: web.Request) -> web.StreamResponse:
         """Create OAuth URL for raid bot authorization."""
         self._require_token(request)
@@ -635,19 +728,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
 
         auth_url = str(auth_manager.generate_auth_url(login))
         return web.Response(
-            text=(
-                "<html><head><title>Raid Bot Autorisierung</title></head>"
-                "<body style='font-family: sans-serif; max-width: 680px; margin: 48px auto;'>"
-                "<h1>Raid Bot Autorisierung</h1>"
-                f"<p>Streamer: <strong>{html.escape(login, quote=True)}</strong></p>"
-                "<p>Klicke auf den Link unten, um den Raid Bot zu autorisieren:</p>"
-                f"<p><a href='{html.escape(auth_url, quote=True)}' "
-                "style='padding: 10px 20px; background: #9146FF; color: white; text-decoration: none; border-radius: 5px;'>"
-                "Auf Twitch autorisieren</a></p>"
-                "<p style='color: #666; font-size: 0.9em;'>"
-                "Der Raid Bot kann dann automatisch in deinem Namen raiden, wenn du offline gehst."
-                "</p></body></html>"
-            ),
+            text=self._build_raid_auth_start_html(login, auth_url),
             content_type="text/html",
         )
 
@@ -750,48 +831,9 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         from_broadcaster = (request.query.get("from") or "").strip().lower()
 
         history = await self._raid_history_cb(limit=limit, from_broadcaster=from_broadcaster)
-
-        rows_html = ""
-        for entry in history:
-            success_icon = "OK" if entry.get("success") else "X"
-            executed_at = str(entry.get("executed_at") or "")[:19]
-            try:
-                stream_duration_min = int(entry.get("stream_duration_sec") or 0) // 60
-            except (TypeError, ValueError):
-                stream_duration_min = 0
-            rows_html += (
-                "<tr>"
-                f"<td>{html.escape(success_icon)}</td>"
-                f"<td>{html.escape(executed_at)}</td>"
-                f"<td><strong>{html.escape(str(entry.get('from_broadcaster_login') or ''))}</strong></td>"
-                f"<td><strong>{html.escape(str(entry.get('to_broadcaster_login') or ''))}</strong></td>"
-                f"<td>{html.escape(str(entry.get('viewer_count') or 0))}</td>"
-                f"<td>{html.escape(str(stream_duration_min))} min</td>"
-                f"<td>{html.escape(str(entry.get('candidates_count') or 0))}</td>"
-                f"<td style='color: red; font-size: 0.85em;'>{html.escape(str(entry.get('error_message') or ''))}</td>"
-                "</tr>"
-            )
-
-        return web.Response(
-            text=(
-                "<html><head><title>Raid History</title><style>"
-                "body { font-family: sans-serif; margin: 32px; }"
-                "table { border-collapse: collapse; width: 100%; }"
-                "th, td { border: 1px solid #ddd; padding: 12px 10px; text-align: left; }"
-                "th { background-color: #9146FF; color: white; }"
-                "tr:nth-child(even) { background-color: #f2f2f2; }"
-                "</style></head><body>"
-                "<h1>Raid History</h1>"
-                "<p><a href='/twitch/admin'>Zurueck zum Dashboard</a></p>"
-                "<table><thead><tr>"
-                "<th>Status</th><th>Zeitpunkt</th><th>Von</th><th>Nach</th>"
-                "<th>Viewer</th><th>Stream-Dauer</th><th>Kandidaten</th><th>Fehler</th>"
-                "</tr></thead><tbody>"
-                + (rows_html if rows_html else "<tr><td colspan='8'>Keine Raids gefunden</td></tr>")
-                + "</tbody></table></body></html>"
-            ),
-            content_type="text/html",
-        )
+        rows_html = self._build_raid_history_rows(history)
+        page_html = self._build_raid_history_page(rows_html)
+        return web.Response(text=page_html, content_type="text/html")
 
     async def stats_entry(self, request: web.Request) -> web.StreamResponse:
         """Canonical public entrypoint that links old + beta analytics dashboards."""

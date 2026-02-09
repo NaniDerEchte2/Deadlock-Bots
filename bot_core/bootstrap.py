@@ -124,8 +124,8 @@ def _log_secret_present(name: str, env_keys: List[str], mode: str = "off") -> No
             return
         if mode in ("present", "masked"):
             logging.info("%s: vorhanden (Wert wird nicht geloggt)", name)
-    except Exception as exc:
-        logging.getLogger().debug("Secret-Check fehlgeschlagen (%s): %r", name, exc)  # nosemgrep
+    except Exception:
+        logging.getLogger().debug("Env-Check fehlgeschlagen (%s)", name)
 
   # nosemgrep
 class _RedactSecretsFilter(logging.Filter):
