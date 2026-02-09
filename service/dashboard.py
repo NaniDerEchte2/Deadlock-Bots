@@ -643,7 +643,8 @@ class DashboardServer:
         _add_target("Main Site", "https://earlysalty.de/health", key="main-site")
         _add_target("Steam Link Service", "https://link.earlysalty.com/health", key="steam-link-service")
         _add_target("Raid Service", "https://raid.earlysalty.com/health", key="raid-service")
-        _add_target("Twitch Stats", "https://twitch.earlysalty.com/twitch/stats", key="twitch-stats")
+        # /twitch/stats requires auth; use a public endpoint to avoid false 401 alarms.
+        _add_target("Twitch Stats", "https://twitch.earlysalty.com/twitch/api/v2/auth-status", key="twitch-stats")
 
         extra_raw = (
             os.getenv("DASHBOARD_HEALTHCHECKS")
