@@ -161,6 +161,17 @@ class TwitchAPI:
                             self._log.debug(
                                 "GET %s failed (quiet): HTTP %s: %s", path, r.status, txt[:180].replace("\n", " ")
                             )
+                        if r.status in {500, 502, 503, 504} and attempt < 2:
+                            delay = 0.5 * (attempt + 1)
+                            self._log.warning(
+                                "GET %s retry %s/3 after HTTP %s (%ss)",
+                                path,
+                                attempt + 1,
+                                r.status,
+                                delay,
+                            )
+                            await asyncio.sleep(delay)
+                            continue
                         r.raise_for_status()
                     return await r.json()
             except aiohttp.ClientResponseError:

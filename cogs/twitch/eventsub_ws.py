@@ -38,6 +38,37 @@ class EventSubWSListener:
         self._callbacks: Dict[str, EventCallback] = {} # sub_type -> callback
         self._session_id: Optional[str] = None  # Stored for dynamic subscriptions
 
+    @staticmethod
+    def _condition_key(condition: Optional[Dict]) -> Tuple[Tuple[str, str], ...]:
+        """Normalize condition payload for stable duplicate checks."""
+        if not condition:
+            return tuple()
+        return tuple(sorted((str(k), str(v)) for k, v in condition.items()))
+
+    @staticmethod
+    def _is_already_exists_error(exc: Exception) -> bool:
+        status = getattr(exc, "status", None)
+        message = f"{getattr(exc, 'message', '')} {exc}".lower()
+        return status == 409 and "already exists" in message
+
+    def _has_subscription(self, sub_type: str, broadcaster_id: str, condition: Optional[Dict]) -> bool:
+        bid = str(broadcaster_id)
+        cond_key = self._condition_key(condition)
+        for existing_type, existing_bid, existing_cond in self._subscriptions:
+            if existing_type != sub_type or existing_bid != bid:
+                continue
+            if self._condition_key(existing_cond) == cond_key:
+                return True
+        return False
+
+    def _track_subscription(self, sub_type: str, broadcaster_id: str, condition: Optional[Dict]) -> bool:
+        bid = str(broadcaster_id)
+        cond = condition or {"broadcaster_user_id": bid}
+        if self._has_subscription(sub_type, bid, cond):
+            return False
+        self._subscriptions.append((sub_type, bid, cond))
+        return True
+
     @property
     def cost(self) -> int:
         """
@@ -65,8 +96,7 @@ class EventSubWSListener:
 
     def add_subscription(self, sub_type: str, broadcaster_id: str, condition: Optional[Dict] = None):
         """Add a subscription to be registered on connect."""
-        cond = condition or {"broadcaster_user_id": str(broadcaster_id)}
-        self._subscriptions.append((sub_type, str(broadcaster_id), cond))
+        self._track_subscription(sub_type, str(broadcaster_id), condition)
 
     async def add_subscription_dynamic(
         self,
@@ -85,11 +115,18 @@ class EventSubWSListener:
             self.log.error("EventSub WS: Keine Session ID verfügbar für dynamische Subscription")
             return False
 
+        cond = condition or {"broadcaster_user_id": str(broadcaster_id)}
+        if self._has_subscription(sub_type, str(broadcaster_id), cond):
+            self.log.debug(
+                "EventSub WS: Dynamic subscription already tracked: %s for %s",
+                sub_type,
+                broadcaster_id,
+            )
+            return True
+
         if self.cost >= 10:
             self.log.error("EventSub WS: Listener ist voll (10/10), kann %s für %s nicht hinzufügen", sub_type, broadcaster_id)
             return False
-
-        cond = condition or {"broadcaster_user_id": str(broadcaster_id)}
 
         # Resolve token if not provided
         token = oauth_token
@@ -107,10 +144,18 @@ class EventSubWSListener:
                 oauth_token=token,
             )
             # Add to tracking list
-            self._subscriptions.append((sub_type, str(broadcaster_id), cond))
+            self._track_subscription(sub_type, str(broadcaster_id), cond)
             self.log.info("EventSub WS: Dynamische Subscription hinzugefügt: %s für %s (%d/%d)", sub_type, broadcaster_id, self.cost, 10)
             return True
         except Exception as e:
+            if self._is_already_exists_error(e):
+                self._track_subscription(sub_type, str(broadcaster_id), cond)
+                self.log.info(
+                    "EventSub WS: Dynamic subscription already exists (409): %s for %s",
+                    sub_type,
+                    broadcaster_id,
+                )
+                return True
             self.log.error("EventSub WS: Dynamische Subscription fehlgeschlagen für %s (%s): %s", broadcaster_id, sub_type, e)
             return False
 
@@ -139,9 +184,16 @@ class EventSubWSListener:
                 continue
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                self.log.exception("EventSub WS listener crashed - Reconnecting in 10s")
-                await asyncio.sleep(10)
+            except Exception as exc:
+                if "No session_id received" in str(exc):
+                    self.log.warning(
+                        "EventSub WS: No session_id on connect/reconnect (url=%s). Retrying fresh endpoint in 1s.",
+                        self._ws_url,
+                    )
+                    await asyncio.sleep(1)
+                else:
+                    self.log.exception("EventSub WS listener crashed - Reconnecting in 10s")
+                    await asyncio.sleep(10)
                 self._ws_url = "wss://eventsub.wss.twitch.tv/ws"
                 is_reconnect = False
 
@@ -265,6 +317,14 @@ class EventSubWSListener:
                     await asyncio.sleep(0.3)
                     
             except Exception as e:
+                if self._is_already_exists_error(e):
+                    successful_count += 1
+                    self.log.info(
+                        "EventSub WS: Subscription already exists (409): %s for %s",
+                        sub_type,
+                        bid,
+                    )
+                    continue
                 msg = str(e)
                 if "429" in msg or "transport limit exceeded" in msg.lower() or "websocket transport" in msg.lower():
                     # 429 Error - Transport limit erreicht
@@ -338,8 +398,19 @@ class EventSubWSListener:
             return
 
         event = payload.get("event") or {}
-        broadcaster_id = str(event.get("broadcaster_user_id") or "").strip()
-        broadcaster_login = (event.get("broadcaster_user_login") or "").strip().lower()
+        # Different EventSub types use different field names for the "target" broadcaster.
+        broadcaster_id = str(
+            event.get("broadcaster_user_id")
+            or event.get("to_broadcaster_user_id")
+            or event.get("user_id")
+            or ""
+        ).strip()
+        broadcaster_login = str(
+            event.get("broadcaster_user_login")
+            or event.get("to_broadcaster_user_login")
+            or event.get("user_login")
+            or ""
+        ).strip().lower()
         
         if not broadcaster_id:
             return

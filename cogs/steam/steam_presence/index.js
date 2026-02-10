@@ -1037,7 +1037,7 @@ const resetTaskPendingStmt = db.prepare(`
          updated_at = ?
    WHERE id = ?
 `);
-const STALE_TASK_TIMEOUT_S = 180; // Tasks länger als 3 Min in RUNNING -> FAILED
+const STALE_TASK_TIMEOUT_S = 600; // Tasks länger als 10 Min in RUNNING -> FAILED
 const failStaleTasksStmt = db.prepare(`
   UPDATE steam_tasks
      SET status = 'FAILED',
@@ -2063,19 +2063,27 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
       resolve: null,
       reject: null,
       timer: null,
+      attemptTimers: [],
       attempts: 0,
-      maxAttempts: Math.max(1, (playtestMsgConfigs.length || DEFAULT_PLAYTEST_MSG_IDS.length)) * estimatedPayloadVariants, // Try all message IDs with all payload versions (now 6 versions)
+      maxAttempts: Math.max(1, (playtestMsgConfigs.length || DEFAULT_PLAYTEST_MSG_IDS.length)) * estimatedPayloadVariants,
+    };
+
+    const cleanup = () => {
+      if (entry.timer) clearTimeout(entry.timer);
+      if (entry.attemptTimers) {
+        entry.attemptTimers.forEach((t) => clearTimeout(t));
+        entry.attemptTimers = [];
+      }
+      removePendingPlaytestInvite(entry);
     };
 
     entry.resolve = (value) => {
-      if (entry.timer) clearTimeout(entry.timer);
-      removePendingPlaytestInvite(entry);
+      cleanup();
       resolve(value);
     };
 
     entry.reject = (err) => {
-      if (entry.timer) clearTimeout(entry.timer);
-      removePendingPlaytestInvite(entry);
+      cleanup();
       reject(err);
     };
 
@@ -2092,7 +2100,7 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
 
     for (const msgConfig of messageConfigs) {
       for (const payloadVersion of payloadVersions) {
-        setTimeout(() => {
+        const t = setTimeout(() => {
           try {
             const context = {
               accountId,
@@ -2125,10 +2133,10 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
               payloadHex: payload.toString('hex').substring(0, 200),
             });
 
-            log('info', 'Deadlock playtest invite requested', { 
-              accountId, 
-              location, 
-              messageId: msgConfig.send, 
+            log('info', 'Deadlock playtest invite requested', {
+              accountId,
+              location,
+              messageId: msgConfig.send,
               messageName: msgConfig.name,
               payloadVersion,
               appId: targetAppId,
@@ -2136,16 +2144,16 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
               payloadHex: payload.toString('hex').substring(0, 50),
               overridePayload: Boolean(buildPlaytestPayloadOverrideFn),
             });
-            
+
             // Update current message IDs if this is the first attempt
             if (attemptCount === 0) {
               GC_MSG_SUBMIT_PLAYTEST_USER = msgConfig.send;
               GC_MSG_SUBMIT_PLAYTEST_USER_RESPONSE = msgConfig.response;
             }
-            
+
           } catch (err) {
-            log('warn', 'Failed to send playtest invite attempt', { 
-              error: err.message, 
+            log('warn', 'Failed to send playtest invite attempt', {
+              error: err.message,
               messageId: msgConfig.send,
               payloadVersion,
               overridePayload: Boolean(buildPlaytestPayloadOverrideFn),
@@ -2158,13 +2166,14 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
           }
         }, attemptCount * 200); // Stagger attempts by 200ms
         
+        entry.attemptTimers.push(t);
         attemptCount++;
       }
     }
 
     // Also try with the originally working app (if we're not already using it)
     if (!buildPlaytestPayloadOverrideFn && DEADLOCK_APP_ID !== 1422450) {
-      setTimeout(() => {
+      const t = setTimeout(() => {
         try {
           const payload = encodeSubmitPlaytestUserPayload(accountId, location);
           client.sendToGC(1422450, PROTO_MASK + GC_MSG_SUBMIT_PLAYTEST_USER, {}, payload);
@@ -2173,6 +2182,7 @@ function sendPlaytestInviteOnce(accountId, location, timeoutMs) {
           log('warn', 'Fallback attempt failed', { error: err.message });
         }
       }, attemptCount * 200);
+      entry.attemptTimers.push(t);
     }
   });
 }
@@ -3281,7 +3291,17 @@ client.on('friendRelationship', (steamId, relationship) => {
 
     const EFriendRelationship = SteamUser.EFriendRelationship || {};
 
-    if (Number(relationship) === Number(EFriendRelationship.Friend)) {
+    if (Number(relationship) === Number(EFriendRelationship.RequestRecipient)) {
+      log('info', 'Accepting incoming friend request', { steam_id64: sid64 });
+      try {
+        client.addFriend(steamId, (err) => {
+          if (err) log('warn', 'Failed to accept incoming friend request', { steam_id64: sid64, error: err.message });
+          else log('info', 'Successfully accepted friend request', { steam_id64: sid64 });
+        });
+      } catch (err) {
+        log('error', 'Error in addFriend for incoming request', { steam_id64: sid64, error: err.message });
+      }
+    } else if (Number(relationship) === Number(EFriendRelationship.Friend)) {
 
       log('info', 'New friend confirmed, checking steam_links', { steam_id64: sid64 });
 

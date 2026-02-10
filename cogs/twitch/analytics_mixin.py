@@ -157,13 +157,32 @@ class TwitchAnalyticsMixin:
             except (TypeError, ValueError):
                 return None
 
+        def _safe_time_text(value):
+            if value is None:
+                return None
+            if isinstance(value, str):
+                return value.strip() or None
+            if isinstance(value, (int, float)):
+                ts = float(value)
+                if ts <= 0:
+                    return None
+                # Some APIs occasionally return milliseconds; normalize to seconds.
+                if ts > 10_000_000_000:
+                    ts = ts / 1000.0
+                try:
+                    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                except (OverflowError, OSError, ValueError):
+                    return str(int(ts))
+            text = str(value).strip()
+            return text or None
+
         now_iso = datetime.now(timezone.utc).isoformat()
-        next_ad_at = (data.get("next_ad_at") or "").strip() or None
-        last_ad_at = (data.get("last_ad_at") or "").strip() or None
+        next_ad_at = _safe_time_text(data.get("next_ad_at"))
+        last_ad_at = _safe_time_text(data.get("last_ad_at"))
         duration = _safe_int(data.get("duration"))
         preroll_free_time = _safe_int(data.get("preroll_free_time"))
         snooze_count = _safe_int(data.get("snooze_count"))
-        snooze_refresh_at = (data.get("snooze_refresh_at") or "").strip() or None
+        snooze_refresh_at = _safe_time_text(data.get("snooze_refresh_at"))
 
         with storage.get_conn() as conn:
             conn.execute(

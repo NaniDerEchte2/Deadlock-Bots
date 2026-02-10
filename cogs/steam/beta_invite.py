@@ -1483,7 +1483,7 @@ class BetaInviteFlow(commands.Cog):
             gc_ready_timeout_ms * max(gc_ready_attempts, 1)
             + invite_timeout_ms * max(invite_attempts, 1)
         )
-        invite_task_timeout = min(120.0, max(60.0, runtime_budget_ms / 1000 + 15.0))
+        invite_task_timeout = min(300.0, max(60.0, runtime_budget_ms / 1000 + 15.0))
 
         log.info(
             "Steam invite timing config: invite_timeout_ms=%s, gc_ready_timeout_ms=%s, invite_attempts=%s, gc_ready_attempts=%s, task_timeout=%s",

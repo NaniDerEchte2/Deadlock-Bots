@@ -734,7 +734,6 @@ class RaidBot:
         self.session = session
         self.chat_bot = None  # Wird später gesetzt
         self._bot_id = None   # Wird bei set_chat_bot gesetzt als Fallback
-        self._cleanup_counter = 0
         self._cog = None  # Referenz zum TwitchStreamCog für EventSub subscriptions
 
         # Pending Raids: {to_broadcaster_id: (from_broadcaster_login, target_stream_data, timestamp, is_partner_raid, viewer_count)}
@@ -756,31 +755,40 @@ class RaidBot:
         """
         Periodische Wartung:
         1. Cleanup abgelaufener Auth-States (alle 30min)
-        2. Proaktiver Refresh von User-Tokens (alle 60min)
+        2. Proaktiver Refresh von User-Tokens (alle 30min; intern expiry-gebremst)
         3. Cleanup alter pending raids (alle 2min)
         """
+        state_cleanup_interval = 1800.0
+        token_refresh_interval = 1800.0
+        blacklist_cleanup_interval = 7 * 1800.0
+        pending_raid_cleanup_interval = 120.0
+
+        last_state_cleanup = 0.0
+        last_token_refresh = 0.0
+        last_blacklist_cleanup = 0.0
         last_raid_cleanup = 0.0
         while True:
-            await asyncio.sleep(1800)  # Alle 30 Minuten
+            await asyncio.sleep(60)  # Loop-Tick (Wartungs-Tasks laufen in eigenen Intervallen)
             try:
-                # 1. State Cleanup
-                self.auth_manager.cleanup_states()
-
-                # 2. Token Maintenance (nur bei jedem 2. Durchlauf = alle 60min)
-                # Einfache Implementierung: Wir machen es einfach alle 30min,
-                # die refresh_all_tokens Methode prüft ja die Expiry (2h Buffer).
-                # Das schadet nicht und hält die Tokens frisch.
-                if self.session:
-                    await self.auth_manager.refresh_all_tokens(self.session)
-
-                # Token Blacklist Cleanup (alle ~3.5 Tage = 7 * 30min Zyklen)
-                self._cleanup_counter += 1
-                if self._cleanup_counter % 7 == 0:
-                    self.auth_manager.token_error_handler.cleanup_old_entries(days=30)
-
-                # 3. Pending Raids Cleanup (alle 2min, aber wir sind hier alle 30min)
                 now = time.time()
-                if now - last_raid_cleanup > 120:
+
+                # 1. State Cleanup (alle 30min)
+                if now - last_state_cleanup >= state_cleanup_interval:
+                    self.auth_manager.cleanup_states()
+                    last_state_cleanup = now
+
+                # 2. Token Maintenance (alle 30min; refresh_all_tokens prüft intern Expiry)
+                if self.session and now - last_token_refresh >= token_refresh_interval:
+                    await self.auth_manager.refresh_all_tokens(self.session)
+                    last_token_refresh = now
+
+                # Token Blacklist Cleanup (alle 3.5h)
+                if now - last_blacklist_cleanup >= blacklist_cleanup_interval:
+                    self.auth_manager.token_error_handler.cleanup_old_entries(days=30)
+                    last_blacklist_cleanup = now
+
+                # 3. Pending Raids Cleanup (alle 2min)
+                if now - last_raid_cleanup >= pending_raid_cleanup_interval:
                     self._cleanup_stale_pending_raids()
                     last_raid_cleanup = now
 

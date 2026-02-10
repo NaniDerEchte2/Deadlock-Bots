@@ -518,38 +518,42 @@ class TwitchMonitoringMixin:
             log.exception("EventSub: Token-Abruf fehlgeschlagen für channel.raid subscription")
             return False
 
-        # Session ID aus dem Listener holen (wir müssen das via API machen, nicht über den Listener)
-        # Da der Listener bereits läuft, müssen wir die subscription direkt via API hinzufügen
-        # Das ist ein Problem - wir brauchen die session_id, die der Listener hat
+        condition = {"to_broadcaster_user_id": str(broadcaster_id)}
 
-        # Workaround: Wir nutzen die stored session_id vom letzten Connect
-        session_id = getattr(target_listener, "_session_id", None)
-        if not session_id:
-            log.error("EventSub: Listener hat keine session_id für dynamische subscription")
-            return False
+        # Versuche alle Listener mit Kapazität, damit ein reconnect/session_id-Race
+        # nicht sofort zum Abbruch führt.
+        for listener_idx, listener in enumerate(listeners, start=1):
+            if listener.is_failed or not listener.has_capacity:
+                continue
+            try:
+                success = await listener.add_subscription_dynamic(
+                    sub_type="channel.raid",
+                    broadcaster_id=str(broadcaster_id),
+                    condition=condition,
+                    oauth_token=token,
+                )
+            except Exception:
+                log.exception(
+                    "EventSub: Listener #%d Fehler bei channel.raid subscription für %s",
+                    listener_idx,
+                    broadcaster_login,
+                )
+                continue
 
-        try:
-            condition = {"to_broadcaster_user_id": str(broadcaster_id)}
-            await self.api.subscribe_eventsub_websocket(
-                session_id=session_id,
-                sub_type="channel.raid",
-                condition=condition,
-                oauth_token=token,
-            )
-            log.info(
-                "EventSub: Dynamische channel.raid subscription erstellt für %s (ID: %s)",
-                broadcaster_login,
-                broadcaster_id
-            )
-            return True
+            if success:
+                log.info(
+                    "EventSub: Dynamische channel.raid subscription erstellt für %s (ID: %s) via Listener #%d",
+                    broadcaster_login,
+                    broadcaster_id,
+                    listener_idx,
+                )
+                return True
 
-        except Exception as e:
-            log.error(
-                "EventSub: Dynamische channel.raid subscription fehlgeschlagen für %s: %s",
-                broadcaster_login,
-                str(e)
-            )
-            return False
+        log.error(
+            "EventSub: Dynamische channel.raid subscription fehlgeschlagen für %s (kein geeigneter Listener erfolgreich)",
+            broadcaster_login,
+        )
+        return False
 
     async def _start_eventsub_offline_listener(self):
         """Kompatibilitäts-Stub (wird nun über _start_eventsub_listener erledigt)."""
