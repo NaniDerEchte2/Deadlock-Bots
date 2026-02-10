@@ -9,6 +9,36 @@ log = logging.getLogger("TwitchStreams.ChatBot")
 
 if TWITCHIO_AVAILABLE:
     class RaidCommandsMixin:
+        def _load_last_autoban_from_log(self, channel_key: str):
+            """Best-effort Fallback: letzten Auto-Ban aus Logdatei laden (überlebt Bot-Restarts)."""
+            autoban_log = getattr(self, "_autoban_log", None)
+            if not autoban_log:
+                return None
+            try:
+                with autoban_log.open("r", encoding="utf-8") as handle:
+                    lines = handle.read().splitlines()
+            except Exception:
+                log.debug("Konnte Auto-Ban-Logdatei nicht lesen", exc_info=True)
+                return None
+
+            for line in reversed(lines):
+                parts = line.split("\t")
+                if len(parts) < 5:
+                    continue
+                status = (parts[1] or "").strip().upper()
+                logged_channel = self._normalize_channel_login(parts[2] if len(parts) > 2 else "")
+                chatter_login = (parts[3] if len(parts) > 3 else "").strip()
+                chatter_id = (parts[4] if len(parts) > 4 else "").strip()
+                if status != "[BANNED]" or logged_channel != channel_key:
+                    continue
+                if not chatter_id:
+                    continue
+                return {
+                    "user_id": chatter_id,
+                    "login": chatter_login,
+                }
+            return None
+
         @twitchio_commands.command(name="raid_enable", aliases=["raidbot"])
         async def cmd_raid_enable(self, ctx: twitchio_commands.Context):
             """!raid_enable - Aktiviert den Auto-Raid-Bot."""
@@ -208,6 +238,10 @@ if TWITCHIO_AVAILABLE:
             channel_key = self._normalize_channel_login(channel_name)
             last = self._last_autoban.get(channel_key)
             if not last:
+                last = self._load_last_autoban_from_log(channel_key)
+                if last:
+                    self._last_autoban[channel_key] = last
+            if not last:
                 await ctx.send(f"@{ctx.author.name} Kein Auto-Ban-Eintrag zum Aufheben gefunden.")
                 return
 
@@ -262,9 +296,9 @@ if TWITCHIO_AVAILABLE:
 
             await ctx.send(f"@{ctx.author.name} Letzte Raids: {raids_text}")
 
-        @twitchio_commands.command(name="raid")
+        @twitchio_commands.command(name="raid", aliases=["traid"])
         async def cmd_raid(self, ctx: twitchio_commands.Context):
-            """!raid - Startet sofort einen Raid auf den bestmöglichen Partner (wie Auto-Raid)."""
+            """!raid / !traid - Startet sofort einen Raid auf den bestmöglichen Partner (wie Auto-Raid)."""
             if not (ctx.author.is_broadcaster or ctx.author.is_mod):
                 await ctx.send(f"@{ctx.author.name} Nur Broadcaster oder Mods können !raid benutzen.")
                 return
@@ -390,6 +424,7 @@ if TWITCHIO_AVAILABLE:
                     stream_duration_sec=stream_duration_sec,
                     target_stream_started_at=target_started_at,
                     candidates_count=len(candidates) if is_partner_raid else 0,
+                    reason="manual_chat_command",
                     session=api_session,
                 )
             except Exception as exc:
@@ -398,6 +433,15 @@ if TWITCHIO_AVAILABLE:
                 return
 
             if success:
+                if hasattr(self._raid_bot, "mark_manual_raid_started"):
+                    try:
+                        self._raid_bot.mark_manual_raid_started(
+                            broadcaster_id=str(twitch_user_id),
+                            ttl_seconds=300.0,
+                        )
+                    except Exception:
+                        log.debug("Konnte Manual-Raid-Suppression nicht setzen für %s", twitch_login, exc_info=True)
+
                 await ctx.send(f"@{ctx.author.name} Raid auf {target_login} gestartet! (Twitch-Countdown ~90s)")
 
                 # Pending Raid registrieren (Nachricht wird erst nach EventSub gesendet)

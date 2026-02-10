@@ -47,8 +47,8 @@ class TwitchRaidMixin:
                     (twitch_user_id,),
                 ).fetchone()
             
-            # Falls er nicht in twitch_streamers steht (noch kein Partner), 
-            # gehen wir davon aus, dass er den Bot via !traid aktiviert hat.
+            # Falls er nicht in twitch_streamers steht (noch kein Partner),
+            # gehen wir davon aus, dass er den Bot via OAuth aktiviert hat.
             if row and not row[0]:
                 log.debug("Auto-Raid übersprungen für %s: deaktiviert in twitch_streamers", login)
                 return
@@ -57,7 +57,20 @@ class TwitchRaidMixin:
 
         auth_mgr = getattr(self._raid_bot, "auth_manager", None)
         if not auth_mgr or not auth_mgr.has_enabled_auth(twitch_user_id):
-            log.debug("Auto-Raid übersprungen für %s: kein aktiver OAuth-Grant (!traid fehlt)", login)
+            log.debug(
+                "Auto-Raid übersprungen für %s: kein aktiver OAuth-Grant (OAuth via /traid oder !raid_enable erforderlich)",
+                login,
+            )
+            return
+
+        if (
+            hasattr(self._raid_bot, "is_offline_auto_raid_suppressed")
+            and self._raid_bot.is_offline_auto_raid_suppressed(twitch_user_id)
+        ):
+            log.info(
+                "Auto-Raid übersprungen für %s: manueller !raid/!traid wurde kurz zuvor gestartet",
+                login,
+            )
             return
 
         get_target_lower = getattr(self, "_get_target_game_lower", None)

@@ -251,7 +251,7 @@ class ConnectionMixin:
         return False
 
     async def join_partner_channels(self):
-        """Joint alle Kanäle, die live sind und den Bot autorisiert haben (Partner oder !traid)."""
+        """Joint alle Kanäle, die live sind und den Bot autorisiert haben (Partner via /traid oder !raid_enable)."""
         with get_conn() as conn:
             # Wir holen alle Partner ODER jeden, der raid_enabled = 1 in twitch_raid_auth hat
             partners = conn.execute(

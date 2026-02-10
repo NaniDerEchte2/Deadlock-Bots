@@ -589,6 +589,7 @@ class RaidExecutor:
         target_stream_started_at: str,
         candidates_count: int,
         session: aiohttp.ClientSession,
+        reason: str = "auto_raid_on_offline",
     ) -> Tuple[bool, Optional[str]]:
         """
         Startet einen Raid von from_broadcaster zu to_broadcaster.
@@ -612,6 +613,7 @@ class RaidExecutor:
                 stream_duration_sec,
                 target_stream_started_at,
                 candidates_count,
+                reason,
                 success=False,
                 error_message=error_msg,
             )
@@ -643,6 +645,7 @@ class RaidExecutor:
                         stream_duration_sec,
                         target_stream_started_at,
                         candidates_count,
+                        reason,
                         success=False,
                         error_message=error_msg,
                     )
@@ -665,6 +668,7 @@ class RaidExecutor:
                     stream_duration_sec,
                     target_stream_started_at,
                     candidates_count,
+                    reason,
                     success=True,
                     error_message=None,
                 )
@@ -682,6 +686,7 @@ class RaidExecutor:
                 stream_duration_sec,
                 target_stream_started_at,
                 candidates_count,
+                reason,
                 success=False,
                 error_message=error_msg,
             )
@@ -697,11 +702,12 @@ class RaidExecutor:
         stream_duration_sec: int,
         target_stream_started_at: str,
         candidates_count: int,
+        reason: str,
         success: bool,
         error_message: Optional[str],
     ) -> None:
         """Speichert Raid-Metadaten in der Datenbank."""
-        reason = "auto_raid_on_offline"
+        history_reason = (reason or "").strip() or "auto_raid_on_offline"
         with get_conn() as conn:
             conn.execute(
                 """
@@ -718,7 +724,7 @@ class RaidExecutor:
                     to_broadcaster_login,
                     viewer_count,
                     stream_duration_sec,
-                    reason,
+                    history_reason,
                     1 if success else 0,
                     error_message,
                     target_stream_started_at,
@@ -753,6 +759,8 @@ class RaidBot:
 
         # Pending Raids: {to_broadcaster_id: (from_broadcaster_login, target_stream_data, timestamp, is_partner_raid, viewer_count)}
         self._pending_raids: Dict[str, Tuple[str, Optional[Dict], float, bool, int]] = {}
+        # Unterdrückt einmalig den Auto-Raid, wenn kurz zuvor ein manueller Raid via Chat gestartet wurde.
+        self._manual_raid_suppression: Dict[str, float] = {}
 
         # Cleanup-Task starten
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
@@ -839,6 +847,28 @@ class RaidBot:
         """
         self._cog = cog
         log.debug("Cog reference set for dynamic EventSub subscriptions")
+
+    def mark_manual_raid_started(self, broadcaster_id: str, ttl_seconds: float = 300.0) -> None:
+        """Unterdrückt den nächsten Offline-Auto-Raid für einen Streamer (z.B. nach !raid/!traid)."""
+        broadcaster_key = str(broadcaster_id or "").strip()
+        if not broadcaster_key:
+            return
+        ttl = max(30.0, float(ttl_seconds or 0.0))
+        self._manual_raid_suppression[broadcaster_key] = time.time() + ttl
+
+    def is_offline_auto_raid_suppressed(self, broadcaster_id: str) -> bool:
+        """True, wenn für den Streamer aktuell eine manuelle-Raid-Sperre aktiv ist."""
+        broadcaster_key = str(broadcaster_id or "").strip()
+        if not broadcaster_key:
+            return False
+        now = time.time()
+        until = self._manual_raid_suppression.get(broadcaster_key)
+        if until is None:
+            return False
+        if now <= until:
+            return True
+        self._manual_raid_suppression.pop(broadcaster_key, None)
+        return False
 
     async def complete_setup_for_streamer(self, twitch_user_id: str, twitch_login: str):
         """
@@ -1650,6 +1680,7 @@ class RaidBot:
                 target_stream_started_at=target_started_at,
                 candidates_count=candidates_count,
                 session=self.session,
+                reason="auto_raid_on_offline",
             )
 
             if success:
