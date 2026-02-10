@@ -8,8 +8,10 @@ from .storage import get_conn
 from .twitch_chat_bot_constants import (
     _DEADLOCK_INVITE_REPLY,
     _INVITE_ACCESS_RE,
+    _INVITE_GAME_CONTEXT_RE,
     _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC,
     _INVITE_QUESTION_RE,
+    _INVITE_STRONG_ACCESS_RE,
     _INVITE_QUESTION_USER_COOLDOWN_SEC,
     _SPAM_FRAGMENTS,
     _SPAM_PHRASES,
@@ -71,7 +73,10 @@ class ModerationMixin:
         if not content:
             return False
         raw = content.strip().lower()
-        if "deadlock" not in raw:
+        has_deadlock_context = "deadlock" in raw
+        has_game_context = bool(_INVITE_GAME_CONTEXT_RE.search(raw))
+        has_strong_access = bool(_INVITE_STRONG_ACCESS_RE.search(raw))
+        if not has_deadlock_context and not (has_game_context and has_strong_access):
             return False
         if not _INVITE_ACCESS_RE.search(raw):
             return False

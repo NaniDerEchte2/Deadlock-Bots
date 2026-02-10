@@ -110,7 +110,7 @@ if _PROMO_COOLDOWN_MAX < _PROMO_COOLDOWN_MIN:
 # Deadlock Zugangsfragen (Invite-Only Hinweise)
 # ---------------------------------------------------------------------------
 _DEADLOCK_INVITE_REPLY: str = (
-    "Wenn du Zugang möchtest, schau gerne auf unserem Discord vorbei, "
+    "Wenn du einen Zugang benötigst, schau gerne auf unserem Discord vorbei, "
     "dort bekommst du eine Einladung und Hilfe beim Einstieg :) {invite}"
 )
 _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC: int = 120
@@ -122,6 +122,14 @@ _INVITE_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 _INVITE_ACCESS_RE = re.compile(
-    r"\b(spielen|spiel|play|zugang|einladung|invite|beta|key|access|reinkomm\w*|rankomm\w*)\b",
+    r"\b(spielen|spiel|play|zugang|einladung|invite|beta|key|access|ea|early\s*access|reinkomm\w*|rankomm\w*)\b",
+    re.IGNORECASE,
+)
+_INVITE_STRONG_ACCESS_RE = re.compile(
+    r"\b(zugang|einladung|invite|beta|key|access|ea|early\s*access|reinkomm\w*|rankomm\w*)\b",
+    re.IGNORECASE,
+)
+_INVITE_GAME_CONTEXT_RE = re.compile(
+    r"\b(game|spiel)\b",
     re.IGNORECASE,
 )
