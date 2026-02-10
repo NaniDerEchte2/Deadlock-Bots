@@ -583,6 +583,97 @@ class ModerationMixin:
                     break
         return False
 
+    @staticmethod
+    def _parse_db_datetime(value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    def _is_partner_channel_for_chat_tracking(self, login: str) -> bool:
+        """Nur verifizierte Partner-Channels (ohne Opt-out/Archiv) tracken."""
+        if not login:
+            return False
+
+        now_mono = time.monotonic()
+        cache = getattr(self, "_chat_partner_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, "_chat_partner_cache", cache)
+        cache_ttl = float(getattr(self, "_chat_partner_cache_ttl_sec", 60.0) or 60.0)
+
+        cached = cache.get(login)
+        if isinstance(cached, tuple) and len(cached) == 2:
+            cached_ts, cached_value = cached
+            try:
+                if now_mono - float(cached_ts) <= cache_ttl:
+                    return bool(cached_value)
+            except Exception:
+                pass
+
+        is_partner = False
+        try:
+            with get_conn() as conn:
+                row = conn.execute(
+                    """
+                    SELECT manual_verified_permanent,
+                           manual_verified_until,
+                           manual_verified_at,
+                           manual_partner_opt_out,
+                           archived_at
+                      FROM twitch_streamers
+                     WHERE LOWER(twitch_login) = ?
+                     LIMIT 1
+                    """,
+                    (login,),
+                ).fetchone()
+
+            if row:
+                if hasattr(row, "keys"):
+                    permanent_raw = row["manual_verified_permanent"]
+                    until_raw = row["manual_verified_until"]
+                    verified_at_raw = row["manual_verified_at"]
+                    opt_out_raw = row["manual_partner_opt_out"]
+                    archived_at_raw = row["archived_at"]
+                else:
+                    permanent_raw = row[0]
+                    until_raw = row[1]
+                    verified_at_raw = row[2]
+                    opt_out_raw = row[3]
+                    archived_at_raw = row[4]
+
+                opt_out = bool(int(opt_out_raw or 0))
+                archived = bool(str(archived_at_raw or "").strip())
+                permanent = bool(int(permanent_raw or 0))
+                until_dt = self._parse_db_datetime(str(until_raw)) if until_raw else None
+                until_active = bool(until_dt and until_dt >= datetime.now(timezone.utc))
+                legacy_verified = bool(str(verified_at_raw or "").strip())
+                verified = permanent or until_active or legacy_verified
+                is_partner = (not opt_out) and (not archived) and verified
+        except Exception:
+            log.debug("Konnte Partner-Status für Chat-Tracking nicht prüfen (%s)", login, exc_info=True)
+            is_partner = False
+
+        cache[login] = (now_mono, is_partner)
+        if len(cache) > 2048:
+            stale_before = now_mono - max(cache_ttl * 4.0, 30.0)
+            stale_keys = [
+                key
+                for key, value in cache.items()
+                if not isinstance(value, tuple)
+                or len(value) != 2
+                or float(value[0]) < stale_before
+            ]
+            for key in stale_keys:
+                cache.pop(key, None)
+
+        return is_partner
+
     def _is_target_game_live_for_chat(self, login: str, session_id: Optional[int]) -> bool:
         """Returns True when chat persistence should run for the channel."""
         target_game_lower = (getattr(self, "_target_game_lower", "") or "").strip().lower()
@@ -658,6 +749,8 @@ class ModerationMixin:
         login = channel_name.lstrip("#").lower()
         if not login:
             return
+        if not self._is_partner_channel_for_chat_tracking(login):
+            return
 
         author = getattr(message, "author", None)
         chatter_login = (getattr(author, "name", "") or "").lower()
@@ -665,6 +758,11 @@ class ModerationMixin:
             return
         chatter_id = str(getattr(author, "id", "") or "") or None
         content = message.content or ""
+        if not isinstance(content, str):
+            content = str(content)
+        if "\x00" in content:
+            content = content.replace("\x00", "")
+        message_id = self._extract_message_id(message)
         is_command = content.strip().startswith(self.prefix or "!")
 
         session_id = self._resolve_session_id(login)
@@ -676,13 +774,31 @@ class ModerationMixin:
         ts_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         with get_conn() as conn:
-            # Rohes Chat-Event (ohne Nachrichtentext)
+            # Rohes Chat-Event inkl. Klartext-Nachricht
             conn.execute(
                 """
-                INSERT INTO twitch_chat_messages (session_id, streamer_login, chatter_login, message_ts, is_command)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO twitch_chat_messages (
+                    session_id,
+                    streamer_login,
+                    chatter_login,
+                    chatter_id,
+                    message_id,
+                    message_ts,
+                    is_command,
+                    content
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, login, chatter_login, ts_iso, 1 if is_command else 0),
+                (
+                    session_id,
+                    login,
+                    chatter_login,
+                    chatter_id,
+                    message_id,
+                    ts_iso,
+                    1 if is_command else 0,
+                    content,
+                ),
             )
 
             # Rollup pro Session
