@@ -1063,51 +1063,137 @@ class AnalyticsV2Mixin:
 
                 if not streamer:
                     return web.json_response({"error": "Streamer required"}, status=400)
+                streamer_login = streamer.lower()
 
-                # Aggregate chat stats
-                stats = conn.execute("""
+                # Session context for normalization (e.g. messages/minute, loyalty score).
+                session_stats = conn.execute(
+                    """
                     SELECT
-                        SUM(s.unique_chatters) as total_unique,
-                        SUM(s.first_time_chatters) as total_first,
-                        SUM(s.returning_chatters) as total_returning
+                        COUNT(*) as session_count,
+                        COALESCE(SUM(s.duration_seconds), 0) as total_duration_seconds
                     FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
-                """, [since_date, streamer.lower()]).fetchone()
+                    WHERE s.started_at >= ?
+                      AND LOWER(s.streamer_login) = ?
+                      AND s.ended_at IS NOT NULL
+                    """,
+                    [since_date, streamer_login],
+                ).fetchone()
+                session_count = int(session_stats[0]) if session_stats and session_stats[0] else 0
+                total_duration_seconds = (
+                    float(session_stats[1]) if session_stats and session_stats[1] else 0.0
+                )
 
-                # Top chatters
-                top = conn.execute("""
+                # True message counts from raw chat events in the selected time range.
+                message_stats = conn.execute(
+                    """
                     SELECT
-                        chatter_login,
-                        SUM(total_messages) as messages,
-                        SUM(total_sessions) as sessions,
-                        MIN(first_seen_at) as first_seen,
-                        MAX(last_seen_at) as last_seen
-                    FROM twitch_chatter_rollup
-                    WHERE LOWER(streamer_login) = ?
-                    GROUP BY chatter_login
+                        COUNT(*) as total_messages,
+                        COALESCE(SUM(CASE WHEN cm.is_command = 1 THEN 1 ELSE 0 END), 0) as command_messages,
+                        COUNT(DISTINCT COALESCE(NULLIF(cm.chatter_login, ''), cm.chatter_id)) as distinct_chatters
+                    FROM twitch_chat_messages cm
+                    WHERE cm.message_ts >= ?
+                      AND LOWER(cm.streamer_login) = ?
+                    """,
+                    [since_date, streamer_login],
+                ).fetchone()
+                total_messages = int(message_stats[0]) if message_stats and message_stats[0] else 0
+                command_messages = int(message_stats[1]) if message_stats and message_stats[1] else 0
+                distinct_chatters_from_messages = (
+                    int(message_stats[2]) if message_stats and message_stats[2] else 0
+                )
+
+                # Chatter cohort split from session-level chatter table.
+                cohort_stats = conn.execute(
+                    """
+                    SELECT
+                        COUNT(DISTINCT COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id)) as unique_chatters,
+                        COUNT(
+                            DISTINCT CASE
+                                WHEN sc.is_first_time_global = 1
+                                THEN COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id)
+                            END
+                        ) as first_time_chatters,
+                        COUNT(DISTINCT sc.session_id) as sessions_with_chat
+                    FROM twitch_session_chatters sc
+                    JOIN twitch_stream_sessions s ON s.id = sc.session_id
+                    WHERE s.started_at >= ?
+                      AND LOWER(s.streamer_login) = ?
+                      AND s.ended_at IS NOT NULL
+                    """,
+                    [since_date, streamer_login],
+                ).fetchone()
+                unique_chatters = int(cohort_stats[0]) if cohort_stats and cohort_stats[0] else 0
+                first_time_chatters = int(cohort_stats[1]) if cohort_stats and cohort_stats[1] else 0
+                sessions_with_chat = int(cohort_stats[2]) if cohort_stats and cohort_stats[2] else 0
+
+                # Fallback for older rows where session_chatters may be sparse.
+                if unique_chatters == 0 and distinct_chatters_from_messages > 0:
+                    unique_chatters = distinct_chatters_from_messages
+                    first_time_chatters = 0
+
+                returning_chatters = max(0, unique_chatters - first_time_chatters)
+                total_minutes = total_duration_seconds / 60.0 if total_duration_seconds > 0 else 0.0
+                messages_per_minute = (
+                    (total_messages / total_minutes) if total_minutes > 0 else 0.0
+                )
+                chatter_return_rate = (
+                    (returning_chatters / unique_chatters) * 100.0 if unique_chatters > 0 else 0.0
+                )
+
+                # Top chatters in selected period (not all-time rollup).
+                top = conn.execute(
+                    """
+                    SELECT
+                        COALESCE(NULLIF(cm.chatter_login, ''), cm.chatter_id, 'unknown') as chatter_key,
+                        COUNT(*) as messages,
+                        COUNT(DISTINCT cm.session_id) as sessions,
+                        MIN(cm.message_ts) as first_seen,
+                        MAX(cm.message_ts) as last_seen
+                    FROM twitch_chat_messages cm
+                    WHERE cm.message_ts >= ?
+                      AND LOWER(cm.streamer_login) = ?
+                    GROUP BY COALESCE(NULLIF(cm.chatter_login, ''), cm.chatter_id, 'unknown')
                     ORDER BY messages DESC
                     LIMIT 20
-                """, [streamer.lower()]).fetchall()
+                    """,
+                    [since_date, streamer_login],
+                ).fetchall()
 
-                return web.json_response({
-                    "totalMessages": 0,  # Would need message count
-                    "uniqueChatters": int(stats[0]) if stats[0] else 0,
-                    "firstTimeChatters": int(stats[1]) if stats[1] else 0,
-                    "returningChatters": int(stats[2]) if stats[2] else 0,
-                    "messagesPerMinute": 0,
-                    "chatterReturnRate": (int(stats[2]) / int(stats[0]) * 100) if stats[0] else 0,
-                    "topChatters": [
-                        {
-                            "login": r[0],
-                            "totalMessages": r[1],
-                            "totalSessions": r[2],
-                            "firstSeen": r[3],
-                            "lastSeen": r[4],
-                            "loyaltyScore": min(100, r[2] * 10),  # Simplified
-                        }
-                        for r in top
-                    ]
-                })
+                return web.json_response(
+                    {
+                        "totalMessages": total_messages,
+                        "uniqueChatters": unique_chatters,
+                        "firstTimeChatters": first_time_chatters,
+                        "returningChatters": returning_chatters,
+                        "messagesPerMinute": round(messages_per_minute, 2),
+                        "chatterReturnRate": round(chatter_return_rate, 1),
+                        "commandMessages": command_messages,
+                        "nonCommandMessages": max(0, total_messages - command_messages),
+                        "topChatters": [
+                            {
+                                "login": r[0],
+                                "totalMessages": int(r[1]) if r[1] else 0,
+                                "totalSessions": int(r[2]) if r[2] else 0,
+                                "firstSeen": r[3],
+                                "lastSeen": r[4],
+                                "loyaltyScore": round(
+                                    min(100.0, ((int(r[2]) if r[2] else 0) / max(1, session_count)) * 100.0),
+                                    1,
+                                ),
+                            }
+                            for r in top
+                        ],
+                        "dataQuality": {
+                            "sessions": session_count,
+                            "sessionsWithChat": sessions_with_chat,
+                            "chatSessionCoverage": round(
+                                (sessions_with_chat / session_count) * 100.0, 1
+                            )
+                            if session_count > 0
+                            else 0.0,
+                        },
+                    }
+                )
         except Exception as exc:
             log.exception("Error in chat analytics API")
             return web.json_response({"error": str(exc)}, status=500)
@@ -1618,10 +1704,23 @@ class AnalyticsV2Mixin:
                     else:
                         deltas[key] = None
 
+                session_count = int(current.get("sessionCount", 0) or 0)
+                if session_count >= 20:
+                    confidence = "medium"
+                elif session_count >= 8:
+                    confidence = "low"
+                else:
+                    confidence = "very_low"
+
                 return web.json_response({
                     **current,
                     "previous": previous,
                     "deltas": deltas,
+                    "dataQuality": {
+                        "confidence": confidence,
+                        "sessions": session_count,
+                        "method": "retention_curve_proxy",
+                    },
                 })
         except Exception as exc:
             log.exception("Error in watch time distribution API")
@@ -1640,86 +1739,142 @@ class AnalyticsV2Mixin:
         try:
             with storage.get_conn() as conn:
                 since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+                streamer_login = streamer.lower()
 
-                # Get session stats — separate net delta from gained-only
+                # Base session and follower stats.
                 stats = conn.execute(
                     """
                     SELECT
-                        SUM(s.unique_chatters) as total_chatters,
-                        SUM(s.returning_chatters) as returning_chatters,
+                        COUNT(*) as session_count,
+                        COALESCE(SUM(s.duration_seconds), 0) as total_duration,
+                        AVG(s.avg_viewers) as avg_viewers,
+                        COALESCE(SUM(s.avg_viewers * s.duration_seconds / 3600.0), 0) as total_hours_watched,
+                        AVG(s.retention_10m) as avg_retention_10m,
                         SUM(CASE WHEN s.follower_delta IS NOT NULL
                              AND NOT (s.followers_end = 0 AND s.followers_start > 0)
                              THEN s.follower_delta ELSE 0 END) as net_followers,
                         SUM(CASE WHEN s.follower_delta > 0
                              AND NOT (s.followers_end = 0 AND s.followers_start > 0)
                              THEN s.follower_delta ELSE 0 END) as gained_followers,
-                        SUM(s.duration_seconds) as total_duration,
-                        AVG(s.avg_viewers) as avg_viewers,
-                        COUNT(*) as session_count
+                        COUNT(CASE WHEN s.follower_delta IS NOT NULL
+                             AND NOT (s.followers_end = 0 AND s.followers_start > 0)
+                             THEN 1 END) as follower_valid_samples
                     FROM twitch_stream_sessions s
-                    WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
-                """,
-                    [since_date, streamer.lower()],
+                    WHERE s.started_at >= ?
+                      AND LOWER(s.streamer_login) = ?
+                      AND s.ended_at IS NOT NULL
+                    """,
+                    [since_date, streamer_login],
                 ).fetchone()
 
-                if not stats or not stats[0]:
-                    return web.json_response({
-                        "uniqueViewers": 0, "returningViewers": 0, "newFollowers": 0,
-                        "netFollowerDelta": 0,
-                        "conversionRate": 0, "avgTimeToFollow": 0,
-                        "followersBySource": {"organic": 0, "raids": 0, "hosts": 0, "other": 0}
-                    })
+                session_count = int(stats[0]) if stats and stats[0] else 0
+                if session_count == 0:
+                    return web.json_response(
+                        {
+                            "uniqueViewers": 0,
+                            "returningViewers": 0,
+                            "newFollowers": 0,
+                            "netFollowerDelta": 0,
+                            "conversionRate": 0,
+                            "avgTimeToFollow": 0,
+                            "followersBySource": {"organic": 0, "raids": 0, "hosts": 0, "other": 0},
+                            "dataQuality": {"confidence": "low", "reason": "no_sessions"},
+                        }
+                    )
 
-                total_chatters = int(stats[0]) if stats[0] else 0
-                returning = int(stats[1]) if stats[1] else 0
-                net_followers = int(stats[2]) if stats[2] else 0
-                gained_followers = int(stats[3]) if stats[3] else 0
-                total_duration = float(stats[4]) if stats[4] else 0
-                avg_viewers = float(stats[5]) if stats[5] else 0
-                session_count = int(stats[6]) if stats[6] else 1
+                total_duration = float(stats[1]) if stats[1] else 0.0
+                avg_viewers = float(stats[2]) if stats[2] else 0.0
+                total_hours_watched = float(stats[3]) if stats[3] else 0.0
+                avg_retention_10m = float(stats[4]) if stats[4] else 0.0  # 0..1
+                net_followers = int(stats[5]) if stats[5] else 0
+                gained_followers = int(stats[6]) if stats[6] else 0
+                follower_valid_samples = int(stats[7]) if stats[7] else 0
 
-                # Unique viewer estimation:
-                # avg_viewers = average concurrent viewers per session
-                # Multiply by ~2.5 for viewer turnover (people join/leave during stream)
-                viewer_estimate = int(avg_viewers * 2.5)
-                chatter_estimate = total_chatters * 6
-                unique_viewers = max(viewer_estimate, chatter_estimate, 1)
+                # Distinct chatter cohorts in selected period (less inflation than SUM per session).
+                chatter_stats = conn.execute(
+                    """
+                    SELECT
+                        COUNT(DISTINCT COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id)) as unique_chatters,
+                        COUNT(
+                            DISTINCT CASE
+                                WHEN sc.is_first_time_global = 0
+                                THEN COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id)
+                            END
+                        ) as returning_chatters
+                    FROM twitch_session_chatters sc
+                    JOIN twitch_stream_sessions s ON s.id = sc.session_id
+                    WHERE s.started_at >= ?
+                      AND LOWER(s.streamer_login) = ?
+                      AND s.ended_at IS NOT NULL
+                    """,
+                    [since_date, streamer_login],
+                ).fetchone()
+                unique_chatters = int(chatter_stats[0]) if chatter_stats and chatter_stats[0] else 0
+                returning_chatters = int(chatter_stats[1]) if chatter_stats and chatter_stats[1] else 0
 
-                # Conversion rate uses gained followers only (not net delta)
-                conversion_rate = (gained_followers / unique_viewers * 100) if unique_viewers > 0 else 0
+                # Unique viewers are not directly available via Helix for creator analytics.
+                # We approximate from viewer-hours and a retention-derived watch-time proxy.
+                avg_watch_minutes_proxy = max(8.0, min(75.0, 8.0 + (avg_retention_10m * 100.0 * 0.55)))
+                unique_from_hours = int((total_hours_watched * 60.0) / max(1.0, avg_watch_minutes_proxy))
+                unique_from_chat = int(unique_chatters * 2.0)
+                unique_from_concurrency = int(avg_viewers * max(1.5, min(4.0, (total_duration / 3600.0) / max(1.0, session_count))))
+                unique_viewers = max(unique_from_hours, unique_from_chat, unique_from_concurrency, 1)
 
-                # Estimate time to follow (based on avg session length)
-                avg_session_mins = (total_duration / session_count / 60) if session_count > 0 else 60
-                avg_time_to_follow = min(avg_session_mins * 0.4, 45)  # Usually in first 40% of stream
+                # Conversion rate uses gained followers only (not net delta).
+                conversion_rate = (gained_followers / unique_viewers * 100.0) if unique_viewers > 0 else 0.0
 
-                # Get raid follower estimate
-                raids_received = conn.execute("""
+                # Estimated time-to-follow: scaled to session length, bounded to practical range.
+                avg_session_mins = (total_duration / max(1, session_count) / 60.0) if total_duration > 0 else 0.0
+                avg_time_to_follow = max(5.0, min(45.0, avg_session_mins * 0.4))
+
+                # Raid inflow proxy for source split.
+                raids_received = conn.execute(
+                    """
                     SELECT COUNT(*), COALESCE(SUM(viewer_count), 0)
                     FROM twitch_raid_history
-                    WHERE LOWER(to_broadcaster_login) = ? AND executed_at >= ? AND success = 1
-                """, [streamer.lower(), since_date]).fetchone()
+                    WHERE LOWER(to_broadcaster_login) = ?
+                      AND executed_at >= ?
+                      AND success = 1
+                    """,
+                    [streamer_login, since_date],
+                ).fetchone()
+                raid_count = int(raids_received[0]) if raids_received and raids_received[0] else 0
+                raid_viewers = int(raids_received[1]) if raids_received and raids_received[1] else 0
 
-                raid_count = raids_received[0] if raids_received else 0
-                raid_viewers = int(raids_received[1]) if raids_received else 0
-
-                # Estimate follower sources (based on gained, not net)
+                # Conservative conversion assumption for raid-origin follows.
                 raid_followers = min(int(raid_viewers * 0.05), gained_followers)
                 organic_followers = max(0, gained_followers - raid_followers)
 
-                return web.json_response({
-                    "uniqueViewers": unique_viewers,
-                    "returningViewers": returning,
-                    "newFollowers": gained_followers,
-                    "netFollowerDelta": net_followers,
-                    "conversionRate": round(conversion_rate, 2),
-                    "avgTimeToFollow": round(avg_time_to_follow, 0),
-                    "followersBySource": {
-                        "organic": organic_followers,
-                        "raids": raid_followers,
-                        "hosts": 0,  # Would need host tracking
-                        "other": 0
+                if follower_valid_samples >= max(3, int(session_count * 0.6)):
+                    confidence = "high"
+                elif follower_valid_samples >= 1:
+                    confidence = "medium"
+                else:
+                    confidence = "low"
+
+                return web.json_response(
+                    {
+                        "uniqueViewers": unique_viewers,
+                        "returningViewers": returning_chatters,
+                        "newFollowers": gained_followers,
+                        "netFollowerDelta": net_followers,
+                        "conversionRate": round(conversion_rate, 2),
+                        "avgTimeToFollow": round(avg_time_to_follow, 0),
+                        "followersBySource": {
+                            "organic": organic_followers,
+                            "raids": raid_followers,
+                            "hosts": 0,  # Host-specific attribution is not tracked.
+                            "other": 0,
+                        },
+                        "dataQuality": {
+                            "confidence": confidence,
+                            "sessions": session_count,
+                            "followerValidSamples": follower_valid_samples,
+                            "raidEvents": raid_count,
+                            "uniqueViewersMethod": "estimated_from_viewer_hours_and_chatters",
+                        },
                     }
-                })
+                )
         except Exception as exc:
             log.exception("Error in follower funnel API")
             return web.json_response({"error": str(exc)}, status=500)
@@ -2084,6 +2239,14 @@ class AnalyticsV2Mixin:
                 else:
                     activity_pattern = "balanced"
 
+                total_sessions = int(sum(weekday_counts.values()))
+                if total_sessions >= 20:
+                    confidence = "medium"
+                elif total_sessions >= 8:
+                    confidence = "low"
+                else:
+                    confidence = "very_low"
+
                 return web.json_response({
                     "estimatedRegions": regions,
                     "viewerTypes": viewer_type,
@@ -2093,6 +2256,11 @@ class AnalyticsV2Mixin:
                     "peakActivityHours": peak_hours,
                     "interactiveRate": round(chat_rate * 100, 1),
                     "loyaltyScore": round(return_rate * 100, 1),
+                    "dataQuality": {
+                        "confidence": confidence,
+                        "sessions": total_sessions,
+                        "method": "heuristic_from_stream_times_and_chat_behavior",
+                    },
                 })
         except Exception as exc:
             log.exception("Error in audience demographics API")
