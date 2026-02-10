@@ -297,13 +297,28 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             session_id      INTEGER NOT NULL,
             streamer_login  TEXT NOT NULL,
             chatter_login   TEXT,
+            chatter_id      TEXT,
+            message_id      TEXT,
             message_ts      TEXT NOT NULL,
-            is_command      INTEGER DEFAULT 0
+            is_command      INTEGER DEFAULT 0,
+            content         TEXT
         )
         """
     )
+    _add_column_if_missing(conn, "twitch_chat_messages", "chatter_id", "TEXT")
+    _add_column_if_missing(conn, "twitch_chat_messages", "message_id", "TEXT")
+    _add_column_if_missing(conn, "twitch_chat_messages", "content", "TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_twitch_chat_messages_session ON twitch_chat_messages(session_id, message_ts)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_chat_messages_streamer_ts ON twitch_chat_messages(streamer_login, message_ts)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_chat_messages_chatter ON twitch_chat_messages(streamer_login, chatter_login, message_ts)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_chat_messages_message_id ON twitch_chat_messages(message_id)"
     )
 
     # 6) Raid-Autorisierung (OAuth User Access Tokens)
