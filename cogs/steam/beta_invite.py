@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional, Union
+from typing import Any, Awaitable, Callable, Mapping, Optional, Union
 from urllib.parse import parse_qs
 
 import asyncio
@@ -92,12 +92,117 @@ if not _trace_log.handlers:
     _trace_log.propagate = False
 
 def _trace(event: str, **fields: Any) -> None:
-    payload = {"event": event}
+    payload = {
+        "event": event,
+        "ts_unix_ms": int(time.time() * 1000),
+        "ts_utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+    }
     payload.update(fields)
     try:
         _trace_log.info(json.dumps(payload, ensure_ascii=False, default=str))
     except Exception:
         log.debug("Trace log failed", exc_info=True)
+
+
+def _preview_text(value: Any, *, max_len: int = 700) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).replace("\r", "").strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}...(+{len(text) - max_len} chars)"
+
+
+def _view_snapshot(view: Any) -> Optional[dict[str, Any]]:
+    if view is None:
+        return None
+
+    snapshot: dict[str, Any] = {
+        "class": view.__class__.__name__,
+        "timeout": getattr(view, "timeout", None),
+    }
+
+    children = getattr(view, "children", None)
+    if not isinstance(children, list):
+        return snapshot
+
+    items: list[dict[str, Any]] = []
+    for child in children[:12]:
+        style_obj = getattr(child, "style", None)
+        style = getattr(style_obj, "name", None) or (str(style_obj) if style_obj is not None else None)
+        item = {
+            "type": child.__class__.__name__,
+            "label": getattr(child, "label", None),
+            "custom_id": getattr(child, "custom_id", None),
+            "style": style,
+            "disabled": bool(getattr(child, "disabled", False)),
+            "url": getattr(child, "url", None),
+            "row": getattr(child, "row", None),
+        }
+        emoji = getattr(child, "emoji", None)
+        if emoji is not None:
+            item["emoji"] = str(emoji)
+        items.append(item)
+
+    snapshot["item_count"] = len(children)
+    snapshot["items"] = items
+    return snapshot
+
+
+def _interaction_snapshot(interaction: Optional[discord.Interaction]) -> dict[str, Any]:
+    if interaction is None:
+        return {}
+
+    data = interaction.data if isinstance(getattr(interaction, "data", None), Mapping) else {}
+    command_name: Optional[str] = None
+    try:
+        command = getattr(interaction, "command", None)
+        command_name = getattr(command, "name", None) if command else None
+    except Exception:
+        command_name = None
+
+    interaction_type = getattr(interaction, "type", None)
+    interaction_type_name = getattr(interaction_type, "name", None) or (str(interaction_type) if interaction_type is not None else None)
+
+    created_at = getattr(interaction, "created_at", None)
+    created_at_utc = created_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if created_at else None
+
+    message = getattr(interaction, "message", None)
+    channel = getattr(interaction, "channel", None)
+    user = getattr(interaction, "user", None)
+    guild = getattr(interaction, "guild", None)
+    response_done: Optional[bool] = None
+    response_obj = getattr(interaction, "response", None)
+    if response_obj is not None and hasattr(response_obj, "is_done"):
+        try:
+            response_done = bool(response_obj.is_done())
+        except Exception:
+            response_done = None
+
+    return {
+        "interaction_id": getattr(interaction, "id", None),
+        "interaction_type": interaction_type_name,
+        "command_name": command_name,
+        "custom_id": data.get("custom_id"),
+        "component_type": data.get("component_type"),
+        "response_done": response_done,
+        "created_at_utc": created_at_utc,
+        "guild_id": getattr(guild, "id", None),
+        "channel_id": getattr(channel, "id", None),
+        "message_id": getattr(message, "id", None),
+        "discord_id": getattr(user, "id", None),
+        "discord_name": _format_discord_name(user) if user is not None else None,
+    }
+
+
+def _trace_interaction_event(
+    event: str,
+    interaction: Optional[discord.Interaction] = None,
+    **fields: Any,
+) -> None:
+    payload = _interaction_snapshot(interaction)
+    payload.update(fields)
+    _trace(event, **payload)
 
 
 def _can_bind_port(host: str, port: int) -> tuple[bool, Optional[str]]:
@@ -150,19 +255,59 @@ class _WebhookFollowup:
         self.log_channel = log_channel
 
     async def send(self, content: str, **kwargs: Any) -> None:
+        _trace(
+            "ui_delivery_attempt",
+            call="webhook_followup.user.send",
+            destination=f"user:{getattr(self.user, 'id', None)}",
+            content_preview=_preview_text(content),
+        )
         try:
             await self.user.send(content)
+            _trace(
+                "ui_delivery_success",
+                call="webhook_followup.user.send",
+                destination=f"user:{getattr(self.user, 'id', None)}",
+                content_preview=_preview_text(content),
+            )
             return
-        except Exception:
+        except Exception as exc:
+            _trace(
+                "ui_delivery_failed",
+                call="webhook_followup.user.send",
+                destination=f"user:{getattr(self.user, 'id', None)}",
+                content_preview=_preview_text(content),
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
             log.debug(
                 "Ko-fi followup DM fehlgeschlagen für %s",
                 getattr(self.user, "id", None),
                 exc_info=True,
             )
         if self.log_channel:
+            _trace(
+                "ui_delivery_attempt",
+                call="webhook_followup.log_channel.send",
+                destination=f"channel:{getattr(self.log_channel, 'id', None)}",
+                content_preview=_preview_text(content),
+            )
             try:
                 await self.log_channel.send(content)
-            except Exception:
+                _trace(
+                    "ui_delivery_success",
+                    call="webhook_followup.log_channel.send",
+                    destination=f"channel:{getattr(self.log_channel, 'id', None)}",
+                    content_preview=_preview_text(content),
+                )
+            except Exception as exc:
+                _trace(
+                    "ui_delivery_failed",
+                    call="webhook_followup.log_channel.send",
+                    destination=f"channel:{getattr(self.log_channel, 'id', None)}",
+                    content_preview=_preview_text(content),
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
                 log.debug("Ko-fi Followup-Log fehlgeschlagen", exc_info=True)
 
 
@@ -626,8 +771,16 @@ class BetaIntentGateView(discord.ui.View):
         self.requester_id = requester_id
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        allowed = interaction.user.id == self.requester_id
+        self.cog._trace_user_action(
+            interaction,
+            "intent_gate.interaction_check",
+            allowed=allowed,
+            requester_id=self.requester_id,
+        )
         if interaction.user.id != self.requester_id:
-            await interaction.response.send_message(
+            await self.cog._response_send_message(
+                interaction,
                 "Nur der ursprüngliche Nutzer kann diese Auswahl treffen.",
                 ephemeral=True,
             )
@@ -636,10 +789,12 @@ class BetaIntentGateView(discord.ui.View):
 
     @discord.ui.button(label="Nur schnell den Invite abholen", style=discord.ButtonStyle.primary)
     async def choose_invite_only(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        self.cog._trace_user_action(interaction, "intent_gate.choose_invite_only")
         await self.cog.handle_intent_selection(interaction, INTENT_INVITE_ONLY)
 
     @discord.ui.button(label="Ich will mitspielen/aktiv sein", style=discord.ButtonStyle.primary)
     async def choose_join(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        self.cog._trace_user_action(interaction, "intent_gate.choose_community")
         await self.cog.handle_intent_selection(interaction, INTENT_COMMUNITY)
 
 
@@ -706,8 +861,10 @@ class BetaInviteLinkPromptView(discord.ui.View):
 
     @discord.ui.button(label="Ich habe mich verknüpft – Weiter", style=discord.ButtonStyle.success, emoji="➡️", row=1)
     async def next_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        self.cog._trace_user_action(interaction, "link_prompt.next_clicked")
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
+            await self.cog._response_send_message(
+                interaction,
                 "Nur der ursprüngliche Nutzer kann diese Auswahl treffen.",
                 ephemeral=True,
             )
@@ -715,7 +872,11 @@ class BetaInviteLinkPromptView(discord.ui.View):
         
         # Sofortiges Feedback und Buttons entfernen um Double-Clicks zu verhindern
         try:
-            await interaction.response.edit_message(content="⏳ Status wird geprüft... Bitte warten.", view=None)
+            await self.cog._response_edit_message(
+                interaction,
+                content="⏳ Status wird geprüft... Bitte warten.",
+                view=None,
+            )
         except Exception:
             pass
 
@@ -733,8 +894,15 @@ class BetaInviteConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Freundschaft bestätigt", style=discord.ButtonStyle.success, emoji="🤝")
     async def confirm_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        self.cog._trace_user_action(
+            interaction,
+            "confirm_view.confirm_clicked",
+            record_id=self.record_id,
+            steam_id64=self.steam_id64,
+        )
         if interaction.user.id != self.discord_id:
-            await interaction.response.send_message(
+            await self.cog._response_send_message(
+                interaction,
                 "Nur der ursprüngliche Nutzer kann diese Einladung bestätigen.",
                 ephemeral=True,
             )
@@ -754,18 +922,21 @@ class BetaInvitePanelView(discord.ui.View):
         custom_id=BETA_INVITE_PANEL_CUSTOM_ID,
     )
     async def start_invite(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        self.cog._trace_user_action(interaction, "panel.start_invite_clicked")
         try:
             await self.cog.start_invite_from_panel(interaction)
         except Exception:
             log.exception("Start Invite aus Panel fehlgeschlagen", exc_info=True)
             try:
-                await interaction.response.send_message(
+                await self.cog._response_send_message(
+                    interaction,
                     "❌ Diese Interaktion ist fehlgeschlagen. Bitte versuche es erneut.",
                     ephemeral=True,
                 )
             except Exception:
                 try:
-                    await interaction.followup.send(
+                    await self.cog._followup_send(
+                        interaction,
                         "❌ Diese Interaktion ist fehlgeschlagen. Bitte versuche es erneut.",
                         ephemeral=True,
                     )
@@ -781,6 +952,164 @@ class BetaInviteFlow(commands.Cog):
         self._kofi_server = None
         self._log_channel_cache: Optional[discord.abc.Messageable] = None
         _ensure_invite_audit_table()
+
+    def _trace_user_action(
+        self,
+        interaction: Optional[discord.Interaction],
+        action: str,
+        **fields: Any,
+    ) -> None:
+        _trace_interaction_event("ui_action", interaction, action=action, **fields)
+
+    async def _run_ui_delivery(
+        self,
+        *,
+        interaction: Optional[discord.Interaction],
+        call: str,
+        op: Callable[[], Awaitable[Any]],
+        content: Optional[Any] = None,
+        ephemeral: Optional[bool] = None,
+        view: Optional[Any] = None,
+        destination: Optional[str] = None,
+        **fields: Any,
+    ) -> Any:
+        payload = {
+            "call": call,
+            "destination": destination,
+            "ephemeral": ephemeral,
+            "content_preview": _preview_text(content),
+            "view": _view_snapshot(view),
+        }
+        payload.update(fields)
+        _trace_interaction_event("ui_delivery_attempt", interaction, **payload)
+        try:
+            result = await op()
+        except Exception as exc:
+            _trace_interaction_event(
+                "ui_delivery_failed",
+                interaction,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                **payload,
+            )
+            raise
+        _trace_interaction_event("ui_delivery_success", interaction, **payload)
+        return result
+
+    async def _response_send_message(
+        self,
+        interaction: discord.Interaction,
+        content: str,
+        *,
+        ephemeral: bool = False,
+        view: Optional[Any] = None,
+    ) -> Any:
+        return await self._run_ui_delivery(
+            interaction=interaction,
+            call="interaction.response.send_message",
+            content=content,
+            ephemeral=ephemeral,
+            view=view,
+            op=lambda: interaction.response.send_message(content, ephemeral=ephemeral, view=view),
+        )
+
+    async def _followup_send(
+        self,
+        interaction: discord.Interaction,
+        content: str,
+        *,
+        ephemeral: bool = False,
+        view: Optional[Any] = None,
+    ) -> Any:
+        return await self._run_ui_delivery(
+            interaction=interaction,
+            call="interaction.followup.send",
+            content=content,
+            ephemeral=ephemeral,
+            view=view,
+            op=lambda: interaction.followup.send(content, ephemeral=ephemeral, view=view),
+        )
+
+    async def _response_edit_message(
+        self,
+        interaction: discord.Interaction,
+        *,
+        content: Optional[str] = None,
+        view: Optional[Any] = None,
+    ) -> Any:
+        return await self._run_ui_delivery(
+            interaction=interaction,
+            call="interaction.response.edit_message",
+            content=content,
+            view=view,
+            op=lambda: interaction.response.edit_message(content=content, view=view),
+        )
+
+    async def _response_defer(
+        self,
+        interaction: discord.Interaction,
+        *,
+        ephemeral: bool = False,
+        thinking: bool = False,
+    ) -> Any:
+        return await self._run_ui_delivery(
+            interaction=interaction,
+            call="interaction.response.defer",
+            content=f"defer(thinking={thinking})",
+            ephemeral=ephemeral,
+            op=lambda: interaction.response.defer(ephemeral=ephemeral, thinking=thinking),
+        )
+
+    async def _edit_original_response(
+        self,
+        interaction: discord.Interaction,
+        *,
+        content: Optional[str] = None,
+        view: Optional[Any] = None,
+    ) -> Any:
+        return await self._run_ui_delivery(
+            interaction=interaction,
+            call="interaction.edit_original_response",
+            content=content,
+            view=view,
+            op=lambda: interaction.edit_original_response(content=content, view=view),
+        )
+
+    async def _send_user_dm(
+        self,
+        user: discord.abc.User,
+        content: str,
+        *,
+        interaction: Optional[discord.Interaction] = None,
+    ) -> Any:
+        return await self._run_ui_delivery(
+            interaction=interaction,
+            call="user.send",
+            destination=f"user:{getattr(user, 'id', None)}",
+            content=content,
+            op=lambda: user.send(content),
+        )
+
+    async def _send_channel_message(
+        self,
+        channel: Union[discord.TextChannel, discord.Thread, discord.abc.Messageable],
+        *,
+        content: Optional[str] = None,
+        embed: Optional[discord.Embed] = None,
+        view: Optional[Any] = None,
+        interaction: Optional[discord.Interaction] = None,
+    ) -> Any:
+        content_preview = content
+        if content_preview is None and embed is not None:
+            content_preview = f"[embed] title={getattr(embed, 'title', None)!r} description={_preview_text(getattr(embed, 'description', None), max_len=240)!r}"
+        return await self._run_ui_delivery(
+            interaction=interaction,
+            call="channel.send",
+            destination=f"channel:{getattr(channel, 'id', None)}",
+            content=content_preview,
+            view=view,
+            op=lambda: channel.send(content=content, embed=embed, view=view),
+        )
 
     async def cog_load(self) -> None:
         self.bot.add_view(BetaInvitePanelView(self))
@@ -864,9 +1193,29 @@ class BetaInviteFlow(commands.Cog):
         if channel is None:
             log.warning("BetaInvite-Log (Fallback): %s", message)
             return
+        _trace(
+            "ui_delivery_attempt",
+            call="notify_log_channel.send",
+            destination=f"channel:{getattr(channel, 'id', None)}",
+            content_preview=_preview_text(message),
+        )
         try:
             await channel.send(message)
-        except Exception:
+            _trace(
+                "ui_delivery_success",
+                call="notify_log_channel.send",
+                destination=f"channel:{getattr(channel, 'id', None)}",
+                content_preview=_preview_text(message),
+            )
+        except Exception as exc:
+            _trace(
+                "ui_delivery_failed",
+                call="notify_log_channel.send",
+                destination=f"channel:{getattr(channel, 'id', None)}",
+                content_preview=_preview_text(message),
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
             log.debug("Senden an BetaInvite-Log-Channel fehlgeschlagen", exc_info=True)
 
     @staticmethod
@@ -916,10 +1265,30 @@ class BetaInviteFlow(commands.Cog):
         return None
 
     async def _safe_dm(self, user: discord.abc.User, content: str) -> bool:
+        _trace(
+            "ui_delivery_attempt",
+            call="safe_dm.user.send",
+            destination=f"user:{getattr(user, 'id', None)}",
+            content_preview=_preview_text(content),
+        )
         try:
             await user.send(content)
+            _trace(
+                "ui_delivery_success",
+                call="safe_dm.user.send",
+                destination=f"user:{getattr(user, 'id', None)}",
+                content_preview=_preview_text(content),
+            )
             return True
-        except Exception:
+        except Exception as exc:
+            _trace(
+                "ui_delivery_failed",
+                call="safe_dm.user.send",
+                destination=f"user:{getattr(user, 'id', None)}",
+                content_preview=_preview_text(content),
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
             log.debug("DM konnte nicht gesendet werden an %s", getattr(user, "id", None), exc_info=True)
             return False
 
@@ -1049,11 +1418,13 @@ class BetaInviteFlow(commands.Cog):
         )
         view = BetaIntentGateView(self, interaction.user.id)
         _trace("betainvite_intent_prompt", discord_id=interaction.user.id)
-        await interaction.followup.send(prompt, view=view, ephemeral=True)
+        await self._followup_send(interaction, prompt, view=view, ephemeral=True)
 
     async def handle_intent_selection(self, interaction: discord.Interaction, intent_choice: str) -> None:
+        self._trace_user_action(interaction, "intent_selection", intent=intent_choice)
         if intent_choice not in (INTENT_COMMUNITY, INTENT_INVITE_ONLY):
-            await interaction.response.send_message(
+            await self._response_send_message(
+                interaction,
                 "Ungültige Auswahl.",
                 ephemeral=True,
             )
@@ -1061,7 +1432,8 @@ class BetaInviteFlow(commands.Cog):
 
         existing = _get_intent_record(interaction.user.id)
         if existing and existing.intent != intent_choice and existing.locked:
-            await interaction.response.send_message(
+            await self._response_send_message(
+                interaction,
                 "Deine Entscheidung ist bereits gespeichert. Falls das ein Fehler ist, melde dich bei einem Mod.",
                 ephemeral=True,
             )
@@ -1083,12 +1455,14 @@ class BetaInviteFlow(commands.Cog):
         if intent_choice == INTENT_INVITE_ONLY:
             view = InviteOnlyPaymentView(KOFI_PAYMENT_URL)
             try:
-                await interaction.response.edit_message(
+                await self._response_edit_message(
+                    interaction,
                     content=INVITE_ONLY_PAYMENT_MESSAGE,
                     view=view,
                 )
             except Exception:
-                await interaction.followup.send(
+                await self._followup_send(
+                    interaction,
                     INVITE_ONLY_PAYMENT_MESSAGE,
                     view=view,
                     ephemeral=True,
@@ -1097,9 +1471,14 @@ class BetaInviteFlow(commands.Cog):
 
         try:
             # Edit initial message to show progress and remove buttons
-            await interaction.response.edit_message(content="⏳ Deine Auswahl wird verarbeitet... Bitte warten.", view=None)
+            await self._response_edit_message(
+                interaction,
+                content="⏳ Deine Auswahl wird verarbeitet... Bitte warten.",
+                view=None,
+            )
         except discord.errors.NotFound:
-            await interaction.followup.send(
+            await self._followup_send(
+                interaction,
                 "Die Auswahl ist abgelaufen. Bitte starte `/betainvite` erneut.",
                 ephemeral=True,
             )
@@ -1108,7 +1487,7 @@ class BetaInviteFlow(commands.Cog):
             log.error("Failed to edit intent interaction: %s", exc)
             # Fallback to defer if edit fails
             try:
-                await interaction.response.defer(ephemeral=True, thinking=True)
+                await self._response_defer(interaction, ephemeral=True, thinking=True)
             except Exception:
                 pass
 
@@ -1139,6 +1518,7 @@ class BetaInviteFlow(commands.Cog):
         return BetaInviteLinkPromptView(self, user.id, login_url, steam_url)
 
     async def _process_invite_request(self, interaction: discord.Interaction) -> None:
+        self._trace_user_action(interaction, "process_invite_request.start")
         try:
             existing = _fetch_invite_by_discord(interaction.user.id)
             primary_link = _lookup_primary_steam_id(interaction.user.id)
@@ -1150,7 +1530,8 @@ class BetaInviteFlow(commands.Cog):
                 discord_id=getattr(interaction.user, "id", None),
                 error=str(e),
             )
-            await interaction.followup.send(
+            await self._followup_send(
+                interaction,
                 "⚠️ Datenbankfehler beim Abrufen der Steam-Verknüpfung. Bitte versuche es erneut.",
                 ephemeral=True
             )
@@ -1167,7 +1548,8 @@ class BetaInviteFlow(commands.Cog):
                 discord_id=interaction.user.id,
             )
 
-            await interaction.followup.send(
+            await self._followup_send(
+                interaction,
                 prompt,
                 view=view,
                 ephemeral=True,
@@ -1184,14 +1566,16 @@ class BetaInviteFlow(commands.Cog):
                 steam_id=resolved,
                 error=str(exc),
             )
-            await interaction.followup.send(
+            await self._followup_send(
+                interaction,
                 f"⚠️ Gespeicherte SteamID ist ungültig: {exc}. Bitte verknüpfe deinen Account erneut.",
                 ephemeral=True,
             )
             return
 
         if existing and existing.status == STATUS_INVITE_SENT and existing.steam_id64 == resolved:
-            await interaction.followup.send(
+            await self._followup_send(
+                interaction,
                 _build_already_invited_message(existing, resolved),
                 ephemeral=True,
             )
@@ -1216,7 +1600,8 @@ class BetaInviteFlow(commands.Cog):
                 record = _update_invite(record.id, account_id=account_id) or record
 
         if record.status == STATUS_INVITE_SENT and record.steam_id64 == resolved:
-            await interaction.followup.send(
+            await self._followup_send(
+                interaction,
                 _build_already_invited_message(record, resolved),
                 ephemeral=True,
             )
@@ -1312,7 +1697,8 @@ class BetaInviteFlow(commands.Cog):
                 status=STATUS_ERROR,
                 last_error=f"Freundschaftsanfrage fehlgeschlagen: {exc}",
             )
-            await interaction.followup.send(
+            await self._followup_send(
+                interaction,
                 "⚠️ Konnte die Freundschaftsanfrage nicht senden. Bitte versuche es später erneut.",
                 ephemeral=True,
             )
@@ -1393,7 +1779,7 @@ class BetaInviteFlow(commands.Cog):
                     "Klicke unten auf \"Freundschaft bestätigt\", dann schicken wir dir den Deadlock-Invite."
                 )
                 view = BetaInviteConfirmView(self, record.id, interaction.user.id, resolved)
-                await interaction.followup.send(message, view=view, ephemeral=True)
+                await self._followup_send(interaction, message, view=view, ephemeral=True)
                 return
 
             log.warning(
@@ -1413,7 +1799,8 @@ class BetaInviteFlow(commands.Cog):
                 status=STATUS_ERROR,
                 last_error=f"Freundschaftsanfrage fehlgeschlagen: {error_msg}",
             )
-            await interaction.followup.send(
+            await self._followup_send(
+                interaction,
                 "⚠️ Konnte die Freundschaftsanfrage nicht senden. Bitte prüfe deine Steam-Privatsphäreeinstellungen und versuche es erneut.",
                 ephemeral=True,
             )
@@ -1440,7 +1827,7 @@ class BetaInviteFlow(commands.Cog):
             "Sobald du die Anfrage angenommen hast, klicke unten auf \"Freundschaft bestätigt\", damit wir die Einladung senden können."
         )
         view = BetaInviteConfirmView(self, record.id, interaction.user.id, resolved)
-        await interaction.followup.send(message, view=view, ephemeral=True)
+        await self._followup_send(interaction, message, view=view, ephemeral=True)
 
     def _record_successful_invite(
         self,
@@ -1469,6 +1856,13 @@ class BetaInviteFlow(commands.Cog):
         *,
         account_id_hint: Optional[int] = None,
     ) -> bool:
+        if isinstance(interaction, discord.Interaction):
+            self._trace_user_action(
+                interaction,
+                "send_invite_after_friend.start",
+                record_id=record.id,
+                steam_id64=record.steam_id64,
+            )
         _trace(
             "invite_start",
             discord_id=record.discord_id,
@@ -1520,9 +1914,9 @@ class BetaInviteFlow(commands.Cog):
             base_msg = "⏳ Einladung wird über Steam verschickt"
             try:
                 if interaction.response.is_done():
-                    await interaction.edit_original_response(content=f"{base_msg}...")
+                    await self._edit_original_response(interaction, content=f"{base_msg}...")
                 else:
-                    await interaction.response.send_message(content=f"{base_msg}...", ephemeral=True)
+                    await self._response_send_message(interaction, f"{base_msg}...", ephemeral=True)
                 anim_task = asyncio.create_task(self._animate_processing(interaction, base_msg, stop_anim))
             except Exception:
                 pass
@@ -1568,7 +1962,8 @@ class BetaInviteFlow(commands.Cog):
                 status=STATUS_ERROR,
                 last_error=f"Interner Fehler: {exc}",
             )
-            await interaction.followup.send(
+            await self._followup_send(
+                interaction,
                 f"❌ Einladung fehlgeschlagen wegen eines internen Fehlers. Bitte versuche es später erneut.",
                 ephemeral=True,
             )
@@ -1680,11 +2075,11 @@ class BetaInviteFlow(commands.Cog):
                 msg = "✅ Dein Account besitzt bereits Deadlock-Zugang! Prüfe deine Steam-Bibliothek oder https://store.steampowered.com/account/playtestinvites ."
                 if isinstance(interaction, discord.Interaction) and interaction.response.is_done():
                     try:
-                        await interaction.edit_original_response(content=msg, view=None)
+                        await self._edit_original_response(interaction, content=msg, view=None)
                     except Exception:
-                        await interaction.followup.send(msg, ephemeral=True)
+                        await self._followup_send(interaction, msg, ephemeral=True)
                 else:
-                    await interaction.followup.send(msg, ephemeral=True)
+                    await self._followup_send(interaction, msg, ephemeral=True)
                 await self._trigger_immediate_role_assignment(record.discord_id)
                 return True
 
@@ -1698,11 +2093,11 @@ class BetaInviteFlow(commands.Cog):
             err_msg = f"❌ Einladung fehlgeschlagen:\n**{error_text}**\n\nFalls du denkst, dass das ein Fehler ist, melde dich bitte bei {BETA_INVITE_SUPPORT_CONTACT}."
             if isinstance(interaction, discord.Interaction) and interaction.response.is_done():
                 try:
-                    await interaction.edit_original_response(content=err_msg, view=None)
+                    await self._edit_original_response(interaction, content=err_msg, view=None)
                 except Exception:
-                    await interaction.followup.send(err_msg, ephemeral=True)
+                    await self._followup_send(interaction, err_msg, ephemeral=True)
             else:
-                await interaction.followup.send(err_msg, ephemeral=True)
+                await self._followup_send(interaction, err_msg, ephemeral=True)
 
             _trace(
                 "invite_failed",
@@ -1739,30 +2134,33 @@ class BetaInviteFlow(commands.Cog):
         
         if isinstance(interaction, discord.Interaction) and interaction.response.is_done():
             try:
-                await interaction.edit_original_response(content=message, view=None)
+                await self._edit_original_response(interaction, content=message, view=None)
             except Exception:
-                await interaction.followup.send(message, ephemeral=True)
+                await self._followup_send(interaction, message, ephemeral=True)
         else:
-            await interaction.followup.send(message, ephemeral=True)
+            await self._followup_send(interaction, message, ephemeral=True)
 
         try:
-            await interaction.user.send(message)
+            await self._send_user_dm(interaction.user, message, interaction=interaction)
         except Exception:  # pragma: no cover - DM optional
             log.debug("Konnte Bestätigungs-DM nicht senden", exc_info=True)
 
         return True
 
     async def handle_confirmation(self, interaction: discord.Interaction, record_id: int) -> None:
+        self._trace_user_action(interaction, "handle_confirmation.start", record_id=record_id)
         record = _fetch_invite_by_id(record_id)
         if record is None:
-            await interaction.response.send_message(
+            await self._response_send_message(
+                interaction,
                 "❌ Kein Eintrag für diese Einladung gefunden. Bitte starte den Vorgang mit `/betainvite` neu.",
                 ephemeral=True,
             )
             return
 
         if record.discord_id != interaction.user.id:
-            await interaction.response.send_message(
+            await self._response_send_message(
+                interaction,
                 "❌ Diese Einladung gehört einem anderen Nutzer.",
                 ephemeral=True,
             )
@@ -1775,7 +2173,8 @@ class BetaInviteFlow(commands.Cog):
         )
 
         if record.status == STATUS_INVITE_SENT:
-            await interaction.response.send_message(
+            await self._response_send_message(
+                interaction,
                 _build_already_invited_message(record, record.steam_id64),
                 ephemeral=True,
             )
@@ -1786,11 +2185,12 @@ class BetaInviteFlow(commands.Cog):
         try:
             # Buttons sofort entfernen und Feedback geben
             base_msg = "⏳ Freundschaft wird geprüft"
-            await interaction.response.edit_message(content=f"{base_msg}...", view=None)
+            await self._response_edit_message(interaction, content=f"{base_msg}...", view=None)
             anim_task = asyncio.create_task(self._animate_processing(interaction, base_msg, stop_anim))
         except discord.errors.NotFound:
             log.warning("Confirmation interaction expired before edit")
-            await interaction.followup.send(
+            await self._followup_send(
+                interaction,
                 "⏱️ Die Bestätigung hat zu lange gedauert. Bitte versuche es erneut.",
                 ephemeral=True
             )
@@ -1798,7 +2198,7 @@ class BetaInviteFlow(commands.Cog):
         except Exception as e:
             log.error(f"Failed to edit confirmation interaction: {e}")
             try:
-                await interaction.response.defer(ephemeral=True, thinking=True)
+                await self._response_defer(interaction, ephemeral=True, thinking=True)
             except Exception:
                 pass
 
@@ -1848,7 +2248,8 @@ class BetaInviteFlow(commands.Cog):
             if not friend_ok:
                 stop_anim.set()
                 if anim_task: await anim_task
-                await interaction.edit_original_response(
+                await self._edit_original_response(
+                    interaction,
                     content="ℹ️ Wir sind noch keine bestätigten Steam-Freunde. Bitte nimm die Freundschaftsanfrage an und probiere es erneut."
                 )
                 return
@@ -1883,6 +2284,7 @@ class BetaInviteFlow(commands.Cog):
 
     async def _animate_processing(self, interaction: discord.Interaction, base_text: str, stop_event: asyncio.Event) -> None:
         """Anmiert Punkte (. .. ...) hinter einem Text, bis stop_event gesetzt ist."""
+        _trace_interaction_event("ui_animation_started", interaction, base_text=base_text)
         dots = ["", ".", "..", "..."]
         idx = 0
         try:
@@ -1896,6 +2298,8 @@ class BetaInviteFlow(commands.Cog):
                 await asyncio.sleep(1.2)
         except asyncio.CancelledError:
             pass
+        finally:
+            _trace_interaction_event("ui_animation_stopped", interaction, base_text=base_text)
 
     async def _sync_verified_on_friendship(self, discord_id: int, steam_id64: str) -> None:
         """Sofort-Sync wenn eine Steam-Freundschaft bestätigt wird: verified=1 setzen + Rolle geben."""
@@ -1928,6 +2332,7 @@ class BetaInviteFlow(commands.Cog):
             log.exception("Konnte Sofort-Rollen-Zuweisung nicht triggern für User %s", user_id)
 
     async def _start_betainvite_flow(self, interaction: discord.Interaction) -> None:
+        self._trace_user_action(interaction, "betainvite_flow.start")
         stop_anim = asyncio.Event()
         anim_task = None
         try:
@@ -1938,13 +2343,13 @@ class BetaInviteFlow(commands.Cog):
 
             base_msg = "⏳ Status wird geprüft"
             if interaction.response.is_done():
-                await interaction.edit_original_response(content=f"{base_msg}...", view=None)
+                await self._edit_original_response(interaction, content=f"{base_msg}...", view=None)
             elif is_panel:
-                await interaction.response.defer(ephemeral=True, thinking=True)
-                await interaction.edit_original_response(content=f"⏳ Einladung wird vorbereitet...")
+                await self._response_defer(interaction, ephemeral=True, thinking=True)
+                await self._edit_original_response(interaction, content=f"⏳ Einladung wird vorbereitet...")
                 base_msg = "⏳ Einladung wird vorbereitet"
             else:
-                await interaction.response.edit_message(content=f"{base_msg}...", view=None)
+                await self._response_edit_message(interaction, content=f"{base_msg}...", view=None)
             
             # Starte Animation im Hintergrund
             anim_task = asyncio.create_task(self._animate_processing(interaction, base_msg, stop_anim))
@@ -1974,7 +2379,7 @@ class BetaInviteFlow(commands.Cog):
                     "Bevor wir fortfahren können, musst du deinen Steam-Account verknüpfen.\n"
                     "Nutze einen der unten verfügbaren Login-Optionen. Sobald du fertig bist, klicke auf **Weiter**."
                 )
-                await interaction.edit_original_response(content=prompt, view=view)
+                await self._edit_original_response(interaction, content=prompt, view=view)
                 _trace("betainvite_no_link", discord_id=interaction.user.id)
                 return
 
@@ -2002,15 +2407,18 @@ class BetaInviteFlow(commands.Cog):
                 try:
                     admin_user = self.bot.get_user(admin_id) or await self.bot.fetch_user(admin_id)
                     if admin_user:
-                        await admin_user.send(
+                        await self._send_user_dm(
+                            admin_user,
                             f"ℹ️ **Zahlungs-Backup**: {interaction.user.mention} (`{interaction.user.name}`) "
-                            "hat gerade die Bezahl-Info angefordert und könnte jetzt bezahlen."
+                            "hat gerade die Bezahl-Info angefordert und könnte jetzt bezahlen.",
+                            interaction=interaction,
                         )
                 except Exception as e:
                     log.debug(f"Konnte Admin-Backup-DM nicht senden: {e}")
                 
                 view = InviteOnlyPaymentView(KOFI_PAYMENT_URL)
-                await interaction.edit_original_response(
+                await self._edit_original_response(
+                    interaction,
                     content=INVITE_ONLY_PAYMENT_MESSAGE,
                     view=view,
                 )
@@ -2034,6 +2442,7 @@ class BetaInviteFlow(commands.Cog):
 
     @app_commands.command(name="betainvite", description="Automatisiert eine Deadlock-Playtest-Einladung anfordern.")
     async def betainvite(self, interaction: discord.Interaction) -> None:
+        self._trace_user_action(interaction, "command.betainvite")
         await self._start_betainvite_flow(interaction)
 
     @app_commands.command(
@@ -2046,9 +2455,11 @@ class BetaInviteFlow(commands.Cog):
         interaction: discord.Interaction,
         channel: Optional[Union[discord.TextChannel, discord.Thread]] = None,
     ) -> None:
+        self._trace_user_action(interaction, "command.publish_betainvite_panel")
         target_channel = channel or interaction.channel
         if not isinstance(target_channel, (discord.TextChannel, discord.Thread)):
-            await interaction.response.send_message(
+            await self._response_send_message(
+                interaction,
                 "❌ Bitte führe den Befehl in einem Textkanal aus oder gib einen Textkanal an.",
                 ephemeral=True,
             )
@@ -2057,16 +2468,18 @@ class BetaInviteFlow(commands.Cog):
         embed = self._build_panel_embed()
         view = BetaInvitePanelView(self)
         try:
-            await target_channel.send(embed=embed, view=view)
+            await self._send_channel_message(target_channel, embed=embed, view=view, interaction=interaction)
         except Exception as exc:  # pragma: no cover - nur Laufzeit-Rechtefehler
             log.warning("Konnte Beta-Invite-Panel nicht senden: %s", exc)
-            await interaction.response.send_message(
+            await self._response_send_message(
+                interaction,
                 "❌ Panel konnte nicht gesendet werden (fehlende Rechte?).",
                 ephemeral=True,
             )
             return
 
-        await interaction.response.send_message(
+        await self._response_send_message(
+            interaction,
             f"✅ Panel in {target_channel.mention} gesendet.",
             ephemeral=True,
         )
