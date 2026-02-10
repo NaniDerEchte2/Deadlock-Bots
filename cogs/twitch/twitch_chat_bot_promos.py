@@ -13,6 +13,7 @@ from .twitch_chat_bot_constants import (
     _PROMO_ACTIVITY_CHATTER_DEDUP_SEC,
     _PROMO_ACTIVITY_MIN_CHATTERS,
     _PROMO_ACTIVITY_MIN_MSGS,
+    _PROMO_ACTIVITY_MIN_RAW_MSGS_SINCE_PROMO,
     _PROMO_ACTIVITY_TARGET_MPM,
     _PROMO_ACTIVITY_WINDOW_MIN,
     _PROMO_ATTEMPT_COOLDOWN_MIN,
@@ -22,10 +23,12 @@ from .twitch_chat_bot_constants import (
     _PROMO_DISCORD_INVITE,
     _PROMO_IGNORE_COMMANDS,
     _PROMO_INTERVAL_MIN,
+    _PROMO_LOOP_INTERVAL_SEC,
     _PROMO_MESSAGES,
     _PROMO_OVERALL_COOLDOWN_MIN,
     _PROMO_VIEWER_SPIKE_COOLDOWN_MIN,
     _PROMO_VIEWER_SPIKE_ENABLED,
+    _PROMO_VIEWER_SPIKE_MIN_CHAT_SILENCE_SEC,
     _PROMO_VIEWER_SPIKE_MIN_DELTA,
     _PROMO_VIEWER_SPIKE_MIN_RATIO,
     _PROMO_VIEWER_SPIKE_MIN_SESSIONS,
@@ -62,6 +65,43 @@ class PromoMixin:
         if _PROMO_DISCORD_INVITE:
             return _PROMO_DISCORD_INVITE, False
         return None, False
+
+    def _record_raw_chat_message(self, login: str) -> None:
+        if not login:
+            return
+
+        raw_map = getattr(self, "_last_raw_chat_message_ts", None)
+        if not isinstance(raw_map, dict):
+            raw_map = {}
+            setattr(self, "_last_raw_chat_message_ts", raw_map)
+        raw_map[login] = time.monotonic()
+
+        raw_count_map = getattr(self, "_raw_msg_count_since_promo", None)
+        if not isinstance(raw_count_map, dict):
+            raw_count_map = {}
+            setattr(self, "_raw_msg_count_since_promo", raw_count_map)
+        raw_count_map[login] = int(raw_count_map.get(login, 0)) + 1
+
+    def _raw_msg_count_since_last_promo(self, login: str) -> int:
+        raw_count_map = getattr(self, "_raw_msg_count_since_promo", None)
+        if not isinstance(raw_count_map, dict):
+            return 0
+        return int(raw_count_map.get(login, 0))
+
+    def _has_new_raw_chat_since_last_promo(self, login: str) -> bool:
+        last_sent = self._last_promo_sent.get(login)
+        if last_sent is None:
+            return True
+
+        raw_map = getattr(self, "_last_raw_chat_message_ts", None)
+        if not isinstance(raw_map, dict):
+            return False
+
+        last_raw = raw_map.get(login)
+        if last_raw is None:
+            return False
+
+        return float(last_raw) > float(last_sent)
 
     def _prune_promo_activity(self, bucket: Deque[Tuple[float, str]], now: float) -> None:
         window_sec = _PROMO_ACTIVITY_WINDOW_MIN * 60
@@ -168,6 +208,9 @@ class PromoMixin:
             return False
 
         self._last_promo_sent[login] = now
+        raw_count_map = getattr(self, "_raw_msg_count_since_promo", None)
+        if isinstance(raw_count_map, dict):
+            raw_count_map[login] = 0
         if reason == "viewer_spike":
             viewer_spike_map = getattr(self, "_last_promo_viewer_spike", None)
             if not isinstance(viewer_spike_map, dict):
@@ -184,6 +227,16 @@ class PromoMixin:
     def _has_recent_chat_activity(self, login: str, now: float) -> bool:
         msg_count, unique_chatters, _ = self._get_promo_activity_stats(login, now)
         return msg_count > 0 and unique_chatters > 0
+
+    def _latest_chat_activity_age_sec(self, login: str, now: float) -> Optional[float]:
+        bucket = self._promo_activity.get(login)
+        if not bucket:
+            return None
+        self._prune_promo_activity(bucket, now)
+        if not bucket:
+            return None
+        last_ts = float(bucket[-1][0])
+        return max(0.0, now - last_ts)
 
     def _get_viewer_spike_context(self, login: str) -> Optional[Tuple[int, float, str, int, float]]:
         row_sessions = None
@@ -274,6 +327,10 @@ class PromoMixin:
         if not self._overall_promo_ready(login, now):
             return False
 
+        min_raw_msgs = max(0, int(_PROMO_ACTIVITY_MIN_RAW_MSGS_SINCE_PROMO))
+        if min_raw_msgs > 0 and self._raw_msg_count_since_last_promo(login) < min_raw_msgs:
+            return False
+
         msg_count, unique_chatters, msgs_per_min = self._get_promo_activity_stats(login, now)
         if _PROMO_ACTIVITY_MIN_MSGS > 0 and msg_count < _PROMO_ACTIVITY_MIN_MSGS:
             return False
@@ -306,7 +363,13 @@ class PromoMixin:
             return False
         if not self._overall_promo_ready(login, now):
             return False
-        if self._has_recent_chat_activity(login, now):
+        if not self._has_new_raw_chat_since_last_promo(login):
+            return False
+        activity_age_sec = self._latest_chat_activity_age_sec(login, now)
+        if (
+            activity_age_sec is not None
+            and activity_age_sec < float(_PROMO_VIEWER_SPIKE_MIN_CHAT_SILENCE_SEC)
+        ):
             return False
 
         ctx = self._get_viewer_spike_context(login)
@@ -376,10 +439,11 @@ class PromoMixin:
     # Periodische Chat-Promos
     # ------------------------------------------------------------------
     async def _periodic_promo_loop(self) -> None:
-        """Hauptschleife: prüft alle 120 s, ob eine Promo gesendet werden soll."""
+        """Hauptschleife: prüft alle X Sekunden, ob eine Promo gesendet werden soll."""
+        loop_interval_sec = max(15, int(_PROMO_LOOP_INTERVAL_SEC))
         try:
             while True:
-                await asyncio.sleep(120)
+                await asyncio.sleep(loop_interval_sec)
                 try:
                     await self._send_promo_if_due()
                 except Exception:

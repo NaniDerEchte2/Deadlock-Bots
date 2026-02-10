@@ -21,8 +21,8 @@ from .storage import get_conn
 log = logging.getLogger("TwitchStreams.PartnerRecruit")
 
 # --- Konfiguration -----------------------------------------------------------
-RECRUIT_LOOKBACK_DAYS = 14            # Zeitraum für die Erkennung
-RECRUIT_MIN_DAYS = 5                  # Mindestanzahl Streaming-Tage im Zeitraum
+RECRUIT_LOOKBACK_DAYS = 28            # Zeitraum für die Erkennung
+RECRUIT_MIN_DAYS = 4                 # Mindestanzahl Streaming-Tage im Zeitraum
 RECRUIT_MIN_AVG_SAMPLES_PER_DAY = 96  # ≈ 2h bei 75s-Sample-Intervall
 RECRUIT_COOLDOWN_DAYS = 60            # Pause zwischen Kontaktversuchen
 RECRUIT_CHECK_INTERVAL_SECONDS = 1800 # Prüfzyklus (30 min)
@@ -31,12 +31,12 @@ RECRUIT_DISCORD_INVITE = "discord.gg/z5TfVHuQq2"
 # Twitch-Chat-Limit: 500 Zeichen. Nachricht bleibt bei ~300 Zeichen.
 _OUTREACH_MSG = (
     "Hey @{login}! Wir haben gesehen, du streamst Deadlock regelmäßiger. "
-    "{days} Tage in 2 Wochen, das ist sportlich :). "
-    "Da wir immer auf der Suche nach Talenten sind, und du regelmäßiger streamst haben wir gedacht, "
-    "laden wir dich zu unserem Streamer-Partner-Programm ein. "
-    "Das kannst du von uns erwarten: Anti-Spam-Schutz & Support für deinen Kanal, "
-    "Go-Live Ankündigungen auf unserem Discord Server, Auto-Raids. "
-    "Falls du bock hast schau gerne hier mal vorbei: {invite} <3"
+    "{days} Tage in 28 Tagen, das ist sportlich :). "
+    "Da wir immer auf der Suche nach Talenten sind, "
+    "möchten wir dich zu unserem Streamer-Partner-Programm einladen. "
+    "Das bieten wir an: Viewerbot-SPAM-Schutz, ein Raid Ökosystem, "
+    "Go-Live Ankündigungen auf´m Discord Server, ein Stream Analyse Dashboad und noch viel mehr. "
+    "Schau gerne mal hier mal vorbei: {invite} <3"
 )
 
 

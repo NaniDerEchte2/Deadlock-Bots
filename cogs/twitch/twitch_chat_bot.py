@@ -27,6 +27,7 @@ from .twitch_chat_bot_commands import RaidCommandsMixin
 from .twitch_chat_bot_connection import ConnectionMixin
 from .twitch_chat_bot_constants import (
     _PROMO_ACTIVITY_ENABLED,
+    _PROMO_LOOP_INTERVAL_SEC,
     _PROMO_MESSAGES,
     _PROMO_VIEWER_SPIKE_ENABLED,
     _SPAM_MIN_MATCHES,
@@ -137,6 +138,8 @@ if TWITCHIO_AVAILABLE:
             self._channel_ids: Dict[str, str] = {}          # login -> broadcaster_id
             self._last_promo_sent: Dict[str, float] = {}    # login -> monotonic timestamp
             self._last_promo_attempt: Dict[str, float] = {} # login -> monotonic timestamp
+            self._last_raw_chat_message_ts: Dict[str, float] = {}
+            self._raw_msg_count_since_promo: Dict[str, int] = {}
             self._promo_activity: Dict[str, Deque[Tuple[float, str]]] = {}
             self._promo_chatter_dedupe: Dict[str, Dict[str, float]] = {}
             self._last_promo_viewer_spike: Dict[str, float] = {}
@@ -495,7 +498,10 @@ if TWITCHIO_AVAILABLE:
                         self._periodic_promo_loop(),
                         name="twitch.chat_bot.promos",
                     )
-                    log.info("Chat-Promo-Loop gestartet (Check alle 120s)")
+                    log.info(
+                        "Chat-Promo-Loop gestartet (Check alle %ss)",
+                        max(15, int(_PROMO_LOOP_INTERVAL_SEC)),
+                    )
 
         async def close(self):
             promo_task = self._promo_task
@@ -666,6 +672,13 @@ if TWITCHIO_AVAILABLE:
                 await self._track_chat_health(message)
             except Exception:
                 log.debug("Konnte Chat-Health nicht loggen", exc_info=True)
+
+            try:
+                login_for_raw = self._normalize_channel_login_safe(getattr(message, "channel", None))
+                if login_for_raw:
+                    self._record_raw_chat_message(login_for_raw)
+            except Exception:
+                log.debug("Raw-Chat-Activity konnte nicht erfasst werden", exc_info=True)
 
             sent_invite = False
             try:

@@ -43,7 +43,22 @@ RAID_SCOPES = [
 ]
 
 RAID_TARGET_COOLDOWN_DAYS = 7  # Avoid repeating the same raid target if alternatives exist
-RECRUIT_DISCORD_INVITE = (os.getenv("RECRUIT_DISCORD_INVITE") or "").strip() or "Server hinzufügen & Code eingeben: z5TfVHuQq2"
+RECRUIT_DISCORD_INVITE = (
+    (os.getenv("RECRUIT_DISCORD_INVITE") or "").strip()
+    or "In Discord Server hinzufügen & Code eingeben: z5TfVHuQq2"
+)
+RECRUIT_DISCORD_INVITE_DIRECT = (
+    (os.getenv("RECRUIT_DISCORD_INVITE_DIRECT") or "").strip()
+    or "https://discord.gg/z5TfVHuQq2"
+)
+
+_recruit_direct_invite_threshold_raw = (
+    os.getenv("RECRUIT_DIRECT_INVITE_MAX_FOLLOWERS") or "120"
+).strip()
+try:
+    RECRUIT_DIRECT_INVITE_MAX_FOLLOWERS = max(0, int(_recruit_direct_invite_threshold_raw))
+except ValueError:
+    RECRUIT_DIRECT_INVITE_MAX_FOLLOWERS = 120
 
 log = logging.getLogger("TwitchStreams.RaidManager")
 
@@ -1131,6 +1146,54 @@ class RaidBot:
                 from_broadcaster_login,
             )
 
+    @staticmethod
+    def _parse_nonnegative_int(value: object) -> Optional[int]:
+        try:
+            if value is None:
+                return None
+            parsed = int(value)
+            return parsed if parsed >= 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    async def _resolve_recruitment_followers_total(
+        self,
+        *,
+        login: str,
+        target_id: Optional[str],
+        target_stream_data: Optional[Dict],
+    ) -> Optional[int]:
+        cached_total = self._parse_nonnegative_int((target_stream_data or {}).get("followers_total"))
+        if cached_total is not None:
+            return cached_total
+
+        resolved_target_id = str(target_id or "").strip()
+        if not resolved_target_id or not self.session:
+            return None
+
+        try:
+            from .twitch_api import TwitchAPI
+        except Exception:
+            return None
+
+        user_token: Optional[str] = None
+        try:
+            user_token = await self.auth_manager.get_valid_token(resolved_target_id, self.session)
+        except Exception:
+            user_token = None
+
+        try:
+            api = TwitchAPI(self.auth_manager.client_id, self.auth_manager.client_secret, session=self.session)
+            followers_total = await api.get_followers_total(resolved_target_id, user_token=user_token)
+        except Exception:
+            log.debug("Follower-Check fehlgeschlagen fuer %s", login, exc_info=True)
+            return None
+
+        parsed_total = self._parse_nonnegative_int(followers_total)
+        if parsed_total is not None and isinstance(target_stream_data, dict):
+            target_stream_data["followers_total"] = parsed_total
+        return parsed_total
+
     async def _send_recruitment_message_now(
         self,
         from_broadcaster_login: str,
@@ -1200,7 +1263,31 @@ class RaidBot:
                 return
 
             # 3. Nachricht vorbereiten (mit Stats Teaser)
-            discord_invite = RECRUIT_DISCORD_INVITE
+            followers_total = await self._resolve_recruitment_followers_total(
+                login=to_broadcaster_login,
+                target_id=target_id,
+                target_stream_data=target_stream_data,
+            )
+            use_direct_invite = (
+                followers_total is not None
+                and followers_total <= RECRUIT_DIRECT_INVITE_MAX_FOLLOWERS
+            )
+            discord_invite = (
+                RECRUIT_DISCORD_INVITE_DIRECT if use_direct_invite else RECRUIT_DISCORD_INVITE
+            )
+            if followers_total is None:
+                log.info(
+                    "Recruitment invite mode for %s: followers unknown -> code-flow",
+                    to_broadcaster_login,
+                )
+            else:
+                log.info(
+                    "Recruitment invite mode for %s: followers=%d threshold=%d mode=%s",
+                    to_broadcaster_login,
+                    followers_total,
+                    RECRUIT_DIRECT_INVITE_MAX_FOLLOWERS,
+                    "direct-link" if use_direct_invite else "code-flow",
+                )
 
             stats_teaser = ""
             try:
