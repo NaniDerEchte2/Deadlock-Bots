@@ -607,7 +607,15 @@ if TWITCHIO_AVAILABLE:
                 return
 
             try:
+                channel_login = self._normalize_channel_login_safe(getattr(message, "channel", None))
                 spam_score, spam_reasons = self._calculate_spam_score(message.content or "")
+                mention_score, mention_reasons = await self._score_mention_patterns(
+                    message.content or "",
+                    host_login=channel_login,
+                )
+                if mention_score:
+                    spam_score += mention_score
+                    spam_reasons.extend(mention_reasons)
 
                 # 2. Faktor: Account-Alter prüfen, wenn Verdacht besteht (Score 2)
                 # Wenn Keyword matcht UND Account < 3 Monate -> Ban (Score >= 3)

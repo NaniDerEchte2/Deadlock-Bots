@@ -21,6 +21,212 @@ log = logging.getLogger("TwitchStreams.ChatBot")
 
 
 class ModerationMixin:
+    @staticmethod
+    def _extract_mentions(content: str) -> list[str]:
+        """Extrahiert Twitch-ähnliche @mentions aus einer Nachricht."""
+        return re.findall(r"(?<!\w)@([A-Za-z0-9_]{3,25})\b", content or "")
+
+    @staticmethod
+    def _looks_like_random_mention_token(token: str) -> bool:
+        """
+        Fallback-Heuristik, wenn Twitch-User-Lookup nicht möglich ist:
+        - mindestens 8 Zeichen
+        - nur alphanumerisch (ohne "_")
+        - enthält Zahl ODER gemischte Groß-/Kleinschreibung
+        """
+        normalized = (token or "").strip()
+        if len(normalized) < 8:
+            return False
+        if not re.fullmatch(r"[A-Za-z0-9]+", normalized):
+            return False
+        has_digit = any(ch.isdigit() for ch in normalized)
+        has_lower = any(ch.islower() for ch in normalized)
+        has_upper = any(ch.isupper() for ch in normalized)
+        return has_digit or (has_lower and has_upper)
+
+    def _is_known_channel_chatter(self, channel_login: str, mention_login: str) -> bool:
+        """Prüft, ob ein Login als Chatter im Streamer-Kontext bekannt ist."""
+        streamer = (channel_login or "").strip().lower().lstrip("#@")
+        mention = (mention_login or "").strip().lower().lstrip("@")
+        if not streamer or not mention:
+            return False
+
+        now = time.monotonic()
+        cache_ttl_sec = 600.0
+        cache = getattr(self, "_mention_chatter_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, "_mention_chatter_cache", cache)
+
+        cache_key = (streamer, mention)
+        cached = cache.get(cache_key)
+        if isinstance(cached, tuple) and len(cached) == 2:
+            cached_ts, cached_value = cached
+            if now - float(cached_ts) <= cache_ttl_sec:
+                return bool(cached_value)
+
+        known = False
+        try:
+            with get_conn() as conn:
+                row = conn.execute(
+                    """
+                    SELECT 1
+                      FROM twitch_session_chatters
+                     WHERE streamer_login = ? AND chatter_login = ?
+                     LIMIT 1
+                    """,
+                    (streamer, mention),
+                ).fetchone()
+                if row is None:
+                    row = conn.execute(
+                        """
+                        SELECT 1
+                          FROM twitch_chatter_rollup
+                         WHERE streamer_login = ? AND chatter_login = ?
+                         LIMIT 1
+                        """,
+                        (streamer, mention),
+                    ).fetchone()
+                known = row is not None
+        except Exception:
+            log.debug(
+                "Konnte Mention-Chatter-Check nicht laden (streamer=%s mention=%s)",
+                streamer,
+                mention,
+                exc_info=True,
+            )
+
+        cache[cache_key] = (now, known)
+        if len(cache) > 4096:
+            stale_before = now - (cache_ttl_sec * 4.0)
+            stale_keys = []
+            for key, value in cache.items():
+                if not isinstance(value, tuple) or len(value) != 2:
+                    stale_keys.append(key)
+                    continue
+                if float(value[0]) < stale_before:
+                    stale_keys.append(key)
+            for key in stale_keys:
+                cache.pop(key, None)
+
+        return known
+
+    async def _resolve_existing_twitch_users(self, logins: list[str]) -> tuple[set[str], bool]:
+        """Löst Logins via Twitch auf. Rückgabe: (gefunden, lookup_ok)."""
+        normalized = []
+        seen = set()
+        for login in logins or []:
+            value = (login or "").strip().lower().lstrip("@")
+            if value and value not in seen:
+                normalized.append(value)
+                seen.add(value)
+        if not normalized:
+            return set(), True
+
+        now = time.monotonic()
+        cache_ttl_sec = 21600.0  # 6h
+        cache = getattr(self, "_mention_user_exists_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, "_mention_user_exists_cache", cache)
+
+        found = set()
+        to_lookup = []
+        for login in normalized:
+            cached = cache.get(login)
+            if isinstance(cached, tuple) and len(cached) == 2:
+                cached_ts, exists = cached
+                if now - float(cached_ts) <= cache_ttl_sec:
+                    if bool(exists):
+                        found.add(login)
+                    continue
+            to_lookup.append(login)
+
+        if not to_lookup:
+            return found, True
+        if not hasattr(self, "fetch_users"):
+            return found, False
+
+        try:
+            users = await self.fetch_users(names=to_lookup)
+            resolved = set()
+            for user in users or []:
+                login = (
+                    getattr(user, "login", None)
+                    or getattr(user, "name", None)
+                    or ""
+                ).strip().lower()
+                if login:
+                    resolved.add(login)
+
+            for login in to_lookup:
+                exists = login in resolved
+                cache[login] = (now, exists)
+                if exists:
+                    found.add(login)
+
+            if len(cache) > 8192:
+                stale_before = now - (cache_ttl_sec * 4.0)
+                stale_keys = []
+                for key, value in cache.items():
+                    if not isinstance(value, tuple) or len(value) != 2:
+                        stale_keys.append(key)
+                        continue
+                    if float(value[0]) < stale_before:
+                        stale_keys.append(key)
+                for key in stale_keys:
+                    cache.pop(key, None)
+
+            return found, True
+        except Exception:
+            log.debug("Konnte Twitch-User für Mentions nicht auflösen", exc_info=True)
+            return found, False
+
+    async def _score_mention_patterns(self, content: str, host_login: str = "") -> tuple[int, list]:
+        """Bewertet Mentions: Host + unbekannte/nicht auflösbare Mentions."""
+        raw = (content or "").strip()
+        if not raw:
+            return 0, []
+
+        mentions = [m.lower() for m in self._extract_mentions(raw)]
+        if not mentions:
+            return 0, []
+
+        hits = 0
+        reasons = []
+        normalized_host = (host_login or "").strip().lower().lstrip("#@")
+
+        if normalized_host and normalized_host in mentions:
+            hits += 1
+            reasons.append("Muster: @host mention")
+
+        candidates = sorted({m for m in mentions if m != normalized_host})
+        if not candidates:
+            return hits, reasons
+
+        maybe_random = []
+        for mention in candidates:
+            if self._is_known_channel_chatter(normalized_host, mention):
+                continue
+            maybe_random.append(mention)
+
+        if not maybe_random:
+            return hits, reasons
+
+        existing_users, lookup_ok = await self._resolve_existing_twitch_users(maybe_random)
+        unresolved = [m for m in maybe_random if m not in existing_users]
+        if not unresolved:
+            return hits, reasons
+
+        if lookup_ok:
+            hits += 1
+            reasons.append("Muster: @unknown mention")
+        elif any(self._looks_like_random_mention_token(m) for m in unresolved):
+            hits += 1
+            reasons.append("Muster: @ + random chars (fallback)")
+
+        return hits, reasons
+
     def _calculate_spam_score(self, content: str) -> tuple[int, list]:
         """Berechnet einen Spam-Score. >= _SPAM_MIN_MATCHES ist ein Ban."""
         if not content:
@@ -61,11 +267,6 @@ class ModerationMixin:
         if "streamboocom" in compact:
             hits += 1
             reasons.append("Muster: streamboocom (kompakt)")
-
-        # NEU: Random @ String Pattern (z.B. @0kyuMlG8): +1 Punkt
-        if re.search(r"@[A-Za-z0-9]{8}\b", raw):
-            hits += 1
-            reasons.append("Muster: @ + 8 random chars")
 
         return hits, reasons
 
