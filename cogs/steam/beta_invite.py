@@ -8,6 +8,7 @@ import os
 import socket
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Union
 from urllib.parse import parse_qs
@@ -252,6 +253,29 @@ def _log_invite_grant(
                 int(invited_at),
             ),
         )
+
+
+def _format_invite_sent_utc(invite_sent_at: Optional[int]) -> Optional[str]:
+    if not invite_sent_at:
+        return None
+    try:
+        return datetime.fromtimestamp(int(invite_sent_at), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except Exception:
+        return None
+
+
+def _build_already_invited_message(record: BetaInviteRecord, steam_id64: str) -> str:
+    sent_utc = _format_invite_sent_utc(record.invite_sent_at)
+    profile_url = f"https://steamcommunity.com/profiles/{steam_id64}"
+    lines = [
+        "✅ Du bist bereits eingeladen.",
+        f"Steam-Account: {profile_url}",
+    ]
+    if sent_utc:
+        lines.append(f"Zuletzt erfolgreich gesendet: {sent_utc}")
+    lines.append("Prüfe unter https://store.steampowered.com/account/playtestinvites .")
+    lines.append("Wichtig: Prüfe genau den oben verknüpften Steam-Account.")
+    return "\n".join(lines)
 
 
 def _has_successful_invite(discord_id: int) -> bool:
@@ -1168,7 +1192,7 @@ class BetaInviteFlow(commands.Cog):
 
         if existing and existing.status == STATUS_INVITE_SENT and existing.steam_id64 == resolved:
             await interaction.followup.send(
-                "✅ Du bist bereits eingeladen. Prüfe unter https://store.steampowered.com/account/playtestinvites .",
+                _build_already_invited_message(existing, resolved),
                 ephemeral=True,
             )
             _trace(
@@ -1193,7 +1217,7 @@ class BetaInviteFlow(commands.Cog):
 
         if record.status == STATUS_INVITE_SENT and record.steam_id64 == resolved:
             await interaction.followup.send(
-                "✅ Du bist bereits eingeladen. Prüfe unter https://store.steampowered.com/account/playtestinvites .",
+                _build_already_invited_message(record, resolved),
                 ephemeral=True,
             )
             _trace(
@@ -1707,9 +1731,9 @@ class BetaInviteFlow(commands.Cog):
 
         message = (
             "✅ Einladung verschickt!\n"
+            f"Steam-Account: https://steamcommunity.com/profiles/{record.steam_id64}\n"
             "Bitte schaue in 1-2 Stunden unter https://store.steampowered.com/account/playtestinvites "
             "und nimm die Einladung dort an. Danach erscheint Deadlock automatisch in deiner Bibliothek.\n"
-            f"Alle weiteren Infos findest du in <{BETA_INVITE_CHANNEL_URL}> - bei Problemen melde dich bitte <{SUPPORT_CHANNEL}>.\n"
             "⚠️ Verlässt du den Server wird der Invite ungültig, egal ob dein Invite noch aussteht oder du Deadlock schon hast."
         )
         
@@ -1752,7 +1776,7 @@ class BetaInviteFlow(commands.Cog):
 
         if record.status == STATUS_INVITE_SENT:
             await interaction.response.send_message(
-                "✅ Du wurdest bereits eingeladen. Prüfe in deiner Steam-Bibliothek oder unter https://store.steampowered.com/account/playtestinvites .",
+                _build_already_invited_message(record, record.steam_id64),
                 ephemeral=True,
             )
             return
