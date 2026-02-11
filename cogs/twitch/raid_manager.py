@@ -1127,6 +1127,13 @@ class RaidBot:
             return
 
         try:
+            # Erfolgreiche Netzwerk-Raids für dieses Ziel zählen (inkl. aktuellem Raid)
+            received_raid_count = self._get_received_network_raid_count(to_broadcaster_id)
+            if received_raid_count <= 0:
+                received_raid_count = 1
+
+            viewer_word = "Viewer" if viewer_count == 1 else "Viewern"
+
             # 1. Channel beitreten (falls noch nicht joined)
             await self.chat_bot.join(to_broadcaster_login, channel_id=to_broadcaster_id)
 
@@ -1136,8 +1143,8 @@ class RaidBot:
             # 3. Nachricht vorbereiten
             message = (
                 f"Hey @{to_broadcaster_login}! 🎮 "
-                f"Du wurdest gerade von @{from_broadcaster_login} mit {viewer_count} Viewern geraidet - "
-                f"Teil unseres Deadlock Streamer-Netzwerks! Gemeinsam wachsen wir stärker! ❤️"
+                f"@{from_broadcaster_login} hat dich gerade mit {viewer_count} {viewer_word} geraidet. "
+                f"Das ist dein Raid Nr. {received_raid_count} aus dem Deadlock Streamer-Netzwerk. ❤️"
             )
 
             # 4. Nachricht senden
@@ -1154,10 +1161,11 @@ class RaidBot:
 
                 if success:
                     log.info(
-                        "✅ Sent partner raid message to %s (raided by %s with %d viewers)",
+                        "✅ Sent partner raid message to %s (raided by %s with %d viewers, network_raid_no=%d)",
                         to_broadcaster_login,
                         from_broadcaster_login,
                         viewer_count,
+                        received_raid_count,
                     )
                 else:
                     log.warning(
@@ -1175,6 +1183,37 @@ class RaidBot:
                 to_broadcaster_login,
                 from_broadcaster_login,
             )
+
+    def _get_received_network_raid_count(self, to_broadcaster_id: str) -> int:
+        """
+        Anzahl erfolgreicher, vom Raid-Bot geloggter Raids auf dieses Ziel.
+
+        Die History enthält nur Raids, die von unseren Streamern über den Bot
+        ausgeführt wurden; damit entspricht der Wert den erhaltenen Netzwerk-Raids.
+        """
+        target_id = str(to_broadcaster_id or "").strip()
+        if not target_id:
+            return 0
+
+        try:
+            with get_conn() as conn:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM twitch_raid_history
+                    WHERE to_broadcaster_id = ?
+                      AND success = 1
+                    """,
+                    (target_id,),
+                ).fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+        except Exception:
+            log.debug(
+                "Could not count received network raids for %s",
+                target_id,
+                exc_info=True,
+            )
+            return 0
 
     @staticmethod
     def _parse_nonnegative_int(value: object) -> Optional[int]:

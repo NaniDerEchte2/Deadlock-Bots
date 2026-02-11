@@ -1004,6 +1004,79 @@
             gap: 0.6rem;
             flex-wrap: wrap;
         }
+        .twitch-insights-card {
+            margin-top: 1rem;
+        }
+        .twitch-insights-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+        .twitch-kpi-item {
+            background: #121212;
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 8px;
+            padding: 0.7rem 0.8rem;
+        }
+        .twitch-kpi-label {
+            color: #adb5bd;
+            font-size: 0.78rem;
+            margin-bottom: 0.2rem;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .twitch-kpi-value {
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: #f8f9fa;
+        }
+        .twitch-kpi-sub {
+            color: #868e96;
+            font-size: 0.75rem;
+            margin-top: 0.15rem;
+        }
+        .twitch-chart-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 0.9rem;
+        }
+        .twitch-chart-panel {
+            background: #131313;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.05);
+            padding: 0.85rem;
+        }
+        .twitch-chart-panel h3 {
+            margin: 0 0 0.55rem 0;
+            font-size: 0.94rem;
+        }
+        .twitch-chart-panel .chart-container {
+            height: 260px;
+            min-height: 200px;
+        }
+        .twitch-reason-badges {
+            margin-top: 0.55rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+        }
+        .twitch-reason-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.18rem 0.5rem;
+            border-radius: 999px;
+            background: rgba(77,171,247,0.12);
+            color: #d0ebff;
+            border: 1px solid rgba(77,171,247,0.22);
+            font-size: 0.74rem;
+            font-weight: 600;
+        }
+        .twitch-reason-badge .reason-peak {
+            color: #ffa8a8;
+            font-weight: 700;
+        }
     </style>
 </head>
 <body>
@@ -1197,6 +1270,31 @@
                     <button class="reload" id="twitch-reload">Twitch neu laden</button>
                 </div>
             </div>
+            <div class="card twitch-insights-card">
+                <div class="section-header">
+                    <h2>Twitch Insights (24h)</h2>
+                    <div class="section-actions">
+                        <button class="reload" id="twitch-metrics-refresh">Neu laden</button>
+                        <span class="voice-meta" id="twitch-metrics-updated">Letzte Aktualisierung: -</span>
+                    </div>
+                </div>
+                <div id="twitch-kpi-grid" class="twitch-insights-grid"></div>
+                <div class="twitch-chart-grid">
+                    <div class="twitch-chart-panel">
+                        <h3>Raids & aktive Streamer</h3>
+                        <div class="chart-container">
+                            <canvas id="twitch-services-chart"></canvas>
+                        </div>
+                    </div>
+                    <div class="twitch-chart-panel">
+                        <h3>EventSub Auslastung & Slots</h3>
+                        <div class="chart-container">
+                            <canvas id="twitch-capacity-chart"></canvas>
+                        </div>
+                        <div id="twitch-metrics-reasons" class="twitch-reason-badges"></div>
+                    </div>
+                </div>
+            </div>
         </section>
 
         <section>
@@ -1321,6 +1419,16 @@
     const coNetworkGenerated = document.getElementById('co-network-generated');
     const coNetworkList = document.getElementById('co-network-list');
     let coNetworkSimulation = null;
+
+    // Twitch Services Insights
+    const twitchMetricsRefreshBtn = document.getElementById('twitch-metrics-refresh');
+    const twitchMetricsUpdated = document.getElementById('twitch-metrics-updated');
+    const twitchKpiGrid = document.getElementById('twitch-kpi-grid');
+    const twitchServicesChartCanvas = document.getElementById('twitch-services-chart');
+    const twitchCapacityChartCanvas = document.getElementById('twitch-capacity-chart');
+    const twitchMetricsReasons = document.getElementById('twitch-metrics-reasons');
+    let twitchServicesChart = null;
+    let twitchCapacityChart = null;
 
     const dashboardRestartBtn = document.getElementById('dashboard-restart');
     const dashboardStatusPill = document.getElementById('dashboard-status-pill');
@@ -1604,6 +1712,11 @@
     if (retentionRefreshButton) {
         retentionRefreshButton.addEventListener('click', () => {
             loadUserRetention();
+        });
+    }
+    if (twitchMetricsRefreshBtn) {
+        twitchMetricsRefreshBtn.addEventListener('click', () => {
+            loadTwitchMetrics();
         });
     }
     const twitchReloadBtn = document.getElementById('twitch-reload');
@@ -2405,6 +2518,325 @@ async function loadVoiceHistory() {
         renderVoiceHistory(data);
     } catch (err) {
         log('Voice Historie konnte nicht geladen werden: ' + err.message, 'error');
+    }
+}
+
+function formatPercent(value, digits = 1) {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+        return '-';
+    }
+    return Number(value).toFixed(digits) + '%';
+}
+
+function formatFixed(value, digits = 1) {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+        return '-';
+    }
+    return Number(value).toFixed(digits);
+}
+
+function renderTwitchKpis(summary) {
+    if (!twitchKpiGrid) {
+        return;
+    }
+    const safeSummary = summary || {};
+    const latest = safeSummary.eventsub_latest || {};
+    const cards = [
+        {
+            label: 'Raids 24h',
+            value: safeNumber(safeSummary.raids_total).toLocaleString('de-DE'),
+            sub: `${safeNumber(safeSummary.raid_viewers_total).toLocaleString('de-DE')} Viewer gesamt`,
+        },
+        {
+            label: 'Aktive Streamer jetzt',
+            value: safeNumber(safeSummary.active_streamers_now).toLocaleString('de-DE'),
+            sub: `Peak 24h: ${safeNumber(safeSummary.active_streamers_peak).toLocaleString('de-DE')}`,
+        },
+        {
+            label: 'EventSub Ø 24h',
+            value: formatPercent(safeSummary.eventsub_avg_utilization_pct, 1),
+            sub: `Peak: ${formatPercent(safeSummary.eventsub_peak_utilization_pct, 1)}`,
+        },
+        {
+            label: 'EventSub jetzt',
+            value: formatPercent(latest.utilization_pct, 1),
+            sub: `${safeNumber(latest.used_slots)} / ${safeNumber(latest.total_slots)} Slots`,
+        },
+        {
+            label: 'Raid Quellen',
+            value: safeNumber(safeSummary.unique_sources).toLocaleString('de-DE'),
+            sub: `${safeNumber(safeSummary.unique_targets).toLocaleString('de-DE')} Ziele`,
+        },
+        {
+            label: 'Listener (Ø / Max)',
+            value: `${formatFixed(safeSummary.eventsub_avg_listener_count, 1)} / ${safeNumber(safeSummary.eventsub_max_listener_count)}`,
+            sub: `${safeNumber(safeSummary.eventsub_samples).toLocaleString('de-DE')} Snapshots`,
+        },
+    ];
+    twitchKpiGrid.innerHTML = '';
+    cards.forEach((card) => {
+        const el = document.createElement('div');
+        el.className = 'twitch-kpi-item';
+
+        const label = document.createElement('div');
+        label.className = 'twitch-kpi-label';
+        label.textContent = card.label;
+
+        const value = document.createElement('div');
+        value.className = 'twitch-kpi-value';
+        value.textContent = card.value;
+
+        const sub = document.createElement('div');
+        sub.className = 'twitch-kpi-sub';
+        sub.textContent = card.sub;
+
+        el.appendChild(label);
+        el.appendChild(value);
+        el.appendChild(sub);
+        twitchKpiGrid.appendChild(el);
+    });
+}
+
+function renderTwitchReasonBadges(reasons) {
+    if (!twitchMetricsReasons) {
+        return;
+    }
+    const rows = Array.isArray(reasons) ? reasons : [];
+    if (!rows.length) {
+        twitchMetricsReasons.innerHTML = '<span class="voice-meta">Keine EventSub Trigger-Daten im Zeitraum.</span>';
+        return;
+    }
+    const frag = document.createDocumentFragment();
+    rows.slice(0, 8).forEach((row) => {
+        const badge = document.createElement('span');
+        badge.className = 'twitch-reason-badge';
+        const reason = (row.reason || 'unknown').toString();
+        const samples = safeNumber(row.samples);
+        const peak = formatPercent(row.peak_utilization_pct, 1);
+        const main = document.createElement('span');
+        main.textContent = `${reason} · ${samples}x`;
+        const peakEl = document.createElement('span');
+        peakEl.className = 'reason-peak';
+        peakEl.textContent = peak;
+        badge.appendChild(main);
+        badge.appendChild(peakEl);
+        frag.appendChild(badge);
+    });
+    twitchMetricsReasons.innerHTML = '';
+    twitchMetricsReasons.appendChild(frag);
+}
+
+function renderTwitchServicesChart(timeline) {
+    if (!twitchServicesChartCanvas) {
+        return;
+    }
+    const labels = Array.isArray(timeline.labels) ? timeline.labels : [];
+    const raids = Array.isArray(timeline.raids) ? timeline.raids : [];
+    const active = Array.isArray(timeline.active_streamers) ? timeline.active_streamers : [];
+    const raidViewers = Array.isArray(timeline.raid_viewers) ? timeline.raid_viewers : [];
+
+    if (twitchServicesChart) {
+        twitchServicesChart.destroy();
+    }
+
+    twitchServicesChart = new Chart(twitchServicesChartCanvas, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [
+                {
+                    type: 'bar',
+                    label: 'Raids',
+                    data: raids,
+                    backgroundColor: 'rgba(255, 159, 64, 0.55)',
+                    borderColor: 'rgba(255, 159, 64, 0.95)',
+                    borderWidth: 1,
+                    yAxisID: 'yRaids',
+                },
+                {
+                    type: 'line',
+                    label: 'Aktive Streamer',
+                    data: active,
+                    borderColor: '#4dabf7',
+                    backgroundColor: 'rgba(77,171,247,0.18)',
+                    fill: true,
+                    tension: 0.35,
+                    pointRadius: 2.5,
+                    yAxisID: 'yActive',
+                },
+                {
+                    type: 'line',
+                    label: 'Raid Viewer',
+                    data: raidViewers,
+                    borderColor: '#f783ac',
+                    backgroundColor: 'rgba(247,131,172,0.12)',
+                    borderDash: [6, 4],
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: 2.5,
+                    yAxisID: 'yViewers',
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                yRaids: {
+                    position: 'left',
+                    title: { display: true, text: 'Raids/h' },
+                    suggestedMin: 0,
+                    ticks: { precision: 0 },
+                },
+                yActive: {
+                    position: 'right',
+                    title: { display: true, text: 'Aktive Streamer' },
+                    suggestedMin: 0,
+                    ticks: { precision: 0 },
+                    grid: { drawOnChartArea: false },
+                },
+                yViewers: {
+                    position: 'right',
+                    title: { display: true, text: 'Raid Viewer/h' },
+                    suggestedMin: 0,
+                    ticks: { precision: 0 },
+                    grid: { drawOnChartArea: false },
+                    display: false,
+                },
+                x: {
+                    ticks: { maxTicksLimit: 12 },
+                },
+            },
+            plugins: {
+                legend: { position: 'top' },
+            },
+        },
+    });
+}
+
+function renderTwitchCapacityChart(timeline) {
+    if (!twitchCapacityChartCanvas) {
+        return;
+    }
+    const labels = Array.isArray(timeline.labels) ? timeline.labels : [];
+    const avgUtil = Array.isArray(timeline.eventsub_avg_utilization_pct)
+        ? timeline.eventsub_avg_utilization_pct.map((v) => (v === null ? null : Number(v)))
+        : [];
+    const peakUtil = Array.isArray(timeline.eventsub_peak_utilization_pct)
+        ? timeline.eventsub_peak_utilization_pct.map((v) => (v === null ? null : Number(v)))
+        : [];
+    const usedSlots = Array.isArray(timeline.eventsub_avg_used_slots)
+        ? timeline.eventsub_avg_used_slots.map((v) => (v === null ? null : Number(v)))
+        : [];
+    const avgListeners = Array.isArray(timeline.eventsub_avg_listener_count)
+        ? timeline.eventsub_avg_listener_count.map((v) => (v === null ? null : Number(v)))
+        : [];
+
+    if (twitchCapacityChart) {
+        twitchCapacityChart.destroy();
+    }
+
+    twitchCapacityChart = new Chart(twitchCapacityChartCanvas, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: 'EventSub Ø Auslastung %',
+                    data: avgUtil,
+                    borderColor: '#69db7c',
+                    backgroundColor: 'rgba(105,219,124,0.18)',
+                    fill: true,
+                    tension: 0.35,
+                    pointRadius: 2.5,
+                    yAxisID: 'yUtil',
+                },
+                {
+                    label: 'EventSub Peak Auslastung %',
+                    data: peakUtil,
+                    borderColor: '#ff8787',
+                    backgroundColor: 'rgba(255,135,135,0.12)',
+                    borderDash: [5, 4],
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: 2.5,
+                    yAxisID: 'yUtil',
+                },
+                {
+                    type: 'bar',
+                    label: 'Ø Used Slots',
+                    data: usedSlots,
+                    backgroundColor: 'rgba(116, 192, 252, 0.4)',
+                    borderColor: 'rgba(116, 192, 252, 0.85)',
+                    borderWidth: 1,
+                    yAxisID: 'ySlots',
+                },
+                {
+                    label: 'Ø Listener',
+                    data: avgListeners,
+                    borderColor: '#ffd43b',
+                    backgroundColor: 'rgba(255,212,59,0.1)',
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: 2.5,
+                    yAxisID: 'ySlots',
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                yUtil: {
+                    position: 'left',
+                    title: { display: true, text: 'Auslastung %' },
+                    suggestedMin: 0,
+                    suggestedMax: 100,
+                },
+                ySlots: {
+                    position: 'right',
+                    title: { display: true, text: 'Slots / Listener' },
+                    suggestedMin: 0,
+                    grid: { drawOnChartArea: false },
+                },
+                x: {
+                    ticks: { maxTicksLimit: 12 },
+                },
+            },
+            plugins: {
+                legend: { position: 'top' },
+            },
+        },
+    });
+}
+
+function renderTwitchMetrics(data) {
+    const payload = data || {};
+    const summary = payload.summary || {};
+    const timeline = payload.timeline || {};
+
+    renderTwitchKpis(summary);
+    renderTwitchServicesChart(timeline);
+    renderTwitchCapacityChart(timeline);
+    renderTwitchReasonBadges(payload.reasons_top || []);
+
+    if (twitchMetricsUpdated) {
+        const generated = payload.generated_at ? formatTimestamp(payload.generated_at) : new Date().toLocaleTimeString();
+        twitchMetricsUpdated.textContent = 'Letzte Aktualisierung: ' + generated + ` (${safeNumber(payload.window_hours || 24)}h)`;
+    }
+}
+
+async function loadTwitchMetrics() {
+    try {
+        const data = await fetchJSON('/api/twitch/metrics?hours=24');
+        renderTwitchMetrics(data);
+    } catch (err) {
+        log('Twitch Metrics konnten nicht geladen werden: ' + err.message, 'error');
+        if (twitchKpiGrid) {
+            twitchKpiGrid.innerHTML = '<div class="voice-meta">Fehler beim Laden der Twitch Insights.</div>';
+        }
     }
 }
 
@@ -3775,6 +4207,9 @@ async function fetchStandaloneLogs(key, limit = 200) {
                     if (typeof loadVoiceHistory === 'function') loadVoiceHistory();
                     if (typeof loadCoNetwork === 'function') loadCoNetwork();
                 }
+                if (target === 'services') {
+                    if (typeof loadTwitchMetrics === 'function') loadTwitchMetrics();
+                }
                 if (target === 'logs') {
                     ensureLogsLoaded();
                 }
@@ -3792,6 +4227,8 @@ async function fetchStandaloneLogs(key, limit = 200) {
     setInterval(loadUserRetention, 60000);
     loadCoNetwork();
     setInterval(loadCoNetwork, 120000);
+    loadTwitchMetrics();
+    setInterval(loadTwitchMetrics, 60000);
 
     // Server Stats Initial Load
     loadServerStats();

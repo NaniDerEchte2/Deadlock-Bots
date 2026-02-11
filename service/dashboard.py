@@ -7,6 +7,7 @@ import json
 import math
 import logging
 import os
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
@@ -170,6 +171,7 @@ class DashboardServer:
                     web.get("/api/status", self._handle_status),
                     web.post("/api/bot/restart", self._handle_bot_restart),
                     web.post("/api/twitch/reload", self._handle_twitch_reload),
+                    web.get("/api/twitch/metrics", self._handle_twitch_metrics),
                     web.post("/api/dashboard/restart", self._handle_dashboard_restart),
                     web.post("/api/cogs/reload", self._handle_reload),
                     web.post("/api/cogs/load", self._handle_load),
@@ -880,6 +882,320 @@ class DashboardServer:
             except Exception as e:
                 logger.exception("Failed to reload Twitch module via dashboard")
                 return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+    async def _handle_twitch_metrics(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+
+        raw_hours = request.query.get("hours")
+        try:
+            hours = int(raw_hours) if raw_hours else 24
+            if hours <= 0:
+                raise ValueError
+            hours = min(hours, 168)
+        except ValueError:
+            raise web.HTTPBadRequest(text="hours must be a positive integer (max 168)")
+
+        cutoff = f"-{hours} hours"
+
+        def _safe_query_all(query: str, params: Tuple[Any, ...] = ()) -> List[Any]:
+            try:
+                return db.query_all(query, params)
+            except sqlite3.OperationalError as exc:
+                msg = str(exc).lower()
+                if "no such table" in msg or "no such column" in msg:
+                    return []
+                raise
+
+        def _safe_query_one(query: str, params: Tuple[Any, ...] = ()) -> Optional[Any]:
+            try:
+                return db.query_one(query, params)
+            except sqlite3.OperationalError as exc:
+                msg = str(exc).lower()
+                if "no such table" in msg or "no such column" in msg:
+                    return None
+                raise
+
+        def _as_int(row: Any, key: str, default: int = 0) -> int:
+            if row is None:
+                return default
+            try:
+                value = row[key] if hasattr(row, "keys") else row[key]
+            except Exception:
+                try:
+                    value = row[key]
+                except Exception:
+                    return default
+            try:
+                return int(value or 0)
+            except Exception:
+                return default
+
+        def _as_float(row: Any, key: str, default: float = 0.0) -> float:
+            if row is None:
+                return default
+            try:
+                value = row[key] if hasattr(row, "keys") else row[key]
+            except Exception:
+                try:
+                    value = row[key]
+                except Exception:
+                    return default
+            try:
+                return float(value or 0.0)
+            except Exception:
+                return default
+
+        try:
+            raids_hourly_rows = _safe_query_all(
+                """
+                SELECT
+                    strftime('%Y-%m-%d %H:00:00', datetime(replace(substr(executed_at, 1, 19), 'T', ' '))) AS bucket_hour,
+                    COUNT(*) AS raid_count,
+                    SUM(COALESCE(viewer_count, 0)) AS raid_viewers
+                FROM twitch_raid_history
+                WHERE datetime(replace(substr(executed_at, 1, 19), 'T', ' ')) >= datetime('now', ?)
+                GROUP BY bucket_hour
+                ORDER BY bucket_hour ASC
+                """,
+                (cutoff,),
+            )
+            raids_summary_row = _safe_query_one(
+                """
+                SELECT
+                    COUNT(*) AS raids_total,
+                    SUM(COALESCE(viewer_count, 0)) AS raid_viewers_total,
+                    COUNT(DISTINCT LOWER(COALESCE(to_broadcaster_login, ''))) AS unique_targets,
+                    COUNT(DISTINCT LOWER(COALESCE(from_broadcaster_login, ''))) AS unique_sources
+                FROM twitch_raid_history
+                WHERE datetime(replace(substr(executed_at, 1, 19), 'T', ' ')) >= datetime('now', ?)
+                """,
+                (cutoff,),
+            )
+
+            active_hourly_rows = _safe_query_all(
+                """
+                SELECT
+                    strftime('%Y-%m-%d %H:00:00', datetime(replace(substr(ts_utc, 1, 19), 'T', ' '))) AS bucket_hour,
+                    COUNT(DISTINCT LOWER(COALESCE(streamer, ''))) AS active_streamers
+                FROM twitch_stats_tracked
+                WHERE datetime(replace(substr(ts_utc, 1, 19), 'T', ' ')) >= datetime('now', ?)
+                GROUP BY bucket_hour
+                ORDER BY bucket_hour ASC
+                """,
+                (cutoff,),
+            )
+            active_now_row = _safe_query_one(
+                """
+                SELECT COUNT(*) AS active_now
+                FROM twitch_live_state
+                WHERE COALESCE(is_live, 0) = 1
+                """
+            )
+
+            eventsub_hourly_rows = _safe_query_all(
+                """
+                SELECT
+                    strftime('%Y-%m-%d %H:00:00', datetime(replace(substr(ts_utc, 1, 19), 'T', ' '))) AS bucket_hour,
+                    AVG(COALESCE(utilization_pct, 0)) AS avg_utilization_pct,
+                    MAX(COALESCE(utilization_pct, 0)) AS peak_utilization_pct,
+                    AVG(COALESCE(used_slots, 0)) AS avg_used_slots,
+                    MAX(COALESCE(used_slots, 0)) AS peak_used_slots,
+                    AVG(COALESCE(listener_count, 0)) AS avg_listener_count,
+                    COUNT(*) AS samples
+                FROM twitch_eventsub_capacity_snapshot
+                WHERE datetime(replace(substr(ts_utc, 1, 19), 'T', ' ')) >= datetime('now', ?)
+                GROUP BY bucket_hour
+                ORDER BY bucket_hour ASC
+                """,
+                (cutoff,),
+            )
+            eventsub_summary_row = _safe_query_one(
+                """
+                SELECT
+                    AVG(COALESCE(utilization_pct, 0)) AS avg_utilization_pct,
+                    MAX(COALESCE(utilization_pct, 0)) AS peak_utilization_pct,
+                    AVG(COALESCE(used_slots, 0)) AS avg_used_slots,
+                    MAX(COALESCE(used_slots, 0)) AS peak_used_slots,
+                    AVG(COALESCE(listener_count, 0)) AS avg_listener_count,
+                    MAX(COALESCE(listener_count, 0)) AS max_listener_count,
+                    SUM(COALESCE(samples, 1)) AS samples
+                FROM (
+                    SELECT utilization_pct, used_slots, listener_count, 1 AS samples
+                    FROM twitch_eventsub_capacity_snapshot
+                    WHERE datetime(replace(substr(ts_utc, 1, 19), 'T', ' ')) >= datetime('now', ?)
+                )
+                """,
+                (cutoff,),
+            )
+            eventsub_latest_row = _safe_query_one(
+                """
+                SELECT
+                    ts_utc,
+                    utilization_pct,
+                    used_slots,
+                    total_slots,
+                    listener_count,
+                    trigger_reason
+                FROM twitch_eventsub_capacity_snapshot
+                ORDER BY datetime(replace(substr(ts_utc, 1, 19), 'T', ' ')) DESC
+                LIMIT 1
+                """
+            )
+            eventsub_reason_rows = _safe_query_all(
+                """
+                SELECT
+                    trigger_reason,
+                    COUNT(*) AS samples,
+                    MAX(COALESCE(utilization_pct, 0)) AS peak_utilization_pct
+                FROM twitch_eventsub_capacity_snapshot
+                WHERE datetime(replace(substr(ts_utc, 1, 19), 'T', ' ')) >= datetime('now', ?)
+                GROUP BY trigger_reason
+                ORDER BY samples DESC, trigger_reason ASC
+                LIMIT 8
+                """,
+                (cutoff,),
+            )
+        except Exception as exc:
+            logging.exception("Failed to load twitch metrics: %s", exc)
+            raise web.HTTPInternalServerError(text="Twitch metrics unavailable") from exc
+
+        now_utc = _dt.datetime.now(tz=_dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
+        start_utc = now_utc - _dt.timedelta(hours=max(0, hours - 1))
+        bucket_keys: List[str] = []
+        labels: List[str] = []
+        for i in range(hours):
+            bucket_dt = start_utc + _dt.timedelta(hours=i)
+            bucket_keys.append(bucket_dt.strftime("%Y-%m-%d %H:00:00"))
+            labels.append(bucket_dt.strftime("%d.%m %H:%M"))
+
+        raids_map: Dict[str, Dict[str, float]] = {}
+        for row in raids_hourly_rows:
+            key = str(row["bucket_hour"] if hasattr(row, "keys") else row[0] or "")
+            if not key:
+                continue
+            raids_map[key] = {
+                "raid_count": float(row["raid_count"] if hasattr(row, "keys") else row[1] or 0),
+                "raid_viewers": float(row["raid_viewers"] if hasattr(row, "keys") else row[2] or 0),
+            }
+
+        active_map: Dict[str, float] = {}
+        for row in active_hourly_rows:
+            key = str(row["bucket_hour"] if hasattr(row, "keys") else row[0] or "")
+            if not key:
+                continue
+            active_map[key] = float(row["active_streamers"] if hasattr(row, "keys") else row[1] or 0)
+
+        eventsub_map: Dict[str, Dict[str, float]] = {}
+        for row in eventsub_hourly_rows:
+            key = str(row["bucket_hour"] if hasattr(row, "keys") else row[0] or "")
+            if not key:
+                continue
+            eventsub_map[key] = {
+                "avg_utilization_pct": float(row["avg_utilization_pct"] if hasattr(row, "keys") else row[1] or 0.0),
+                "peak_utilization_pct": float(row["peak_utilization_pct"] if hasattr(row, "keys") else row[2] or 0.0),
+                "avg_used_slots": float(row["avg_used_slots"] if hasattr(row, "keys") else row[3] or 0.0),
+                "peak_used_slots": float(row["peak_used_slots"] if hasattr(row, "keys") else row[4] or 0.0),
+                "avg_listener_count": float(row["avg_listener_count"] if hasattr(row, "keys") else row[5] or 0.0),
+                "samples": float(row["samples"] if hasattr(row, "keys") else row[6] or 0),
+            }
+
+        raids_series: List[int] = []
+        raid_viewers_series: List[int] = []
+        active_streamers_series: List[int] = []
+        eventsub_avg_util_series: List[Optional[float]] = []
+        eventsub_peak_util_series: List[Optional[float]] = []
+        eventsub_used_slots_series: List[Optional[float]] = []
+        eventsub_listener_series: List[Optional[float]] = []
+
+        for key in bucket_keys:
+            raid_row = raids_map.get(key, {})
+            active_row = active_map.get(key, 0.0)
+            event_row = eventsub_map.get(key)
+
+            raids_series.append(int(round(float(raid_row.get("raid_count", 0.0)))))
+            raid_viewers_series.append(int(round(float(raid_row.get("raid_viewers", 0.0)))))
+            active_streamers_series.append(int(round(float(active_row or 0.0))))
+
+            if event_row:
+                eventsub_avg_util_series.append(round(float(event_row.get("avg_utilization_pct", 0.0)), 2))
+                eventsub_peak_util_series.append(round(float(event_row.get("peak_utilization_pct", 0.0)), 2))
+                eventsub_used_slots_series.append(round(float(event_row.get("avg_used_slots", 0.0)), 2))
+                eventsub_listener_series.append(round(float(event_row.get("avg_listener_count", 0.0)), 2))
+            else:
+                eventsub_avg_util_series.append(None)
+                eventsub_peak_util_series.append(None)
+                eventsub_used_slots_series.append(None)
+                eventsub_listener_series.append(None)
+
+        raids_total = _as_int(raids_summary_row, "raids_total", 0)
+        raid_viewers_total = _as_int(raids_summary_row, "raid_viewers_total", 0)
+        unique_targets = _as_int(raids_summary_row, "unique_targets", 0)
+        unique_sources = _as_int(raids_summary_row, "unique_sources", 0)
+
+        active_now = _as_int(active_now_row, "active_now", 0)
+        active_peak = max(active_streamers_series) if active_streamers_series else 0
+        active_avg = (sum(active_streamers_series) / len(active_streamers_series)) if active_streamers_series else 0.0
+
+        eventsub_avg = _as_float(eventsub_summary_row, "avg_utilization_pct", 0.0)
+        eventsub_peak = _as_float(eventsub_summary_row, "peak_utilization_pct", 0.0)
+        eventsub_avg_slots = _as_float(eventsub_summary_row, "avg_used_slots", 0.0)
+        eventsub_peak_slots = _as_float(eventsub_summary_row, "peak_used_slots", 0.0)
+        eventsub_avg_listeners = _as_float(eventsub_summary_row, "avg_listener_count", 0.0)
+        eventsub_max_listeners = _as_int(eventsub_summary_row, "max_listener_count", 0)
+        eventsub_samples = _as_int(eventsub_summary_row, "samples", 0)
+
+        eventsub_latest = {
+            "ts_utc": (eventsub_latest_row["ts_utc"] if eventsub_latest_row and hasattr(eventsub_latest_row, "keys") else None),
+            "utilization_pct": _as_float(eventsub_latest_row, "utilization_pct", 0.0),
+            "used_slots": _as_int(eventsub_latest_row, "used_slots", 0),
+            "total_slots": _as_int(eventsub_latest_row, "total_slots", 0),
+            "listener_count": _as_int(eventsub_latest_row, "listener_count", 0),
+            "reason": (eventsub_latest_row["trigger_reason"] if eventsub_latest_row and hasattr(eventsub_latest_row, "keys") else None),
+        }
+
+        reason_top = []
+        for row in eventsub_reason_rows:
+            reason_top.append(
+                {
+                    "reason": str(row["trigger_reason"] if hasattr(row, "keys") else row[0] or ""),
+                    "samples": int(row["samples"] if hasattr(row, "keys") else row[1] or 0),
+                    "peak_utilization_pct": float(row["peak_utilization_pct"] if hasattr(row, "keys") else row[2] or 0.0),
+                }
+            )
+
+        payload = {
+            "window_hours": hours,
+            "generated_at": _dt.datetime.now(tz=_dt.timezone.utc).isoformat(timespec="seconds"),
+            "summary": {
+                "raids_total": raids_total,
+                "raid_viewers_total": raid_viewers_total,
+                "unique_targets": unique_targets,
+                "unique_sources": unique_sources,
+                "active_streamers_now": active_now,
+                "active_streamers_peak": active_peak,
+                "active_streamers_avg": round(active_avg, 2),
+                "eventsub_samples": eventsub_samples,
+                "eventsub_avg_utilization_pct": round(eventsub_avg, 2),
+                "eventsub_peak_utilization_pct": round(eventsub_peak, 2),
+                "eventsub_avg_used_slots": round(eventsub_avg_slots, 2),
+                "eventsub_peak_used_slots": round(eventsub_peak_slots, 2),
+                "eventsub_avg_listener_count": round(eventsub_avg_listeners, 2),
+                "eventsub_max_listener_count": eventsub_max_listeners,
+                "eventsub_latest": eventsub_latest,
+            },
+            "timeline": {
+                "labels": labels,
+                "raids": raids_series,
+                "raid_viewers": raid_viewers_series,
+                "active_streamers": active_streamers_series,
+                "eventsub_avg_utilization_pct": eventsub_avg_util_series,
+                "eventsub_peak_utilization_pct": eventsub_peak_util_series,
+                "eventsub_avg_used_slots": eventsub_used_slots_series,
+                "eventsub_avg_listener_count": eventsub_listener_series,
+            },
+            "reasons_top": reason_top,
+        }
+        return self._json(payload)
 
     async def _handle_voice_stats(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
