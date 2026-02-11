@@ -142,7 +142,7 @@ class TwitchPartnerRecruitMixin:
             log.debug("PartnerRecruit: Chat-Bot nicht verfügbar")
             return
 
-        # 1. Channel folgen (damit "Follower only" Chats funktionieren)
+        # 1. Follow-Status prüfen (Auto-Follow per API ist bei Twitch nicht mehr möglich)
         if hasattr(chat_bot, "follow_channel"):
             await chat_bot.follow_channel(user_id)
 

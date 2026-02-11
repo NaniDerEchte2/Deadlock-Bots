@@ -9,7 +9,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone, timedelta
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import discord
@@ -78,6 +78,320 @@ class TwitchMonitoringMixin:
                 continue
             seen.append(normalized)
         return [*seen] or [None]
+
+    def _eventsub_capacity_sample_interval_seconds(self) -> int:
+        raw = (os.getenv("TWITCH_EVENTSUB_CAPACITY_SAMPLE_SECONDS") or "").strip()
+        default_value = 300
+        if not raw:
+            return default_value
+        try:
+            value = int(raw)
+        except ValueError:
+            return default_value
+        return max(30, min(3600, value))
+
+    def _eventsub_capacity_retention_days(self) -> int:
+        raw = (os.getenv("TWITCH_EVENTSUB_CAPACITY_RETENTION_DAYS") or "").strip()
+        default_value = 45
+        if not raw:
+            return default_value
+        try:
+            value = int(raw)
+        except ValueError:
+            return default_value
+        return max(7, min(365, value))
+
+    def _collect_eventsub_capacity_snapshot(self, *, reason: str) -> Dict[str, Any]:
+        listeners = list(getattr(self, "_eventsub_ws_listeners", []) or [])
+        listener_rows: List[Dict[str, Any]] = []
+        ready_count = 0
+        failed_count = 0
+        used_slots = 0
+        listeners_at_limit = 0
+
+        for idx, listener in enumerate(listeners, start=1):
+            is_failed = bool(getattr(listener, "is_failed", False))
+            is_ready = bool(getattr(listener, "is_ready", False))
+            if is_ready and not is_failed:
+                ready_count += 1
+            if is_failed:
+                failed_count += 1
+
+            raw_sub_count = getattr(listener, "subscription_count", None)
+            if raw_sub_count is None:
+                raw_sub_count = getattr(listener, "cost", 0)
+            try:
+                sub_count = int(raw_sub_count or 0)
+            except Exception:
+                sub_count = 0
+            sub_count = max(0, min(10, sub_count))
+            free_slots = max(0, 10 - sub_count)
+            if sub_count >= 10:
+                listeners_at_limit += 1
+            used_slots += sub_count
+
+            listener_rows.append(
+                {
+                    "idx": idx,
+                    "ready": 1 if is_ready else 0,
+                    "failed": 1 if is_failed else 0,
+                    "subscriptions": sub_count,
+                    "free_slots": free_slots,
+                }
+            )
+
+        listener_count = len(listeners)
+        total_slots = listener_count * 10
+        headroom_slots = max(0, total_slots - used_slots)
+        utilization_pct = (float(used_slots) / float(total_slots) * 100.0) if total_slots > 0 else 0.0
+
+        return {
+            "ts_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "reason": (reason or "unknown").strip()[:64],
+            "listener_count": listener_count,
+            "ready_listeners": ready_count,
+            "failed_listeners": failed_count,
+            "used_slots": used_slots,
+            "total_slots": total_slots,
+            "headroom_slots": headroom_slots,
+            "listeners_at_limit": listeners_at_limit,
+            "utilization_pct": round(utilization_pct, 2),
+            "listeners": listener_rows,
+        }
+
+    async def _record_eventsub_capacity_snapshot(self, reason: str, *, force: bool = False) -> None:
+        now_monotonic = time.monotonic()
+        interval = self._eventsub_capacity_sample_interval_seconds()
+        last_snapshot = float(getattr(self, "_eventsub_capacity_last_snapshot", 0.0) or 0.0)
+        if not force and last_snapshot and (now_monotonic - last_snapshot) < interval:
+            return
+
+        snapshot = self._collect_eventsub_capacity_snapshot(reason=reason)
+        listeners_json = json.dumps(
+            snapshot.get("listeners", []),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+
+        try:
+            with storage.get_conn() as c:
+                c.execute(
+                    """
+                    INSERT INTO twitch_eventsub_capacity_snapshot (
+                        ts_utc, trigger_reason, listener_count, ready_listeners, failed_listeners,
+                        used_slots, total_slots, headroom_slots, listeners_at_limit, utilization_pct, listeners_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        snapshot.get("ts_utc"),
+                        snapshot.get("reason"),
+                        int(snapshot.get("listener_count") or 0),
+                        int(snapshot.get("ready_listeners") or 0),
+                        int(snapshot.get("failed_listeners") or 0),
+                        int(snapshot.get("used_slots") or 0),
+                        int(snapshot.get("total_slots") or 0),
+                        int(snapshot.get("headroom_slots") or 0),
+                        int(snapshot.get("listeners_at_limit") or 0),
+                        float(snapshot.get("utilization_pct") or 0.0),
+                        listeners_json,
+                    ),
+                )
+
+                last_cleanup = float(getattr(self, "_eventsub_capacity_last_cleanup", 0.0) or 0.0)
+                if (now_monotonic - last_cleanup) >= 3600:
+                    retention_days = self._eventsub_capacity_retention_days()
+                    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+                    c.execute(
+                        "DELETE FROM twitch_eventsub_capacity_snapshot WHERE ts_utc < ?",
+                        (cutoff.isoformat(timespec="seconds"),),
+                    )
+                    setattr(self, "_eventsub_capacity_last_cleanup", now_monotonic)
+
+            setattr(self, "_eventsub_capacity_last_snapshot", now_monotonic)
+            utilization_pct = float(snapshot.get("utilization_pct") or 0.0)
+            if utilization_pct >= 90.0:
+                last_warn = float(getattr(self, "_eventsub_capacity_last_warn", 0.0) or 0.0)
+                if (now_monotonic - last_warn) >= 600:
+                    log.warning(
+                        "EventSub Capacity hoch: %.1f%% (%d/%d Slots, %d Listener, Trigger=%s)",
+                        utilization_pct,
+                        int(snapshot.get("used_slots") or 0),
+                        int(snapshot.get("total_slots") or 0),
+                        int(snapshot.get("listener_count") or 0),
+                        str(snapshot.get("reason") or "unknown"),
+                    )
+                    setattr(self, "_eventsub_capacity_last_warn", now_monotonic)
+        except Exception:
+            log.debug("EventSub: konnte Capacity-Snapshot nicht speichern", exc_info=True)
+
+    async def _get_eventsub_capacity_overview(self, *, hours: int = 24) -> Dict[str, Any]:
+        hours = max(1, min(168, int(hours or 24)))
+        lookback = f"-{hours} hours"
+
+        try:
+            with storage.get_conn() as c:
+                rows = c.execute(
+                    """
+                    SELECT ts_utc, trigger_reason, listener_count, ready_listeners, failed_listeners,
+                           used_slots, total_slots, headroom_slots, listeners_at_limit, utilization_pct
+                      FROM twitch_eventsub_capacity_snapshot
+                     WHERE ts_utc >= datetime('now', ?)
+                     ORDER BY ts_utc ASC
+                    """,
+                    (lookback,),
+                ).fetchall()
+                hourly_rows = c.execute(
+                    """
+                    SELECT CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
+                           COUNT(*) AS samples,
+                           AVG(utilization_pct) AS avg_utilization_pct,
+                           MAX(utilization_pct) AS max_utilization_pct,
+                           AVG(used_slots) AS avg_used_slots,
+                           MAX(used_slots) AS max_used_slots,
+                           AVG(listener_count) AS avg_listener_count,
+                           MAX(listener_count) AS max_listener_count
+                      FROM twitch_eventsub_capacity_snapshot
+                     WHERE ts_utc >= datetime('now', ?)
+                     GROUP BY hour
+                     ORDER BY hour ASC
+                    """,
+                    (lookback,),
+                ).fetchall()
+                reason_rows = c.execute(
+                    """
+                    SELECT trigger_reason,
+                           COUNT(*) AS samples,
+                           MAX(utilization_pct) AS peak_utilization_pct
+                      FROM twitch_eventsub_capacity_snapshot
+                     WHERE ts_utc >= datetime('now', ?)
+                     GROUP BY trigger_reason
+                     ORDER BY samples DESC, trigger_reason ASC
+                    """,
+                    (lookback,),
+                ).fetchall()
+        except Exception:
+            log.debug("EventSub: konnte Capacity-Overview nicht laden", exc_info=True)
+            rows = []
+            hourly_rows = []
+            reason_rows = []
+
+        utilization_values: List[float] = []
+        used_slot_values: List[float] = []
+        listener_count_values: List[float] = []
+        ready_count_values: List[float] = []
+        failed_count_values: List[float] = []
+        for row in rows:
+            if hasattr(row, "keys"):
+                utilization_values.append(float(row["utilization_pct"] or 0.0))
+                used_slot_values.append(float(row["used_slots"] or 0.0))
+                listener_count_values.append(float(row["listener_count"] or 0.0))
+                ready_count_values.append(float(row["ready_listeners"] or 0.0))
+                failed_count_values.append(float(row["failed_listeners"] or 0.0))
+            else:
+                utilization_values.append(float(row[9] or 0.0))
+                used_slot_values.append(float(row[5] or 0.0))
+                listener_count_values.append(float(row[2] or 0.0))
+                ready_count_values.append(float(row[3] or 0.0))
+                failed_count_values.append(float(row[4] or 0.0))
+
+        def _avg(values: List[float]) -> float:
+            return (sum(values) / len(values)) if values else 0.0
+
+        def _max(values: List[float]) -> float:
+            return max(values) if values else 0.0
+
+        def _p95(values: List[float]) -> float:
+            if not values:
+                return 0.0
+            ordered = sorted(values)
+            idx = int(round((len(ordered) - 1) * 0.95))
+            idx = max(0, min(len(ordered) - 1, idx))
+            return ordered[idx]
+
+        current_snapshot = self._collect_eventsub_capacity_snapshot(reason="current")
+
+        hourly: List[Dict[str, Any]] = []
+        for row in hourly_rows:
+            if hasattr(row, "keys"):
+                hourly.append(
+                    {
+                        "hour": int(row["hour"] or 0),
+                        "samples": int(row["samples"] or 0),
+                        "avg_utilization_pct": float(row["avg_utilization_pct"] or 0.0),
+                        "max_utilization_pct": float(row["max_utilization_pct"] or 0.0),
+                        "avg_used_slots": float(row["avg_used_slots"] or 0.0),
+                        "max_used_slots": int(row["max_used_slots"] or 0),
+                        "avg_listener_count": float(row["avg_listener_count"] or 0.0),
+                        "max_listener_count": int(row["max_listener_count"] or 0),
+                    }
+                )
+            else:
+                hourly.append(
+                    {
+                        "hour": int(row[0] or 0),
+                        "samples": int(row[1] or 0),
+                        "avg_utilization_pct": float(row[2] or 0.0),
+                        "max_utilization_pct": float(row[3] or 0.0),
+                        "avg_used_slots": float(row[4] or 0.0),
+                        "max_used_slots": int(row[5] or 0),
+                        "avg_listener_count": float(row[6] or 0.0),
+                        "max_listener_count": int(row[7] or 0),
+                    }
+                )
+
+        reasons: List[Dict[str, Any]] = []
+        for row in reason_rows:
+            if hasattr(row, "keys"):
+                reasons.append(
+                    {
+                        "reason": str(row["trigger_reason"] or ""),
+                        "samples": int(row["samples"] or 0),
+                        "peak_utilization_pct": float(row["peak_utilization_pct"] or 0.0),
+                    }
+                )
+            else:
+                reasons.append(
+                    {
+                        "reason": str(row[0] or ""),
+                        "samples": int(row[1] or 0),
+                        "peak_utilization_pct": float(row[2] or 0.0),
+                    }
+                )
+
+        last_snapshot_at = None
+        if rows:
+            last_row = rows[-1]
+            last_snapshot_at = (
+                str(last_row["ts_utc"]) if hasattr(last_row, "keys") else str(last_row[0])
+            )
+
+        return {
+            "window_hours": hours,
+            "samples": len(rows),
+            "last_snapshot_at": last_snapshot_at,
+            "avg_utilization_pct": round(_avg(utilization_values), 2),
+            "p95_utilization_pct": round(_p95(utilization_values), 2),
+            "max_utilization_pct": round(_max(utilization_values), 2),
+            "avg_used_slots": round(_avg(used_slot_values), 2),
+            "max_used_slots": int(round(_max(used_slot_values))),
+            "avg_listener_count": round(_avg(listener_count_values), 2),
+            "max_listener_count": int(round(_max(listener_count_values))),
+            "avg_ready_listeners": round(_avg(ready_count_values), 2),
+            "max_failed_listeners": int(round(_max(failed_count_values))),
+            "hourly": hourly,
+            "reasons": reasons,
+            "current": {
+                "ts_utc": current_snapshot.get("ts_utc"),
+                "listener_count": int(current_snapshot.get("listener_count") or 0),
+                "ready_listeners": int(current_snapshot.get("ready_listeners") or 0),
+                "failed_listeners": int(current_snapshot.get("failed_listeners") or 0),
+                "used_slots": int(current_snapshot.get("used_slots") or 0),
+                "total_slots": int(current_snapshot.get("total_slots") or 0),
+                "headroom_slots": int(current_snapshot.get("headroom_slots") or 0),
+                "listeners_at_limit": int(current_snapshot.get("listeners_at_limit") or 0),
+                "utilization_pct": float(current_snapshot.get("utilization_pct") or 0.0),
+            },
+        }
 
     def _get_raid_enabled_streamers_for_eventsub(self) -> List[Dict[str, str]]:
         """Broadcaster-Liste für EventSub stream.offline (nur raid_bot_enabled=1)."""
@@ -255,6 +569,10 @@ class TwitchMonitoringMixin:
 
         if not raid_enabled_streamers:
             log.info("EventSub WS: Keine Streamer für EventSub monitoring gefunden.")
+            try:
+                await self._record_eventsub_capacity_snapshot("startup_no_streamers", force=True)
+            except Exception:
+                log.debug("EventSub: Snapshot für startup_no_streamers fehlgeschlagen", exc_info=True)
             setattr(self, "_eventsub_ws_started", False)  # Reset flag
             return
 
@@ -289,6 +607,7 @@ class TwitchMonitoringMixin:
             token_resolver = _resolve_bot_token
         else:
             log.warning("EventSub WS: Kein Token Manager vorhanden, Subscriptions könnten fehlschlagen.")
+        setattr(self, "_eventsub_ws_token_resolver", token_resolver)
 
         from .eventsub_ws import EventSubWSListener
         
@@ -304,6 +623,7 @@ class TwitchMonitoringMixin:
                 # oder bis der Stream wieder live geht (dann wird sie eh neu erstellt)
             except Exception:
                 log.exception("EventSub WS: Offline-Callback fehlgeschlagen für %s", login)
+        setattr(self, "_eventsub_ws_offline_cb", _offline_cb)
 
         # stream.online wird NICHT mehr über EventSub überwacht!
         # Polling (_tick) erkennt Go-Live und ruft dann _handle_stream_went_live() auf
@@ -337,12 +657,47 @@ class TwitchMonitoringMixin:
 
                 # 2. Dynamisch stream.offline Subscription hinzufügen
                 # Jetzt wo der Stream live ist, wollen wir wissen, wann er offline geht (für Auto-Raid)
-                listeners_list = getattr(self, "_eventsub_ws_listeners", [])
+                listeners_list: List[EventSubWSListener] = getattr(self, "_eventsub_ws_listeners", [])
                 target_listener = None
                 for l in listeners_list:
                     if l.has_capacity and not l.is_failed:
                         target_listener = l
                         break
+
+                if not target_listener and len(listeners_list) < 3 and getattr(self, "api", None):
+                    target_listener = EventSubWSListener(self.api, log, token_resolver=token_resolver)
+                    target_listener.set_callback("stream.offline", _offline_cb)
+                    raid_cb = getattr(self, "_eventsub_ws_raid_cb", None)
+                    if callable(raid_cb):
+                        target_listener.set_callback("channel.raid", raid_cb)
+                    listeners_list.append(target_listener)
+                    listener_idx = len(listeners_list)
+                    log.info(
+                        "Polling: Erstelle EventSub Listener #%d für dynamische stream.offline subscription von %s",
+                        listener_idx,
+                        login or bid,
+                    )
+                    asyncio.create_task(
+                        target_listener.run(),
+                        name=f"twitch.eventsub.ws.{listener_idx - 1}",
+                    )
+                    ready = await target_listener.wait_until_ready(timeout=8.0)
+                    if not ready:
+                        log.warning(
+                            "Polling: Neuer EventSub Listener #%d nicht bereit (stream.offline für %s übersprungen)",
+                            listener_idx,
+                            login or bid,
+                        )
+                        await self._record_eventsub_capacity_snapshot(
+                            "stream_offline_listener_not_ready",
+                            force=True,
+                        )
+                        target_listener = None
+                    else:
+                        await self._record_eventsub_capacity_snapshot(
+                            "stream_offline_listener_created",
+                            force=True,
+                        )
 
                 if target_listener:
                     # Hole Bot Token
@@ -365,16 +720,21 @@ class TwitchMonitoringMixin:
                                         "Polling: stream.offline dynamisch hinzugefügt für %s (jetzt live → warte auf offline)",
                                         login or bid
                                     )
+                                    await self._record_eventsub_capacity_snapshot(
+                                        "stream_offline_subscribed",
+                                        force=True,
+                                    )
                         except Exception:
                             log.exception("Polling: Konnte stream.offline nicht dynamisch hinzufügen für %s", login or bid)
                 else:
                     log.warning("Polling: Kein EventSub Listener mit Kapazität für stream.offline von %s", login or bid)
+                    await self._record_eventsub_capacity_snapshot(
+                        "stream_offline_no_capacity",
+                        force=True,
+                    )
 
             except Exception:
                 log.exception("Polling: Go-Live Handler fehlgeschlagen für %s", login or bid)
-
-        # Speichere Handler als Instanz-Attribut damit Polling darauf zugreifen kann
-        setattr(self, "_handle_stream_went_live", _handle_stream_went_live)
 
         async def _raid_cb(to_bid: str, to_login: str, event: dict):
             """
@@ -410,11 +770,15 @@ class TwitchMonitoringMixin:
                 )
             except Exception:
                 log.exception("EventSub WS: Raid-Callback fehlgeschlagen für %s", to_login or to_bid)
+        setattr(self, "_eventsub_ws_raid_cb", _raid_cb)
+
+        # Speichere Handler als Instanz-Attribut damit Polling darauf zugreifen kann
+        setattr(self, "_handle_stream_went_live", _handle_stream_went_live)
 
         def get_or_create_listener() -> Optional[EventSubWSListener]:
             # Versuche existierenden Listener mit Platz (< 10 cost per transport limit)
             for l in listeners:
-                if l.cost < 10:
+                if l.has_capacity and not l.is_failed:
                     return l
             # Wenn kein Platz und < 3 Listener (Twitch erlaubt max 3 WebSocket Transports), erstelle neuen
             if len(listeners) < 3:
@@ -429,6 +793,7 @@ class TwitchMonitoringMixin:
         # Go-Live Detection erfolgt über Polling (_tick), das dann _handle_stream_went_live() aufruft
         # channel.raid wird dynamisch erstellt wenn ein Raid gestartet wird
         subs_added = 0
+        startup_capacity_exhausted = False
         for entry in raid_enabled_streamers:
             bid = entry.get("twitch_user_id")
             login = entry.get("twitch_login", "").lower()
@@ -444,12 +809,22 @@ class TwitchMonitoringMixin:
                     log.debug("EventSub WS: stream.offline beim Start subscribed für %s (aktuell live)", login)
                 else:
                     log.error("EventSub WS: Limit erreicht (3 Connections, alle voll). Konnte stream.offline für %s nicht abonnieren.", login)
+                    startup_capacity_exhausted = True
 
         log.info(
             "EventSub WS: %d stream.offline Subscriptions auf %d WebSocket(s) verteilt (nur für live Streams). "
             "Go-Live Detection erfolgt via Polling.",
             subs_added, len(listeners)
         )
+        try:
+            await self._record_eventsub_capacity_snapshot("startup_distribution", force=True)
+        except Exception:
+            log.debug("EventSub: Startup-Capacity-Snapshot fehlgeschlagen", exc_info=True)
+        if startup_capacity_exhausted:
+            try:
+                await self._record_eventsub_capacity_snapshot("startup_no_capacity", force=True)
+            except Exception:
+                log.debug("EventSub: Startup-No-Capacity-Snapshot fehlgeschlagen", exc_info=True)
 
         # 4. Alle Listener starten
         tasks = []
@@ -465,6 +840,10 @@ class TwitchMonitoringMixin:
                 raise
             except Exception:
                 log.exception("EventSub WS: Ein oder mehrere Listener beendet mit Fehler")
+                try:
+                    await self._record_eventsub_capacity_snapshot("listener_runtime_error", force=True)
+                except Exception:
+                    log.debug("EventSub: Snapshot bei listener_runtime_error fehlgeschlagen", exc_info=True)
                 setattr(self, "_eventsub_ws_started", False)
 
 
@@ -478,10 +857,14 @@ class TwitchMonitoringMixin:
         Returns:
             True wenn die Subscription erfolgreich erstellt wurde, False sonst.
         """
-        listeners: List[EventSubWSListener] = getattr(self, "_eventsub_ws_listeners", [])
-        if not listeners:
-            log.warning("EventSub: Keine aktiven Listener verfügbar für dynamische raid subscription")
+        from .eventsub_ws import EventSubWSListener
+
+        if not getattr(self, "api", None):
+            log.error("EventSub: Keine API verfügbar für channel.raid subscription")
+            await self._record_eventsub_capacity_snapshot("raid_no_api", force=True)
             return False
+
+        listeners: List[EventSubWSListener] = getattr(self, "_eventsub_ws_listeners", [])
 
         # Finde einen Listener mit Kapazität
         target_listener = None
@@ -490,23 +873,65 @@ class TwitchMonitoringMixin:
                 target_listener = l
                 break
 
+        if not target_listener and len(listeners) < 3:
+            token_resolver = getattr(self, "_eventsub_ws_token_resolver", None)
+            target_listener = EventSubWSListener(self.api, log, token_resolver=token_resolver)
+            offline_cb = getattr(self, "_eventsub_ws_offline_cb", None)
+            raid_cb = getattr(self, "_eventsub_ws_raid_cb", None)
+            if callable(offline_cb):
+                target_listener.set_callback("stream.offline", offline_cb)
+            if callable(raid_cb):
+                target_listener.set_callback("channel.raid", raid_cb)
+
+            listeners.append(target_listener)
+            setattr(self, "_eventsub_ws_listeners", listeners)
+            listener_idx = len(listeners)
+            log.info(
+                "EventSub: Erstelle zusätzlichen Listener #%d für channel.raid subscription (target: %s)",
+                listener_idx,
+                broadcaster_login,
+            )
+            asyncio.create_task(
+                target_listener.run(),
+                name=f"twitch.eventsub.ws.{listener_idx - 1}",
+            )
+            ready = await target_listener.wait_until_ready(timeout=8.0)
+            if not ready:
+                log.error(
+                    "EventSub: Neuer Listener #%d wurde nicht rechtzeitig bereit für channel.raid target %s",
+                    listener_idx,
+                    broadcaster_login,
+                )
+                await self._record_eventsub_capacity_snapshot(
+                    "raid_listener_not_ready",
+                    force=True,
+                )
+                return False
+            await self._record_eventsub_capacity_snapshot(
+                "raid_listener_created",
+                force=True,
+            )
+
         if not target_listener:
             log.error(
                 "EventSub: Kein verfügbarer Listener mit Kapazität für channel.raid subscription (target: %s)",
                 broadcaster_login
             )
+            await self._record_eventsub_capacity_snapshot("raid_no_capacity", force=True)
             return False
 
         # Hole Bot Token für die Subscription
         bot_token_mgr = getattr(self, "_bot_token_manager", None)
         if not bot_token_mgr:
             log.error("EventSub: Kein Bot Token Manager verfügbar")
+            await self._record_eventsub_capacity_snapshot("raid_no_token_manager", force=True)
             return False
 
         try:
             token, _ = await bot_token_mgr.get_valid_token()
             if not token:
                 log.error("EventSub: Konnte Bot-Token nicht laden für channel.raid subscription")
+                await self._record_eventsub_capacity_snapshot("raid_token_missing", force=True)
                 return False
 
             # Strip "oauth:" prefix wenn vorhanden
@@ -516,6 +941,7 @@ class TwitchMonitoringMixin:
 
         except Exception:
             log.exception("EventSub: Token-Abruf fehlgeschlagen für channel.raid subscription")
+            await self._record_eventsub_capacity_snapshot("raid_token_error", force=True)
             return False
 
         condition = {"to_broadcaster_user_id": str(broadcaster_id)}
@@ -547,12 +973,14 @@ class TwitchMonitoringMixin:
                     broadcaster_id,
                     listener_idx,
                 )
+                await self._record_eventsub_capacity_snapshot("raid_subscribed", force=True)
                 return True
 
         log.error(
             "EventSub: Dynamische channel.raid subscription fehlgeschlagen für %s (kein geeigneter Listener erfolgreich)",
             broadcaster_login,
         )
+        await self._record_eventsub_capacity_snapshot("raid_subscribe_failed", force=True)
         return False
 
     async def _start_eventsub_offline_listener(self):
@@ -711,6 +1139,11 @@ class TwitchMonitoringMixin:
             await self._process_postings(tracked, streams_by_login)
         except Exception:
             log.exception("Fehler in _process_postings")
+
+        try:
+            await self._record_eventsub_capacity_snapshot("poll_tick")
+        except Exception:
+            log.debug("EventSub: Snapshot im Poll-Tick fehlgeschlagen", exc_info=True)
 
         self._tick_count += 1
         if self._tick_count % self._log_every_n == 0:

@@ -40,6 +40,13 @@ DB_FILE = str(Path(central_db.db_path()))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('StandaloneRankBot')
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
 # Load secrets from Windows Vault
 try:
     import keyring
@@ -81,6 +88,7 @@ RANK_SELECTION_CHANNEL_ID = 1398021105339334666  # Channel für automatische Vie
 
 # Deadlock MMR Sync
 MMR_API_URL = "https://api.deadlock-api.com/v1/players/mmr"
+MMR_AUTO_SYNC_ENABLED = _env_flag("DEADLOCK_MMR_AUTO_SYNC", default=False)
 MMR_SYNC_START_HOUR = int(os.getenv("DEADLOCK_MMR_SYNC_HOUR", "5"))
 MMR_SYNC_TZ = os.getenv("DEADLOCK_MMR_SYNC_TZ", "Europe/Berlin")
 MMR_SYNC_MAX_RPS = float(os.getenv("DEADLOCK_MMR_MAX_RPS", "20"))
@@ -484,10 +492,15 @@ def ensure_notification_tasks_running(mode: str = "normal", interval: int = 30) 
     else:
         started_flags["daily_cleanup"] = False
 
-    if not daily_mmr_sync_check.is_running():
-        daily_mmr_sync_check.start()
-        started_flags["daily_mmr_sync"] = True
+    if MMR_AUTO_SYNC_ENABLED:
+        if not daily_mmr_sync_check.is_running():
+            daily_mmr_sync_check.start()
+            started_flags["daily_mmr_sync"] = True
+        else:
+            started_flags["daily_mmr_sync"] = False
     else:
+        if daily_mmr_sync_check.is_running():
+            daily_mmr_sync_check.stop()
         started_flags["daily_mmr_sync"] = False
 
     return {
@@ -2095,6 +2108,8 @@ async def daily_cleanup_check():
 
 @tasks.loop(minutes=1)
 async def daily_mmr_sync_check():
+    if not MMR_AUTO_SYNC_ENABLED:
+        return
     if not _mmr_should_run_now():
         return
     if MMR_SYNC_LOCK.locked():
@@ -2222,6 +2237,10 @@ async def on_ready():
     logger.info("   !rtest_users @user1 @user2 - Test-User setzen")
     logger.info("   !rstart - System starten")
     logger.info("   !rdb - Datenbank anzeigen")
+    logger.info(
+        "   Auto MMR Sync: %s",
+        "AKTIV" if MMR_AUTO_SYNC_ENABLED else "DEAKTIVIERT (manuelle Rangwahl)",
+    )
 
     if not standalone_command_poller.is_running():
         standalone_command_poller.start()

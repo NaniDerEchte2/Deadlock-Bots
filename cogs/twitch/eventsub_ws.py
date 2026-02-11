@@ -80,6 +80,11 @@ class EventSubWSListener:
             return 9999 # Mark as full/broken
         # In a more advanced version, we could look up costs per sub_type.
         return len(self._subscriptions)
+
+    @property
+    def subscription_count(self) -> int:
+        """Number of tracked subscriptions assigned to this listener."""
+        return len(self._subscriptions)
     
     @property
     def has_capacity(self) -> bool:
@@ -89,6 +94,28 @@ class EventSubWSListener:
     @property
     def is_failed(self) -> bool:
         return self._failed
+
+    @property
+    def is_ready(self) -> bool:
+        """True once Twitch assigned a session_id for dynamic subscriptions."""
+        return bool(self._session_id) and not self._failed
+
+    async def wait_until_ready(self, timeout: float = 8.0, poll_interval: float = 0.1) -> bool:
+        """
+        Wait until this listener has a valid EventSub session_id.
+
+        Returns:
+            True if ready within timeout, False otherwise.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout)
+        while loop.time() < deadline:
+            if self.is_ready:
+                return True
+            if self._failed or self._stop:
+                return False
+            await asyncio.sleep(max(0.01, poll_interval))
+        return self.is_ready
 
     def stop(self) -> None:
         """Signal the listener to stop."""
@@ -166,8 +193,7 @@ class EventSubWSListener:
     async def run(self) -> None:
         """Start the listener and handle reconnects."""
         if not self._subscriptions:
-            self.log.debug("EventSub WS: No subscriptions added. Listener not started.")
-            return
+            self.log.debug("EventSub WS: Starting listener without initial subscriptions.")
 
         is_reconnect = False
         while not self._stop:
@@ -278,6 +304,10 @@ class EventSubWSListener:
             return None
 
     async def _register_all_subscriptions(self, session_id: str) -> None:
+        if not self._subscriptions:
+            self.log.debug("EventSub WS: No initial subscriptions to register.")
+            return
+
         token = await self._resolve_token()
         if not token:
             self.log.error("EventSub WS: No user token available. Subscriptions will fail.")

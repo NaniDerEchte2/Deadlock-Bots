@@ -88,6 +88,7 @@ class DashboardStatsMixin:
         retention_stats = stats.get("retention") or {}
         discovery_stats = stats.get("discovery") or {}
         chat_stats = stats.get("chat") or {}
+        eventsub_stats = stats.get("eventsub") or {}
 
         min_samples = _parse_int("min_samples", "samples")
         min_avg = _parse_float("min_avg", "avg")
@@ -1189,6 +1190,12 @@ class DashboardStatsMixin:
             except (TypeError, ValueError):
                 return "-"
 
+        def _fmt_percent_value(value, *, digits: int = 1) -> str:
+            try:
+                return f"{float(value):.{digits}f}%"
+            except (TypeError, ValueError):
+                return "-"
+
         ret_sessions = int(retention_stats.get("sessions") or 0)
         retention_tiles = "".join(
             f"<div class='user-summary-item'><span class='label'>{html.escape(label)}</span><span class='value'>{value}</span></div>"
@@ -1328,7 +1335,87 @@ class DashboardStatsMixin:
         else:
             content_card = ""
 
-        insights_html = f"{retention_card}{discovery_card}{content_card}{chat_card}"
+        eventsub = eventsub_stats if isinstance(eventsub_stats, dict) else {}
+        eventsub_current = eventsub.get("current") if isinstance(eventsub.get("current"), dict) else {}
+        window_hours = int(eventsub.get("window_hours") or 24)
+        eventsub_samples = int(eventsub.get("samples") or 0)
+        eventsub_last_snapshot = str(eventsub.get("last_snapshot_at") or "-")
+        eventsub_tiles = "".join(
+            f"<div class='user-summary-item'><span class='label'>{html.escape(label)}</span><span class='value'>{value}</span></div>"
+            for label, value in [
+                ("Jetzt", _fmt_percent_value(eventsub_current.get("utilization_pct"))),
+                (f"Ø {window_hours}h", _fmt_percent_value(eventsub.get("avg_utilization_pct"))),
+                ("P95", _fmt_percent_value(eventsub.get("p95_utilization_pct"))),
+                ("Peak", _fmt_percent_value(eventsub.get("max_utilization_pct"))),
+                ("Slots jetzt", f"{_fmt_int(eventsub_current.get('used_slots'))} / {_fmt_int(eventsub_current.get('total_slots'))}"),
+                ("Peak Slots", _fmt_int(eventsub.get("max_used_slots"))),
+                ("Listener jetzt", _fmt_int(eventsub_current.get("listener_count"))),
+                ("Max Listener", _fmt_int(eventsub.get("max_listener_count"))),
+            ]
+        )
+
+        eventsub_hourly = eventsub.get("hourly") if isinstance(eventsub.get("hourly"), list) else []
+        if eventsub_hourly:
+            eventsub_hourly_rows = "".join(
+                "<tr>"
+                f"<td data-sort-type='number' data-value='{int(row.get('hour') or 0)}'>{int(row.get('hour') or 0):02d}:00</td>"
+                f"<td data-sort-type='number' data-value='{int(row.get('samples') or 0)}'>{int(row.get('samples') or 0)}</td>"
+                f"<td data-sort-type='number' data-value='{float(row.get('avg_utilization_pct') or 0.0):.4f}'>{_fmt_percent_value(row.get('avg_utilization_pct'))}</td>"
+                f"<td data-sort-type='number' data-value='{float(row.get('max_utilization_pct') or 0.0):.4f}'>{_fmt_percent_value(row.get('max_utilization_pct'))}</td>"
+                f"<td data-sort-type='number' data-value='{float(row.get('avg_used_slots') or 0.0):.4f}'>{_fmt_float(row.get('avg_used_slots'))}</td>"
+                f"<td data-sort-type='number' data-value='{int(row.get('max_used_slots') or 0)}'>{_fmt_int(row.get('max_used_slots'))}</td>"
+                "</tr>"
+                for row in sorted(
+                    [r for r in eventsub_hourly if isinstance(r, dict)],
+                    key=lambda item: int(item.get("hour") or 0),
+                )
+            )
+        else:
+            eventsub_hourly_rows = "<tr><td colspan=6><i>Noch keine EventSub-Snapshots im ausgewählten Fenster.</i></td></tr>"
+
+        eventsub_reasons = eventsub.get("reasons") if isinstance(eventsub.get("reasons"), list) else []
+        if eventsub_reasons:
+            reason_lines = "".join(
+                "<li>"
+                f"<strong>{html.escape(str(row.get('reason') or '-'))}</strong>: "
+                f"{_fmt_int(row.get('samples'))} Samples, Peak {_fmt_percent_value(row.get('peak_utilization_pct'))}"
+                "</li>"
+                for row in eventsub_reasons[:6]
+                if isinstance(row, dict)
+            )
+            eventsub_reason_html = (
+                "<ul class='status-meta' style='margin:.6rem 0 0 .2rem; padding-left:1rem;'>"
+                f"{reason_lines}"
+                "</ul>"
+            )
+        else:
+            eventsub_reason_html = "<div class='status-meta' style='margin-top:.5rem;'>Keine Trigger-Auswertung vorhanden.</div>"
+
+        eventsub_card = f"""
+<div class="card" style="margin-top:1.4rem;">
+  <div class="card-header">
+    <h2>EventSub Kapazität</h2>
+    <div class="status-meta">{window_hours}h Fenster • Samples: {eventsub_samples} • Letzter Snapshot: {html.escape(eventsub_last_snapshot)}</div>
+  </div>
+  <div class="user-summary">{eventsub_tiles}</div>
+  <table class="sortable-table" style="margin-top:1rem;">
+    <thead>
+      <tr>
+        <th data-sort-type="number">Stunde (UTC)</th>
+        <th data-sort-type="number">Samples</th>
+        <th data-sort-type="number">Ø Auslastung</th>
+        <th data-sort-type="number">Peak Auslastung</th>
+        <th data-sort-type="number">Ø Used Slots</th>
+        <th data-sort-type="number">Peak Used Slots</th>
+      </tr>
+    </thead>
+    <tbody>{eventsub_hourly_rows}</tbody>
+  </table>
+  {eventsub_reason_html}
+</div>
+"""
+
+        insights_html = f"{retention_card}{discovery_card}{content_card}{chat_card}{eventsub_card}"
 
         body = f"""
 <h1 style="margin:.2rem 0 1rem 0;">Twitch Stats</h1>

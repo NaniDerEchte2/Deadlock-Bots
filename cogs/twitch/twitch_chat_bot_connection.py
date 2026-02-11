@@ -209,7 +209,12 @@ class ConnectionMixin:
             return False
 
     async def follow_channel(self, broadcaster_id: str) -> bool:
-        """Folgt einem Channel mit dem Bot-Account (nötig für Follower-only Chats)."""
+        """
+        Prüft, ob der Bot dem Channel bereits folgt.
+
+        Hinweis: Twitch bietet seit dem 28.07.2021 keine öffentliche Helix-API
+        mehr zum Erstellen von Follows an.
+        """
         safe_bot_id = self.bot_id_safe or self.bot_id
         if not safe_bot_id or not self._token_manager:
             log.debug("follow_channel: Kein Bot-ID oder Token-Manager verfügbar")
@@ -227,23 +232,47 @@ class ConnectionMixin:
                     headers = {
                         "Client-ID": self._client_id,
                         "Authorization": f"Bearer {access_token}",
-                        "Content-Type": "application/json",
                     }
-                    payload = {"from_id": str(safe_bot_id), "to_id": str(broadcaster_id)}
-                    async with session.post(
-                        "https://api.twitch.tv/helix/users/follows",
+                    params = {
+                        "user_id": str(safe_bot_id),
+                        "broadcaster_id": str(broadcaster_id),
+                    }
+                    async with session.get(
+                        "https://api.twitch.tv/helix/channels/followed",
                         headers=headers,
-                        json=payload,
+                        params=params,
                     ) as r:
-                        if r.status in {200, 204}:
-                            log.info("follow_channel: Bot folgt jetzt %s", broadcaster_id)
-                            return True
-                        if r.status == 401 and attempt == 0:
-                            log.debug("follow_channel: 401 für %s, triggere Token-Refresh", broadcaster_id)
-                            await self._token_manager.get_valid_token(force_refresh=True)
-                            continue
+                        if r.status == 200:
+                            data = await r.json(content_type=None)
+                            follows = data.get("data", []) if isinstance(data, dict) else []
+                            if follows:
+                                log.info("follow_channel: Bot folgt bereits %s", broadcaster_id)
+                                return True
+
+                            if not getattr(self, "_follow_api_create_removed_logged", False):
+                                log.info(
+                                    "follow_channel: Twitch-API kann keine Follows mehr erstellen "
+                                    "(abgeschaltet am 28.07.2021). Manual Follow erforderlich."
+                                )
+                                self._follow_api_create_removed_logged = True
+                            log.debug("follow_channel: Bot folgt %s derzeit nicht", broadcaster_id)
+                            return False
                         txt = await r.text()
-                        log.debug("follow_channel: HTTP %s – %s", r.status, txt[:200])
+                        if r.status == 401:
+                            txt_l = txt.lower()
+                            if "user:read:follows" in txt_l or "missing required scope" in txt_l:
+                                if not getattr(self, "_follow_scope_missing_logged", False):
+                                    log.warning(
+                                        "follow_channel: Bot-Token ohne Scope user:read:follows; "
+                                        "Follow-Status kann nicht geprüft werden."
+                                    )
+                                    self._follow_scope_missing_logged = True
+                                return False
+                            if attempt == 0:
+                                log.debug("follow_channel: 401 für %s, triggere Token-Refresh", broadcaster_id)
+                                await self._token_manager.get_valid_token(force_refresh=True)
+                                continue
+                        log.debug("follow_channel: Follow-Check HTTP %s – %s", r.status, txt[:200])
                         return False
             except Exception:
                 log.debug("follow_channel: Exception", exc_info=True)

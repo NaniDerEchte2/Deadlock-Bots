@@ -381,6 +381,14 @@ class TwitchDashboardMixin:
         stats["category"]["unique_streamers"] = cat_uniq
         stats["avg_viewers_all"] = cat_avg
         stats["avg_viewers_tracked"] = tr_avg
+
+        try:
+            eventsub_fetcher = getattr(self, "_get_eventsub_capacity_overview", None)
+            if callable(eventsub_fetcher):
+                stats["eventsub"] = await eventsub_fetcher(hours=24)
+        except Exception:
+            log.debug("Konnte EventSub-Capacity-Overview nicht laden", exc_info=True)
+
         return stats
 
     async def _dashboard_streamer_analytics_data_old(self, streamer_login: str, days: int = 30) -> dict:

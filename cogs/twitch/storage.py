@@ -421,7 +421,33 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_twitch_subs_user_ts ON twitch_subscriptions_snapshot(twitch_user_id, snapshot_at)"
     )
 
-    # 8b) Ads Schedule Snapshots
+    # 8b) EventSub Capacity Snapshots
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_eventsub_capacity_snapshot (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts_utc             TEXT DEFAULT CURRENT_TIMESTAMP,
+            trigger_reason     TEXT,
+            listener_count     INTEGER DEFAULT 0,
+            ready_listeners    INTEGER DEFAULT 0,
+            failed_listeners   INTEGER DEFAULT 0,
+            used_slots         INTEGER DEFAULT 0,
+            total_slots        INTEGER DEFAULT 0,
+            headroom_slots     INTEGER DEFAULT 0,
+            listeners_at_limit INTEGER DEFAULT 0,
+            utilization_pct    REAL DEFAULT 0,
+            listeners_json     TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_eventsub_capacity_ts ON twitch_eventsub_capacity_snapshot(ts_utc)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_eventsub_capacity_reason ON twitch_eventsub_capacity_snapshot(trigger_reason, ts_utc)"
+    )
+
+    # 8c) Ads Schedule Snapshots
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS twitch_ads_schedule_snapshot (

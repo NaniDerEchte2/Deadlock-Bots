@@ -1262,7 +1262,7 @@ class RaidBot:
         except Exception:
             log.debug("Konnte Channel %s nicht vorab beitreten", to_broadcaster_login)
 
-        # Bot dem Channel folgen – damit die Nachricht auch in "Follower only" Chats gesendet werden kann
+        # Follow-Status prüfen (Auto-Follow per API ist bei Twitch nicht mehr möglich).
         if target_id and hasattr(self.chat_bot, "follow_channel"):
             await self.chat_bot.follow_channel(target_id)
 
