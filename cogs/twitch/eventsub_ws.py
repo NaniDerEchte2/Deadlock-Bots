@@ -15,6 +15,11 @@ class EventSubReconnect(Exception):
     pass
 
 
+class EventSubTransportSessionInvalid(Exception):
+    """Signals that the websocket transport session is no longer usable."""
+    pass
+
+
 class EventSubWSListener:
     """
     Consolidated EventSub WebSocket Client.
@@ -50,6 +55,19 @@ class EventSubWSListener:
         status = getattr(exc, "status", None)
         message = f"{getattr(exc, 'message', '')} {exc}".lower()
         return status == 409 and "already exists" in message
+
+    @staticmethod
+    def _is_transport_session_gone_error(exc: Exception) -> bool:
+        status = getattr(exc, "status", None)
+        message = f"{getattr(exc, 'message', '')} {exc}".lower()
+        if status != 400:
+            return False
+        return (
+            "websocket transport session does not exist" in message
+            or "session does not exist" in message
+            or "has already disconnected" in message
+            or "session has disconnected" in message
+        )
 
     def _has_subscription(self, sub_type: str, broadcaster_id: str, condition: Optional[Dict]) -> bool:
         bid = str(broadcaster_id)
@@ -120,6 +138,7 @@ class EventSubWSListener:
     def stop(self) -> None:
         """Signal the listener to stop."""
         self._stop = True
+        self._session_id = None
 
     def add_subscription(self, sub_type: str, broadcaster_id: str, condition: Optional[Dict] = None):
         """Add a subscription to be registered on connect."""
@@ -138,8 +157,12 @@ class EventSubWSListener:
         Returns:
             True if successful, False otherwise.
         """
-        if not self._session_id:
+        if not self.is_ready:
             self.log.error("EventSub WS: Keine Session ID verfügbar für dynamische Subscription")
+            return False
+        session_id = self._session_id
+        if not session_id:
+            self.log.error("EventSub WS: Session ID wurde vor dynamischer Subscription zurückgesetzt")
             return False
 
         cond = condition or {"broadcaster_user_id": str(broadcaster_id)}
@@ -165,7 +188,7 @@ class EventSubWSListener:
 
         try:
             await self.api.subscribe_eventsub_websocket(
-                session_id=self._session_id,
+                session_id=session_id,
                 sub_type=sub_type,
                 condition=cond,
                 oauth_token=token,
@@ -183,6 +206,15 @@ class EventSubWSListener:
                     broadcaster_id,
                 )
                 return True
+            if self._is_transport_session_gone_error(e):
+                self._session_id = None
+                self.log.warning(
+                    "EventSub WS: Transport-Session nicht mehr gültig bei dynamischer Subscription %s für %s. "
+                    "Warte auf Reconnect.",
+                    sub_type,
+                    broadcaster_id,
+                )
+                return False
             self.log.error("EventSub WS: Dynamische Subscription fehlgeschlagen für %s (%s): %s", broadcaster_id, sub_type, e)
             return False
 
@@ -208,6 +240,12 @@ class EventSubWSListener:
                     self._ws_url = new_url
                 is_reconnect = True
                 continue
+            except EventSubTransportSessionInvalid as exc:
+                self.log.warning("%s. Reconnecting in 1s", exc)
+                await asyncio.sleep(1)
+                self._ws_url = "wss://eventsub.wss.twitch.tv/ws"
+                is_reconnect = False
+                continue
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -224,23 +262,27 @@ class EventSubWSListener:
                 is_reconnect = False
 
     async def _run_once(self, is_reconnect: bool = False) -> None:
+        self._session_id = None
         session = self.api.get_http_session()
         ws_url = self._ws_url
-        async with session.ws_connect(ws_url, heartbeat=20) as ws:
-            session_id = await self._wait_for_welcome(ws)
-            if not session_id:
-                raise ConnectionError("EventSub WS: No session_id received, aborting.")
+        try:
+            async with session.ws_connect(ws_url, heartbeat=20) as ws:
+                session_id = await self._wait_for_welcome(ws)
+                if not session_id:
+                    raise ConnectionError("EventSub WS: No session_id received, aborting.")
 
-            if not is_reconnect:
-                await self._register_all_subscriptions(session_id)
-            else:
-                self.log.info("EventSub WS: Reconnect successful - Subscriptions are migrated by Twitch.")
+                if not is_reconnect:
+                    await self._register_all_subscriptions(session_id)
+                else:
+                    self.log.info("EventSub WS: Reconnect successful - Subscriptions are migrated by Twitch.")
 
-            async for msg in ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    await self._handle_message(msg.json())
-                elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                    break
+                async for msg in ws:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        await self._handle_message(msg.json())
+                    elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                        break
+        finally:
+            self._session_id = None
         
         # If we exit the loop and we are not stopping, it's an error
         if not self._stop:
@@ -355,6 +397,16 @@ class EventSubWSListener:
                         bid,
                     )
                     continue
+                if self._is_transport_session_gone_error(e):
+                    self._session_id = None
+                    raise EventSubTransportSessionInvalid(
+                        "EventSub WS: WebSocket transport session became invalid while registering subscriptions"
+                    ) from e
+                if isinstance(e, asyncio.TimeoutError):
+                    self._session_id = None
+                    raise EventSubTransportSessionInvalid(
+                        "EventSub WS: Timeout while registering subscriptions for active transport session"
+                    ) from e
                 msg = str(e)
                 if "429" in msg or "transport limit exceeded" in msg.lower() or "websocket transport" in msg.lower():
                     # 429 Error - Transport limit erreicht
@@ -391,6 +443,16 @@ class EventSubWSListener:
                         successful_count += 1
                         self.log.info("EventSub WS: Retry nach 429 erfolgreich: %s for %s", sub_type, bid)
                     except Exception as retry_err:
+                        if self._is_transport_session_gone_error(retry_err):
+                            self._session_id = None
+                            raise EventSubTransportSessionInvalid(
+                                "EventSub WS: WebSocket transport session became invalid during 429 retry"
+                            ) from retry_err
+                        if isinstance(retry_err, asyncio.TimeoutError):
+                            self._session_id = None
+                            raise EventSubTransportSessionInvalid(
+                                "EventSub WS: Timeout during 429 retry while registering subscriptions"
+                            ) from retry_err
                         retry_msg = str(retry_err)
                         if "429" in retry_msg or "transport limit" in retry_msg.lower():
                             self.log.error(

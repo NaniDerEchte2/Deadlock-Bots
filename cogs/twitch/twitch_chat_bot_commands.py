@@ -296,6 +296,93 @@ if TWITCHIO_AVAILABLE:
 
             await ctx.send(f"@{ctx.author.name} Letzte Raids: {raids_text}")
 
+        @twitchio_commands.command(name="clip", aliases=["createclip"])
+        async def cmd_clip(self, ctx: twitchio_commands.Context):
+            """!clip - Erstellt einen Clip aus dem aktuellen Stream-Buffer und postet den Link."""
+            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
+                await ctx.send(f"@{ctx.author.name} Nur Broadcaster oder Mods können !clip benutzen.")
+                return
+
+            channel_name = ctx.channel.name
+            streamer_data = self._get_streamer_by_channel(channel_name)
+            if not streamer_data:
+                await ctx.send(f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert.")
+                return
+
+            twitch_login, twitch_user_id, _ = streamer_data
+
+            if not self._raid_bot or not hasattr(self._raid_bot, "auth_manager"):
+                await ctx.send(f"@{ctx.author.name} Twitch-Bot nicht verfügbar.")
+                return
+
+            auth_manager = self._raid_bot.auth_manager
+            api_session = getattr(self._raid_bot, "session", None)
+            if not api_session:
+                await ctx.send(f"@{ctx.author.name} Twitch-Bot nicht verfügbar (keine API-Session).")
+                return
+
+            required_scope = "clips:edit"
+            scopes = set(auth_manager.get_scopes(str(twitch_user_id)))
+            if required_scope not in scopes:
+                auth_url = auth_manager.generate_auth_url(twitch_login)
+                await ctx.send(
+                    f"@{ctx.author.name} Für !clip fehlt OAuth-Scope clips:edit. "
+                    f"Bitte einmal neu autorisieren: {auth_url}"
+                )
+                return
+
+            try:
+                tokens = await auth_manager.get_tokens_for_user(str(twitch_user_id), api_session)
+            except Exception:
+                log.exception("Clip command: token fetch failed for %s", twitch_login)
+                tokens = None
+
+            if not tokens:
+                auth_url = auth_manager.generate_auth_url(twitch_login)
+                await ctx.send(
+                    f"@{ctx.author.name} OAuth fehlt oder ist abgelaufen. "
+                    f"Bitte neu autorisieren: {auth_url}"
+                )
+                return
+
+            access_token, _ = tokens
+
+            try:
+                from .twitch_api import TwitchAPI  # lokal importieren, um Zyklus zu vermeiden
+                api = TwitchAPI(auth_manager.client_id, auth_manager.client_secret, session=api_session)
+                clip = await api.create_clip(
+                    str(twitch_user_id),
+                    user_token=str(access_token),
+                    has_delay=False,
+                )
+            except Exception:
+                log.exception("Clip command failed for %s", twitch_login)
+                clip = None
+
+            if not clip:
+                await ctx.send(
+                    f"@{ctx.author.name} Clip konnte nicht erstellt werden. "
+                    "Bitte in 10 Sekunden nochmal versuchen."
+                )
+                return
+
+            clip_id = str(clip.get("id") or "").strip()
+            edit_url = str(clip.get("edit_url") or "").strip()
+            clip_url = f"https://clips.twitch.tv/{clip_id}" if clip_id else edit_url
+            if not clip_url:
+                await ctx.send(
+                    f"@{ctx.author.name} Clip wurde angefordert, aber es kam kein Link zurück."
+                )
+                return
+
+            await ctx.send(f"@{ctx.author.name} 🎬 Clip erstellt (letzte ~Minute): {clip_url}")
+            log.info(
+                "Clip command successful: %s in #%s (clip_id=%s)",
+                twitch_login,
+                channel_name,
+                clip_id or "-",
+            )
+
         @twitchio_commands.command(name="raid", aliases=["traid"])
         async def cmd_raid(self, ctx: twitchio_commands.Context):
             """!raid / !traid - Startet sofort einen Raid auf den bestmöglichen Partner (wie Auto-Raid)."""

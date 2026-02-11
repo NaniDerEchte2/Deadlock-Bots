@@ -7,9 +7,10 @@ import {
   Users,
   Calendar,
   Target,
+  GraduationCap,
 } from 'lucide-react';
 
-export type TabId = 'overview' | 'streams' | 'chat' | 'growth' | 'audience' | 'compare' | 'schedule';
+export type TabId = 'overview' | 'streams' | 'chat' | 'growth' | 'audience' | 'compare' | 'schedule' | 'coaching';
 
 interface Tab {
   id: TabId;
@@ -25,6 +26,7 @@ const tabs: Tab[] = [
   { id: 'audience', label: 'Audience', icon: Target },
   { id: 'compare', label: 'Vergleich', icon: Users },
   { id: 'schedule', label: 'Zeitplan', icon: Calendar },
+  { id: 'coaching', label: 'Coaching', icon: GraduationCap },
 ];
 
 interface TabNavigationProps {

@@ -9,6 +9,7 @@ import { Growth } from '@/pages/Growth';
 import { Audience } from '@/pages/Audience';
 import { Comparison } from '@/pages/Comparison';
 import { Schedule } from '@/pages/Schedule';
+import { Coaching } from '@/pages/Coaching';
 import { useStreamerList, useAuthStatus } from '@/hooks/useAnalytics';
 import type { TimeRange } from '@/types/analytics';
 import { Shield, ShieldCheck, ShieldAlert, Wifi, AlertTriangle } from 'lucide-react';
@@ -201,6 +202,10 @@ function Dashboard() {
 
         {activeTab === 'schedule' && (
           <Schedule streamer={streamer || ''} days={days} />
+        )}
+
+        {activeTab === 'coaching' && (
+          <Coaching streamer={streamer || ''} days={days} />
         )}
       </div>
     </div>

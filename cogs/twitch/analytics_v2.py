@@ -14,6 +14,7 @@ from urllib.parse import urlencode, urlsplit
 from aiohttp import web
 
 from . import storage
+from .coaching_engine import CoachingEngine
 
 log = logging.getLogger("TwitchStreams.AnalyticsV2")
 
@@ -252,6 +253,7 @@ class AnalyticsV2Mixin:
         # Stats-Data Endpoints (from twitch_stats_tracked / twitch_stats_category)
         router.add_get("/twitch/api/v2/viewer-timeline", self._api_v2_viewer_timeline)
         router.add_get("/twitch/api/v2/category-leaderboard", self._api_v2_category_leaderboard)
+        router.add_get("/twitch/api/v2/coaching", self._api_v2_coaching)
         # Serve the dashboard
         router.add_get("/twitch/dashboard-v2", self._serve_dashboard_v2)
         router.add_get("/twitch/dashboard-v2/{path:.*}", self._serve_dashboard_v2_assets)
@@ -2425,6 +2427,25 @@ class AnalyticsV2Mixin:
                 })
         except Exception as exc:
             log.exception("Error in category leaderboard API")
+            return web.json_response({"error": str(exc)}, status=500)
+
+
+    async def _api_v2_coaching(self, request: web.Request) -> web.Response:
+        """Get personalized coaching data for a streamer."""
+        self._require_v2_auth(request)
+
+        streamer = request.query.get("streamer", "").strip()
+        days = min(max(int(request.query.get("days", "30")), 7), 365)
+
+        if not streamer:
+            return web.json_response({"error": "Streamer required"}, status=400)
+
+        try:
+            with storage.get_conn() as conn:
+                data = CoachingEngine.get_coaching_data(conn, streamer, days)
+                return web.json_response(data)
+        except Exception as exc:
+            log.exception("Error in coaching API")
             return web.json_response({"error": str(exc)}, status=500)
 
 

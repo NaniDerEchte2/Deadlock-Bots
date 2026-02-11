@@ -346,4 +346,209 @@ export interface CategoryLeaderboard {
   yourRank: number | null;
 }
 
+// Coaching Types
+
+export interface CoachingEfficiency {
+  viewerHoursPerStreamHour: number;
+  categoryAvg: number;
+  topPerformers: { streamer: string; ratio: number }[];
+  percentile: number;
+  totalStreamHours: number;
+  totalViewerHours: number;
+}
+
+export interface CoachingTitleEntry {
+  title: string;
+  avgViewers: number;
+  peakViewers: number;
+  chatters: number;
+  usageCount: number;
+}
+
+export interface CoachingTitleAnalysis {
+  yourTitles: CoachingTitleEntry[];
+  categoryTopTitles: { title: string; streamer: string; avgViewers: number }[];
+  yourMissingPatterns: string[];
+  topPerformerPatterns: string[];
+  varietyPct: number;
+  uniqueTitleCount: number;
+  totalSessionCount: number;
+  avgPeerVarietyPct: number;
+  peerVariety: { streamer: string; uniqueTitles: number; totalSessions: number; varietyPct: number }[];
+}
+
+export interface CoachingSweetSpot {
+  weekday: number;
+  hour: number;
+  categoryViewers: number;
+  competitors: number;
+  opportunityScore: number;
+}
+
+export interface CoachingScheduleOptimizer {
+  sweetSpots: CoachingSweetSpot[];
+  yourCurrentSlots: { weekday: number; hour: number; count: number }[];
+  competitionHeatmap: { weekday: number; hour: number; competitors: number; categoryViewers: number }[];
+}
+
+export interface CoachingDurationBucket {
+  label: string;
+  streamCount: number;
+  avgViewers: number;
+  avgChatters: number;
+  avgRetention5m: number;
+  efficiencyRatio: number;
+}
+
+export interface CoachingDurationAnalysis {
+  buckets: CoachingDurationBucket[];
+  optimalLabel: string;
+  currentAvgHours: number;
+  correlation: number;
+}
+
+export interface CoachingCrossCommunity {
+  totalUniqueChatters: number;
+  chatterSources: { sourceStreamer: string; sharedChatters: number; percentage: number }[];
+  isolatedChatters: number;
+  isolatedPercentage: number;
+  ecosystemSummary: string;
+}
+
+export interface CoachingTagOptimization {
+  yourTags: { tags: string; avgViewers: number; usageCount: number }[];
+  categoryBestTags: { tags: string; avgViewers: number; streamerCount: number }[];
+  missingHighPerformers: string[];
+  underperformingTags: string[];
+}
+
+export interface CoachingRetention {
+  your5mRetention: number;
+  category5mRetention: number;
+  yourViewerCurve: { minute: number; avgViewerPct: number }[];
+  topPerformerCurve: { minute: number; avgViewerPct: number }[];
+  criticalDropoffMinute: number;
+}
+
+export interface CoachingDoubleStream {
+  detected: boolean;
+  count: number;
+  occurrences: { date: string; sessionCount: number; avgViewers: number }[];
+  singleDayAvg: number;
+  doubleDayAvg: number;
+}
+
+export interface CoachingRecommendation {
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  category: string;
+  title: string;
+  description: string;
+  estimatedImpact: string;
+  evidence: string;
+  icon: string;
+}
+
+export interface CoachingChatConcentration {
+  totalChatters: number;
+  totalMessages: number;
+  msgsPerChatter: number;
+  loyaltyBuckets: Record<string, { count: number; pct: number; messages: number }>;
+  topChatters: { login: string; messages: number; sessions: number; sharePct: number; cumulativePct: number }[];
+  concentrationIndex: number;
+  top1Pct: number;
+  top3Pct: number;
+  ownOneTimerPct: number;
+  avgPeerOneTimerPct: number;
+}
+
+export interface CoachingRaidPartner {
+  login: string;
+  sentCount: number;
+  sentAvgViewers: number;
+  receivedCount: number;
+  receivedAvgViewers: number;
+  reciprocity: 'mutual' | 'sentOnly' | 'receivedOnly';
+  balance: number;
+}
+
+export interface CoachingRaidNetwork {
+  totalSent: number;
+  totalReceived: number;
+  totalSentViewers: number;
+  totalReceivedViewers: number;
+  avgSentViewers: number;
+  avgReceivedViewers: number;
+  reciprocityRatio: number;
+  mutualPartners: number;
+  totalPartners: number;
+  partners: CoachingRaidPartner[];
+}
+
+export interface CoachingPeerEntry {
+  login: string;
+  sessions: number;
+  avgViewers: number;
+  maxPeak: number;
+  avgHours: number;
+  avgChatters: number;
+  retention5m: number;
+  totalHours: number;
+  followsGained: number;
+  uniqueTitles: number;
+  titleVariety: number;
+}
+
+export interface CoachingPeerComparison {
+  ownData: CoachingPeerEntry | null;
+  ownRank: number;
+  totalStreamers: number;
+  similarPeers: CoachingPeerEntry[];
+  aspirationalPeers: CoachingPeerEntry[];
+  metricsRanked: Record<string, { rank: number; total: number; value: number }>;
+  gapToNext: { login: string; avgViewersDiff: number; chatDiff: number; retentionDiff: number } | null;
+}
+
+export interface CoachingCompetitionHourly {
+  hour: number;
+  activeStreamers: number;
+  avgViewers: number;
+  avgPeak: number;
+  opportunityScore: number;
+  yourData: { count: number; avgViewers: number; avgPeak: number; avgChatters: number } | null;
+}
+
+export interface CoachingCompetitionWeekly {
+  weekday: number;
+  weekdayLabel: string;
+  activeStreamers: number;
+  avgViewers: number;
+  yourData: { count: number; avgViewers: number; avgPeak: number } | null;
+}
+
+export interface CoachingCompetitionDensity {
+  hourly: CoachingCompetitionHourly[];
+  weekly: CoachingCompetitionWeekly[];
+  sweetSpots: CoachingCompetitionHourly[];
+}
+
+export interface CoachingData {
+  streamer: string;
+  days: number;
+  empty?: boolean;
+  efficiency: CoachingEfficiency;
+  titleAnalysis: CoachingTitleAnalysis;
+  scheduleOptimizer: CoachingScheduleOptimizer;
+  durationAnalysis: CoachingDurationAnalysis;
+  crossCommunity: CoachingCrossCommunity;
+  tagOptimization: CoachingTagOptimization;
+  retentionCoaching: CoachingRetention;
+  doubleStreamDetection: CoachingDoubleStream;
+  chatConcentration: CoachingChatConcentration;
+  raidNetwork: CoachingRaidNetwork;
+  peerComparison: CoachingPeerComparison;
+  competitionDensity: CoachingCompetitionDensity;
+  recommendations: CoachingRecommendation[];
+  aiSummary: string | null;
+}
+
 export type TimeRange = 7 | 30 | 90 | 365;

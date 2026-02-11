@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import aiohttp
+import discord
 
 from .storage import get_conn
 from .token_error_handler import TokenErrorHandler
@@ -39,6 +40,7 @@ RAID_SCOPES = [
     "channel:bot",
     "chat:read",
     "chat:edit",
+    "clips:edit",
     "channel:read:ads",
 ]
 
@@ -59,6 +61,21 @@ try:
     RECRUIT_DIRECT_INVITE_MAX_FOLLOWERS = max(0, int(_recruit_direct_invite_threshold_raw))
 except ValueError:
     RECRUIT_DIRECT_INVITE_MAX_FOLLOWERS = 120
+
+
+def _parse_env_int(name: str, default: int = 0) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+STREAMER_ROLE_ID = _parse_env_int("STREAMER_ROLE_ID", 1313624729466441769)
+STREAMER_GUILD_ID = _parse_env_int("STREAMER_GUILD_ID", 0)
+FALLBACK_MAIN_GUILD_ID = _parse_env_int("MAIN_GUILD_ID", 0)
 
 log = logging.getLogger("TwitchStreams.RaidManager")
 
@@ -311,11 +328,30 @@ class RaidAuthManager:
             conn.execute(
                 """
                 UPDATE twitch_streamers
-                   SET raid_bot_enabled = 1
+                   SET twitch_login = ?,
+                       twitch_user_id = ?,
+                       raid_bot_enabled = 1,
+                       manual_verified_permanent = 1,
+                       manual_verified_until = NULL,
+                       manual_verified_at = COALESCE(manual_verified_at, CURRENT_TIMESTAMP),
+                       manual_partner_opt_out = 0,
+                       is_on_discord = CASE
+                           WHEN COALESCE(discord_user_id, '') <> '' THEN 1
+                           ELSE is_on_discord
+                       END
                  WHERE twitch_user_id = ?
                     OR lower(twitch_login) = lower(?)
                 """,
-                (twitch_user_id, twitch_login),
+                (twitch_login, twitch_user_id, twitch_user_id, twitch_login),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO twitch_streamers
+                    (twitch_login, twitch_user_id, raid_bot_enabled, manual_verified_permanent,
+                     manual_verified_until, manual_verified_at, manual_partner_opt_out)
+                VALUES (?, ?, 1, 1, NULL, CURRENT_TIMESTAMP, 0)
+                """,
+                (twitch_login, twitch_user_id),
             )
             conn.commit()
 
@@ -520,12 +556,56 @@ class RaidAuthManager:
 
     def revoke_auth(self, twitch_user_id: str) -> None:
         """Entfernt die Raid-Autorisierung für einen Streamer."""
+        login_hint = ""
+        discord_user_id = ""
         with get_conn() as conn:
+            auth_row = conn.execute(
+                "SELECT twitch_login FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                (twitch_user_id,),
+            ).fetchone()
+            if auth_row:
+                login_hint = str(auth_row[0] if not hasattr(auth_row, "keys") else auth_row["twitch_login"] or "")
+
+            streamer_row = conn.execute(
+                """
+                SELECT discord_user_id
+                FROM twitch_streamers
+                WHERE twitch_user_id = ?
+                   OR (? <> '' AND LOWER(twitch_login) = LOWER(?))
+                LIMIT 1
+                """,
+                (twitch_user_id, login_hint, login_hint),
+            ).fetchone()
+            if streamer_row:
+                discord_user_id = str(
+                    streamer_row[0] if not hasattr(streamer_row, "keys") else streamer_row["discord_user_id"] or ""
+                ).strip()
+
             conn.execute(
                 "DELETE FROM twitch_raid_auth WHERE twitch_user_id = ?",
                 (twitch_user_id,),
             )
+            conn.execute(
+                """
+                UPDATE twitch_streamers
+                   SET raid_bot_enabled = 0,
+                       manual_verified_permanent = 0,
+                       manual_verified_until = NULL,
+                       manual_verified_at = NULL,
+                       manual_partner_opt_out = 1
+                 WHERE twitch_user_id = ?
+                    OR (? <> '' AND LOWER(twitch_login) = LOWER(?))
+                """,
+                (twitch_user_id, login_hint, login_hint),
+            )
             conn.commit()
+
+        if discord_user_id and hasattr(self.token_error_handler, "schedule_streamer_role_sync"):
+            self.token_error_handler.schedule_streamer_role_sync(
+                discord_user_id,
+                should_have_role=False,
+                reason="Twitch-Bot Autorisierung entzogen",
+            )
         log.info("Revoked raid auth for user_id=%s", twitch_user_id)
 
     def set_raid_enabled(self, twitch_user_id: str, enabled: bool) -> None:
@@ -759,7 +839,7 @@ class RaidBot:
 
         # Pending Raids: {to_broadcaster_id: (from_broadcaster_login, target_stream_data, timestamp, is_partner_raid, viewer_count)}
         self._pending_raids: Dict[str, Tuple[str, Optional[Dict], float, bool, int]] = {}
-        # Unterdrückt einmalig den Auto-Raid, wenn kurz zuvor ein manueller Raid via Chat gestartet wurde.
+        # Unterdrückt den nächsten Offline-Auto-Raid, wenn kurz zuvor ein manueller/externer Raid erkannt wurde.
         self._manual_raid_suppression: Dict[str, float] = {}
 
         # Cleanup-Task starten
@@ -813,6 +893,7 @@ class RaidBot:
                 # 3. Pending Raids Cleanup (alle 2min)
                 if now - last_raid_cleanup >= pending_raid_cleanup_interval:
                     self._cleanup_stale_pending_raids()
+                    self._cleanup_expired_manual_raid_suppressions()
                     last_raid_cleanup = now
 
             except Exception:
@@ -870,14 +951,249 @@ class RaidBot:
         self._manual_raid_suppression.pop(broadcaster_key, None)
         return False
 
-    async def complete_setup_for_streamer(self, twitch_user_id: str, twitch_login: str):
+    def _resolve_streamer_id_by_login(self, broadcaster_login: str) -> Optional[str]:
+        """Best-effort: löst eine Twitch-User-ID aus twitch_streamers über den Login auf."""
+        login_key = str(broadcaster_login or "").strip().lower()
+        if not login_key:
+            return None
+        try:
+            with get_conn() as conn:
+                row = conn.execute(
+                    "SELECT twitch_user_id FROM twitch_streamers WHERE LOWER(twitch_login) = ?",
+                    (login_key,),
+                ).fetchone()
+            if not row:
+                return None
+            resolved = row["twitch_user_id"] if hasattr(row, "keys") else row[0]
+            resolved_key = str(resolved or "").strip()
+            return resolved_key or None
+        except Exception:
+            log.debug("Konnte broadcaster_id nicht über Login auflösen: %s", login_key, exc_info=True)
+            return None
+
+    def _cleanup_expired_manual_raid_suppressions(self) -> None:
+        """Entfernt abgelaufene Einträge aus dem Manual-Raid-Suppression-Cache."""
+        now = time.time()
+        expired = [
+            broadcaster_id
+            for broadcaster_id, until in self._manual_raid_suppression.items()
+            if now > float(until or 0.0)
+        ]
+        for broadcaster_id in expired:
+            self._manual_raid_suppression.pop(broadcaster_id, None)
+        if expired:
+            log.debug("Cleaned up %d expired manual raid suppressions", len(expired))
+
+    @staticmethod
+    def _normalize_discord_user_id(raw: Optional[str]) -> Optional[str]:
+        candidate = str(raw or "").strip()
+        if candidate and candidate.isdigit():
+            return candidate
+        return None
+
+    def _iter_role_guild_candidates(self, discord_bot: Optional[discord.Client]) -> List[discord.Guild]:
+        if discord_bot is None:
+            return []
+
+        candidates: List[discord.Guild] = []
+        seen: set[int] = set()
+        for guild_id in (STREAMER_GUILD_ID, FALLBACK_MAIN_GUILD_ID):
+            if guild_id and guild_id not in seen:
+                seen.add(guild_id)
+                guild = discord_bot.get_guild(guild_id)
+                if guild is not None:
+                    candidates.append(guild)
+
+        if not candidates:
+            candidates.extend(getattr(discord_bot, "guilds", []))
+        return candidates
+
+    async def _resolve_discord_display_name(self, discord_user_id: Optional[str]) -> Optional[str]:
+        normalized_id = self._normalize_discord_user_id(discord_user_id)
+        if not normalized_id:
+            return None
+
+        discord_bot = getattr(self.auth_manager, "_discord_bot", None)
+        if discord_bot is None:
+            return None
+
+        user_id_int = int(normalized_id)
+        user = discord_bot.get_user(user_id_int)
+        if user is None:
+            try:
+                user = await discord_bot.fetch_user(user_id_int)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return None
+
+        if user is None:
+            return None
+        return str(
+            getattr(user, "global_name", None)
+            or getattr(user, "display_name", None)
+            or getattr(user, "name", None)
+            or ""
+        ).strip() or None
+
+    async def _apply_streamer_role(
+        self,
+        discord_user_id: Optional[str],
+        *,
+        should_have_role: bool,
+        reason: str,
+    ) -> None:
+        if STREAMER_ROLE_ID <= 0:
+            return
+
+        normalized_id = self._normalize_discord_user_id(discord_user_id)
+        if not normalized_id:
+            return
+
+        discord_bot = getattr(self.auth_manager, "_discord_bot", None)
+        if discord_bot is None:
+            return
+
+        user_id_int = int(normalized_id)
+        for guild in self._iter_role_guild_candidates(discord_bot):
+            role = guild.get_role(STREAMER_ROLE_ID)
+            if role is None:
+                continue
+
+            member = guild.get_member(user_id_int)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(user_id_int)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    member = None
+
+            if member is None:
+                continue
+
+            try:
+                has_role = role in member.roles
+                if should_have_role and not has_role:
+                    await member.add_roles(role, reason=reason)
+                    log.info("Streamer role granted to %s in guild %s", normalized_id, guild.id)
+                elif (not should_have_role) and has_role:
+                    await member.remove_roles(role, reason=reason)
+                    log.info("Streamer role removed from %s in guild %s", normalized_id, guild.id)
+            except discord.Forbidden:
+                log.warning("Missing permission to sync streamer role in guild %s", guild.id)
+            except discord.HTTPException:
+                log.warning("Discord API error while syncing streamer role in guild %s", guild.id)
+
+    async def _sync_partner_state_after_auth(
+        self,
+        twitch_user_id: str,
+        twitch_login: str,
+        *,
+        state_discord_user_id: Optional[str] = None,
+    ) -> Optional[str]:
+        provided_discord_id = self._normalize_discord_user_id(state_discord_user_id)
+        existing_discord_id: Optional[str] = None
+        existing_display_name: Optional[str] = None
+
+        with get_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT discord_user_id, discord_display_name
+                FROM twitch_streamers
+                WHERE twitch_user_id = ?
+                   OR lower(twitch_login) = lower(?)
+                LIMIT 1
+                """,
+                (twitch_user_id, twitch_login),
+            ).fetchone()
+            if row:
+                existing_discord_id = self._normalize_discord_user_id(
+                    row[0] if not hasattr(row, "keys") else row["discord_user_id"]
+                )
+                existing_display_name = str(
+                    row[1] if not hasattr(row, "keys") else row["discord_display_name"] or ""
+                ).strip() or None
+
+        final_discord_id = provided_discord_id or existing_discord_id
+        final_display_name = existing_display_name or await self._resolve_discord_display_name(final_discord_id)
+
+        is_on_discord_value = 1 if final_discord_id else 0
+        with get_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO twitch_streamers
+                    (twitch_login, twitch_user_id, discord_user_id, discord_display_name,
+                     is_on_discord, manual_verified_permanent, manual_verified_until,
+                     manual_verified_at, manual_partner_opt_out, raid_bot_enabled)
+                VALUES (?, ?, ?, ?, ?, 1, NULL, CURRENT_TIMESTAMP, 0, 1)
+                """,
+                (
+                    twitch_login,
+                    twitch_user_id,
+                    final_discord_id,
+                    final_display_name,
+                    is_on_discord_value,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE twitch_streamers
+                   SET twitch_login = ?,
+                       twitch_user_id = ?,
+                       discord_user_id = ?,
+                       discord_display_name = ?,
+                       is_on_discord = ?,
+                       manual_verified_permanent = 1,
+                       manual_verified_until = NULL,
+                       manual_verified_at = COALESCE(manual_verified_at, CURRENT_TIMESTAMP),
+                       manual_partner_opt_out = 0,
+                       raid_bot_enabled = 1
+                 WHERE twitch_user_id = ?
+                    OR lower(twitch_login) = lower(?)
+                """,
+                (
+                    twitch_login,
+                    twitch_user_id,
+                    final_discord_id,
+                    final_display_name,
+                    is_on_discord_value,
+                    twitch_user_id,
+                    twitch_login,
+                ),
+            )
+            conn.commit()
+
+        if final_discord_id:
+            await self._apply_streamer_role(
+                final_discord_id,
+                should_have_role=True,
+                reason="Twitch-Bot erfolgreich autorisiert",
+            )
+        return final_discord_id
+
+    async def complete_setup_for_streamer(
+        self,
+        twitch_user_id: str,
+        twitch_login: str,
+        state_discord_user_id: Optional[str] = None,
+    ):
         """
         Führt Aktionen nach erfolgreicher OAuth-Autorisierung aus:
         1. Bot als Moderator setzen
         2. Bestätigungsnachricht im Chat senden
         """
         log.info("Completing setup for streamer %s (%s)", twitch_login, twitch_user_id)
-        
+
+        try:
+            await self._sync_partner_state_after_auth(
+                twitch_user_id,
+                twitch_login,
+                state_discord_user_id=state_discord_user_id,
+            )
+        except Exception:
+            log.exception(
+                "Failed to sync partner state after auth for %s (%s)",
+                twitch_login,
+                twitch_user_id,
+            )
+
         # 1. Tokens holen
         tokens = await self.auth_manager.get_tokens_for_user(twitch_user_id, self.session)
         if not tokens:
@@ -1054,6 +1370,7 @@ class RaidBot:
         to_broadcaster_login: str,
         from_broadcaster_login: str,
         viewer_count: int,
+        from_broadcaster_id: Optional[str] = None,
     ):
         """
         Wird aufgerufen, wenn ein channel.raid EventSub Event eintrifft.
@@ -1064,6 +1381,18 @@ class RaidBot:
         """
         pending = self._pending_raids.pop(to_broadcaster_id, None)
         if not pending:
+            from_broadcaster_key = str(from_broadcaster_id or "").strip()
+            if not from_broadcaster_key:
+                from_broadcaster_key = self._resolve_streamer_id_by_login(from_broadcaster_login) or ""
+            if from_broadcaster_key:
+                self.mark_manual_raid_started(from_broadcaster_key, ttl_seconds=300.0)
+                log.info(
+                    "External/manual raid detected via EventSub: %s -> %s. "
+                    "Suppressing next offline auto-raid for broadcaster_id=%s (ttl=300s)",
+                    from_broadcaster_login,
+                    to_broadcaster_login,
+                    from_broadcaster_key,
+                )
             log.debug(
                 "Raid arrival ignored (not pending): %s -> %s",
                 from_broadcaster_login,
@@ -1289,7 +1618,7 @@ class RaidBot:
 
             if not target_id:
                 # Fallback: ID über Login-Namen auflösen
-                users = await self.chat_bot.fetch_users(names=[to_broadcaster_login])
+                users = await self.chat_bot.fetch_users(logins=[to_broadcaster_login])
                 if users:
                     target_id = str(users[0].id)
 

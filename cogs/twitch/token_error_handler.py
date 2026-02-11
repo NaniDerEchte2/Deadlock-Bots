@@ -5,7 +5,9 @@ Verwaltet:
 - Discord-Benachrichtigungen bei Token-Problemen
 - Verhindert endlose Refresh-Versuche
 """
+import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -19,6 +21,21 @@ log = logging.getLogger("TwitchStreams.TokenErrorHandler")
 TOKEN_ERROR_CHANNEL_ID = 1374364800817303632
 
 
+def _parse_env_int(name: str, default: int = 0) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+STREAMER_ROLE_ID = _parse_env_int("STREAMER_ROLE_ID", 1313624729466441769)
+STREAMER_GUILD_ID = _parse_env_int("STREAMER_GUILD_ID", 0)
+FALLBACK_MAIN_GUILD_ID = _parse_env_int("MAIN_GUILD_ID", 0)
+
+
 class TokenErrorHandler:
     """Verwaltet Token-Fehler und verhindert endlose Refresh-Versuche."""
 
@@ -28,6 +45,98 @@ class TokenErrorHandler:
             discord_bot: Discord Bot-Instanz für Benachrichtigungen
         """
         self.discord_bot = discord_bot
+
+    @staticmethod
+    def _normalize_discord_user_id(raw: Optional[str]) -> Optional[str]:
+        value = str(raw or "").strip()
+        if value and value.isdigit():
+            return value
+        return None
+
+    def _iter_role_guild_candidates(self) -> list[discord.Guild]:
+        if not self.discord_bot:
+            return []
+
+        candidates: list[discord.Guild] = []
+        seen: set[int] = set()
+        for guild_id in (STREAMER_GUILD_ID, FALLBACK_MAIN_GUILD_ID):
+            if guild_id and guild_id not in seen:
+                seen.add(guild_id)
+                guild = self.discord_bot.get_guild(guild_id)
+                if guild is not None:
+                    candidates.append(guild)
+
+        if not candidates:
+            candidates.extend(getattr(self.discord_bot, "guilds", []))
+        return candidates
+
+    async def _sync_streamer_role(
+        self,
+        discord_user_id: str,
+        *,
+        should_have_role: bool,
+        reason: str,
+    ) -> None:
+        if not self.discord_bot or STREAMER_ROLE_ID <= 0:
+            return
+
+        normalized_id = self._normalize_discord_user_id(discord_user_id)
+        if not normalized_id:
+            return
+
+        user_id_int = int(normalized_id)
+        for guild in self._iter_role_guild_candidates():
+            role = guild.get_role(STREAMER_ROLE_ID)
+            if role is None:
+                continue
+
+            member = guild.get_member(user_id_int)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(user_id_int)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    member = None
+
+            if member is None:
+                continue
+
+            try:
+                has_role = role in member.roles
+                if should_have_role and not has_role:
+                    await member.add_roles(role, reason=reason)
+                    log.info("Granted streamer role to Discord user %s in guild %s", normalized_id, guild.id)
+                elif (not should_have_role) and has_role:
+                    await member.remove_roles(role, reason=reason)
+                    log.info("Removed streamer role from Discord user %s in guild %s", normalized_id, guild.id)
+            except discord.Forbidden:
+                log.warning("Missing permission to sync streamer role in guild %s", guild.id)
+            except discord.HTTPException:
+                log.warning("Discord API error while syncing streamer role in guild %s", guild.id)
+
+    def schedule_streamer_role_sync(
+        self,
+        discord_user_id: Optional[str],
+        *,
+        should_have_role: bool,
+        reason: str,
+    ) -> None:
+        normalized_id = self._normalize_discord_user_id(discord_user_id)
+        if not normalized_id:
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        loop.create_task(
+            self._sync_streamer_role(
+                normalized_id,
+                should_have_role=should_have_role,
+                reason=reason,
+            ),
+            name="twitch.token_error.role_sync",
+        )
 
     def is_token_blacklisted(self, twitch_user_id: str) -> bool:
         """
@@ -112,8 +221,34 @@ class TokenErrorHandler:
 
     def _disable_raid_bot(self, twitch_user_id: str):
         """Deaktiviert den Raid-Bot für einen Streamer mit Token-Fehler."""
+        login_hint = ""
+        discord_user_id = ""
         try:
             with get_conn() as conn:
+                auth_row = conn.execute(
+                    "SELECT twitch_login FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                    (twitch_user_id,),
+                ).fetchone()
+                if auth_row:
+                    login_hint = str(
+                        auth_row[0] if not hasattr(auth_row, "keys") else auth_row["twitch_login"] or ""
+                    ).strip()
+
+                streamer_row = conn.execute(
+                    """
+                    SELECT discord_user_id
+                    FROM twitch_streamers
+                    WHERE twitch_user_id = ?
+                       OR (? <> '' AND LOWER(twitch_login) = LOWER(?))
+                    LIMIT 1
+                    """,
+                    (twitch_user_id, login_hint, login_hint),
+                ).fetchone()
+                if streamer_row:
+                    discord_user_id = str(
+                        streamer_row[0] if not hasattr(streamer_row, "keys") else streamer_row["discord_user_id"] or ""
+                    ).strip()
+
                 conn.execute(
                     """
                     UPDATE twitch_raid_auth
@@ -125,13 +260,24 @@ class TokenErrorHandler:
                 conn.execute(
                     """
                     UPDATE twitch_streamers
-                    SET raid_bot_enabled = 0
+                    SET raid_bot_enabled = 0,
+                        manual_verified_permanent = 0,
+                        manual_verified_until = NULL,
+                        manual_verified_at = NULL,
+                        manual_partner_opt_out = 1
                     WHERE twitch_user_id = ?
+                       OR (? <> '' AND LOWER(twitch_login) = LOWER(?))
                     """,
-                    (twitch_user_id,),
+                    (twitch_user_id, login_hint, login_hint),
                 )
                 conn.commit()
             log.info("Disabled raid bot for user_id=%s due to token error", twitch_user_id)
+
+            self.schedule_streamer_role_sync(
+                discord_user_id,
+                should_have_role=False,
+                reason="Twitch-Bot Autorisierung ungültig",
+            )
         except Exception:
             log.error("Error disabling raid bot", exc_info=True)
 

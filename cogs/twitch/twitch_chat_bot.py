@@ -8,6 +8,7 @@ Streamer können den Twitch-Bot direkt über Twitch-Chat-Commands steuern:
 - !raid_disable / !raidbot_off - Deaktiviert Auto-Raids
 - !raid_status - Zeigt den Status an
 - !raid_history - Zeigt die letzten Raids
+- !clip - Erstellt einen Clip und postet den Link
 """
 import asyncio
 import copy

@@ -148,7 +148,7 @@ class ModerationMixin:
             return found, False
 
         try:
-            users = await self.fetch_users(names=to_lookup)
+            users = await self.fetch_users(logins=to_lookup)
             resolved = set()
             for user in users or []:
                 login = (
@@ -236,26 +236,34 @@ class ModerationMixin:
         raw = content.strip()
         hits = 0
 
-        # Spam-Phrasen: +2 Punkte
+        # Spam-Phrasen haben Priorität (zuverlässiger als Fragmente).
+        # Es gilt hier: Phrase ODER Fragment-Fallback, nicht beides zusammen.
+        phrase_matched = False
+
+        # Spam-Phrasen (exact): +2 Punkte
         for phrase in _SPAM_PHRASES:
             if phrase in raw:
                 hits += 2
                 reasons.append(f"Phrase(Exact): {phrase}")
+                phrase_matched = True
                 break  # Nur einmal zählen
 
         lowered = raw.casefold()
-        if hits == 0:  # Nur prüfen wenn noch keine exakte Phrase gefunden
+        if not phrase_matched:  # Nur prüfen wenn noch keine exakte Phrase gefunden
             for phrase in _SPAM_PHRASES:
                 if phrase.casefold() in lowered:
                     hits += 2
                     reasons.append(f"Phrase(Casefold): {phrase}")
+                    phrase_matched = True
                     break
 
-        # Prüfe Fragmente mit Wortgrenzen: +1 Punkt pro Fragment
-        for frag in _SPAM_FRAGMENTS:
-            if re.search(r"\b" + re.escape(frag.casefold()) + r"\b", lowered):
-                hits += 1
-                reasons.append(f"Fragment: {frag}")
+        # Fragment-Fallback: nur wenn keine Phrase gematcht wurde.
+        if not phrase_matched:
+            for frag in _SPAM_FRAGMENTS:
+                if re.search(r"\b" + re.escape(frag.casefold()) + r"\b", lowered):
+                    hits += 1
+                    reasons.append(f"Fragment(Fallback): {frag}")
+                    break
 
         # Muster: "viewer [name]": +1 Punkt
         if re.search(r"\bviewer\s+\w+", lowered):
@@ -696,6 +704,28 @@ class ModerationMixin:
                                 continue  # Retry outer loop
 
                             txt = await resp.text()
+                            if resp.status == 400 and "already banned" in txt.lower():
+                                log.info(
+                                    "Auto-Ban in %s übersprungen: %s ist bereits gebannt.",
+                                    channel_name,
+                                    chatter_login or chatter_id,
+                                )
+                                self._last_autoban[channel_key] = {
+                                    "user_id": chatter_id,
+                                    "login": chatter_login,
+                                    "content": original_content,
+                                    "ts": datetime.now(timezone.utc).isoformat(),
+                                }
+                                self._record_autoban(
+                                    channel_name=channel_name,
+                                    chatter_login=chatter_login,
+                                    chatter_id=chatter_id,
+                                    content=original_content,
+                                    status="BANNED",
+                                    reason="already_banned",
+                                )
+                                return True
+
                             if resp.status == 403:
                                 log.warning("Auto-Ban fehlgeschlagen in %s (403 Forbidden): Bot ist wahrscheinlich kein Moderator!", channel_name)
                             elif resp.status == 401:

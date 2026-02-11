@@ -1023,6 +1023,11 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
                 status=400,
                 content_type="text/html",
             )
+        state_discord_user_id: Optional[str] = None
+        if login.lower().startswith("discord:"):
+            candidate_discord_id = login.split(":", 1)[1].strip()
+            if candidate_discord_id.isdigit():
+                state_discord_user_id = candidate_discord_id
 
         session = getattr(raid_bot, "session", None)
         owns_session = False
@@ -1080,7 +1085,11 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             post_setup = getattr(raid_bot, "complete_setup_for_streamer", None)
             if callable(post_setup):
                 asyncio.create_task(
-                    post_setup(twitch_user_id, twitch_login),
+                    post_setup(
+                        twitch_user_id,
+                        twitch_login,
+                        state_discord_user_id=state_discord_user_id,
+                    ),
                     name="twitch.raid.complete_setup",
                 )
 

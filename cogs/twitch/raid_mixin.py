@@ -68,7 +68,7 @@ class TwitchRaidMixin:
             and self._raid_bot.is_offline_auto_raid_suppressed(twitch_user_id)
         ):
             log.info(
-                "Auto-Raid übersprungen für %s: manueller !raid/!traid wurde kurz zuvor gestartet",
+                "Auto-Raid übersprungen für %s: kürzlich manueller/externer Raid erkannt",
                 login,
             )
             return

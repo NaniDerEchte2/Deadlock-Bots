@@ -20,6 +20,7 @@ import type {
   AudienceInsights,
   ViewerTimelinePoint,
   CategoryLeaderboard,
+  CoachingData,
 } from '@/types/analytics';
 
 const API_BASE = '/twitch/api/v2';
@@ -302,6 +303,17 @@ export async function fetchViewerTimeline(
 ): Promise<ViewerTimelinePoint[]> {
   return fetchApi<ViewerTimelinePoint[]>('/viewer-timeline', {
     streamer: streamer || '',
+    days,
+  });
+}
+
+// Coaching Data
+export async function fetchCoaching(
+  streamer: string,
+  days: TimeRange
+): Promise<CoachingData> {
+  return fetchApi<CoachingData>('/coaching', {
+    streamer,
     days,
   });
 }

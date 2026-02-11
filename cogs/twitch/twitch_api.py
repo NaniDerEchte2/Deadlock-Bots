@@ -91,6 +91,8 @@ class TwitchAPI:
         *,
         log_on_error: bool = True,
         oauth_token: Optional[str] = None,
+        max_attempts: int = 3,
+        request_timeout_total: Optional[float] = None,
     ) -> Dict:
         # Allow caller to override the auth token (e.g. EventSub with user tokens)
         token_override = (oauth_token or "").strip()
@@ -105,29 +107,51 @@ class TwitchAPI:
         assert self._session is not None
         url = f"{TWITCH_API_BASE}{path}"
         last_exc: Optional[Exception] = None
-        for attempt in range(3):
+        attempts = max(1, min(int(max_attempts or 1), 5))
+        request_timeout = None
+        if request_timeout_total is not None:
+            request_timeout = aiohttp.ClientTimeout(total=max(0.1, float(request_timeout_total)))
+
+        for attempt in range(attempts):
             try:
                 headers = {"Client-ID": self.client_id, "Authorization": f"Bearer {token_override}"}
-                async with self._session.post(url, headers=headers, json=json) as r:
+                request_kwargs = {"headers": headers, "json": json}
+                if request_timeout is not None:
+                    request_kwargs["timeout"] = request_timeout
+                async with self._session.post(url, **request_kwargs) as r:
                     if r.status not in {200, 202}:
                         txt = await r.text()
+                        txt_one_line = txt[:300].replace("\n", " ")
                         if log_on_error:
                             self._log.error(
-                                "POST %s failed: HTTP %s: %s", path, r.status, txt[:300].replace("\n", " ")
+                                "POST %s failed: HTTP %s: %s", path, r.status, txt_one_line
                             )
                         else:
                             self._log.debug(
                                 "POST %s failed (quiet): HTTP %s: %s", path, r.status, txt[:180].replace("\n", " ")
                             )
-                        r.raise_for_status()
+                        raise aiohttp.ClientResponseError(
+                            request_info=r.request_info,
+                            history=r.history,
+                            status=r.status,
+                            message=txt_one_line or (r.reason or ""),
+                            headers=r.headers,
+                        )
                     return await r.json()
             except aiohttp.ClientResponseError:
                 raise
             except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
                 last_exc = exc
-                if attempt < 2:
+                if attempt < attempts - 1:
                     delay = 0.5 * (attempt + 1)
-                    self._log.warning("POST %s retry %s/3 after %s (%s)", path, attempt + 1, delay, exc.__class__.__name__)
+                    self._log.warning(
+                        "POST %s retry %s/%s after %s (%s)",
+                        path,
+                        attempt + 1,
+                        attempts,
+                        delay,
+                        exc.__class__.__name__,
+                    )
                     await asyncio.sleep(delay)
                     continue
                 self._log.error("POST %s failed after retries: %s", path, exc)
@@ -332,6 +356,60 @@ class TwitchAPI:
         """
         return await self.get_streams_for_game(game_id=category_id, game_name="", language=language, limit=limit)
 
+    async def create_clip(
+        self,
+        broadcaster_id: str,
+        *,
+        user_token: str,
+        has_delay: bool = False,
+    ) -> Optional[Dict]:
+        """Create a clip for a broadcaster using a user OAuth token.
+
+        Note: Twitch determines the final segment from the stream buffer
+        (typically the most recent ~90 seconds).
+        """
+        if not broadcaster_id or not user_token:
+            return None
+
+        token = (user_token or "").strip()
+        if token.lower().startswith("oauth:"):
+            token = token.split(":", 1)[1].strip()
+        if not token:
+            return None
+
+        self._ensure_session()
+        assert self._session is not None
+
+        url = f"{TWITCH_API_BASE}/clips"
+        params = {
+            "broadcaster_id": str(broadcaster_id),
+            "has_delay": "true" if has_delay else "false",
+        }
+        headers = {
+            "Client-ID": self.client_id,
+            "Authorization": f"Bearer {token}",
+        }
+
+        try:
+            async with self._session.post(url, headers=headers, params=params) as r:
+                if r.status not in {200, 202}:
+                    txt = await r.text()
+                    self._log.debug(
+                        "POST /clips failed: HTTP %s: %s",
+                        r.status,
+                        txt[:180].replace("\n", " "),
+                    )
+                    return None
+                js = await r.json()
+        except Exception:
+            self._log.debug("create_clip failed for broadcaster=%s", broadcaster_id, exc_info=True)
+            return None
+
+        data = js.get("data", []) if isinstance(js, dict) else []
+        if not data or not isinstance(data[0], dict):
+            return None
+        return data[0]
+
     async def get_latest_vod_thumbnail(self, *, user_id: Optional[str] = None, login: Optional[str] = None) -> Optional[str]:
         """Best-effort: Thumbnail des neuesten VOD (type=archive) als 1280x720-URL."""
         target_user_id = (user_id or "").strip()
@@ -500,4 +578,10 @@ class TwitchAPI:
             "condition": condition,
             "transport": {"method": "websocket", "session_id": session_id},
         }
-        return await self._post("/eventsub/subscriptions", json=payload, oauth_token=oauth_token)
+        return await self._post(
+            "/eventsub/subscriptions",
+            json=payload,
+            oauth_token=oauth_token,
+            max_attempts=1,
+            request_timeout_total=8.0,
+        )

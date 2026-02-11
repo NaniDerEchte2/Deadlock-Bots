@@ -544,6 +544,147 @@ class TwitchMonitoringMixin:
         except Exception:
             log.exception("EventSub: Auto-Raid offline handling failed for %s", broadcaster_login or broadcaster_id)
 
+    async def _acquire_eventsub_dynamic_listener(
+        self,
+        *,
+        reason: str,
+        target_label: str,
+        wait_existing_timeout: float = 1.5,
+        wait_new_timeout: float = 8.0,
+    ):
+        """Return a ready listener with free capacity, creating one if needed."""
+        from .eventsub_ws import EventSubWSListener
+
+        if not getattr(self, "api", None):
+            return None
+
+        lock = getattr(self, "_eventsub_ws_listener_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            setattr(self, "_eventsub_ws_listener_lock", lock)
+
+        async with lock:
+            listeners_raw = getattr(self, "_eventsub_ws_listeners", None)
+            if isinstance(listeners_raw, list):
+                listeners: List[EventSubWSListener] = listeners_raw
+            else:
+                listeners = list(listeners_raw or [])
+                setattr(self, "_eventsub_ws_listeners", listeners)
+
+            def _listener_sub_count(listener: EventSubWSListener) -> int:
+                raw_value = getattr(
+                    listener,
+                    "subscription_count",
+                    getattr(listener, "cost", 0),
+                )
+                try:
+                    return max(0, min(10, int(raw_value or 0)))
+                except Exception:
+                    return 0
+
+            async def _create_listener(create_reason: str) -> Optional[EventSubWSListener]:
+                if len(listeners) >= 3:
+                    ready_with_capacity = sum(
+                        1
+                        for listener in listeners
+                        if listener.is_ready and not listener.is_failed and listener.has_capacity
+                    )
+                    log.warning(
+                        "EventSub: Kein weiterer Listener verfügbar (3/3 aktiv) (%s: %s, ready_with_capacity=%d)",
+                        reason,
+                        target_label or "unknown",
+                        ready_with_capacity,
+                    )
+                    return None
+
+                token_resolver = getattr(self, "_eventsub_ws_token_resolver", None)
+                listener = EventSubWSListener(self.api, log, token_resolver=token_resolver)
+                offline_cb = getattr(self, "_eventsub_ws_offline_cb", None)
+                raid_cb = getattr(self, "_eventsub_ws_raid_cb", None)
+                if callable(offline_cb):
+                    listener.set_callback("stream.offline", offline_cb)
+                if callable(raid_cb):
+                    listener.set_callback("channel.raid", raid_cb)
+
+                listeners.append(listener)
+                listener_idx = len(listeners)
+                log.info(
+                    "EventSub: Erstelle zusätzlichen Listener #%d (%s: %s, reason=%s)",
+                    listener_idx,
+                    reason,
+                    target_label or "unknown",
+                    create_reason,
+                )
+                asyncio.create_task(listener.run(), name=f"twitch.eventsub.ws.{listener_idx - 1}")
+
+                if await listener.wait_until_ready(timeout=wait_new_timeout):
+                    try:
+                        await self._record_eventsub_capacity_snapshot("dynamic_listener_created", force=True)
+                    except Exception:
+                        log.debug("EventSub: Snapshot dynamic_listener_created fehlgeschlagen", exc_info=True)
+                    return listener
+
+                # Cleanup, damit ein nicht-bereiter Listener keinen der 3 Slots dauerhaft blockiert.
+                try:
+                    listener.stop()
+                except Exception:
+                    pass
+                try:
+                    listeners.remove(listener)
+                except ValueError:
+                    pass
+
+                log.warning(
+                    "EventSub: Neuer Listener #%d wurde nicht rechtzeitig bereit (%s: %s, reason=%s)",
+                    listener_idx,
+                    reason,
+                    target_label or "unknown",
+                    create_reason,
+                )
+                return None
+
+            ready_candidates = [
+                listener
+                for listener in listeners
+                if not listener.is_failed and listener.has_capacity and listener.is_ready
+            ]
+
+            for idx, listener in enumerate(listeners, start=1):
+                if listener.is_failed or not listener.has_capacity or listener.is_ready:
+                    continue
+                try:
+                    if await listener.wait_until_ready(timeout=wait_existing_timeout):
+                        ready_candidates.append(listener)
+                except Exception:
+                    log.debug(
+                        "EventSub: wait_until_ready fehlgeschlagen für Listener #%d (%s: %s)",
+                        idx,
+                        reason,
+                        target_label or "unknown",
+                        exc_info=True,
+                    )
+
+            if ready_candidates:
+                soft_prewarm_threshold = 8  # 80% von 10 Slots
+                ready_loads = [_listener_sub_count(listener) for listener in ready_candidates]
+                if ready_loads and min(ready_loads) >= soft_prewarm_threshold and len(listeners) < 3:
+                    log.info(
+                        "EventSub: Soft-Limit erreicht (%s: %s, loads=%s) -> prewarm neuer Listener",
+                        reason,
+                        target_label or "unknown",
+                        ",".join(str(v) for v in sorted(ready_loads, reverse=True)),
+                    )
+                    prewarmed = await _create_listener("soft_limit_reached")
+                    if prewarmed is not None:
+                        # Neue Subscription direkt auf den frisch gestarteten Listener legen.
+                        return prewarmed
+
+                # Danach die bestehenden Listener bis 10/10 füllen.
+                ready_candidates.sort(key=_listener_sub_count, reverse=True)
+                return ready_candidates[0]
+
+            return await _create_listener("no_ready_listener")
+
     async def _start_eventsub_listener(self):
         """Startet konsolidierte EventSub WebSocket Listener (verteilt auf bis zu 3 Verbindungen)."""
         if getattr(self, "_eventsub_ws_started", False):
@@ -657,47 +798,10 @@ class TwitchMonitoringMixin:
 
                 # 2. Dynamisch stream.offline Subscription hinzufügen
                 # Jetzt wo der Stream live ist, wollen wir wissen, wann er offline geht (für Auto-Raid)
-                listeners_list: List[EventSubWSListener] = getattr(self, "_eventsub_ws_listeners", [])
-                target_listener = None
-                for l in listeners_list:
-                    if l.has_capacity and not l.is_failed:
-                        target_listener = l
-                        break
-
-                if not target_listener and len(listeners_list) < 3 and getattr(self, "api", None):
-                    target_listener = EventSubWSListener(self.api, log, token_resolver=token_resolver)
-                    target_listener.set_callback("stream.offline", _offline_cb)
-                    raid_cb = getattr(self, "_eventsub_ws_raid_cb", None)
-                    if callable(raid_cb):
-                        target_listener.set_callback("channel.raid", raid_cb)
-                    listeners_list.append(target_listener)
-                    listener_idx = len(listeners_list)
-                    log.info(
-                        "Polling: Erstelle EventSub Listener #%d für dynamische stream.offline subscription von %s",
-                        listener_idx,
-                        login or bid,
-                    )
-                    asyncio.create_task(
-                        target_listener.run(),
-                        name=f"twitch.eventsub.ws.{listener_idx - 1}",
-                    )
-                    ready = await target_listener.wait_until_ready(timeout=8.0)
-                    if not ready:
-                        log.warning(
-                            "Polling: Neuer EventSub Listener #%d nicht bereit (stream.offline für %s übersprungen)",
-                            listener_idx,
-                            login or bid,
-                        )
-                        await self._record_eventsub_capacity_snapshot(
-                            "stream_offline_listener_not_ready",
-                            force=True,
-                        )
-                        target_listener = None
-                    else:
-                        await self._record_eventsub_capacity_snapshot(
-                            "stream_offline_listener_created",
-                            force=True,
-                        )
+                target_listener = await self._acquire_eventsub_dynamic_listener(
+                    reason="stream.offline",
+                    target_label=str(login or bid or ""),
+                )
 
                 if target_listener:
                     # Hole Bot Token
@@ -749,6 +853,7 @@ class TwitchMonitoringMixin:
                     return
 
                 from_login = (event.get("from_broadcaster_user_login") or "").strip().lower()
+                from_broadcaster_id = str(event.get("from_broadcaster_user_id") or "").strip()
                 viewer_count = int(event.get("viewers") or 0)
 
                 if not from_login:
@@ -766,6 +871,7 @@ class TwitchMonitoringMixin:
                     to_broadcaster_id=to_bid,
                     to_broadcaster_login=to_login,
                     from_broadcaster_login=from_login,
+                    from_broadcaster_id=from_broadcaster_id,
                     viewer_count=viewer_count,
                 )
             except Exception:
@@ -864,53 +970,12 @@ class TwitchMonitoringMixin:
             await self._record_eventsub_capacity_snapshot("raid_no_api", force=True)
             return False
 
+        target_listener = await self._acquire_eventsub_dynamic_listener(
+            reason="channel.raid",
+            target_label=str(broadcaster_login or broadcaster_id or ""),
+        )
+
         listeners: List[EventSubWSListener] = getattr(self, "_eventsub_ws_listeners", [])
-
-        # Finde einen Listener mit Kapazität
-        target_listener = None
-        for l in listeners:
-            if l.has_capacity and not l.is_failed:
-                target_listener = l
-                break
-
-        if not target_listener and len(listeners) < 3:
-            token_resolver = getattr(self, "_eventsub_ws_token_resolver", None)
-            target_listener = EventSubWSListener(self.api, log, token_resolver=token_resolver)
-            offline_cb = getattr(self, "_eventsub_ws_offline_cb", None)
-            raid_cb = getattr(self, "_eventsub_ws_raid_cb", None)
-            if callable(offline_cb):
-                target_listener.set_callback("stream.offline", offline_cb)
-            if callable(raid_cb):
-                target_listener.set_callback("channel.raid", raid_cb)
-
-            listeners.append(target_listener)
-            setattr(self, "_eventsub_ws_listeners", listeners)
-            listener_idx = len(listeners)
-            log.info(
-                "EventSub: Erstelle zusätzlichen Listener #%d für channel.raid subscription (target: %s)",
-                listener_idx,
-                broadcaster_login,
-            )
-            asyncio.create_task(
-                target_listener.run(),
-                name=f"twitch.eventsub.ws.{listener_idx - 1}",
-            )
-            ready = await target_listener.wait_until_ready(timeout=8.0)
-            if not ready:
-                log.error(
-                    "EventSub: Neuer Listener #%d wurde nicht rechtzeitig bereit für channel.raid target %s",
-                    listener_idx,
-                    broadcaster_login,
-                )
-                await self._record_eventsub_capacity_snapshot(
-                    "raid_listener_not_ready",
-                    force=True,
-                )
-                return False
-            await self._record_eventsub_capacity_snapshot(
-                "raid_listener_created",
-                force=True,
-            )
 
         if not target_listener:
             log.error(
@@ -946,11 +1011,15 @@ class TwitchMonitoringMixin:
 
         condition = {"to_broadcaster_user_id": str(broadcaster_id)}
 
-        # Versuche alle Listener mit Kapazität, damit ein reconnect/session_id-Race
-        # nicht sofort zum Abbruch führt.
-        for listener_idx, listener in enumerate(listeners, start=1):
-            if listener.is_failed or not listener.has_capacity:
+        # Versuche zuerst den gewählten Listener und danach alle weiteren mit Kapazität.
+        ordered_listeners = [target_listener] + [l for l in listeners if l is not target_listener]
+        for listener in ordered_listeners:
+            if listener.is_failed or not listener.has_capacity or not listener.is_ready:
                 continue
+            try:
+                listener_idx = listeners.index(listener) + 1
+            except Exception:
+                listener_idx = 0
             try:
                 success = await listener.add_subscription_dynamic(
                     sub_type="channel.raid",

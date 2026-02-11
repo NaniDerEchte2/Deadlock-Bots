@@ -23,6 +23,7 @@ import {
   fetchAudienceDemographics,
   fetchViewerTimeline,
   fetchCategoryLeaderboard,
+  fetchCoaching,
 } from '@/api/client';
 import type { TimeRange } from '@/types/analytics';
 
@@ -207,6 +208,16 @@ export function useViewerTimeline(streamer: string | null, days: number) {
   return useQuery({
     queryKey: ['viewer-timeline', streamer, days],
     queryFn: () => fetchViewerTimeline(streamer, days),
+    staleTime: STALE_TIME,
+    enabled: !!streamer,
+  });
+}
+
+// Coaching Hook
+export function useCoaching(streamer: string | null, days: TimeRange) {
+  return useQuery({
+    queryKey: ['coaching', streamer, days],
+    queryFn: () => fetchCoaching(streamer!, days),
     staleTime: STALE_TIME,
     enabled: !!streamer,
   });
