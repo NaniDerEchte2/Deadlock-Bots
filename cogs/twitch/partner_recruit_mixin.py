@@ -173,7 +173,11 @@ class TwitchPartnerRecruitMixin:
                     self.name = n
                     self.id = uid
 
-            success = await chat_bot._send_chat_message(_MockChannel(login, user_id), message)
+            success = await chat_bot._send_chat_message(
+                _MockChannel(login, user_id),
+                message,
+                source="recruitment",
+            )
 
         # 5. Versuch loggen (Cooldown setzen auch bei Fehler)
         self._record_outreach(login, user_id, success)

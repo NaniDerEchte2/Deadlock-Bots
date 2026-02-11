@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import aiohttp
 
@@ -103,6 +103,26 @@ class EventSubWSListener:
     def subscription_count(self) -> int:
         """Number of tracked subscriptions assigned to this listener."""
         return len(self._subscriptions)
+
+    def get_tracked_subscriptions(self) -> List[Dict[str, Any]]:
+        """Return a copy of tracked subscriptions for diagnostics/dashboard views."""
+        rows: List[Dict[str, Any]] = []
+        for sub_type, broadcaster_id, condition in self._subscriptions:
+            safe_condition: Dict[str, str] = {}
+            if isinstance(condition, dict):
+                safe_condition = {
+                    str(key): str(value)
+                    for key, value in condition.items()
+                    if str(key).strip()
+                }
+            rows.append(
+                {
+                    "type": str(sub_type or ""),
+                    "broadcaster_id": str(broadcaster_id or ""),
+                    "condition": safe_condition,
+                }
+            )
+        return rows
     
     @property
     def has_capacity(self) -> bool:

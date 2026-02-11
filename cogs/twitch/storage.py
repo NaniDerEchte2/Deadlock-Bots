@@ -89,6 +89,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ("manual_partner_opt_out", "INTEGER DEFAULT 0"),
         ("archived_at", "TEXT"),
         ("raid_bot_enabled", "INTEGER DEFAULT 0"),  # Auto-Raid Opt-in/out (default: off)
+        ("silent_ban", "INTEGER DEFAULT 0"),  # 1 = suppress auto-ban chat notifications
+        ("silent_raid", "INTEGER DEFAULT 0"),  # 1 = suppress raid arrival chat notifications
         ("created_at", "TEXT DEFAULT CURRENT_TIMESTAMP"),
     ]:
         _add_column_if_missing(conn, "twitch_streamers", col, spec)

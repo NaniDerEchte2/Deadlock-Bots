@@ -488,7 +488,11 @@ class PromoMixin:
                     self.name = name
                     self.id = channel_id
 
-            ok = await self._send_chat_message(_Channel(login, broadcaster_id), msg)
+            ok = await self._send_chat_message(
+                _Channel(login, broadcaster_id),
+                msg,
+                source="promo",
+            )
             if ok:
                 self._last_promo_sent[login] = now
                 if is_specific:

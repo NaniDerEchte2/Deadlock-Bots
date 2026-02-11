@@ -1391,6 +1391,83 @@ class DashboardStatsMixin:
         else:
             eventsub_reason_html = "<div class='status-meta' style='margin-top:.5rem;'>Keine Trigger-Auswertung vorhanden.</div>"
 
+        eventsub_active_types = (
+            eventsub.get("active_subscription_types")
+            if isinstance(eventsub.get("active_subscription_types"), list)
+            else []
+        )
+        if eventsub_active_types:
+            eventsub_active_type_rows = "".join(
+                "<tr>"
+                f"<td>{html.escape(str(row.get('sub_type') or '-'))}</td>"
+                f"<td data-sort-type='number' data-value='{int(row.get('count') or 0)}'>{_fmt_int(row.get('count'))}</td>"
+                "</tr>"
+                for row in sorted(
+                    [r for r in eventsub_active_types if isinstance(r, dict)],
+                    key=lambda item: (-int(item.get("count") or 0), str(item.get("sub_type") or "")),
+                )
+            )
+        else:
+            eventsub_active_type_rows = "<tr><td colspan=2><i>Keine aktiven EventSub-Typen.</i></td></tr>"
+
+        eventsub_active_channels = (
+            eventsub.get("active_subscription_channels")
+            if isinstance(eventsub.get("active_subscription_channels"), list)
+            else []
+        )
+        if eventsub_active_channels:
+            eventsub_active_channel_rows = "".join(
+                "<tr>"
+                "<td>"
+                f"{('@' + html.escape(str(row.get('twitch_login') or ''))) if row.get('twitch_login') else '-'}"
+                f"<div class='status-meta'>ID: {html.escape(str(row.get('twitch_user_id') or '-'))}</div>"
+                "</td>"
+                f"<td data-sort-type='number' data-value='{int(row.get('subscription_count') or 0)}'>{_fmt_int(row.get('subscription_count'))}</td>"
+                f"<td>{html.escape(', '.join(str(v) for v in (row.get('sub_types') if isinstance(row.get('sub_types'), (list, tuple, set)) else [])) or '-')}</td>"
+                "</tr>"
+                for row in sorted(
+                    [r for r in eventsub_active_channels if isinstance(r, dict)],
+                    key=lambda item: (
+                        -int(item.get("subscription_count") or 0),
+                        str(item.get("twitch_login") or ""),
+                        str(item.get("twitch_user_id") or ""),
+                    ),
+                )
+            )
+        else:
+            eventsub_active_channel_rows = "<tr><td colspan=3><i>Keine aktiven EventSub-Kanäle.</i></td></tr>"
+
+        eventsub_active_subscriptions = (
+            eventsub.get("active_subscriptions")
+            if isinstance(eventsub.get("active_subscriptions"), list)
+            else []
+        )
+        if eventsub_active_subscriptions:
+            eventsub_active_subscription_rows = "".join(
+                "<tr>"
+                f"<td>{html.escape(str(row.get('sub_type') or '-'))}</td>"
+                "<td>"
+                f"{('@' + html.escape(str(row.get('target_login') or ''))) if row.get('target_login') else '-'}"
+                f"<div class='status-meta'>ID: {html.escape(str(row.get('target_user_id') or row.get('broadcaster_user_id') or '-'))}</div>"
+                "</td>"
+                f"<td data-sort-type='number' data-value='{int(row.get('listener_idx') or 0)}'>#{_fmt_int(row.get('listener_idx'))}</td>"
+                f"<td>{html.escape(', '.join(f'{str(k)}={str(v)}' for k, v in sorted((row.get('condition') if isinstance(row.get('condition'), dict) else {}).items())) or '-')}</td>"
+                "</tr>"
+                for row in sorted(
+                    [r for r in eventsub_active_subscriptions if isinstance(r, dict)],
+                    key=lambda item: (
+                        str(item.get("target_login") or ""),
+                        str(item.get("target_user_id") or item.get("broadcaster_user_id") or ""),
+                        str(item.get("sub_type") or ""),
+                        int(item.get("listener_idx") or 0),
+                    ),
+                )
+            )
+        else:
+            eventsub_active_subscription_rows = "<tr><td colspan=4><i>Keine aktiven EventSub-Subscriptions.</i></td></tr>"
+
+        eventsub_active_count = int(eventsub_current.get("subscription_count") or 0)
+
         eventsub_card = f"""
 <div class="card" style="margin-top:1.4rem;">
   <div class="card-header">
@@ -1412,6 +1489,46 @@ class DashboardStatsMixin:
     <tbody>{eventsub_hourly_rows}</tbody>
   </table>
   {eventsub_reason_html}
+  <div class="status-meta" style="margin-top:1rem;">Aktive Subscriptions jetzt: {_fmt_int(eventsub_active_count)}</div>
+  <div class="row" style="gap:1rem; flex-wrap:wrap; margin-top:.8rem;">
+    <div style="flex:1; min-width:220px;">
+      <h3 style="margin:.1rem 0 .5rem 0; font-size:1rem;">Aktive EventSub-Typen</h3>
+      <table class="sortable-table">
+        <thead>
+          <tr>
+            <th data-sort-type="string">Typ</th>
+            <th data-sort-type="number">Anzahl</th>
+          </tr>
+        </thead>
+        <tbody>{eventsub_active_type_rows}</tbody>
+      </table>
+    </div>
+    <div style="flex:2; min-width:280px;">
+      <h3 style="margin:.1rem 0 .5rem 0; font-size:1rem;">Aktive EventSub-Kanäle</h3>
+      <table class="sortable-table">
+        <thead>
+          <tr>
+            <th data-sort-type="string">Kanal</th>
+            <th data-sort-type="number">Subscriptions</th>
+            <th data-sort-type="string">Typen</th>
+          </tr>
+        </thead>
+        <tbody>{eventsub_active_channel_rows}</tbody>
+      </table>
+    </div>
+  </div>
+  <h3 style="margin:1rem 0 .5rem 0; font-size:1rem;">Aktive EventSub-Subscriptions (Detail)</h3>
+  <table class="sortable-table">
+    <thead>
+      <tr>
+        <th data-sort-type="string">EventSub</th>
+        <th data-sort-type="string">Kanal</th>
+        <th data-sort-type="number">Listener</th>
+        <th data-sort-type="string">Condition</th>
+      </tr>
+    </thead>
+    <tbody>{eventsub_active_subscription_rows}</tbody>
+  </table>
 </div>
 """
 

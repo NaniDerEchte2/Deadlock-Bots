@@ -403,16 +403,42 @@ class ModerationMixin:
             return True
         return False
 
-    def _blacklist_streamer_for_promo(self, channel, status: Optional[int], text: str) -> None:
-        """Blacklist a streamer when the bot gets banned due to auto-promo."""
+    @staticmethod
+    def _should_blacklist_for_source(source: Optional[str]) -> bool:
+        if not source:
+            return False
+        return source.strip().lower() in {"promo", "recruitment", "partner_raid"}
+
+    def _blacklist_streamer_for_source(
+        self,
+        channel,
+        status: Optional[int],
+        text: str,
+        source: Optional[str],
+    ) -> None:
+        """Blacklist a streamer when outbound bot messages indicate the bot is banned."""
+        source_tag = str(source or "").strip().lower()
+        if not self._should_blacklist_for_source(source_tag):
+            return
+
         login = self._normalize_channel_login_safe(channel)
         if not login:
             return
+        try:
+            if self._is_partner_channel_for_chat_tracking(login):
+                log.info(
+                    "Blacklist übersprungen für Partner-Channel %s (source=%s)",
+                    login,
+                    source_tag,
+                )
+                return
+        except Exception:
+            log.debug("Partner-Check vor Blacklist fehlgeschlagen fuer %s", login, exc_info=True)
 
         raw_id = str(getattr(channel, "id", "") or "").strip()
         target_id = raw_id if raw_id else None
         snippet = (text or "").replace("\n", " ").strip()[:180]
-        reason = "auto_promo_bot_banned"
+        reason = f"{source_tag}_bot_banned"
         if status is not None:
             reason += f" (HTTP {status})"
         if snippet:
@@ -433,9 +459,13 @@ class ModerationMixin:
                     )
                     conn.commit()
             except Exception:
-                log.debug("Konnte Auto-Promo-Blacklist nicht schreiben fuer %s", login, exc_info=True)
+                log.debug("Konnte Bot-Ban-Blacklist nicht schreiben fuer %s", login, exc_info=True)
 
-        log.warning("Auto-Promo Ban erkannt: %s auf Raid-Blacklist gesetzt.", login)
+        log.warning("Bot-Ban erkannt (source=%s): %s auf Raid-Blacklist gesetzt.", source_tag, login)
+
+    def _blacklist_streamer_for_promo(self, channel, status: Optional[int], text: str) -> None:
+        """Backward-compatible wrapper for promo ban blacklisting."""
+        self._blacklist_streamer_for_source(channel, status, text, source="promo")
 
     async def _send_announcement(self, channel, text: str, color: str = "purple", source: Optional[str] = None) -> bool:
         """Sendet eine Announcement (hervorgehobene Nachricht) via Helix API.
@@ -490,8 +520,8 @@ class ModerationMixin:
                             await self._token_manager.get_valid_token(force_refresh=True)
                             continue
                         txt = await r.text()
-                        if source == "promo" and self._looks_like_ban_error(r.status, txt):
-                            self._blacklist_streamer_for_promo(channel, r.status, txt)
+                        if self._should_blacklist_for_source(source) and self._looks_like_ban_error(r.status, txt):
+                            self._blacklist_streamer_for_source(channel, r.status, txt, source)
                         log.warning(
                             "_send_announcement fehlgeschlagen: HTTP %s - %s, Fallback auf normale Nachricht",
                             r.status, txt,
@@ -512,8 +542,8 @@ class ModerationMixin:
                     await channel.send(text)
                     return True
                 except Exception as exc:
-                    if source == "promo" and self._looks_like_ban_error(None, str(exc)):
-                        self._blacklist_streamer_for_promo(channel, None, str(exc))
+                    if self._should_blacklist_for_source(source) and self._looks_like_ban_error(None, str(exc)):
+                        self._blacklist_streamer_for_source(channel, None, str(exc), source)
                     raise
 
             # 2. Fallback: Direkte Helix API Call (TwitchIO 3.x kompatibel)
@@ -563,8 +593,8 @@ class ModerationMixin:
                                     await self._token_manager.get_valid_token(force_refresh=True)
                                     continue
                                 txt = await r.text()
-                                if source == "promo" and self._looks_like_ban_error(r.status, txt):
-                                    self._blacklist_streamer_for_promo(channel, r.status, txt)
+                                if self._should_blacklist_for_source(source) and self._looks_like_ban_error(r.status, txt):
+                                    self._blacklist_streamer_for_source(channel, r.status, txt, source)
                                 log.warning("Twitch hat die Bot-Nachricht abgelehnt: HTTP %s - %s", r.status, txt)
                                 return False
                     except Exception as e:
@@ -691,11 +721,22 @@ class ModerationMixin:
                                     content=original_content,
                                     status="BANNED"
                                 )
-                                # Nachricht an den Chat senden, WARUM gebannt wurde
-                                await self._send_chat_message(
-                                    message.channel,
-                                    f"🛡️ Auto-Mod: {chatter_login} wurde wegen Spam-Verdacht gebannt. (!unban zum Rückgängigmachen)"
-                                )
+                                # Nachricht an den Chat senden, WARUM gebannt wurde (wenn nicht silent)
+                                silent = False
+                                try:
+                                    with get_conn() as _conn:
+                                        _sb_row = _conn.execute(
+                                            "SELECT silent_ban FROM twitch_streamers WHERE twitch_user_id = ?",
+                                            (twitch_user_id,),
+                                        ).fetchone()
+                                        silent = bool(int((_sb_row[0] if _sb_row else 0) or 0))
+                                except Exception:
+                                    pass
+                                if not silent:
+                                    await self._send_chat_message(
+                                        message.channel,
+                                        f"🛡️ Auto-Mod: {chatter_login} wurde wegen Spam-Verdacht gebannt. (!unban zum Rückgängigmachen)"
+                                    )
                                 return True
 
                             if resp.status == 401 and attempt == 0:

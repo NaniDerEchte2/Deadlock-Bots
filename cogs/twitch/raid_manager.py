@@ -1419,6 +1419,26 @@ class RaidBot:
             is_partner_raid,
         )
 
+        # silent_raid Check: Streamer kann Raid-Nachrichten im Chat unterdrücken
+        silent_raid = False
+        try:
+            with get_conn() as conn:
+                _sr_row = conn.execute(
+                    "SELECT silent_raid FROM twitch_streamers WHERE LOWER(twitch_login) = ?",
+                    (to_broadcaster_login.lower(),),
+                ).fetchone()
+                silent_raid = bool(int((_sr_row[0] if _sr_row else 0) or 0))
+        except Exception:
+            pass
+
+        if silent_raid:
+            log.info(
+                "Raid message suppressed (silent_raid): %s -> %s",
+                from_broadcaster_login,
+                to_broadcaster_login,
+            )
+            return
+
         # Partner-Raid: Sende Partner-Message
         if is_partner_raid:
             await self._send_partner_raid_message(
@@ -1485,7 +1505,8 @@ class RaidBot:
 
                 success = await self.chat_bot._send_chat_message(
                     MockChannel(to_broadcaster_login, to_broadcaster_id),
-                    message
+                    message,
+                    source="partner_raid",
                 )
 
                 if success:
@@ -1732,7 +1753,8 @@ class RaidBot:
                     
                     success = await self.chat_bot._send_chat_message(
                         MockChannel(to_broadcaster_login, target_id),
-                        message
+                        message,
+                        source="recruitment",
                     )
                     
                     if success:

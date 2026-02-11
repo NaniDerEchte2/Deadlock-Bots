@@ -146,6 +146,107 @@ async def _resolve_guild_and_member(
     return g1, m1
 
 
+def _is_truthy_flag(value: object) -> bool:
+    """Robuste Auswertung von bool/int-Flags aus DB-Zeilen."""
+    try:
+        return bool(int(value or 0))
+    except (TypeError, ValueError):
+        return bool(value)
+
+
+def _check_partner_onboarding_blacklist(
+    *,
+    discord_user_id: Optional[int] = None,
+    twitch_login: Optional[str] = None,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Prüft, ob ein Streamer beim Partner-Onboarding zwingend abgelehnt werden muss.
+
+    Sperrgründe:
+    - manuelles Opt-out (`manual_partner_opt_out=1`)
+    - Twitch-Login in `twitch_raid_blacklist`
+    """
+    if not twitch_storage:
+        return False, None
+
+    normalized_login = (twitch_login or "").strip().lower()
+    discord_id = str(discord_user_id) if discord_user_id is not None else ""
+    candidate_logins: set[str] = set()
+    if normalized_login:
+        candidate_logins.add(normalized_login)
+
+    try:
+        with twitch_storage.get_conn() as conn:
+            if normalized_login:
+                opt_out_row = conn.execute(
+                    """
+                    SELECT manual_partner_opt_out
+                    FROM twitch_streamers
+                    WHERE LOWER(twitch_login) = LOWER(?)
+                    LIMIT 1
+                    """,
+                    (normalized_login,),
+                ).fetchone()
+                if opt_out_row:
+                    opt_out_raw = (
+                        opt_out_row["manual_partner_opt_out"]
+                        if hasattr(opt_out_row, "keys")
+                        else opt_out_row[0]
+                    )
+                    if _is_truthy_flag(opt_out_raw):
+                        return True, f"manual_partner_opt_out=1 fuer {normalized_login}"
+
+            if discord_id:
+                rows = conn.execute(
+                    """
+                    SELECT twitch_login, manual_partner_opt_out
+                    FROM twitch_streamers
+                    WHERE discord_user_id = ?
+                    """,
+                    (discord_id,),
+                ).fetchall()
+                for row in rows:
+                    row_login = str(
+                        row["twitch_login"] if hasattr(row, "keys") else row[0] or ""
+                    ).strip().lower()
+                    if row_login:
+                        candidate_logins.add(row_login)
+
+                    opt_out_raw = row["manual_partner_opt_out"] if hasattr(row, "keys") else row[1]
+                    if _is_truthy_flag(opt_out_raw):
+                        blocked_login = row_login or normalized_login or "unbekannt"
+                        return True, f"manual_partner_opt_out=1 fuer {blocked_login}"
+
+            for login in candidate_logins:
+                blacklist_row = conn.execute(
+                    """
+                    SELECT reason
+                    FROM twitch_raid_blacklist
+                    WHERE LOWER(target_login) = LOWER(?)
+                    LIMIT 1
+                    """,
+                    (login,),
+                ).fetchone()
+                if blacklist_row:
+                    reason_raw = blacklist_row["reason"] if hasattr(blacklist_row, "keys") else blacklist_row[0]
+                    reason = str(reason_raw).strip() if reason_raw else "kein Grund hinterlegt"
+                    return True, f"twitch_raid_blacklist fuer {login} ({reason})"
+    except Exception:
+        log.exception("Blacklist-/Opt-out-Pruefung im Streamer-Onboarding fehlgeschlagen")
+        return False, None
+
+    return False, None
+
+
+def _blacklist_rejection_message() -> str:
+    return (
+        "Nach einer Internen überprüfeung, müssen wir dein Streamer Onboading leider Ablehnen.\n\n"
+        "Du hast dich zuvor aktiv gegen das Streamer-Partnerprogramm entschieden. "
+        "Darum nehmen wir dich nicht als Streamer-Partner auf.\n\n"
+        "Wir bitten um dein Verständniss und wünschen dir noch erfolgreiche Streams."
+    )
+
+
 async def _assign_role_and_notify(
     interaction: discord.Interaction, 
     twitch_login: Optional[str] = None
@@ -409,6 +510,21 @@ class StreamerIntroView(StepView):
                 await interaction.response.defer(thinking=False)
             except Exception:
                 log.debug("Intro defer failed", exc_info=True)
+
+        blocked, reason = _check_partner_onboarding_blacklist(discord_user_id=interaction.user.id)
+        if blocked:
+            log.info(
+                "Streamer-Onboarding abgelehnt (Intro): user=%s reason=%s",
+                interaction.user.id,
+                reason,
+            )
+            await _safe_send(
+                interaction,
+                content=_blacklist_rejection_message(),
+                ephemeral=True,
+            )
+            await self._finish(interaction)
+            return
 
         requirements_view = StreamerRequirementsView()
         requirements_embed = StreamerRequirementsView.build_embed()
@@ -849,6 +965,25 @@ class StreamerRequirementsView(StepView):
             )
             return
 
+        blocked, reason = _check_partner_onboarding_blacklist(
+            discord_user_id=interaction.user.id,
+            twitch_login=self.twitch_login,
+        )
+        if blocked:
+            log.info(
+                "Streamer-Onboarding abgelehnt (Verify): user=%s login=%s reason=%s",
+                interaction.user.id,
+                self.twitch_login,
+                reason,
+            )
+            await _safe_send(
+                interaction,
+                content=_blacklist_rejection_message(),
+                ephemeral=True,
+            )
+            await self._finish(interaction)
+            return
+
         await interaction.response.defer(ephemeral=True)
 
         assign_ok, assign_msg = await _assign_role_and_notify(interaction, self.twitch_login)
@@ -932,6 +1067,20 @@ class StreamerOnboarding(commands.Cog):
             await interaction.response.defer(ephemeral=True)
         except Exception:
             log.debug("streamer_cmd defer failed", exc_info=True)
+
+        blocked, reason = _check_partner_onboarding_blacklist(discord_user_id=interaction.user.id)
+        if blocked:
+            log.info(
+                "Streamer-Onboarding abgelehnt (/streamer): user=%s reason=%s",
+                interaction.user.id,
+                reason,
+            )
+            await _safe_send(
+                interaction,
+                content=_blacklist_rejection_message(),
+                ephemeral=True,
+            )
+            return
 
         try:
             dm = await interaction.user.create_dm()

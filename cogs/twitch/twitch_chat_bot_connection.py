@@ -10,6 +10,67 @@ log = logging.getLogger("TwitchStreams.ChatBot")
 
 
 class ConnectionMixin:
+    @staticmethod
+    def _looks_like_bot_banned_error(status: Optional[int], text: str) -> bool:
+        if not text:
+            return False
+        lowered = text.lower()
+        if "user is banned" in lowered:
+            return True
+        if "banned" in lowered:
+            return True
+        if status in {400, 403} and "ban" in lowered:
+            return True
+        return False
+
+    def _blacklist_streamer_for_bot_ban(
+        self,
+        broadcaster_id: Optional[str],
+        broadcaster_login: str,
+        status: Optional[int],
+        text: str,
+    ) -> None:
+        login = str(broadcaster_login or "").strip().lower().lstrip("#")
+        if not login:
+            return
+        try:
+            checker = getattr(self, "_is_partner_channel_for_chat_tracking", None)
+            if callable(checker) and checker(login):
+                log.info(
+                    "Blacklist übersprungen für Partner-Channel %s (_ensure_bot_is_mod)",
+                    login,
+                )
+                return
+        except Exception:
+            log.debug("Partner-Check in _ensure_bot_is_mod fehlgeschlagen fuer %s", login, exc_info=True)
+
+        target_id = str(broadcaster_id or "").strip() or None
+        snippet = (text or "").replace("\n", " ").strip()[:180]
+        reason = "chat_bot_banned_in_channel"
+        if status is not None:
+            reason += f" (HTTP {status})"
+        if snippet:
+            reason += f": {snippet}"
+
+        raid_bot = getattr(self, "_raid_bot", None)
+        if raid_bot and hasattr(raid_bot, "_add_to_blacklist"):
+            raid_bot._add_to_blacklist(target_id, login, reason)
+        else:
+            try:
+                with get_conn() as conn:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO twitch_raid_blacklist (target_id, target_login, reason)
+                        VALUES (?, ?, ?)
+                        """,
+                        (target_id, login, reason),
+                    )
+                    conn.commit()
+            except Exception:
+                log.debug("Konnte Bot-Ban Blacklist nicht schreiben fuer %s", login, exc_info=True)
+
+        log.warning("Bot-Ban erkannt: %s auf Raid-Blacklist gesetzt.", login)
+
     async def _ensure_bot_is_mod(self, broadcaster_id: str, broadcaster_login: str) -> bool:
         """
         Setzt den Bot als Moderator im Ziel-Channel über den Streamer-Token.
@@ -66,6 +127,13 @@ class ConnectionMixin:
                         log.info("_ensure_bot_is_mod: Bot ist bereits Mod in %s (422)", broadcaster_login)
                         return True
                     txt = await r.text()
+                    if self._looks_like_bot_banned_error(r.status, txt):
+                        self._blacklist_streamer_for_bot_ban(
+                            broadcaster_id=str(broadcaster_id),
+                            broadcaster_login=broadcaster_login,
+                            status=r.status,
+                            text=txt,
+                        )
                     # 400 "user is banned" → Bot wurde im Channel gebannt,
                     # Mod-Status kann nicht gesetzt werden bis der Ban aufgehoben wurde
                     log.warning(

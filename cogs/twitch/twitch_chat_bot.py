@@ -91,6 +91,9 @@ if TWITCHIO_AVAILABLE:
     ):
         """Twitch IRC Bot für Raid-Commands im Chat."""
 
+        # TwitchIO 3.x Component compatibility: guards list expected by Command._run_guards
+        __all_guards__: list = []
+
         def __init__(
             self,
             token: str,

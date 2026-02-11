@@ -101,9 +101,59 @@ class TwitchMonitoringMixin:
             return default_value
         return max(7, min(365, value))
 
+    @staticmethod
+    def _eventsub_target_user_id(condition: Optional[Dict[str, Any]], *, fallback: str = "") -> str:
+        condition_map = condition if isinstance(condition, dict) else {}
+        for key in (
+            "broadcaster_user_id",
+            "to_broadcaster_user_id",
+            "from_broadcaster_user_id",
+            "user_id",
+        ):
+            value = str(condition_map.get(key) or "").strip()
+            if value:
+                return value
+        return str(fallback or "").strip()
+
+    def _resolve_twitch_logins_by_user_id(self, user_ids: List[str]) -> Dict[str, str]:
+        unique_ids: List[str] = []
+        seen: set[str] = set()
+        for raw in user_ids:
+            value = str(raw or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            unique_ids.append(value)
+
+        if not unique_ids:
+            return {}
+
+        placeholders = ",".join("?" for _ in unique_ids)
+        query = (
+            "SELECT twitch_user_id, twitch_login "
+            "FROM twitch_streamers "
+            f"WHERE twitch_user_id IN ({placeholders}) "
+            "AND twitch_login IS NOT NULL"
+        )
+        try:
+            with storage.get_conn() as c:
+                rows = c.execute(query, tuple(unique_ids)).fetchall()
+            out: Dict[str, str] = {}
+            for row in rows:
+                uid = str(row["twitch_user_id"] if hasattr(row, "keys") else row[0]).strip()
+                login = str(row["twitch_login"] if hasattr(row, "keys") else row[1]).strip().lower()
+                if uid and login:
+                    out[uid] = login
+            return out
+        except Exception:
+            log.debug("EventSub: konnte twitch_login Mapping nicht laden", exc_info=True)
+            return {}
+
     def _collect_eventsub_capacity_snapshot(self, *, reason: str) -> Dict[str, Any]:
         listeners = list(getattr(self, "_eventsub_ws_listeners", []) or [])
         listener_rows: List[Dict[str, Any]] = []
+        active_subscriptions: List[Dict[str, Any]] = []
+        sub_type_counts: Dict[str, int] = {}
         ready_count = 0
         failed_count = 0
         used_slots = 0
@@ -140,10 +190,118 @@ class TwitchMonitoringMixin:
                 }
             )
 
+            tracked_subscriptions: List[Dict[str, Any]] = []
+            getter = getattr(listener, "get_tracked_subscriptions", None)
+            if callable(getter):
+                try:
+                    tracked_subscriptions = getter() or []
+                except Exception:
+                    tracked_subscriptions = []
+            elif isinstance(getattr(listener, "_subscriptions", None), list):
+                for raw in getattr(listener, "_subscriptions", []) or []:
+                    if not isinstance(raw, tuple) or len(raw) < 3:
+                        continue
+                    sub_type = str(raw[0] or "")
+                    broadcaster_id = str(raw[1] or "")
+                    condition = raw[2] if isinstance(raw[2], dict) else {}
+                    tracked_subscriptions.append(
+                        {
+                            "type": sub_type,
+                            "broadcaster_id": broadcaster_id,
+                            "condition": condition,
+                        }
+                    )
+
+            for sub in tracked_subscriptions:
+                sub_type = str(sub.get("type") or "").strip().lower() or "unknown"
+                broadcaster_id = str(sub.get("broadcaster_id") or "").strip()
+                raw_condition = sub.get("condition")
+                condition: Dict[str, str] = {}
+                if isinstance(raw_condition, dict):
+                    condition = {
+                        str(key): str(value)
+                        for key, value in raw_condition.items()
+                        if str(key).strip()
+                    }
+
+                target_user_id = self._eventsub_target_user_id(condition, fallback=broadcaster_id)
+                active_subscriptions.append(
+                    {
+                        "listener_idx": idx,
+                        "sub_type": sub_type,
+                        "broadcaster_user_id": broadcaster_id,
+                        "target_user_id": target_user_id,
+                        "condition": condition,
+                    }
+                )
+                sub_type_counts[sub_type] = int(sub_type_counts.get(sub_type, 0)) + 1
+
         listener_count = len(listeners)
         total_slots = listener_count * 10
         headroom_slots = max(0, total_slots - used_slots)
         utilization_pct = (float(used_slots) / float(total_slots) * 100.0) if total_slots > 0 else 0.0
+
+        login_map = self._resolve_twitch_logins_by_user_id(
+            [str(row.get("target_user_id") or "") for row in active_subscriptions]
+        )
+
+        for row in active_subscriptions:
+            target_user_id = str(row.get("target_user_id") or "").strip()
+            target_login = login_map.get(target_user_id)
+            if not target_login:
+                condition = row.get("condition") if isinstance(row.get("condition"), dict) else {}
+                target_login = (
+                    str(condition.get("broadcaster_user_login") or "").strip().lower()
+                    or str(condition.get("to_broadcaster_user_login") or "").strip().lower()
+                    or None
+                )
+            row["target_login"] = target_login
+
+        channel_map: Dict[str, Dict[str, Any]] = {}
+        for row in active_subscriptions:
+            target_user_id = str(row.get("target_user_id") or "").strip()
+            if not target_user_id:
+                continue
+            sub_type = str(row.get("sub_type") or "").strip().lower() or "unknown"
+            target_login = str(row.get("target_login") or "").strip().lower() or None
+            channel_entry = channel_map.setdefault(
+                target_user_id,
+                {
+                    "twitch_user_id": target_user_id,
+                    "twitch_login": target_login,
+                    "subscription_count": 0,
+                    "sub_types": set(),
+                },
+            )
+            channel_entry["subscription_count"] = int(channel_entry.get("subscription_count") or 0) + 1
+            if target_login and not channel_entry.get("twitch_login"):
+                channel_entry["twitch_login"] = target_login
+            channel_entry["sub_types"].add(sub_type)
+
+        subscription_channels = sorted(
+            [
+                {
+                    "twitch_user_id": str(entry.get("twitch_user_id") or ""),
+                    "twitch_login": (str(entry.get("twitch_login") or "").strip().lower() or None),
+                    "subscription_count": int(entry.get("subscription_count") or 0),
+                    "sub_types": sorted(str(sub_type) for sub_type in entry.get("sub_types", set())),
+                }
+                for entry in channel_map.values()
+            ],
+            key=lambda entry: (
+                -int(entry.get("subscription_count") or 0),
+                str(entry.get("twitch_login") or ""),
+                str(entry.get("twitch_user_id") or ""),
+            ),
+        )
+
+        subscription_types = [
+            {"sub_type": sub_type, "count": int(count)}
+            for sub_type, count in sorted(
+                sub_type_counts.items(),
+                key=lambda item: (-int(item[1] or 0), str(item[0])),
+            )
+        ]
 
         return {
             "ts_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -157,6 +315,10 @@ class TwitchMonitoringMixin:
             "listeners_at_limit": listeners_at_limit,
             "utilization_pct": round(utilization_pct, 2),
             "listeners": listener_rows,
+            "subscription_count": len(active_subscriptions),
+            "subscriptions": active_subscriptions,
+            "subscription_types": subscription_types,
+            "subscription_channels": subscription_channels,
         }
 
     async def _record_eventsub_capacity_snapshot(self, reason: str, *, force: bool = False) -> None:
@@ -380,6 +542,9 @@ class TwitchMonitoringMixin:
             "max_failed_listeners": int(round(_max(failed_count_values))),
             "hourly": hourly,
             "reasons": reasons,
+            "active_subscriptions": current_snapshot.get("subscriptions", []),
+            "active_subscription_types": current_snapshot.get("subscription_types", []),
+            "active_subscription_channels": current_snapshot.get("subscription_channels", []),
             "current": {
                 "ts_utc": current_snapshot.get("ts_utc"),
                 "listener_count": int(current_snapshot.get("listener_count") or 0),
@@ -390,6 +555,7 @@ class TwitchMonitoringMixin:
                 "headroom_slots": int(current_snapshot.get("headroom_slots") or 0),
                 "listeners_at_limit": int(current_snapshot.get("listeners_at_limit") or 0),
                 "utilization_pct": float(current_snapshot.get("utilization_pct") or 0.0),
+                "subscription_count": int(current_snapshot.get("subscription_count") or 0),
             },
         }
 

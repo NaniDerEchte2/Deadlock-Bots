@@ -383,6 +383,74 @@ if TWITCHIO_AVAILABLE:
                 clip_id or "-",
             )
 
+        @twitchio_commands.command(name="silentban")
+        async def cmd_silentban(self, ctx: twitchio_commands.Context):
+            """!silentban - Schaltet die Auto-Ban Chat-Benachrichtigung für diesen Channel ein/aus."""
+            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
+                await ctx.send(f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Bot steuern.")
+                return
+
+            channel_name = ctx.channel.name
+            streamer_data = self._get_streamer_by_channel(channel_name)
+            if not streamer_data:
+                await ctx.send(f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert.")
+                return
+
+            twitch_login = streamer_data[0]
+
+            with get_conn() as conn:
+                row = conn.execute(
+                    "SELECT silent_ban FROM twitch_streamers WHERE LOWER(twitch_login) = ?",
+                    (twitch_login.lower(),),
+                ).fetchone()
+                current = int(row[0] or 0) if row else 0
+                new_value = 0 if current else 1
+                conn.execute(
+                    "UPDATE twitch_streamers SET silent_ban = ? WHERE LOWER(twitch_login) = ?",
+                    (new_value, twitch_login.lower()),
+                )
+                conn.commit()
+
+            if new_value:
+                await ctx.send(f"@{ctx.author.name} 🔇 Auto-Ban Benachrichtigungen deaktiviert. Bans werden weiterhin ausgeführt, aber keine Nachricht mehr im Chat.")
+            else:
+                await ctx.send(f"@{ctx.author.name} 🔊 Auto-Ban Benachrichtigungen aktiviert.")
+            log.info("silentban toggled to %d for %s by %s", new_value, twitch_login, ctx.author.name)
+
+        @twitchio_commands.command(name="silentraid")
+        async def cmd_silentraid(self, ctx: twitchio_commands.Context):
+            """!silentraid - Schaltet die Raid-Benachrichtigung für diesen Channel ein/aus."""
+            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
+                await ctx.send(f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Bot steuern.")
+                return
+
+            channel_name = ctx.channel.name
+            streamer_data = self._get_streamer_by_channel(channel_name)
+            if not streamer_data:
+                await ctx.send(f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert.")
+                return
+
+            twitch_login = streamer_data[0]
+
+            with get_conn() as conn:
+                row = conn.execute(
+                    "SELECT silent_raid FROM twitch_streamers WHERE LOWER(twitch_login) = ?",
+                    (twitch_login.lower(),),
+                ).fetchone()
+                current = int(row[0] or 0) if row else 0
+                new_value = 0 if current else 1
+                conn.execute(
+                    "UPDATE twitch_streamers SET silent_raid = ? WHERE LOWER(twitch_login) = ?",
+                    (new_value, twitch_login.lower()),
+                )
+                conn.commit()
+
+            if new_value:
+                await ctx.send(f"@{ctx.author.name} 🔇 Raid-Benachrichtigungen deaktiviert. Raids werden weiterhin ausgeführt, aber keine Nachricht mehr im Chat.")
+            else:
+                await ctx.send(f"@{ctx.author.name} 🔊 Raid-Benachrichtigungen aktiviert.")
+            log.info("silentraid toggled to %d for %s by %s", new_value, twitch_login, ctx.author.name)
+
         @twitchio_commands.command(name="raid", aliases=["traid"])
         async def cmd_raid(self, ctx: twitchio_commands.Context):
             """!raid / !traid - Startet sofort einen Raid auf den bestmöglichen Partner (wie Auto-Raid)."""
