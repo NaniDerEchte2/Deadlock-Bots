@@ -240,7 +240,7 @@ def _check_partner_onboarding_blacklist(
 
 def _blacklist_rejection_message() -> str:
     return (
-        "Nach einer Internen überprüfeung, müssen wir dein Streamer Onboading leider Ablehnen.\n\n"
+        "Nach einer Internen überprüfung, müssen wir dein Streamer Onboading leider Ablehnen.\n\n"
         "Du hast dich zuvor aktiv gegen das Streamer-Partnerprogramm entschieden. "
         "Darum nehmen wir dich nicht als Streamer-Partner auf.\n\n"
         "Wir bitten um dein Verständniss und wünschen dir noch erfolgreiche Streams."
