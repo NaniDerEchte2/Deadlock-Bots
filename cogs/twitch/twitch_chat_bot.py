@@ -94,6 +94,14 @@ if TWITCHIO_AVAILABLE:
         # TwitchIO 3.x Component compatibility: guards list expected by Command._run_guards
         __all_guards__: list = []
 
+        async def component_before_invoke(self, ctx) -> None:
+            """TwitchIO 3.x Component hook stub – required when _injected is set on commands."""
+            pass
+
+        async def component_command_error(self, payload) -> None:
+            """TwitchIO 3.x Component hook stub – required when _injected is set on commands."""
+            pass
+
         def __init__(
             self,
             token: str,
