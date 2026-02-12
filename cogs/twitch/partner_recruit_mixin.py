@@ -24,7 +24,7 @@ log = logging.getLogger("TwitchStreams.PartnerRecruit")
 RECRUIT_LOOKBACK_DAYS = 28            # Zeitraum für die Erkennung
 RECRUIT_MIN_DAYS = 4                 # Mindestanzahl Streaming-Tage im Zeitraum
 RECRUIT_MIN_AVG_SAMPLES_PER_DAY = 96  # ≈ 2h bei 75s-Sample-Intervall
-RECRUIT_COOLDOWN_DAYS = 60            # Pause zwischen Kontaktversuchen
+RECRUIT_COOLDOWN_DAYS = 30            # Pause zwischen Kontaktversuchen
 RECRUIT_CHECK_INTERVAL_SECONDS = 1800 # Prüfzyklus (30 min)
 RECRUIT_DISCORD_INVITE = "discord.gg/z5TfVHuQq2"
 
