@@ -589,29 +589,35 @@ if TWITCHIO_AVAILABLE:
         async def event_message(self, message):
             """Wird bei jeder Chat-Nachricht aufgerufen."""
             # Compatibility layer for TwitchIO 3.x EventSub
+            # In 3.x, message is a ChatMessage with text/chatter/channel
+            # In 2.x, message is a Message with content/author/channel
+
+            # Detect 3.x by presence of 'text' or 'chatter' (and absence of 'content')
+            is_3x = hasattr(message, "chatter") and not hasattr(message, "content")
+            
+            if is_3x:
+                # Aliases for 2.x compatibility
+                if not hasattr(message, "content"):
+                    message.content = getattr(message, "text", "")
+                if not hasattr(message, "author"):
+                    message.author = message.chatter
+                
+                # Ensure author has 2.x style flags if missing
+                author = message.author
+                if not hasattr(author, "moderator") and hasattr(author, "is_moderator"):
+                    author.moderator = author.is_moderator
+                if not hasattr(author, "broadcaster") and hasattr(author, "is_broadcaster"):
+                    author.broadcaster = author.is_broadcaster
+
+                # In 3.x, message.channel is a Broadcaster object, but we might need MockChannel 
+                # if downstream code expects specific 2.x Channel attributes
+                if not hasattr(message.channel, "name") and hasattr(message.channel, "login"):
+                    message.channel.name = message.channel.login
+
+            # Fallback for echo if still missing (unlikely in 3.x)
             if not hasattr(message, "echo"):
                 safe_bot_id = self.bot_id_safe or self.bot_id or ""
-                message.echo = str(getattr(message.chatter, "id", "")) == str(safe_bot_id)
-
-            if not hasattr(message, "content"):
-                message.content = getattr(message, "text", "")
-
-            if not hasattr(message, "author"):
-                message.author = message.chatter
-
-            # Mock channel object mit allen benötigten Attributen
-            if not hasattr(message, "channel"):
-                broadcaster_login = getattr(message.broadcaster, "login", None) or getattr(message.broadcaster, "name", "unknown")
-                broadcaster_id = getattr(message.broadcaster, "id", None)
-
-                class MockChannel:
-                    def __init__(self, login, channel_id=None):
-                        self.name = login
-                        self.id = channel_id
-                    def __str__(self):
-                        return self.name
-
-                message.channel = MockChannel(broadcaster_login, broadcaster_id)
+                message.echo = str(getattr(message, "chatter", message).id) == str(safe_bot_id)
 
             # Ignoriere Bot-Nachrichten
             if message.echo:
