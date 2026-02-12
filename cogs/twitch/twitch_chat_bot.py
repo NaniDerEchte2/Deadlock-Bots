@@ -102,6 +102,10 @@ if TWITCHIO_AVAILABLE:
             """TwitchIO 3.x Component hook stub – required when _injected is set on commands."""
             pass
 
+        async def component_after_invoke(self, ctx) -> None:
+            """TwitchIO 3.x Component hook stub – required when _injected is set on commands."""
+            pass
+
         def __init__(
             self,
             token: str,

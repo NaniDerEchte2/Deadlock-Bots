@@ -43,7 +43,7 @@ if TWITCHIO_AVAILABLE:
         async def cmd_raid_enable(self, ctx: twitchio_commands.Context):
             """!raid_enable - Aktiviert den Auto-Raid-Bot."""
             # Nur Broadcaster oder Mods dürfen den Bot steuern
-            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
+            if not (getattr(ctx.author, "broadcaster", False) or getattr(ctx.author, "moderator", False)):
                 await ctx.send(
                     f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Twitch-Bot steuern."
                 )
@@ -115,7 +115,7 @@ if TWITCHIO_AVAILABLE:
         @twitchio_commands.command(name="raid_disable", aliases=["raidbot_off"])
         async def cmd_raid_disable(self, ctx: twitchio_commands.Context):
             """!raid_disable - Deaktiviert den Auto-Raid-Bot."""
-            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
+            if not (getattr(ctx.author, "broadcaster", False) or getattr(ctx.author, "moderator", False)):
                 await ctx.send(
                     f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Twitch-Bot steuern."
                 )
@@ -224,7 +224,7 @@ if TWITCHIO_AVAILABLE:
         @twitchio_commands.command(name="uban", aliases=["unban"])
         async def cmd_uban(self, ctx: twitchio_commands.Context):
             """!uban / !unban - hebt den letzten Auto-Ban im aktuellen Channel auf."""
-            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
+            if not (getattr(ctx.author, "broadcaster", False) or getattr(ctx.author, "moderator", False)):
                 await ctx.send(f"@{ctx.author.name} Nur der Broadcaster oder Mods.")
                 return
 
@@ -299,7 +299,7 @@ if TWITCHIO_AVAILABLE:
         @twitchio_commands.command(name="clip", aliases=["createclip"])
         async def cmd_clip(self, ctx: twitchio_commands.Context):
             """!clip - Erstellt einen Clip aus dem aktuellen Stream-Buffer und postet den Link."""
-            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
+            if not (getattr(ctx.author, "broadcaster", False) or getattr(ctx.author, "moderator", False)):
                 await ctx.send(f"@{ctx.author.name} Nur Broadcaster oder Mods können !clip benutzen.")
                 return
 
@@ -386,7 +386,7 @@ if TWITCHIO_AVAILABLE:
         @twitchio_commands.command(name="silentban")
         async def cmd_silentban(self, ctx: twitchio_commands.Context):
             """!silentban - Schaltet die Auto-Ban Chat-Benachrichtigung für diesen Channel ein/aus."""
-            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
+            if not (getattr(ctx.author, "broadcaster", False) or getattr(ctx.author, "moderator", False)):
                 await ctx.send(f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Bot steuern.")
                 return
 
@@ -420,7 +420,7 @@ if TWITCHIO_AVAILABLE:
         @twitchio_commands.command(name="silentraid")
         async def cmd_silentraid(self, ctx: twitchio_commands.Context):
             """!silentraid - Schaltet die Raid-Benachrichtigung für diesen Channel ein/aus."""
-            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
+            if not (getattr(ctx.author, "broadcaster", False) or getattr(ctx.author, "moderator", False)):
                 await ctx.send(f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Bot steuern.")
                 return
 
@@ -454,7 +454,7 @@ if TWITCHIO_AVAILABLE:
         @twitchio_commands.command(name="raid", aliases=["traid"])
         async def cmd_raid(self, ctx: twitchio_commands.Context):
             """!raid / !traid - Startet sofort einen Raid auf den bestmöglichen Partner (wie Auto-Raid)."""
-            if not (ctx.author.is_broadcaster or ctx.author.is_mod):
+            if not (getattr(ctx.author, "broadcaster", False) or getattr(ctx.author, "moderator", False)):
                 await ctx.send(f"@{ctx.author.name} Nur Broadcaster oder Mods können !raid benutzen.")
                 return
 

@@ -640,7 +640,7 @@ class ModerationMixin:
             return False
         if chatter_id == str(twitch_user_id):
             return False
-        if getattr(author, "is_mod", False) or getattr(author, "is_broadcaster", False):
+        if getattr(author, "moderator", False) or getattr(author, "broadcaster", False):
             return False
 
         # --- ÄNDERUNG: Wir nutzen jetzt das BOT-Token für Moderation, nicht das Streamer-Token ---
