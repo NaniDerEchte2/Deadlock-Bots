@@ -47,7 +47,7 @@ RAID_SCOPES = [
 RAID_TARGET_COOLDOWN_DAYS = 7  # Avoid repeating the same raid target if alternatives exist
 RECRUIT_DISCORD_INVITE = (
     (os.getenv("RECRUIT_DISCORD_INVITE") or "").strip()
-    or "In Discord Server hinzufügen & Code eingeben: z5TfVHuQq2"
+    or "Discord: Server hinzufügen & Code eingeben: z5TfVHuQq2"
 )
 RECRUIT_DISCORD_INVITE_DIRECT = (
     (os.getenv("RECRUIT_DISCORD_INVITE_DIRECT") or "").strip()
@@ -1661,14 +1661,14 @@ class RaidBot:
 
         try:
             # 2. Anti-Spam Check: Haben wir diesen Streamer schon "kürzlich" geraidet?
-            # Wir prüfen, ob es mehr als 1 erfolgreichen Raid in den letzten 14 Tagen gab.
+            # Wir prüfen, ob es mehr als 1 erfolgreichen Raid in den letzten 24 Stunden gab.
             with get_conn() as conn:
                 raid_check = conn.execute(
                     """
                     SELECT COUNT(*) FROM twitch_raid_history
                     WHERE to_broadcaster_id = ?
                       AND success = 1
-                      AND executed_at > datetime('now', '-14 days')
+                      AND executed_at > datetime('now', '-1 day')
                     """,
                     (target_id,),
                 ).fetchone()
@@ -1676,12 +1676,16 @@ class RaidBot:
             
             if recent_raids > 1:
                 log.info(
-                    "Skipping recruitment message to %s (Anti-Spam: %d raids in last 14 days)", 
+                    "Skipping recruitment message to %s (Anti-Spam: %d raids in last 24 hours)", 
                     to_broadcaster_login, recent_raids
                 )
                 return
 
-            # 3. Nachricht vorbereiten (mit Stats Teaser)
+            # 3. Bestimme die Anzahl der bisherigen Netzwerk-Raids für diesen Streamer
+            total_raids = self._get_received_network_raid_count(target_id)
+            bot_nick = getattr(self.chat_bot, "nick", "DeadlockBot")
+
+            # 4. Nachricht vorbereiten (mit Stats Teaser)
             followers_total = await self._resolve_recruitment_followers_total(
                 login=to_broadcaster_login,
                 target_id=target_id,
@@ -1694,19 +1698,6 @@ class RaidBot:
             discord_invite = (
                 RECRUIT_DISCORD_INVITE_DIRECT if use_direct_invite else RECRUIT_DISCORD_INVITE
             )
-            if followers_total is None:
-                log.info(
-                    "Recruitment invite mode for %s: followers unknown -> code-flow",
-                    to_broadcaster_login,
-                )
-            else:
-                log.info(
-                    "Recruitment invite mode for %s: followers=%d threshold=%d mode=%s",
-                    to_broadcaster_login,
-                    followers_total,
-                    RECRUIT_DIRECT_INVITE_MAX_FOLLOWERS,
-                    "direct-link" if use_direct_invite else "code-flow",
-                )
 
             stats_teaser = ""
             try:
@@ -1727,20 +1718,43 @@ class RaidBot:
                     avg_viewers = int(stats[0])
                     peak_viewers = int(stats[1]) if stats[1] else 0
                     if peak_viewers > 0:
-                        stats_teaser = f"Übrigens: Du hattest im Schnitt {avg_viewers} Viewer bei Deadlock, dein Peak war {peak_viewers}. Weitere Details haben wir auch falls du willst :) "
+                        stats_teaser = f"Übrigens: Du hattest im Schnitt {avg_viewers} Viewer bei Deadlock, dein Peak war {peak_viewers}. "
             except Exception:
                 log.debug("Could not fetch stats for %s", to_broadcaster_login, exc_info=True)
 
-            message = (
-                f"Hey @{to_broadcaster_login}! "
-                f"Du wurdest gerade von @{from_broadcaster_login} geraidet, einem unserer Deadlock Streamer-Partner! <3 "
-                f"{stats_teaser}"
-                f"Du kannst auch Teil der Community werden und auch Support zu erhalten – "
-                f"schau gerne mal auf unserem Discord vorbei: {discord_invite} "
-                f"Win-Win für alle Deadlock-Streamer! 🎮"
-            )
+            # Nachrichtenauswahl basierend auf Raid-Anzahl
+            if total_raids <= 1:
+                message = (
+                    f"Hey @{to_broadcaster_login}! Ich bin der Bot der deutschen Deadlock Community . "
+                    f"Ich manage hier die Raids bei Twitch Deadlock.. "
+                    f"Du wurdest gerade von @{from_broadcaster_login} geraidet, einem unserer Partner! <3 "
+                    f"Falls du bock hast kannst auch Teil der Community werden und Support erhalten – "
+                    f"schau gerne mal auf unserem Discord vorbei: {discord_invite} "
+                    f"Dir noch einen wunderschönen Stream <3"
+                )
+            elif total_raids == 2:
+                message = (
+                    f"Hey @{to_broadcaster_login}! Na, schon der 2. Raid von uns! ❤️ "
+                    f"@{from_broadcaster_login} bringt dir gerade Verstärkung aus dem Netzwerk vorbei. "
+                    f"{stats_teaser}"
+                    f"Unser Partner-Netzwerk wächst ständig und wir würden freuen uns über ein neues Gesicht freuen :). "
+                    f"Schau mal rein: {discord_invite} 🎮"
+                )
+            elif total_raids == 3:
+                message = (
+                    f"Hey @{to_broadcaster_login}! Aller guten Dinge sind 3! Das ist schon der 3. Raid aus der Community für dich. ❤️ "
+                    f"Hast du schon über eine Partnerschaft nachgedacht? Gemeinsam wachsen wir viel schneller! "
+                    f"Join uns: {discord_invite} 🎮"
+                )
+            else: # 4. Raid und mehr
+                message = (
+                    f"Hey @{to_broadcaster_login}! So langsam wird es Zeit für eine Partnerschaft, oder? 😉 "
+                    f"Das ist schon der {total_raids}. Raid von uns (diesmal von @{from_broadcaster_login})! "
+                    f"{stats_teaser}"
+                    f"Komm in unser Netzwerk und profitiere von gegenseitigen Raids, Zugang zu der größten deutschen Deadlock Community und viel mehr. Schau doch gerne mal vorbei: {discord_invite} 🎮"
+                )
 
-            # 4. Sende Nachricht via Bot
+            # 5. Sende Nachricht via Bot
             # TwitchIO 3.x: Nutze _send_chat_message helper (MockChannel)
             # Diese Methode existiert im chat_bot und funktioniert mit EventSub
             try:
