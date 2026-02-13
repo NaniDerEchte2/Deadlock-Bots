@@ -22,6 +22,16 @@ log = logging.getLogger("TwitchStreams.ChatBot")
 
 class ModerationMixin:
     @staticmethod
+    def _resolve_message_channel(message):
+        """Best-effort channel resolution for TwitchIO 2.x and 3.x messages."""
+        if message is None:
+            return None
+        channel = getattr(message, "channel", None)
+        if channel is not None:
+            return channel
+        return getattr(message, "source_broadcaster", None) or getattr(message, "broadcaster", None)
+
+    @staticmethod
     def _extract_mentions(content: str) -> list[str]:
         """Extrahiert Twitch-ähnliche @mentions aus einer Nachricht."""
         return re.findall(r"(?<!\w)@([A-Za-z0-9_]{3,25})\b", content or "")
@@ -257,24 +267,26 @@ class ModerationMixin:
                     phrase_matched = True
                     break
 
-        # Fragment-Fallback: nur wenn keine Phrase gematcht wurde.
+        # Fragment-/Keyword-Fallback: nur wenn keine Phrase gematcht wurde.
+        # Die kompakte Domain-Form wird wie ein Keyword behandelt, nicht als Extra-Bonus.
         if not phrase_matched:
+            fragment_hit = False
             for frag in _SPAM_FRAGMENTS:
                 if re.search(r"\b" + re.escape(frag.casefold()) + r"\b", lowered):
                     hits += 1
                     reasons.append(f"Fragment(Fallback): {frag}")
+                    fragment_hit = True
                     break
+            if not fragment_hit:
+                compact = re.sub(r"[^a-z0-9]", "", lowered)
+                if "streamboocom" in compact:
+                    hits += 1
+                    reasons.append("Fragment(Fallback): streamboocom (kompakt)")
 
         # Muster: "viewer [name]": +1 Punkt
         if re.search(r"\bviewer\s+\w+", lowered):
             hits += 1
             reasons.append("Muster: viewer + name")
-
-        # Kompakte Form "streamboocom": +1 Punkt
-        compact = re.sub(r"[^a-z0-9]", "", lowered)
-        if "streamboocom" in compact:
-            hits += 1
-            reasons.append("Muster: streamboocom (kompakt)")
 
         return hits, reasons
 
@@ -301,7 +313,12 @@ class ModerationMixin:
         if content.strip().startswith(self.prefix or "!"):
             return False
 
-        channel_name = getattr(message.channel, "name", "") or ""
+        channel = self._resolve_message_channel(message)
+        channel_name = (
+            getattr(channel, "name", "")
+            or getattr(channel, "login", "")
+            or ""
+        )
         login = channel_name.lstrip("#").lower()
         if not login:
             return False
@@ -325,9 +342,12 @@ class ModerationMixin:
         if not invite:
             return False
 
+        if channel is None:
+            return False
+
         mention = f"@{getattr(author, 'name', '')} " if getattr(author, "name", None) else ""
         msg = mention + _DEADLOCK_INVITE_REPLY.format(invite=invite)
-        ok = await self._send_chat_message(message.channel, msg)
+        ok = await self._send_chat_message(channel, msg)
         if ok:
             self._last_invite_reply[login] = now
             if user_key:
@@ -624,7 +644,12 @@ class ModerationMixin:
 
     async def _auto_ban_and_cleanup(self, message) -> bool:
         """Bannt erkannte Spam-Bots und löscht die Nachricht (als Bot)."""
-        channel_name = getattr(message.channel, "name", "") or ""
+        channel = self._resolve_message_channel(message)
+        channel_name = (
+            getattr(channel, "name", "")
+            or getattr(channel, "login", "")
+            or ""
+        )
         channel_key = self._normalize_channel_login(channel_name)
         streamer_data = self._get_streamer_by_channel(channel_name)
         if not streamer_data:
@@ -734,7 +759,7 @@ class ModerationMixin:
                                     pass
                                 if not silent:
                                     await self._send_chat_message(
-                                        message.channel,
+                                        channel,
                                         f"🛡️ Auto-Mod: {chatter_login} wurde wegen Spam-Verdacht gebannt. (!unban zum Rückgängigmachen)"
                                     )
                                 return True
@@ -1017,7 +1042,12 @@ class ModerationMixin:
 
     async def _track_chat_health(self, message) -> None:
         """Loggt Chat-Events für Chat-Gesundheit und Retention-Metriken."""
-        channel_name = getattr(message.channel, "name", "") or ""
+        channel = self._resolve_message_channel(message)
+        channel_name = (
+            getattr(channel, "name", "")
+            or getattr(channel, "login", "")
+            or ""
+        )
         login = channel_name.lstrip("#").lower()
         if not login:
             return

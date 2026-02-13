@@ -211,3 +211,260 @@ class TwitchAnalyticsMixin:
     @collect_analytics_data.before_loop
     async def _before_analytics(self):
         await self.bot.wait_until_ready()
+
+    async def _handle_stream_online(self, broadcaster_user_id: str, broadcaster_login: str, event: dict) -> None:
+        """Wird von stream.online EventSub aufgerufen – triggert sofort den Go-Live-Handler."""
+        handler = getattr(self, "_handle_stream_went_live", None)
+        if callable(handler):
+            log.info(
+                "EventSub stream.online: %s (%s) ist live – triggere Go-Live-Handler",
+                broadcaster_login or broadcaster_user_id,
+                broadcaster_user_id,
+            )
+            await handler(broadcaster_user_id, broadcaster_login)
+
+    async def _handle_channel_update(self, broadcaster_user_id: str, event: dict) -> None:
+        """Speichert eine channel.update Notification (Titel/Game-Änderung) in der DB."""
+        title = (event.get("title") or "").strip() or None
+        game_name = (event.get("category_name") or event.get("game_name") or "").strip() or None
+        language = (event.get("broadcaster_language") or "").strip() or None
+        try:
+            with storage.get_conn() as c:
+                c.execute(
+                    """
+                    INSERT INTO twitch_channel_updates (twitch_user_id, title, game_name, language, recorded_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        broadcaster_user_id,
+                        title,
+                        game_name,
+                        language,
+                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    ),
+                )
+                # Auch twitch_live_state aktualisieren, falls Stream gerade läuft
+                c.execute(
+                    """
+                    UPDATE twitch_live_state
+                       SET last_title = COALESCE(?, last_title),
+                           last_game  = COALESCE(?, last_game)
+                     WHERE twitch_user_id = ? AND is_live = 1
+                    """,
+                    (title, game_name, broadcaster_user_id),
+                )
+        except Exception:
+            log.exception("_handle_channel_update: Fehler für %s", broadcaster_user_id)
+
+    async def _store_subscription_event(
+        self, broadcaster_user_id: str, event: dict, event_type: str
+    ) -> None:
+        """Speichert channel.subscribe / channel.subscription.gift / channel.subscription.message."""
+        user_login = (
+            event.get("user_login") or event.get("user_name") or ""
+        ).strip().lower() or None
+        tier = (event.get("tier") or "1000").strip()
+        is_gift = int(bool(event.get("is_gift")))
+        gifter_login = (event.get("gifter_login") or event.get("gifter_user_login") or "").strip().lower() or None
+        cumulative_months = int(event.get("cumulative_months") or event.get("months") or 0) or None
+        streak_months = int(event.get("streak_months") or 0) or None
+        message_data = event.get("message") or {}
+        if isinstance(message_data, dict):
+            message = (message_data.get("text") or "").strip() or None
+        else:
+            message = str(message_data).strip() or None
+        total_gifted = int(event.get("total") or 0) or None
+
+        session_id: int | None = None
+        try:
+            with storage.get_conn() as c:
+                row = c.execute(
+                    """
+                    SELECT id FROM twitch_stream_sessions
+                     WHERE twitch_user_id = ? AND ended_at IS NULL
+                     ORDER BY started_at DESC LIMIT 1
+                    """,
+                    (broadcaster_user_id,),
+                ).fetchone()
+            if row:
+                session_id = int(row[0] if not hasattr(row, "keys") else row["id"])
+        except Exception:
+            pass
+
+        try:
+            with storage.get_conn() as c:
+                c.execute(
+                    """
+                    INSERT INTO twitch_subscription_events
+                        (session_id, twitch_user_id, event_type, user_login, tier,
+                         is_gift, gifter_login, cumulative_months, streak_months,
+                         message, total_gifted, received_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id, broadcaster_user_id, event_type, user_login, tier,
+                        is_gift, gifter_login, cumulative_months, streak_months,
+                        message, total_gifted,
+                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    ),
+                )
+        except Exception:
+            log.exception("_store_subscription_event: Fehler für %s (%s)", broadcaster_user_id, event_type)
+
+    async def _store_ad_break_event(self, broadcaster_user_id: str, event: dict) -> None:
+        """Speichert ein channel.ad_break.begin Event."""
+        duration_seconds = int(event.get("duration_seconds") or 0) or None
+        is_automatic = int(bool(event.get("is_automatic")))
+
+        session_id: int | None = None
+        try:
+            with storage.get_conn() as c:
+                row = c.execute(
+                    """
+                    SELECT id FROM twitch_stream_sessions
+                     WHERE twitch_user_id = ? AND ended_at IS NULL
+                     ORDER BY started_at DESC LIMIT 1
+                    """,
+                    (broadcaster_user_id,),
+                ).fetchone()
+            if row:
+                session_id = int(row[0] if not hasattr(row, "keys") else row["id"])
+        except Exception:
+            pass
+
+        try:
+            with storage.get_conn() as c:
+                c.execute(
+                    """
+                    INSERT INTO twitch_ad_break_events
+                        (session_id, twitch_user_id, duration_seconds, is_automatic, started_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id, broadcaster_user_id, duration_seconds, is_automatic,
+                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    ),
+                )
+        except Exception:
+            log.exception("_store_ad_break_event: Fehler für %s", broadcaster_user_id)
+
+    async def _store_bits_event(self, broadcaster_user_id: str, event: dict) -> None:
+        """Speichert ein channel.cheer (Bits) Event in der Datenbank."""
+        donor_login = (event.get("user_login") or event.get("user_name") or "").strip().lower() or None
+        amount = int(event.get("bits") or event.get("amount") or 0)
+        message = (event.get("message") or "").strip() or None
+        if not amount:
+            return
+        # Session ID für den aktuellen Stream bestimmen (optional)
+        session_id: int | None = None
+        try:
+            with storage.get_conn() as c:
+                row = c.execute(
+                    """
+                    SELECT id FROM twitch_stream_sessions
+                     WHERE twitch_user_id = ?
+                       AND ended_at IS NULL
+                     ORDER BY started_at DESC LIMIT 1
+                    """,
+                    (broadcaster_user_id,),
+                ).fetchone()
+            if row:
+                session_id = int(row[0] if not hasattr(row, "keys") else row["id"])
+        except Exception:
+            log.debug("_store_bits_event: Konnte session_id nicht ermitteln", exc_info=True)
+
+        try:
+            with storage.get_conn() as c:
+                c.execute(
+                    """
+                    INSERT INTO twitch_bits_events
+                        (session_id, twitch_user_id, donor_login, amount, message, received_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        broadcaster_user_id,
+                        donor_login,
+                        amount,
+                        message,
+                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    ),
+                )
+        except Exception:
+            log.exception("_store_bits_event: Fehler beim Speichern für %s", broadcaster_user_id)
+
+    async def _store_hype_train_event(
+        self, broadcaster_user_id: str, event: dict, *, ended: bool
+    ) -> None:
+        """Speichert ein channel.hype_train.begin/end Event in der Datenbank."""
+        started_at = (event.get("started_at") or "").strip() or None
+        ended_at = (event.get("ended_at") or "").strip() or None if ended else None
+        level = int(event.get("level") or 0) or None
+        total_progress = int(event.get("total") or event.get("total_progress") or 0) or None
+        duration_seconds: int | None = None
+        if started_at and ended_at:
+            try:
+                from datetime import datetime as _dt
+                dt_start = _dt.fromisoformat(started_at.replace("Z", "+00:00"))
+                dt_end = _dt.fromisoformat(ended_at.replace("Z", "+00:00"))
+                duration_seconds = max(0, int((dt_end - dt_start).total_seconds()))
+            except Exception:
+                pass
+
+        session_id: int | None = None
+        try:
+            with storage.get_conn() as c:
+                row = c.execute(
+                    """
+                    SELECT id FROM twitch_stream_sessions
+                     WHERE twitch_user_id = ?
+                       AND ended_at IS NULL
+                     ORDER BY started_at DESC LIMIT 1
+                    """,
+                    (broadcaster_user_id,),
+                ).fetchone()
+            if row:
+                session_id = int(row[0] if not hasattr(row, "keys") else row["id"])
+        except Exception:
+            log.debug("_store_hype_train_event: Konnte session_id nicht ermitteln", exc_info=True)
+
+        try:
+            with storage.get_conn() as c:
+                if ended:
+                    # Versuche, ein bereits vorhandenes begin-Event zu aktualisieren
+                    updated = c.execute(
+                        """
+                        UPDATE twitch_hype_train_events
+                           SET ended_at = ?,
+                               duration_seconds = ?,
+                               level = COALESCE(?, level),
+                               total_progress = COALESCE(?, total_progress)
+                         WHERE twitch_user_id = ?
+                           AND started_at = ?
+                           AND ended_at IS NULL
+                        """,
+                        (ended_at, duration_seconds, level, total_progress, broadcaster_user_id, started_at),
+                    ).rowcount
+                    if updated:
+                        return
+                c.execute(
+                    """
+                    INSERT INTO twitch_hype_train_events
+                        (session_id, twitch_user_id, started_at, ended_at,
+                         duration_seconds, level, total_progress)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        broadcaster_user_id,
+                        started_at,
+                        ended_at,
+                        duration_seconds,
+                        level,
+                        total_progress,
+                    ),
+                )
+        except Exception:
+            log.exception(
+                "_store_hype_train_event: Fehler beim Speichern für %s", broadcaster_user_id
+            )

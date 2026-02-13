@@ -589,7 +589,8 @@ if TWITCHIO_AVAILABLE:
         async def event_message(self, message):
             """Wird bei jeder Chat-Nachricht aufgerufen."""
             # Compatibility layer for TwitchIO 3.x EventSub
-            # In 3.x, message is a ChatMessage with text/chatter/channel
+            # In 3.x, message is a ChatMessage with text/chatter/broadcaster
+            # and optional source_broadcaster (shared chat).
             # In 2.x, message is a Message with content/author/channel
 
             # Detect 3.x by presence of 'text' or 'chatter' (and absence of 'content')
@@ -609,10 +610,22 @@ if TWITCHIO_AVAILABLE:
                 if not hasattr(author, "broadcaster") and hasattr(author, "is_broadcaster"):
                     author.broadcaster = author.is_broadcaster
 
-                # In 3.x, message.channel is a Broadcaster object, but we might need MockChannel 
-                # if downstream code expects specific 2.x Channel attributes
-                if not hasattr(message.channel, "name") and hasattr(message.channel, "login"):
-                    message.channel.name = message.channel.login
+                # In 3.x EventSub payloads there is no message.channel by default.
+                # Normalize to a 2.x-like shape expected by downstream code.
+                channel = getattr(message, "channel", None)
+                if channel is None:
+                    channel = getattr(message, "source_broadcaster", None) or getattr(message, "broadcaster", None)
+                    if channel is not None:
+                        try:
+                            message.channel = channel
+                        except Exception:
+                            pass
+
+                if channel is not None and not hasattr(channel, "name") and hasattr(channel, "login"):
+                    try:
+                        channel.name = channel.login
+                    except Exception:
+                        pass
 
             # Fallback for echo if still missing (unlikely in 3.x)
             if not hasattr(message, "echo"):
@@ -645,9 +658,9 @@ if TWITCHIO_AVAILABLE:
                     spam_score += mention_score
                     spam_reasons.extend(mention_reasons)
 
-                # 2. Faktor: Account-Alter prüfen, wenn Verdacht besteht (Score 2)
-                # Wenn Keyword matcht UND Account < 3 Monate -> Ban (Score >= 3)
-                if 0 < spam_score < _SPAM_MIN_MATCHES:
+                # 2. Faktor: Account-Alter prüft nur den letzten fehlenden Punkt zum Ban.
+                # Ein junges Konto soll nur dann eskalieren, wenn bereits zwei Signale vorliegen.
+                if spam_score == (_SPAM_MIN_MATCHES - 1):
                     try:
                         author_id = getattr(message.author, "id", None)
                         if author_id:
@@ -660,7 +673,7 @@ if TWITCHIO_AVAILABLE:
 
                                 age = datetime.now(timezone.utc) - created_at
                                 if age.days < 90:  # Jünger als 3 Monate
-                                    spam_score += 2
+                                    spam_score += 1
                                     spam_reasons.append(f"Account-Alter: {age.days} Tage")
                     except Exception:
                         log.debug("Konnte User-Alter für Spam-Check nicht laden", exc_info=True)
@@ -668,10 +681,21 @@ if TWITCHIO_AVAILABLE:
                 if spam_score >= _SPAM_MIN_MATCHES:
                     enforced = await self._auto_ban_and_cleanup(message)
                     if not enforced:
-                        log.warning("Spam erkannt in %s (Score: %d, Treffer: %s), aber Auto-Ban konnte nicht durchgesetzt werden.", getattr(message.channel, "name", "unknown"), spam_score, ", ".join(spam_reasons))
+                        channel_obj = getattr(message, "channel", None)
+                        channel_name = (
+                            getattr(channel_obj, "name", "")
+                            or getattr(channel_obj, "login", "")
+                            or "unknown"
+                        )
+                        log.warning("Spam erkannt in %s (Score: %d, Treffer: %s), aber Auto-Ban konnte nicht durchgesetzt werden.", channel_name, spam_score, ", ".join(spam_reasons))
                     return
                 elif spam_score > 0:
-                    channel_name = getattr(message.channel, "name", "unknown")
+                    channel_obj = getattr(message, "channel", None)
+                    channel_name = (
+                        getattr(channel_obj, "name", "")
+                        or getattr(channel_obj, "login", "")
+                        or "unknown"
+                    )
                     author_name = getattr(message.author, "name", "unknown")
                     author_id = str(getattr(message.author, "id", ""))
 

@@ -61,49 +61,74 @@ async def _send_interaction_message(
 
 
 class _RaidAuthGenerateButton(discord.ui.Button):
-    def __init__(self, parent: "RaidAuthGenerateView", *, label: str) -> None:
-        super().__init__(label=label, style=discord.ButtonStyle.primary)
-        self._view_ref = parent
+    def __init__(self, twitch_login: str, *, label: str) -> None:
+        login = (twitch_login or "").strip().lower()
+        super().__init__(
+            label=label,
+            style=discord.ButtonStyle.primary,
+            custom_id=f"raid_auth_generate:{login}",
+        )
+        self._twitch_login = login
 
     async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
-        view = self._view_ref
-        login = view.twitch_login
-        auth_manager = view.auth_manager
+        try:
+            login = self._twitch_login
 
-        if not auth_manager or not login:
-            await _send_interaction_message(
-                interaction,
-                "Auth-Link konnte nicht erzeugt werden (fehlende Daten).",
-            )
-            return
+            # Auth-Manager dynamisch aus dem Cog holen (restart-sicher)
+            auth_manager = None
+            for cog in interaction.client.cogs.values():
+                if hasattr(cog, "_raid_bot") and getattr(cog, "_raid_bot", None):
+                    auth_manager = cog._raid_bot.auth_manager  # type: ignore[union-attr]
+                    break
 
-        auth_url = auth_manager.generate_auth_url(login)
-        link_view = discord.ui.View(timeout=300)
-        link_view.add_item(
-            discord.ui.Button(
-                label=AUTH_LINK_LABEL,
-                url=auth_url,
-                style=discord.ButtonStyle.link,
+            if not auth_manager or not login:
+                await interaction.response.send_message(
+                    "⚠️ Bot nicht bereit – bitte kurz warten und nochmal versuchen.\n"
+                    "Alternativ: `/traid` in Discord nutzen.",
+                    ephemeral=True,
+                )
+                return
+
+            # generate_discord_button_url liefert einen kurzen Redirect-URL (<512 Zeichen)
+            # statt des vollen Twitch-OAuth-URL der das Discord-Limit überschreiten würde.
+            button_url = auth_manager.generate_discord_button_url(login)
+            link_view = discord.ui.View(timeout=300)
+            link_view.add_item(
+                discord.ui.Button(
+                    label=AUTH_LINK_LABEL,
+                    url=button_url,
+                    style=discord.ButtonStyle.link,
+                )
             )
-        )
-        content = (
-            f"Hier ist dein Twitch OAuth-Link für **{login}**.\n"
-            "Bitte innerhalb von 10 Minuten öffnen, danach läuft der Link ab."
-        )
-        await _send_interaction_message(interaction, content, view=link_view)
+            content = (
+                f"Hier ist dein Twitch OAuth-Link für **{login}**.\n"
+                "Bitte innerhalb von 10 Minuten öffnen, danach läuft der Link ab."
+            )
+            await _send_interaction_message(interaction, content, view=link_view)
+
+        except Exception:
+            log.exception("RaidAuthButton callback failed for %s", self._twitch_login)
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "❌ Fehler beim Erzeugen des Links. Bitte `/traid` in Discord nutzen.",
+                        ephemeral=True,
+                    )
+            except Exception:
+                pass
 
 
 class RaidAuthGenerateView(discord.ui.View):
-    """View that generates a fresh OAuth link on click."""
+    """View that generates a fresh OAuth link on click. Persistent across bot restarts."""
 
     def __init__(
         self,
         *,
-        auth_manager,
+        auth_manager=None,  # Nur noch für Kompatibilität, wird im Button dynamisch geholt
         twitch_login: str,
         button_label: str = AUTH_BUTTON_LABEL,
     ) -> None:
-        super().__init__(timeout=12 * 60 * 60)
-        self.auth_manager = auth_manager
+        super().__init__(timeout=None)  # persistent – kein Timeout
+        self.auth_manager = auth_manager  # optional, Button holt es selbst
         self.twitch_login = (twitch_login or "").strip().lower()
-        self.add_item(_RaidAuthGenerateButton(self, label=button_label))
+        self.add_item(_RaidAuthGenerateButton(self.twitch_login, label=button_label))

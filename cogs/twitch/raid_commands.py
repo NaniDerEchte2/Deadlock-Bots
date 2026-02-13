@@ -387,3 +387,100 @@ class RaidCommandsMixin:
         else:
             await ctx.send(f"Promo an **{login}** konnte nicht gesendet werden.", ephemeral=True)
             log.warning("Manual promo to %s failed (triggered by %s)", login, ctx.author)
+
+    @commands.hybrid_command(name="reauth_all")
+    @commands.has_permissions(administrator=True)
+    async def cmd_reauth_all(self, ctx: commands.Context):
+        """(Admin) Alle Streamer zur Neu-Autorisierung auffordern (neue Scopes)."""
+        auth_manager = getattr(getattr(self, "_raid_bot", None), "auth_manager", None)
+        if not auth_manager:
+            await ctx.send("❌ Raid-Bot nicht verfügbar.", ephemeral=True)
+            return
+
+        await ctx.defer(ephemeral=True)
+
+        # Tokens sichern und needs_reauth=1 setzen
+        count = await auth_manager.snapshot_and_flag_reauth()
+
+        # Persistente Views (neu) registrieren damit Buttons sofort klickbar sind
+        if hasattr(self, "_register_persistent_raid_auth_views"):
+            self._register_persistent_raid_auth_views()
+
+        # Alle Streamer mit needs_reauth=1 und Discord-User-ID holen
+        with get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT a.twitch_user_id, a.twitch_login, s.discord_user_id
+                FROM twitch_raid_auth a
+                LEFT JOIN twitch_streamers s ON a.twitch_user_id = s.twitch_user_id
+                WHERE a.needs_reauth = 1
+                """
+            ).fetchall()
+
+        sent, deleted_total = 0, 0
+        failed_list: list[str] = []
+        for row in rows:
+            twitch_user_id = row[0] if not hasattr(row, "keys") else row["twitch_user_id"]
+            twitch_login   = row[1] if not hasattr(row, "keys") else row["twitch_login"]
+            discord_uid    = row[2] if not hasattr(row, "keys") else row["discord_user_id"]
+            if not discord_uid:
+                failed_list.append(f"`{twitch_login}` (keine Discord-ID)")
+                continue
+            try:
+                user = await ctx.bot.fetch_user(int(discord_uid))
+                dm_channel = await user.create_dm()
+
+                # Alte Bot-Nachrichten in der DM löschen (letzten 50 Msgs)
+                async for msg in dm_channel.history(limit=50):
+                    if msg.author.id == ctx.bot.user.id:
+                        try:
+                            await msg.delete()
+                            deleted_total += 1
+                        except Exception:
+                            pass
+
+                # Neue Nachricht mit persistentem Button senden
+                embed = build_raid_requirements_embed(twitch_login)
+                view = RaidAuthGenerateView(twitch_login=twitch_login)
+                await dm_channel.send(
+                    "🔄 **Neue Twitch-Autorisierung erforderlich** – der Bot benötigt "
+                    "zusätzliche Scopes (Bits, Hype Train, Subscriptions, Ads). "
+                    "Bitte autorisiere deinen Account neu:",
+                    embed=embed,
+                    view=view,
+                )
+                # reauth_notified_at aktualisieren
+                with get_conn() as conn:
+                    conn.execute(
+                        "UPDATE twitch_raid_auth SET reauth_notified_at=CURRENT_TIMESTAMP "
+                        "WHERE twitch_user_id=?",
+                        (twitch_user_id,),
+                    )
+                sent += 1
+                log.info("reauth_all: DM gesendet an %s (%s)", twitch_login, discord_uid)
+            except Exception as e:
+                reason = str(e)[:60] if str(e) else "Unbekannt"
+                failed_list.append(f"`{twitch_login}` (<@{discord_uid}>) – {reason}")
+                log.warning(
+                    "reauth_all: DM fehlgeschlagen für %s (%s)",
+                    twitch_login, discord_uid, exc_info=True,
+                )
+
+        failed = len(failed_list)
+        summary = (
+            f"✅ Re-Auth gestartet:\n"
+            f"• **{count}** Tokens gesichert (needs_reauth=1)\n"
+            f"• **{deleted_total}** alte Bot-Nachrichten gelöscht\n"
+            f"• **{sent}** DMs gesendet\n"
+            f"• **{failed}** fehlgeschlagen"
+        )
+        if failed_list:
+            summary += "\n\n**Fehlgeschlagen:**\n" + "\n".join(failed_list)
+
+        # Discord-Limit: max 2000 Zeichen pro Nachricht
+        if len(summary) > 1990:
+            summary = summary[:1990] + "…"
+
+        await ctx.send(summary, ephemeral=True)
+        log.info("reauth_all: %d gesichert, %d gelöscht, %d DMs, %d fehlgeschlagen",
+                 count, deleted_total, sent, failed)

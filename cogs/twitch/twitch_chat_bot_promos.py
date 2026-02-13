@@ -411,7 +411,15 @@ class PromoMixin:
         if not _PROMO_ACTIVITY_ENABLED:
             return
 
-        channel_name = getattr(message.channel, "name", "") or ""
+        channel = getattr(message, "channel", None)
+        if channel is None:
+            channel = getattr(message, "source_broadcaster", None) or getattr(message, "broadcaster", None)
+
+        channel_name = (
+            getattr(channel, "name", "")
+            or getattr(channel, "login", "")
+            or ""
+        )
         login = channel_name.lstrip("#").lower()
         if not login or not self._promo_channel_allowed(login):
             return
@@ -429,7 +437,7 @@ class PromoMixin:
         now = time.monotonic()
         self._record_promo_activity(login, chatter_login, now)
 
-        channel_id = getattr(message.channel, "id", None) or self._channel_ids.get(login)
+        channel_id = getattr(channel, "id", None) or self._channel_ids.get(login)
         if not channel_id:
             return
 

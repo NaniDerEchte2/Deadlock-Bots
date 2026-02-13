@@ -319,6 +319,18 @@ if TWITCHIO_AVAILABLE:
 
             twitch_login, twitch_user_id, _ = streamer_data
 
+            # needs_reauth=1 → neuen Auth-Link anfordern
+            if hasattr(self, "_is_fully_authed"):
+                try:
+                    if not await self._is_fully_authed(twitch_user_id):
+                        await ctx.send(
+                            f"@{ctx.author.name} Neu-Autorisierung erforderlich. "
+                            "Bitte prüfe deine Discord-DMs oder nutze /traid für den neuen Auth-Link."
+                        )
+                        return
+                except Exception:
+                    pass
+
             if not self._raid_bot or not hasattr(self._raid_bot, "auth_manager"):
                 await ctx.send(f"@{ctx.author.name} Twitch-Bot nicht verfügbar.")
                 return
@@ -406,7 +418,17 @@ if TWITCHIO_AVAILABLE:
                 await ctx.send(f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert.")
                 return
 
-            twitch_login = streamer_data[0]
+            twitch_login, twitch_user_id_sb, _ = streamer_data
+            if hasattr(self, "_is_fully_authed"):
+                try:
+                    if not await self._is_fully_authed(twitch_user_id_sb):
+                        await ctx.send(
+                            f"@{ctx.author.name} Neu-Autorisierung erforderlich. "
+                            "Bitte prüfe deine Discord-DMs oder nutze /traid."
+                        )
+                        return
+                except Exception:
+                    pass
 
             with get_conn() as conn:
                 row = conn.execute(
@@ -442,7 +464,17 @@ if TWITCHIO_AVAILABLE:
                 await ctx.send(f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert.")
                 return
 
-            twitch_login = streamer_data[0]
+            twitch_login, twitch_user_id_sr, _ = streamer_data
+            if hasattr(self, "_is_fully_authed"):
+                try:
+                    if not await self._is_fully_authed(twitch_user_id_sr):
+                        await ctx.send(
+                            f"@{ctx.author.name} Neu-Autorisierung erforderlich. "
+                            "Bitte prüfe deine Discord-DMs oder nutze /traid."
+                        )
+                        return
+                except Exception:
+                    pass
 
             with get_conn() as conn:
                 row = conn.execute(
@@ -475,6 +507,7 @@ if TWITCHIO_AVAILABLE:
             channel_name = ctx.channel.name
             streamer_data = self._get_streamer_by_channel(channel_name)
             if not streamer_data:
+                await ctx.send(f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert. Bitte erst mit !raid_enable verifizieren.")
                 return
 
             twitch_login, twitch_user_id, _ = streamer_data
@@ -484,6 +517,18 @@ if TWITCHIO_AVAILABLE:
                     f"@{ctx.author.name} OAuth fehlt – Anforderung: Twitch-Bot autorisieren mit !raid_enable."
                 )
                 return
+
+            # needs_reauth=1 → Streamer muss erst re-authen, kein Raid
+            if hasattr(self, "_is_fully_authed"):
+                try:
+                    if not await self._is_fully_authed(twitch_user_id):
+                        await ctx.send(
+                            f"@{ctx.author.name} Neu-Autorisierung erforderlich. "
+                            "Bitte prüfe deine Discord-DMs oder nutze /traid für den neuen Auth-Link."
+                        )
+                        return
+                except Exception:
+                    pass
 
             api_session = getattr(self._raid_bot, "session", None)
             executor = getattr(self._raid_bot, "raid_executor", None)
@@ -606,7 +651,7 @@ if TWITCHIO_AVAILABLE:
                     try:
                         self._raid_bot.mark_manual_raid_started(
                             broadcaster_id=str(twitch_user_id),
-                            ttl_seconds=300.0,
+                            ttl_seconds=28800.0,  # 8 Stunden: verhindert Auto-Raid nach manuellem Raid
                         )
                     except Exception:
                         log.debug("Konnte Manual-Raid-Suppression nicht setzen für %s", twitch_login, exc_info=True)

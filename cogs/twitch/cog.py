@@ -6,6 +6,7 @@ from .admin import TwitchAdminMixin
 from .base import TwitchBaseCog
 from .dashboard_mixin import TwitchDashboardMixin
 from .leaderboard import LeaderboardOptions, TwitchLeaderboardMixin, TwitchLeaderboardView
+from .legacy_token_analytics import LegacyTokenAnalyticsMixin
 from .monitoring import TwitchMonitoringMixin
 from .raid_mixin import TwitchRaidMixin
 from .raid_commands import RaidCommandsMixin
@@ -20,6 +21,7 @@ __all__ = [
 
 
 class TwitchStreamCog(
+    LegacyTokenAnalyticsMixin,
     TwitchAnalyticsMixin,
     TwitchRaidMixin,
     RaidCommandsMixin,

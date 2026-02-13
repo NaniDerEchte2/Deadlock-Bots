@@ -732,6 +732,33 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             content_type="text/html",
         )
 
+    async def raid_auth_go(self, request: web.Request) -> web.StreamResponse:
+        """Kurz-Redirect für Discord-Buttons → leitet zum vollen Twitch-OAuth-URL weiter.
+
+        Kein Token erforderlich – der State ist das Geheimnis (10 Min TTL).
+        Discord-Button-URLs sind auf 512 Zeichen limitiert; der volle OAuth-URL
+        überschreitet dieses Limit.  Der Button verweist stattdessen auf diesen
+        Endpoint, der den gespeicherten URL nachschlägt und weiterleitet.
+        """
+        state = (request.query.get("state") or "").strip()
+        if not state:
+            return web.Response(text="Missing state parameter", status=400)
+
+        auth_manager = getattr(getattr(self, "_raid_bot", None), "auth_manager", None)
+        if not auth_manager:
+            return web.Response(text="Raid bot not initialized", status=503)
+
+        full_url = auth_manager.get_pending_auth_url(state)
+        if not full_url:
+            return web.Response(
+                text="<html><body>Link abgelaufen oder ungültig. "
+                     "Bitte erneut auf den Button in Discord klicken.</body></html>",
+                content_type="text/html",
+                status=410,
+            )
+
+        raise web.HTTPFound(location=full_url)
+
     async def raid_requirements(self, request: web.Request) -> web.StreamResponse:
         """Send raid OAuth requirement DM with one-click fresh link generation."""
         self._require_token(request)
@@ -838,7 +865,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
     async def stats_entry(self, request: web.Request) -> web.StreamResponse:
         """Canonical public entrypoint that links old + beta analytics dashboards."""
         if not self._check_v2_auth(request):
-            raise web.HTTPFound("/twitch/auth/login?next=%2Ftwitch%2Fstats")
+            raise web.HTTPFound("/twitch/auth/login?next=%2Ftwitch%2Fdashboards")
 
         legacy_url = self._resolve_legacy_stats_url()
         beta_url = "/twitch/dashboard-v2"
@@ -1188,6 +1215,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             web.get("/twitch/partners", self.partner_stats),
             web.get("/twitch/dashboards", self.stats_entry),
             web.get("/twitch/raid/auth", self.raid_auth_start),
+            web.get("/twitch/raid/go", self.raid_auth_go),
             web.get("/twitch/raid/requirements", self.raid_requirements),
             web.get("/twitch/raid/history", self.raid_history),
             web.get("/twitch/auth/login", self.auth_login),
@@ -1221,6 +1249,7 @@ def build_v2_app(
     raid_history_cb: Optional[Callable[..., Awaitable[List[dict]]]] = None,
     raid_bot: Optional[Any] = None,
     reload_cb: Optional[Callable[[], Awaitable[str]]] = None,
+    eventsub_webhook_handler: Optional[Any] = None,
 ) -> web.Application:
     app = web.Application()
     DashboardV2Server(
@@ -1244,6 +1273,11 @@ def build_v2_app(
         raid_bot=raid_bot,
         reload_cb=reload_cb,
     ).attach(app)
+    if eventsub_webhook_handler is not None:
+        app.router.add_post(
+            "/twitch/eventsub/callback",
+            eventsub_webhook_handler.handle_request,
+        )
     return app
 
 

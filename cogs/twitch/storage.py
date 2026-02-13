@@ -343,6 +343,12 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_twitch_raid_auth_login ON twitch_raid_auth(twitch_login)"
     )
+    _add_column_if_missing(conn, "twitch_raid_auth", "legacy_access_token",  "TEXT")
+    _add_column_if_missing(conn, "twitch_raid_auth", "legacy_refresh_token", "TEXT")
+    _add_column_if_missing(conn, "twitch_raid_auth", "legacy_scopes",        "TEXT")
+    _add_column_if_missing(conn, "twitch_raid_auth", "legacy_saved_at",      "TEXT")
+    _add_column_if_missing(conn, "twitch_raid_auth", "needs_reauth",         "INTEGER DEFAULT 0")
+    _add_column_if_missing(conn, "twitch_raid_auth", "reauth_notified_at",   "TEXT")
 
     # Safety: Disable auto-raid for streamer entries without an active OAuth grant.
     try:
@@ -535,5 +541,105 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             cooldown_until   TEXT,
             notes            TEXT
         )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_bits_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id      INTEGER,
+            twitch_user_id  TEXT NOT NULL,
+            donor_login     TEXT,
+            amount          INTEGER NOT NULL,
+            message         TEXT,
+            received_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_twitch_bits_events_session
+        ON twitch_bits_events (session_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_hype_train_events (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id       INTEGER,
+            twitch_user_id   TEXT NOT NULL,
+            started_at       TEXT,
+            ended_at         TEXT,
+            duration_seconds INTEGER,
+            level            INTEGER,
+            total_progress   INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_twitch_hype_train_events_session
+        ON twitch_hype_train_events (session_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_subscription_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id      INTEGER,
+            twitch_user_id  TEXT NOT NULL,
+            event_type      TEXT NOT NULL,  -- 'subscribe', 'gift', 'resub'
+            user_login      TEXT,           -- Subscriber oder Gifter
+            tier            TEXT,           -- '1000', '2000', '3000'
+            is_gift         INTEGER DEFAULT 0,
+            gifter_login    TEXT,
+            cumulative_months INTEGER,
+            streak_months   INTEGER,
+            message         TEXT,
+            total_gifted    INTEGER,        -- Nur bei gift: Gesamtanzahl
+            received_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_twitch_subscription_events_session
+        ON twitch_subscription_events (session_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_channel_updates (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            twitch_user_id  TEXT NOT NULL,
+            title           TEXT,
+            game_name       TEXT,
+            language        TEXT,
+            recorded_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_twitch_channel_updates_user
+        ON twitch_channel_updates (twitch_user_id, recorded_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_ad_break_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id      INTEGER,
+            twitch_user_id  TEXT NOT NULL,
+            duration_seconds INTEGER,
+            is_automatic    INTEGER DEFAULT 0,
+            started_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_twitch_ad_break_events_session
+        ON twitch_ad_break_events (session_id)
         """
     )

@@ -585,3 +585,105 @@ class TwitchAPI:
             max_attempts=1,
             request_timeout_total=8.0,
         )
+
+    async def subscribe_eventsub_webhook(
+        self,
+        *,
+        sub_type: str,
+        condition: Dict[str, str],
+        webhook_url: str,
+        secret: str,
+        version: str = "1",
+        oauth_token: Optional[str] = None,
+    ) -> Dict:
+        """Registriert eine Webhook-basierte EventSub Subscription."""
+        payload = {
+            "type": sub_type,
+            "version": version,
+            "condition": condition,
+            "transport": {
+                "method": "webhook",
+                "callback": webhook_url,
+                "secret": secret,
+            },
+        }
+        return await self._post(
+            "/eventsub/subscriptions",
+            json=payload,
+            oauth_token=oauth_token,
+            max_attempts=1,
+            request_timeout_total=10.0,
+        )
+
+    async def delete_eventsub_subscription(self, subscription_id: str, oauth_token: Optional[str] = None) -> bool:
+        """Löscht eine EventSub Subscription per ID."""
+        await self._ensure_token()
+        self._ensure_session()
+        assert self._session is not None
+
+        token_override = (oauth_token or "").strip()
+        if token_override.lower().startswith("oauth:"):
+            token_override = token_override.split(":", 1)[1]
+        if not token_override:
+            token_override = self._token or ""
+
+        url = f"{TWITCH_API_BASE}/eventsub/subscriptions"
+        headers = {"Client-ID": self.client_id, "Authorization": f"Bearer {token_override}"}
+        try:
+            async with self._session.delete(url, headers=headers, params={"id": subscription_id}) as r:
+                if r.status == 204:
+                    return True
+                txt = await r.text()
+                self._log.warning("DELETE /eventsub/subscriptions?id=%s: HTTP %s: %s", subscription_id, r.status, txt[:200])
+                return False
+        except Exception as exc:
+            self._log.error("delete_eventsub_subscription(%s) fehlgeschlagen: %s", subscription_id, exc)
+            return False
+
+    async def list_eventsub_subscriptions(
+        self,
+        *,
+        status: str = "enabled",
+        oauth_token: Optional[str] = None,
+    ) -> List[Dict]:
+        """Listet aktive EventSub Subscriptions (paginiert)."""
+        await self._ensure_token()
+        self._ensure_session()
+        assert self._session is not None
+
+        token_override = (oauth_token or "").strip()
+        if token_override.lower().startswith("oauth:"):
+            token_override = token_override.split(":", 1)[1]
+        if not token_override:
+            token_override = self._token or ""
+
+        headers = {"Client-ID": self.client_id, "Authorization": f"Bearer {token_override}"}
+        url = f"{TWITCH_API_BASE}/eventsub/subscriptions"
+        results: List[Dict] = []
+        cursor: Optional[str] = None
+
+        for _ in range(20):  # Max 20 Seiten (Schutz vor Endlosschleife)
+            params: List[Tuple[str, str]] = []
+            if status:
+                params.append(("status", status))
+            if cursor:
+                params.append(("after", cursor))
+            try:
+                async with self._session.get(url, headers=headers, params=params or None) as r:
+                    if r.status != 200:
+                        txt = await r.text()
+                        self._log.warning("GET /eventsub/subscriptions: HTTP %s: %s", r.status, txt[:200])
+                        break
+                    js = await r.json()
+            except Exception as exc:
+                self._log.error("list_eventsub_subscriptions fehlgeschlagen: %s", exc)
+                break
+
+            data = js.get("data") or []
+            results.extend(data)
+            pagination = js.get("pagination") or {}
+            cursor = pagination.get("cursor")
+            if not cursor:
+                break
+
+        return results

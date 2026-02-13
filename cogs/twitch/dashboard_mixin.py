@@ -1267,6 +1267,7 @@ class TwitchDashboardMixin:
                     raid_history_cb=getattr(self, "_dashboard_raid_history", None),
                     raid_bot=getattr(self, "_raid_bot", None),
                     reload_cb=self._reload_twitch_cog,
+                    eventsub_webhook_handler=getattr(self, "_eventsub_webhook_handler", None),
                 )
                 runner = web.AppRunner(app)
                 await runner.setup()

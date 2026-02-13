@@ -133,6 +133,41 @@ class TwitchBaseCog(commands.Cog):
         self._legacy_stats_url = (os.getenv("TWITCH_LEGACY_STATS_URL") or "").strip() or None
         self._required_marker_default = TWITCH_REQUIRED_DISCORD_MARKER or None
 
+        # EventSub Webhook Handler – früh initialisieren damit er sowohl im Dashboard
+        # als auch in _start_eventsub_listener verfügbar ist.
+        _webhook_secret = (os.getenv("TWITCH_WEBHOOK_SECRET") or "").strip()
+        if _webhook_secret:
+            try:
+                from .eventsub_webhook import EventSubWebhookHandler
+                self._eventsub_webhook_handler = EventSubWebhookHandler(
+                    secret=_webhook_secret,
+                    logger=log,
+                )
+                # Webhook-Basis-URL aus dem Auth-Redirect-URI ableiten
+                _parsed_redirect = urlparse(self._dashboard_auth_redirect_uri)
+                self._webhook_base_url: Optional[str] = (
+                    f"{_parsed_redirect.scheme}://{_parsed_redirect.netloc}"
+                    if _parsed_redirect.netloc else None
+                )
+                self._webhook_secret: Optional[str] = _webhook_secret
+                log.info(
+                    "EventSub Webhook Handler initialisiert (base_url=%s)",
+                    self._webhook_base_url,
+                )
+            except Exception:
+                log.exception("EventSub Webhook Handler konnte nicht initialisiert werden")
+                self._eventsub_webhook_handler = None
+                self._webhook_base_url = None
+                self._webhook_secret = None
+        else:
+            log.info(
+                "TWITCH_WEBHOOK_SECRET nicht gesetzt – EventSub Webhook deaktiviert, "
+                "WebSocket-Fallback wird verwendet."
+            )
+            self._eventsub_webhook_handler = None
+            self._webhook_base_url = None
+            self._webhook_secret = None
+
         if not self.client_id:
             log.error("TWITCH_CLIENT_ID not configured; Twitch features will be limited or disabled.")
             self.api = None
@@ -191,6 +226,9 @@ class TwitchBaseCog(commands.Cog):
                 self._raid_bot.set_cog(self)  # For dynamic EventSub subscriptions
                 log.info("Raid-Bot initialisiert (redirect_uri: %s)", redirect_uri)
 
+                # Persistente Views registrieren (Button-Callbacks überleben Bot-Neustart)
+                self._register_persistent_raid_auth_views()
+
                 # Twitch Chat Bot starten (falls Token vorhanden)
                 if self._twitch_bot_token:
                     self._spawn_bg_task(self._init_twitch_chat_bot(), "twitch.chat_bot")
@@ -221,6 +259,25 @@ class TwitchBaseCog(commands.Cog):
         if self.api:
             self._spawn_bg_task(self._sync_missing_user_ids(), "twitch.sync_user_ids")
 
+    def _register_persistent_raid_auth_views(self) -> None:
+        """Registriert persistente RaidAuthGenerateViews für alle Streamer in der DB.
+        Muss bei Bot-Start aufgerufen werden damit Buttons nach Neustart funktionieren."""
+        from .raid_views import RaidAuthGenerateView
+        try:
+            with storage.get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT twitch_login FROM twitch_raid_auth WHERE twitch_login IS NOT NULL"
+                ).fetchall()
+            count = 0
+            for row in rows:
+                login = str(row[0] if not hasattr(row, "keys") else row["twitch_login"]).strip().lower()
+                if login:
+                    self.bot.add_view(RaidAuthGenerateView(twitch_login=login))
+                    count += 1
+            log.info("Persistente RaidAuthViews registriert: %d Streamer", count)
+        except Exception:
+            log.exception("Fehler beim Registrieren persistenter RaidAuthViews")
+
     # -------------------------------------------------------
     # Lifecycle
     # -------------------------------------------------------
@@ -249,22 +306,10 @@ class TwitchBaseCog(commands.Cog):
             except Exception:
                 log.exception("Konnte Loop nicht canceln: %r", lp)
         
-        # 2. EventSub Listener stoppen UND WebSocket-Sessions schließen
-        es_ws_listeners = getattr(self, "_eventsub_ws_listeners", [])
-        if es_ws_listeners:
-            log.info("Stoppe %d EventSub WS Listener...", len(es_ws_listeners))
-            for i, listener in enumerate(es_ws_listeners):
-                try:
-                    if hasattr(listener, "stop"):
-                        listener.stop()
-                        log.debug("EventSub Listener %d: stop() aufgerufen", i)
-                    # Warte kurz damit der Listener die WebSocket-Session schließen kann
-                    await asyncio.sleep(0.5)
-                except Exception:
-                    log.exception("Fehler beim Stoppen von EventSub WS Listener %d", i)
-            # Kurze Pause damit alle WS-Sessions geschlossen werden können
-            await asyncio.sleep(1.0)
-            log.info("EventSub WS Listener gestoppt")
+        # 2. EventSub: Webhook Handler hat keinen persistenten Zustand der explizit
+        #    gestoppt werden muss. Etwaige Background-Tasks (dispatch) werden beim
+        #    asyncio-Shutdown automatisch gecancelt.
+        log.debug("EventSub Webhook: kein expliziter Teardown nötig")
 
         # 3. Twitch Chat Bot sauber beenden (Port 4343 freigeben)
         if self._twitch_chat_bot:

@@ -42,6 +42,8 @@ RAID_SCOPES = [
     "chat:edit",
     "clips:edit",
     "channel:read:ads",
+    "bits:read",
+    "channel:read:hype_train",
 ]
 
 RAID_TARGET_COOLDOWN_DAYS = 7  # Avoid repeating the same raid target if alternatives exist
@@ -88,12 +90,16 @@ class RaidAuthManager:
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
         self._state_tokens: Dict[str, Tuple[str, float]] = {}  # state -> (twitch_login, timestamp)
+        self._pending_auth_urls: Dict[str, str] = {}  # state -> full_twitch_auth_url
         self._lock = asyncio.Lock()
         self.token_error_handler = TokenErrorHandler()
 
+        # Basis-URL für Short-Redirect ableiten (z.B. https://raid.earlysalty.com)
+        _parts = redirect_uri.split("/twitch/", 1)
+        self._base_url: str = _parts[0] if len(_parts) > 1 else ""
+
     def generate_auth_url(self, twitch_login: str) -> str:
         """Generiert eine OAuth-URL für Streamer-Autorisierung."""
-        # State kürzen auf 16 chars um URL-Länge für Discord Buttons (max 512) zu sparen
         state = secrets.token_urlsafe(16)
         self._state_tokens[state] = (twitch_login, time.time())
 
@@ -103,21 +109,63 @@ class RaidAuthManager:
             "response_type": "code",
             "scope": " ".join(RAID_SCOPES),
             "state": state,
-            "force_verify": "true",  # Immer erneut authorisieren lassen
+            "force_verify": "true",
         }
         return f"{TWITCH_AUTHORIZE_URL}?{urlencode(params)}"
 
+    def generate_discord_button_url(self, twitch_login: str) -> str:
+        """Generiert einen kurzen Redirect-URL für Discord-Buttons (max 512 Zeichen).
+
+        Discord-Button-URLs dürfen max. 512 Zeichen lang sein.  Der volle Twitch-
+        OAuth-URL überschreitet dieses Limit.  Wir speichern den vollen URL im
+        _pending_auth_urls-Dict und geben einen kurzen /twitch/raid/go?state=…
+        Redirect-Link zurück, den der Webserver dann weiterleitet.
+        """
+        state = secrets.token_urlsafe(16)
+        ts = time.time()
+        self._state_tokens[state] = (twitch_login, ts)
+
+        params = {
+            "client_id": self.client_id,
+            "redirect_uri": self.redirect_uri,
+            "response_type": "code",
+            "scope": " ".join(RAID_SCOPES),
+            "state": state,
+            "force_verify": "true",
+        }
+        full_url = f"{TWITCH_AUTHORIZE_URL}?{urlencode(params)}"
+        self._pending_auth_urls[state] = full_url
+
+        if self._base_url:
+            return f"{self._base_url}/twitch/raid/go?state={state}"
+        # Fallback: vollen URL trotzdem zurückgeben (kann bei sehr langen URLs fehlschlagen)
+        return full_url
+
+    def get_pending_auth_url(self, state: str) -> Optional[str]:
+        """Gibt den gespeicherten vollen OAuth-URL für einen State zurück (einmalig)."""
+        # Wir löschen den Eintrag NICHT hier – verify_state macht das beim echten Callback.
+        entry = self._pending_auth_urls.get(state)
+        if not entry:
+            return None
+        # Prüfen ob der State noch gültig ist (10 Min TTL)
+        token_data = self._state_tokens.get(state)
+        if not token_data or time.time() - token_data[1] > 600:
+            self._pending_auth_urls.pop(state, None)
+            return None
+        return entry
+
     def verify_state(self, state: str) -> Optional[str]:
         """Verifiziert State-Token und gibt den zugehörigen Login zurück (max 10 Min alt)."""
+        self._pending_auth_urls.pop(state, None)  # Cleanup Short-URL Eintrag
         data = self._state_tokens.pop(state, None)
         if not data:
             return None
-        
+
         login, timestamp = data
         if time.time() - timestamp > 600:  # 10 Minuten TTL
             log.warning("OAuth state for %s expired", login)
             return None
-            
+
         return login
 
     def cleanup_states(self) -> None:
@@ -126,6 +174,7 @@ class RaidAuthManager:
         expired = [s for s, (_, ts) in self._state_tokens.items() if now - ts > 600]
         for s in expired:
             del self._state_tokens[s]
+            self._pending_auth_urls.pop(s, None)
         if expired:
             log.debug("Cleaned up %d expired auth states", len(expired))
 
@@ -291,6 +340,23 @@ class RaidAuthManager:
             
         return refreshed_count
 
+    async def snapshot_and_flag_reauth(self) -> int:
+        """Snapshot aktuelle Tokens → legacy_*, setzt needs_reauth=1 für alle.
+        Gibt Anzahl betroffener Zeilen zurück."""
+        with get_conn() as conn:
+            conn.execute("""
+                UPDATE twitch_raid_auth SET
+                    legacy_access_token  = access_token,
+                    legacy_refresh_token = refresh_token,
+                    legacy_scopes        = scopes,
+                    legacy_saved_at      = CURRENT_TIMESTAMP,
+                    needs_reauth         = 1
+                WHERE access_token IS NOT NULL
+            """)
+            count = conn.execute("SELECT changes()").fetchone()[0]
+        log.info("snapshot_and_flag_reauth: %d Tokens gesichert, needs_reauth=1 gesetzt", count)
+        return count
+
     def save_auth(
         self,
         twitch_user_id: str,
@@ -352,6 +418,11 @@ class RaidAuthManager:
                 VALUES (?, ?, 1, 1, NULL, CURRENT_TIMESTAMP, 0)
                 """,
                 (twitch_login, twitch_user_id),
+            )
+            # Re-Auth abgeschlossen: needs_reauth zurücksetzen
+            conn.execute(
+                "UPDATE twitch_raid_auth SET needs_reauth=0 WHERE twitch_user_id=?",
+                (twitch_user_id,),
             )
             conn.commit()
 
@@ -1385,10 +1456,10 @@ class RaidBot:
             if not from_broadcaster_key:
                 from_broadcaster_key = self._resolve_streamer_id_by_login(from_broadcaster_login) or ""
             if from_broadcaster_key:
-                self.mark_manual_raid_started(from_broadcaster_key, ttl_seconds=300.0)
+                self.mark_manual_raid_started(from_broadcaster_key, ttl_seconds=28800.0)
                 log.info(
                     "External/manual raid detected via EventSub: %s -> %s. "
-                    "Suppressing next offline auto-raid for broadcaster_id=%s (ttl=300s)",
+                    "Suppressing next offline auto-raid for broadcaster_id=%s (ttl=28800s/8h)",
                     from_broadcaster_login,
                     to_broadcaster_login,
                     from_broadcaster_key,

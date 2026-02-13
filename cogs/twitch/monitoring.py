@@ -150,96 +150,45 @@ class TwitchMonitoringMixin:
             return {}
 
     def _collect_eventsub_capacity_snapshot(self, *, reason: str) -> Dict[str, Any]:
-        listeners = list(getattr(self, "_eventsub_ws_listeners", []) or [])
-        listener_rows: List[Dict[str, Any]] = []
+        # Webhook-basiert: Subscription-Liste aus lokalem Tracking
+        tracked_subs: List[Dict[str, Any]] = list(
+            getattr(self, "_eventsub_webhook_active_subs", []) or []
+        )
         active_subscriptions: List[Dict[str, Any]] = []
         sub_type_counts: Dict[str, int] = {}
-        ready_count = 0
-        failed_count = 0
-        used_slots = 0
-        listeners_at_limit = 0
 
-        for idx, listener in enumerate(listeners, start=1):
-            is_failed = bool(getattr(listener, "is_failed", False))
-            is_ready = bool(getattr(listener, "is_ready", False))
-            if is_ready and not is_failed:
-                ready_count += 1
-            if is_failed:
-                failed_count += 1
-
-            raw_sub_count = getattr(listener, "subscription_count", None)
-            if raw_sub_count is None:
-                raw_sub_count = getattr(listener, "cost", 0)
-            try:
-                sub_count = int(raw_sub_count or 0)
-            except Exception:
-                sub_count = 0
-            sub_count = max(0, min(10, sub_count))
-            free_slots = max(0, 10 - sub_count)
-            if sub_count >= 10:
-                listeners_at_limit += 1
-            used_slots += sub_count
-
-            listener_rows.append(
+        for sub in tracked_subs:
+            sub_type = str(sub.get("sub_type") or "").strip().lower() or "unknown"
+            broadcaster_user_id = str(sub.get("broadcaster_user_id") or "").strip()
+            active_subscriptions.append(
                 {
-                    "idx": idx,
-                    "ready": 1 if is_ready else 0,
-                    "failed": 1 if is_failed else 0,
-                    "subscriptions": sub_count,
-                    "free_slots": free_slots,
+                    "listener_idx": 1,  # Webhook hat keinen Listener-Pool
+                    "sub_type": sub_type,
+                    "broadcaster_user_id": broadcaster_user_id,
+                    "target_user_id": broadcaster_user_id,
+                    "condition": {"broadcaster_user_id": broadcaster_user_id},
                 }
             )
+            sub_type_counts[sub_type] = int(sub_type_counts.get(sub_type, 0)) + 1
 
-            tracked_subscriptions: List[Dict[str, Any]] = []
-            getter = getattr(listener, "get_tracked_subscriptions", None)
-            if callable(getter):
-                try:
-                    tracked_subscriptions = getter() or []
-                except Exception:
-                    tracked_subscriptions = []
-            elif isinstance(getattr(listener, "_subscriptions", None), list):
-                for raw in getattr(listener, "_subscriptions", []) or []:
-                    if not isinstance(raw, tuple) or len(raw) < 3:
-                        continue
-                    sub_type = str(raw[0] or "")
-                    broadcaster_id = str(raw[1] or "")
-                    condition = raw[2] if isinstance(raw[2], dict) else {}
-                    tracked_subscriptions.append(
-                        {
-                            "type": sub_type,
-                            "broadcaster_id": broadcaster_id,
-                            "condition": condition,
-                        }
-                    )
-
-            for sub in tracked_subscriptions:
-                sub_type = str(sub.get("type") or "").strip().lower() or "unknown"
-                broadcaster_id = str(sub.get("broadcaster_id") or "").strip()
-                raw_condition = sub.get("condition")
-                condition: Dict[str, str] = {}
-                if isinstance(raw_condition, dict):
-                    condition = {
-                        str(key): str(value)
-                        for key, value in raw_condition.items()
-                        if str(key).strip()
-                    }
-
-                target_user_id = self._eventsub_target_user_id(condition, fallback=broadcaster_id)
-                active_subscriptions.append(
-                    {
-                        "listener_idx": idx,
-                        "sub_type": sub_type,
-                        "broadcaster_user_id": broadcaster_id,
-                        "target_user_id": target_user_id,
-                        "condition": condition,
-                    }
-                )
-                sub_type_counts[sub_type] = int(sub_type_counts.get(sub_type, 0)) + 1
-
-        listener_count = len(listeners)
-        total_slots = listener_count * 10
+        used_slots = len(active_subscriptions)
+        # Webhook skaliert auf 10.000 Subscriptions – repräsentiere das in der Snapshot-Struktur
+        total_slots = 10000
         headroom_slots = max(0, total_slots - used_slots)
         utilization_pct = (float(used_slots) / float(total_slots) * 100.0) if total_slots > 0 else 0.0
+
+        # listener_rows für Kompatibilität mit bestehenden Dashboard-Feldern
+        listener_rows: List[Dict[str, Any]] = [{
+            "idx": 1,
+            "ready": 1,
+            "failed": 0,
+            "subscriptions": used_slots,
+            "free_slots": headroom_slots,
+        }]
+        listener_count = 1
+        ready_count = 1
+        failed_count = 0
+        listeners_at_limit = 0
 
         login_map = self._resolve_twitch_logins_by_user_id(
             [str(row.get("target_user_id") or "") for row in active_subscriptions]
@@ -710,234 +659,166 @@ class TwitchMonitoringMixin:
         except Exception:
             log.exception("EventSub: Auto-Raid offline handling failed for %s", broadcaster_login or broadcaster_id)
 
-    async def _acquire_eventsub_dynamic_listener(
-        self,
-        *,
-        reason: str,
-        target_label: str,
-        wait_existing_timeout: float = 1.5,
-        wait_new_timeout: float = 8.0,
-    ):
-        """Return a ready listener with free capacity, creating one if needed."""
-        from .eventsub_ws import EventSubWSListener
-
-        if not getattr(self, "api", None):
+    def _get_eventsub_webhook_url(self) -> Optional[str]:
+        """Gibt die vollständige Webhook-Callback-URL zurück, falls konfiguriert."""
+        base = getattr(self, "_webhook_base_url", None)
+        if not base:
             return None
+        return f"{base}/twitch/eventsub/callback"
 
-        lock = getattr(self, "_eventsub_ws_listener_lock", None)
-        if lock is None:
-            lock = asyncio.Lock()
-            setattr(self, "_eventsub_ws_listener_lock", lock)
-
-        async with lock:
-            listeners_raw = getattr(self, "_eventsub_ws_listeners", None)
-            if isinstance(listeners_raw, list):
-                listeners: List[EventSubWSListener] = listeners_raw
-            else:
-                listeners = list(listeners_raw or [])
-                setattr(self, "_eventsub_ws_listeners", listeners)
-
-            def _listener_sub_count(listener: EventSubWSListener) -> int:
-                raw_value = getattr(
-                    listener,
-                    "subscription_count",
-                    getattr(listener, "cost", 0),
-                )
-                try:
-                    return max(0, min(10, int(raw_value or 0)))
-                except Exception:
-                    return 0
-
-            async def _create_listener(create_reason: str) -> Optional[EventSubWSListener]:
-                if len(listeners) >= 3:
-                    ready_with_capacity = sum(
-                        1
-                        for listener in listeners
-                        if listener.is_ready and not listener.is_failed and listener.has_capacity
-                    )
-                    log.warning(
-                        "EventSub: Kein weiterer Listener verfügbar (3/3 aktiv) (%s: %s, ready_with_capacity=%d)",
-                        reason,
-                        target_label or "unknown",
-                        ready_with_capacity,
-                    )
-                    return None
-
-                token_resolver = getattr(self, "_eventsub_ws_token_resolver", None)
-                listener = EventSubWSListener(self.api, log, token_resolver=token_resolver)
-                offline_cb = getattr(self, "_eventsub_ws_offline_cb", None)
-                raid_cb = getattr(self, "_eventsub_ws_raid_cb", None)
-                if callable(offline_cb):
-                    listener.set_callback("stream.offline", offline_cb)
-                if callable(raid_cb):
-                    listener.set_callback("channel.raid", raid_cb)
-
-                listeners.append(listener)
-                listener_idx = len(listeners)
-                log.info(
-                    "EventSub: Erstelle zusätzlichen Listener #%d (%s: %s, reason=%s)",
-                    listener_idx,
-                    reason,
-                    target_label or "unknown",
-                    create_reason,
-                )
-                asyncio.create_task(listener.run(), name=f"twitch.eventsub.ws.{listener_idx - 1}")
-
-                if await listener.wait_until_ready(timeout=wait_new_timeout):
-                    try:
-                        await self._record_eventsub_capacity_snapshot("dynamic_listener_created", force=True)
-                    except Exception:
-                        log.debug("EventSub: Snapshot dynamic_listener_created fehlgeschlagen", exc_info=True)
-                    return listener
-
-                # Cleanup, damit ein nicht-bereiter Listener keinen der 3 Slots dauerhaft blockiert.
-                try:
-                    listener.stop()
-                except Exception:
-                    pass
-                try:
-                    listeners.remove(listener)
-                except ValueError:
-                    pass
-
-                log.warning(
-                    "EventSub: Neuer Listener #%d wurde nicht rechtzeitig bereit (%s: %s, reason=%s)",
-                    listener_idx,
-                    reason,
-                    target_label or "unknown",
-                    create_reason,
-                )
-                return None
-
-            ready_candidates = [
-                listener
-                for listener in listeners
-                if not listener.is_failed and listener.has_capacity and listener.is_ready
-            ]
-
-            for idx, listener in enumerate(listeners, start=1):
-                if listener.is_failed or not listener.has_capacity or listener.is_ready:
-                    continue
-                try:
-                    if await listener.wait_until_ready(timeout=wait_existing_timeout):
-                        ready_candidates.append(listener)
-                except Exception:
-                    log.debug(
-                        "EventSub: wait_until_ready fehlgeschlagen für Listener #%d (%s: %s)",
-                        idx,
-                        reason,
-                        target_label or "unknown",
-                        exc_info=True,
-                    )
-
-            if ready_candidates:
-                soft_prewarm_threshold = 8  # 80% von 10 Slots
-                ready_loads = [_listener_sub_count(listener) for listener in ready_candidates]
-                if ready_loads and min(ready_loads) >= soft_prewarm_threshold and len(listeners) < 3:
-                    log.info(
-                        "EventSub: Soft-Limit erreicht (%s: %s, loads=%s) -> prewarm neuer Listener",
-                        reason,
-                        target_label or "unknown",
-                        ",".join(str(v) for v in sorted(ready_loads, reverse=True)),
-                    )
-                    prewarmed = await _create_listener("soft_limit_reached")
-                    if prewarmed is not None:
-                        # Neue Subscription direkt auf den frisch gestarteten Listener legen.
-                        return prewarmed
-
-                # Danach die bestehenden Listener bis 10/10 füllen.
-                ready_candidates.sort(key=_listener_sub_count, reverse=True)
-                return ready_candidates[0]
-
-            return await _create_listener("no_ready_listener")
+    async def _cleanup_old_eventsub_subscriptions(self, webhook_url: str) -> None:
+        """Löscht veraltete Webhook-Subscriptions vom letzten Start."""
+        if not getattr(self, "api", None):
+            return
+        try:
+            existing = await self.api.list_eventsub_subscriptions(status="enabled")
+            deleted = 0
+            for sub in existing:
+                if sub.get("transport", {}).get("callback") == webhook_url:
+                    sub_id = sub.get("id")
+                    if sub_id:
+                        await self.api.delete_eventsub_subscription(sub_id)
+                        deleted += 1
+            if deleted:
+                log.info("EventSub Webhook: %d alte Subscriptions gelöscht", deleted)
+        except Exception:
+            log.exception("EventSub Webhook: Cleanup alter Subscriptions fehlgeschlagen")
 
     async def _start_eventsub_listener(self):
-        """Startet konsolidierte EventSub WebSocket Listener (verteilt auf bis zu 3 Verbindungen)."""
-        if getattr(self, "_eventsub_ws_started", False):
-            log.debug("EventSub WS Listener bereits gestartet, überspringe.")
+        """Startet Webhook-basierte EventSub Subscriptions."""
+        if getattr(self, "_eventsub_started", False):
+            log.debug("EventSub Listener bereits gestartet, überspringe.")
             return
-        setattr(self, "_eventsub_ws_started", True)
-        
+        setattr(self, "_eventsub_started", True)
+
+        webhook_url = self._get_eventsub_webhook_url()
+        webhook_secret = getattr(self, "_webhook_secret", None)
+        webhook_handler = getattr(self, "_eventsub_webhook_handler", None)
+
+        if not webhook_url or not webhook_secret or not webhook_handler:
+            log.warning(
+                "EventSub Webhook: TWITCH_WEBHOOK_SECRET nicht konfiguriert – "
+                "EventSub Subscriptions werden nicht erstellt. "
+                "Bitte TWITCH_WEBHOOK_SECRET setzen."
+            )
+            setattr(self, "_eventsub_started", False)
+            return
+
         if not getattr(self, "api", None):
-            log.warning("EventSub WS: Keine API vorhanden, Listener wird nicht gestartet.")
+            log.warning("EventSub Webhook: Keine API vorhanden, Listener wird nicht gestartet.")
+            setattr(self, "_eventsub_started", False)
             return
-            
+
         try:
             await self.bot.wait_until_ready()
         except Exception:
-            log.exception("EventSub WS: wait_until_ready fehlgeschlagen")
+            log.exception("EventSub Webhook: wait_until_ready fehlgeschlagen")
             return
 
-        # 1. Broadcaster sammeln
-        # Strategie: Polling erkennt Go-Live (alle 15s), dann wird stream.offline dynamisch hinzugefügt
-        # Beim Start: Subscribe stream.offline NUR für aktuell live Streams
-        # So sparen wir Subscription-Slots: nur Live-Streams werden überwacht
-        raid_enabled_streamers = self._get_raid_enabled_streamers_for_eventsub()
-
-        if not raid_enabled_streamers:
-            log.info("EventSub WS: Keine Streamer für EventSub monitoring gefunden.")
-            try:
-                await self._record_eventsub_capacity_snapshot("startup_no_streamers", force=True)
-            except Exception:
-                log.debug("EventSub: Snapshot für startup_no_streamers fehlgeschlagen", exc_info=True)
-            setattr(self, "_eventsub_ws_started", False)  # Reset flag
-            return
-
-        # Hole aktuellen Live-Status für alle raid-enabled Streamer
-        raid_logins = [s["twitch_login"] for s in raid_enabled_streamers]
-        currently_live_streams = {}
-        try:
-            live_streams = await self.api.get_streams_by_logins(raid_logins)
-            for stream in live_streams:
-                login_lower = (stream.get("user_login") or "").lower()
-                if login_lower:
-                    currently_live_streams[login_lower] = stream
-            log.info(
-                "EventSub WS: %d von %d raid-enabled Streamern sind aktuell live",
-                len(currently_live_streams),
-                len(raid_enabled_streamers)
-            )
-        except Exception:
-            log.exception("EventSub WS: Konnte Live-Status nicht abrufen, subscribe keine stream.offline beim Start")
-        
-        # 2. Token Resolver vorbereiten
-        token_resolver = None
-        bot_token_mgr = getattr(self, "_bot_token_manager", None)
-        if bot_token_mgr:
-            async def _resolve_bot_token(_user_id: str) -> Optional[str]:
-                try:
-                    token, _ = await bot_token_mgr.get_valid_token()
-                    return token
-                except Exception:
-                    log.debug("EventSub WS: konnte Bot-Token nicht laden", exc_info=True)
-                    return None
-            token_resolver = _resolve_bot_token
-        else:
-            log.warning("EventSub WS: Kein Token Manager vorhanden, Subscriptions könnten fehlschlagen.")
-        setattr(self, "_eventsub_ws_token_resolver", token_resolver)
-
-        from .eventsub_ws import EventSubWSListener
-        
-        # Wir verwalten eine Liste von Listenern (max 3)
-        listeners: List[EventSubWSListener] = []
-        setattr(self, "_eventsub_ws_listeners", listeners)
-
-        # Callbacks vorbereiten
+        # Callbacks registrieren
         async def _offline_cb(bid: str, login: str, _event: dict):
             try:
                 await self._on_eventsub_stream_offline(bid, login)
-                # stream.offline Subscription bleibt aktiv bis zum nächsten Restart
-                # oder bis der Stream wieder live geht (dann wird sie eh neu erstellt)
             except Exception:
-                log.exception("EventSub WS: Offline-Callback fehlgeschlagen für %s", login)
-        setattr(self, "_eventsub_ws_offline_cb", _offline_cb)
+                log.exception("EventSub Webhook: Offline-Callback fehlgeschlagen für %s", login)
 
-        # stream.online wird NICHT mehr über EventSub überwacht!
-        # Polling (_tick) erkennt Go-Live und ruft dann _handle_stream_went_live() auf
+        async def _raid_cb(to_bid: str, to_login: str, event: dict):
+            try:
+                raid_bot = getattr(self, "_raid_bot", None)
+                if not raid_bot:
+                    log.debug("EventSub Webhook: Raid-Bot nicht verfügbar für channel.raid von %s", to_login)
+                    return
+                from_login = (event.get("from_broadcaster_user_login") or "").strip().lower()
+                from_broadcaster_id = str(event.get("from_broadcaster_user_id") or "").strip()
+                viewer_count = int(event.get("viewers") or 0)
+                if not from_login:
+                    log.warning("EventSub Webhook: channel.raid event ohne from_broadcaster_user_login")
+                    return
+                log.info(
+                    "EventSub Webhook: channel.raid: %s -> %s (%d viewers)",
+                    from_login, to_login, viewer_count,
+                )
+                await raid_bot.on_raid_arrival(
+                    to_broadcaster_id=to_bid,
+                    to_broadcaster_login=to_login,
+                    from_broadcaster_login=from_login,
+                    from_broadcaster_id=from_broadcaster_id,
+                    viewer_count=viewer_count,
+                )
+            except Exception:
+                log.exception("EventSub Webhook: Raid-Callback fehlgeschlagen für %s", to_login or to_bid)
+
+        async def _bits_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_bits_event(bid, event)
+            except Exception:
+                log.exception("EventSub Webhook: Bits-Callback fehlgeschlagen für %s", login)
+
+        async def _hype_begin_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_hype_train_event(bid, event, ended=False)
+            except Exception:
+                log.exception("EventSub Webhook: Hype-Train-Begin-Callback fehlgeschlagen für %s", login)
+
+        async def _hype_end_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_hype_train_event(bid, event, ended=True)
+            except Exception:
+                log.exception("EventSub Webhook: Hype-Train-End-Callback fehlgeschlagen für %s", login)
+
+        async def _online_cb(bid: str, login: str, event: dict):
+            try:
+                await self._handle_stream_online(bid, login, event)
+            except Exception:
+                log.exception("EventSub Webhook: stream.online-Callback fehlgeschlagen für %s", login)
+
+        async def _channel_update_cb(bid: str, login: str, event: dict):
+            try:
+                await self._handle_channel_update(bid, event)
+            except Exception:
+                log.exception("EventSub Webhook: channel.update-Callback fehlgeschlagen für %s", login)
+
+        async def _subscribe_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_subscription_event(bid, event, "subscribe")
+            except Exception:
+                log.exception("EventSub Webhook: channel.subscribe-Callback fehlgeschlagen für %s", login)
+
+        async def _gift_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_subscription_event(bid, event, "gift")
+            except Exception:
+                log.exception("EventSub Webhook: channel.subscription.gift-Callback fehlgeschlagen für %s", login)
+
+        async def _resub_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_subscription_event(bid, event, "resub")
+            except Exception:
+                log.exception("EventSub Webhook: channel.subscription.message-Callback fehlgeschlagen für %s", login)
+
+        async def _ad_break_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_ad_break_event(bid, event)
+            except Exception:
+                log.exception("EventSub Webhook: channel.ad_break.begin-Callback fehlgeschlagen für %s", login)
+
+        webhook_handler.set_callback("stream.online", _online_cb)
+        webhook_handler.set_callback("stream.offline", _offline_cb)
+        webhook_handler.set_callback("channel.raid", _raid_cb)
+        webhook_handler.set_callback("channel.update", _channel_update_cb)
+        webhook_handler.set_callback("channel.subscribe", _subscribe_cb)
+        webhook_handler.set_callback("channel.subscription.gift", _gift_cb)
+        webhook_handler.set_callback("channel.subscription.message", _resub_cb)
+        webhook_handler.set_callback("channel.ad_break.begin", _ad_break_cb)
+        webhook_handler.set_callback("channel.cheer", _bits_cb)
+        webhook_handler.set_callback("channel.hype_train.begin", _hype_begin_cb)
+        webhook_handler.set_callback("channel.hype_train.end", _hype_end_cb)
+
+        # Go-Live Handler für Polling
         async def _handle_stream_went_live(bid: str, login: str):
             """
             Wird vom Polling aufgerufen wenn ein Stream live geht.
-            Subscribed stream.offline und joined Chat-Bot.
+            Subscribed stream.offline via Webhook und joined Chat-Bot.
             """
             try:
                 # 1. Chat-Bot joinen (falls Partner mit Chat-Scope)
@@ -962,261 +843,286 @@ class TwitchMonitoringMixin:
                             if success:
                                 log.info("Polling: Chat-Bot joined %s (%s) nach Go-Live", login_norm, bid)
 
-                # 2. Dynamisch stream.offline Subscription hinzufügen
-                # Jetzt wo der Stream live ist, wollen wir wissen, wann er offline geht (für Auto-Raid)
-                target_listener = await self._acquire_eventsub_dynamic_listener(
-                    reason="stream.offline",
-                    target_label=str(login or bid or ""),
+                # 2. stream.offline Webhook Subscription (nur bei vollständiger Auth)
+                # Webhook-Subscriptions erfordern App-Access-Token → oauth_token=None
+                fully_authed = (
+                    await self._is_fully_authed(str(bid))
+                    if hasattr(self, "_is_fully_authed")
+                    else True
                 )
-
-                if target_listener:
-                    # Hole Bot Token
-                    bot_token_mgr = getattr(self, "_bot_token_manager", None)
-                    if bot_token_mgr:
-                        try:
-                            token, _ = await bot_token_mgr.get_valid_token()
-                            if token:
-                                token = token.strip()
-                                if token.lower().startswith("oauth:"):
-                                    token = token[6:]
-
-                                success = await target_listener.add_subscription_dynamic(
-                                    sub_type="stream.offline",
-                                    broadcaster_id=bid,
-                                    oauth_token=token
-                                )
-                                if success:
-                                    log.info(
-                                        "Polling: stream.offline dynamisch hinzugefügt für %s (jetzt live → warte auf offline)",
-                                        login or bid
-                                    )
-                                    await self._record_eventsub_capacity_snapshot(
-                                        "stream_offline_subscribed",
-                                        force=True,
-                                    )
-                        except Exception:
-                            log.exception("Polling: Konnte stream.offline nicht dynamisch hinzufügen für %s", login or bid)
-                else:
-                    log.warning("Polling: Kein EventSub Listener mit Kapazität für stream.offline von %s", login or bid)
-                    await self._record_eventsub_capacity_snapshot(
-                        "stream_offline_no_capacity",
-                        force=True,
+                if fully_authed:
+                    result = await self.api.subscribe_eventsub_webhook(
+                        sub_type="stream.offline",
+                        condition={"broadcaster_user_id": str(bid)},
+                        webhook_url=webhook_url,
+                        secret=webhook_secret,
+                        oauth_token=None,
                     )
+                    if result:
+                        log.info(
+                            "Polling: stream.offline Webhook Subscription erstellt für %s",
+                            login or bid,
+                        )
+                        self._eventsub_track_sub("stream.offline", str(bid))
+                        await self._record_eventsub_capacity_snapshot("stream_offline_subscribed", force=True)
+                else:
+                    log.info(
+                        "Polling: stream.offline übersprungen für %s (needs_reauth=1)",
+                        login or bid,
+                    )
+
+                # 3. Broadcaster-Token Subscriptions (Bits, Hype, Subs, Ads)
+                broadcaster_token = await self._resolve_eventsub_broadcaster_token(str(bid))
+                if broadcaster_token:
+                    broadcaster_subs = [
+                        # (sub_type, version, scope_info)
+                        ("channel.cheer",                  "1", "bits:read"),
+                        ("channel.hype_train.begin",        "1", "channel:read:hype_train"),
+                        ("channel.hype_train.end",          "1", "channel:read:hype_train"),
+                        ("channel.subscribe",               "1", "channel:read:subscriptions"),
+                        ("channel.subscription.gift",       "1", "channel:read:subscriptions"),
+                        ("channel.subscription.message",    "1", "channel:read:subscriptions"),
+                        ("channel.ad_break.begin",          "1", "channel:read:ads"),
+                    ]
+                    for sub_type, version, _ in broadcaster_subs:
+                        try:
+                            await self.api.subscribe_eventsub_webhook(
+                                sub_type=sub_type,
+                                condition={"broadcaster_user_id": str(bid)},
+                                webhook_url=webhook_url,
+                                secret=webhook_secret,
+                                oauth_token=broadcaster_token,
+                                version=version,
+                            )
+                            self._eventsub_track_sub(sub_type, str(bid))
+                            log.debug(
+                                "EventSub Webhook: %s Subscription erstellt für %s",
+                                sub_type, login or bid,
+                            )
+                        except Exception:
+                            log.debug(
+                                "EventSub Webhook: %s fehlgeschlagen für %s (evtl. Scope fehlt)",
+                                sub_type, login or bid, exc_info=True,
+                            )
 
             except Exception:
                 log.exception("Polling: Go-Live Handler fehlgeschlagen für %s", login or bid)
 
-        async def _raid_cb(to_bid: str, to_login: str, event: dict):
-            """
-            Callback für channel.raid EventSub.
-
-            Wird gefeuert, wenn ein Raid beim Ziel-Broadcaster ankommt.
-            """
-            try:
-                raid_bot = getattr(self, "_raid_bot", None)
-                if not raid_bot:
-                    log.debug("EventSub WS: Raid-Bot nicht verfügbar für channel.raid von %s", to_login)
-                    return
-
-                from_login = (event.get("from_broadcaster_user_login") or "").strip().lower()
-                from_broadcaster_id = str(event.get("from_broadcaster_user_id") or "").strip()
-                viewer_count = int(event.get("viewers") or 0)
-
-                if not from_login:
-                    log.warning("EventSub WS: channel.raid event ohne from_broadcaster_user_login")
-                    return
-
-                log.info(
-                    "EventSub WS: channel.raid Event empfangen: %s -> %s (%d viewers)",
-                    from_login,
-                    to_login,
-                    viewer_count
-                )
-
-                await raid_bot.on_raid_arrival(
-                    to_broadcaster_id=to_bid,
-                    to_broadcaster_login=to_login,
-                    from_broadcaster_login=from_login,
-                    from_broadcaster_id=from_broadcaster_id,
-                    viewer_count=viewer_count,
-                )
-            except Exception:
-                log.exception("EventSub WS: Raid-Callback fehlgeschlagen für %s", to_login or to_bid)
-        setattr(self, "_eventsub_ws_raid_cb", _raid_cb)
-
-        # Speichere Handler als Instanz-Attribut damit Polling darauf zugreifen kann
         setattr(self, "_handle_stream_went_live", _handle_stream_went_live)
 
-        def get_or_create_listener() -> Optional[EventSubWSListener]:
-            # Versuche existierenden Listener mit Platz (< 10 cost per transport limit)
-            for l in listeners:
-                if l.has_capacity and not l.is_failed:
-                    return l
-            # Wenn kein Platz und < 3 Listener (Twitch erlaubt max 3 WebSocket Transports), erstelle neuen
-            if len(listeners) < 3:
-                new_l = EventSubWSListener(self.api, log, token_resolver=token_resolver)
-                new_l.set_callback("stream.offline", _offline_cb)
-                new_l.set_callback("channel.raid", _raid_cb)
-                listeners.append(new_l)
-                return new_l
-            return None
+        # 1. Alte Subscriptions bereinigen
+        await self._cleanup_old_eventsub_subscriptions(webhook_url)
 
-        # 3. Subscriptions verteilen (stream.offline NUR für aktuell live Streams)
-        # Go-Live Detection erfolgt über Polling (_tick), das dann _handle_stream_went_live() aufruft
-        # channel.raid wird dynamisch erstellt wenn ein Raid gestartet wird
-        subs_added = 0
-        startup_capacity_exhausted = False
+        # Lokale Subscription-Tracking-Liste leeren
+        setattr(self, "_eventsub_webhook_active_subs", [])
+
+        # 2. Broadcaster sammeln
+        raid_enabled_streamers = self._get_raid_enabled_streamers_for_eventsub()
+        if not raid_enabled_streamers:
+            log.info("EventSub Webhook: Keine Streamer für EventSub monitoring gefunden.")
+            try:
+                await self._record_eventsub_capacity_snapshot("startup_no_streamers", force=True)
+            except Exception:
+                log.debug("EventSub: Snapshot für startup_no_streamers fehlgeschlagen", exc_info=True)
+            return
+
+        # 3. Live-Status abrufen
+        raid_logins = [s["twitch_login"] for s in raid_enabled_streamers]
+        currently_live_streams: Dict[str, dict] = {}
+        try:
+            live_streams = await self.api.get_streams_by_logins(raid_logins)
+            for stream in live_streams:
+                login_lower = (stream.get("user_login") or "").lower()
+                if login_lower:
+                    currently_live_streams[login_lower] = stream
+            log.info(
+                "EventSub Webhook: %d von %d raid-enabled Streamern sind aktuell live",
+                len(currently_live_streams),
+                len(raid_enabled_streamers),
+            )
+        except Exception:
+            log.exception(
+                "EventSub Webhook: Konnte Live-Status nicht abrufen, "
+                "subscribe keine stream.offline beim Start"
+            )
+
+        # 4. stream.online + stream.offline + channel.update für alle/live Streamer
+        offline_added = 0
+        online_added = 0
+        update_added = 0
         for entry in raid_enabled_streamers:
             bid = entry.get("twitch_user_id")
             login = entry.get("twitch_login", "").lower()
             if not bid:
                 continue
 
-            # Subscribe stream.offline NUR wenn Stream aktuell live ist
-            if login in currently_live_streams:
-                l = get_or_create_listener()
-                if l:
-                    l.add_subscription("stream.offline", str(bid))
-                    subs_added += 1
-                    log.debug("EventSub WS: stream.offline beim Start subscribed für %s (aktuell live)", login)
-                else:
-                    log.error("EventSub WS: Limit erreicht (3 Connections, alle voll). Konnte stream.offline für %s nicht abonnieren.", login)
-                    startup_capacity_exhausted = True
+            # stream.online für ALLE (so erkennen wir Go-Live sofort statt per 15s-Polling)
+            # Webhook-Subscriptions erfordern einen App-Access-Token (client_credentials),
+            # daher oauth_token=None → TwitchAPI nutzt automatisch den App-Token.
+            try:
+                result = await self.api.subscribe_eventsub_webhook(
+                    sub_type="stream.online",
+                    condition={"broadcaster_user_id": str(bid)},
+                    webhook_url=webhook_url,
+                    secret=webhook_secret,
+                    oauth_token=None,
+                )
+                if result:
+                    self._eventsub_track_sub("stream.online", str(bid))
+                    online_added += 1
+            except Exception:
+                log.debug("EventSub Webhook: stream.online fehlgeschlagen für %s", login, exc_info=True)
+
+            # channel.update für ALLE (Titel/Game-Änderungen mitbekommen)
+            try:
+                result = await self.api.subscribe_eventsub_webhook(
+                    sub_type="channel.update",
+                    condition={"broadcaster_user_id": str(bid)},
+                    webhook_url=webhook_url,
+                    secret=webhook_secret,
+                    oauth_token=None,
+                    version="2",
+                )
+                if result:
+                    self._eventsub_track_sub("channel.update", str(bid))
+                    update_added += 1
+            except Exception:
+                log.debug("EventSub Webhook: channel.update fehlgeschlagen für %s", login, exc_info=True)
+
+            # stream.offline NUR für aktuell live Streams
+            if login not in currently_live_streams:
+                continue
+            try:
+                result = await self.api.subscribe_eventsub_webhook(
+                    sub_type="stream.offline",
+                    condition={"broadcaster_user_id": str(bid)},
+                    webhook_url=webhook_url,
+                    secret=webhook_secret,
+                    oauth_token=None,
+                )
+                if result:
+                    self._eventsub_track_sub("stream.offline", str(bid))
+                    offline_added += 1
+                    log.debug("EventSub Webhook: stream.offline subscribed für %s (live)", login)
+            except Exception:
+                log.exception("EventSub Webhook: stream.offline fehlgeschlagen für %s", login)
 
         log.info(
-            "EventSub WS: %d stream.offline Subscriptions auf %d WebSocket(s) verteilt (nur für live Streams). "
-            "Go-Live Detection erfolgt via Polling.",
-            subs_added, len(listeners)
+            "EventSub Webhook: stream.online=%d, channel.update=%d, stream.offline=%d (nur live) subscribiert",
+            online_added, update_added, offline_added,
         )
         try:
             await self._record_eventsub_capacity_snapshot("startup_distribution", force=True)
         except Exception:
             log.debug("EventSub: Startup-Capacity-Snapshot fehlgeschlagen", exc_info=True)
-        if startup_capacity_exhausted:
-            try:
-                await self._record_eventsub_capacity_snapshot("startup_no_capacity", force=True)
-            except Exception:
-                log.debug("EventSub: Startup-No-Capacity-Snapshot fehlgeschlagen", exc_info=True)
 
-        # 4. Alle Listener starten
-        tasks = []
-        for i, l in enumerate(listeners):
-            log.info("EventSub WS: Starte Listener #%d...", i + 1)
-            tasks.append(asyncio.create_task(l.run(), name=f"twitch.eventsub.ws.{i}"))
-        
-        if tasks:
-            try:
-                await asyncio.gather(*tasks)
-            except asyncio.CancelledError:
-                log.info("EventSub WS: Alle Listener wurden abgebrochen")
-                raise
-            except Exception:
-                log.exception("EventSub WS: Ein oder mehrere Listener beendet mit Fehler")
-                try:
-                    await self._record_eventsub_capacity_snapshot("listener_runtime_error", force=True)
-                except Exception:
-                    log.debug("EventSub: Snapshot bei listener_runtime_error fehlgeschlagen", exc_info=True)
-                setattr(self, "_eventsub_ws_started", False)
+    async def _resolve_eventsub_bot_token(self) -> Optional[str]:
+        """Gibt den aktuellen Bot-Token zurück (ohne 'oauth:' Präfix)."""
+        bot_token_mgr = getattr(self, "_bot_token_manager", None)
+        if not bot_token_mgr:
+            return None
+        try:
+            token, _ = await bot_token_mgr.get_valid_token()
+            if not token:
+                return None
+            token = token.strip()
+            if token.lower().startswith("oauth:"):
+                token = token[6:]
+            return token
+        except Exception:
+            log.debug("EventSub Webhook: konnte Bot-Token nicht laden", exc_info=True)
+            return None
+
+    async def _resolve_eventsub_broadcaster_token(self, broadcaster_user_id: str) -> Optional[str]:
+        """Gibt den Broadcaster-Token für eine bestimmte User-ID zurück (falls vorhanden).
+        Bei needs_reauth=1 wird der legacy_access_token genutzt (Übergangsmodus)."""
+        if hasattr(self, "_resolve_broadcaster_token_with_legacy"):
+            return await self._resolve_broadcaster_token_with_legacy(broadcaster_user_id)
+        # Fallback falls Mixin nicht eingebunden
+        try:
+            with storage.get_conn() as c:
+                row = c.execute(
+                    "SELECT access_token FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                    (broadcaster_user_id,),
+                ).fetchone()
+            if not row:
+                return None
+            token = str(row[0] if not hasattr(row, "keys") else row["access_token"]).strip()
+            if token.lower().startswith("oauth:"):
+                token = token[6:]
+            return token or None
+        except Exception:
+            log.debug(
+                "EventSub Webhook: konnte Broadcaster-Token für %s nicht laden",
+                broadcaster_user_id, exc_info=True,
+            )
+            return None
+
+    def _eventsub_track_sub(self, sub_type: str, broadcaster_user_id: str) -> None:
+        """Merkt sich eine aktive Webhook-Subscription für spätere Capacity-Snapshots."""
+        active_subs: List[Dict] = getattr(self, "_eventsub_webhook_active_subs", None)
+        if active_subs is None:
+            active_subs = []
+            setattr(self, "_eventsub_webhook_active_subs", active_subs)
+        active_subs.append({
+            "sub_type": sub_type,
+            "broadcaster_user_id": broadcaster_user_id,
+        })
 
 
     async def subscribe_raid_target_dynamic(self, broadcaster_id: str, broadcaster_login: str) -> bool:
         """
-        Erstellt dynamisch eine channel.raid EventSub subscription für einen spezifischen Broadcaster.
+        Erstellt dynamisch eine channel.raid Webhook-Subscription für einen Broadcaster.
 
-        Diese Methode wird aufgerufen, wenn wir einen Raid starten, um zu erkennen,
-        wann der Raid beim Ziel ankommt.
+        Wird aufgerufen wenn ein Raid gestartet wird, um zu erkennen wenn der Raid ankommt.
 
         Returns:
             True wenn die Subscription erfolgreich erstellt wurde, False sonst.
         """
-        from .eventsub_ws import EventSubWSListener
+        webhook_url = self._get_eventsub_webhook_url()
+        webhook_secret = getattr(self, "_webhook_secret", None)
+
+        if not webhook_url or not webhook_secret:
+            log.error(
+                "EventSub Webhook: Keine Webhook-URL/Secret konfiguriert für channel.raid subscription"
+            )
+            return False
 
         if not getattr(self, "api", None):
-            log.error("EventSub: Keine API verfügbar für channel.raid subscription")
+            log.error("EventSub Webhook: Keine API verfügbar für channel.raid subscription")
             await self._record_eventsub_capacity_snapshot("raid_no_api", force=True)
             return False
 
-        target_listener = await self._acquire_eventsub_dynamic_listener(
-            reason="channel.raid",
-            target_label=str(broadcaster_login or broadcaster_id or ""),
-        )
-
-        listeners: List[EventSubWSListener] = getattr(self, "_eventsub_ws_listeners", [])
-
-        if not target_listener:
-            log.error(
-                "EventSub: Kein verfügbarer Listener mit Kapazität für channel.raid subscription (target: %s)",
-                broadcaster_login
-            )
-            await self._record_eventsub_capacity_snapshot("raid_no_capacity", force=True)
-            return False
-
-        # Hole Bot Token für die Subscription
-        bot_token_mgr = getattr(self, "_bot_token_manager", None)
-        if not bot_token_mgr:
-            log.error("EventSub: Kein Bot Token Manager verfügbar")
-            await self._record_eventsub_capacity_snapshot("raid_no_token_manager", force=True)
-            return False
-
         try:
-            token, _ = await bot_token_mgr.get_valid_token()
-            if not token:
-                log.error("EventSub: Konnte Bot-Token nicht laden für channel.raid subscription")
-                await self._record_eventsub_capacity_snapshot("raid_token_missing", force=True)
-                return False
-
-            # Strip "oauth:" prefix wenn vorhanden
-            token = token.strip()
-            if token.lower().startswith("oauth:"):
-                token = token[6:]
-
-        except Exception:
-            log.exception("EventSub: Token-Abruf fehlgeschlagen für channel.raid subscription")
-            await self._record_eventsub_capacity_snapshot("raid_token_error", force=True)
-            return False
-
-        condition = {"to_broadcaster_user_id": str(broadcaster_id)}
-
-        # Versuche zuerst den gewählten Listener und danach alle weiteren mit Kapazität.
-        ordered_listeners = [target_listener] + [l for l in listeners if l is not target_listener]
-        for listener in ordered_listeners:
-            if listener.is_failed or not listener.has_capacity or not listener.is_ready:
-                continue
-            try:
-                listener_idx = listeners.index(listener) + 1
-            except Exception:
-                listener_idx = 0
-            try:
-                success = await listener.add_subscription_dynamic(
-                    sub_type="channel.raid",
-                    broadcaster_id=str(broadcaster_id),
-                    condition=condition,
-                    oauth_token=token,
-                )
-            except Exception:
-                log.exception(
-                    "EventSub: Listener #%d Fehler bei channel.raid subscription für %s",
-                    listener_idx,
-                    broadcaster_login,
-                )
-                continue
-
-            if success:
+            result = await self.api.subscribe_eventsub_webhook(
+                sub_type="channel.raid",
+                condition={"to_broadcaster_user_id": str(broadcaster_id)},
+                webhook_url=webhook_url,
+                secret=webhook_secret,
+                oauth_token=None,  # Webhook-Subscriptions benötigen App-Access-Token
+            )
+            if result:
+                self._eventsub_track_sub("channel.raid", str(broadcaster_id))
                 log.info(
-                    "EventSub: Dynamische channel.raid subscription erstellt für %s (ID: %s) via Listener #%d",
+                    "EventSub Webhook: channel.raid Subscription erstellt für %s (ID: %s)",
                     broadcaster_login,
                     broadcaster_id,
-                    listener_idx,
                 )
                 await self._record_eventsub_capacity_snapshot("raid_subscribed", force=True)
                 return True
-
-        log.error(
-            "EventSub: Dynamische channel.raid subscription fehlgeschlagen für %s (kein geeigneter Listener erfolgreich)",
-            broadcaster_login,
-        )
-        await self._record_eventsub_capacity_snapshot("raid_subscribe_failed", force=True)
-        return False
+            log.error(
+                "EventSub Webhook: channel.raid Subscription fehlgeschlagen für %s",
+                broadcaster_login,
+            )
+            await self._record_eventsub_capacity_snapshot("raid_subscribe_failed", force=True)
+            return False
+        except Exception:
+            log.exception(
+                "EventSub Webhook: channel.raid Subscription fehlgeschlagen für %s",
+                broadcaster_login,
+            )
+            await self._record_eventsub_capacity_snapshot("raid_subscribe_error", force=True)
+            return False
 
     async def _start_eventsub_offline_listener(self):
         """Kompatibilitäts-Stub (wird nun über _start_eventsub_listener erledigt)."""
