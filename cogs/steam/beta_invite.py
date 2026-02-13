@@ -877,8 +877,8 @@ class BetaInviteLinkPromptView(discord.ui.View):
                 content="⏳ Status wird geprüft... Bitte warten.",
                 view=None,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Link prompt status message could not be updated before restarting flow: %s", exc)
 
         # Den Flow erneut starten (der nun die Verknüpfung finden sollte)
         await self.cog.start_invite_from_panel(interaction)
@@ -1488,8 +1488,8 @@ class BetaInviteFlow(commands.Cog):
             # Fallback to defer if edit fails
             try:
                 await self._response_defer(interaction, ephemeral=True, thinking=True)
-            except Exception:
-                pass
+            except Exception as defer_exc:
+                log.debug("Intent interaction could not be deferred after edit failure: %s", defer_exc)
 
         await self._process_invite_request(interaction)
 
@@ -1918,8 +1918,8 @@ class BetaInviteFlow(commands.Cog):
                 else:
                     await self._response_send_message(interaction, f"{base_msg}...", ephemeral=True)
                 anim_task = asyncio.create_task(self._animate_processing(interaction, base_msg, stop_anim))
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Could not start invite progress animation: %s", exc)
 
         try:
             invite_outcome = await self.tasks.run(
@@ -1938,7 +1938,8 @@ class BetaInviteFlow(commands.Cog):
             
             # Stoppe Animation vor dem Senden des Endergebnisses
             stop_anim.set()
-            if anim_task: await anim_task
+            if anim_task:
+                await anim_task
 
             if invite_outcome.timed_out and str(invite_outcome.status or "").upper() == "RUNNING":
                 log.warning(
@@ -1955,7 +1956,8 @@ class BetaInviteFlow(commands.Cog):
                     log.exception("Extended wait for Steam invite task failed")
         except Exception as exc:
             stop_anim.set()
-            if anim_task: await anim_task
+            if anim_task:
+                await anim_task
             log.exception("Steam invite task failed with exception")
             _update_invite(
                 record.id,
@@ -1964,7 +1966,7 @@ class BetaInviteFlow(commands.Cog):
             )
             await self._followup_send(
                 interaction,
-                f"❌ Einladung fehlgeschlagen wegen eines internen Fehlers. Bitte versuche es später erneut.",
+                "❌ Einladung fehlgeschlagen wegen eines internen Fehlers. Bitte versuche es später erneut.",
                 ephemeral=True,
             )
             return False
@@ -2199,8 +2201,8 @@ class BetaInviteFlow(commands.Cog):
             log.error(f"Failed to edit confirmation interaction: {e}")
             try:
                 await self._response_defer(interaction, ephemeral=True, thinking=True)
-            except Exception:
-                pass
+            except Exception as defer_exc:
+                log.debug("Confirmation interaction could not be deferred after edit failure: %s", defer_exc)
 
         try:
             friend_outcome = await self.tasks.run(
@@ -2247,7 +2249,8 @@ class BetaInviteFlow(commands.Cog):
             
             if not friend_ok:
                 stop_anim.set()
-                if anim_task: await anim_task
+                if anim_task:
+                    await anim_task
                 await self._edit_original_response(
                     interaction,
                     content="ℹ️ Wir sind noch keine bestätigten Steam-Freunde. Bitte nimm die Freundschaftsanfrage an und probiere es erneut."
@@ -2297,7 +2300,7 @@ class BetaInviteFlow(commands.Cog):
                 idx += 1
                 await asyncio.sleep(1.2)
         except asyncio.CancelledError:
-            pass
+            return
         finally:
             _trace_interaction_event("ui_animation_stopped", interaction, base_text=base_text)
 
@@ -2346,7 +2349,7 @@ class BetaInviteFlow(commands.Cog):
                 await self._edit_original_response(interaction, content=f"{base_msg}...", view=None)
             elif is_panel:
                 await self._response_defer(interaction, ephemeral=True, thinking=True)
-                await self._edit_original_response(interaction, content=f"⏳ Einladung wird vorbereitet...")
+                await self._edit_original_response(interaction, content="⏳ Einladung wird vorbereitet...")
                 base_msg = "⏳ Einladung wird vorbereitet"
             else:
                 await self._response_edit_message(interaction, content=f"{base_msg}...", view=None)
@@ -2372,7 +2375,8 @@ class BetaInviteFlow(commands.Cog):
 
             if not steam_id:
                 stop_anim.set()
-                if anim_task: await anim_task
+                if anim_task:
+                    await anim_task
 
                 view = self._build_link_prompt_view(interaction.user)
                 prompt = (
@@ -2390,14 +2394,16 @@ class BetaInviteFlow(commands.Cog):
             intent_record = _get_intent_record(interaction.user.id)
             if intent_record is None:
                 stop_anim.set()
-                if anim_task: await anim_task
+                if anim_task:
+                    await anim_task
                 await self._prompt_intent_gate(interaction)
                 return
 
             # 3. Wenn Invite-Only, Zahlung tracken und Info senden
             if intent_record.intent == INTENT_INVITE_ONLY:
                 stop_anim.set()
-                if anim_task: await anim_task
+                if anim_task:
+                    await anim_task
                 
                 # Merke uns den Nutzer für den Webhook (24h)
                 _register_pending_payment(interaction.user.id, interaction.user.name)
@@ -2665,7 +2671,7 @@ async def _start_kofi_webhook_server(beta_invite: BetaInviteFlow) -> None:
     except asyncio.CancelledError:
         server.should_exit = True
         raise
-    except SystemExit as exc:  # pragma: no cover - uvicorn exits with SystemExit on startup errors
+    except SystemExit:  # pragma: no cover - uvicorn exits with SystemExit on startup errors
         message = (
             "Ko-fi Webhook-Server gestoppt: Start fehlgeschlagen "
             f"(Port {KOFI_WEBHOOK_HOST}:{KOFI_WEBHOOK_PORT} bereits belegt?)."

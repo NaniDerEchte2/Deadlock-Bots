@@ -115,7 +115,11 @@ class _RaidAuthGenerateButton(discord.ui.Button):
                         ephemeral=True,
                     )
             except Exception:
-                pass
+                log.debug(
+                    "RaidAuthButton fallback error message failed for %s",
+                    self._twitch_login,
+                    exc_info=True,
+                )
 
 
 class RaidAuthGenerateView(discord.ui.View):

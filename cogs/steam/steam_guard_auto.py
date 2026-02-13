@@ -208,7 +208,7 @@ class SteamGuardEmailMonitor:
             try:
                 body = email_message.get_payload(decode=True).decode('utf-8', errors='ignore')
             except Exception:
-                pass
+                log.debug("Failed to decode non-multipart email body", exc_info=True)
 
         return body
 

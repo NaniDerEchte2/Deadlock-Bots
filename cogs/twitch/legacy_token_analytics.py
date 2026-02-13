@@ -45,8 +45,7 @@ class LegacyTokenAnalyticsMixin:
                 token = row["legacy_access_token"] if hasattr(row, "keys") else row[1]
                 if token:
                     log.debug(
-                        "LegacyToken: Nutze legacy_access_token für %s (needs_reauth=1)",
-                        twitch_user_id,
+                        "LegacyToken: Nutze legacy_access_token (needs_reauth=1)",
                     )
             if not token:
                 return None
@@ -56,7 +55,7 @@ class LegacyTokenAnalyticsMixin:
             return token or None
         except Exception:
             log.debug(
-                "LegacyToken: Konnte Token für %s nicht laden", twitch_user_id, exc_info=True
+                "LegacyToken: Konnte Token nicht laden", exc_info=True
             )
             return None
 
@@ -77,8 +76,8 @@ class LegacyTokenAnalyticsMixin:
             return needs_reauth == 0
         except Exception:
             log.debug(
-                "LegacyToken: _is_fully_authed-Check für %s fehlgeschlagen",
-                twitch_user_id, exc_info=True,
+                "LegacyToken: _is_fully_authed-Check fehlgeschlagen",
+                exc_info=True,
             )
             return False
 

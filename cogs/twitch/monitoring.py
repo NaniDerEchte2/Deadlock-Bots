@@ -835,7 +835,11 @@ class TwitchMonitoringMixin:
                             if row:
                                 login_norm = str(row[0]).lower()
                         except Exception:
-                            pass
+                            log.debug(
+                                "Polling: login lookup for user id %s failed",
+                                bid,
+                                exc_info=True,
+                            )
                     if login_norm:
                         monitored = getattr(chat_bot, "_monitored_streamers", set())
                         if login_norm not in monitored:
@@ -1053,8 +1057,8 @@ class TwitchMonitoringMixin:
             return token or None
         except Exception:
             log.debug(
-                "EventSub Webhook: konnte Broadcaster-Token für %s nicht laden",
-                broadcaster_user_id, exc_info=True,
+                "EventSub Webhook: konnte Broadcaster-Token nicht laden",
+                exc_info=True,
             )
             return None
 
@@ -1350,7 +1354,6 @@ class TwitchMonitoringMixin:
             login_lower = login.lower()
             stream = streams_by_login.get(login_lower)
             previous_state = live_state.get(login_lower, {})
-            archived_at_raw = entry.get("archived_at")
             is_archived = bool(entry.get("is_archived"))
             was_live = bool(previous_state.get("is_live", 0))
             is_live = bool(stream)

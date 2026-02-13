@@ -1254,9 +1254,6 @@ class AnalyticsV2Mixin:
         """Get tag performance analysis."""
         self._require_v2_auth(request)
 
-        days = min(max(int(request.query.get("days", "30")), 7), 365)
-        limit = min(max(int(request.query.get("limit", "30")), 5), 100)
-
         try:
             # Tags are stored as JSON in the tags column
             # This is a simplified version - full implementation would parse JSON
@@ -1927,7 +1924,7 @@ class AnalyticsV2Mixin:
                     if tags_str.startswith("["):
                         try:
                             tags = json.loads(tags_str)
-                        except:
+                        except json.JSONDecodeError:
                             tags = [tags_str]
                     else:
                         tags = [t.strip() for t in tags_str.split(",") if t.strip()]

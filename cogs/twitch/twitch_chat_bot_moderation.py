@@ -6,15 +6,15 @@ from typing import Optional
 
 from .storage import get_conn
 from .twitch_chat_bot_constants import (
-    _DEADLOCK_INVITE_REPLY,
-    _INVITE_ACCESS_RE,
-    _INVITE_GAME_CONTEXT_RE,
+    DEADLOCK_INVITE_REPLY,
+    INVITE_ACCESS_RE,
+    INVITE_GAME_CONTEXT_RE,
     _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC,
     _INVITE_QUESTION_RE,
-    _INVITE_STRONG_ACCESS_RE,
+    INVITE_STRONG_ACCESS_RE,
     _INVITE_QUESTION_USER_COOLDOWN_SEC,
-    _SPAM_FRAGMENTS,
-    _SPAM_PHRASES,
+    SPAM_FRAGMENTS,
+    SPAM_PHRASES,
 )
 
 log = logging.getLogger("TwitchStreams.ChatBot")
@@ -238,7 +238,7 @@ class ModerationMixin:
         return hits, reasons
 
     def _calculate_spam_score(self, content: str) -> tuple[int, list]:
-        """Berechnet einen Spam-Score. >= _SPAM_MIN_MATCHES ist ein Ban."""
+        """Berechnet einen Spam-Score. >= SPAM_MIN_MATCHES ist ein Ban."""
         if not content:
             return 0, []
 
@@ -251,7 +251,7 @@ class ModerationMixin:
         phrase_matched = False
 
         # Spam-Phrasen (exact): +2 Punkte
-        for phrase in _SPAM_PHRASES:
+        for phrase in SPAM_PHRASES:
             if phrase in raw:
                 hits += 2
                 reasons.append(f"Phrase(Exact): {phrase}")
@@ -260,7 +260,7 @@ class ModerationMixin:
 
         lowered = raw.casefold()
         if not phrase_matched:  # Nur prüfen wenn noch keine exakte Phrase gefunden
-            for phrase in _SPAM_PHRASES:
+            for phrase in SPAM_PHRASES:
                 if phrase.casefold() in lowered:
                     hits += 2
                     reasons.append(f"Phrase(Casefold): {phrase}")
@@ -271,7 +271,7 @@ class ModerationMixin:
         # Die kompakte Domain-Form wird wie ein Keyword behandelt, nicht als Extra-Bonus.
         if not phrase_matched:
             fragment_hit = False
-            for frag in _SPAM_FRAGMENTS:
+            for frag in SPAM_FRAGMENTS:
                 if re.search(r"\b" + re.escape(frag.casefold()) + r"\b", lowered):
                     hits += 1
                     reasons.append(f"Fragment(Fallback): {frag}")
@@ -295,11 +295,11 @@ class ModerationMixin:
             return False
         raw = content.strip().lower()
         has_deadlock_context = "deadlock" in raw
-        has_game_context = bool(_INVITE_GAME_CONTEXT_RE.search(raw))
-        has_strong_access = bool(_INVITE_STRONG_ACCESS_RE.search(raw))
+        has_game_context = bool(INVITE_GAME_CONTEXT_RE.search(raw))
+        has_strong_access = bool(INVITE_STRONG_ACCESS_RE.search(raw))
         if not has_deadlock_context and not (has_game_context and has_strong_access):
             return False
-        if not _INVITE_ACCESS_RE.search(raw):
+        if not INVITE_ACCESS_RE.search(raw):
             return False
         if "?" in raw or _INVITE_QUESTION_RE.search(raw):
             return True
@@ -346,7 +346,7 @@ class ModerationMixin:
             return False
 
         mention = f"@{getattr(author, 'name', '')} " if getattr(author, "name", None) else ""
-        msg = mention + _DEADLOCK_INVITE_REPLY.format(invite=invite)
+        msg = mention + DEADLOCK_INVITE_REPLY.format(invite=invite)
         ok = await self._send_chat_message(channel, msg)
         if ok:
             self._last_invite_reply[login] = now
@@ -408,7 +408,7 @@ class ModerationMixin:
             if hasattr(self, "_normalize_channel_login"):
                 return self._normalize_channel_login(name)
         except Exception:
-            pass
+            log.debug("Konnte Channel-Login nicht normalisieren", exc_info=True)
         return name.lower().lstrip("#")
 
     @staticmethod
@@ -503,8 +503,8 @@ class ModerationMixin:
                 user = await self.fetch_user(login=channel.name.lstrip("#"))
                 if user:
                     b_id = str(user.id)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Konnte broadcaster_id aus Channel-Namen nicht aufloesen", exc_info=exc)
 
         safe_bot_id = self.bot_id_safe or self.bot_id
         if not (b_id and safe_bot_id and self._token_manager):
@@ -755,8 +755,8 @@ class ModerationMixin:
                                             (twitch_user_id,),
                                         ).fetchone()
                                         silent = bool(int((_sb_row[0] if _sb_row else 0) or 0))
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    log.debug("Konnte silent_ban nicht ermitteln fuer %s", channel_name, exc_info=exc)
                                 if not silent:
                                     await self._send_chat_message(
                                         channel,
@@ -910,8 +910,8 @@ class ModerationMixin:
             try:
                 if now_mono - float(cached_ts) <= cache_ttl:
                     return bool(cached_value)
-            except Exception:
-                pass
+            except (TypeError, ValueError) as exc:
+                log.debug("Partner-Cache-Eintrag ungueltig fuer %s", login, exc_info=exc)
 
         is_partner = False
         try:

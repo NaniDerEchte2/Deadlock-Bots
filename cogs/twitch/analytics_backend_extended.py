@@ -400,8 +400,8 @@ class AnalyticsBackendExtended:
         try:
             conn.execute("SELECT follower_delta FROM twitch_stream_sessions LIMIT 1")
             has_follower_delta = True
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("follower_delta Spalte fehlt in discovery_timeline - verwende Fallback", exc_info=exc)
 
         if has_follower_delta:
             if streamer_login:

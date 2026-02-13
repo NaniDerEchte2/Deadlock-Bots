@@ -14,7 +14,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from .storage import get_conn
 

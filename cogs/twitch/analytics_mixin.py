@@ -289,7 +289,11 @@ class TwitchAnalyticsMixin:
             if row:
                 session_id = int(row[0] if not hasattr(row, "keys") else row["id"])
         except Exception:
-            pass
+            log.debug(
+                "_store_subscription_event: Konnte session_id nicht ermitteln für %s",
+                broadcaster_user_id,
+                exc_info=True,
+            )
 
         try:
             with storage.get_conn() as c:
@@ -330,7 +334,11 @@ class TwitchAnalyticsMixin:
             if row:
                 session_id = int(row[0] if not hasattr(row, "keys") else row["id"])
         except Exception:
-            pass
+            log.debug(
+                "_store_ad_break_event: Konnte session_id nicht ermitteln für %s",
+                broadcaster_user_id,
+                exc_info=True,
+            )
 
         try:
             with storage.get_conn() as c:
@@ -408,8 +416,12 @@ class TwitchAnalyticsMixin:
                 dt_start = _dt.fromisoformat(started_at.replace("Z", "+00:00"))
                 dt_end = _dt.fromisoformat(ended_at.replace("Z", "+00:00"))
                 duration_seconds = max(0, int((dt_end - dt_start).total_seconds()))
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                log.debug(
+                    "_store_hype_train_event: Konnte Dauer nicht berechnen für %s",
+                    broadcaster_user_id,
+                    exc_info=True,
+                )
 
         session_id: int | None = None
         try:

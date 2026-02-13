@@ -1500,7 +1500,11 @@ class RaidBot:
                 ).fetchone()
                 silent_raid = bool(int((_sr_row[0] if _sr_row else 0) or 0))
         except Exception:
-            pass
+            log.debug(
+                "Raid arrival: silent_raid lookup failed for %s",
+                to_broadcaster_login,
+                exc_info=True,
+            )
 
         if silent_raid:
             log.info(
@@ -1754,7 +1758,6 @@ class RaidBot:
 
             # 3. Bestimme die Anzahl der bisherigen Netzwerk-Raids für diesen Streamer
             total_raids = self._get_received_network_raid_count(target_id)
-            bot_nick = getattr(self.chat_bot, "nick", "DeadlockBot")
 
             # 4. Nachricht vorbereiten (mit Stats Teaser)
             followers_total = await self._resolve_recruitment_followers_total(

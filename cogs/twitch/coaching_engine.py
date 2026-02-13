@@ -15,7 +15,7 @@ import re
 import sqlite3
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 log = logging.getLogger("TwitchStreams.CoachingEngine")
 
@@ -645,19 +645,30 @@ def _build_viewer_curve(
     if not session_ids:
         return []
 
-    placeholders = ",".join("?" * len(session_ids))
+    normalized_pairs: List[Tuple[int, int]] = []
+    for sid, peak in zip(session_ids, peak_viewers):
+        try:
+            normalized_pairs.append((int(sid), int(peak)))
+        except (TypeError, ValueError):
+            continue
+    normalized_session_ids = [sid for sid, _ in normalized_pairs]
+    if not normalized_session_ids:
+        return []
+
+    # Keep SQL static and pass session ids as data to avoid dynamic query construction.
+    session_id_csv = ",".join(str(sid) for sid in normalized_session_ids)
     rows = conn.execute(
-        f"""
+        """
         SELECT session_id, minutes_from_start, viewer_count
         FROM twitch_session_viewers
-        WHERE session_id IN ({placeholders})
+        WHERE instr(',' || ? || ',', ',' || CAST(session_id AS TEXT) || ',') > 0
           AND minutes_from_start <= 60
         ORDER BY session_id, minutes_from_start
         """,
-        session_ids,
+        (session_id_csv,),
     ).fetchall()
 
-    peak_map = dict(zip(session_ids, peak_viewers))
+    peak_map = {sid: peak for sid, peak in normalized_pairs}
     by_minute: Dict[int, List[float]] = defaultdict(list)
 
     for sid, minute, vc in rows:

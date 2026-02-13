@@ -9,7 +9,7 @@ from discord.ext import commands
 
 from .storage import get_conn
 from .raid_views import build_raid_requirements_embed, RaidAuthGenerateView
-from .twitch_chat_bot_constants import _PROMO_MESSAGES
+from .twitch_chat_bot_constants import PROMO_MESSAGES
 
 log = logging.getLogger("TwitchStreams.RaidCommands")
 
@@ -371,7 +371,7 @@ class RaidCommandsMixin:
             await ctx.send(f"Kein Discord-Invite für **{login}** verfügbar.", ephemeral=True)
             return
 
-        msg = random.choice(_PROMO_MESSAGES).format(invite=invite)
+        msg = random.choice(PROMO_MESSAGES).format(invite=invite)
 
         # Nachricht senden via Announcement (Fallback auf normale Message)
         ok = await chat_bot._send_announcement(
@@ -437,7 +437,12 @@ class RaidCommandsMixin:
                             await msg.delete()
                             deleted_total += 1
                         except Exception:
-                            pass
+                            log.debug(
+                                "reauth_all: Konnte DM-Nachricht %s nicht löschen für %s",
+                                msg.id,
+                                twitch_login,
+                                exc_info=True,
+                            )
 
                 # Neue Nachricht mit persistentem Button senden
                 embed = build_raid_requirements_embed(twitch_login)

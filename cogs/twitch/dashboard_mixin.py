@@ -399,17 +399,6 @@ class TwitchDashboardMixin:
         from datetime import datetime, timedelta
         import math
 
-        def _parse_dt(raw: object) -> Optional[datetime]:
-            if not raw:
-                return None
-            text = str(raw).replace("Z", "+00:00")
-            for fmt in (None, "%Y-%m-%d %H:%M:%S"):
-                try:
-                    return datetime.fromisoformat(text) if fmt is None else datetime.strptime(text, fmt)
-                except Exception:
-                    continue
-            return None
-
         def _pct(val: Optional[float]) -> float:
             if val is None: return 0.0
             # Heuristic: if <= 1.0 assume ratio, else percent
@@ -563,7 +552,6 @@ class TwitchDashboardMixin:
             raids_sent = raids_sent_row["c"] or 0
             raids_sent_viewers = raids_sent_row["v"] or 0
             raids_recv = raids_recv_row["c"] or 0
-            raids_recv_viewers = raids_recv_row["v"] or 0
 
             # 3. Monetization (Subs)
             # ----------------------
@@ -592,13 +580,6 @@ class TwitchDashboardMixin:
                 (cutoff_iso,)
             ).fetchall()
             pop_avg_viewers = [r["v"] for r in pop_cat_rows if r["v"] is not None]
-            
-            # Category Peak Viewers Distribution
-            pop_peak_rows = conn.execute(
-                "SELECT MAX(viewer_count) as v FROM twitch_stats_category WHERE ts_utc >= ? GROUP BY streamer",
-                (cutoff_iso,)
-            ).fetchall()
-            pop_peak_viewers = [r["v"] for r in pop_peak_rows if r["v"] is not None]
 
             # Internal Cohort (Partners/Tracked) for deeper stats
             # We use 'twitch_stream_sessions' aggregations for other metrics
@@ -617,7 +598,6 @@ class TwitchDashboardMixin:
             
             cohort_avg = [float(r["avg_v"] or 0) for r in cohort_rows]
             cohort_ret10 = [_pct(r["r10"]) for r in cohort_rows]
-            cohort_drop = [_pct(r["avg_drop"]) for r in cohort_rows]
             cohort_growth = [int(r["growth"] or 0) for r in cohort_rows]
             cohort_chat = [int(r["chat"] or 0) for r in cohort_rows]
 
@@ -633,7 +613,6 @@ class TwitchDashboardMixin:
         # Rates
         chat_rate = (sum_unique_chatters / max(total_sessions, 1)) / max(avg_v, 1) * 100 # Chatters per 100 viewers
         returning_rate = (sum_returning_chatters / max(sum_unique_chatters, 1)) * 100
-        growth_rate = sum_followers / max(total_duration_h, 1) # Followers per hour
         conversion_rate = (sum_followers / max(sum_unique_chatters, 1)) * 100 # Follows per unique chatter (proxy for unique viewer)
         
         monetization_efficiency = curr_points / max(avg_v, 1) # Points per Viewer

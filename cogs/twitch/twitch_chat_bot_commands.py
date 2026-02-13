@@ -329,7 +329,11 @@ if TWITCHIO_AVAILABLE:
                         )
                         return
                 except Exception:
-                    pass
+                    log.debug(
+                        "Clip command auth precheck failed for %s",
+                        twitch_login,
+                        exc_info=True,
+                    )
 
             if not self._raid_bot or not hasattr(self._raid_bot, "auth_manager"):
                 await ctx.send(f"@{ctx.author.name} Twitch-Bot nicht verfügbar.")
@@ -354,7 +358,7 @@ if TWITCHIO_AVAILABLE:
             try:
                 tokens = await auth_manager.get_tokens_for_user(str(twitch_user_id), api_session)
             except Exception:
-                log.exception("Clip command: token fetch failed for %s", twitch_login)
+                log.exception("Clip command: token fetch failed")
                 tokens = None
 
             if not tokens:
@@ -428,7 +432,11 @@ if TWITCHIO_AVAILABLE:
                         )
                         return
                 except Exception:
-                    pass
+                    log.debug(
+                        "Silentban auth precheck failed for %s",
+                        twitch_login,
+                        exc_info=True,
+                    )
 
             with get_conn() as conn:
                 row = conn.execute(

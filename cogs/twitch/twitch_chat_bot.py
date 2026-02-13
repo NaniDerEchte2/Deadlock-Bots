@@ -28,11 +28,11 @@ from .twitch_chat_bot_commands import RaidCommandsMixin
 from .twitch_chat_bot_connection import ConnectionMixin
 from .twitch_chat_bot_constants import (
     _PROMO_ACTIVITY_ENABLED,
-    _PROMO_LOOP_INTERVAL_SEC,
-    _PROMO_MESSAGES,
-    _PROMO_VIEWER_SPIKE_ENABLED,
-    _SPAM_MIN_MATCHES,
-    _WHITELISTED_BOTS,
+    PROMO_LOOP_INTERVAL_SEC,
+    PROMO_MESSAGES,
+    PROMO_VIEWER_SPIKE_ENABLED,
+    SPAM_MIN_MATCHES,
+    WHITELISTED_BOTS,
 )
 from .twitch_chat_bot_deps import (
     TWITCHIO_AVAILABLE,
@@ -44,7 +44,6 @@ from .twitch_chat_bot_promos import PromoMixin
 from .twitch_chat_bot_tokens import (
     _KEYRING_SERVICE,
     TokenPersistenceMixin,
-    load_bot_token,
     load_bot_tokens,
 )
 
@@ -371,7 +370,7 @@ if TWITCHIO_AVAILABLE:
                 try:
                     await bot.wait_until_ready()
                 except Exception:
-                    pass
+                    log.debug("Discord bot readiness check failed", exc_info=True)
 
             candidates = await self._candidate_invite_channels()
             if not candidates:
@@ -508,7 +507,7 @@ if TWITCHIO_AVAILABLE:
                     except Exception as e:
                         log.debug("Konnte initialem Channel %s nicht beitreten: %s", channel, e)
 
-            if _PROMO_MESSAGES and (_PROMO_ACTIVITY_ENABLED or _PROMO_VIEWER_SPIKE_ENABLED):
+            if PROMO_MESSAGES and (_PROMO_ACTIVITY_ENABLED or PROMO_VIEWER_SPIKE_ENABLED):
                 if not self._promo_task or self._promo_task.done():
                     self._promo_task = asyncio.create_task(
                         self._periodic_promo_loop(),
@@ -516,7 +515,7 @@ if TWITCHIO_AVAILABLE:
                     )
                     log.info(
                         "Chat-Promo-Loop gestartet (Check alle %ss)",
-                        max(15, int(_PROMO_LOOP_INTERVAL_SEC)),
+                        max(15, int(PROMO_LOOP_INTERVAL_SEC)),
                     )
 
         async def close(self):
@@ -527,7 +526,7 @@ if TWITCHIO_AVAILABLE:
                 try:
                     await promo_task
                 except asyncio.CancelledError:
-                    pass
+                    log.debug("Promo-Task wurde beim Shutdown abgebrochen")
                 except Exception:
                     log.debug("Promo-Task konnte nicht sauber beendet werden", exc_info=True)
             await super().close()
@@ -618,14 +617,20 @@ if TWITCHIO_AVAILABLE:
                     if channel is not None:
                         try:
                             message.channel = channel
-                        except Exception:
-                            pass
+                        except (AttributeError, TypeError):
+                            log.debug(
+                                "Could not assign normalized channel on EventSub message",
+                                exc_info=True,
+                            )
 
                 if channel is not None and not hasattr(channel, "name") and hasattr(channel, "login"):
                     try:
                         channel.name = channel.login
-                    except Exception:
-                        pass
+                    except (AttributeError, TypeError):
+                        log.debug(
+                            "Could not normalize channel.name from channel.login",
+                            exc_info=True,
+                        )
 
             # Fallback for echo if still missing (unlikely in 3.x)
             if not hasattr(message, "echo"):
@@ -638,7 +643,7 @@ if TWITCHIO_AVAILABLE:
 
             # Whitelist-Check: Bekannte Bot-Accounts überspringen Spam-Prüfung
             author_name = getattr(message.author, "name", "").lower()
-            if author_name in _WHITELISTED_BOTS:
+            if author_name in WHITELISTED_BOTS:
                 # Bot ist whitelisted - überspringe Spam-Detection komplett
                 try:
                     await self._track_chat_health(message)
@@ -660,7 +665,7 @@ if TWITCHIO_AVAILABLE:
 
                 # 2. Faktor: Account-Alter prüft nur den letzten fehlenden Punkt zum Ban.
                 # Ein junges Konto soll nur dann eskalieren, wenn bereits zwei Signale vorliegen.
-                if spam_score == (_SPAM_MIN_MATCHES - 1):
+                if spam_score == (SPAM_MIN_MATCHES - 1):
                     try:
                         author_id = getattr(message.author, "id", None)
                         if author_id:
@@ -678,7 +683,7 @@ if TWITCHIO_AVAILABLE:
                     except Exception:
                         log.debug("Konnte User-Alter für Spam-Check nicht laden", exc_info=True)
 
-                if spam_score >= _SPAM_MIN_MATCHES:
+                if spam_score >= SPAM_MIN_MATCHES:
                     enforced = await self._auto_ban_and_cleanup(message)
                     if not enforced:
                         channel_obj = getattr(message, "channel", None)

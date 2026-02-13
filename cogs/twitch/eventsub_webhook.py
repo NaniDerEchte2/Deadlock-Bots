@@ -5,7 +5,6 @@ import asyncio
 import hashlib
 import hmac
 import logging
-import time
 from typing import Awaitable, Callable, Dict, Optional, Set
 
 from aiohttp import web
@@ -177,8 +176,15 @@ class EventSubWebhookHandler:
 
     async def _dispatch_notification(self, data: dict, sub_type: str) -> None:
         """Verarbeitet eine Notification und ruft den passenden Callback auf."""
-        payload = data.get("payload") or {}
-        subscription = payload.get("subscription") or {}
+        # Webhook notifications come as top-level {"subscription": ..., "event": ...}
+        # while EventSub WebSocket messages use {"payload": {"subscription": ..., "event": ...}}.
+        payload = data.get("payload")
+        if isinstance(payload, dict) and ("event" in payload or "subscription" in payload):
+            envelope = payload
+        else:
+            envelope = data
+
+        subscription = envelope.get("subscription") or data.get("subscription") or {}
         actual_sub_type = subscription.get("type") or sub_type
 
         callback = self._callbacks.get(actual_sub_type)
@@ -186,13 +192,16 @@ class EventSubWebhookHandler:
             self.log.debug("EventSub Webhook: Kein Callback für type=%r", actual_sub_type)
             return
 
-        event = payload.get("event") or {}
+        event = envelope.get("event") or data.get("event") or {}
+        condition = subscription.get("condition") or {}
 
         # Broadcaster-ID und Login aus dem Event extrahieren (je nach Sub-Type)
         broadcaster_id = str(
             event.get("broadcaster_user_id")
             or event.get("to_broadcaster_user_id")
             or event.get("user_id")
+            or condition.get("broadcaster_user_id")
+            or condition.get("to_broadcaster_user_id")
             or ""
         ).strip()
         broadcaster_login = str(

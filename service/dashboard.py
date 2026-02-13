@@ -398,10 +398,10 @@ class DashboardServer:
         try:
             resolved = path.resolve()
             log_dir_resolved = log_dir.resolve()
-            if log_dir_resolved not in resolved.parents and resolved != log_dir_resolved:
-                raise web.HTTPBadRequest(text="Invalid log filename")
-        except Exception:
-            pass
+        except (OSError, RuntimeError) as exc:
+            raise web.HTTPBadRequest(text="Invalid log filename") from exc
+        if log_dir_resolved not in resolved.parents and resolved != log_dir_resolved:
+            raise web.HTTPBadRequest(text="Invalid log filename")
         if not path.exists() or not path.is_file():
             raise web.HTTPNotFound(text="Log file not found")
         return path
