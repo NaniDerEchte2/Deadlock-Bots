@@ -12,6 +12,7 @@ import os
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+import aiohttp
 import discord
 from discord.ext import tasks
 
@@ -30,6 +31,99 @@ from .logger import log
 
 class TwitchMonitoringMixin:
     """Polling loops and helpers used by the Twitch cog."""
+
+    @staticmethod
+    def _reauth_chat_reminder_text() -> str:
+        return (
+            "Kurze Erinnerung: Für den Raid-/Stats-Bot fehlt noch die neue Twitch-Autorisierung. "
+            "Du hast dazu bereits eine Discord-DM mit dem Re-Auth-Link erhalten. Danke dir!"
+        )
+
+    async def _resolve_live_stream_id_for_login(self, login_lower: str) -> Optional[str]:
+        if not login_lower or not getattr(self, "api", None):
+            return None
+        try:
+            streams = await self.api.get_streams_by_logins([login_lower])
+            if not streams:
+                return None
+            stream_id = str((streams[0] or {}).get("id") or "").strip()
+            return stream_id or None
+        except Exception:
+            log.debug(
+                "ReAuth reminder: Konnte aktuelle stream_id nicht laden für %s",
+                login_lower,
+                exc_info=True,
+            )
+            return None
+
+    async def _maybe_send_reauth_chat_reminder(
+        self,
+        *,
+        chat_bot,
+        broadcaster_id: str,
+        login_lower: str,
+    ) -> bool:
+        """Sendet beim Streamstart einmalig eine freundliche Re-Auth-Erinnerung in den Twitch-Chat."""
+        if not chat_bot or not broadcaster_id or not login_lower:
+            return False
+
+        broadcaster_key = str(broadcaster_id).strip()
+        login_key = str(login_lower).strip().lower()
+        if not broadcaster_key or not login_key:
+            return False
+
+        # Primärer Dedupe über stream_id (pro Streamstart genau eine Nachricht).
+        stream_id = await self._resolve_live_stream_id_for_login(login_key)
+        stream_guard = getattr(self, "_reauth_reminder_last_stream_id", None)
+        if not isinstance(stream_guard, dict):
+            stream_guard = {}
+            setattr(self, "_reauth_reminder_last_stream_id", stream_guard)
+        if stream_id:
+            if stream_guard.get(broadcaster_key) == stream_id:
+                return False
+        else:
+            # Fallback-Dedupe, falls stream_id temporär nicht geladen werden kann.
+            fallback_guard = getattr(self, "_reauth_reminder_last_sent_ts", None)
+            if not isinstance(fallback_guard, dict):
+                fallback_guard = {}
+                setattr(self, "_reauth_reminder_last_sent_ts", fallback_guard)
+            now_ts = time.time()
+            last_ts = float(fallback_guard.get(broadcaster_key) or 0.0)
+            if now_ts - last_ts < 300.0:
+                return False
+            fallback_guard[broadcaster_key] = now_ts
+
+        send_chat = getattr(chat_bot, "_send_chat_message", None)
+        if not callable(send_chat):
+            return False
+
+        make_channel = getattr(chat_bot, "_make_promo_channel", None)
+        if callable(make_channel):
+            channel = make_channel(login_key, broadcaster_key)
+        else:
+            class _Channel:
+                __slots__ = ("name", "id")
+
+                def __init__(self, name: str, cid: str):
+                    self.name = name
+                    self.id = cid
+
+            channel = _Channel(login_key, broadcaster_key)
+
+        ok = await send_chat(
+            channel,
+            self._reauth_chat_reminder_text(),
+            source="migration_reminder",
+        )
+        if ok:
+            if stream_id:
+                stream_guard[broadcaster_key] = stream_id
+            log.info(
+                "ReAuth reminder: Chat-Hinweis bei Streamstart gesendet für %s (%s)",
+                login_key,
+                broadcaster_key,
+            )
+        return bool(ok)
 
     def _get_target_game_lower(self) -> str:
         target = getattr(self, "_target_game_lower", None)
@@ -632,6 +726,13 @@ class TwitchMonitoringMixin:
         if not broadcaster_id:
             return
         login_lower = (broadcaster_login or "").lower()
+        # Fallback-Dedupe-Guard zurücksetzen, damit beim nächsten Streamstart erneut erinnert werden kann.
+        try:
+            fallback_guard = getattr(self, "_reauth_reminder_last_sent_ts", None)
+            if isinstance(fallback_guard, dict):
+                fallback_guard.pop(str(broadcaster_id), None)
+        except Exception:
+            log.debug("ReAuth reminder: Konnte Fallback-Guard nicht zurücksetzen", exc_info=True)
         # Doppel-Trigger (Polling + EventSub) vermeiden
         throttle = getattr(self, "_eventsub_offline_throttle", None)
         if throttle is None:
@@ -874,6 +975,19 @@ class TwitchMonitoringMixin:
                         "Polling: stream.offline übersprungen für %s (needs_reauth=1)",
                         login or bid,
                     )
+                    if chat_bot and login_norm:
+                        try:
+                            await self._maybe_send_reauth_chat_reminder(
+                                chat_bot=chat_bot,
+                                broadcaster_id=str(bid),
+                                login_lower=login_norm,
+                            )
+                        except Exception:
+                            log.debug(
+                                "ReAuth reminder: Chat-Hinweis fehlgeschlagen für %s",
+                                login_norm,
+                                exc_info=True,
+                            )
 
                 # 3. Broadcaster-Token Subscriptions (Bits, Hype, Subs, Ads)
                 broadcaster_token = await self._resolve_eventsub_broadcaster_token(str(bid))
@@ -902,6 +1016,41 @@ class TwitchMonitoringMixin:
                             log.debug(
                                 "EventSub Webhook: %s Subscription erstellt für %s",
                                 sub_type, login or bid,
+                            )
+                        except aiohttp.ClientResponseError as exc:
+                            if int(getattr(exc, "status", 0) or 0) == 401:
+                                if hasattr(self, "_clear_legacy_snapshot_for_user"):
+                                    try:
+                                        cleared = bool(
+                                            self._clear_legacy_snapshot_for_user(
+                                                str(bid),
+                                                reason="eventsub_401_invalid_oauth",
+                                            )
+                                        )
+                                        if cleared:
+                                            log.warning(
+                                                "EventSub Webhook: legacy_* Snapshot für %s nach 401 entfernt (needs_reauth bleibt 1)",
+                                                login or bid,
+                                            )
+                                    except Exception:
+                                        log.debug(
+                                            "EventSub Webhook: Konnte legacy_* Snapshot nach 401 nicht entfernen für %s",
+                                            login or bid,
+                                            exc_info=True,
+                                        )
+                                log.warning(
+                                    "EventSub Webhook: %s fehlgeschlagen für %s (HTTP 401 Invalid OAuth token). "
+                                    "Weitere Broadcaster-Subscriptions werden übersprungen.",
+                                    sub_type,
+                                    login or bid,
+                                )
+                                break
+                            log.debug(
+                                "EventSub Webhook: %s fehlgeschlagen für %s (HTTP %s, evtl. Scope fehlt)",
+                                sub_type,
+                                login or bid,
+                                int(getattr(exc, "status", 0) or 0),
+                                exc_info=True,
                             )
                         except Exception:
                             log.debug(

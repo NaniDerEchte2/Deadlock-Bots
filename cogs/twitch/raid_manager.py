@@ -357,6 +357,36 @@ class RaidAuthManager:
         log.info("snapshot_and_flag_reauth: %d Tokens gesichert, needs_reauth=1 gesetzt", count)
         return count
 
+    def clear_legacy_tokens_for_fully_authed(self) -> int:
+        """
+        Entfernt legacy_* Snapshots für Streamer mit needs_reauth=0.
+        Diese Daten sind nach erfolgreichem Re-Auth nicht mehr nötig.
+        """
+        with get_conn() as conn:
+            conn.execute(
+                """
+                UPDATE twitch_raid_auth
+                   SET legacy_access_token  = NULL,
+                       legacy_refresh_token = NULL,
+                       legacy_scopes        = NULL,
+                       legacy_saved_at      = NULL
+                 WHERE needs_reauth = 0
+                   AND (
+                       legacy_access_token IS NOT NULL
+                    OR legacy_refresh_token IS NOT NULL
+                    OR legacy_scopes IS NOT NULL
+                    OR legacy_saved_at IS NOT NULL
+                   )
+                """
+            )
+            count = conn.execute("SELECT changes()").fetchone()[0]
+        if count:
+            log.info(
+                "legacy_* Snapshots für %d fully-authed Streamer entfernt (needs_reauth=0)",
+                count,
+            )
+        return int(count or 0)
+
     def save_auth(
         self,
         twitch_user_id: str,
@@ -421,7 +451,15 @@ class RaidAuthManager:
             )
             # Re-Auth abgeschlossen: needs_reauth zurücksetzen
             conn.execute(
-                "UPDATE twitch_raid_auth SET needs_reauth=0 WHERE twitch_user_id=?",
+                """
+                UPDATE twitch_raid_auth
+                   SET needs_reauth = 0,
+                       legacy_access_token = NULL,
+                       legacy_refresh_token = NULL,
+                       legacy_scopes = NULL,
+                       legacy_saved_at = NULL
+                 WHERE twitch_user_id = ?
+                """,
                 (twitch_user_id,),
             )
             conn.commit()
@@ -954,6 +992,7 @@ class RaidBot:
                 # 2. Token Maintenance (alle 30min; refresh_all_tokens prüft intern Expiry)
                 if self.session and now - last_token_refresh >= token_refresh_interval:
                     await self.auth_manager.refresh_all_tokens(self.session)
+                    self.auth_manager.clear_legacy_tokens_for_fully_authed()
                     last_token_refresh = now
 
                 # Token Blacklist Cleanup (alle 3.5h)

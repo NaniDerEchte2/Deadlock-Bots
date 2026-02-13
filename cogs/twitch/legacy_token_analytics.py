@@ -3,7 +3,7 @@
 LegacyTokenAnalyticsMixin – Übergangslösung für Streamer die noch re-authen müssen.
 
 Streamer mit needs_reauth=1 haben noch die neuen Scopes (bits:read, channel:read:hype_train,
-channel:read:subscriptions, channel:read:ads) nicht autorisiert. Für diese werden die
+channel:read:subscriptions, channel:read:ads) nicht autorisiert. Für diese werden
 legacy_access_token Felder für Analytics-EventSubs verwendet, bis sie re-authen.
 """
 from __future__ import annotations
@@ -20,15 +20,109 @@ class LegacyTokenAnalyticsMixin:
     legacy_access_token statt des (ungültigen/unzureichenden) access_token verwenden.
     """
 
+    def _clear_legacy_snapshot_for_user(
+        self,
+        twitch_user_id: str,
+        *,
+        only_when_reauth_pending: bool = True,
+        reason: str = "",
+    ) -> bool:
+        """
+        Entfernt legacy_* Snapshot-Felder für genau einen Streamer.
+
+        Standardmäßig nur, wenn needs_reauth=1 ist, damit fully-authed User
+        nicht versehentlich betroffen sind.
+        """
+        user_id = str(twitch_user_id or "").strip()
+        if not user_id:
+            return False
+        try:
+            if only_when_reauth_pending:
+                query = """
+                    UPDATE twitch_raid_auth
+                       SET legacy_access_token  = NULL,
+                           legacy_refresh_token = NULL,
+                           legacy_scopes        = NULL,
+                           legacy_saved_at      = NULL
+                     WHERE twitch_user_id = ?
+                       AND needs_reauth = 1
+                       AND (
+                           legacy_access_token IS NOT NULL
+                        OR legacy_refresh_token IS NOT NULL
+                        OR legacy_scopes IS NOT NULL
+                        OR legacy_saved_at IS NOT NULL
+                       )
+                """
+            else:
+                query = """
+                    UPDATE twitch_raid_auth
+                       SET legacy_access_token  = NULL,
+                           legacy_refresh_token = NULL,
+                           legacy_scopes        = NULL,
+                           legacy_saved_at      = NULL
+                     WHERE twitch_user_id = ?
+                       AND (
+                           legacy_access_token IS NOT NULL
+                        OR legacy_refresh_token IS NOT NULL
+                        OR legacy_scopes IS NOT NULL
+                        OR legacy_saved_at IS NOT NULL
+                       )
+                """
+
+            with storage.get_conn() as conn:
+                conn.execute(query, (user_id,))
+                changed = int(conn.execute("SELECT changes()").fetchone()[0] or 0)
+            if changed:
+                suffix = f" ({reason})" if reason else ""
+                log.info(
+                    "LegacyToken: legacy_* Snapshot für user_id=%s entfernt%s",
+                    user_id,
+                    suffix,
+                )
+            return bool(changed)
+        except Exception:
+            log.debug(
+                "LegacyToken: Konnte legacy_* Snapshot nicht löschen für user_id=%s",
+                user_id,
+                exc_info=True,
+            )
+            return False
+
     async def _resolve_broadcaster_token_with_legacy(
         self, twitch_user_id: str
     ) -> Optional[str]:
         """
         Gibt den Token zurück, der für broadcaster-spezifische EventSub-Subscriptions
         genutzt werden soll:
-        - needs_reauth=0 → neuer access_token (volle Scopes)
+        - needs_reauth=0 → neuer access_token (volle Scopes), bevorzugt via get_valid_token (mit Refresh)
         - needs_reauth=1 → legacy_access_token (alte Scopes für Analytics-Übergang)
         """
+        def _sanitize_token(raw_value: object) -> Optional[str]:
+            token = str(raw_value or "").strip()
+            if not token:
+                return None
+            if token.lower().startswith("oauth:"):
+                token = token[6:]
+            return token or None
+
+        async def _resolve_current_access_token() -> Optional[str]:
+            raid_bot = getattr(self, "_raid_bot", None)
+            auth_manager = getattr(raid_bot, "auth_manager", None) if raid_bot else None
+            session = getattr(raid_bot, "session", None) if raid_bot else None
+            if auth_manager and session and not getattr(session, "closed", False):
+                try:
+                    refreshed_token = await auth_manager.get_valid_token(str(twitch_user_id), session)
+                    clean = _sanitize_token(refreshed_token)
+                    if clean:
+                        return clean
+                except Exception:
+                    log.debug(
+                        "LegacyToken: get_valid_token fehlgeschlagen, nutze DB-Fallback",
+                        exc_info=True,
+                    )
+            token_raw = row["access_token"] if hasattr(row, "keys") else row[0]
+            return _sanitize_token(token_raw)
+
         try:
             with storage.get_conn() as conn:
                 row = conn.execute(
@@ -40,19 +134,28 @@ class LegacyTokenAnalyticsMixin:
                 return None
             needs_reauth = row["needs_reauth"] if hasattr(row, "keys") else row[2]
             if needs_reauth == 0:
-                token = row["access_token"] if hasattr(row, "keys") else row[0]
-            else:
-                token = row["legacy_access_token"] if hasattr(row, "keys") else row[1]
-                if token:
-                    log.debug(
-                        "LegacyToken: Nutze legacy_access_token (needs_reauth=1)",
+                legacy_raw = row["legacy_access_token"] if hasattr(row, "keys") else row[1]
+                if _sanitize_token(legacy_raw):
+                    self._clear_legacy_snapshot_for_user(
+                        str(twitch_user_id),
+                        only_when_reauth_pending=False,
+                        reason="fully_authed_cleanup",
                     )
-            if not token:
-                return None
-            token = str(token).strip()
-            if token.lower().startswith("oauth:"):
-                token = token[6:]
-            return token or None
+                return await _resolve_current_access_token()
+
+            legacy_token = _sanitize_token(row["legacy_access_token"] if hasattr(row, "keys") else row[1])
+            if legacy_token:
+                log.debug(
+                    "LegacyToken: Nutze legacy_access_token (needs_reauth=1)",
+                )
+                return legacy_token
+
+            log.info(
+                "LegacyToken: needs_reauth=1 aber kein legacy_access_token vorhanden (user_id=%s) - "
+                "überspringe Broadcaster-EventSubs bis Re-Auth",
+                str(twitch_user_id),
+            )
+            return None
         except Exception:
             log.debug(
                 "LegacyToken: Konnte Token nicht laden", exc_info=True
