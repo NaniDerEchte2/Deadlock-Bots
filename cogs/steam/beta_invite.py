@@ -232,7 +232,7 @@ def _probe_kofi_health(
             try:
                 conn.close()
             except Exception:
-                pass
+                log.debug("Ko-fi health probe connection close failed", exc_info=True)
 
     if resp.status != 200:
         return False, f"Status {resp.status}"
@@ -526,16 +526,19 @@ def _get_pending_payment(username_or_id: Union[str, int]) -> Optional[int]:
     """Sucht nach einer offenen Zahlung via ID oder Name (Username-Case-Insensitive)."""
     with db.get_conn() as conn:
         # Erst nach ID suchen
+        d_id: Optional[int] = None
         try:
             d_id = int(username_or_id)
+        except (ValueError, TypeError):
+            d_id = None
+
+        if d_id is not None:
             row = conn.execute(
                 "SELECT discord_id FROM beta_invite_pending_payments WHERE discord_id = ?",
                 (d_id,),
             ).fetchone()
             if row:
                 return int(row["discord_id"])
-        except (ValueError, TypeError):
-            pass
 
         # Dann nach Name suchen (Case-Insensitive)
         name_clean = str(username_or_id).strip().lstrip("@").lower()
@@ -941,7 +944,7 @@ class BetaInvitePanelView(discord.ui.View):
                         ephemeral=True,
                     )
                 except Exception:
-                    pass
+                    log.debug("Followup-Fehlernachricht konnte nicht gesendet werden", exc_info=True)
 
 
 class BetaInviteFlow(commands.Cog):
@@ -1111,6 +1114,11 @@ class BetaInviteFlow(commands.Cog):
             op=lambda: channel.send(content=content, embed=embed, view=view),
         )
 
+    async def _await_animation_task(self, task: Optional[asyncio.Task]) -> None:
+        if task is None:
+            return
+        await asyncio.gather(task)
+
     async def cog_load(self) -> None:
         self.bot.add_view(BetaInvitePanelView(self))
         # Cleanup expired pending payments (older than 24h)
@@ -1154,8 +1162,11 @@ class BetaInviteFlow(commands.Cog):
                 # Wait for the task to actually finish to release the port
                 try:
                     await asyncio.wait_for(self._kofi_webhook_task, timeout=5.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
-                    pass
+                except (asyncio.CancelledError, asyncio.TimeoutError) as exc:
+                    log.debug(
+                        "Ko-fi Webhook Task beim Unload beendet: %s",
+                        type(exc).__name__,
+                    )
             except Exception:
                 log.debug("Fehler beim Warten auf Ko-fi Webhook Task", exc_info=True)
 
@@ -1938,8 +1949,7 @@ class BetaInviteFlow(commands.Cog):
             
             # Stoppe Animation vor dem Senden des Endergebnisses
             stop_anim.set()
-            if anim_task:
-                await anim_task
+            await self._await_animation_task(anim_task)
 
             if invite_outcome.timed_out and str(invite_outcome.status or "").upper() == "RUNNING":
                 log.warning(
@@ -1956,8 +1966,7 @@ class BetaInviteFlow(commands.Cog):
                     log.exception("Extended wait for Steam invite task failed")
         except Exception as exc:
             stop_anim.set()
-            if anim_task:
-                await anim_task
+            await self._await_animation_task(anim_task)
             log.exception("Steam invite task failed with exception")
             _update_invite(
                 record.id,
@@ -2249,8 +2258,7 @@ class BetaInviteFlow(commands.Cog):
             
             if not friend_ok:
                 stop_anim.set()
-                if anim_task:
-                    await anim_task
+                await self._await_animation_task(anim_task)
                 await self._edit_original_response(
                     interaction,
                     content="ℹ️ Wir sind noch keine bestätigten Steam-Freunde. Bitte nimm die Freundschaftsanfrage an und probiere es erneut."
@@ -2267,8 +2275,7 @@ class BetaInviteFlow(commands.Cog):
             )
         finally:
             stop_anim.set()
-            if anim_task:
-                await anim_task
+            await self._await_animation_task(anim_task)
 
     def _build_panel_embed(self) -> discord.Embed:
         description = (
@@ -2375,8 +2382,7 @@ class BetaInviteFlow(commands.Cog):
 
             if not steam_id:
                 stop_anim.set()
-                if anim_task:
-                    await anim_task
+                await self._await_animation_task(anim_task)
 
                 view = self._build_link_prompt_view(interaction.user)
                 prompt = (
@@ -2394,16 +2400,14 @@ class BetaInviteFlow(commands.Cog):
             intent_record = _get_intent_record(interaction.user.id)
             if intent_record is None:
                 stop_anim.set()
-                if anim_task:
-                    await anim_task
+                await self._await_animation_task(anim_task)
                 await self._prompt_intent_gate(interaction)
                 return
 
             # 3. Wenn Invite-Only, Zahlung tracken und Info senden
             if intent_record.intent == INTENT_INVITE_ONLY:
                 stop_anim.set()
-                if anim_task:
-                    await anim_task
+                await self._await_animation_task(anim_task)
                 
                 # Merke uns den Nutzer für den Webhook (24h)
                 _register_pending_payment(interaction.user.id, interaction.user.name)
@@ -2443,8 +2447,7 @@ class BetaInviteFlow(commands.Cog):
             await self._process_invite_request(interaction)
         finally:
             stop_anim.set()
-            if anim_task:
-                await anim_task
+            await self._await_animation_task(anim_task)
 
     @app_commands.command(name="betainvite", description="Automatisiert eine Deadlock-Playtest-Einladung anfordern.")
     async def betainvite(self, interaction: discord.Interaction) -> None:
@@ -2560,8 +2563,8 @@ async def _parse_kofi_request_payload(request: Any) -> Mapping[str, Any]:
     if isinstance(data_field, str):
         try:
             parsed["data"] = json.loads(data_field)
-        except Exception:
-            pass
+        except json.JSONDecodeError:
+            parsed["data"] = data_field
     return parsed
 
 

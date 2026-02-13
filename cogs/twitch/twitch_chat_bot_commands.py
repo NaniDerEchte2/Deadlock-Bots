@@ -482,7 +482,11 @@ if TWITCHIO_AVAILABLE:
                         )
                         return
                 except Exception:
-                    pass
+                    log.debug(
+                        "Silentraid auth precheck failed for %s",
+                        twitch_login,
+                        exc_info=True,
+                    )
 
             with get_conn() as conn:
                 row = conn.execute(
@@ -536,7 +540,11 @@ if TWITCHIO_AVAILABLE:
                         )
                         return
                 except Exception:
-                    pass
+                    log.debug(
+                        "Manual raid auth precheck failed for %s",
+                        twitch_login,
+                        exc_info=True,
+                    )
 
             api_session = getattr(self._raid_bot, "session", None)
             executor = getattr(self._raid_bot, "raid_executor", None)

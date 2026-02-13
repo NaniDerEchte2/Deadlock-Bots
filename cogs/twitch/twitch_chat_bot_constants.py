@@ -134,6 +134,12 @@ if PROMO_VIEWER_SPIKE_MIN_STATS_SAMPLES > PROMO_VIEWER_SPIKE_STATS_SAMPLE_LIMIT:
 if PROMO_VIEWER_SPIKE_MIN_DELTA == 0 and PROMO_VIEWER_SPIKE_MIN_RATIO <= 1.0:
     PROMO_VIEWER_SPIKE_MIN_DELTA = 1
 
+# Öffentliche, normalisierte Werte für andere Module.
+PROMO_INTERVAL_MIN: int = _PROMO_INTERVAL_MIN
+PROMO_ACTIVITY_ENABLED: bool = _PROMO_ACTIVITY_ENABLED
+PROMO_COOLDOWN_MIN: int = _PROMO_COOLDOWN_MIN
+PROMO_COOLDOWN_MAX: int = _PROMO_COOLDOWN_MAX
+
 # ---------------------------------------------------------------------------
 # Deadlock Zugangsfragen (Invite-Only Hinweise)
 # ---------------------------------------------------------------------------
@@ -149,6 +155,10 @@ _INVITE_QUESTION_RE = re.compile(
     r"|\b(bekomm|krieg|erhalt)\w*\s+(man|ich)\b",
     re.IGNORECASE,
 )
+INVITE_QUESTION_CHANNEL_COOLDOWN_SEC: int = _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC
+INVITE_QUESTION_USER_COOLDOWN_SEC: int = _INVITE_QUESTION_USER_COOLDOWN_SEC
+INVITE_QUESTION_RE = _INVITE_QUESTION_RE
+
 INVITE_ACCESS_RE = re.compile(
     r"\b(spielen|spiel|play|zugang|einladung|invite|beta|key|access|ea|early\s*access|reinkomm\w*|rankomm\w*)\b",
     re.IGNORECASE,

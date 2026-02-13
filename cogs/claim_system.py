@@ -151,7 +151,7 @@ class ClaimSystem(commands.Cog):
             try:
                 await self._server_task
             except asyncio.CancelledError:
-                pass
+                log.debug("ClaimSystem: Socket server task cancelled during unload")
         log.info("ClaimSystem: Socket server stopped")
 
     async def _start_socket_server(self):
