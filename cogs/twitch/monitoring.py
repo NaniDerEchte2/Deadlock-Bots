@@ -993,9 +993,10 @@ class TwitchMonitoringMixin:
             except Exception:
                 log.debug("EventSub Webhook: channel.update fehlgeschlagen für %s", login, exc_info=True)
 
-            # stream.offline NUR für aktuell live Streams
-            if login not in currently_live_streams:
-                continue
+            # stream.offline für ALLE Streamer (nicht nur live) – so wird
+            # auch ein Offline-Ereignis erkannt wenn der Bot während eines
+            # laufenden Streams neu gestartet wurde oder der Streamer offline
+            # ist, aber danach wieder live geht und wir keinen Neustart haben.
             try:
                 result = await self.api.subscribe_eventsub_webhook(
                     sub_type="stream.offline",
@@ -1007,12 +1008,12 @@ class TwitchMonitoringMixin:
                 if result:
                     self._eventsub_track_sub("stream.offline", str(bid))
                     offline_added += 1
-                    log.debug("EventSub Webhook: stream.offline subscribed für %s (live)", login)
+                    log.debug("EventSub Webhook: stream.offline subscribed für %s", login)
             except Exception:
                 log.exception("EventSub Webhook: stream.offline fehlgeschlagen für %s", login)
 
         log.info(
-            "EventSub Webhook: stream.online=%d, channel.update=%d, stream.offline=%d (nur live) subscribiert",
+            "EventSub Webhook: stream.online=%d, channel.update=%d, stream.offline=%d subscribiert",
             online_added, update_added, offline_added,
         )
         try:
