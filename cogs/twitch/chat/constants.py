@@ -1,5 +1,28 @@
+import logging
 import re
 from typing import List, Set
+
+# ---------------------------------------------------------------------------
+# Optional twitchio dependency
+# ---------------------------------------------------------------------------
+try:
+    from twitchio import eventsub
+    from twitchio import web as twitchio_web
+    from twitchio.ext import commands as twitchio_commands
+
+    _ = (eventsub, twitchio_web, twitchio_commands)
+
+    TWITCHIO_AVAILABLE = True
+except ImportError:
+    TWITCHIO_AVAILABLE = False
+    eventsub = None
+    twitchio_web = None
+    twitchio_commands = None
+    log = logging.getLogger("TwitchStreams.ChatBot")
+    log.warning(
+        "twitchio nicht installiert. Twitch Chat Bot wird nicht verfügbar sein. "
+        "Installation: pip install twitchio"
+    )
 
 # Whitelist für bekannte legitime Bots (keine Spam-Prüfung)
 WHITELISTED_BOTS = {
@@ -35,7 +58,7 @@ SPAM_PHRASES = (
     "Viewers smmhype1.ru",
     "Viewers smmhype",
     "viewers on streamboo .com (remove the space)",
-    "Hey friend I really enjoy your content so I give you a follow I’d love to be a friend and of you feel free to Add me on Discord",
+    "Hey friend I really enjoy your content so I give you a follow I'd love to be a friend and of you feel free to Add me on Discord",
 )
 # Entferne "viewer" und "viewers" aus den Fragmenten - zu allgemein und führt zu False Positives
 SPAM_FRAGMENTS = (

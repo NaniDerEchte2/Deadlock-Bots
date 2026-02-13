@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from . import storage
+from .. import storage
 
 log = logging.getLogger("TwitchStreams.AnalyticsBackend")
 

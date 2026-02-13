@@ -9,9 +9,9 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import discord
 from discord.ext import commands
 
-from . import storage
-from .constants import TWITCH_STATS_CHANNEL_IDS
-from .logger import log
+from .. import storage
+from ..constants import TWITCH_STATS_CHANNEL_IDS
+from ..constants import log
 
 
 @dataclass

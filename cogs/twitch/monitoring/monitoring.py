@@ -16,8 +16,8 @@ import aiohttp
 import discord
 from discord.ext import tasks
 
-from . import storage
-from .constants import (
+from .. import storage
+from ..constants import (
     INVITES_REFRESH_INTERVAL_HOURS,
     POLL_INTERVAL_SECONDS,
     TWITCH_BRAND_COLOR_HEX,
@@ -26,7 +26,7 @@ from .constants import (
     TWITCH_VOD_BUTTON_LABEL,
     TWITCH_TARGET_GAME_NAME,
 )
-from .logger import log
+from ..constants import log
 
 
 class TwitchMonitoringMixin:

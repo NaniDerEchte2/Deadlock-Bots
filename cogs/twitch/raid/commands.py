@@ -7,9 +7,9 @@ import random
 import discord
 from discord.ext import commands
 
-from .storage import get_conn
-from .raid_views import build_raid_requirements_embed, RaidAuthGenerateView
-from .twitch_chat_bot_constants import PROMO_MESSAGES
+from ..storage import get_conn
+from .views import build_raid_requirements_embed, RaidAuthGenerateView
+from ..chat.constants import PROMO_MESSAGES
 
 log = logging.getLogger("TwitchStreams.RaidCommands")
 

@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
-from .storage import get_conn
+from ..storage import get_conn
 
 log = logging.getLogger("TwitchStreams.PartnerRecruit")
 

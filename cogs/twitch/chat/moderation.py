@@ -4,8 +4,8 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from .storage import get_conn
-from .twitch_chat_bot_constants import (
+from ..storage import get_conn
+from .constants import (
     DEADLOCK_INVITE_REPLY,
     INVITE_ACCESS_RE,
     INVITE_GAME_CONTEXT_RE,

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from discord.ext import tasks
 
-from . import storage
+from .. import storage
 
 log = logging.getLogger("TwitchStreams.Analytics")
 

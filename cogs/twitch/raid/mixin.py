@@ -5,8 +5,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from .constants import TWITCH_TARGET_GAME_NAME
-from .storage import get_conn
+from ..constants import TWITCH_TARGET_GAME_NAME
+from ..storage import get_conn
 
 log = logging.getLogger("TwitchStreams.RaidMixin")
 

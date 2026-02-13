@@ -1,5 +1,9 @@
 """Configuration constants for the Twitch cogs."""
 
+import logging
+
+log = logging.getLogger("TwitchStreams")
+
 # ============================
 # 🛠️ CONFIG — EDIT HERE
 # ============================

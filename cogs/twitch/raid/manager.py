@@ -20,8 +20,8 @@ from urllib.parse import urlencode
 import aiohttp
 import discord
 
-from .storage import get_conn
-from .token_error_handler import TokenErrorHandler
+from ..storage import get_conn
+from ..api.token_error_handler import TokenErrorHandler
 
 TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 TWITCH_AUTHORIZE_URL = "https://id.twitch.tv/oauth2/authorize"

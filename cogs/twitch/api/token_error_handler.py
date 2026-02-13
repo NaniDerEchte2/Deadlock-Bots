@@ -13,7 +13,7 @@ from typing import Optional
 
 import discord
 
-from .storage import get_conn
+from ..storage import get_conn
 
 log = logging.getLogger("TwitchStreams.TokenErrorHandler")
 

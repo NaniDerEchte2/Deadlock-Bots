@@ -13,7 +13,7 @@ from urllib.parse import urlencode, urlsplit
 
 from aiohttp import web
 
-from . import storage
+from .. import storage
 from .coaching_engine import CoachingEngine
 
 log = logging.getLogger("TwitchStreams.AnalyticsV2")

@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from .admin import TwitchAdminMixin
+from .community.admin import TwitchAdminMixin
 from .base import TwitchBaseCog
-from .dashboard_mixin import TwitchDashboardMixin
-from .leaderboard import LeaderboardOptions, TwitchLeaderboardMixin, TwitchLeaderboardView
-from .legacy_token_analytics import LegacyTokenAnalyticsMixin
-from .monitoring import TwitchMonitoringMixin
-from .raid_mixin import TwitchRaidMixin
-from .raid_commands import RaidCommandsMixin
-from .analytics_mixin import TwitchAnalyticsMixin
-from .partner_recruit_mixin import TwitchPartnerRecruitMixin
+from .dashboard.mixin import TwitchDashboardMixin
+from .community.leaderboard import LeaderboardOptions, TwitchLeaderboardMixin, TwitchLeaderboardView
+from .analytics.legacy_token import LegacyTokenAnalyticsMixin
+from .monitoring.monitoring import TwitchMonitoringMixin
+from .raid.mixin import TwitchRaidMixin
+from .raid.commands import RaidCommandsMixin
+from .analytics.mixin import TwitchAnalyticsMixin
+from .community.partner_recruit import TwitchPartnerRecruitMixin
 
 __all__ = [
     "TwitchStreamCog",

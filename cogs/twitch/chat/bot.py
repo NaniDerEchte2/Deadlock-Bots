@@ -21,27 +21,25 @@ from typing import Deque, Dict, Optional, Set, Tuple
 
 import discord
 
-from .constants import TWITCH_NOTIFY_CHANNEL_ID, TWITCH_TARGET_GAME_NAME
-from .storage import get_conn
-from .token_manager import TwitchBotTokenManager
-from .twitch_chat_bot_commands import RaidCommandsMixin
-from .twitch_chat_bot_connection import ConnectionMixin
-from .twitch_chat_bot_constants import (
+from ..constants import TWITCH_NOTIFY_CHANNEL_ID, TWITCH_TARGET_GAME_NAME
+from ..storage import get_conn
+from ..api.token_manager import TwitchBotTokenManager
+from .commands import RaidCommandsMixin
+from .connection import ConnectionMixin
+from .constants import (
     _PROMO_ACTIVITY_ENABLED,
     PROMO_LOOP_INTERVAL_SEC,
     PROMO_MESSAGES,
     PROMO_VIEWER_SPIKE_ENABLED,
     SPAM_MIN_MATCHES,
-    WHITELISTED_BOTS,
-)
-from .twitch_chat_bot_deps import (
     TWITCHIO_AVAILABLE,
     twitchio_commands,
     twitchio_web,
+    WHITELISTED_BOTS,
 )
-from .twitch_chat_bot_moderation import ModerationMixin
-from .twitch_chat_bot_promos import PromoMixin
-from .twitch_chat_bot_tokens import (
+from .moderation import ModerationMixin
+from .promos import PromoMixin
+from .tokens import (
     _KEYRING_SERVICE,
     TokenPersistenceMixin,
     load_bot_tokens,

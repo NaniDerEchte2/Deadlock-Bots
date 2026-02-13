@@ -7,8 +7,8 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 
 import discord
 
-from . import storage
-from .logger import log
+from .. import storage
+from ..constants import log
 
 
 class TwitchAdminMixin:

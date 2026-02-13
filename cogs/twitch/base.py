@@ -30,11 +30,11 @@ from .constants import (
     TWITCH_REQUIRED_DISCORD_MARKER,
     TWITCH_TARGET_GAME_NAME,
 )
-from .logger import log
-from .twitch_api import TwitchAPI
-from .raid_manager import RaidBot
-from .twitch_chat_bot import TWITCHIO_AVAILABLE, create_twitch_chat_bot, load_bot_tokens
-from .token_manager import TwitchBotTokenManager
+from .constants import log
+from .api.twitch_api import TwitchAPI
+from .raid.manager import RaidBot
+from .chat.bot import TWITCHIO_AVAILABLE, create_twitch_chat_bot, load_bot_tokens
+from .api.token_manager import TwitchBotTokenManager
 
 
 def _parse_env_bool(name: str, default: bool) -> bool:

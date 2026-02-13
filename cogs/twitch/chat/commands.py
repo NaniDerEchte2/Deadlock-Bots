@@ -1,8 +1,8 @@
 import logging
 from datetime import datetime, timezone
 
-from .storage import get_conn
-from .twitch_chat_bot_deps import TWITCHIO_AVAILABLE, twitchio_commands
+from ..storage import get_conn
+from .constants import TWITCHIO_AVAILABLE, twitchio_commands
 
 log = logging.getLogger("TwitchStreams.ChatBot")
 

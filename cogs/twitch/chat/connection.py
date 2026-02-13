@@ -3,8 +3,8 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from .storage import get_conn
-from .twitch_chat_bot_deps import eventsub
+from ..storage import get_conn
+from .constants import eventsub
 
 log = logging.getLogger("TwitchStreams.ChatBot")
 

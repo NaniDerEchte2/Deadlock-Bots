@@ -15,13 +15,13 @@ import aiohttp
 import discord
 from aiohttp import web
 
-from . import storage
-from .analytics_v2 import AnalyticsV2Mixin
-from .dashboard.live import DashboardLiveMixin
-from .dashboard.stats import DashboardStatsMixin
-from .dashboard.templates import DashboardTemplateMixin
-from .logger import log
-from .raid_views import RaidAuthGenerateView, build_raid_requirements_embed
+from .. import storage
+from ..analytics.api_v2 import AnalyticsV2Mixin
+from .live import DashboardLiveMixin
+from .stats import DashboardStatsMixin
+from .templates import DashboardTemplateMixin
+from ..constants import log
+from ..raid.views import RaidAuthGenerateView, build_raid_requirements_embed
 
 TWITCH_OAUTH_AUTHORIZE_URL = "https://id.twitch.tv/oauth2/authorize"
 TWITCH_OAUTH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"

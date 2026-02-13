@@ -7,8 +7,8 @@ from typing import Deque, List, Optional, Tuple
 
 from service import db
 
-from .storage import get_conn
-from .twitch_chat_bot_constants import (
+from ..storage import get_conn
+from .constants import (
     _PROMO_ACTIVITY_ENABLED,
     PROMO_ACTIVITY_CHATTER_DEDUP_SEC,
     PROMO_ACTIVITY_MIN_CHATTERS,

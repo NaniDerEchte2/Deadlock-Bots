@@ -9,7 +9,7 @@ from urllib.parse import quote_plus
 
 from aiohttp import web
 
-from ..logger import log
+from ..constants import log
 
 
 class DashboardLiveMixin:

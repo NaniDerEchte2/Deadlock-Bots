@@ -13,11 +13,11 @@ import discord
 
 from aiohttp import web
 
-from . import storage
-from .dashboard_v2_server import build_v2_app
-from .logger import log
-from .constants import TWITCH_TARGET_GAME_NAME
-from .analytics_backend_extended import AnalyticsBackendExtended
+from .. import storage
+from .server_v2 import build_v2_app
+from ..constants import log
+from ..constants import TWITCH_TARGET_GAME_NAME
+from ..analytics.backend_extended import AnalyticsBackendExtended
 
 
 def _parse_env_int(var_name: str, default: int = 0) -> int:

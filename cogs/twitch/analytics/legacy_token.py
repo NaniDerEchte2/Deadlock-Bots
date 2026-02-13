@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .logger import log
-from . import storage
+from ..constants import log
+from .. import storage
 
 
 class LegacyTokenAnalyticsMixin:
