@@ -126,6 +126,7 @@ if TWITCHIO_AVAILABLE:
                 client_secret=client_secret,
                 bot_id=bot_id or "",  # Fallback auf leeren String falls None (für TwitchIO Kompatibilität)
                 prefix=prefix,
+                case_insensitive=True,
                 **base_kwargs,
             )
             self.prefix = prefix

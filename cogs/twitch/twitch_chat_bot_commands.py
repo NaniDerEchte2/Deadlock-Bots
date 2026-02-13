@@ -303,14 +303,8 @@ if TWITCHIO_AVAILABLE:
             await ctx.send(f"@{ctx.author.name} Letzte Raids: {raids_text}")
 
         @twitchio_commands.command(name="clip", aliases=["createclip"])
-        async def cmd_clip(self, ctx: twitchio_commands.Context):
-            """!clip - Erstellt einen Clip aus dem aktuellen Stream-Buffer und postet den Link."""
-            is_mod = getattr(ctx.author, "is_moderator", getattr(ctx.author, "moderator", False))
-            is_broadcaster = getattr(ctx.author, "is_broadcaster", getattr(ctx.author, "broadcaster", False))
-            if not (is_broadcaster or is_mod):
-                await ctx.send(f"@{ctx.author.name} Nur Broadcaster oder Mods können !clip benutzen.")
-                return
-
+        async def cmd_clip(self, ctx: twitchio_commands.Context, *, description: str = ""):
+            """!clip [beschreibung] - Erstellt einen Clip aus dem aktuellen Stream-Buffer und postet den Link."""
             channel_name = ctx.channel.name
             streamer_data = self._get_streamer_by_channel(channel_name)
             if not streamer_data:
@@ -399,13 +393,28 @@ if TWITCHIO_AVAILABLE:
                 )
                 return
 
-            await ctx.send(f"@{ctx.author.name} 🎬 Clip erstellt (letzte ~Minute): {clip_url}")
+            desc_part = f" – \"{description.strip()}\"" if description.strip() else ""
+            await ctx.send(f"@{ctx.author.name} 🎬 Clip erstellt{desc_part} (letzte ~Minute): {clip_url}")
             log.info(
                 "Clip command successful: %s in #%s (clip_id=%s)",
                 twitch_login,
                 channel_name,
                 clip_id or "-",
             )
+
+        @twitchio_commands.command(name="ping", aliases=["health", "status", "bot"])
+        async def cmd_ping(self, ctx: twitchio_commands.Context):
+            """!ping - Zeigt ob der Bot online ist."""
+            import random
+            responses = [
+                f"@{ctx.author.name} Eure Majestät! 👑 Der Bot steht zu Euren Diensten. Was kann ich für Euch tun?",
+                f"@{ctx.author.name} Bin da! Ausgeschlafen, aufgewärmt und bereit für Chaos. 🤖✅",
+                f"@{ctx.author.name} Ja ich lebe noch, keine Sorge. Puls: 📶 Signal: 🟢 Kaffee: ☕ alles gut.",
+                f"@{ctx.author.name} Bot online! Bereit für Euren Befehl, oh weiser Chatter. 🫡",
+                f"@{ctx.author.name} 🟢 Ich atme noch! Und ich hab sogar alle meine Kabel dran.",
+                f"@{ctx.author.name} Natürlich bin ich online – wer soll sonst die Clips machen? 😏🎬",
+            ]
+            await ctx.send(random.choice(responses))
 
         @twitchio_commands.command(name="silentban")
         async def cmd_silentban(self, ctx: twitchio_commands.Context):

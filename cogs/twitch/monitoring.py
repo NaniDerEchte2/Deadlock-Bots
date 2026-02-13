@@ -903,8 +903,13 @@ class TwitchMonitoringMixin:
             except Exception:
                 log.exception("EventSub Webhook: channel.ad_break.begin-Callback fehlgeschlagen für %s", login)
 
+        async def _follow_cb(bid: str, login: str, event: dict):
+            user_login = (event.get("user_login") or event.get("user_name") or "").strip()
+            log.debug("EventSub: channel.follow – %s followed %s", user_login, login)
+
         webhook_handler.set_callback("stream.online", _online_cb)
         webhook_handler.set_callback("stream.offline", _offline_cb)
+        webhook_handler.set_callback("channel.follow", _follow_cb)
         webhook_handler.set_callback("channel.raid", _raid_cb)
         webhook_handler.set_callback("channel.update", _channel_update_cb)
         webhook_handler.set_callback("channel.subscribe", _subscribe_cb)
@@ -1057,6 +1062,27 @@ class TwitchMonitoringMixin:
                                 "EventSub Webhook: %s fehlgeschlagen für %s (evtl. Scope fehlt)",
                                 sub_type, login or bid, exc_info=True,
                             )
+
+                    # channel.follow v2 – braucht moderator_user_id in der Condition
+                    try:
+                        await self.api.subscribe_eventsub_webhook(
+                            sub_type="channel.follow",
+                            condition={
+                                "broadcaster_user_id": str(bid),
+                                "moderator_user_id": str(bid),
+                            },
+                            webhook_url=webhook_url,
+                            secret=webhook_secret,
+                            oauth_token=broadcaster_token,
+                            version="2",
+                        )
+                        self._eventsub_track_sub("channel.follow", str(bid))
+                        log.debug("EventSub Webhook: channel.follow v2 subscribed für %s", login or bid)
+                    except Exception:
+                        log.debug(
+                            "EventSub Webhook: channel.follow v2 fehlgeschlagen für %s (evtl. Scope fehlt)",
+                            login or bid, exc_info=True,
+                        )
 
             except Exception:
                 log.exception("Polling: Go-Live Handler fehlgeschlagen für %s", login or bid)
