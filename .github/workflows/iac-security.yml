@@ -181,7 +181,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload IaC SAST Artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: iac-sast-reports
@@ -238,7 +238,7 @@ jobs:
           cat iac-analysis.md
 
       - name: Upload Analysis
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: iac-best-practices
@@ -275,7 +275,7 @@ jobs:
           cat config-security.md
 
       - name: Upload Config Security
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: config-security
