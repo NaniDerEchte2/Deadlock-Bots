@@ -1,0 +1,40 @@
+name: "🧪 Continuous Fuzzing"
+
+on:
+  pull_request:
+  push:
+    branches: [ "main", "master", "develop" ]
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  protocol-fuzzing:
+    name: "Protocol Fuzzing (fast-check)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Configure Fuzzing Depth
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "FUZZ_NUM_RUNS=10000" >> $GITHUB_ENV
+          else
+            echo "FUZZ_NUM_RUNS=2000" >> $GITHUB_ENV
+          fi
+
+      - name: Install Fuzzing Dependencies
+        run: |
+          npm ci --prefix cogs/steam/steam_presence --include=dev --ignore-scripts
+
+      - name: Run Protocol Fuzzing
+        run: |
+          npm --prefix cogs/steam/steam_presence run fuzz:protocol

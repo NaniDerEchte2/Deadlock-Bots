@@ -1,0 +1,58 @@
+name: "📦 Supply Chain Provenance"
+
+on:
+  push:
+    branches: [ "main", "master", "develop" ]
+  schedule:
+    - cron: "43 1 * * *"
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  sbom-and-attestations:
+    name: "SBOM + Dependency Graph + Attestations"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Build Source Artifact
+        run: |
+          mkdir -p dist
+          git archive --format=tar.gz --output "dist/source-${GITHUB_SHA}.tar.gz" HEAD
+
+      - name: Generate SPDX SBOM + Submit Dependency Snapshot
+        uses: anchore/sbom-action@e11c554f704a0b820cbf8c51673f6945e0731532 # v0.20.0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/sbom.spdx.json
+          artifact-name: source-sbom.spdx.json
+          upload-release-assets: false
+          dependency-snapshot: true
+
+      - name: Upload Source Artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: source-archive
+          path: dist/source-${{ github.sha }}.tar.gz
+          if-no-files-found: error
+
+      - name: Attest Build Provenance
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-path: dist/source-${{ github.sha }}.tar.gz
+        continue-on-error: true
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@10926c72720ffc3f7b666661c8e55b1344e2a365 # v2
+        with:
+          subject-path: dist/source-${{ github.sha }}.tar.gz
+          sbom-path: dist/sbom.spdx.json
+        continue-on-error: true

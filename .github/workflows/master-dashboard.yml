@@ -85,6 +85,9 @@ jobs:
           echo "- 🌐 **Dashboard DAST** - Dynamic endpoint security tests" >> $GITHUB_STEP_SUMMARY
           echo "- 🐳 **Container Security** - Docker analysis" >> $GITHUB_STEP_SUMMARY
           echo "- 🏗️ **IaC Security** - Infrastructure checks" >> $GITHUB_STEP_SUMMARY
+          echo "- 🧪 **Continuous Fuzzing** - Property-based fuzz tests" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 **Supply Chain Provenance** - SBOM + attestations + dependency graph submission" >> $GITHUB_STEP_SUMMARY
+          echo "- 🚨 **Security Incident Automation** - Automated incident tracking" >> $GITHUB_STEP_SUMMARY
           echo "- ⚡ **Performance Analysis** - Performance profiling" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ **Compliance Check** - Best practices" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -171,6 +174,9 @@ jobs:
               "dashboard-dast.yml",
               "container-security.yml",
               "iac-security.yml",
+              "fuzzing-continuous.yml",
+              "supply-chain-provenance.yml",
+              "security-incident-automation.yml",
               "performance-analysis.yml",
               "compliance-check.yml"
             ]
