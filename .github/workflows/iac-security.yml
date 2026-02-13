@@ -8,9 +8,7 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: read
-  security-events: write
+permissions: read-all
 
 jobs:
   # ============================================================================
@@ -72,6 +70,9 @@ jobs:
     needs: detect-iac
     if: needs.detect-iac.outputs.has_any == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 

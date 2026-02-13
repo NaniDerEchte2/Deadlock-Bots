@@ -4,12 +4,16 @@
   "private": true,
   "description": "Steam Rich Presence collector for the Deadlock Discord bots.",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "fuzz:protocol": "node fuzz/protocol.fastcheck.js"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.0",
     "steam-totp": "^2.1.1",
     "steam-user": "^5.0.0",
     "steamid": "^2.1.0"
+  },
+  "devDependencies": {
+    "fast-check": "^4.5.3"
   }
 }

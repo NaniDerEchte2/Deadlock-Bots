@@ -37,8 +37,7 @@ jobs:
 
       - name: Install Dashboard Runtime Dependencies
         run: |
-          pip install --upgrade pip
-          pip install aiohttp
+          python -m pip install aiohttp==3.13.3
 
       - name: Start Dashboard Test Server
         env:

@@ -7,14 +7,14 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pull-requests: write
-  security-events: write
+permissions: read-all
 
 jobs:
   dependency-review:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: 'Checkout Repository'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -90,8 +90,7 @@ jobs:
       - name: 'Install Python Dependency Scanners'
         if: hashFiles('**/requirements*.txt') != ''
         run: |
-          pip install --upgrade pip
-          pip install pip-audit safety
+          python -m pip install pip-audit==2.10.0 safety==3.7.0
 
       - name: 'Python Dependency Scan (Recursive)'
         if: hashFiles('**/requirements*.txt') != ''

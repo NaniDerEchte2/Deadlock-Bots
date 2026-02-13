@@ -8,11 +8,7 @@ on:
     - cron: '0 2 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: read
-  security-events: write
-  actions: read
-  pull-requests: write
+permissions: read-all
 
 jobs:
   # ============================================================================
@@ -93,8 +89,13 @@ jobs:
 
       - name: Install Analysis Tools
         run: |
-          pip install --upgrade pip
-          pip install bandit safety pip-audit radon vulture dodgy
+          python -m pip install \
+            bandit==1.9.3 \
+            safety==3.7.0 \
+            pip-audit==2.10.0 \
+            radon==6.0.1 \
+            vulture==2.14 \
+            dodgy==0.2.1
         continue-on-error: true
 
       # Bandit - Security Issues
@@ -215,6 +216,12 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Property-Based Fuzzing (fast-check)
+        if: hashFiles('cogs/steam/steam_presence/fuzz/*.js') != ''
+        run: |
+          npm ci --prefix cogs/steam/steam_presence --include=dev --ignore-scripts
+          npm --prefix cogs/steam/steam_presence run fuzz:protocol
+
       # NPM Audit - recursive lockfile scan
       - name: NPM Audit
         if: hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != ''
@@ -246,7 +253,7 @@ jobs:
       # RetireJS - Check for vulnerable JS libraries
       - name: RetireJS Scan
         run: |
-          npm install -g retire || true
+          npm install -g retire@5.4.2 || true
           echo "Running RetireJS scan..."
           retire --path . --outputformat json --outputpath retirejs-report.json || true
           if [ -f retirejs-report.json ]; then
@@ -258,7 +265,7 @@ jobs:
       - name: ESLint Security Scan
         if: hashFiles('**/package.json') != ''
         run: |
-          npm install -g eslint eslint-plugin-security eslint-plugin-no-secrets || true
+          npm install -g eslint@10.0.0 eslint-plugin-security@3.0.1 eslint-plugin-no-secrets@2.2.2 || true
           eslint . --ext .js,.ts,.jsx,.tsx --format json --output-file eslint-security.json || true
         continue-on-error: true
 
@@ -272,7 +279,7 @@ jobs:
             echo "ℹ️ SNYK_TOKEN not configured; skipping Snyk scan."
             exit 0
           fi
-          npm install -g snyk || true
+          npm install -g snyk@1.1302.1 || true
           snyk auth "$SNYK_TOKEN" || true
           snyk test --all-projects --severity-threshold=low --json-file-output=snyk-report.json || true
         continue-on-error: true
@@ -297,6 +304,9 @@ jobs:
     needs: detect-languages
     if: needs.detect-languages.outputs.has_python == 'true' || needs.detect-languages.outputs.has_javascript == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     container:
       image: semgrep/semgrep:1.151.0
     steps:
@@ -379,6 +389,9 @@ jobs:
   trivy-scan:
     name: 🛡️ Trivy Security Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -432,48 +445,57 @@ jobs:
         with:
           node-version: '20'
 
-      # Python Dependencies
-      - name: Python Dependency Tree
+      # Python dependency manifests (no dynamic package install in CI)
+      - name: Python Dependency Manifest Snapshot
         if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
-          pip install pipdeptree
           mkdir -p dependency-analysis/python-deps
           found=0
           while IFS= read -r req_file; do
             found=1
             rel_path="${req_file#./}"
             safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
-            pip install -r "$req_file" || true
-            pipdeptree --json > "dependency-analysis/python-deps/${safe_name}.json" || true
+            cp "$req_file" "dependency-analysis/python-deps/${safe_name}.requirements.txt"
+            awk '
+              /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+              { total += 1 }
+              /==/ { pinned += 1 }
+              END {
+                printf("total_entries=%d\n", total)
+                printf("pinned_entries=%d\n", pinned)
+                if (total > 0) {
+                  printf("pinning_ratio=%.2f\n", pinned / total)
+                } else {
+                  printf("pinning_ratio=1.00\n")
+                }
+              }
+            ' "$req_file" > "dependency-analysis/python-deps/${safe_name}.pinning.txt"
           done < <(find . -type f -name "requirements*.txt" \
             -not -path "*/.venv/*" \
             -not -path "*/venv/*" \
             -not -path "*/.git/*" | sort)
           if [ "$found" -eq 0 ]; then
-            echo "ℹ️ No requirements*.txt files found for dependency tree"
+            echo "ℹ️ No requirements*.txt files found for dependency manifest snapshot"
           fi
         continue-on-error: true
 
-      # License Scanner for Python
-      - name: Python License Scanner
+      - name: Python Dependency Vulnerability Report
         if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
-          pip install pip-licenses
-          mkdir -p dependency-analysis/python-licenses
+          python -m pip install pip-audit==2.10.0
+          mkdir -p dependency-analysis/python-vulns
           found=0
           while IFS= read -r req_file; do
             found=1
             rel_path="${req_file#./}"
             safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
-            pip install -r "$req_file" || true
-            pip-licenses --format=json --with-urls > "dependency-analysis/python-licenses/${safe_name}.json" || true
-            pip-licenses --format=markdown > "dependency-analysis/python-licenses/${safe_name}.md" || true
+            pip-audit -r "$req_file" --format json --output "dependency-analysis/python-vulns/${safe_name}.pip-audit.json" || true
           done < <(find . -type f -name "requirements*.txt" \
             -not -path "*/.venv/*" \
             -not -path "*/venv/*" \
             -not -path "*/.git/*" | sort)
           if [ "$found" -eq 0 ]; then
-            echo "ℹ️ No requirements*.txt files found for license scan"
+            echo "ℹ️ No requirements*.txt files found for Python vulnerability reporting"
           fi
         continue-on-error: true
 
@@ -481,7 +503,7 @@ jobs:
       - name: NPM License Scanner
         if: needs.detect-languages.outputs.has_package_json == 'true' && hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != ''
         run: |
-          npm install -g license-checker
+          npm install -g license-checker@25.0.1
           mkdir -p dependency-analysis/npm-licenses
           found=0
           while IFS= read -r lock_file; do

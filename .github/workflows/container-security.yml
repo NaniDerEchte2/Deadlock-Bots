@@ -8,9 +8,7 @@ on:
     - cron: '0 4 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: read
-  security-events: write
+permissions: read-all
 
 jobs:
   # ============================================================================
@@ -54,6 +52,9 @@ jobs:
     needs: detect-container-files
     if: needs.detect-container-files.outputs.has_dockerfile == 'true' || needs.detect-container-files.outputs.has_compose == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -133,6 +134,9 @@ jobs:
     needs: detect-container-files
     if: needs.detect-container-files.outputs.has_dockerfile == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 

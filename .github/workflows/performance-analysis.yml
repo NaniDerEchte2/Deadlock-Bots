@@ -6,9 +6,7 @@ on:
     - cron: '0 5 * * 0'  # Weekly on Sunday
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pull-requests: write
+permissions: read-all
 
 jobs:
   # ============================================================================
@@ -63,7 +61,7 @@ jobs:
 
       - name: Install Tools
         run: |
-          pip install radon vulture
+          python -m pip install radon==6.0.1 vulture==2.14
         continue-on-error: true
 
       # Complexity Analysis
