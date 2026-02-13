@@ -23,7 +23,7 @@ jobs:
       has_cloudformation: ${{ steps.check.outputs.has_cloudformation }}
       has_any: ${{ steps.check.outputs.has_any }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       
       - name: Check for IaC Files
         id: check
@@ -74,7 +74,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Checkov IaC Scan (SARIF)
         uses: bridgecrewio/checkov-action@b3c44b4437c93549fc8cfaef9208497ba4955d39 # master
@@ -201,7 +201,7 @@ jobs:
     name: 📋 IaC Best Practices
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Check Best Practices
         run: |
@@ -252,7 +252,7 @@ jobs:
     name: 🔧 Configuration Security
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Scan Config Files
         run: |
