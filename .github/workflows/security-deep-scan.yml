@@ -187,7 +187,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Python Security Reports
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: python-security-reports
@@ -285,7 +285,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload JS Security Reports
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: javascript-security-reports
@@ -373,7 +373,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Semgrep Artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: semgrep-reports
@@ -416,7 +416,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Trivy Artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: trivy-reports
@@ -525,7 +525,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Dependency Reports
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: dependency-analysis
@@ -566,7 +566,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Scorecard Artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: scorecard-report
