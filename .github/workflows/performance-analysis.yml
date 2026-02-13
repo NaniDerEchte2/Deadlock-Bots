@@ -59,10 +59,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Tools
-        run: |
-          python -m pip install radon==6.0.1 vulture==2.14
-        continue-on-error: true
+      - name: Set up uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
 
       # Complexity Analysis
       - name: Complexity Analysis
@@ -70,10 +68,10 @@ jobs:
           echo "# Performance Analysis" > performance-report.md
           echo "" >> performance-report.md
           echo "## Cyclomatic Complexity:" >> performance-report.md
-          radon cc . -a --total-average >> performance-report.md || echo "No data" >> performance-report.md
+          uvx --with radon==6.0.1 radon cc . -a --total-average >> performance-report.md || echo "No data" >> performance-report.md
           echo "" >> performance-report.md
           echo "## Maintainability Index:" >> performance-report.md
-          radon mi . -s >> performance-report.md || echo "No data" >> performance-report.md
+          uvx --with radon==6.0.1 radon mi . -s >> performance-report.md || echo "No data" >> performance-report.md
           cat performance-report.md
         continue-on-error: true
 
@@ -82,7 +80,7 @@ jobs:
         run: |
           echo "" >> performance-report.md
           echo "## Potential Dead Code:" >> performance-report.md
-          vulture . --min-confidence 80 >> performance-report.md || echo "Analysis failed" >> performance-report.md
+          uvx --with vulture==2.14 vulture . --min-confidence 80 >> performance-report.md || echo "Analysis failed" >> performance-report.md
         continue-on-error: true
 
       # Find Nested Loops (Performance Bottlenecks)

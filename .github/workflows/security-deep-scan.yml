@@ -87,25 +87,17 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Analysis Tools
-        run: |
-          python -m pip install \
-            bandit==1.9.3 \
-            safety==3.7.0 \
-            pip-audit==2.10.0 \
-            radon==6.0.1 \
-            vulture==2.14 \
-            dodgy==0.2.1
-        continue-on-error: true
+      - name: Set up uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
 
       # Bandit - Security Issues
       - name: Bandit Security Scan
         run: |
           echo "Running Bandit security scan..."
-          bandit -r . -f json -o bandit-report.json -ll || true
+          uvx --with bandit==1.9.3 bandit -r . -f json -o bandit-report.json -ll || true
           if [ -f bandit-report.json ]; then
             echo "✅ Bandit scan completed"
-            bandit -r . -ll || echo "⚠️ Security issues found (check artifact)"
+            uvx --with bandit==1.9.3 bandit -r . -ll || echo "⚠️ Security issues found (check artifact)"
           fi
         continue-on-error: true
 
@@ -121,7 +113,7 @@ jobs:
             rel_path="${req_file#./}"
             safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
             echo "Safety scan for $req_file"
-            safety check -r "$req_file" --json > "safety-reports/${safe_name}.json" || true
+            uvx --with safety==3.7.0 safety check -r "$req_file" --json > "safety-reports/${safe_name}.json" || true
           done < <(find . -type f -name "requirements*.txt" \
             -not -path "*/.venv/*" \
             -not -path "*/venv/*" \
@@ -146,7 +138,7 @@ jobs:
             rel_path="${req_file#./}"
             safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
             echo "pip-audit for $req_file"
-            pip-audit -r "$req_file" --format json --output "pip-audit-reports/${safe_name}.json" || true
+            uvx --with pip-audit==2.10.0 pip-audit -r "$req_file" --format json --output "pip-audit-reports/${safe_name}.json" || true
           done < <(find . -type f -name "requirements*.txt" \
             -not -path "*/.venv/*" \
             -not -path "*/venv/*" \
@@ -163,8 +155,8 @@ jobs:
       - name: Complexity Analysis
         run: |
           echo "Running complexity analysis..."
-          radon cc . -a -nb --total-average > radon-complexity.txt || true
-          radon mi . -nb > radon-maintainability.txt || true
+          uvx --with radon==6.0.1 radon cc . -a -nb --total-average > radon-complexity.txt || true
+          uvx --with radon==6.0.1 radon mi . -nb > radon-maintainability.txt || true
           echo "✅ Complexity analysis completed"
         continue-on-error: true
 
@@ -172,7 +164,7 @@ jobs:
       - name: Find Dead Code
         run: |
           echo "Looking for dead code..."
-          vulture . --min-confidence 80 > vulture-report.txt || true
+          uvx --with vulture==2.14 vulture . --min-confidence 80 > vulture-report.txt || true
           if [ -f vulture-report.txt ]; then
             lines=$(wc -l < vulture-report.txt)
             echo "Found $lines potential dead code items"
@@ -183,7 +175,7 @@ jobs:
       - name: Dodgy Suspicious Pattern Check
         run: |
           echo "Running dodgy..."
-          dodgy > dodgy-report.txt || true
+          uvx --with dodgy==0.2.1 dodgy > dodgy-report.txt || true
         continue-on-error: true
 
       - name: Upload Python Security Reports
@@ -253,9 +245,8 @@ jobs:
       # RetireJS - Check for vulnerable JS libraries
       - name: RetireJS Scan
         run: |
-          npm install -g retire@5.4.2 || true
           echo "Running RetireJS scan..."
-          retire --path . --outputformat json --outputpath retirejs-report.json || true
+          npx --yes retire@5.4.2 --path . --outputformat json --outputpath retirejs-report.json || true
           if [ -f retirejs-report.json ]; then
             echo "✅ RetireJS scan completed"
           fi
@@ -265,8 +256,7 @@ jobs:
       - name: ESLint Security Scan
         if: hashFiles('**/package.json') != ''
         run: |
-          npm install -g eslint@10.0.0 eslint-plugin-security@3.0.1 eslint-plugin-no-secrets@2.2.2 || true
-          eslint . --ext .js,.ts,.jsx,.tsx --format json --output-file eslint-security.json || true
+          npx --yes -p eslint@10.0.0 -p eslint-plugin-security@3.0.1 -p eslint-plugin-no-secrets@2.2.2 eslint . --ext .js,.ts,.jsx,.tsx --format json --output-file eslint-security.json || true
         continue-on-error: true
 
       # Snyk Scan (optional, requires repository secret SNYK_TOKEN)
@@ -279,9 +269,8 @@ jobs:
             echo "ℹ️ SNYK_TOKEN not configured; skipping Snyk scan."
             exit 0
           fi
-          npm install -g snyk@1.1302.1 || true
-          snyk auth "$SNYK_TOKEN" || true
-          snyk test --all-projects --severity-threshold=low --json-file-output=snyk-report.json || true
+          npx --yes snyk@1.1302.1 auth "$SNYK_TOKEN" || true
+          npx --yes snyk@1.1302.1 test --all-projects --severity-threshold=low --json-file-output=snyk-report.json || true
         continue-on-error: true
 
       - name: Upload JS Security Reports
@@ -439,6 +428,10 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Set up uv
+        if: needs.detect-languages.outputs.has_requirements == 'true'
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+
       - name: Setup Node.js
         if: needs.detect-languages.outputs.has_package_json == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -482,14 +475,13 @@ jobs:
       - name: Python Dependency Vulnerability Report
         if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
-          python -m pip install pip-audit==2.10.0
           mkdir -p dependency-analysis/python-vulns
           found=0
           while IFS= read -r req_file; do
             found=1
             rel_path="${req_file#./}"
             safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
-            pip-audit -r "$req_file" --format json --output "dependency-analysis/python-vulns/${safe_name}.pip-audit.json" || true
+            uvx --with pip-audit==2.10.0 pip-audit -r "$req_file" --format json --output "dependency-analysis/python-vulns/${safe_name}.pip-audit.json" || true
           done < <(find . -type f -name "requirements*.txt" \
             -not -path "*/.venv/*" \
             -not -path "*/venv/*" \
@@ -503,7 +495,6 @@ jobs:
       - name: NPM License Scanner
         if: needs.detect-languages.outputs.has_package_json == 'true' && hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != ''
         run: |
-          npm install -g license-checker@25.0.1
           mkdir -p dependency-analysis/npm-licenses
           found=0
           while IFS= read -r lock_file; do
@@ -513,8 +504,8 @@ jobs:
             safe_name="$(echo "${rel_dir:-root}" | sed 's#[^A-Za-z0-9._-]#_#g')"
             (
               cd "$dir_path"
-              license-checker --json > "$GITHUB_WORKSPACE/dependency-analysis/npm-licenses/${safe_name}.json" || true
-              license-checker --summary > "$GITHUB_WORKSPACE/dependency-analysis/npm-licenses/${safe_name}.txt" || true
+              npx --yes license-checker@25.0.1 --json > "$GITHUB_WORKSPACE/dependency-analysis/npm-licenses/${safe_name}.json" || true
+              npx --yes license-checker@25.0.1 --summary > "$GITHUB_WORKSPACE/dependency-analysis/npm-licenses/${safe_name}.txt" || true
             )
           done < <(find . -type f \( -name "package-lock.json" -o -name "npm-shrinkwrap.json" \) \
             -not -path "*/node_modules/*" \

@@ -103,18 +103,20 @@ jobs:
             };
 
             const settingsFindings = [];
-            if (status.dependencyGraph !== 'enabled') {
-              settingsFindings.push(`Dependency Graph is \`${status.dependencyGraph}\`.`);
+            const settingsObservations = [];
+            function collectSettingFinding(label, value) {
+              if (value === 'enabled') return;
+              if (value === 'unknown' || value === 'not_available') {
+                settingsObservations.push(`${label} is \`${value}\` (insufficient permissions or unavailable).`);
+                return;
+              }
+              settingsFindings.push(`${label} is \`${value}\`.`);
             }
-            if (status.dependabotAlerts !== 'enabled') {
-              settingsFindings.push(`Dependabot Alerts are \`${status.dependabotAlerts}\`.`);
-            }
-            if (status.secretScanning !== 'enabled') {
-              settingsFindings.push(`Secret Scanning is \`${status.secretScanning}\`.`);
-            }
-            if (status.pushProtection !== 'enabled') {
-              settingsFindings.push(`Secret Scanning Push Protection is \`${status.pushProtection}\`.`);
-            }
+
+            collectSettingFinding('Dependency Graph', status.dependencyGraph);
+            collectSettingFinding('Dependabot Alerts', status.dependabotAlerts);
+            collectSettingFinding('Secret Scanning', status.secretScanning);
+            collectSettingFinding('Secret Scanning Push Protection', status.pushProtection);
 
             const shouldOpenIncident =
               codeHighCritical.length > 0 ||
@@ -174,6 +176,8 @@ jobs:
               `- Push Protection: \`${status.pushProtection}\``,
               '',
               settingsFindings.length ? '### Settings Findings\n' + settingsFindings.map((x) => `- ${x}`).join('\n') : '### Settings Findings\n- None',
+              '',
+              settingsObservations.length ? '### Settings Observations (Non-Blocking)\n' + settingsObservations.map((x) => `- ${x}`).join('\n') : '### Settings Observations (Non-Blocking)\n- None',
               '',
               secretApiError ? `### Secret Scanning API\n- Could not query secret scanning alerts: \`${secretApiError}\`` : '### Secret Scanning API\n- Query successful',
               '',

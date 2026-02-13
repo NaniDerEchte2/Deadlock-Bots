@@ -1,0 +1,5 @@
+# Default ownership for all files in this repository.
+* @NaniDerEchte2
+
+# Protect CI/security changes with explicit owner review.
+.github/workflows/* @NaniDerEchte2

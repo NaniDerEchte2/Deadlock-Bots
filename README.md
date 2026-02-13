@@ -141,4 +141,4 @@ Konfiguration in `service/standalone_manager.py`
 
 ## Lizenz
 
-Internes Community-Projekt
+MIT (siehe `LICENSE`)
