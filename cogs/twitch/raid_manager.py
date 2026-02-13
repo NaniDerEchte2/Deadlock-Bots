@@ -1372,19 +1372,41 @@ class RaidBot:
                 
                 # Nachricht im Stil des Screenshots
                 message = "Deadlock Chatbot Guard verbunden! 🎮"
-                
-                # Sende Nachricht (EventSub kompatibel via ChatBot Methode)
+                commands_public = (
+                    "Commands für alle: "
+                    "!ping (Bot-Status) | "
+                    "!clip [beschreibung] (Clip erstellen) | "
+                    "!raid_history (letzte Raids)"
+                )
+                commands_mod = (
+                    "Mod-Commands: "
+                    "!raid / !traid (Raid starten) | "
+                    "!raid_status (Bot-Status) | "
+                    "!uban / !unban (letzten Auto-Ban aufheben) | "
+                    "!silentban / !silentraid (Benachrichtigungen an/aus)"
+                )
+
+                # Sende Nachrichten (EventSub kompatibel via ChatBot Methode)
                 if hasattr(self.chat_bot, "_send_chat_message"):
                     # Mock Channel-Objekt für die interne Methode
                     class MockChannel:
                         def __init__(self, login, uid):
                             self.name = login
                             self.id = uid
-                    
-                    await self.chat_bot._send_chat_message(MockChannel(twitch_login, twitch_user_id), message)
+
+                    mock_ch = MockChannel(twitch_login, twitch_user_id)
+                    await self.chat_bot._send_chat_message(mock_ch, message)
+                    await asyncio.sleep(1)
+                    await self.chat_bot._send_chat_message(mock_ch, commands_public)
+                    await asyncio.sleep(1)
+                    await self.chat_bot._send_chat_message(mock_ch, commands_mod)
                 elif hasattr(self.chat_bot, "send_message") and bot_id:
                     await self.chat_bot.send_message(str(twitch_user_id), str(bot_id), message)
-                
+                    await asyncio.sleep(1)
+                    await self.chat_bot.send_message(str(twitch_user_id), str(bot_id), commands_public)
+                    await asyncio.sleep(1)
+                    await self.chat_bot.send_message(str(twitch_user_id), str(bot_id), commands_mod)
+
                 log.info("Sent auth success message to %s", twitch_login)
             except Exception:
                 log.exception("Error sending auth success message to %s", twitch_login)
