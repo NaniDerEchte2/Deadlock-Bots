@@ -13,8 +13,18 @@ export default defineConfig({
   },
   base: '/twitch/dashboard-v2/',
   build: {
-    outDir: 'dist',
+    outDir: '../analytics/dashboard_v2/dist',
     emptyOutDir: true,
+    chunkSizeWarningLimit: 1000,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ['react', 'react-dom'],
+          charts: ['recharts'],
+          query: ['@tanstack/react-query'],
+        },
+      },
+    },
   },
   server: {
     proxy: {

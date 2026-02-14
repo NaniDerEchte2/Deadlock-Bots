@@ -13,6 +13,7 @@ import time
 import secrets
 import asyncio
 import os
+import json
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlencode
@@ -192,7 +193,15 @@ class RaidAuthManager:
 
         async with session.post(TWITCH_TOKEN_URL, data=data) as r:
             if r.status != 200:
-                log.error("OAuth exchange failed with HTTP status %s", r.status)
+                try:
+                    err_body = await r.text()
+                except Exception:
+                    err_body = "<unreadable>"
+                log.error(
+                    "OAuth exchange failed with HTTP %s: %s",
+                    r.status,
+                    err_body[:500],
+                )
                 r.raise_for_status()
             return await r.json()
 
@@ -216,22 +225,43 @@ class RaidAuthManager:
                     twitch_login or "unknown",
                     r.status,
                 )
-                
-                # Bei "Invalid refresh token" (HTTP 400): Blacklist + Benachrichtigung
-                if r.status == 400 and "invalid" in txt.lower() and twitch_user_id and twitch_login:
+
+                # Nur echte "invalid refresh token"/"invalid_grant" Antworten dürfen
+                # den Blacklist-Counter erhöhen. Andere 400er sind oft Request-/Config-
+                # Probleme und sollten keinen Streamer sperren.
+                response_lc = txt.lower()
+                parsed_message = ""
+                parsed_error = ""
+                try:
+                    payload = json.loads(txt)
+                    if isinstance(payload, dict):
+                        parsed_message = str(payload.get("message", "")).lower()
+                        parsed_error = str(payload.get("error", "")).lower()
+                except Exception:
+                    pass
+
+                is_invalid_refresh_grant = r.status == 400 and (
+                    "invalid refresh token" in response_lc
+                    or "invalid refresh token" in parsed_message
+                    or "invalid_grant" in response_lc
+                    or "invalid_grant" in parsed_message
+                    or "invalid_grant" in parsed_error
+                )
+
+                if is_invalid_refresh_grant and twitch_user_id and twitch_login:
                     log.warning(
                         "Invalid OAuth refresh grant for %s (ID: %s) - adding to blacklist",
                         twitch_login,
                         twitch_user_id,
                     )
-                    
+
                     # Zur Blacklist hinzufügen
                     self.token_error_handler.add_to_blacklist(
                         twitch_user_id=twitch_user_id,
                         twitch_login=twitch_login,
                         error_message=error_msg,
                     )
-                    
+
                     # Discord-Benachrichtigung senden (async, fire-and-forget)
                     if hasattr(self, '_discord_bot') and self._discord_bot:
                         asyncio.create_task(
@@ -241,6 +271,11 @@ class RaidAuthManager:
                                 error_message=error_msg,
                             )
                         )
+                elif r.status == 400 and twitch_login:
+                    log.warning(
+                        "OAuth refresh for %s returned HTTP 400 but not an invalid refresh grant; skipping blacklist increment",
+                        twitch_login,
+                    )
 
                 r.raise_for_status()
             return await r.json()
@@ -277,6 +312,19 @@ class RaidAuthManager:
             if self.token_error_handler.is_token_blacklisted(user_id):
                 continue
 
+            # Cooldown: Nicht zu schnell nach einem Fehler erneut versuchen (min. 2h Abstand)
+            if self.token_error_handler.has_recent_failure(user_id):
+                log.debug(
+                    "Skipping token refresh for %s (recent failure, cooldown active)",
+                    login,
+                )
+                continue
+
+            # Bug Fix: NULL refresh_token → kein Refresh möglich, überspringen
+            if not refresh_tok:
+                log.warning("No refresh token stored for %s (user_id=%s), skipping", login, user_id)
+                continue
+
             try:
                 expires_dt = datetime.fromisoformat(expires_iso.replace("Z", "+00:00"))
                 expires_ts = expires_dt.timestamp()
@@ -296,14 +344,20 @@ class RaidAuthManager:
                             "SELECT token_expires_at FROM twitch_raid_auth WHERE twitch_user_id = ?",
                             (user_id,)
                         ).fetchone()
-                    
+
                     if current:
                         curr_iso = current[0]
+                        if not curr_iso:
+                            log.warning("NULL token_expires_at in double-check for %s, skipping", login)
+                            continue
                         curr_ts = datetime.fromisoformat(curr_iso.replace("Z", "+00:00")).timestamp()
-                        if now_ts < curr_ts - 7200:
-                            continue # Wurde bereits refresht
+                        # Bug Fix: time.time() statt veraltetes now_ts verwenden
+                        if time.time() < curr_ts - 7200:
+                            continue  # Wurde bereits refresht
                 except Exception as exc:
-                    log.debug("Konnte expires_at nicht parsen für %s", login, exc_info=exc)
+                    # Bug Fix: Bei Exception im Double-Check SKIP statt Fallthrough zum Refresh
+                    log.warning("Double-check failed for %s, skipping refresh to be safe: %s", login, exc)
+                    continue
 
                 log.info("Auto-refreshing OAuth grant for %s (background maintenance)", login)
                 try:
@@ -311,7 +365,7 @@ class RaidAuthManager:
                         refresh_tok, session, twitch_user_id=user_id, twitch_login=login
                     )
                     new_access = token_data["access_token"]
-                    new_refresh = token_data.get("refresh_token", refresh_tok)
+                    new_refresh = token_data.get("refresh_token") or refresh_tok
                     expires_in = token_data.get("expires_in", 3600)
                     
                     new_expires_at = datetime.now(timezone.utc).timestamp() + expires_in
@@ -328,6 +382,8 @@ class RaidAuthManager:
                             (new_access, new_refresh, new_expires_iso, user_id),
                         )
                         conn.commit()
+                    # Erfolgreicher Refresh → eventuelle Fehler-Counter zurücksetzen
+                    self.token_error_handler.clear_failure_count(user_id)
                     refreshed_count += 1
                     # Kleines Delay um API Spikes zu vermeiden
                     await asyncio.sleep(0.5)
@@ -481,6 +537,14 @@ class RaidAuthManager:
         if self.token_error_handler.is_token_blacklisted(twitch_user_id):
             return None
 
+        # Cooldown: Nicht zu schnell nach einem Fehler erneut versuchen
+        if self.token_error_handler.has_recent_failure(twitch_user_id):
+            log.debug(
+                "get_tokens_for_user: recent failure cooldown active for user_id=%s",
+                twitch_user_id,
+            )
+            return None
+
         with get_conn() as conn:
             row = conn.execute(
                 """
@@ -495,7 +559,7 @@ class RaidAuthManager:
             return None
 
         access_token, refresh_token, expires_at_iso, twitch_login = row
-        expires_at = datetime.fromisoformat(expires_at_iso).timestamp()
+        expires_at = datetime.fromisoformat(expires_at_iso.replace("Z", "+00:00")).timestamp()
 
         # Token noch gültig? (5 Minuten Puffer)
         if time.time() < expires_at - 300:
@@ -509,10 +573,10 @@ class RaidAuthManager:
                     "SELECT token_expires_at, access_token, refresh_token FROM twitch_raid_auth WHERE twitch_user_id = ?",
                     (twitch_user_id,),
                 ).fetchone()
-            
+
             if row_check:
                 curr_expires_iso, curr_access, curr_refresh = row_check
-                curr_expires = datetime.fromisoformat(curr_expires_iso).timestamp()
+                curr_expires = datetime.fromisoformat(curr_expires_iso.replace("Z", "+00:00")).timestamp()
                 if time.time() < curr_expires - 300:
                     return curr_access, curr_refresh
 
@@ -525,7 +589,7 @@ class RaidAuthManager:
                     twitch_login=twitch_login,
                 )
                 new_access_token = token_data["access_token"]
-                new_refresh_token = token_data.get("refresh_token", refresh_token)
+                new_refresh_token = token_data.get("refresh_token") or refresh_token
                 expires_in = token_data.get("expires_in", 3600)
 
                 # Token in DB aktualisieren
@@ -546,6 +610,7 @@ class RaidAuthManager:
                     )
                     conn.commit()
 
+                self.token_error_handler.clear_failure_count(twitch_user_id)
                 return new_access_token, new_refresh_token
             except Exception:
                 log.exception("Failed to refresh OAuth grant for %s", twitch_login)
@@ -569,6 +634,14 @@ class RaidAuthManager:
             )
             return None
 
+        # Cooldown: Wenn kürzlich ein Fehler aufgetreten ist, nicht sofort nochmal versuchen
+        if self.token_error_handler.has_recent_failure(twitch_user_id):
+            log.debug(
+                "OAuth grant for user_id=%s has recent failure, cooldown active - returning None",
+                twitch_user_id,
+            )
+            return None
+
         # SCHRITT 2: Token aus DB holen
         with get_conn() as conn:
             row = conn.execute(
@@ -584,7 +657,7 @@ class RaidAuthManager:
             return None
 
         access_token, refresh_token, expires_at_iso, twitch_login = row
-        expires_at = datetime.fromisoformat(expires_at_iso).timestamp()
+        expires_at = datetime.fromisoformat(expires_at_iso.replace("Z", "+00:00")).timestamp()
 
         # SCHRITT 3: Token noch gültig?
         if time.time() < expires_at - 300:  # 5 Minuten Puffer
@@ -598,10 +671,10 @@ class RaidAuthManager:
                     "SELECT token_expires_at, access_token FROM twitch_raid_auth WHERE twitch_user_id = ?",
                     (twitch_user_id,),
                 ).fetchone()
-            
+
             if row_check:
                 curr_expires_iso, curr_access = row_check
-                curr_expires = datetime.fromisoformat(curr_expires_iso).timestamp()
+                curr_expires = datetime.fromisoformat(curr_expires_iso.replace("Z", "+00:00")).timestamp()
                 if time.time() < curr_expires - 300:
                     return curr_access
 
@@ -615,7 +688,7 @@ class RaidAuthManager:
                     twitch_login=twitch_login,
                 )
                 new_access_token = token_data["access_token"]
-                new_refresh_token = token_data.get("refresh_token", refresh_token)
+                new_refresh_token = token_data.get("refresh_token") or refresh_token
                 expires_in = token_data.get("expires_in", 3600)
 
                 # Token in DB aktualisieren
@@ -636,6 +709,7 @@ class RaidAuthManager:
                     )
                     conn.commit()
 
+                self.token_error_handler.clear_failure_count(twitch_user_id)
                 return new_access_token
             except Exception:
                 log.exception("Failed to refresh OAuth grant for %s", twitch_login)
@@ -974,11 +1048,13 @@ class RaidBot:
         token_refresh_interval = 1800.0
         blacklist_cleanup_interval = 7 * 1800.0
         pending_raid_cleanup_interval = 120.0
+        grace_period_check_interval = 3600.0  # stündlich
 
         last_state_cleanup = 0.0
         last_token_refresh = 0.0
         last_blacklist_cleanup = 0.0
         last_raid_cleanup = 0.0
+        last_grace_period_check = 0.0
         while True:
             await asyncio.sleep(60)  # Loop-Tick (Wartungs-Tasks laufen in eigenen Intervallen)
             try:
@@ -999,6 +1075,11 @@ class RaidBot:
                 if now - last_blacklist_cleanup >= blacklist_cleanup_interval:
                     self.auth_manager.token_error_handler.cleanup_old_entries(days=30)
                     last_blacklist_cleanup = now
+
+                # Grace-Period Check (stündlich): Erinnerung + Rolle entfernen bei Ablauf
+                if now - last_grace_period_check >= grace_period_check_interval:
+                    await self.auth_manager.token_error_handler.check_grace_periods()
+                    last_grace_period_check = now
 
                 # 3. Pending Raids Cleanup (alle 2min)
                 if now - last_raid_cleanup >= pending_raid_cleanup_interval:

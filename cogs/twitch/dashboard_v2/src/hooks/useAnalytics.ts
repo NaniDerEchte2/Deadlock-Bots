@@ -24,6 +24,8 @@ import {
   fetchViewerTimeline,
   fetchCategoryLeaderboard,
   fetchCoaching,
+  fetchMonetization,
+  fetchCategoryTimings,
 } from '@/api/client';
 import type { TimeRange } from '@/types/analytics';
 
@@ -220,6 +222,24 @@ export function useCoaching(streamer: string | null, days: TimeRange) {
     queryFn: () => fetchCoaching(streamer!, days),
     staleTime: STALE_TIME,
     enabled: !!streamer,
+  });
+}
+
+// Category Timings Hook
+export function useCategoryTimings(days: TimeRange, source: 'category' | 'tracked' = 'category') {
+  return useQuery({
+    queryKey: ['category-timings', days, source],
+    queryFn: () => fetchCategoryTimings(days, source),
+    staleTime: STALE_TIME,
+  });
+}
+
+// Monetization Hook
+export function useMonetization(streamer: string | null, days: TimeRange) {
+  return useQuery({
+    queryKey: ['monetization', streamer, days],
+    queryFn: () => fetchMonetization(streamer, days),
+    staleTime: STALE_TIME,
   });
 }
 

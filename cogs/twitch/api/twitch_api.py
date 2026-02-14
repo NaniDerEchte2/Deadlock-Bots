@@ -607,13 +607,22 @@ class TwitchAPI:
                 "secret": secret,
             },
         }
-        return await self._post(
-            "/eventsub/subscriptions",
-            json=payload,
-            oauth_token=oauth_token,
-            max_attempts=1,
-            request_timeout_total=10.0,
-        )
+        try:
+            return await self._post(
+                "/eventsub/subscriptions",
+                json=payload,
+                log_on_error=False,
+                oauth_token=oauth_token,
+                max_attempts=1,
+                request_timeout_total=10.0,
+            )
+        except aiohttp.ClientResponseError as exc:
+            if exc.status == 409:
+                self._log.debug(
+                    "POST /eventsub/subscriptions: subscription already exists (409), treating as success"
+                )
+                return {"already_exists": True}
+            raise
 
     async def delete_eventsub_subscription(self, subscription_id: str, oauth_token: Optional[str] = None) -> bool:
         """Löscht eine EventSub Subscription per ID."""

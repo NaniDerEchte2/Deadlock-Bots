@@ -8,9 +8,11 @@ import {
   Calendar,
   Target,
   GraduationCap,
+  DollarSign,
+  Globe,
 } from 'lucide-react';
 
-export type TabId = 'overview' | 'streams' | 'chat' | 'growth' | 'audience' | 'compare' | 'schedule' | 'coaching';
+export type TabId = 'overview' | 'streams' | 'chat' | 'growth' | 'audience' | 'compare' | 'schedule' | 'coaching' | 'monetization' | 'category';
 
 interface Tab {
   id: TabId;
@@ -27,6 +29,8 @@ const tabs: Tab[] = [
   { id: 'compare', label: 'Vergleich', icon: Users },
   { id: 'schedule', label: 'Zeitplan', icon: Calendar },
   { id: 'coaching', label: 'Coaching', icon: GraduationCap },
+  { id: 'monetization', label: 'Monetization', icon: DollarSign },
+  { id: 'category', label: 'Kategorie', icon: Globe },
 ];
 
 interface TabNavigationProps {

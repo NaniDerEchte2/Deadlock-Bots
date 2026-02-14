@@ -254,6 +254,8 @@ class AnalyticsV2Mixin:
         router.add_get("/twitch/api/v2/viewer-timeline", self._api_v2_viewer_timeline)
         router.add_get("/twitch/api/v2/category-leaderboard", self._api_v2_category_leaderboard)
         router.add_get("/twitch/api/v2/coaching", self._api_v2_coaching)
+        router.add_get("/twitch/api/v2/monetization", self._api_v2_monetization)
+        router.add_get("/twitch/api/v2/category-timings", self._api_v2_category_timings)
         # Serve the dashboard
         router.add_get("/twitch/dashboard-v2", self._serve_dashboard_v2)
         router.add_get("/twitch/dashboard-v2/{path:.*}", self._serve_dashboard_v2_assets)
@@ -2444,6 +2446,286 @@ class AnalyticsV2Mixin:
         except Exception as exc:
             log.exception("Error in coaching API")
             return web.json_response({"error": str(exc)}, status=500)
+
+
+    async def _api_v2_category_timings(self, request: web.Request) -> web.Response:
+        """
+        Outlier-resistente Stunden- und Wochentags-Analyse für die gesamte Kategorie.
+        Methode: Median der Streamer-Mediane (zweistufig) + P25/P75 Konfidenzband.
+        Einzelne Streamer mit extrem hohen Viewerzahlen verzerren so das Ergebnis nicht.
+        """
+        self._require_v2_auth(request)
+        days = min(max(int(request.query.get("days", "30")), 7), 90)
+        source = request.query.get("source", "category")  # 'category' | 'tracked'
+
+        from datetime import datetime, timedelta, timezone
+        from statistics import median, quantiles
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        table = "twitch_stats_category" if source != "tracked" else "twitch_stats_tracked"
+
+        try:
+            with storage.get_conn() as c:
+                rows = c.execute(
+                    f"""
+                    SELECT streamer,
+                           CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
+                           CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
+                           viewer_count
+                      FROM {table}
+                     WHERE ts_utc >= ?
+                       AND viewer_count IS NOT NULL
+                       AND viewer_count > 0
+                    """,
+                    (cutoff,),
+                ).fetchall()
+        except Exception as exc:
+            log.exception("category-timings query failed")
+            return web.json_response({"error": str(exc)}, status=500)
+
+        # --- Stunde: Streamer → Stunde → Liste Viewerzahlen ---
+        # hour_data[hour][streamer] = [viewer_counts...]
+        from collections import defaultdict
+        hour_data: dict = defaultdict(lambda: defaultdict(list))
+        weekday_data: dict = defaultdict(lambda: defaultdict(list))
+
+        for row in rows:
+            streamer = row[0]
+            hour = int(row[1])
+            wd = int(row[2])
+            vc = float(row[3])
+            hour_data[hour][streamer].append(vc)
+            weekday_data[wd][streamer].append(vc)
+
+        def _robust_stats(slot_data: dict) -> dict:
+            """Für einen Slot (Stunde/Wochentag): Median der Streamer-Mediane + P25/P75."""
+            if not slot_data:
+                return {"median": None, "p25": None, "p75": None,
+                        "streamer_count": 0, "sample_count": 0}
+            # Schritt 1: pro Streamer einen Median berechnen
+            per_streamer = [median(vals) for vals in slot_data.values() if vals]
+            per_streamer.sort()
+            n = len(per_streamer)
+            sample_count = sum(len(v) for v in slot_data.values())
+            if n == 0:
+                return {"median": None, "p25": None, "p75": None,
+                        "streamer_count": 0, "sample_count": 0}
+            # Schritt 2: Median der Mediane
+            med = median(per_streamer)
+            # P25 / P75
+            if n >= 4:
+                qs = quantiles(per_streamer, n=4)
+                p25, p75 = qs[0], qs[2]
+            elif n >= 2:
+                p25 = per_streamer[0]
+                p75 = per_streamer[-1]
+            else:
+                p25 = p75 = per_streamer[0]
+            return {
+                "median": round(med, 1),
+                "p25": round(p25, 1),
+                "p75": round(p75, 1),
+                "streamer_count": n,
+                "sample_count": sample_count,
+            }
+
+        weekday_names = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"]
+
+        hourly = []
+        for h in range(24):
+            s = _robust_stats(hour_data.get(h, {}))
+            s["hour"] = h
+            hourly.append(s)
+
+        weekday_order = [1, 2, 3, 4, 5, 6, 0]  # Mo-So
+        weekly = []
+        for wd in weekday_order:
+            s = _robust_stats(weekday_data.get(wd, {}))
+            s["weekday"] = wd
+            s["label"] = weekday_names[wd]
+            weekly.append(s)
+
+        total_streamers = len({row[0] for row in rows})
+
+        return web.json_response({
+            "hourly": hourly,
+            "weekly": weekly,
+            "total_streamers": total_streamers,
+            "window_days": days,
+            "method": "median_of_medians",
+        })
+
+    async def _api_v2_monetization(self, request: web.Request) -> web.Response:
+        """Monetization & Hype Train overview for the last N days."""
+        self._require_v2_auth(request)
+        streamer = request.query.get("streamer", "").strip().lower()
+        days = min(max(int(request.query.get("days", "30")), 7), 90)
+
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+        ads: dict = {"total": 0, "auto": 0, "manual": 0, "sessions_with_ads": 0,
+                     "avg_duration_s": 0.0, "avg_viewer_drop_pct": None, "worst_ads": []}
+        hype_train: dict = {"total": 0, "avg_level": 0.0, "max_level": 0, "avg_duration_s": 0.0}
+        bits: dict = {"total": 0, "cheer_events": 0}
+        subs: dict = {"total_events": 0, "gifted": 0}
+
+        try:
+            with storage.get_conn() as c:
+                # --- Ad Break overview ---
+                streamer_join = "AND LOWER(s.streamer_login) = ?" if streamer else ""
+                streamer_params = [streamer] if streamer else []
+
+                ad_agg = c.execute(
+                    f"""
+                    SELECT COUNT(*) AS total_ads,
+                           SUM(CASE WHEN a.is_automatic=1 THEN 1 ELSE 0 END) AS auto_ads,
+                           AVG(a.duration_seconds) AS avg_duration,
+                           COUNT(DISTINCT a.session_id) AS sessions_with_ads
+                      FROM twitch_ad_break_events a
+                      LEFT JOIN twitch_stream_sessions s ON s.id = a.session_id
+                     WHERE a.started_at >= ?
+                       {streamer_join}
+                    """,
+                    [cutoff] + streamer_params,
+                ).fetchone()
+                if ad_agg:
+                    total = int(ad_agg["total_ads"] or 0)
+                    auto = int(ad_agg["auto_ads"] or 0)
+                    ads["total"] = total
+                    ads["auto"] = auto
+                    ads["manual"] = total - auto
+                    ads["sessions_with_ads"] = int(ad_agg["sessions_with_ads"] or 0)
+                    ads["avg_duration_s"] = round(float(ad_agg["avg_duration"] or 0.0), 1)
+
+                # --- Viewer impact ---
+                ad_rows = c.execute(
+                    f"""
+                    SELECT a.id, a.session_id, a.started_at, a.duration_seconds, a.is_automatic,
+                           s.started_at AS session_start
+                      FROM twitch_ad_break_events a
+                      JOIN twitch_stream_sessions s ON s.id = a.session_id
+                     WHERE a.started_at >= ?
+                       AND a.session_id IS NOT NULL
+                       {streamer_join}
+                     ORDER BY a.started_at DESC
+                     LIMIT 200
+                    """,
+                    [cutoff] + streamer_params,
+                ).fetchall()
+
+                timeline_map: dict = {}
+                if ad_rows:
+                    session_ids = list({int(r["session_id"]) for r in ad_rows if r["session_id"]})
+                    if session_ids:
+                        ph = ",".join("?" * len(session_ids))
+                        vrows = c.execute(
+                            f"SELECT session_id, minutes_from_start, viewer_count FROM twitch_session_viewers WHERE session_id IN ({ph}) ORDER BY session_id, minutes_from_start",
+                            session_ids,
+                        ).fetchall()
+                        for vr in vrows:
+                            sid = int(vr["session_id"])
+                            timeline_map.setdefault(sid, []).append(
+                                (float(vr["minutes_from_start"] or 0), int(vr["viewer_count"] or 0))
+                            )
+
+                drop_pcts: list = []
+                worst_ads: list = []
+                for ad in ad_rows:
+                    sid = int(ad["session_id"] or 0)
+                    dur_s = float(ad["duration_seconds"] or 30)
+                    try:
+                        ad_dt = datetime.fromisoformat(str(ad["started_at"]).replace("Z", "+00:00"))
+                        sess_dt = datetime.fromisoformat(str(ad["session_start"]).replace("Z", "+00:00"))
+                        min_into = (ad_dt - sess_dt).total_seconds() / 60.0
+                    except Exception:
+                        continue
+                    tl = timeline_map.get(sid, [])
+                    if not tl:
+                        continue
+                    dur_min = dur_s / 60.0
+                    pre = [v for m, v in tl if (min_into - 5) <= m < min_into]
+                    post_start = min_into + dur_min
+                    post = [v for m, v in tl if post_start <= m < (post_start + 5)]
+                    if not pre or not post:
+                        continue
+                    pre_avg = sum(pre) / len(pre)
+                    if pre_avg <= 0:
+                        continue
+                    drop = (sum(post) / len(post) - pre_avg) / pre_avg * 100.0
+                    drop_pcts.append(drop)
+                    worst_ads.append({
+                        "started_at": str(ad["started_at"] or "")[:16],
+                        "duration_s": int(dur_s),
+                        "drop_pct": round(drop, 1),
+                        "is_automatic": bool(ad["is_automatic"]),
+                    })
+
+                if drop_pcts:
+                    ads["avg_viewer_drop_pct"] = round(sum(drop_pcts) / len(drop_pcts), 1)
+                worst_ads.sort(key=lambda x: x["drop_pct"])
+                ads["worst_ads"] = worst_ads[:5]
+
+                # --- Hype Train ---
+                try:
+                    ht_join = "AND LOWER(s.streamer_login) = ?" if streamer else ""
+                    ht = c.execute(
+                        f"""
+                        SELECT COUNT(*) AS total, AVG(h.level) AS avg_level,
+                               MAX(h.level) AS max_level, AVG(h.duration_seconds) AS avg_dur
+                          FROM twitch_hype_train_events h
+                          LEFT JOIN twitch_stream_sessions s ON s.id = h.session_id
+                         WHERE h.started_at >= ?
+                           AND h.ended_at IS NOT NULL
+                           {ht_join}
+                        """,
+                        [cutoff] + streamer_params,
+                    ).fetchone()
+                    if ht:
+                        hype_train = {
+                            "total": int(ht["total"] or 0),
+                            "avg_level": round(float(ht["avg_level"] or 0), 1),
+                            "max_level": int(ht["max_level"] or 0),
+                            "avg_duration_s": round(float(ht["avg_dur"] or 0), 0),
+                        }
+                except Exception:
+                    log.debug("Hype train query failed", exc_info=True)
+
+                # --- Bits ---
+                try:
+                    b_join = "AND LOWER(streamer_login) = ?" if streamer else ""
+                    br = c.execute(
+                        f"SELECT SUM(amount) AS total, COUNT(*) AS events FROM twitch_bits_events WHERE received_at >= ? {b_join}",
+                        [cutoff] + streamer_params,
+                    ).fetchone()
+                    if br:
+                        bits = {"total": int(br["total"] or 0), "cheer_events": int(br["events"] or 0)}
+                except Exception:
+                    log.debug("Bits query failed", exc_info=True)
+
+                # --- Subs ---
+                try:
+                    s_join = "AND LOWER(streamer_login) = ?" if streamer else ""
+                    sr = c.execute(
+                        f"SELECT COUNT(*) AS total, SUM(CASE WHEN is_gift=1 THEN 1 ELSE 0 END) AS gifted FROM twitch_subscription_events WHERE received_at >= ? {s_join}",
+                        [cutoff] + streamer_params,
+                    ).fetchone()
+                    if sr:
+                        subs = {"total_events": int(sr["total"] or 0), "gifted": int(sr["gifted"] or 0)}
+                except Exception:
+                    log.debug("Subs query failed", exc_info=True)
+
+        except Exception as exc:
+            log.exception("Error in monetization API")
+            return web.json_response({"error": str(exc)}, status=500)
+
+        return web.json_response({
+            "ads": ads,
+            "hype_train": hype_train,
+            "bits": bits,
+            "subs": subs,
+            "window_days": days,
+        })
 
 
 __all__ = ["AnalyticsV2Mixin"]

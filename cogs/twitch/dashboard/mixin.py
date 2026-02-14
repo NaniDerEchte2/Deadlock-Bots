@@ -6,7 +6,7 @@ import os
 import sqlite3
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import discord
@@ -349,6 +349,179 @@ class TwitchDashboardMixin:
 
         return f"Discord-Daten für {normalized} aktualisiert"
 
+    async def _get_monetization_stats(self) -> dict:
+        """Aggregate monetization & hype train data for the last 30 days."""
+        cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+
+        ads: dict = {
+            "total": 0,
+            "auto": 0,
+            "manual": 0,
+            "sessions_with_ads": 0,
+            "avg_duration_s": 0.0,
+            "avg_viewer_drop_pct": None,
+            "worst_ads": [],
+        }
+        hype_train: dict = {"total": 0, "avg_level": 0.0, "max_level": 0, "avg_duration_s": 0.0}
+        bits: dict = {"total": 0, "cheer_events": 0}
+        subs: dict = {"total_events": 0, "gifted": 0}
+
+        with storage.get_conn() as c:
+            # 1a. Ad Break overview
+            ad_agg = c.execute(
+                """
+                SELECT COUNT(*) AS total_ads,
+                       SUM(CASE WHEN is_automatic=1 THEN 1 ELSE 0 END) AS auto_ads,
+                       AVG(duration_seconds) AS avg_duration,
+                       COUNT(DISTINCT session_id) AS sessions_with_ads
+                  FROM twitch_ad_break_events
+                 WHERE started_at >= ?
+                """,
+                (cutoff_30d,),
+            ).fetchone()
+            if ad_agg:
+                total = int(ad_agg["total_ads"] or 0)
+                auto = int(ad_agg["auto_ads"] or 0)
+                ads["total"] = total
+                ads["auto"] = auto
+                ads["manual"] = total - auto
+                ads["sessions_with_ads"] = int(ad_agg["sessions_with_ads"] or 0)
+                ads["avg_duration_s"] = float(ad_agg["avg_duration"] or 0.0)
+
+            # 1b. Viewer-impact analysis
+            ad_rows = c.execute(
+                """
+                SELECT a.id, a.session_id, a.started_at, a.duration_seconds, a.is_automatic,
+                       s.started_at AS session_start
+                  FROM twitch_ad_break_events a
+                  JOIN twitch_stream_sessions s ON s.id = a.session_id
+                 WHERE a.started_at >= ?
+                   AND a.session_id IS NOT NULL
+                 ORDER BY a.started_at DESC
+                 LIMIT 200
+                """,
+                (cutoff_30d,),
+            ).fetchall()
+
+            timeline_map: dict = {}
+            if ad_rows:
+                session_ids = list({int(r["session_id"]) for r in ad_rows if r["session_id"]})
+                if session_ids:
+                    placeholders = ",".join("?" * len(session_ids))
+                    viewer_rows = c.execute(
+                        f"""
+                        SELECT session_id, minutes_from_start, viewer_count
+                          FROM twitch_session_viewers
+                         WHERE session_id IN ({placeholders})
+                         ORDER BY session_id, minutes_from_start
+                        """,
+                        session_ids,
+                    ).fetchall()
+                    for vr in viewer_rows:
+                        sid = int(vr["session_id"])
+                        timeline_map.setdefault(sid, []).append(
+                            (float(vr["minutes_from_start"] or 0), int(vr["viewer_count"] or 0))
+                        )
+
+            drop_pcts: List[float] = []
+            worst_ads: List[dict] = []
+            for ad in ad_rows:
+                session_id = int(ad["session_id"] or 0)
+                ad_started = ad["started_at"]
+                session_start = ad["session_start"]
+                duration_s = float(ad["duration_seconds"] or 30)
+                try:
+                    ad_dt = datetime.fromisoformat(str(ad_started).replace("Z", "+00:00"))
+                    sess_dt = datetime.fromisoformat(str(session_start).replace("Z", "+00:00"))
+                    minutes_into = (ad_dt - sess_dt).total_seconds() / 60.0
+                except Exception:
+                    continue
+                timeline = timeline_map.get(session_id, [])
+                if not timeline:
+                    continue
+                duration_min = duration_s / 60.0
+                pre_vals = [v for m, v in timeline if (minutes_into - 5) <= m < minutes_into]
+                post_start = minutes_into + duration_min
+                post_vals = [v for m, v in timeline if post_start <= m < (post_start + 5)]
+                if not pre_vals or not post_vals:
+                    continue
+                pre_avg = sum(pre_vals) / len(pre_vals)
+                if pre_avg <= 0:
+                    continue
+                post_avg = sum(post_vals) / len(post_vals)
+                drop_pct = (post_avg - pre_avg) / pre_avg * 100.0
+                drop_pcts.append(drop_pct)
+                worst_ads.append({
+                    "started_at": str(ad_started or "")[:16],
+                    "duration_s": int(duration_s),
+                    "drop_pct": round(drop_pct, 1),
+                    "is_automatic": bool(ad["is_automatic"]),
+                })
+
+            if drop_pcts:
+                ads["avg_viewer_drop_pct"] = round(sum(drop_pcts) / len(drop_pcts), 1)
+            worst_ads.sort(key=lambda x: x["drop_pct"])
+            ads["worst_ads"] = worst_ads[:5]
+
+            # 1c. Hype Train overview
+            try:
+                ht_row = c.execute(
+                    """
+                    SELECT COUNT(*) AS total_trains,
+                           AVG(level) AS avg_level,
+                           MAX(level) AS max_level,
+                           AVG(duration_seconds) AS avg_duration
+                      FROM twitch_hype_train_events
+                     WHERE started_at >= ?
+                       AND ended_at IS NOT NULL
+                    """,
+                    (cutoff_30d,),
+                ).fetchone()
+                if ht_row:
+                    hype_train["total"] = int(ht_row["total_trains"] or 0)
+                    hype_train["avg_level"] = round(float(ht_row["avg_level"] or 0.0), 1)
+                    hype_train["max_level"] = int(ht_row["max_level"] or 0)
+                    hype_train["avg_duration_s"] = round(float(ht_row["avg_duration"] or 0.0), 0)
+            except Exception:
+                log.debug("Hype Train query fehlgeschlagen", exc_info=True)
+
+            # 1d. Bits
+            try:
+                bits_row = c.execute(
+                    "SELECT SUM(amount) AS total_bits, COUNT(*) AS cheer_events FROM twitch_bits_events WHERE received_at >= ?",
+                    (cutoff_30d,),
+                ).fetchone()
+                if bits_row:
+                    bits["total"] = int(bits_row["total_bits"] or 0)
+                    bits["cheer_events"] = int(bits_row["cheer_events"] or 0)
+            except Exception:
+                log.debug("Bits query fehlgeschlagen", exc_info=True)
+
+            # 1d. Subs
+            try:
+                subs_row = c.execute(
+                    """
+                    SELECT COUNT(*) AS total_events,
+                           SUM(CASE WHEN is_gift=1 THEN 1 ELSE 0 END) AS gifted
+                      FROM twitch_subscription_events
+                     WHERE received_at >= ?
+                    """,
+                    (cutoff_30d,),
+                ).fetchone()
+                if subs_row:
+                    subs["total_events"] = int(subs_row["total_events"] or 0)
+                    subs["gifted"] = int(subs_row["gifted"] or 0)
+            except Exception:
+                log.debug("Subs query fehlgeschlagen", exc_info=True)
+
+        return {
+            "ads": ads,
+            "hype_train": hype_train,
+            "bits": bits,
+            "subs": subs,
+            "window_days": 30,
+        }
+
     async def _dashboard_stats(
         self,
         *,
@@ -388,6 +561,11 @@ class TwitchDashboardMixin:
                 stats["eventsub"] = await eventsub_fetcher(hours=24)
         except Exception:
             log.debug("Konnte EventSub-Capacity-Overview nicht laden", exc_info=True)
+
+        try:
+            stats["monetization"] = await self._get_monetization_stats()
+        except Exception:
+            log.debug("Konnte Monetization-Stats nicht laden", exc_info=True)
 
         return stats
 

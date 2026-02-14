@@ -10,6 +10,8 @@ import { Audience } from '@/pages/Audience';
 import { Comparison } from '@/pages/Comparison';
 import { Schedule } from '@/pages/Schedule';
 import { Coaching } from '@/pages/Coaching';
+import { Monetization } from '@/pages/Monetization';
+import { Category } from '@/pages/Category';
 import { useStreamerList, useAuthStatus } from '@/hooks/useAnalytics';
 import type { TimeRange } from '@/types/analytics';
 import { Shield, ShieldCheck, ShieldAlert, Wifi, AlertTriangle } from 'lucide-react';
@@ -206,6 +208,19 @@ function Dashboard() {
 
         {activeTab === 'coaching' && (
           <Coaching streamer={streamer || ''} days={days} />
+        )}
+
+        {activeTab === 'monetization' && (
+          <Monetization streamer={streamer} days={days} />
+        )}
+
+        {activeTab === 'category' && (
+          <Category
+            streamer={streamer}
+            days={days}
+            onStreamerSelect={setStreamer}
+            onNavigate={setActiveTab}
+          />
         )}
       </div>
     </div>

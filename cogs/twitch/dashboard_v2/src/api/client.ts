@@ -1,6 +1,8 @@
 // API Client for Twitch Analytics Dashboard
 
 import type {
+  MonetizationStats,
+  CategoryTimings,
   DashboardOverview,
   MonthlyStats,
   WeekdayStats,
@@ -314,6 +316,25 @@ export async function fetchCoaching(
 ): Promise<CoachingData> {
   return fetchApi<CoachingData>('/coaching', {
     streamer,
+    days,
+  });
+}
+
+// Category Timings (Median-basiert, outlier-resistent)
+export async function fetchCategoryTimings(
+  days: TimeRange,
+  source: 'category' | 'tracked' = 'category'
+): Promise<CategoryTimings> {
+  return fetchApi<CategoryTimings>('/category-timings', { days, source });
+}
+
+// Monetization & Hype Train
+export async function fetchMonetization(
+  streamer: string | null,
+  days: TimeRange
+): Promise<MonetizationStats> {
+  return fetchApi<MonetizationStats>('/monetization', {
+    streamer: streamer || '',
     days,
   });
 }

@@ -961,20 +961,26 @@ class TwitchMonitoringMixin:
                     else True
                 )
                 if fully_authed:
-                    result = await self.api.subscribe_eventsub_webhook(
-                        sub_type="stream.offline",
-                        condition={"broadcaster_user_id": str(bid)},
-                        webhook_url=webhook_url,
-                        secret=webhook_secret,
-                        oauth_token=None,
-                    )
-                    if result:
-                        log.info(
-                            "Polling: stream.offline Webhook Subscription erstellt für %s",
+                    if self._eventsub_has_sub("stream.offline", str(bid)):
+                        log.debug(
+                            "Polling: stream.offline bereits subscribed für %s, überspringe",
                             login or bid,
                         )
-                        self._eventsub_track_sub("stream.offline", str(bid))
-                        await self._record_eventsub_capacity_snapshot("stream_offline_subscribed", force=True)
+                    else:
+                        result = await self.api.subscribe_eventsub_webhook(
+                            sub_type="stream.offline",
+                            condition={"broadcaster_user_id": str(bid)},
+                            webhook_url=webhook_url,
+                            secret=webhook_secret,
+                            oauth_token=None,
+                        )
+                        if result:
+                            log.info(
+                                "Polling: stream.offline Webhook Subscription erstellt für %s",
+                                login or bid,
+                            )
+                            self._eventsub_track_sub("stream.offline", str(bid))
+                            await self._record_eventsub_capacity_snapshot("stream_offline_subscribed", force=True)
                 else:
                     log.info(
                         "Polling: stream.offline übersprungen für %s (needs_reauth=1)",
@@ -1008,6 +1014,9 @@ class TwitchMonitoringMixin:
                         ("channel.ad_break.begin",          "1", "channel:read:ads"),
                     ]
                     for sub_type, version, _ in broadcaster_subs:
+                        if self._eventsub_has_sub(sub_type, str(bid)):
+                            log.debug("EventSub Webhook: %s bereits subscribed für %s, überspringe", sub_type, login or bid)
+                            continue
                         try:
                             await self.api.subscribe_eventsub_webhook(
                                 sub_type=sub_type,
@@ -1064,25 +1073,28 @@ class TwitchMonitoringMixin:
                             )
 
                     # channel.follow v2 – braucht moderator_user_id in der Condition
-                    try:
-                        await self.api.subscribe_eventsub_webhook(
-                            sub_type="channel.follow",
-                            condition={
-                                "broadcaster_user_id": str(bid),
-                                "moderator_user_id": str(bid),
-                            },
-                            webhook_url=webhook_url,
-                            secret=webhook_secret,
-                            oauth_token=broadcaster_token,
-                            version="2",
-                        )
-                        self._eventsub_track_sub("channel.follow", str(bid))
-                        log.debug("EventSub Webhook: channel.follow v2 subscribed für %s", login or bid)
-                    except Exception:
-                        log.debug(
-                            "EventSub Webhook: channel.follow v2 fehlgeschlagen für %s (evtl. Scope fehlt)",
-                            login or bid, exc_info=True,
-                        )
+                    if self._eventsub_has_sub("channel.follow", str(bid)):
+                        log.debug("EventSub Webhook: channel.follow bereits subscribed für %s, überspringe", login or bid)
+                    else:
+                        try:
+                            await self.api.subscribe_eventsub_webhook(
+                                sub_type="channel.follow",
+                                condition={
+                                    "broadcaster_user_id": str(bid),
+                                    "moderator_user_id": str(bid),
+                                },
+                                webhook_url=webhook_url,
+                                secret=webhook_secret,
+                                oauth_token=broadcaster_token,
+                                version="2",
+                            )
+                            self._eventsub_track_sub("channel.follow", str(bid))
+                            log.debug("EventSub Webhook: channel.follow v2 subscribed für %s", login or bid)
+                        except Exception:
+                            log.debug(
+                                "EventSub Webhook: channel.follow v2 fehlgeschlagen für %s (evtl. Scope fehlt)",
+                                login or bid, exc_info=True,
+                            )
 
             except Exception:
                 log.exception("Polling: Go-Live Handler fehlgeschlagen für %s", login or bid)
@@ -1238,16 +1250,33 @@ class TwitchMonitoringMixin:
             )
             return None
 
+    def _eventsub_has_sub(self, sub_type: str, broadcaster_user_id: str) -> bool:
+        """Prüft ob eine Webhook-Subscription bereits in dieser Session registriert wurde."""
+        tracked: set = getattr(self, "_eventsub_webhook_tracked", None)
+        if tracked is None:
+            return False
+        return (sub_type, str(broadcaster_user_id)) in tracked
+
     def _eventsub_track_sub(self, sub_type: str, broadcaster_user_id: str) -> None:
         """Merkt sich eine aktive Webhook-Subscription für spätere Capacity-Snapshots."""
+        tracked: set = getattr(self, "_eventsub_webhook_tracked", None)
+        if tracked is None:
+            tracked = set()
+            setattr(self, "_eventsub_webhook_tracked", tracked)
+        tracked.add((sub_type, str(broadcaster_user_id)))
+        # Kompatibilität: active_subs-Liste für Capacity-Snapshots weiter befüllen
         active_subs: List[Dict] = getattr(self, "_eventsub_webhook_active_subs", None)
         if active_subs is None:
             active_subs = []
             setattr(self, "_eventsub_webhook_active_subs", active_subs)
-        active_subs.append({
-            "sub_type": sub_type,
-            "broadcaster_user_id": broadcaster_user_id,
-        })
+        if not any(
+            s.get("sub_type") == sub_type and s.get("broadcaster_user_id") == str(broadcaster_user_id)
+            for s in active_subs
+        ):
+            active_subs.append({
+                "sub_type": sub_type,
+                "broadcaster_user_id": str(broadcaster_user_id),
+            })
 
 
     async def subscribe_raid_target_dynamic(self, broadcaster_id: str, broadcaster_login: str) -> bool:

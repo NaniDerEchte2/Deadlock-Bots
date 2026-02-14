@@ -552,3 +552,65 @@ export interface CoachingData {
 }
 
 export type TimeRange = 7 | 30 | 90 | 365;
+export type { TabId } from '@/components/layout/TabNavigation';
+
+// Category Timings (Median-basiert)
+export interface TimingSlot {
+  median: number | null;
+  p25: number | null;
+  p75: number | null;
+  streamer_count: number;
+  sample_count: number;
+}
+
+export interface HourlyTimingSlot extends TimingSlot {
+  hour: number;
+}
+
+export interface WeeklyTimingSlot extends TimingSlot {
+  weekday: number;
+  label: string;
+}
+
+export interface CategoryTimings {
+  hourly: HourlyTimingSlot[];
+  weekly: WeeklyTimingSlot[];
+  total_streamers: number;
+  window_days: number;
+  method: string;
+}
+
+// Monetization & Hype Train
+export interface WorstAd {
+  started_at: string;
+  duration_s: number;
+  drop_pct: number;
+  is_automatic: boolean;
+}
+
+export interface MonetizationStats {
+  ads: {
+    total: number;
+    auto: number;
+    manual: number;
+    sessions_with_ads: number;
+    avg_duration_s: number;
+    avg_viewer_drop_pct: number | null;
+    worst_ads: WorstAd[];
+  };
+  hype_train: {
+    total: number;
+    avg_level: number;
+    max_level: number;
+    avg_duration_s: number;
+  };
+  bits: {
+    total: number;
+    cheer_events: number;
+  };
+  subs: {
+    total_events: number;
+    gifted: number;
+  };
+  window_days: number;
+}

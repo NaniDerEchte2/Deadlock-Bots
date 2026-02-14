@@ -489,3 +489,101 @@ class RaidCommandsMixin:
         await ctx.send(summary, ephemeral=True)
         log.info("reauth_all: %d gesichert, %d gelöscht, %d DMs, %d fehlgeschlagen",
                  count, deleted_total, sent, failed)
+
+    @commands.command(name="tte")
+    @commands.is_owner()
+    async def cmd_test_token_error(
+        self,
+        ctx: commands.Context,
+        target: discord.User = None,
+        mode: str = "initial",
+    ):
+        """(Owner) Sendet Token-Error-DM an einen User. Usage: !tte [@user] [initial|reminder]"""
+        handler = getattr(getattr(self, "_raid_bot", None), "auth_manager", None)
+        handler = getattr(handler, "token_error_handler", None) if handler else None
+        if not handler:
+            await ctx.send("❌ Token error handler nicht verfügbar.", ephemeral=True)
+            return
+
+        handler.discord_bot = self.bot  # type: ignore[attr-defined]
+        is_reminder = mode.lower() == "reminder"
+
+        if target is None:
+            # Kein User angegeben → Test-DM an Admin mit Fake-Daten
+            ADMIN_TARGET_ID = 662995601738170389
+            original = handler._get_discord_user_id
+            handler._get_discord_user_id = lambda *_: str(ADMIN_TARGET_ID)
+            try:
+                success = await handler._send_user_dm_token_error(
+                    str(ADMIN_TARGET_ID),
+                    "teststreamer",
+                    "HTTP 400: {\"status\":400,\"message\":\"Invalid refresh token\"}",
+                    is_reminder=is_reminder,
+                )
+            finally:
+                handler._get_discord_user_id = original
+
+            if success:
+                await ctx.send(f"✅ Test-DM (`{mode}`) gesendet an <@{ADMIN_TARGET_ID}>.", ephemeral=True)
+            else:
+                await ctx.send("❌ DM konnte nicht gesendet werden (DMs geschlossen?).", ephemeral=True)
+            return
+
+        # User angegeben → echte Daten aus DB holen
+        discord_user_id = str(target.id)
+        with get_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT a.twitch_user_id, a.twitch_login, b.error_message,
+                       b.notified, b.user_dm_sent
+                FROM twitch_streamers s
+                LEFT JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
+                LEFT JOIN twitch_token_blacklist b ON s.twitch_user_id = b.twitch_user_id
+                WHERE s.discord_user_id = ?
+                LIMIT 1
+                """,
+                (discord_user_id,),
+            ).fetchone()
+
+        if not row or not row[0]:
+            await ctx.send(f"❌ Kein Twitch-Account für <@{target.id}> gefunden.", ephemeral=True)
+            return
+
+        twitch_user_id, twitch_login, error_message, notified, user_dm_sent = row
+        error_message = error_message or "HTTP 400: {\"status\":400,\"message\":\"Invalid refresh token\"}"
+
+        # Monkey-Patch damit die DM an den richtigen User geht
+        original = handler._get_discord_user_id
+        handler._get_discord_user_id = lambda *_: discord_user_id
+        try:
+            success = await handler._send_user_dm_token_error(
+                twitch_user_id,
+                twitch_login,
+                error_message,
+                is_reminder=is_reminder,
+            )
+        finally:
+            handler._get_discord_user_id = original
+
+        if success:
+            # Blacklist-Eintrag als benachrichtigt markieren damit der Bot nicht nochmal sendet
+            with get_conn() as conn:
+                conn.execute(
+                    """
+                    UPDATE twitch_token_blacklist
+                    SET notified = 1, user_dm_sent = 1
+                    WHERE twitch_user_id = ?
+                    """,
+                    (twitch_user_id,),
+                )
+                conn.commit()
+            await ctx.send(
+                f"✅ Token-Error-DM (`{mode}`) gesendet an <@{target.id}> (`{twitch_login}`).\n"
+                f"Blacklist-Eintrag als `notified=1, user_dm_sent=1` markiert – Bot sendet nicht erneut.",
+                ephemeral=True,
+            )
+        else:
+            await ctx.send(
+                f"❌ DM an <@{target.id}> fehlgeschlagen (DMs geschlossen?).",
+                ephemeral=True,
+            )
