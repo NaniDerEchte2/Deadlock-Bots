@@ -187,6 +187,35 @@ class DeadlockVoiceStatus(commands.Cog):
                     result.append(channel)
         return result
 
+    def _resolve_base_name(self, channel: discord.VoiceChannel, fallback_base: str) -> str:
+        """Ermittelt den Basisnamen; für dynamische Chill-Lanes aus TempVoice-Regeln statt aus altem Channelnamen."""
+        base = (fallback_base or "").strip()
+        core = self.bot.get_cog("TempVoiceCore")
+        if core is None:
+            return base
+        try:
+            created_channels = getattr(core, "created_channels", set())
+            if channel.id not in created_channels:
+                return base
+
+            lane_rules = getattr(core, "lane_rules", {}).get(channel.id)
+            if not lane_rules and hasattr(core, "_rules_for_category"):
+                lane_rules = core._rules_for_category(channel.category)
+            if not isinstance(lane_rules, dict) or not lane_rules.get("prefix_from_rank"):
+                return base
+
+            compose_name = getattr(core, "_compose_name", None)
+            if not callable(compose_name):
+                return base
+            desired_name = str(compose_name(channel)).strip()
+            if not desired_name:
+                return base
+            resolved_base, _ignored_suffix = self._split_suffix(desired_name)
+            return resolved_base or base
+        except Exception as exc:
+            log.debug("Failed to resolve dynamic base name for channel %s: %s", channel.id, exc, exc_info=True)
+            return base
+
     async def _fetch_user_steam_ids(self, user_ids: Iterable[int]) -> Dict[int, List[str]]:
         ids = {int(uid) for uid in user_ids if uid}
         if not ids:
@@ -264,6 +293,7 @@ class DeadlockVoiceStatus(commands.Cog):
         now: int,
     ) -> None:
         base_name, current_suffix = self._split_suffix(channel.name)
+        base_name = self._resolve_base_name(channel, base_name)
         total_members = len(members)
         trace_payload: Dict[str, Any] = {
             "channel_id": channel.id,

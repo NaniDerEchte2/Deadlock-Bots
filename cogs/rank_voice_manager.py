@@ -100,6 +100,7 @@ class RolePermissionVoiceManager(commands.Cog):
         self._pending_channel_renames: Dict[int, str] = {}
         self._rename_tasks: Dict[int, asyncio.Task] = {}
         self._rename_tasks_lock = asyncio.Lock()  # Schützt _rename_tasks vor Race Conditions
+        self._startup_reconciled = False
 
     @staticmethod
     def _is_tempvoice_lane(channel: discord.VoiceChannel) -> bool:
@@ -252,6 +253,7 @@ class RolePermissionVoiceManager(commands.Cog):
                     logger.debug("Failed to cancel rename task: %s", exc, exc_info=True)
             self._rename_tasks.clear()
             self._pending_channel_renames.clear()
+            self._startup_reconciled = False
             logger.info("RolePermissionVoiceManager Cog entladen")
         except Exception as e:
             logger.error(f"Fehler beim Entladen des RolePermissionVoiceManager Cogs: {e}")
@@ -603,6 +605,34 @@ class RolePermissionVoiceManager(commands.Cog):
     ) -> Optional[Tuple[int, str, int, int, int]]:
         return self.channel_anchors.get(channel.id)
 
+    async def _ensure_valid_anchor(
+        self,
+        channel: discord.VoiceChannel,
+        members_ranks: Dict[discord.Member, Tuple[str, int]],
+    ) -> bool:
+        """Stellt sicher, dass der Anker zu einem aktuell anwesenden Member gehört."""
+        anchor = self.get_channel_anchor(channel)
+        if not members_ranks:
+            if anchor is not None:
+                await self.remove_channel_anchor(channel)
+                return True
+            return False
+
+        if anchor is not None:
+            anchor_user_id = int(anchor[0])
+            if any(int(member.id) == anchor_user_id for member in members_ranks):
+                return False
+            logger.info(
+                "🔄 Anker in %s ungültig (owner=%s nicht im Channel) – setze neu.",
+                channel.name,
+                anchor_user_id,
+            )
+
+        first_member = next(iter(members_ranks.keys()))
+        rank_name, rank_value = members_ranks[first_member]
+        await self.set_channel_anchor(channel, first_member, rank_name, rank_value)
+        return True
+
     async def remove_channel_anchor(self, channel: discord.VoiceChannel):
         if channel.id in self.channel_anchors:
             old = self.channel_anchors.pop(channel.id)
@@ -635,6 +665,20 @@ class RolePermissionVoiceManager(commands.Cog):
             return self.monitored_categories.get(channel.category_id)
         return None
 
+    async def _reconcile_live_channels(self, guild: discord.Guild):
+        """Synchronisiert beim Start vorhandene Voice-Channels mit dem aktuellen Anchor-State."""
+        for channel in guild.voice_channels:
+            if not self.is_monitored_channel(channel):
+                continue
+            if not self.is_channel_system_enabled(channel):
+                continue
+            members_ranks = await self.get_channel_members_ranks(channel)
+            if not members_ranks and self.get_channel_anchor(channel) is None:
+                continue
+            anchor_changed = await self._ensure_valid_anchor(channel, members_ranks)
+            await self.update_channel_permissions_via_roles(channel, force=anchor_changed)
+            await self.update_channel_name(channel, force=anchor_changed)
+
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild):
         # Falls der Bot später hinzugefügt wird – Lade DB-Status für diese Guild
@@ -642,6 +686,17 @@ class RolePermissionVoiceManager(commands.Cog):
             await self._db_load_state_for_guild(guild)
         except Exception as e:
             logger.warning(f"on_guild_join load state failed: {e}")
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if self._startup_reconciled:
+            return
+        self._startup_reconciled = True
+        for guild in self.bot.guilds:
+            try:
+                await self._reconcile_live_channels(guild)
+            except Exception as e:
+                logger.warning("on_ready reconcile failed for guild %s: %s", guild.id, e)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -667,24 +722,23 @@ class RolePermissionVoiceManager(commands.Cog):
             if not self.is_channel_system_enabled(channel):
                 return
 
-            rank_name, rank_value = self.get_user_rank_from_roles(member)
-
-            anchor = self.get_channel_anchor(channel)
-            if anchor is None:
-                await self.set_channel_anchor(channel, member, rank_name, rank_value)
-                await self.update_channel_permissions_via_roles(channel)
-                await self.update_channel_name(channel)
+            members_ranks = await self.get_channel_members_ranks(channel)
+            if not members_ranks:
                 return
+            anchor_changed = await self._ensure_valid_anchor(channel, members_ranks)
+            rank_name, rank_value = members_ranks.get(member, self.get_user_rank_from_roles(member))
+            anchor = self.get_channel_anchor(channel)
 
-            # Nur logs – niemals kicken
-            _uid, _arname, _arval, allowed_min, allowed_max = anchor
-            if not (allowed_min <= rank_value <= allowed_max):
-                logger.info(
-                    f"ℹ️ {member.display_name} ({rank_name}) passt nicht in {allowed_min}-{allowed_max}, bleibt aber."
-                )
+            if anchor:
+                # Nur logs – niemals kicken
+                _uid, _arname, _arval, allowed_min, allowed_max = anchor
+                if not (allowed_min <= rank_value <= allowed_max):
+                    logger.info(
+                        f"ℹ️ {member.display_name} ({rank_name}) passt nicht in {allowed_min}-{allowed_max}, bleibt aber."
+                    )
 
-            await self.update_channel_permissions_via_roles(channel)
-            await self.update_channel_name(channel)
+            await self.update_channel_permissions_via_roles(channel, force=anchor_changed)
+            await self.update_channel_name(channel, force=anchor_changed)
 
         except Exception as e:
             logger.error(f"handle_voice_join Fehler: {e}")
@@ -697,18 +751,10 @@ class RolePermissionVoiceManager(commands.Cog):
                 return
 
             members_ranks = await self.get_channel_members_ranks(channel)
-            if not members_ranks:
-                await self.remove_channel_anchor(channel)
-            else:
-                anchor = self.get_channel_anchor(channel)
-                if anchor is None:
-                    # Kein Anker (z. B. nach komplett leerem Channel) -> ersten User setzen
-                    first_remaining = next(iter(members_ranks.keys()))
-                    rn, rv = members_ranks[first_remaining]
-                    await self.set_channel_anchor(channel, first_remaining, rn, rv)
+            anchor_changed = await self._ensure_valid_anchor(channel, members_ranks)
 
-            await self.update_channel_permissions_via_roles(channel)
-            await self.update_channel_name(channel)
+            await self.update_channel_permissions_via_roles(channel, force=anchor_changed)
+            await self.update_channel_name(channel, force=anchor_changed)
 
         except Exception as e:
             logger.error(f"handle_voice_leave Fehler: {e}")

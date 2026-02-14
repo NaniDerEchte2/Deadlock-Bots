@@ -41,7 +41,7 @@ STAGING_RULES: Dict[int, Dict[str, Any]] = {
         "disable_rank_caps": True,
         "disable_min_rank": True,
     },
-    CASUAL_STAGING_ID: {  # Chill Lanes: Prefix per berechnetem Lane-Schnitt
+    CASUAL_STAGING_ID: {  # Chill Lanes: Prefix primär aus Owner-Rang
         "prefix_from_rank": True,
     },
 }
@@ -338,13 +338,15 @@ class TempVoiceCore(commands.Cog):
 
     def _desired_prefix_for_rules(self, lane: discord.VoiceChannel, rules: Dict[str, Any]) -> str:
         if rules.get("prefix_from_rank"):
+            owner_id = self.lane_owner.get(lane.id)
+            member = lane.guild.get_member(int(owner_id)) if owner_id else None
+            owner_prefix = _rank_prefix_for(member) if member else None
+            if owner_prefix:
+                return owner_prefix
             avg_prefix = self._average_rank_prefix_for_lane(lane)
             if avg_prefix:
                 return avg_prefix
-            owner_id = self.lane_owner.get(lane.id)
-            member = lane.guild.get_member(int(owner_id)) if owner_id else None
-            prefix = _rank_prefix_for(member) if member else None
-            return prefix or CASUAL_RANK_FALLBACK
+            return CASUAL_RANK_FALLBACK
         return str(rules.get("prefix") or "Lane")
 
     def _store_lane_rules(self, lane_id: int, rules: Dict[str, Any]):
