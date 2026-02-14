@@ -578,6 +578,114 @@ def _get_pending_payment(username_or_id: Union[str, int]) -> Optional[int]:
     return None
 
 
+def _track_panel_click(discord_id: int) -> None:
+    """Zählt Panel-Klicks pro User in der DB."""
+    now_ts = int(time.time())
+    with db.get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO beta_invite_panel_clicks(discord_id, click_count, first_clicked_at, last_clicked_at)
+            VALUES (?, 1, ?, ?)
+            ON CONFLICT(discord_id) DO UPDATE SET
+                click_count = click_count + 1,
+                last_clicked_at = excluded.last_clicked_at
+            """,
+            (int(discord_id), now_ts, now_ts),
+        )
+
+
+def _get_funnel_stats() -> dict:
+    """Liest alle Funnel-Metriken aus der DB."""
+    with db.get_conn() as conn:
+        panel_clicks = conn.execute(
+            "SELECT COUNT(DISTINCT discord_id) as unique_users, COALESCE(SUM(click_count),0) as total_clicks FROM beta_invite_panel_clicks"
+        ).fetchone()
+
+        intent_counts = {
+            row["intent"]: row["n"]
+            for row in conn.execute(
+                "SELECT intent, COUNT(*) as n FROM beta_invite_intent GROUP BY intent"
+            ).fetchall()
+        }
+
+        invite_statuses = {
+            row["status"]: row["n"]
+            for row in conn.execute(
+                "SELECT status, COUNT(*) as n FROM steam_beta_invites GROUP BY status"
+            ).fetchall()
+        }
+
+        community_funnel = conn.execute(
+            """
+            SELECT
+                COUNT(DISTINCT i.discord_id) as chose_community,
+                SUM(CASE WHEN b.discord_id IS NOT NULL THEN 1 ELSE 0 END) as has_record,
+                SUM(CASE WHEN b.status = 'invite_sent' THEN 1 ELSE 0 END) as invite_sent
+            FROM beta_invite_intent i
+            LEFT JOIN steam_beta_invites b ON b.discord_id = i.discord_id
+            WHERE i.intent = 'community'
+            """
+        ).fetchone()
+
+        invite_only_funnel = conn.execute(
+            """
+            SELECT
+                COUNT(DISTINCT i.discord_id) as chose_invite_only,
+                SUM(CASE WHEN b.discord_id IS NOT NULL THEN 1 ELSE 0 END) as has_record,
+                SUM(CASE WHEN b.status = 'invite_sent' THEN 1 ELSE 0 END) as invite_sent,
+                SUM(CASE WHEN p.discord_id IS NOT NULL THEN 1 ELSE 0 END) as got_payment_link
+            FROM beta_invite_intent i
+            LEFT JOIN steam_beta_invites b ON b.discord_id = i.discord_id
+            LEFT JOIN beta_invite_pending_payments p ON p.discord_id = i.discord_id
+            WHERE i.intent = 'invite_only'
+            """
+        ).fetchone()
+
+        # Geier: invite_only gewählt, kein Invite-Record, entschieden vor mehr als 1h
+        geier_cutoff = int(time.time()) - 3600
+        geier_rows = conn.execute(
+            """
+            SELECT i.discord_id, i.decided_at
+            FROM beta_invite_intent i
+            LEFT JOIN steam_beta_invites b ON b.discord_id = i.discord_id
+            WHERE i.intent = 'invite_only'
+              AND b.discord_id IS NULL
+              AND i.decided_at < ?
+            ORDER BY i.decided_at DESC
+            """,
+            (geier_cutoff,),
+        ).fetchall()
+
+        # Community-Abbrecher: community gewählt, kein Invite-Record, vor mehr als 1h
+        dropout_cutoff = int(time.time()) - 3600
+        community_dropout = conn.execute(
+            """
+            SELECT COUNT(*) as n
+            FROM beta_invite_intent i
+            LEFT JOIN steam_beta_invites b ON b.discord_id = i.discord_id
+            WHERE i.intent = 'community'
+              AND b.discord_id IS NULL
+              AND i.decided_at < ?
+            """,
+            (dropout_cutoff,),
+        ).fetchone()
+
+    return {
+        "panel_unique": panel_clicks["unique_users"] if panel_clicks else 0,
+        "panel_total": panel_clicks["total_clicks"] if panel_clicks else 0,
+        "intent_community": intent_counts.get("community", 0),
+        "intent_invite_only": intent_counts.get("invite_only", 0),
+        "community_has_record": community_funnel["has_record"] or 0,
+        "community_invite_sent": community_funnel["invite_sent"] or 0,
+        "community_dropout": community_dropout["n"] if community_dropout else 0,
+        "invite_only_got_link": invite_only_funnel["got_payment_link"] or 0,
+        "invite_only_invite_sent": invite_only_funnel["invite_sent"] or 0,
+        "invite_only_total": invite_only_funnel["chose_invite_only"] or 0,
+        "geier": [{"discord_id": r["discord_id"], "decided_at": r["decided_at"]} for r in geier_rows],
+        "invite_statuses": invite_statuses,
+    }
+
+
 def _cleanup_pending_payments() -> int:
     """Entfernt Einträge, die älter als 24 Stunden sind."""
     expiry = int(time.time()) - (24 * 3600)
@@ -953,6 +1061,10 @@ class BetaInvitePanelView(discord.ui.View):
     )
     async def start_invite(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         self.cog._trace_user_action(interaction, "panel.start_invite_clicked")
+        try:
+            _track_panel_click(interaction.user.id)
+        except Exception:
+            log.debug("Panel-Click-Tracking fehlgeschlagen", exc_info=True)
         try:
             await self.cog.start_invite_from_panel(interaction)
         except Exception:
@@ -2531,6 +2643,68 @@ class BetaInviteFlow(commands.Cog):
             f"✅ Panel in {target_channel.mention} gesendet.",
             ephemeral=True,
         )
+
+    @app_commands.command(
+        name="betainvite_stats",
+        description="(Admin) Funnel-Auswertung: Wer hat angeklickt, wer hat abgebrochen, wer ist Geier?",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def betainvite_stats(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        try:
+            stats = await asyncio.to_thread(_get_funnel_stats)
+        except Exception as exc:
+            await interaction.followup.send(f"❌ Fehler beim Laden der Stats: {exc}", ephemeral=True)
+            return
+
+        guild = interaction.guild
+        total_intent = stats["intent_community"] + stats["intent_invite_only"]
+
+        def pct(part: int, total: int) -> str:
+            return f"{round(part / total * 100)}%" if total else "–"
+
+        # Geier-Namen auflösen
+        geier_lines: list[str] = []
+        for entry in stats["geier"][:25]:  # max 25 in der Anzeige
+            uid = entry["discord_id"]
+            member = guild.get_member(uid) if guild else None
+            if not member and guild:
+                try:
+                    member = await guild.fetch_member(uid)
+                except Exception:
+                    pass
+            decided = datetime.fromtimestamp(entry["decided_at"], tz=timezone.utc).strftime("%d.%m.%y")
+            name = f"{member.mention} (`{member.name}`)" if member else f"<@{uid}> (nicht mehr im Server)"
+            geier_lines.append(f"  • {name} — seit {decided}")
+
+        geier_count = len(stats["geier"])
+        geier_text = "\n".join(geier_lines) if geier_lines else "  Keine"
+        if geier_count > 25:
+            geier_text += f"\n  … und {geier_count - 25} weitere"
+
+        msg = (
+            "## 📊 Beta Invite Funnel\n"
+            f"**Panel angeklickt:** {stats['panel_unique']} Unique-User ({stats['panel_total']} gesamt, ab jetzt getrackt)\n"
+            f"**Intent-Wahl gesamt:** {total_intent}\n\n"
+            "### 🎮 Mitspielen (Community)\n"
+            f"  Haben gewählt: **{stats['intent_community']}**\n"
+            f"  Invite-Record erstellt: **{stats['community_has_record']}** ({pct(stats['community_has_record'], stats['intent_community'])})\n"
+            f"  Invite erfolgreich: **{stats['community_invite_sent']}** ({pct(stats['community_invite_sent'], stats['intent_community'])})\n"
+            f"  Abgebrochen (>1h, kein Record): **{stats['community_dropout']}**\n\n"
+            "### 💰 Invite Only (Ko-fi)\n"
+            f"  Haben gewählt: **{stats['invite_only_total']}**\n"
+            f"  Ko-fi-Link erhalten (Token): **{stats['invite_only_got_link']}**\n"
+            f"  Invite bekommen: **{stats['invite_only_invite_sent']}** ({pct(stats['invite_only_invite_sent'], stats['invite_only_total'])})\n"
+            f"  Nie bezahlt (Geier 🦅): **{geier_count}**\n\n"
+            f"**Invite-Statuses gesamt:** {stats['invite_statuses']}\n\n"
+            f"### 🦅 Geier-Liste (invite_only gewählt, nie bezahlt)\n{geier_text}"
+        )
+
+        # Discord-Limit: 2000 Zeichen per Nachricht
+        if len(msg) > 1900:
+            await interaction.followup.send(msg[:1900] + "\n…(abgeschnitten)", ephemeral=True)
+        else:
+            await interaction.followup.send(msg, ephemeral=True)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
