@@ -1727,7 +1727,7 @@ class RaidBot:
             return None
 
         try:
-            from .twitch_api import TwitchAPI
+            from ..api.twitch_api import TwitchAPI
         except Exception:
             return None
 
@@ -1961,7 +1961,7 @@ class RaidBot:
         if not candidates or not self.session:
             return
         try:
-            from .twitch_api import TwitchAPI
+            from ..api.twitch_api import TwitchAPI
         except Exception:
             return
 

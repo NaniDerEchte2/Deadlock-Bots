@@ -366,7 +366,7 @@ if TWITCHIO_AVAILABLE:
             access_token, _ = tokens
 
             try:
-                from .twitch_api import TwitchAPI  # lokal importieren, um Zyklus zu vermeiden
+                from ..api.twitch_api import TwitchAPI  # lokal importieren, um Zyklus zu vermeiden
                 api = TwitchAPI(auth_manager.client_id, auth_manager.client_secret, session=api_session)
                 clip = await api.create_clip(
                     str(twitch_user_id),
@@ -584,7 +584,7 @@ if TWITCHIO_AVAILABLE:
             candidates = []
             api = None
             try:
-                from .twitch_api import TwitchAPI  # lokal importieren, um Zyklus zu vermeiden
+                from ..api.twitch_api import TwitchAPI  # lokal importieren, um Zyklus zu vermeiden
                 api = TwitchAPI(self._raid_bot.auth_manager.client_id, self._raid_bot.auth_manager.client_secret, session=api_session)
                 streams = await api.get_streams_by_logins(partner_logins, language=None)
                 for stream in streams:
@@ -611,7 +611,7 @@ if TWITCHIO_AVAILABLE:
                 # Fallback auf DE Deadlock-Streamer
                 try:
                     if api is None:
-                        from .twitch_api import TwitchAPI  # lokal importieren, um Zyklus zu vermeiden
+                        from ..api.twitch_api import TwitchAPI  # lokal importieren, um Zyklus zu vermeiden
                         api = TwitchAPI(self._raid_bot.auth_manager.client_id, self._raid_bot.auth_manager.client_secret, session=api_session)
                     from .constants import TWITCH_TARGET_GAME_NAME
                     category_id = await api.get_category_id(TWITCH_TARGET_GAME_NAME)

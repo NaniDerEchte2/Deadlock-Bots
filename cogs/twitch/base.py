@@ -138,7 +138,7 @@ class TwitchBaseCog(commands.Cog):
         _webhook_secret = (os.getenv("TWITCH_WEBHOOK_SECRET") or "").strip()
         if _webhook_secret:
             try:
-                from .eventsub_webhook import EventSubWebhookHandler
+                from .monitoring.eventsub_webhook import EventSubWebhookHandler
                 self._eventsub_webhook_handler = EventSubWebhookHandler(
                     secret=_webhook_secret,
                     logger=log,
@@ -262,7 +262,7 @@ class TwitchBaseCog(commands.Cog):
     def _register_persistent_raid_auth_views(self) -> None:
         """Registriert persistente RaidAuthGenerateViews für alle Streamer in der DB.
         Muss bei Bot-Start aufgerufen werden damit Buttons nach Neustart funktionieren."""
-        from .raid_views import RaidAuthGenerateView
+        from .raid.views import RaidAuthGenerateView
         try:
             with storage.get_conn() as conn:
                 rows = conn.execute(
