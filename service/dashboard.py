@@ -162,7 +162,15 @@ class DashboardServer:
             if self._started:
                 return
 
-            app = web.Application()
+            @web.middleware
+            async def _security_headers(request: web.Request, handler: Any) -> web.StreamResponse:
+                response = await handler(request)
+                response.headers.setdefault("X-Frame-Options", "DENY")
+                response.headers.setdefault("X-Content-Type-Options", "nosniff")
+                response.headers.setdefault("X-XSS-Protection", "1; mode=block")
+                return response
+
+            app = web.Application(middlewares=[_security_headers])
             app["dashboard"] = self
             app.add_routes(
                 [
@@ -879,9 +887,9 @@ class DashboardServer:
             try:
                 await self.bot.reload_extension("cogs.twitch")
                 return web.json_response({"ok": True, "message": "Twitch module reloaded (no purge)"})
-            except Exception as e:
+            except Exception:
                 logger.exception("Failed to reload Twitch module via dashboard")
-                return web.json_response({"ok": False, "error": str(e)}, status=500)
+                return web.json_response({"ok": False, "error": "Internal server error"}, status=500)
 
     async def _handle_twitch_metrics(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
@@ -2300,6 +2308,7 @@ class DashboardServer:
 
     async def _handle_bot_restart(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
+        logger.warning("AUDIT master-dashboard bot_restart requested from %s", request.remote)
         lifecycle = self._lifecycle or getattr(self.bot, "lifecycle", None)
         if not lifecycle:
             return self._json({"ok": False, "message": "Restart nicht verfügbar (kein Lifecycle angebunden)"})
@@ -2605,6 +2614,7 @@ class DashboardServer:
         if not isinstance(names, list) or not names:
             raise web.HTTPBadRequest(text="'names' must be a non-empty list")
         normalized = self._normalize_names(names)
+        logger.info("AUDIT master-dashboard cog_reload: names=%s from %s", normalized, request.remote)
 
         results: Dict[str, Dict[str, Any]] = {}
         async with self._lock:
@@ -2654,6 +2664,7 @@ class DashboardServer:
         if not isinstance(names, list) or not names:
             raise web.HTTPBadRequest(text="'names' must be a non-empty list")
         normalized = self._normalize_names(names)
+        logger.warning("AUDIT master-dashboard cog_unload: names=%s from %s", normalized, request.remote)
 
         results: Dict[str, Dict[str, Any]] = {}
         async with self._lock:
@@ -2722,6 +2733,7 @@ class DashboardServer:
         path = payload.get("path")
         if not path:
             raise web.HTTPBadRequest(text="'path' is required")
+        logger.warning("AUDIT master-dashboard cog_block: path=%s from %s", path, request.remote)
         async with self._lock:
             try:
                 result = await self.bot.block_namespace(path)
@@ -2749,6 +2761,7 @@ class DashboardServer:
         path = payload.get("path")
         if not path:
             raise web.HTTPBadRequest(text="'path' is required")
+        logger.info("AUDIT master-dashboard cog_unblock: path=%s from %s", path, request.remote)
         async with self._lock:
             try:
                 result = await self.bot.unblock_namespace(path)

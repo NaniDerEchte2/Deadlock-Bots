@@ -68,6 +68,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         self._oauth_states: Dict[str, Dict[str, Any]] = {}
         self._auth_sessions: Dict[str, Dict[str, Any]] = {}
         self._oauth_state_ttl_seconds = 600
+        self._rate_limits: Dict[str, List[float]] = {}
         self._add = add_cb if callable(add_cb) else self._empty_add
         self._remove = remove_cb if callable(remove_cb) else self._empty_remove
         self._list = list_cb if callable(list_cb) else self._empty_list
@@ -331,13 +332,47 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         for sid in expired_sessions:
             self._auth_sessions.pop(sid, None)
 
+        # Hard cap to prevent unbounded growth under heavy abuse
+        _MAX_STATES = 500
+        if len(self._oauth_states) > _MAX_STATES:
+            oldest = sorted(self._oauth_states.items(), key=lambda kv: float(kv[1].get("created_at", 0)))
+            for k, _ in oldest[: len(self._oauth_states) - _MAX_STATES]:
+                self._oauth_states.pop(k, None)
+
+        _MAX_SESSIONS = 2000
+        if len(self._auth_sessions) > _MAX_SESSIONS:
+            oldest_s = sorted(self._auth_sessions.items(), key=lambda kv: float(kv[1].get("created_at", 0)))
+            for k, _ in oldest_s[: len(self._auth_sessions) - _MAX_SESSIONS]:
+                self._auth_sessions.pop(k, None)
+
+    def _check_rate_limit(self, request: web.Request, *, max_requests: int = 10, window_seconds: float = 60.0) -> bool:
+        """Sliding-window rate limiter per peer IP.  Returns True if allowed."""
+        peer = self._peer_host(request)
+        now = time.time()
+        hits = self._rate_limits.get(peer, [])
+        hits = [t for t in hits if now - t < window_seconds]
+        if len(hits) >= max_requests:
+            self._rate_limits[peer] = hits
+            return False
+        hits.append(now)
+        self._rate_limits[peer] = hits
+        # Prevent unbounded growth – clear when tracking too many distinct IPs
+        if len(self._rate_limits) > 1000:
+            self._rate_limits.clear()
+        return True
+
     def _is_oauth_configured(self) -> bool:
         return bool(self._oauth_client_id and self._oauth_client_secret)
 
     def _is_secure_request(self, request: web.Request) -> bool:
-        forwarded_proto = (request.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
-        if forwarded_proto:
-            return forwarded_proto == "https"
+        # Only trust X-Forwarded-Proto when the TCP peer is a loopback address
+        # (i.e. a trusted local proxy).  Accepting this header from arbitrary
+        # clients would allow spoofing the "secure" flag and mis-marking cookies.
+        peer = self._peer_host(request)
+        if self._is_loopback_host(peer):
+            forwarded_proto = (request.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+            if forwarded_proto:
+                return forwarded_proto == "https"
         return bool(request.secure)
 
     def _build_oauth_redirect_uri(self) -> Optional[str]:
@@ -908,6 +943,9 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             destination = self._canonical_post_login_destination(next_path)
             raise web.HTTPFound(destination)
 
+        if not self._check_rate_limit(request, max_requests=10, window_seconds=60.0):
+            return web.Response(text="Zu viele Anfragen. Bitte warte kurz.", status=429)
+
         if not self._is_oauth_configured():
             return web.Response(
                 text="Twitch OAuth nicht konfiguriert. Bitte TWITCH_CLIENT_ID und TWITCH_CLIENT_SECRET setzen.",
@@ -937,6 +975,9 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
 
     async def auth_callback(self, request: web.Request) -> web.StreamResponse:
         """Handle Twitch OAuth callback, verify partner status, and create session."""
+        if not self._check_rate_limit(request, max_requests=10, window_seconds=60.0):
+            return web.Response(text="Zu viele Anfragen. Bitte warte kurz.", status=429)
+
         if not self._is_oauth_configured():
             return web.Response(text="OAuth ist nicht konfiguriert.", status=503)
 
@@ -967,6 +1008,11 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             twitch_user_id=user.get("twitch_user_id") or "",
         )
         if not partner:
+            log.warning(
+                "AUDIT dashboard login denied: twitch=%s peer=%s",
+                self._sanitize_log_value(user.get("twitch_login")),
+                self._sanitize_log_value(self._peer_host(request)),
+            )
             return web.Response(
                 text=(
                     f"Kein Zugriff: Twitch-Account '{user.get('display_name') or user.get('twitch_login')}' "
@@ -979,6 +1025,11 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             twitch_login=partner.get("twitch_login") or user.get("twitch_login") or "",
             twitch_user_id=partner.get("twitch_user_id") or user.get("twitch_user_id") or "",
             display_name=user.get("display_name") or "",
+        )
+        log.info(
+            "AUDIT dashboard login success: twitch=%s peer=%s",
+            self._sanitize_log_value(partner.get("twitch_login")),
+            self._sanitize_log_value(self._peer_host(request)),
         )
         destination = self._safe_internal_redirect(
             self._normalize_next_path(state_data.get("next_path")),
@@ -1148,7 +1199,13 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         """Logout and clear dashboard session cookie."""
         session_id = (request.cookies.get(self._session_cookie_name) or "").strip()
         if session_id:
-            self._auth_sessions.pop(session_id, None)
+            session = self._auth_sessions.pop(session_id, None)
+            twitch_login = (session or {}).get("twitch_login", "unknown") if session else "unknown"
+            log.info(
+                "AUDIT dashboard logout: twitch=%s peer=%s",
+                self._sanitize_log_value(twitch_login),
+                self._sanitize_log_value(self._peer_host(request)),
+            )
 
         response = web.HTTPFound("/twitch/auth/login?next=%2Ftwitch%2Fdashboard-v2")
         self._clear_session_cookie(response)
@@ -1189,8 +1246,10 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         """Optional reload endpoint for admin tooling compatibility."""
         token = (await request.post()).get("token", "")
         if not self._check_admin_token(token):
+            log.warning("AUDIT dashboard reload_cog: unauthorized attempt from peer=%s", self._sanitize_log_value(self._peer_host(request)))
             return web.Response(text="Unauthorized", status=401)
 
+        log.info("AUDIT dashboard reload_cog: triggered by peer=%s", self._sanitize_log_value(self._peer_host(request)))
         if self._reload_cb:
             msg = await self._reload_cb()
             return web.Response(text=msg)
@@ -1228,6 +1287,16 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         self._register_v2_routes(app.router)
 
 
+@web.middleware
+async def _security_headers_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+    """Attach minimal security headers to every response."""
+    response = await handler(request)
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-XSS-Protection", "1; mode=block")
+    return response
+
+
 def build_v2_app(
     *,
     noauth: bool,
@@ -1251,7 +1320,7 @@ def build_v2_app(
     reload_cb: Optional[Callable[[], Awaitable[str]]] = None,
     eventsub_webhook_handler: Optional[Any] = None,
 ) -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[_security_headers_middleware])
     DashboardV2Server(
         app_token=token,
         noauth=noauth,
