@@ -602,6 +602,7 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             CREATE TABLE IF NOT EXISTS beta_invite_pending_payments(
               discord_id INTEGER PRIMARY KEY,
               discord_name TEXT NOT NULL,
+              token TEXT UNIQUE,
               created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
             );
 
@@ -778,6 +779,20 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+        # Ko-fi pending payments: token Spalte hinzufügen
+        try:
+            c.execute(
+                "ALTER TABLE beta_invite_pending_payments ADD COLUMN token TEXT"
+            )
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+        try:
+            c.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_payments_token ON beta_invite_pending_payments(token)"
+            )
+        except sqlite3.OperationalError:
+            pass
         # Indizes ergänzen (idempotent)
         try:
             c.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_user  ON steam_links(user_id)")

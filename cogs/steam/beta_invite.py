@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable, Mapping, Optional, Union
 from urllib.parse import parse_qs
 
 import asyncio
+import secrets
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -35,16 +36,16 @@ KOFI_VERIFICATION_TOKEN = os.getenv("KOFI_VERIFICATION_TOKEN")
 
 EXPRESS_SUCCESS_DM = "Vielen Dank für deinen Support! 🚑 Dein Deadlock-Invite wird jetzt verarbeitet."
 STEAM_LINK_REQUIRED_DM = "Zahlung erhalten! Aber du musst erst deinen Steam-Account verknüpfen. Nutze danach /betainvite oder klicke im Panel auf Weiter."
-INVITE_ONLY_PAYMENT_MESSAGE = (
-'''
-Damit wir dir den Invite schicken können, brauchen wir deine Hilfe!
-
-Um unseren Server werbefrei und technisch auf dem neuesten Stand zu halten, erheben wir einen kleinen Infrastruktur-Beitrag. Ohne diesen können wir den Service und die Bot-Entwicklung leider nicht dauerhaft anbieten.
-
-Wichtig: Nutze deinen Discord USER-Namen (@deinname) im Nachrichtentext der Zahlung, damit wir dich zuordnen können.
-
-Nachdem du deinen Beitrag geleistet hast, wird der Invite automatisch per DM an dich verschickt.'''
-)
+def _make_payment_message(token: str) -> str:
+    return (
+        f"Damit wir dir den Invite schicken können, brauchen wir deine Hilfe!\n\n"
+        f"Um unseren Server werbefrei und technisch auf dem neuesten Stand zu halten, erheben wir einen kleinen Infrastruktur-Beitrag. "
+        f"Ohne diesen können wir den Service und die Bot-Entwicklung leider nicht dauerhaft anbieten.\n\n"
+        f"**Wichtig:** Kopiere diesen Code in das Nachrichtenfeld bei Ko-fi:\n"
+        f"```\n{token}\n```"
+        f"Nur so können wir dich automatisch zuordnen. Schreib **nichts anderes** in das Feld.\n\n"
+        f"Nachdem du deinen Beitrag geleistet hast, wird der Invite automatisch per DM an dich verschickt."
+    )
 KOFI_PAYMENT_URL = "https://ko-fi.com/deutschedeadlockcommunity"
 _raw_log_channel_id = os.getenv("BETA_INVITE_LOG_CHANNEL_ID", "1234567890")
 try:
@@ -507,19 +508,45 @@ def _persist_intent_once(discord_id: int, intent: str) -> BetaIntentDecision:
     return record
 
 
-def _register_pending_payment(discord_id: int, discord_name: str) -> None:
+def _register_pending_payment(discord_id: int, discord_name: str) -> str:
+    """Registriert eine ausstehende Zahlung und gibt den zugehörigen Token zurück."""
     now_ts = int(time.time())
+    token = f"DDL-{secrets.token_hex(4).upper()}"
     with db.get_conn() as conn:
+        # Prüfe ob bereits ein Token existiert (bei erneutem Klick alten Token wiederverwenden)
+        existing = conn.execute(
+            "SELECT token FROM beta_invite_pending_payments WHERE discord_id = ?",
+            (int(discord_id),),
+        ).fetchone()
+        if existing and existing["token"]:
+            return existing["token"]
         conn.execute(
             """
-            INSERT INTO beta_invite_pending_payments(discord_id, discord_name, created_at)
-            VALUES (?, ?, ?)
+            INSERT INTO beta_invite_pending_payments(discord_id, discord_name, token, created_at)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(discord_id) DO UPDATE SET
                 discord_name=excluded.discord_name,
+                token=COALESCE(token, excluded.token),
                 created_at=excluded.created_at
             """,
-            (int(discord_id), str(discord_name), now_ts),
+            (int(discord_id), str(discord_name), token, now_ts),
         )
+    return token
+
+
+def _get_pending_payment_by_token(token: str) -> Optional[int]:
+    """Sucht nach einer offenen Zahlung via Token (Case-Insensitive)."""
+    clean = token.strip().upper()
+    if not clean:
+        return None
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT discord_id FROM beta_invite_pending_payments WHERE UPPER(token) = ?",
+            (clean,),
+        ).fetchone()
+        if row:
+            return int(row["discord_id"])
+    return None
 
 
 def _get_pending_payment(username_or_id: Union[str, int]) -> Optional[int]:
@@ -1306,12 +1333,10 @@ class BetaInviteFlow(commands.Cog):
     async def handle_kofi_webhook(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
         raw_message = str(data.get("message") or "").strip()
-        username_candidate = self._extract_discord_username(raw_message)
 
         _trace(
             "kofi_webhook_received",
             raw_message=raw_message,
-            username=username_candidate,
             payload_keys=list(data.keys()) if isinstance(data, Mapping) else None,
         )
 
@@ -1320,13 +1345,16 @@ class BetaInviteFlow(commands.Cog):
             await self._notify_log_channel("Ko-fi Webhook: MAIN_GUILD_ID ist nicht gesetzt oder Guild nicht im Cache.")
             return {"ok": False, "reason": "guild_unavailable"}
 
-        if not username_candidate:
-            await self._notify_log_channel("Ko-fi Webhook: message-Feld leer, kein Discord-Nutzer angegeben.")
-            return {"ok": False, "reason": "missing_username"}
+        if not raw_message:
+            await self._notify_log_channel(
+                "⚠️ Ko-fi Webhook: Nachrichtenfeld leer – kein Token angegeben. Bitte manuell prüfen!"
+            )
+            return {"ok": False, "reason": "missing_message"}
 
-        # Smarter Check: Haben wir eine ID für diesen Namen in den letzten 24h getrackt?
+        # Token-Lookup (primär): Format DDL-XXXXXXXX
         member = None
-        pending_id = _get_pending_payment(username_candidate)
+        token_candidate = raw_message.strip().upper()
+        pending_id = _get_pending_payment_by_token(token_candidate)
         if pending_id:
             member = guild.get_member(pending_id)
             if not member:
@@ -1335,21 +1363,31 @@ class BetaInviteFlow(commands.Cog):
                 except Exception:
                     log.debug("Could not fetch member from pending_id %s", pending_id)
 
-        # Fallback: Namenssuche
+        # Fallback: Alter Username-basierter Lookup (für Abwärtskompatibilität)
         if member is None:
-            member = await self._find_member_by_username(guild, username_candidate)
+            username_candidate = self._extract_discord_username(raw_message)
+            if username_candidate:
+                pending_id_by_name = _get_pending_payment(username_candidate)
+                if pending_id_by_name:
+                    member = guild.get_member(pending_id_by_name)
+                    if not member:
+                        try:
+                            member = await guild.fetch_member(pending_id_by_name)
+                        except Exception:
+                            log.debug("Could not fetch member from pending_id %s", pending_id_by_name)
+                if member is None:
+                    member = await self._find_member_by_username(guild, username_candidate)
 
         if member is None:
             await self._notify_log_channel(
-                f"⚠️ Ko-fi Webhook: Nutzer '{username_candidate}' konnte nicht gefunden werden. Raw message: {raw_message!r}"
+                f"⚠️ Ko-fi Webhook: Kein Nutzer für Token/Message `{raw_message!r}` gefunden. Bitte manuell prüfen!"
             )
             _trace(
                 "kofi_member_not_found",
-                username=username_candidate,
                 raw_message=raw_message,
                 guild_id=getattr(guild, "id", None),
             )
-            return {"ok": False, "reason": "user_not_found", "username": username_candidate}
+            return {"ok": False, "reason": "user_not_found", "raw_message": raw_message}
 
         steam_id = _lookup_primary_steam_id(member.id)
         if not steam_id:
@@ -1464,17 +1502,18 @@ class BetaInviteFlow(commands.Cog):
         )
 
         if intent_choice == INTENT_INVITE_ONLY:
+            payment_token = _register_pending_payment(interaction.user.id, interaction.user.name)
             view = InviteOnlyPaymentView(KOFI_PAYMENT_URL)
             try:
                 await self._response_edit_message(
                     interaction,
-                    content=INVITE_ONLY_PAYMENT_MESSAGE,
+                    content=_make_payment_message(payment_token),
                     view=view,
                 )
             except Exception:
                 await self._followup_send(
                     interaction,
-                    INVITE_ONLY_PAYMENT_MESSAGE,
+                    _make_payment_message(payment_token),
                     view=view,
                     ephemeral=True,
                 )
@@ -2409,9 +2448,9 @@ class BetaInviteFlow(commands.Cog):
                 stop_anim.set()
                 await self._await_animation_task(anim_task)
                 
-                # Merke uns den Nutzer für den Webhook (24h)
-                _register_pending_payment(interaction.user.id, interaction.user.name)
-                
+                # Merke uns den Nutzer für den Webhook (24h), Token für Zuordnung
+                payment_token = _register_pending_payment(interaction.user.id, interaction.user.name)
+
                 # Backup Benachrichtigung für Admin (DM)
                 admin_id = 662995601738170389
                 try:
@@ -2420,16 +2459,16 @@ class BetaInviteFlow(commands.Cog):
                         await self._send_user_dm(
                             admin_user,
                             f"ℹ️ **Zahlungs-Backup**: {interaction.user.mention} (`{interaction.user.name}`) "
-                            "hat gerade die Bezahl-Info angefordert und könnte jetzt bezahlen.",
+                            f"hat gerade die Bezahl-Info angefordert (Token: `{payment_token}`) und könnte jetzt bezahlen.",
                             interaction=interaction,
                         )
                 except Exception as e:
                     log.debug(f"Konnte Admin-Backup-DM nicht senden: {e}")
-                
+
                 view = InviteOnlyPaymentView(KOFI_PAYMENT_URL)
                 await self._edit_original_response(
                     interaction,
-                    content=INVITE_ONLY_PAYMENT_MESSAGE,
+                    content=_make_payment_message(payment_token),
                     view=view,
                 )
                 _trace(
