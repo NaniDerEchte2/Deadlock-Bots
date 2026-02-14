@@ -598,6 +598,14 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               locked INTEGER NOT NULL DEFAULT 1
             );
 
+            -- Funnel: Panel-Klicks tracken
+            CREATE TABLE IF NOT EXISTS beta_invite_panel_clicks(
+              discord_id INTEGER PRIMARY KEY,
+              click_count INTEGER NOT NULL DEFAULT 1,
+              first_clicked_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              last_clicked_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
             -- Pending payments for Ko-fi tracking
             CREATE TABLE IF NOT EXISTS beta_invite_pending_payments(
               discord_id INTEGER PRIMARY KEY,
