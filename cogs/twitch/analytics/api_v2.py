@@ -260,6 +260,99 @@ class AnalyticsV2Mixin:
         # Serve the dashboard
         router.add_get("/twitch/dashboard-v2", self._serve_dashboard_v2)
         router.add_get("/twitch/dashboard-v2/{path:.*}", self._serve_dashboard_v2_assets)
+        # Public demo (no auth required)
+        self._register_demo_routes(router)
+
+    def _register_demo_routes(self, router: web.UrlDispatcher) -> None:
+        """Register public demo endpoints – no authentication required."""
+        from .demo_data import (
+            get_auth_status, get_streamers, get_overview, get_monthly_stats,
+            get_weekday_stats, get_hourly_heatmap, get_calendar_heatmap,
+            get_chat_analytics, get_viewer_overlap, get_tag_analysis,
+            get_tag_analysis_extended, get_title_performance, get_rankings,
+            get_category_comparison, get_watch_time_distribution,
+            get_follower_funnel, get_audience_insights, get_audience_demographics,
+            get_viewer_timeline, get_category_leaderboard, get_coaching,
+            get_monetization, get_category_timings, get_category_activity_series,
+        )
+
+        def _j(data):
+            async def _handler(request: web.Request) -> web.Response:
+                return web.json_response(data() if callable(data) else data)
+            return _handler
+
+        def _days_j(fn):
+            async def _handler(request: web.Request) -> web.Response:
+                try:
+                    days = int(request.query.get("days", "30"))
+                except ValueError:
+                    days = 30
+                return web.json_response(fn(days))
+            return _handler
+
+        def _metric_j(fn):
+            async def _handler(request: web.Request) -> web.Response:
+                metric = request.query.get("metric", "viewers")
+                return web.json_response(fn(metric))
+            return _handler
+
+        base = "/twitch/demo/api/v2"
+        router.add_get(f"{base}/auth-status",               _j(get_auth_status))
+        router.add_get(f"{base}/streamers",                  _j(get_streamers))
+        router.add_get(f"{base}/overview",                   _days_j(get_overview))
+        router.add_get(f"{base}/monthly-stats",              _j(get_monthly_stats))
+        router.add_get(f"{base}/weekly-stats",               _j(get_weekday_stats))
+        router.add_get(f"{base}/hourly-heatmap",             _j(get_hourly_heatmap))
+        router.add_get(f"{base}/calendar-heatmap",           _j(get_calendar_heatmap))
+        router.add_get(f"{base}/chat-analytics",             _j(get_chat_analytics))
+        router.add_get(f"{base}/viewer-overlap",             _j(get_viewer_overlap))
+        router.add_get(f"{base}/tag-analysis",               _j(get_tag_analysis))
+        router.add_get(f"{base}/tag-analysis-extended",      _j(get_tag_analysis_extended))
+        router.add_get(f"{base}/title-performance",          _j(get_title_performance))
+        router.add_get(f"{base}/rankings",                   _metric_j(get_rankings))
+        router.add_get(f"{base}/category-comparison",        _j(get_category_comparison))
+        router.add_get(f"{base}/watch-time-distribution",    _j(get_watch_time_distribution))
+        router.add_get(f"{base}/follower-funnel",            _j(get_follower_funnel))
+        router.add_get(f"{base}/audience-insights",          _j(get_audience_insights))
+        router.add_get(f"{base}/audience-demographics",      _j(get_audience_demographics))
+        router.add_get(f"{base}/viewer-timeline",            _days_j(get_viewer_timeline))
+        router.add_get(f"{base}/category-leaderboard",       _j(get_category_leaderboard))
+        router.add_get(f"{base}/coaching",                   _j(get_coaching))
+        router.add_get(f"{base}/monetization",               _j(get_monetization))
+        router.add_get(f"{base}/category-timings",           _j(get_category_timings))
+        router.add_get(f"{base}/category-activity-series",   _j(get_category_activity_series))
+        # Demo dashboard HTML
+        router.add_get("/twitch/demo/", self._serve_demo_dashboard)
+        router.add_get("/twitch/demo",  self._serve_demo_dashboard)
+
+    async def _serve_demo_dashboard(self, request: web.Request) -> web.Response:
+        """Serve the demo dashboard HTML without authentication."""
+        import pathlib
+        dist_path = pathlib.Path(__file__).parent / "dashboard_v2" / "dist" / "index.html"
+        if not dist_path.exists():
+            return web.Response(text="Dashboard not built. Run npm run build in dashboard_v2/", status=404)
+        html = dist_path.read_text(encoding="utf-8")
+        # Inject demo config + fetch interceptor before the app boots.
+        # The built JS has the API base hardcoded as "/twitch/api/v2", so we
+        # intercept fetch() to transparently rewrite those calls to the public
+        # demo endpoints at "/twitch/demo/api/v2".
+        inject = (
+            '<script>'
+            'window.__DEMO_MODE__=true;'
+            'window.__DEMO_STREAMER__="deadlock_de_demo";'
+            '(function(){'
+            'var _f=window.fetch;'
+            'window.fetch=function(u,o){'
+            'if(typeof u==="string"&&u.indexOf("/twitch/api/v2/")!==-1){'
+            'u=u.replace("/twitch/api/v2/","/twitch/demo/api/v2/");'
+            '}'
+            'return _f.call(this,u,o);'
+            '};'
+            '})();'
+            '</script>'
+        )
+        html = html.replace("</head>", f"{inject}\n  </head>", 1)
+        return web.Response(text=html, content_type="text/html", charset="utf-8")
 
     async def _serve_dashboard_v2(self, request: web.Request) -> web.Response:
         """Serve the main dashboard HTML."""

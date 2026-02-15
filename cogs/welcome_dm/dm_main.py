@@ -291,3 +291,6 @@ class WelcomeDM(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(WelcomeDM(bot))
+    from .dm_assistant import BotDMAssistant, FallbackView
+    bot.add_view(FallbackView())
+    await bot.add_cog(BotDMAssistant(bot))

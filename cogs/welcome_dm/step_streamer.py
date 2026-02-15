@@ -54,6 +54,9 @@ STREAMER_ROLE_ID = int(os.getenv("STREAMER_ROLE_ID", "1313624729466441769"))
 STREAMER_NOTIFY_CHANNEL_ID = int(os.getenv("STREAMER_NOTIFY_CHANNEL_ID", "1374364800817303632"))
 MAIN_GUILD_ID = int(os.getenv("MAIN_GUILD_ID", "0"))  # DM-Fallback, falls interaction.guild None
 
+# Demo-Dashboard URL (öffentlich, kein Login nötig)
+ANALYTICS_DEMO_URL = "https://demo.earlysalty.com/"
+
 
 # ------------------------------
 # Utilities
@@ -447,11 +450,21 @@ class StreamerIntroView(StepView):
     """
     Step 1: "Streamst du Deadlock? – möchtest du Partner werden?"
     Buttons:
+      - 📊 Demo ansehen     -> Link zum Analytics Demo-Dashboard (kein Auth)
       - Ja, Partner werden  -> weiter zu Step 2 (Anforderungen)
       - Nein, kein Partner  -> Abbruch
     """
     def __init__(self):
         super().__init__()
+        # Link-Button für das Demo-Dashboard (persistent-kompatibel, da kein custom_id)
+        self.add_item(
+            discord.ui.Button(
+                label="📊 Demo ansehen",
+                style=discord.ButtonStyle.link,
+                url=ANALYTICS_DEMO_URL,
+                row=1,
+            )
+        )
 
     @staticmethod
     def build_embed(user: discord.abc.User) -> discord.Embed:
@@ -460,43 +473,35 @@ class StreamerIntroView(StepView):
             description=(
                 "Wir haben einen **exklusiven Streamer-Bereich** mit automatisierten Tools, "
                 "die dir als Partner das Leben leichter machen.\n\n"
-                "**Twitch Bot-Update: Das passiert im Hintergrund:**\n\n"
 
                 "**1️⃣ Auto-Raid Manager**\n"
                 "Schluss mit manuellem Raid-Suchen am Ende eines langen Streams. Der Bot übernimmt das automatisch:\n"
                 "• Sobald dein Stream **offline** geht, prüft der Bot, **welche Partner aktuell live** sind und raidet einen davon\n"
                 "• **Fallback:** Wenn **kein Partner live** ist, sucht der Bot automatisch nach **deutschen Deadlock-Streamern**\n\n"
-
+                "• **Manuelle Raids gehen nach wie vor, und der Bot ist nur aktiv wenn du Deadlock Streamst**.\n\n"
+                
                 "**2️⃣ Chat Guard – Schutz vor Müll im Chat**\n"
                 "Damit dein Chat sauber bleibt, ohne dass du ständig moderieren musst:\n"
-                "• **Spam-Mod:** Filtert Spam anhand einer vorgegebenen Liste (z. B. Viewer-Bots)\n"
-                "• **Erweiterbar:** Neue Spam-Wellen können wir schnell ergänzen\n"
-                "• **Wichtig:** Bitte gebt Feedback inkl. **exakter Nachricht** – nur so können wir zuverlässig bannen\n\n"
+                "• **Spam-Mod:** Filtert Viewer-Bots z.B. ```Best viewers streamboo .com (remove the space) @v3GTfQvC```\n"
 
-                "**3️⃣ Analytics Dashboard** *(Work in Progress 03–05/26)*\n"
+                "**3️⃣ Analytics Dashboard**\n"
                 "• **Retention-Analyse:** Wann droppen Zuschauer? (z. B. nach 5, 10 oder 20 Minuten)\n"
                 "• **Unique Chatters:** Wie viele **verschiedene** Menschen interagieren wirklich?\n"
                 "• **Kategorie-Vergleich (DE):** Analyse der deutschen Deadlock-Kategorie & Vergleich zwischen Streamern\n"
-                "→ Ziel: Du erkennst Muster und weißt, was du optimieren kannst.\n\n"
+                "→ Ziel: Du erkennst Muster und weißt, was du optimieren kannst.\n"
+                "→ **Sneak Peak gefällig?** Klick unten auf **„📊 Demo ansehen“**!\n\n"
 
                 "**4️⃣ Discord – Live-Stream Auto-Post**\n"
                 "• Sobald du **Deadlock** streamst, wird dein Stream automatisch im Discord gepostet (#🎥twitch)\n"
                 "→ Ergebnis: Mehr Sichtbarkeit in der Community, ohne dass du selbst posten musst.\n\n"
-
-                "**5️⃣ Chat-Promos**\n"
-                "• Der Bot postet alle ~30 Minuten eine kurze Promo in deinem Chat\n"
-                "• Inhalt: Einladung zur deutschen Deadlock-Community + Discord-Link\n"
-                "→ Mehr Sichtbarkeit für die Community, vollautomatisch.\n\n"
-
-                "**Wenn du Lust hast, teste die Beta-Features direkt:**\n"
-                "Nutze #🎥streamer-austausch `!traid`, autorisiere den **Twitch-Bot** "
-                "und gib uns Feedback, wenn dir etwas auffällt oder du dir weitere Features wünschst.\n\n"
+    
+                "Gib uns Feedback, wenn dir etwas auffällt oder du dir weitere Features wünschst.\n\n"
 
                 "**Bereit, Partner zu werden?**"
             ),
             color=0x9146FF  # Twitch-Lila
         )
-        e.set_footer(text="Schritt 1/2 • Streamer-Partner werden")
+        e.set_footer(text="Schritt 1/2 • Streamer-Partner werden • Demo-Dashboard verfügbar")
         return e
 
     @discord.ui.button(
