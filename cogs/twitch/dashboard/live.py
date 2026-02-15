@@ -10,6 +10,37 @@ from urllib.parse import quote_plus
 from aiohttp import web
 
 from ..constants import log
+from .. import storage as _storage
+
+# Alle Scopes die ein vollständig autorisierter Streamer haben sollte
+_REQUIRED_SCOPES: list[str] = [
+    "channel:manage:raids",
+    "moderator:read:followers",
+    "moderator:manage:banned_users",
+    "moderator:manage:chat_messages",
+    "channel:read:subscriptions",
+    "analytics:read:games",
+    "channel:manage:moderators",
+    "channel:bot",
+    "chat:read",
+    "chat:edit",
+    "clips:edit",
+    "channel:read:ads",
+    "bits:read",
+    "channel:read:hype_train",
+    "moderator:read:chatters",
+    "moderator:manage:shoutouts",
+    "channel:read:redemptions",
+]
+
+# Scopes die besonders wichtig für Analytics/Lurker-Tracking sind
+_CRITICAL_SCOPES: set[str] = {
+    "moderator:read:chatters",   # Lurker-Tracking via Chatters API
+    "channel:read:redemptions",  # Channel Point Redemptions
+    "bits:read",                 # Bits Events
+    "channel:read:hype_train",   # Hype Train Events
+    "channel:read:subscriptions", # Sub Events
+}
 
 
 class DashboardLiveMixin:
@@ -683,6 +714,111 @@ class DashboardLiveMixin:
             "</div>"
         )
 
+        # --- Scope Status Card ---
+        scope_rows: List[str] = []
+        try:
+            with _storage.get_conn() as _sc:
+                auth_rows = _sc.execute(
+                    "SELECT twitch_login, scopes, needs_reauth FROM twitch_raid_auth ORDER BY twitch_login"
+                ).fetchall()
+            for auth_row in auth_rows:
+                _login = str(auth_row[0] if not hasattr(auth_row, "keys") else auth_row["twitch_login"])
+                _scopes_raw = str(auth_row[1] if not hasattr(auth_row, "keys") else auth_row["scopes"] or "")
+                _needs_reauth = bool(auth_row[2] if not hasattr(auth_row, "keys") else auth_row["needs_reauth"])
+                _token_scopes = set(_scopes_raw.split()) if _scopes_raw else set()
+                _missing = [s for s in _REQUIRED_SCOPES if s not in _token_scopes]
+                _missing_critical = [s for s in _missing if s in _CRITICAL_SCOPES]
+                _has_chatters = "moderator:read:chatters" in _token_scopes
+
+                if _needs_reauth:
+                    row_class = "scope-row scope-reauth"
+                    status_pill = "<span class='pill err'>Re-Auth nötig</span>"
+                elif _missing_critical:
+                    row_class = "scope-row scope-critical"
+                    status_pill = f"<span class='pill warn'>{len(_missing_critical)} kritisch fehlt</span>"
+                elif _missing:
+                    row_class = "scope-row scope-partial"
+                    status_pill = f"<span class='pill neutral'>{len(_missing)} fehlt</span>"
+                else:
+                    row_class = "scope-row scope-full"
+                    status_pill = "<span class='pill ok'>Vollständig</span>"
+
+                chatters_icon = "✅" if _has_chatters else "❌"
+                redemptions_icon = "✅" if "channel:read:redemptions" in _token_scopes else "❌"
+                bits_icon = "✅" if "bits:read" in _token_scopes else "❌"
+                hype_icon = "✅" if "channel:read:hype_train" in _token_scopes else "❌"
+                subs_icon = "✅" if "channel:read:subscriptions" in _token_scopes else "❌"
+
+                missing_chips_html = ""
+                if _missing:
+                    missing_chips_html = "<div class='scope-missing'>" + "".join(
+                        f"<span class='chip {'chip-crit' if s in _CRITICAL_SCOPES else ''}'>{html.escape(s)}</span>"
+                        for s in _missing
+                    ) + "</div>"
+
+                scope_rows.append(
+                    f"<tr class='{row_class}'>"
+                    f"  <td><strong>{html.escape(_login)}</strong></td>"
+                    f"  <td>{status_pill}</td>"
+                    f"  <td title='moderator:read:chatters (Lurker)'>{chatters_icon}</td>"
+                    f"  <td title='channel:read:redemptions'>{redemptions_icon}</td>"
+                    f"  <td title='bits:read'>{bits_icon}</td>"
+                    f"  <td title='channel:read:hype_train'>{hype_icon}</td>"
+                    f"  <td title='channel:read:subscriptions'>{subs_icon}</td>"
+                    f"  <td>{missing_chips_html}</td>"
+                    f"</tr>"
+                )
+        except Exception:
+            log.debug("Scope-Status Card: DB-Fehler", exc_info=True)
+            scope_rows = ["<tr><td colspan='8'>Fehler beim Laden der Scope-Daten</td></tr>"]
+
+        total_authorized = len(scope_rows)
+        full_scope_count = sum(1 for r in scope_rows if "scope-full" in r)
+        missing_chatters_count = sum(1 for r in scope_rows if "❌" in r and "scope-row" in r and "moderator:read:chatters" not in (r[r.find("scope-full"):] if "scope-full" in r else ""))
+        # Simpler count: count rows where chatters-icon is ❌
+        chatters_missing_count = sum(1 for r in scope_rows if ">❌<" in r.split("title='moderator:read:chatters")[1][:20] if "moderator:read:chatters" in r)
+
+        scope_summary_pills = (
+            f"<span class='pill ok'>{full_scope_count} vollständig</span>"
+            f"<span class='pill warn'>{total_authorized - full_scope_count} unvollständig</span>"
+        )
+
+        scope_card_html = (
+            "<div class='card scope-card'>"
+            "  <div class='card-header'>"
+            "    <div>"
+            "      <p class='eyebrow'>OAuth Token Scopes</p>"
+            "      <h2>Scope-Status pro Streamer</h2>"
+            "      <p class='lead'>Zeigt welche Streamer alle erforderlichen Scopes autorisiert haben – besonders wichtig für Lurker-Tracking (<code>moderator:read:chatters</code>) und Channel Points (<code>channel:read:redemptions</code>).</p>"
+            "    </div>"
+            "    <div class='raid-metrics'>"
+            f"      <div class='mini-stat'><strong>{total_authorized}</strong><span>Mit OAuth</span></div>"
+            f"      <div class='mini-stat'><strong>{full_scope_count}</strong><span>Vollständig</span></div>"
+            f"      <div class='mini-stat'><strong>{total_authorized - full_scope_count}</strong><span>Fehlt</span></div>"
+            "    </div>"
+            "  </div>"
+            "  <div class='status-meta' style='margin-bottom:.8rem;'>"
+            f"    {scope_summary_pills}"
+            "    <span class='pill neutral'>Re-Auth Link → Raid Bot Autorisierung</span>"
+            "  </div>"
+            "  <div class='table-wrap'>"
+            "  <table>"
+            "    <thead><tr>"
+            "      <th>Streamer</th>"
+            "      <th>Status</th>"
+            "      <th title='moderator:read:chatters'>👁 Chatters</th>"
+            "      <th title='channel:read:redemptions'>🎁 Points</th>"
+            "      <th title='bits:read'>💎 Bits</th>"
+            "      <th title='channel:read:hype_train'>🚂 Hype</th>"
+            "      <th title='channel:read:subscriptions'>⭐ Subs</th>"
+            "      <th>Fehlende Scopes</th>"
+            "    </tr></thead>"
+            f"    <tbody>{''.join(scope_rows) if scope_rows else '<tr><td colspan=8>Kein Streamer mit OAuth autorisiert</td></tr>'}</tbody>"
+            "  </table>"
+            "  </div>"
+            "</div>"
+        )
+
         raid_history_link = ""
         if raid_bot_available:
             history_href = "/twitch/raid/history"
@@ -744,6 +880,8 @@ class DashboardLiveMixin:
 </div>
 
 {table_html}
+
+{scope_card_html}
 
 {archived_card_html}
 {non_partner_card_html}

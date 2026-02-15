@@ -688,4 +688,40 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_twitch_shoutout_events_user ON twitch_shoutout_events(twitch_user_id, received_at)"
     )
 
+    # --- Follow Events (channel.follow EventSub) ---
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_follow_events (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            streamer_login TEXT NOT NULL,
+            twitch_user_id TEXT NOT NULL,
+            follower_login TEXT NOT NULL,
+            follower_id    TEXT,
+            followed_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_follow_events_streamer ON twitch_follow_events(streamer_login, followed_at)"
+    )
+
+    # --- Channel Point Redemption Events ---
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_channel_points_events (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id     INTEGER,
+            twitch_user_id TEXT NOT NULL,
+            user_login     TEXT,
+            reward_id      TEXT,
+            reward_title   TEXT,
+            reward_cost    INTEGER,
+            user_input     TEXT,
+            redeemed_at    TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_channel_points_events_user ON twitch_channel_points_events(twitch_user_id, redeemed_at)"
+    )
 

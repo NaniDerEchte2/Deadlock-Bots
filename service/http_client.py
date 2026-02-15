@@ -36,7 +36,7 @@ def build_resilient_connector(
     dns_servers: Optional[Iterable[str]] = None,
     ttl_dns_cache: int = 300,
     family: socket.AddressFamily = socket.AF_INET,
-    limit: int = 100,
+    limit: int = 500,
     limit_per_host: int = 0,
 ) -> aiohttp.TCPConnector:
     """

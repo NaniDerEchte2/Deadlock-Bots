@@ -262,6 +262,15 @@ class DashboardTemplateMixin:
   .mini-stat strong {{ font-size:1.1rem; color:var(--accent-3); }}
   .mini-stat span {{ font-size:.75rem; color:var(--muted); }}
   .raid-cell {{ display:flex; flex-direction:column; gap:.4rem; align-items:flex-start; }}
+  .pill.err {{ background:var(--err-bg); border-color:var(--err-bd); color:var(--err-fg); }}
+  .pill.neutral {{ background:rgba(124,58,237,0.15); color:var(--text); border-color:rgba(124,58,237,0.35); }}
+  .scope-card {{ margin-top:1.4rem; }}
+  .scope-missing {{ display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.3rem; }}
+  .chip-crit {{ background:rgba(239,68,68,.18); border-color:rgba(239,68,68,.55); color:#fca5a5; }}
+  .scope-row.scope-reauth td {{ background:rgba(239,68,68,.08); }}
+  .scope-row.scope-critical td {{ background:rgba(245,158,11,.06); }}
+  .scope-row.scope-partial td {{ background:rgba(124,58,237,.04); }}
+  .scope-row.scope-full td {{ background:rgba(16,185,129,.04); }}
   @keyframes rise {{
     from {{ opacity:0; transform: translateY(12px); }}
     to {{ opacity:1; transform: translateY(0); }}

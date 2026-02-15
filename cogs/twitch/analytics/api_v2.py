@@ -695,8 +695,26 @@ class AnalyticsV2Mixin:
         chat_sample_count = int(sample_row[1]) if sample_row else 0
         follower_valid_count = int(sample_row[2]) if sample_row else 0
 
+        # Active chatters (at least 1 message) for engagement rate calculation
+        active_chatters_row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id))
+            FROM twitch_session_chatters sc
+            JOIN twitch_stream_sessions s ON s.id = sc.session_id
+            WHERE s.started_at >= ?
+              AND s.ended_at IS NOT NULL
+              AND (? IS NULL OR LOWER(s.streamer_login) = ?)
+              AND sc.messages > 0
+            """,
+            [since_date, streamer_login, streamer_login],
+        ).fetchone()
+        active_chatters = int(active_chatters_row[0]) if active_chatters_row and active_chatters_row[0] else 0
+
+        avg_viewers = float(row[0]) if row[0] else 0
+        engagement_rate = (active_chatters / avg_viewers * 100) if avg_viewers > 0 else 0
+
         return {
-            "avg_avg_viewers": float(row[0]) if row[0] else 0,
+            "avg_avg_viewers": avg_viewers,
             "max_peak_viewers": int(row[1]) if row[1] else 0,
             "total_hours_watched": float(row[2]) if row[2] else 0,
             "total_airtime_hours": total_airtime,
@@ -709,6 +727,8 @@ class AnalyticsV2Mixin:
             "avg_retention_20m": float(row[7]) * 100 if row[7] else 0,
             "avg_dropoff": float(row[8]) * 100 if row[8] else 0,
             "total_unique_chatters": unique_chatters,
+            "active_chatters": active_chatters,
+            "engagement_rate": round(engagement_rate, 2),
             "chat_per_100": float(row[10]) if row[10] else 0,
             "retention_sample_count": retention_sample_count,
             "chat_sample_count": chat_sample_count,
@@ -756,12 +776,12 @@ class AnalyticsV2Mixin:
         else:
             retention = min(100, int(ret_10m * 1.5))  # 66% = 100
 
-        # Engagement: Based on chat per 100 viewers (neutral if insufficient data)
-        chat_100 = metrics.get("chat_per_100", 0)
+        # Engagement: % of avg viewers who actively chatted (0-10% bad, 10-20% ok, 20%+ gut)
+        engagement_rate = metrics.get("engagement_rate", 0)
         if metrics.get("chat_sample_count", 0) < 3:
             engagement = 50
         else:
-            engagement = min(100, int(chat_100 * 3))  # ~33 chatters/100 peak-viewer = 100
+            engagement = min(100, int(engagement_rate * 5))  # 20% engagement_rate = 100
 
         # Growth: Based on followers per hour (floor at 0, negative fph = 0 growth)
         fph = max(0, metrics.get("followers_per_hour", 0))
@@ -1200,7 +1220,7 @@ class AnalyticsV2Mixin:
                     int(message_stats[2]) if message_stats and message_stats[2] else 0
                 )
 
-                # Chatter cohort split from session-level chatter table.
+                # Chatter cohort split + lurker stats from session-level chatter table.
                 cohort_stats = conn.execute(
                     """
                     SELECT
@@ -1211,7 +1231,12 @@ class AnalyticsV2Mixin:
                                 THEN COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id)
                             END
                         ) as first_time_chatters,
-                        COUNT(DISTINCT sc.session_id) as sessions_with_chat
+                        COUNT(DISTINCT sc.session_id) as sessions_with_chat,
+                        COUNT(*) as total_unique_viewers,
+                        SUM(CASE WHEN sc.messages = 0 AND sc.seen_via_chatters_api = 1 THEN 1 ELSE 0 END) as lurkers,
+                        SUM(CASE WHEN sc.messages > 0 THEN 1 ELSE 0 END) as active_chatters_count,
+                        ROUND(AVG(CASE WHEN sc.messages > 0 THEN sc.messages ELSE NULL END), 1) as avg_messages_per_chatter,
+                        SUM(CASE WHEN sc.seen_via_chatters_api = 1 THEN 1 ELSE 0 END) as chatters_api_seen
                     FROM twitch_session_chatters sc
                     JOIN twitch_stream_sessions s ON s.id = sc.session_id
                     WHERE s.started_at >= ?
@@ -1223,6 +1248,14 @@ class AnalyticsV2Mixin:
                 unique_chatters = int(cohort_stats[0]) if cohort_stats and cohort_stats[0] else 0
                 first_time_chatters = int(cohort_stats[1]) if cohort_stats and cohort_stats[1] else 0
                 sessions_with_chat = int(cohort_stats[2]) if cohort_stats and cohort_stats[2] else 0
+                total_unique_viewers = int(cohort_stats[3]) if cohort_stats and cohort_stats[3] else 0
+                lurker_count = int(cohort_stats[4]) if cohort_stats and cohort_stats[4] else 0
+                active_chatters_count = int(cohort_stats[5]) if cohort_stats and cohort_stats[5] else 0
+                avg_messages_per_chatter = float(cohort_stats[6]) if cohort_stats and cohort_stats[6] else 0.0
+                chatters_api_seen = int(cohort_stats[7]) if cohort_stats and cohort_stats[7] else 0
+                lurker_ratio = round(lurker_count / total_unique_viewers, 3) if total_unique_viewers > 0 else 0.0
+                active_ratio = round(active_chatters_count / total_unique_viewers, 3) if total_unique_viewers > 0 else 0.0
+                chatters_api_coverage = round(chatters_api_seen / total_unique_viewers, 3) if total_unique_viewers > 0 else 0.0
 
                 # Fallback for older rows where session_chatters may be sparse.
                 if unique_chatters == 0 and distinct_chatters_from_messages > 0:
@@ -1267,6 +1300,11 @@ class AnalyticsV2Mixin:
                         "chatterReturnRate": round(chatter_return_rate, 1),
                         "commandMessages": command_messages,
                         "nonCommandMessages": max(0, total_messages - command_messages),
+                        "lurkerRatio": lurker_ratio,
+                        "lurkerCount": lurker_count,
+                        "activeChatters": active_chatters_count,
+                        "activeRatio": active_ratio,
+                        "avgMessagesPerChatter": avg_messages_per_chatter,
                         "topChatters": [
                             {
                                 "login": r[0],
@@ -1289,6 +1327,7 @@ class AnalyticsV2Mixin:
                             )
                             if session_count > 0
                             else 0.0,
+                            "chattersApiCoverage": chatters_api_coverage,
                         },
                     }
                 )
@@ -1697,46 +1736,92 @@ class AnalyticsV2Mixin:
 
     # ==================== NEW AUDIENCE ANALYTICS ENDPOINTS ====================
 
-    def _calc_watch_distribution(self, sessions) -> Dict[str, Any]:
-        """Calculate watch time distribution from session retention data."""
+    def _calc_watch_distribution(self, sessions, conn=None, session_ids: list = None) -> Dict[str, Any]:
+        """Calculate watch time distribution.
+
+        Tries to use real per-viewer watch-time from chatters-API snapshots
+        (last_seen_at - first_message_at) when sufficient data is available.
+        Falls back to a retention-curve proxy otherwise.
+        """
         if not sessions:
             return {
                 "under5min": 0, "min5to15": 0, "min15to30": 0,
                 "min30to60": 0, "over60min": 0,
                 "avgWatchTime": 0, "medianWatchTime": 0,
                 "sessionCount": 0,
+                "dataQuality": {"method": "no_data", "coverage": 0.0},
             }
 
         total_sessions = len(sessions)
-        ret_5m_avg = sum((s[1] or 0) * 100 for s in sessions) / total_sessions
-        ret_10m_avg = sum((s[2] or 0) * 100 for s in sessions) / total_sessions
-        ret_20m_avg = sum((s[3] or 0) * 100 for s in sessions) / total_sessions
 
-        # Clamp to 0 — noisy data can invert retention values (10m > 5m)
-        under_5min = max(0, 100 - ret_5m_avg)
-        min_5_to_15 = max(0, ret_5m_avg - ret_10m_avg)
-        min_15_to_30 = max(0, ret_10m_avg - ret_20m_avg)
-        min_30_to_60 = max(0, ret_20m_avg * 0.4)
-        over_60min = max(0, ret_20m_avg * 0.6)
+        # --- Attempt: real watch-time from chatters-API snapshots ---
+        real_minutes: list[float] = []
+        if conn is not None and session_ids:
+            if session_ids:
+                placeholders = ",".join("?" * len(session_ids))
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        ROUND((julianday(COALESCE(last_seen_at, first_message_at))
+                               - julianday(first_message_at)) * 24 * 60) as watch_minutes
+                    FROM twitch_session_chatters
+                    WHERE session_id IN ({placeholders})
+                      AND last_seen_at IS NOT NULL
+                    """,
+                    session_ids,
+                ).fetchall()
+                real_minutes = [float(r[0]) for r in rows if r[0] is not None and r[0] >= 0]
 
-        total = under_5min + min_5_to_15 + min_15_to_30 + min_30_to_60 + over_60min
-        if total > 0:
-            under_5min = (under_5min / total) * 100
-            min_5_to_15 = (min_5_to_15 / total) * 100
-            min_15_to_30 = (min_15_to_30 / total) * 100
-            min_30_to_60 = (min_30_to_60 / total) * 100
-            over_60min = (over_60min / total) * 100
+        # Decide whether real data is sufficient (≥30% coverage vs session count)
+        use_real = len(real_minutes) >= total_sessions * 0.3 and len(real_minutes) >= 3
 
-        avg_durations = [s[0] or 0 for s in sessions]
-        avg_duration_mins = sum(avg_durations) / len(avg_durations) / 60 if avg_durations else 0
+        if use_real:
+            total_viewers = len(real_minutes)
+            under_5min   = sum(1 for m in real_minutes if m < 5)  / total_viewers * 100
+            min_5_to_15  = sum(1 for m in real_minutes if 5 <= m < 15) / total_viewers * 100
+            min_15_to_30 = sum(1 for m in real_minutes if 15 <= m < 30) / total_viewers * 100
+            min_30_to_60 = sum(1 for m in real_minutes if 30 <= m < 60) / total_viewers * 100
+            over_60min   = sum(1 for m in real_minutes if m >= 60) / total_viewers * 100
+            avg_watch_time = sum(real_minutes) / total_viewers
+            # Median
+            sorted_m = sorted(real_minutes)
+            mid = len(sorted_m) // 2
+            median_watch_time = sorted_m[mid] if len(sorted_m) % 2 == 1 else (sorted_m[mid - 1] + sorted_m[mid]) / 2
+            # Approximate total-session coverage ratio
+            total_viewers_in_sessions = sum(int(s[4] or 0) for s in sessions)  # avg_viewers col
+            coverage = min(1.0, total_viewers / max(1, total_viewers_in_sessions)) if total_viewers_in_sessions > 0 else 0.0
+            data_quality = {"method": "chatters_api_snapshots", "coverage": round(coverage, 2)}
+        else:
+            # Retention-curve proxy (original method)
+            ret_5m_avg  = sum((s[1] or 0) * 100 for s in sessions) / total_sessions
+            ret_10m_avg = sum((s[2] or 0) * 100 for s in sessions) / total_sessions
+            ret_20m_avg = sum((s[3] or 0) * 100 for s in sessions) / total_sessions
 
-        avg_watch_time = (
-            (under_5min / 100) * 2.5 +
-            (min_5_to_15 / 100) * 10 +
-            (min_15_to_30 / 100) * 22.5 +
-            (min_30_to_60 / 100) * 45 +
-            (over_60min / 100) * min(90, avg_duration_mins)
-        )
+            under_5min   = max(0, 100 - ret_5m_avg)
+            min_5_to_15  = max(0, ret_5m_avg - ret_10m_avg)
+            min_15_to_30 = max(0, ret_10m_avg - ret_20m_avg)
+            min_30_to_60 = max(0, ret_20m_avg * 0.4)
+            over_60min   = max(0, ret_20m_avg * 0.6)
+
+            total = under_5min + min_5_to_15 + min_15_to_30 + min_30_to_60 + over_60min
+            if total > 0:
+                under_5min   = (under_5min / total) * 100
+                min_5_to_15  = (min_5_to_15 / total) * 100
+                min_15_to_30 = (min_15_to_30 / total) * 100
+                min_30_to_60 = (min_30_to_60 / total) * 100
+                over_60min   = (over_60min / total) * 100
+
+            avg_durations = [s[0] or 0 for s in sessions]
+            avg_duration_mins = sum(avg_durations) / len(avg_durations) / 60 if avg_durations else 0
+            avg_watch_time = (
+                (under_5min / 100) * 2.5 +
+                (min_5_to_15 / 100) * 10 +
+                (min_15_to_30 / 100) * 22.5 +
+                (min_30_to_60 / 100) * 45 +
+                (over_60min / 100) * min(90, avg_duration_mins)
+            )
+            median_watch_time = avg_watch_time * 0.85
+            data_quality = {"method": "retention_curve_proxy", "coverage": round(len(real_minutes) / max(1, total_sessions), 2)}
 
         return {
             "under5min": round(max(0, under_5min), 1),
@@ -1745,8 +1830,9 @@ class AnalyticsV2Mixin:
             "min30to60": round(max(0, min_30_to_60), 1),
             "over60min": round(max(0, over_60min), 1),
             "avgWatchTime": round(avg_watch_time, 1),
-            "medianWatchTime": round(avg_watch_time * 0.85, 1),  # Estimate: ~85% of avg
+            "medianWatchTime": round(median_watch_time, 1),
             "sessionCount": total_sessions,
+            "dataQuality": data_quality,
         }
 
     async def _api_v2_watch_time_distribution(self, request: web.Request) -> web.Response:
@@ -1767,27 +1853,34 @@ class AnalyticsV2Mixin:
                 # Current period
                 current_sessions = conn.execute(
                     """
-                    SELECT s.duration_seconds, s.retention_5m, s.retention_10m,
-                           s.retention_20m, s.avg_viewers, s.start_viewers, s.end_viewers
+                    SELECT s.id, s.retention_5m, s.retention_10m,
+                           s.retention_20m, s.avg_viewers, s.start_viewers, s.end_viewers,
+                           s.duration_seconds
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
                 """,
                     [since_date, streamer.lower()],
                 ).fetchall()
+                # Remap: (duration_seconds, ret5, ret10, ret20, avg_viewers, ...) for _calc
+                current_sessions_remapped = [(r[7], r[1], r[2], r[3], r[4]) for r in current_sessions]
 
                 # Previous period
                 prev_sessions = conn.execute(
                     """
-                    SELECT s.duration_seconds, s.retention_5m, s.retention_10m,
-                           s.retention_20m, s.avg_viewers, s.start_viewers, s.end_viewers
+                    SELECT s.id, s.retention_5m, s.retention_10m,
+                           s.retention_20m, s.avg_viewers, s.start_viewers, s.end_viewers,
+                           s.duration_seconds
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= ? AND s.started_at < ? AND LOWER(s.streamer_login) = ? AND s.ended_at IS NOT NULL
                 """,
                     [prev_since_date, since_date, streamer.lower()],
                 ).fetchall()
+                prev_sessions_remapped = [(r[7], r[1], r[2], r[3], r[4]) for r in prev_sessions]
 
-                current = self._calc_watch_distribution(current_sessions)
-                previous = self._calc_watch_distribution(prev_sessions)
+                current_ids = [r[0] for r in current_sessions]
+                prev_ids = [r[0] for r in prev_sessions]
+                current = self._calc_watch_distribution(current_sessions_remapped, conn=conn, session_ids=current_ids)
+                previous = self._calc_watch_distribution(prev_sessions_remapped, conn=conn, session_ids=prev_ids)
 
                 # Calculate deltas
                 deltas = {}
@@ -1807,6 +1900,7 @@ class AnalyticsV2Mixin:
                 else:
                     confidence = "very_low"
 
+                dq = current.get("dataQuality", {})
                 return web.json_response({
                     **current,
                     "previous": previous,
@@ -1814,7 +1908,8 @@ class AnalyticsV2Mixin:
                     "dataQuality": {
                         "confidence": confidence,
                         "sessions": session_count,
-                        "method": "retention_curve_proxy",
+                        "method": dq.get("method", "retention_curve_proxy"),
+                        "coverage": dq.get("coverage", 0.0),
                     },
                 })
         except Exception as exc:
@@ -1869,8 +1964,10 @@ class AnalyticsV2Mixin:
                             "uniqueViewers": 0,
                             "returningViewers": 0,
                             "newFollowers": 0,
+                            "followsDuringStream": 0,
                             "netFollowerDelta": 0,
                             "conversionRate": 0,
+                            "conversionDataSource": "session_delta_fallback",
                             "avgTimeToFollow": 0,
                             "followersBySource": {"organic": 0, "raids": 0, "hosts": 0, "other": 0},
                             "dataQuality": {"confidence": "low", "reason": "no_sessions"},
@@ -1895,7 +1992,8 @@ class AnalyticsV2Mixin:
                                 WHEN sc.is_first_time_global = 0
                                 THEN COALESCE(NULLIF(sc.chatter_login, ''), sc.chatter_id)
                             END
-                        ) as returning_chatters
+                        ) as returning_chatters,
+                        COUNT(*) as total_viewers_tracked
                     FROM twitch_session_chatters sc
                     JOIN twitch_stream_sessions s ON s.id = sc.session_id
                     WHERE s.started_at >= ?
@@ -1906,17 +2004,44 @@ class AnalyticsV2Mixin:
                 ).fetchone()
                 unique_chatters = int(chatter_stats[0]) if chatter_stats and chatter_stats[0] else 0
                 returning_chatters = int(chatter_stats[1]) if chatter_stats and chatter_stats[1] else 0
+                total_viewers_tracked = int(chatter_stats[2]) if chatter_stats and chatter_stats[2] else 0
 
-                # Unique viewers are not directly available via Helix for creator analytics.
-                # We approximate from viewer-hours and a retention-derived watch-time proxy.
-                avg_watch_minutes_proxy = max(8.0, min(75.0, 8.0 + (avg_retention_10m * 100.0 * 0.55)))
-                unique_from_hours = int((total_hours_watched * 60.0) / max(1.0, avg_watch_minutes_proxy))
-                unique_from_chat = int(unique_chatters * 2.0)
-                unique_from_concurrency = int(avg_viewers * max(1.5, min(4.0, (total_duration / 3600.0) / max(1.0, session_count))))
-                unique_viewers = max(unique_from_hours, unique_from_chat, unique_from_concurrency, 1)
+                # Real follow events during streams (primary source)
+                follow_events_row = conn.execute(
+                    """
+                    SELECT COUNT(*) as follows_during_stream
+                    FROM twitch_follow_events fe
+                    JOIN twitch_stream_sessions ss
+                        ON ss.streamer_login = fe.streamer_login
+                       AND fe.followed_at BETWEEN ss.started_at
+                           AND COALESCE(ss.ended_at, datetime('now'))
+                    WHERE LOWER(ss.streamer_login) = ?
+                      AND ss.started_at >= ?
+                      AND ss.ended_at IS NOT NULL
+                    """,
+                    [streamer_login, since_date],
+                ).fetchone()
+                follows_during_stream = int(follow_events_row[0]) if follow_events_row and follow_events_row[0] else 0
 
-                # Conversion rate uses gained followers only (not net delta).
-                conversion_rate = (gained_followers / unique_viewers * 100.0) if unique_viewers > 0 else 0.0
+                # Use chatters-API total_viewers_tracked as unique viewer count when available
+                unique_viewers = max(total_viewers_tracked, unique_chatters, 1)
+                if total_viewers_tracked == 0:
+                    # Fallback: estimate unique viewers
+                    avg_watch_minutes_proxy = max(8.0, min(75.0, 8.0 + (avg_retention_10m * 100.0 * 0.55)))
+                    unique_from_hours = int((total_hours_watched * 60.0) / max(1.0, avg_watch_minutes_proxy))
+                    unique_from_chat = int(unique_chatters * 2.0)
+                    unique_from_concurrency = int(avg_viewers * max(1.5, min(4.0, (total_duration / 3600.0) / max(1.0, session_count))))
+                    unique_viewers = max(unique_from_hours, unique_from_chat, unique_from_concurrency, 1)
+
+                # Follow conversion: prefer real events, fallback to session delta
+                if follows_during_stream > 0:
+                    conversion_source = "follow_events"
+                    gained_followers_for_conversion = follows_during_stream
+                else:
+                    conversion_source = "session_delta_fallback"
+                    gained_followers_for_conversion = gained_followers
+
+                conversion_rate = (gained_followers_for_conversion / unique_viewers * 100.0) if unique_viewers > 0 else 0.0
 
                 # Estimated time-to-follow: scaled to session length, bounded to practical range.
                 avg_session_mins = (total_duration / max(1, session_count) / 60.0) if total_duration > 0 else 0.0
@@ -1937,8 +2062,8 @@ class AnalyticsV2Mixin:
                 raid_viewers = int(raids_received[1]) if raids_received and raids_received[1] else 0
 
                 # Conservative conversion assumption for raid-origin follows.
-                raid_followers = min(int(raid_viewers * 0.05), gained_followers)
-                organic_followers = max(0, gained_followers - raid_followers)
+                raid_followers = min(int(raid_viewers * 0.05), gained_followers_for_conversion)
+                organic_followers = max(0, gained_followers_for_conversion - raid_followers)
 
                 if follower_valid_samples >= max(3, int(session_count * 0.6)):
                     confidence = "high"
@@ -1951,9 +2076,11 @@ class AnalyticsV2Mixin:
                     {
                         "uniqueViewers": unique_viewers,
                         "returningViewers": returning_chatters,
-                        "newFollowers": gained_followers,
+                        "newFollowers": gained_followers_for_conversion,
+                        "followsDuringStream": follows_during_stream,
                         "netFollowerDelta": net_followers,
                         "conversionRate": round(conversion_rate, 2),
+                        "conversionDataSource": conversion_source,
                         "avgTimeToFollow": round(avg_time_to_follow, 0),
                         "followersBySource": {
                             "organic": organic_followers,
@@ -1966,7 +2093,7 @@ class AnalyticsV2Mixin:
                             "sessions": session_count,
                             "followerValidSamples": follower_valid_samples,
                             "raidEvents": raid_count,
-                            "uniqueViewersMethod": "estimated_from_viewer_hours_and_chatters",
+                            "uniqueViewersMethod": "chatters_api_snapshots" if total_viewers_tracked > 0 else "estimated_from_viewer_hours_and_chatters",
                         },
                     }
                 )

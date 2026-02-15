@@ -946,8 +946,34 @@ class TwitchMonitoringMixin:
                 log.exception("EventSub Webhook: channel.ad_break.begin-Callback fehlgeschlagen für %s", login)
 
         async def _follow_cb(bid: str, login: str, event: dict):
-            user_login = (event.get("user_login") or event.get("user_name") or "").strip()
+            user_login = (event.get("user_login") or event.get("user_name") or "").strip().lower()
+            user_id = str(event.get("user_id") or "").strip()
+            followed_at = (event.get("followed_at") or datetime.now(timezone.utc).isoformat())
             log.debug("EventSub: channel.follow – %s followed %s", user_login, login)
+            try:
+                with storage.get_conn() as c:
+                    c.execute(
+                        """
+                        INSERT INTO twitch_follow_events
+                            (streamer_login, twitch_user_id, follower_login, follower_id, followed_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (login, bid, user_login, user_id or None, followed_at),
+                    )
+            except Exception:
+                log.exception("EventSub: _follow_cb – DB-Insert fehlgeschlagen für %s", login)
+
+        async def _points_auto_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_channel_points_event(bid, event)
+            except Exception:
+                log.exception("EventSub: channel.channel_points_automatic_reward_redemption.add fehlgeschlagen für %s", login)
+
+        async def _points_custom_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_channel_points_event(bid, event)
+            except Exception:
+                log.exception("EventSub: channel.channel_points_custom_reward_redemption.add fehlgeschlagen für %s", login)
 
         webhook_handler.set_callback("stream.online", _online_cb)
         webhook_handler.set_callback("stream.offline", _offline_cb)
@@ -968,6 +994,8 @@ class TwitchMonitoringMixin:
         webhook_handler.set_callback("channel.bits.use", _bits_use_cb)
         webhook_handler.set_callback("channel.shoutout.create", _shoutout_create_cb)
         webhook_handler.set_callback("channel.shoutout.receive", _shoutout_receive_cb)
+        webhook_handler.set_callback("channel.channel_points_automatic_reward_redemption.add", _points_auto_cb)
+        webhook_handler.set_callback("channel.channel_points_custom_reward_redemption.add", _points_custom_cb)
 
         # Go-Live Handler für Polling
         async def _handle_stream_went_live(bid: str, login: str):
@@ -1052,13 +1080,27 @@ class TwitchMonitoringMixin:
                 # 3. Broadcaster-Token Subscriptions (Bits, Hype, Subs, Ads)
                 broadcaster_token = await self._resolve_eventsub_broadcaster_token(str(bid))
                 if broadcaster_token:
+                    # Scopes des Tokens aus DB laden – nur Subs subscriben, für die der Scope vorhanden ist
+                    try:
+                        with storage.get_conn() as _sc:
+                            _scope_row = _sc.execute(
+                                "SELECT scopes FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                                (str(bid),),
+                            ).fetchone()
+                        _token_scopes: set[str] = set(
+                            (_scope_row[0] if _scope_row and _scope_row[0] else "").split()
+                        )
+                    except Exception:
+                        log.debug("EventSub: Konnte Scopes für %s nicht laden", login or bid, exc_info=True)
+                        _token_scopes = set()
+
                     broadcaster_subs = [
-                        # (sub_type, version, scope_info)
+                        # (sub_type, version, required_scope)
                         ("channel.cheer",                  "1", "bits:read"),
                         ("channel.bits.use",               "1", "bits:read"),
-                        ("channel.hype_train.begin",       "2", "channel:read:hype_train"),
-                        ("channel.hype_train.progress",    "2", "channel:read:hype_train"),
-                        ("channel.hype_train.end",         "2", "channel:read:hype_train"),
+                        ("channel.hype_train.begin",       "1", "channel:read:hype_train"),
+                        ("channel.hype_train.progress",    "1", "channel:read:hype_train"),
+                        ("channel.hype_train.end",         "1", "channel:read:hype_train"),
                         ("channel.subscribe",              "1", "channel:read:subscriptions"),
                         ("channel.subscription.gift",      "1", "channel:read:subscriptions"),
                         ("channel.subscription.message",   "1", "channel:read:subscriptions"),
@@ -1068,8 +1110,17 @@ class TwitchMonitoringMixin:
                         ("channel.unban",                  "1", "moderator:manage:banned_users"),
                         ("channel.shoutout.create",        "1", "moderator:manage:shoutouts"),
                         ("channel.shoutout.receive",       "1", "moderator:manage:shoutouts"),
+                        ("channel.channel_points_automatic_reward_redemption.add", "2", "channel:read:redemptions"),
+                        ("channel.channel_points_custom_reward_redemption.add",    "1", "channel:read:redemptions"),
                     ]
-                    for sub_type, version, _ in broadcaster_subs:
+                    for sub_type, version, required_scope in broadcaster_subs:
+                        # Scope-Check: überspringen wenn Token den Scope nicht hat
+                        if _token_scopes and required_scope not in _token_scopes:
+                            log.debug(
+                                "EventSub Webhook: %s übersprungen für %s (Scope '%s' fehlt im Token)",
+                                sub_type, login or bid, required_scope,
+                            )
+                            continue
                         if self._eventsub_has_sub(sub_type, str(bid)):
                             log.debug("EventSub Webhook: %s bereits subscribed für %s, überspringe", sub_type, login or bid)
                             continue
