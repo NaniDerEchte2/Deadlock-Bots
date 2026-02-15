@@ -9,11 +9,11 @@ Step 1  (StreamerIntroView):
     - Nein, kein Partner  -> Abbruch
 
 Step 2  (StreamerRequirementsView):
-  Zeigt die Anforderungen und führt durch 3 Schritte:
-    1. Voraussetzungen via Modal bestätigen ("bestätigen")
-    2. Twitch-Bot autorisieren (Kanal wird automatisch erkannt)
-    3. Button "Verifizierung anstoßen" vergibt Rolle + Kontroll-Ping
-  Zusätzlich: "Abbrechen" beendet ohne Änderungen.
+  Zeigt die Anforderungen mit 2 Buttons:
+    1. Twitch-Bot autorisieren (Kanal wird automatisch erkannt)
+    2. Abbrechen
+  Nach erfolgreicher OAuth-Autorisierung wird automatisch verifiziert
+  (Rolle + Kontroll-Ping), ohne separaten Verifizierungs-Button.
 
 Hinweise:
 - Nutzt die bestehende StepView aus cogs/welcome_dm/base.py (keine timeout-Args!)
@@ -405,44 +405,6 @@ async def _disable_all_and_edit(
         log.debug("response edit failed: %r", e)
 
 
-class StreamerRequirementsAcknowledgementModal(discord.ui.Modal):
-    """Fragt aktiv ab, dass die Voraussetzungen verstanden wurden."""
-
-    def __init__(self, parent_view: "StreamerRequirementsView"):
-        super().__init__(title="Partner-Voraussetzungen bestätigt")
-        self.parent_view = parent_view
-        self.confirm_input = discord.ui.TextInput(
-            label="Hiermit bestätige ich die Voraussetzungen",
-            placeholder="Bitte tippe hier 'bestätigen' ein",
-            required=True,
-            max_length=20,
-        )
-        self.add_item(self.confirm_input)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        if str(self.confirm_input.value).strip().lower() != "bestätigen":
-            await _safe_send(
-                interaction,
-                content="⚠️ Bitte gib genau \"bestätigen\" ein, um zu bestätigen, dass du die Voraussetzungen erfüllt hast.",
-                ephemeral=True,
-            )
-            return
-
-        if self.parent_view is not None:
-            await self.parent_view.mark_acknowledged(interaction)
-
-    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:  # pragma: no cover - defensive
-        log.exception("StreamerRequirementsAcknowledgementModal failed: %r", error)
-        try:
-            await _safe_send(
-                interaction,
-                content="⚠️ Unerwarteter Fehler beim Bestätigen der Voraussetzungen. Bitte probiere es erneut.",
-                ephemeral=True,
-            )
-        except Exception:
-            log.debug("Ack modal error response failed", exc_info=True)
-
-
 # ------------------------------
 # Schritt 1: Intro / Entscheidung
 # ------------------------------
@@ -596,11 +558,10 @@ class StreamerIntroView(StepView):
 # Schritt 2: Anforderungen + Abschluss
 # ------------------------------
 class StreamerRequirementsView(StepView):
-    """Mehrstufige Erfassung der Voraussetzungen und finaler Start der Verifizierung."""
+    """Schritt 2: Twitch-Bot autorisieren, dann automatische Verifizierung."""
 
     def __init__(self):
         super().__init__()
-        self.acknowledged = False
         self.twitch_login: Optional[str] = None
         self.raid_bot_authorized = False
         self.verification_started = False
@@ -610,7 +571,6 @@ class StreamerRequirementsView(StepView):
     @staticmethod
     def build_embed(
         *,
-        acknowledged: bool = False,
         twitch_login: Optional[str] = None,
         raid_bot_authorized: bool = False,
         verification_started: bool = False,
@@ -623,9 +583,8 @@ class StreamerRequirementsView(StepView):
             raid_entry += " (Kanal wird automatisch erkannt)"
 
         checklist = [
-            f"{'✅' if acknowledged else '⬜'} Voraussetzungen bestätigt",
             raid_entry,
-            f"{'✅' if verification_started else '⬜'} Verifizierung angestoßen",
+            f"{'✅' if verification_started else '⬜'} Automatisch verifiziert",
         ]
 
         checklist_text = "\n".join(checklist)
@@ -634,30 +593,30 @@ class StreamerRequirementsView(StepView):
             """
             **📋 Voraussetzungen für Streamer-Partner:**
 
-            **1️⃣ Twitch-Bot autorisieren (Pflicht)**
+            **Twitch-Bot autorisieren (Pflicht)**
             Ohne OAuth können wir dich nicht freischalten.
 
-            **2️⃣ Was der Bot für dich macht**
+            **Was der Bot für dich macht**
             • Auto-Raid beim Offline-Gehen
             • Chat Guard gegen Spam
             • Discord Auto-Post für Live-Streams
 
-            **3️⃣ Discord-Link im Twitch-Chat (einfach erklärt)**
+            **Discord-Link im Twitch-Chat (einfach erklärt)**
             • Bei Frage nach Zugang/Invite
             • Bei genug Chat-Aktivität
             • Bei Viewer-Spike
             • Mit Cooldowns, damit es nicht spammt
 
             **Wie aktivieren?**
-            Klick auf den Button unten → auf Twitch autorisieren → fertig.
-            Dein Twitch-Kanal wird automatisch erkannt.
+            Klick auf den Button unten und autorisiere den Bot auf Twitch.
+            Sobald die Autorisierung erkannt wurde, wirst du automatisch verifiziert.
             """
         ).strip()
 
         if twitch_login:
             requirement_text = (
                 f"✅ **Twitch-Kanal erkannt:** **{twitch_login}**\n"
-                "Ein Team-Mitglied prüft dein Profil und schaltet dich nach erfolgreicher Kontrolle frei.\n\n"
+                "Die Verifizierung läuft automatisch nach erfolgreicher OAuth-Prüfung.\n\n"
                 f"{requirement_text}"
             )
 
@@ -666,16 +625,14 @@ class StreamerRequirementsView(StepView):
         if verification_started:
             followup = (
                 verification_message
-                or "✅ **Danke!** Wir prüfen jetzt alles und melden uns, sobald die Kontrolle abgeschlossen ist."
+                or "✅ **Fertig!** Dein Setup wurde automatisch verifiziert."
             )
             embed_description += f"\n\n{followup}"
         else:
             embed_description += (
-                "\n\n**🎯 Nächste Schritte:**\n"
-                "Nutze die Buttons unten, um:\n"
-                "1️⃣ Voraussetzungen bestätigen\n"
-                "2️⃣ Twitch-Bot autorisieren (Pflicht)\n"
-                "3️⃣ Verifizierung starten"
+                "\n\n**🎯 Nächster Schritt:**\n"
+                "Nutze den Button unten, um den Twitch-Bot zu autorisieren.\n"
+                "Danach läuft die Verifizierung automatisch."
             )
 
         e = discord.Embed(
@@ -683,7 +640,7 @@ class StreamerRequirementsView(StepView):
             description=embed_description,
             color=0x32CD32,
         )
-        e.set_footer(text="Schritt 2/2 • Alle Schritte abarbeiten")
+        e.set_footer(text="Schritt 2/2 • Twitch-OAuth + Auto-Verifizierung")
         return e
 
     def _sync_button_states(self) -> None:
@@ -691,19 +648,14 @@ class StreamerRequirementsView(StepView):
             if not isinstance(child, discord.ui.Button):
                 continue
 
-            if child.custom_id == "wdm:streamer:req_ack":
-                child.disabled = self.acknowledged
-            elif child.custom_id == "wdm:streamer:req_raid_bot":
-                child.disabled = (not self.acknowledged) or self.raid_bot_authorized or self.verification_started
-            elif child.custom_id == "wdm:streamer:req_verify":
-                child.disabled = not (self.acknowledged and self.twitch_login and self.raid_bot_authorized and not self.verification_started)
+            if child.custom_id == "wdm:streamer:req_raid_bot":
+                child.disabled = self.raid_bot_authorized or self.verification_started
             elif child.custom_id == "wdm:streamer:req_cancel":
                 child.disabled = self.verification_started
 
     async def _update_message(self, interaction: discord.Interaction) -> None:
         self._sync_button_states()
         embed = self.build_embed(
-            acknowledged=self.acknowledged,
             twitch_login=self.twitch_login,
             raid_bot_authorized=self.raid_bot_authorized,
             verification_started=self.verification_started,
@@ -727,23 +679,7 @@ class StreamerRequirementsView(StepView):
             log.debug("Failed to update requirements message: %r", exc)
 
     @discord.ui.button(
-        label="1️⃣ Voraussetzungen bestätigen",
-        style=discord.ButtonStyle.primary,
-        custom_id="wdm:streamer:req_ack",
-    )
-    async def btn_acknowledge(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.acknowledged:
-            await _safe_send(
-                interaction,
-                content="✅ Du hast die Voraussetzungen bereits bestätigt.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.send_modal(StreamerRequirementsAcknowledgementModal(self))
-
-    @discord.ui.button(
-        label="2️⃣ Twitch-Bot autorisieren",
+        label="Twitch-Bot autorisieren",
         style=discord.ButtonStyle.primary,
         custom_id="wdm:streamer:req_raid_bot",
     )
@@ -876,17 +812,45 @@ class StreamerRequirementsView(StepView):
                             conn.commit()
 
                     if auth_row:
+                        blocked, reason = _check_partner_onboarding_blacklist(
+                            discord_user_id=btn_interaction.user.id,
+                            twitch_login=twitch_login,
+                        )
+                        if blocked:
+                            log.info(
+                                "Streamer-Onboarding abgelehnt (Auto-Verify): user=%s login=%s reason=%s",
+                                btn_interaction.user.id,
+                                twitch_login,
+                                reason,
+                            )
+                            await btn_interaction.followup.send(
+                                _blacklist_rejection_message(),
+                                ephemeral=True,
+                            )
+                            confirm_button.disabled = True
+                            await btn_interaction.edit_original_response(view=confirm_view)
+                            await self._finish(interaction)
+                            return
+
+                        assign_ok, assign_msg = await _assign_role_and_notify(btn_interaction, twitch_login)
+                        if not assign_ok:
+                            await btn_interaction.followup.send(f"⚠️ {assign_msg}", ephemeral=True)
+                            return
+
                         self.twitch_login = twitch_login
                         self.raid_bot_authorized = True
+                        self.verification_started = True
+                        self.verification_message = assign_msg
                         await self._update_message(btn_interaction)
                         await btn_interaction.followup.send(
-                            "✅ **Twitch-Bot erfolgreich autorisiert!**\n"
+                            "✅ **Twitch-Bot erfolgreich autorisiert und automatisch verifiziert!**\n"
                             f"**Kanal erkannt:** **{twitch_login}**\n"
-                            "Du kannst jetzt die Verifizierung anstoßen (Button 3️⃣).",
+                            f"{assign_msg}",
                             ephemeral=True,
                         )
                         confirm_button.disabled = True
                         await btn_interaction.edit_original_response(view=confirm_view)
+                        await self._finish(interaction)
                     else:
                         await btn_interaction.followup.send(
                             "⚠️ **Autorisierung noch nicht gefunden (OAuth fehlt)**\n\n"
@@ -922,66 +886,6 @@ class StreamerRequirementsView(StepView):
             )
 
     @discord.ui.button(
-        label="3️⃣ Verifizierung starten",
-        style=discord.ButtonStyle.success,
-        custom_id="wdm:streamer:req_verify",
-    )
-    async def btn_verify(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.acknowledged or not self.twitch_login or not self.raid_bot_authorized:
-            missing = []
-            if not self.acknowledged:
-                missing.append("1️⃣ Voraussetzungen bestätigen")
-            if not self.raid_bot_authorized or not self.twitch_login:
-                missing.append("2️⃣ Twitch-Bot autorisieren (Pflicht)")
-
-            await _safe_send(
-                interaction,
-                content=f"⚠️ **Bitte erledige noch folgende Schritte:**\n\n" + "\n".join(missing),
-                ephemeral=True,
-            )
-            return
-
-        blocked, reason = _check_partner_onboarding_blacklist(
-            discord_user_id=interaction.user.id,
-            twitch_login=self.twitch_login,
-        )
-        if blocked:
-            log.info(
-                "Streamer-Onboarding abgelehnt (Verify): user=%s login=%s reason=%s",
-                interaction.user.id,
-                self.twitch_login,
-                reason,
-            )
-            await _safe_send(
-                interaction,
-                content=_blacklist_rejection_message(),
-                ephemeral=True,
-            )
-            await self._finish(interaction)
-            return
-
-        await interaction.response.defer(ephemeral=True)
-
-        assign_ok, assign_msg = await _assign_role_and_notify(interaction, self.twitch_login)
-        if not assign_ok:
-            await interaction.followup.send(f"⚠️ {assign_msg}", ephemeral=True)
-            return
-
-        self.verification_started = True
-        self.verification_message = assign_msg
-        await self._update_message(interaction)
-        await interaction.followup.send(
-            f"✅ {assign_msg}\n\n"
-            "**Was passiert jetzt?**\n"
-            "• Ein Team-Mitglied prüft dein Setup\n"
-            "• Du wirst freigeschaltet, sobald alles passt\n"
-            "• Bei Rückfragen melden wir uns bei dir\n\n"
-            "Danke für deine Geduld! 🎉",
-            ephemeral=True
-        )
-        await self._finish(interaction)
-
-    @discord.ui.button(
         label="❌ Abbrechen",
         style=discord.ButtonStyle.danger,
         custom_id="wdm:streamer:req_cancel",
@@ -997,20 +901,6 @@ class StreamerRequirementsView(StepView):
             ephemeral=True,
         )
         await self._finish(interaction)
-
-    async def mark_acknowledged(self, interaction: discord.Interaction) -> None:
-        self.acknowledged = True
-        await self._update_message(interaction)
-        await _safe_send(
-            interaction,
-            content=(
-                "✅ **Voraussetzungen bestätigt!**\n\n"
-                "Wir schauen kurz, ob du alles erfüllst.\n"
-                "Als nächstes: Autorisiere den Twitch-Bot (Button 2️⃣)."
-            ),
-            ephemeral=True,
-        )
-
 
 # ---------------------------------------------------------
 # Backward-Compat: Export "StreamerView" für bestehende Importe
