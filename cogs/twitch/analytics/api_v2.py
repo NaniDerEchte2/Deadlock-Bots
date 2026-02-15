@@ -1758,17 +1758,19 @@ class AnalyticsV2Mixin:
         real_minutes: list[float] = []
         if conn is not None and session_ids:
             if session_ids:
-                placeholders = ",".join("?" * len(session_ids))
+                session_ids_json = json.dumps([int(sid) for sid in session_ids])
                 rows = conn.execute(
-                    f"""
+                    """
                     SELECT
                         ROUND((julianday(COALESCE(last_seen_at, first_message_at))
                                - julianday(first_message_at)) * 24 * 60) as watch_minutes
                     FROM twitch_session_chatters
-                    WHERE session_id IN ({placeholders})
+                    WHERE session_id IN (
+                        SELECT CAST(value AS INTEGER) FROM json_each(?)
+                    )
                       AND last_seen_at IS NOT NULL
                     """,
-                    session_ids,
+                    (session_ids_json,),
                 ).fetchall()
                 real_minutes = [float(r[0]) for r in rows if r[0] is not None and r[0] >= 0]
 
@@ -2683,23 +2685,36 @@ class AnalyticsV2Mixin:
         from statistics import median, quantiles
 
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        table = "twitch_stats_category" if source != "tracked" else "twitch_stats_tracked"
-
         try:
             with storage.get_conn() as c:
-                rows = c.execute(
-                    f"""
-                    SELECT streamer,
-                           CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
-                           CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
-                           viewer_count
-                      FROM {table}
-                     WHERE ts_utc >= ?
-                       AND viewer_count IS NOT NULL
-                       AND viewer_count > 0
-                    """,
-                    (cutoff,),
-                ).fetchall()
+                if source == "tracked":
+                    rows = c.execute(
+                        """
+                        SELECT streamer,
+                               CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
+                               CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
+                               viewer_count
+                          FROM twitch_stats_tracked
+                         WHERE ts_utc >= ?
+                           AND viewer_count IS NOT NULL
+                           AND viewer_count > 0
+                        """,
+                        (cutoff,),
+                    ).fetchall()
+                else:
+                    rows = c.execute(
+                        """
+                        SELECT streamer,
+                               CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
+                               CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
+                               viewer_count
+                          FROM twitch_stats_category
+                         WHERE ts_utc >= ?
+                           AND viewer_count IS NOT NULL
+                           AND viewer_count > 0
+                        """,
+                        (cutoff,),
+                    ).fetchall()
         except Exception as exc:
             log.exception("category-timings query failed")
             return web.json_response({"error": str(exc)}, status=500)
@@ -2944,11 +2959,8 @@ class AnalyticsV2Mixin:
         try:
             with storage.get_conn() as c:
                 # --- Ad Break overview ---
-                streamer_join = "AND LOWER(s.streamer_login) = ?" if streamer else ""
-                streamer_params = [streamer] if streamer else []
-
                 ad_agg = c.execute(
-                    f"""
+                    """
                     SELECT COUNT(*) AS total_ads,
                            SUM(CASE WHEN a.is_automatic=1 THEN 1 ELSE 0 END) AS auto_ads,
                            AVG(a.duration_seconds) AS avg_duration,
@@ -2956,9 +2968,9 @@ class AnalyticsV2Mixin:
                       FROM twitch_ad_break_events a
                       LEFT JOIN twitch_stream_sessions s ON s.id = a.session_id
                      WHERE a.started_at >= ?
-                       {streamer_join}
+                       AND (? = '' OR LOWER(s.streamer_login) = ?)
                     """,
-                    [cutoff] + streamer_params,
+                    (cutoff, streamer, streamer),
                 ).fetchone()
                 if ad_agg:
                     total = int(ad_agg["total_ads"] or 0)
@@ -2971,28 +2983,35 @@ class AnalyticsV2Mixin:
 
                 # --- Viewer impact ---
                 ad_rows = c.execute(
-                    f"""
+                    """
                     SELECT a.id, a.session_id, a.started_at, a.duration_seconds, a.is_automatic,
                            s.started_at AS session_start
                       FROM twitch_ad_break_events a
                       JOIN twitch_stream_sessions s ON s.id = a.session_id
                      WHERE a.started_at >= ?
                        AND a.session_id IS NOT NULL
-                       {streamer_join}
+                       AND (? = '' OR LOWER(s.streamer_login) = ?)
                      ORDER BY a.started_at DESC
                      LIMIT 200
                     """,
-                    [cutoff] + streamer_params,
+                    (cutoff, streamer, streamer),
                 ).fetchall()
 
                 timeline_map: dict = {}
                 if ad_rows:
                     session_ids = list({int(r["session_id"]) for r in ad_rows if r["session_id"]})
                     if session_ids:
-                        ph = ",".join("?" * len(session_ids))
+                        session_ids_json = json.dumps(session_ids)
                         vrows = c.execute(
-                            f"SELECT session_id, minutes_from_start, viewer_count FROM twitch_session_viewers WHERE session_id IN ({ph}) ORDER BY session_id, minutes_from_start",
-                            session_ids,
+                            """
+                            SELECT session_id, minutes_from_start, viewer_count
+                              FROM twitch_session_viewers
+                             WHERE session_id IN (
+                                SELECT CAST(value AS INTEGER) FROM json_each(?)
+                             )
+                             ORDER BY session_id, minutes_from_start
+                            """,
+                            (session_ids_json,),
                         ).fetchall()
                         for vr in vrows:
                             sid = int(vr["session_id"])
@@ -3039,18 +3058,17 @@ class AnalyticsV2Mixin:
 
                 # --- Hype Train ---
                 try:
-                    ht_join = "AND LOWER(s.streamer_login) = ?" if streamer else ""
                     ht = c.execute(
-                        f"""
+                        """
                         SELECT COUNT(*) AS total, AVG(h.level) AS avg_level,
                                MAX(h.level) AS max_level, AVG(h.duration_seconds) AS avg_dur
                           FROM twitch_hype_train_events h
                           LEFT JOIN twitch_stream_sessions s ON s.id = h.session_id
                          WHERE h.started_at >= ?
                            AND h.ended_at IS NOT NULL
-                           {ht_join}
+                           AND (? = '' OR LOWER(s.streamer_login) = ?)
                         """,
-                        [cutoff] + streamer_params,
+                        (cutoff, streamer, streamer),
                     ).fetchone()
                     if ht:
                         hype_train = {
@@ -3064,10 +3082,14 @@ class AnalyticsV2Mixin:
 
                 # --- Bits ---
                 try:
-                    b_join = "AND LOWER(streamer_login) = ?" if streamer else ""
                     br = c.execute(
-                        f"SELECT SUM(amount) AS total, COUNT(*) AS events FROM twitch_bits_events WHERE received_at >= ? {b_join}",
-                        [cutoff] + streamer_params,
+                        """
+                        SELECT SUM(amount) AS total, COUNT(*) AS events
+                          FROM twitch_bits_events
+                         WHERE received_at >= ?
+                           AND (? = '' OR LOWER(streamer_login) = ?)
+                        """,
+                        (cutoff, streamer, streamer),
                     ).fetchone()
                     if br:
                         bits = {"total": int(br["total"] or 0), "cheer_events": int(br["events"] or 0)}
@@ -3076,10 +3098,15 @@ class AnalyticsV2Mixin:
 
                 # --- Subs ---
                 try:
-                    s_join = "AND LOWER(streamer_login) = ?" if streamer else ""
                     sr = c.execute(
-                        f"SELECT COUNT(*) AS total, SUM(CASE WHEN is_gift=1 THEN 1 ELSE 0 END) AS gifted FROM twitch_subscription_events WHERE received_at >= ? {s_join}",
-                        [cutoff] + streamer_params,
+                        """
+                        SELECT COUNT(*) AS total,
+                               SUM(CASE WHEN is_gift=1 THEN 1 ELSE 0 END) AS gifted
+                          FROM twitch_subscription_events
+                         WHERE received_at >= ?
+                           AND (? = '' OR LOWER(streamer_login) = ?)
+                        """,
+                        (cutoff, streamer, streamer),
                     ).fetchone()
                     if sr:
                         subs = {"total_events": int(sr["total"] or 0), "gifted": int(sr["gifted"] or 0)}

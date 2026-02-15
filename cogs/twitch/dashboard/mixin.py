@@ -407,15 +407,17 @@ class TwitchDashboardMixin:
             if ad_rows:
                 session_ids = list({int(r["session_id"]) for r in ad_rows if r["session_id"]})
                 if session_ids:
-                    placeholders = ",".join("?" * len(session_ids))
+                    session_ids_json = json.dumps(session_ids)
                     viewer_rows = c.execute(
-                        f"""
+                        """
                         SELECT session_id, minutes_from_start, viewer_count
                           FROM twitch_session_viewers
-                         WHERE session_id IN ({placeholders})
+                         WHERE session_id IN (
+                            SELECT CAST(value AS INTEGER) FROM json_each(?)
+                         )
                          ORDER BY session_id, minutes_from_start
                         """,
-                        session_ids,
+                        (session_ids_json,),
                     ).fetchall()
                     for vr in viewer_rows:
                         sid = int(vr["session_id"])

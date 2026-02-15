@@ -53,20 +53,18 @@ class TokenErrorHandler:
     @staticmethod
     def _migrate_db() -> None:
         """Fügt neue Spalten zur twitch_token_blacklist hinzu (idempotent)."""
-        new_cols = [
-            ("grace_expires_at", "TEXT"),
-            ("user_dm_sent", "INTEGER DEFAULT 0"),
-            ("reminder_sent", "INTEGER DEFAULT 0"),
-            ("role_removed", "INTEGER DEFAULT 0"),
-        ]
+        column_add_statements = {
+            "grace_expires_at": "ALTER TABLE twitch_token_blacklist ADD COLUMN grace_expires_at TEXT",
+            "user_dm_sent": "ALTER TABLE twitch_token_blacklist ADD COLUMN user_dm_sent INTEGER DEFAULT 0",
+            "reminder_sent": "ALTER TABLE twitch_token_blacklist ADD COLUMN reminder_sent INTEGER DEFAULT 0",
+            "role_removed": "ALTER TABLE twitch_token_blacklist ADD COLUMN role_removed INTEGER DEFAULT 0",
+        }
         try:
             with get_conn() as conn:
                 existing = {row[1] for row in conn.execute("PRAGMA table_info(twitch_token_blacklist)")}
-                for col_name, col_type in new_cols:
+                for col_name, statement in column_add_statements.items():
                     if col_name not in existing:
-                        conn.execute(
-                            f"ALTER TABLE twitch_token_blacklist ADD COLUMN {col_name} {col_type}"
-                        )
+                        conn.execute(statement)
                 conn.commit()
         except Exception:
             log.warning("DB migration for twitch_token_blacklist failed (non-critical)", exc_info=True)
