@@ -86,6 +86,17 @@ FALLBACK_MAIN_GUILD_ID = _parse_env_int("MAIN_GUILD_ID", 0)
 log = logging.getLogger("TwitchStreams.RaidManager")
 
 
+def _mask_log_identifier(
+    value: object, *, visible_prefix: int = 3, visible_suffix: int = 2
+) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "<empty>"
+    if len(text) <= visible_prefix + visible_suffix:
+        return "***"
+    return f"{text[:visible_prefix]}...{text[-visible_suffix:]}"
+
+
 class RaidAuthManager:
     """Verwaltet OAuth User Access Tokens für Raid-Autorisierung."""
 
@@ -318,14 +329,18 @@ class RaidAuthManager:
             # Cooldown: Nicht zu schnell nach einem Fehler erneut versuchen (min. 2h Abstand)
             if self.token_error_handler.has_recent_failure(user_id):
                 log.debug(
-                    "Skipping token refresh for %s (recent failure, cooldown active)",
-                    login,
+                    "Skipping OAuth refresh for broadcaster=%s (recent failure, cooldown active)",
+                    _mask_log_identifier(login),
                 )
                 continue
 
             # Bug Fix: NULL refresh_token → kein Refresh möglich, überspringen
             if not refresh_tok:
-                log.warning("No refresh token stored for %s (user_id=%s), skipping", login, user_id)
+                log.warning(
+                    "No refresh grant stored for broadcaster=%s (user_id=%s); skipping",
+                    _mask_log_identifier(login),
+                    _mask_log_identifier(user_id),
+                )
                 continue
 
             try:
@@ -351,7 +366,10 @@ class RaidAuthManager:
                     if current:
                         curr_iso = current[0]
                         if not curr_iso:
-                            log.warning("NULL token_expires_at in double-check for %s, skipping", login)
+                            log.warning(
+                                "Missing expiry timestamp in double-check for broadcaster=%s; skipping",
+                                _mask_log_identifier(login),
+                            )
                             continue
                         curr_ts = datetime.fromisoformat(curr_iso.replace("Z", "+00:00")).timestamp()
                         # Bug Fix: time.time() statt veraltetes now_ts verwenden
@@ -543,8 +561,8 @@ class RaidAuthManager:
         # Cooldown: Nicht zu schnell nach einem Fehler erneut versuchen
         if self.token_error_handler.has_recent_failure(twitch_user_id):
             log.debug(
-                "get_tokens_for_user: recent failure cooldown active for user_id=%s",
-                twitch_user_id,
+                "Auth lookup cooldown active for user_id=%s",
+                _mask_log_identifier(twitch_user_id),
             )
             return None
 
@@ -583,7 +601,10 @@ class RaidAuthManager:
                 if time.time() < curr_expires - 300:
                     return curr_access, curr_refresh
 
-            log.info("Refreshing OAuth grant for %s (get_tokens)", twitch_login)
+            log.info(
+                "Refreshing OAuth grant for broadcaster=%s (auth lookup)",
+                _mask_log_identifier(twitch_login),
+            )
             try:
                 token_data = await self.refresh_token(
                     refresh_token,
@@ -1439,10 +1460,9 @@ class RaidBot:
                             )
                         else:
                             log.warning(
-                                "Failed to add bot as moderator in %s: HTTP %s: %s (used broadcaster token)",
-                                twitch_login,
+                                "Failed to add bot as moderator in %s: HTTP %s (used broadcaster grant)",
+                                _mask_log_identifier(twitch_login),
                                 r.status,
-                                txt,
                             )
             except Exception:
                 log.exception("Error adding bot as moderator for %s", twitch_login)

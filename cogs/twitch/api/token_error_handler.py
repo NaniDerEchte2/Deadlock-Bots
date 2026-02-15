@@ -39,6 +39,17 @@ STREAMER_GUILD_ID = _parse_env_int("STREAMER_GUILD_ID", 0)
 FALLBACK_MAIN_GUILD_ID = _parse_env_int("MAIN_GUILD_ID", 0)
 
 
+def _mask_log_identifier(
+    value: object, *, visible_prefix: int = 3, visible_suffix: int = 2
+) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "<empty>"
+    if len(text) <= visible_prefix + visible_suffix:
+        return "***"
+    return f"{text[:visible_prefix]}...{text[-visible_suffix:]}"
+
+
 class TokenErrorHandler:
     """Verwaltet Token-Fehler und verhindert endlose Refresh-Versuche."""
 
@@ -240,8 +251,8 @@ class TokenErrorHandler:
                             (new_count, now, now, error_message, twitch_user_id),
                         )
                         log.info(
-                            "Reset token failure counter for %s after %dh without errors",
-                            twitch_login,
+                            "Reset OAuth refresh failure counter for broadcaster=%s after %dh without errors",
+                            _mask_log_identifier(twitch_login),
                             self.CONSECUTIVE_FAILURE_WINDOW_HOURS,
                         )
                     else:
@@ -297,8 +308,8 @@ class TokenErrorHandler:
                 self._disable_raid_bot(twitch_user_id)
             else:
                 log.info(
-                    "Token error for %s (count %d/%d) – will retry before disabling",
-                    twitch_login,
+                    "OAuth refresh error for broadcaster=%s (count %d/%d) - will retry before disabling",
+                    _mask_log_identifier(twitch_login),
                     current_count,
                     self.BLACKLIST_DISABLE_THRESHOLD,
                 )
@@ -358,7 +369,10 @@ class TokenErrorHandler:
                     (twitch_user_id, login_hint, login_hint),
                 )
                 conn.commit()
-            log.info("Disabled raid bot for user_id=%s due to token error", twitch_user_id)
+            log.info(
+                "Disabled raid bot for user_id=%s due to OAuth refresh error",
+                _mask_log_identifier(twitch_user_id),
+            )
             # Rolle wird NICHT sofort entfernt – User hat %d Tage Grace-Period
             # Stelle sicher dass grace_expires_at gesetzt ist (wurde beim ersten Blacklist-Eintrag gesetzt)
             try:
@@ -441,7 +455,10 @@ class TokenErrorHandler:
                     (twitch_user_id,),
                 )
                 conn.commit()
-            log.info("Removed user_id=%s from token blacklist", twitch_user_id)
+            log.info(
+                "Removed user_id=%s from OAuth refresh blacklist",
+                _mask_log_identifier(twitch_user_id),
+            )
         except Exception:
             log.error("Error removing from token blacklist", exc_info=True)
 
@@ -672,7 +689,11 @@ class TokenErrorHandler:
 
         try:
             await user.send(embed=embed, view=view)
-            log.info("Sent token error DM to Discord user %s (%s)", discord_user_id, twitch_login)
+            log.info(
+                "Sent OAuth refresh error DM to Discord user=%s (broadcaster=%s)",
+                _mask_log_identifier(discord_user_id),
+                _mask_log_identifier(twitch_login),
+            )
             # user_dm_sent in DB markieren
             try:
                 with get_conn() as conn:
@@ -688,7 +709,11 @@ class TokenErrorHandler:
             log.info("Cannot DM Discord user %s (DMs closed), skipping", discord_user_id)
             return False
         except Exception:
-            log.warning("Failed to send token error DM to %s", discord_user_id, exc_info=True)
+            log.warning(
+                "Failed to send OAuth refresh error DM to Discord user=%s",
+                _mask_log_identifier(discord_user_id),
+                exc_info=True,
+            )
             return False
 
     def _get_discord_user_id(self, twitch_user_id: str, twitch_login: str) -> Optional[str]:

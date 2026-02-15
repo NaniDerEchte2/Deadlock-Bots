@@ -14,6 +14,17 @@ from ..constants import log
 from .. import storage
 
 
+def _mask_log_identifier(
+    value: object, *, visible_prefix: int = 3, visible_suffix: int = 2
+) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "<empty>"
+    if len(text) <= visible_prefix + visible_suffix:
+        return "***"
+    return f"{text[:visible_prefix]}...{text[-visible_suffix:]}"
+
+
 class LegacyTokenAnalyticsMixin:
     """
     Stellt Hilfsmethoden bereit, die bei Streamern mit needs_reauth=1 den
@@ -75,15 +86,15 @@ class LegacyTokenAnalyticsMixin:
             if changed:
                 suffix = f" ({reason})" if reason else ""
                 log.info(
-                    "LegacyToken: legacy_* Snapshot für user_id=%s entfernt%s",
-                    user_id,
+                    "LegacyAuth: legacy_* snapshot removed for user_id=%s%s",
+                    _mask_log_identifier(user_id),
                     suffix,
                 )
             return bool(changed)
         except Exception:
             log.debug(
-                "LegacyToken: Konnte legacy_* Snapshot nicht löschen für user_id=%s",
-                user_id,
+                "LegacyAuth: could not remove legacy_* snapshot for user_id=%s",
+                _mask_log_identifier(user_id),
                 exc_info=True,
             )
             return False
@@ -151,9 +162,9 @@ class LegacyTokenAnalyticsMixin:
                 return legacy_token
 
             log.info(
-                "LegacyToken: needs_reauth=1 aber kein legacy_access_token vorhanden (user_id=%s) - "
-                "überspringe Broadcaster-EventSubs bis Re-Auth",
-                str(twitch_user_id),
+                "LegacyAuth: needs_reauth=1 but no legacy access grant exists (user_id=%s) - "
+                "skip broadcaster EventSubs until re-auth",
+                _mask_log_identifier(twitch_user_id),
             )
             return None
         except Exception:
