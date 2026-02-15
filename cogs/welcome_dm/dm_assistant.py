@@ -182,7 +182,11 @@ class BotDMAssistant(commands.Cog):
             try:
                 await message.channel.send(cooldown_msg)
             except Exception:
-                pass
+                log.debug(
+                    "BotDMAssistant: cooldown message could not be sent to user=%s",
+                    message.author.id,
+                    exc_info=True,
+                )
             return
 
         ai_cog = self._ai()

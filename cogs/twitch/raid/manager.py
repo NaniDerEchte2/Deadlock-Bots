@@ -252,7 +252,7 @@ class RaidAuthManager:
                         parsed_message = str(payload.get("message", "")).lower()
                         parsed_error = str(payload.get("error", "")).lower()
                 except Exception:
-                    pass
+                    log.debug("OAuth refresh error payload was not valid JSON", exc_info=True)
 
                 is_invalid_refresh_grant = r.status == 400 and (
                     "invalid refresh token" in response_lc

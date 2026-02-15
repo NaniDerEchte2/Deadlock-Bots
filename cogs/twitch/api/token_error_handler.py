@@ -320,7 +320,6 @@ class TokenErrorHandler:
     def _disable_raid_bot(self, twitch_user_id: str):
         """Deaktiviert den Raid-Bot für einen Streamer mit Token-Fehler."""
         login_hint = ""
-        discord_user_id = ""
         try:
             with get_conn() as conn:
                 auth_row = conn.execute(
@@ -330,21 +329,6 @@ class TokenErrorHandler:
                 if auth_row:
                     login_hint = str(
                         auth_row[0] if not hasattr(auth_row, "keys") else auth_row["twitch_login"] or ""
-                    ).strip()
-
-                streamer_row = conn.execute(
-                    """
-                    SELECT discord_user_id
-                    FROM twitch_streamers
-                    WHERE twitch_user_id = ?
-                       OR (? <> '' AND LOWER(twitch_login) = LOWER(?))
-                    LIMIT 1
-                    """,
-                    (twitch_user_id, login_hint, login_hint),
-                ).fetchone()
-                if streamer_row:
-                    discord_user_id = str(
-                        streamer_row[0] if not hasattr(streamer_row, "keys") else streamer_row["discord_user_id"] or ""
                     ).strip()
 
                 conn.execute(
@@ -703,7 +687,11 @@ class TokenErrorHandler:
                     )
                     conn.commit()
             except Exception:
-                pass
+                log.debug(
+                    "Failed to mark user_dm_sent for broadcaster=%s",
+                    _mask_log_identifier(twitch_user_id),
+                    exc_info=True,
+                )
             return True
         except discord.Forbidden:
             log.info("Cannot DM Discord user %s (DMs closed), skipping", discord_user_id)

@@ -53,7 +53,7 @@ class RenameManagerCog(commands.Cog):
             if self.bot.user and self.bot.user.id:
                 return int(self.bot.user.id)
         except Exception:
-            pass
+            logger.debug("RenameManagerCog: failed to resolve worker id from bot user", exc_info=True)
         return 1
 
     async def _ensure_db_schema(self) -> None:

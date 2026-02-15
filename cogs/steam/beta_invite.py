@@ -2672,7 +2672,7 @@ class BetaInviteFlow(commands.Cog):
                 try:
                     member = await guild.fetch_member(uid)
                 except Exception:
-                    pass
+                    log.debug("Beta invite stats: failed to fetch member uid=%s", uid, exc_info=True)
             decided = datetime.fromtimestamp(entry["decided_at"], tz=timezone.utc).strftime("%d.%m.%y")
             name = f"{member.mention} (`{member.name}`)" if member else f"<@{uid}> (nicht mehr im Server)"
             geier_lines.append(f"  • {name} — seit {decided}")

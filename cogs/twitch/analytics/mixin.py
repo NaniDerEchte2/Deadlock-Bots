@@ -409,7 +409,7 @@ class TwitchAnalyticsMixin:
             message = str(message_data).strip() or None
         total_gifted = int(event.get("total") or 0) or None
 
-        session_id = self._get_active_session_id(broadcaster_user_id)
+        session_id = self._get_active_session_id_by_user_id(broadcaster_user_id)
 
         try:
             with storage.get_conn() as c:
@@ -431,7 +431,7 @@ class TwitchAnalyticsMixin:
         except Exception:
             log.exception("_store_subscription_event: Fehler für %s (%s)", broadcaster_user_id, event_type)
 
-    def _get_active_session_id(self, broadcaster_user_id: str) -> "int | None":
+    def _get_active_session_id_by_user_id(self, broadcaster_user_id: str) -> "int | None":
         """Gibt die aktive session_id für einen Broadcaster zurück (über twitch_live_state).
 
         twitch_stream_sessions hat keine twitch_user_id-Spalte – deshalb über
@@ -446,7 +446,11 @@ class TwitchAnalyticsMixin:
             if row and row[0] is not None:
                 return int(row[0] if not hasattr(row, "keys") else row["active_session_id"])
         except Exception:
-            log.debug("_get_active_session_id: Fehler für %s", broadcaster_user_id, exc_info=True)
+            log.debug(
+                "_get_active_session_id_by_user_id: Fehler für %s",
+                broadcaster_user_id,
+                exc_info=True,
+            )
         return None
 
     async def _store_ad_break_event(self, broadcaster_user_id: str, event: dict) -> None:
@@ -454,7 +458,7 @@ class TwitchAnalyticsMixin:
         duration_seconds = int(event.get("duration_seconds") or 0) or None
         is_automatic = int(bool(event.get("is_automatic")))
 
-        session_id = self._get_active_session_id(broadcaster_user_id)
+        session_id = self._get_active_session_id_by_user_id(broadcaster_user_id)
 
         try:
             with storage.get_conn() as c:
@@ -480,7 +484,7 @@ class TwitchAnalyticsMixin:
         if not amount:
             return
         # Session ID für den aktuellen Stream bestimmen (optional)
-        session_id = self._get_active_session_id(broadcaster_user_id)
+        session_id = self._get_active_session_id_by_user_id(broadcaster_user_id)
 
         try:
             with storage.get_conn() as c:
@@ -512,7 +516,7 @@ class TwitchAnalyticsMixin:
         user_input = (event.get("user_input") or "").strip() or None
         redeemed_at = (event.get("redeemed_at") or "").strip() or datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-        session_id = self._get_active_session_id(broadcaster_user_id)
+        session_id = self._get_active_session_id_by_user_id(broadcaster_user_id)
 
         try:
             with storage.get_conn() as c:
@@ -549,7 +553,7 @@ class TwitchAnalyticsMixin:
                     exc_info=True,
                 )
 
-        session_id = self._get_active_session_id(broadcaster_user_id)
+        session_id = self._get_active_session_id_by_user_id(broadcaster_user_id)
 
         try:
             with storage.get_conn() as c:
@@ -603,7 +607,7 @@ class TwitchAnalyticsMixin:
         reason = (event.get("reason") or "").strip() or None
         ends_at = (event.get("ends_at") or "").strip() or None  # None = permanent
 
-        session_id = self._get_active_session_id(broadcaster_user_id)
+        session_id = self._get_active_session_id_by_user_id(broadcaster_user_id)
 
         try:
             with storage.get_conn() as c:

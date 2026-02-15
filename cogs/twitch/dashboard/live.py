@@ -774,9 +774,6 @@ class DashboardLiveMixin:
 
         total_authorized = len(scope_rows)
         full_scope_count = sum(1 for r in scope_rows if "scope-full" in r)
-        missing_chatters_count = sum(1 for r in scope_rows if "❌" in r and "scope-row" in r and "moderator:read:chatters" not in (r[r.find("scope-full"):] if "scope-full" in r else ""))
-        # Simpler count: count rows where chatters-icon is ❌
-        chatters_missing_count = sum(1 for r in scope_rows if ">❌<" in r.split("title='moderator:read:chatters")[1][:20] if "moderator:read:chatters" in r)
 
         scope_summary_pills = (
             f"<span class='pill ok'>{full_scope_count} vollständig</span>"
