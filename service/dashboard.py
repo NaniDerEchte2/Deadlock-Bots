@@ -2308,7 +2308,8 @@ class DashboardServer:
 
     async def _handle_bot_restart(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
-        logger.warning("AUDIT master-dashboard bot_restart requested from %s", request.remote)
+        safe_remote = self._safe_log_value(request.remote)
+        logger.warning("AUDIT master-dashboard bot_restart requested from %s", safe_remote)
         lifecycle = self._lifecycle or getattr(self.bot, "lifecycle", None)
         if not lifecycle:
             return self._json({"ok": False, "message": "Restart nicht verfügbar (kein Lifecycle angebunden)"})
@@ -2614,7 +2615,9 @@ class DashboardServer:
         if not isinstance(names, list) or not names:
             raise web.HTTPBadRequest(text="'names' must be a non-empty list")
         normalized = self._normalize_names(names)
-        logger.info("AUDIT master-dashboard cog_reload: names=%s from %s", normalized, request.remote)
+        safe_names = self._safe_log_value(normalized)
+        safe_remote = self._safe_log_value(request.remote)
+        logger.info("AUDIT master-dashboard cog_reload: names=%s from %s", safe_names, safe_remote)
 
         results: Dict[str, Dict[str, Any]] = {}
         async with self._lock:
@@ -2664,7 +2667,9 @@ class DashboardServer:
         if not isinstance(names, list) or not names:
             raise web.HTTPBadRequest(text="'names' must be a non-empty list")
         normalized = self._normalize_names(names)
-        logger.warning("AUDIT master-dashboard cog_unload: names=%s from %s", normalized, request.remote)
+        safe_names = self._safe_log_value(normalized)
+        safe_remote = self._safe_log_value(request.remote)
+        logger.warning("AUDIT master-dashboard cog_unload: names=%s from %s", safe_names, safe_remote)
 
         results: Dict[str, Dict[str, Any]] = {}
         async with self._lock:
@@ -2733,7 +2738,9 @@ class DashboardServer:
         path = payload.get("path")
         if not path:
             raise web.HTTPBadRequest(text="'path' is required")
-        logger.warning("AUDIT master-dashboard cog_block: path=%s from %s", path, request.remote)
+        safe_path = self._safe_log_value(path)
+        safe_remote = self._safe_log_value(request.remote)
+        logger.warning("AUDIT master-dashboard cog_block: path=%s from %s", safe_path, safe_remote)
         async with self._lock:
             try:
                 result = await self.bot.block_namespace(path)
@@ -2761,7 +2768,9 @@ class DashboardServer:
         path = payload.get("path")
         if not path:
             raise web.HTTPBadRequest(text="'path' is required")
-        logger.info("AUDIT master-dashboard cog_unblock: path=%s from %s", path, request.remote)
+        safe_path = self._safe_log_value(path)
+        safe_remote = self._safe_log_value(request.remote)
+        logger.info("AUDIT master-dashboard cog_unblock: path=%s from %s", safe_path, safe_remote)
         async with self._lock:
             try:
                 result = await self.bot.unblock_namespace(path)
