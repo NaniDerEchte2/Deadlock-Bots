@@ -224,7 +224,7 @@ class TwitchBaseCog(commands.Cog):
                 )
                 self._raid_bot.set_discord_bot(self.bot)
                 self._raid_bot.set_cog(self)  # For dynamic EventSub subscriptions
-                log.info("Raid-Bot initialisiert (redirect_uri: %s)", redirect_uri)
+                log.debug("Raid-Bot initialisiert (redirect_uri: %s)", redirect_uri)
 
                 # Persistente Views registrieren (Button-Callbacks überleben Bot-Neustart)
                 self._register_persistent_raid_auth_views()
@@ -274,7 +274,7 @@ class TwitchBaseCog(commands.Cog):
                 if login:
                     self.bot.add_view(RaidAuthGenerateView(twitch_login=login))
                     count += 1
-            log.info("Persistente RaidAuthViews registriert: %d Streamer", count)
+            log.debug("Persistente RaidAuthViews registriert: %d Streamer", count)
         except Exception:
             log.exception("Fehler beim Registrieren persistenter RaidAuthViews")
 
@@ -500,7 +500,7 @@ class TwitchBaseCog(commands.Cog):
                 self._invite_codes[guild_id] = codes
             
             total_codes = sum(len(codes) for codes in by_guild.values())
-            log.info(
+            log.debug(
                 "Invite-Codes aus DB geladen: %s Guilds, %s Codes gesamt",
                 len(by_guild), total_codes
             )

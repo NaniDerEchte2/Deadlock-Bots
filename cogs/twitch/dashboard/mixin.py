@@ -1434,7 +1434,7 @@ class TwitchDashboardMixin:
                 await site.start()
                 self._web = runner
                 self._web_app = app
-                log.info("Twitch dashboard running on http://%s:%s/twitch", self._dashboard_host, self._dashboard_port)
+                log.debug("Twitch dashboard running on http://%s:%s/twitch", self._dashboard_host, self._dashboard_port)
                 return
             except OSError as e:
                 if runner:

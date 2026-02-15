@@ -65,4 +65,4 @@ async def setup(bot: commands.Bot):
     # Command bewusst NUR HIER registrieren (keine Decorators im Cog)
     bot.add_command(prefix_command)
     cog.set_prefix_command(prefix_command)
-    log.info("Registered !twl prefix command via setup hook")
+    log.debug("Registered !twl prefix command via setup hook")

@@ -233,7 +233,6 @@ class TwitchAnalyticsMixin:
 
         scopes = {s.lower() for s in self._raid_bot.auth_manager.get_scopes(user_id)}
         if "moderator:read:chatters" not in scopes:
-            log.debug("Chatters-Poller: %s hat kein moderator:read:chatters Scope", login)
             return None
 
         try:

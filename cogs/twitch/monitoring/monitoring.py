@@ -1480,7 +1480,7 @@ class TwitchMonitoringMixin:
         try:
             self._category_id = await self.api.get_category_id(TWITCH_TARGET_GAME_NAME)
             if self._category_id:
-                log.info("Deadlock category_id = %s", self._category_id)
+                log.debug("Deadlock category_id = %s", self._category_id)
         except Exception:
             log.exception("Konnte Twitch-Kategorie-ID nicht ermitteln")
 

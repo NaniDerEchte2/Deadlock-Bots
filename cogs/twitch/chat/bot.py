@@ -57,6 +57,7 @@ def _setup_twitch_logging():
     exists = False
     for h in twitch_log.handlers:
         if isinstance(h, logging.handlers.RotatingFileHandler) and str(h.baseFilename).endswith("twitch_bot.log"):
+            h.setLevel(logging.INFO)
             exists = True
             break
 
@@ -69,6 +70,7 @@ def _setup_twitch_logging():
         )
         formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         handler.setFormatter(formatter)
+        handler.setLevel(logging.INFO)
         twitch_log.addHandler(handler)
         twitch_log.propagate = True  # Auch weiterhin im Master-Log behalten
 
