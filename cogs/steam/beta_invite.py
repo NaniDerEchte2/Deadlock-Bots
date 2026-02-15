@@ -25,11 +25,13 @@ from cogs.welcome_dm import base as welcome_base
 
 try:
     from fastapi import FastAPI, HTTPException, Request
+    from fastapi.responses import JSONResponse
     import uvicorn
 except Exception:  # pragma: no cover - optional dependency in some environments
     FastAPI = None
     HTTPException = None
     Request = None
+    JSONResponse = None
     uvicorn = None
 
 SUPPORT_CHANNEL = "https://discord.com/channels/1289721245281292288/1459628609705738539"
@@ -2792,7 +2794,7 @@ async def _parse_kofi_request_payload(request: Any) -> Mapping[str, Any]:
 
 
 async def _start_kofi_webhook_server(beta_invite: BetaInviteFlow) -> None:
-    if not all((FastAPI, HTTPException, Request, uvicorn)):
+    if not all((FastAPI, HTTPException, Request, JSONResponse, uvicorn)):
         log.warning("Ko-fi Webhook deaktiviert (fastapi/uvicorn fehlt)")
         beta_invite._kofi_webhook_task = None
         return
@@ -2860,8 +2862,7 @@ async def _start_kofi_webhook_server(beta_invite: BetaInviteFlow) -> None:
     async def kofi_health() -> Mapping[str, Any]:
         return {"ok": True}
 
-    @app.post(KOFI_WEBHOOK_PATH)
-    async def kofi_webhook(request: Request) -> Mapping[str, Any]:
+    async def kofi_webhook(request: Any) -> JSONResponse:
         payload = await _parse_kofi_request_payload(request)
         if not payload:
             raise HTTPException(status_code=400, detail="Invalid payload")
@@ -2881,7 +2882,11 @@ async def _start_kofi_webhook_server(beta_invite: BetaInviteFlow) -> None:
             raise HTTPException(status_code=401, detail="Invalid verification token")
 
         asyncio.create_task(beta_invite.handle_kofi_webhook(payload))
-        return {"ok": True, "queued": True}
+        return JSONResponse(content={"ok": True, "queued": True}, status_code=200)
+
+    # Use a plain Starlette route here to avoid FastAPI parameter model parsing
+    # edge cases for "request" in postponed annotations mode.
+    app.add_route(KOFI_WEBHOOK_PATH, kofi_webhook, methods=["POST"])
 
     config = uvicorn.Config(
         app=app,
