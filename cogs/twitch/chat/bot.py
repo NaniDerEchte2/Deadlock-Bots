@@ -651,72 +651,73 @@ if TWITCHIO_AVAILABLE:
                 await self.process_commands(message)
                 return
 
-            try:
-                channel_login = self._normalize_channel_login_safe(getattr(message, "channel", None))
-                spam_score, spam_reasons = self._calculate_spam_score(message.content or "")
-                mention_score, mention_reasons = await self._score_mention_patterns(
-                    message.content or "",
-                    host_login=channel_login,
-                )
-                if mention_score:
-                    spam_score += mention_score
-                    spam_reasons.extend(mention_reasons)
+            channel_login = self._normalize_channel_login_safe(getattr(message, "channel", None))
+            if channel_login and self._is_partner_channel_for_chat_tracking(channel_login):
+                try:
+                    spam_score, spam_reasons = self._calculate_spam_score(message.content or "")
+                    mention_score, mention_reasons = await self._score_mention_patterns(
+                        message.content or "",
+                        host_login=channel_login,
+                    )
+                    if mention_score:
+                        spam_score += mention_score
+                        spam_reasons.extend(mention_reasons)
 
-                # 2. Faktor: Account-Alter prüft nur den letzten fehlenden Punkt zum Ban.
-                # Ein junges Konto soll nur dann eskalieren, wenn bereits zwei Signale vorliegen.
-                if spam_score == (SPAM_MIN_MATCHES - 1):
-                    try:
-                        author_id = getattr(message.author, "id", None)
-                        if author_id:
-                            # fetch_users benötigt IDs. Twitch IDs sind numerisch.
-                            users = await self.fetch_users(ids=[int(author_id)])
-                            if users and users[0].created_at:
-                                created_at = users[0].created_at
-                                if created_at.tzinfo is None:
-                                    created_at = created_at.replace(tzinfo=timezone.utc)
+                    # 2. Faktor: Account-Alter prüft nur den letzten fehlenden Punkt zum Ban.
+                    # Ein junges Konto soll nur dann eskalieren, wenn bereits zwei Signale vorliegen.
+                    if spam_score == (SPAM_MIN_MATCHES - 1):
+                        try:
+                            author_id = getattr(message.author, "id", None)
+                            if author_id:
+                                # fetch_users benötigt IDs. Twitch IDs sind numerisch.
+                                users = await self.fetch_users(ids=[int(author_id)])
+                                if users and users[0].created_at:
+                                    created_at = users[0].created_at
+                                    if created_at.tzinfo is None:
+                                        created_at = created_at.replace(tzinfo=timezone.utc)
 
-                                age = datetime.now(timezone.utc) - created_at
-                                if age.days < 90:  # Jünger als 3 Monate
-                                    spam_score += 1
-                                    spam_reasons.append(f"Account-Alter: {age.days} Tage")
-                    except Exception:
-                        log.debug("Konnte User-Alter für Spam-Check nicht laden", exc_info=True)
+                                    age = datetime.now(timezone.utc) - created_at
+                                    if age.days < 90:  # Jünger als 3 Monate
+                                        spam_score += 1
+                                        spam_reasons.append(f"Account-Alter: {age.days} Tage")
+                        except Exception:
+                            log.debug("Konnte User-Alter für Spam-Check nicht laden", exc_info=True)
 
-                if spam_score >= SPAM_MIN_MATCHES:
-                    enforced = await self._auto_ban_and_cleanup(message)
-                    if not enforced:
+                    if spam_score >= SPAM_MIN_MATCHES:
+                        enforced = await self._auto_ban_and_cleanup(message)
+                        if not enforced:
+                            channel_obj = getattr(message, "channel", None)
+                            channel_name = (
+                                getattr(channel_obj, "name", "")
+                                or getattr(channel_obj, "login", "")
+                                or "unknown"
+                            )
+                            log.warning("Spam erkannt in %s (Score: %d, Treffer: %s), aber Auto-Ban konnte nicht durchgesetzt werden.", channel_name, spam_score, ", ".join(spam_reasons))
+                        return
+                    elif spam_score > 0:
                         channel_obj = getattr(message, "channel", None)
                         channel_name = (
                             getattr(channel_obj, "name", "")
                             or getattr(channel_obj, "login", "")
                             or "unknown"
                         )
-                        log.warning("Spam erkannt in %s (Score: %d, Treffer: %s), aber Auto-Ban konnte nicht durchgesetzt werden.", channel_name, spam_score, ", ".join(spam_reasons))
-                    return
-                elif spam_score > 0:
-                    channel_obj = getattr(message, "channel", None)
-                    channel_name = (
-                        getattr(channel_obj, "name", "")
-                        or getattr(channel_obj, "login", "")
-                        or "unknown"
-                    )
-                    author_name = getattr(message.author, "name", "unknown")
-                    author_id = str(getattr(message.author, "id", ""))
+                        author_name = getattr(message.author, "name", "unknown")
+                        author_id = str(getattr(message.author, "id", ""))
 
-                    # Logge Verdacht in Datei für Feinabstimmung
-                    reasons_str = ", ".join(spam_reasons)
-                    self._record_autoban(
-                        channel_name=channel_name,
-                        chatter_login=author_name,
-                        chatter_id=author_id,
-                        content=message.content or "",
-                        status=f"SUSPICIOUS({spam_score})",
-                        reason=reasons_str
-                    )
+                        # Logge Verdacht in Datei für Feinabstimmung
+                        reasons_str = ", ".join(spam_reasons)
+                        self._record_autoban(
+                            channel_name=channel_name,
+                            chatter_login=author_name,
+                            chatter_id=author_id,
+                            content=message.content or "",
+                            status=f"SUSPICIOUS({spam_score})",
+                            reason=reasons_str
+                        )
 
-                    log.info("Verdächtige Nachricht (Score %d, Treffer: %s) in %s von %s: %s", spam_score, reasons_str, channel_name, author_name, message.content)
-            except Exception:
-                log.debug("Auto-Ban Prüfung fehlgeschlagen", exc_info=True)
+                        log.info("Verdächtige Nachricht (Score %d, Treffer: %s) in %s von %s: %s", spam_score, reasons_str, channel_name, author_name, message.content)
+                except Exception:
+                    log.debug("Auto-Ban Prüfung fehlgeschlagen", exc_info=True)
 
             try:
                 await self._track_chat_health(message)

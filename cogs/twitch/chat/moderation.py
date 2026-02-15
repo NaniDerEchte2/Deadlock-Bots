@@ -657,6 +657,8 @@ class ModerationMixin:
             or ""
         )
         channel_key = self._normalize_channel_login(channel_name)
+        if not self._is_partner_channel_for_chat_tracking(channel_key):
+            return False
         streamer_data = self._get_streamer_by_channel(channel_name)
         if not streamer_data:
             return False
