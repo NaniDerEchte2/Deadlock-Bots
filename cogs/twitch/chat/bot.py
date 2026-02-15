@@ -655,9 +655,14 @@ if TWITCHIO_AVAILABLE:
             if channel_login and self._is_partner_channel_for_chat_tracking(channel_login):
                 try:
                     spam_score, spam_reasons = self._calculate_spam_score(message.content or "")
+                    has_phrase_or_fragment_signal = any(
+                        reason.startswith("Phrase(") or reason.startswith("Fragment(")
+                        for reason in spam_reasons
+                    )
                     mention_score, mention_reasons = await self._score_mention_patterns(
                         message.content or "",
                         host_login=channel_login,
+                        allow_host_bonus=has_phrase_or_fragment_signal,
                     )
                     if mention_score:
                         spam_score += mention_score

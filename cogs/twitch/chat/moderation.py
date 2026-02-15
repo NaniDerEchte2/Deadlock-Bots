@@ -192,8 +192,14 @@ class ModerationMixin:
             log.debug("Konnte Twitch-User für Mentions nicht auflösen", exc_info=True)
             return found, False
 
-    async def _score_mention_patterns(self, content: str, host_login: str = "") -> tuple[int, list]:
-        """Bewertet Mentions: Host + unbekannte/nicht auflösbare Mentions."""
+    async def _score_mention_patterns(
+        self,
+        content: str,
+        host_login: str = "",
+        *,
+        allow_host_bonus: bool = False,
+    ) -> tuple[int, list]:
+        """Bewertet Mentions. Host-Mentions zählen nur optional als Bonus."""
         raw = (content or "").strip()
         if not raw:
             return 0, []
@@ -206,7 +212,7 @@ class ModerationMixin:
         reasons = []
         normalized_host = (host_login or "").strip().lower().lstrip("#@")
 
-        if normalized_host and normalized_host in mentions:
+        if allow_host_bonus and normalized_host and normalized_host in mentions:
             hits += 1
             reasons.append("Muster: @host mention")
 
