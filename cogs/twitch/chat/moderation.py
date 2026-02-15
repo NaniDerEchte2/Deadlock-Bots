@@ -402,13 +402,18 @@ class ModerationMixin:
         status: str = "BANNED",
         reason: str = "",
     ) -> None:
-        """Persistiert Auto-Ban-Ereignis oder Verdacht für spätere Review."""
+        """Persistiert Auto-Ban-Ereignis oder Verdacht in die passende Review-Logdatei."""
         try:
-            self._autoban_log.parent.mkdir(parents=True, exist_ok=True)
+            status_upper = (status or "").strip().upper()
+            target_log = self._autoban_log
+            if status_upper.startswith("SUSPICIOUS"):
+                target_log = getattr(self, "_suspicious_log", self._autoban_log)
+
+            target_log.parent.mkdir(parents=True, exist_ok=True)
             ts = datetime.now(timezone.utc).isoformat()
             safe_content = content.replace("\n", " ")[:500]
             line = f"{ts}\t[{status}]\t{channel_name}\t{chatter_login or '-'}\t{chatter_id}\t{reason or '-'}\t{safe_content}\n"
-            with self._autoban_log.open("a", encoding="utf-8") as f:
+            with target_log.open("a", encoding="utf-8") as f:
                 f.write(line)
         except Exception:
             log.debug("Konnte Auto-Ban Review-Log nicht schreiben", exc_info=True)
