@@ -256,6 +256,7 @@ class AnalyticsV2Mixin:
         router.add_get("/twitch/api/v2/coaching", self._api_v2_coaching)
         router.add_get("/twitch/api/v2/monetization", self._api_v2_monetization)
         router.add_get("/twitch/api/v2/category-timings", self._api_v2_category_timings)
+        router.add_get("/twitch/api/v2/category-activity-series", self._api_v2_category_activity_series)
         # Serve the dashboard
         router.add_get("/twitch/dashboard-v2", self._serve_dashboard_v2)
         router.add_get("/twitch/dashboard-v2/{path:.*}", self._serve_dashboard_v2_assets)
@@ -2553,6 +2554,156 @@ class AnalyticsV2Mixin:
             "total_streamers": total_streamers,
             "window_days": days,
             "method": "median_of_medians",
+        })
+
+    async def _api_v2_category_activity_series(self, request: web.Request) -> web.Response:
+        """
+        Legacy stats-style comparison series for category vs tracked.
+        Provides hourly and weekday rows with average and peak values.
+        """
+        self._require_v2_auth(request)
+        days = min(max(int(request.query.get("days", "30")), 7), 365)
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+        hourly_rows: List[Any] = []
+        weekday_rows: List[Any] = []
+
+        try:
+            with storage.get_conn() as conn:
+                hourly_rows = conn.execute(
+                    """
+                    WITH source_rows AS (
+                        SELECT 'tracked' AS source_key, viewer_count, ts_utc
+                          FROM twitch_stats_tracked
+                        UNION ALL
+                        SELECT 'category' AS source_key, viewer_count, ts_utc
+                          FROM twitch_stats_category
+                    )
+                    SELECT source_key,
+                           CAST(strftime('%H', ts_utc) AS INTEGER) AS hour,
+                           AVG(viewer_count) AS avg_viewers,
+                           MAX(viewer_count) AS max_viewers,
+                           COUNT(*) AS samples
+                      FROM source_rows
+                     WHERE ts_utc >= ?
+                     GROUP BY source_key, hour
+                     ORDER BY source_key, hour
+                    """,
+                    (cutoff,),
+                ).fetchall()
+
+                weekday_rows = conn.execute(
+                    """
+                    WITH source_rows AS (
+                        SELECT 'tracked' AS source_key, viewer_count, ts_utc
+                          FROM twitch_stats_tracked
+                        UNION ALL
+                        SELECT 'category' AS source_key, viewer_count, ts_utc
+                          FROM twitch_stats_category
+                    )
+                    SELECT source_key,
+                           CAST(strftime('%w', ts_utc) AS INTEGER) AS weekday,
+                           AVG(viewer_count) AS avg_viewers,
+                           MAX(viewer_count) AS max_viewers,
+                           COUNT(*) AS samples
+                      FROM source_rows
+                     WHERE ts_utc >= ?
+                     GROUP BY source_key, weekday
+                     ORDER BY source_key, weekday
+                    """,
+                    (cutoff,),
+                ).fetchall()
+        except Exception as exc:
+            log.exception("category-activity-series query failed")
+            return web.json_response({"error": str(exc)}, status=500)
+
+        def _float_or_none(value: Any, *, digits: int = 1) -> Optional[float]:
+            if value is None:
+                return None
+            try:
+                return round(float(value), digits)
+            except (TypeError, ValueError):
+                return None
+
+        def _int_or_none(value: Any) -> Optional[int]:
+            if value is None:
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        hourly_map: Dict[str, Dict[int, Dict[str, Any]]] = {"category": {}, "tracked": {}}
+        weekday_map: Dict[str, Dict[int, Dict[str, Any]]] = {"category": {}, "tracked": {}}
+
+        for row in hourly_rows:
+            source_key = str(row[0] or "").strip().lower()
+            hour = _int_or_none(row[1])
+            if source_key not in hourly_map or hour is None:
+                continue
+            hourly_map[source_key][hour] = {
+                "avg": _float_or_none(row[2]),
+                "peak": _int_or_none(row[3]),
+                "samples": _int_or_none(row[4]) or 0,
+            }
+
+        for row in weekday_rows:
+            source_key = str(row[0] or "").strip().lower()
+            weekday = _int_or_none(row[1])
+            if source_key not in weekday_map or weekday is None:
+                continue
+            weekday_map[source_key][weekday] = {
+                "avg": _float_or_none(row[2]),
+                "peak": _int_or_none(row[3]),
+                "samples": _int_or_none(row[4]) or 0,
+            }
+
+        hourly: List[Dict[str, Any]] = []
+        for hour in range(24):
+            category_point = hourly_map["category"].get(hour, {})
+            tracked_point = hourly_map["tracked"].get(hour, {})
+            hourly.append({
+                "hour": hour,
+                "label": f"{hour:02d}:00",
+                "categoryAvg": category_point.get("avg"),
+                "trackedAvg": tracked_point.get("avg"),
+                "categoryPeak": category_point.get("peak"),
+                "trackedPeak": tracked_point.get("peak"),
+                "categorySamples": int(category_point.get("samples") or 0),
+                "trackedSamples": int(tracked_point.get("samples") or 0),
+            })
+
+        weekday_labels = {
+            0: "Sonntag",
+            1: "Montag",
+            2: "Dienstag",
+            3: "Mittwoch",
+            4: "Donnerstag",
+            5: "Freitag",
+            6: "Samstag",
+        }
+        weekday_order = [1, 2, 3, 4, 5, 6, 0]  # Mo-So
+
+        weekly: List[Dict[str, Any]] = []
+        for weekday in weekday_order:
+            category_point = weekday_map["category"].get(weekday, {})
+            tracked_point = weekday_map["tracked"].get(weekday, {})
+            weekly.append({
+                "weekday": weekday,
+                "label": weekday_labels.get(weekday, str(weekday)),
+                "categoryAvg": category_point.get("avg"),
+                "trackedAvg": tracked_point.get("avg"),
+                "categoryPeak": category_point.get("peak"),
+                "trackedPeak": tracked_point.get("peak"),
+                "categorySamples": int(category_point.get("samples") or 0),
+                "trackedSamples": int(tracked_point.get("samples") or 0),
+            })
+
+        return web.json_response({
+            "hourly": hourly,
+            "weekly": weekly,
+            "windowDays": days,
+            "source": "legacy_stats_chart",
         })
 
     async def _api_v2_monetization(self, request: web.Request) -> web.Response:

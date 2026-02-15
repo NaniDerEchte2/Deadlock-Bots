@@ -26,6 +26,7 @@ import {
   fetchCoaching,
   fetchMonetization,
   fetchCategoryTimings,
+  fetchCategoryActivitySeries,
 } from '@/api/client';
 import type { TimeRange } from '@/types/analytics';
 
@@ -230,6 +231,14 @@ export function useCategoryTimings(days: TimeRange, source: 'category' | 'tracke
   return useQuery({
     queryKey: ['category-timings', days, source],
     queryFn: () => fetchCategoryTimings(days, source),
+    staleTime: STALE_TIME,
+  });
+}
+
+export function useCategoryActivitySeries(days: TimeRange) {
+  return useQuery({
+    queryKey: ['category-activity-series', days],
+    queryFn: () => fetchCategoryActivitySeries(days),
     staleTime: STALE_TIME,
   });
 }

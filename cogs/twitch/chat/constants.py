@@ -175,6 +175,7 @@ _INVITE_QUESTION_USER_COOLDOWN_SEC: int = 3600
 _INVITE_QUESTION_RE = re.compile(
     r"\b(wie|wo|wann|wieso|warum|woher)\b"
     r"|\b(kann|darf)\s+man\b"
+    r"|\b(kann|kannst|konnte|koennte|könnte|darf|darfst)\s+(man|ich|du)\b"
     r"|\b(bekomm|krieg|erhalt)\w*\s+(man|ich)\b",
     re.IGNORECASE,
 )
@@ -183,11 +184,11 @@ INVITE_QUESTION_USER_COOLDOWN_SEC: int = _INVITE_QUESTION_USER_COOLDOWN_SEC
 INVITE_QUESTION_RE = _INVITE_QUESTION_RE
 
 INVITE_ACCESS_RE = re.compile(
-    r"\b(spielen|spiel|play|zugang|einladung|invite|beta|key|access|ea|early\s*access|reinkomm\w*|rankomm\w*)\b",
+    r"\b(spielen|spiel|play|zugang|einlad\w*|invit\w*|beta|key|access|ea|early\s*access|reinkomm\w*|rankomm\w*)\b",
     re.IGNORECASE,
 )
 INVITE_STRONG_ACCESS_RE = re.compile(
-    r"\b(zugang|einladung|invite|beta|key|access|ea|early\s*access|reinkomm\w*|rankomm\w*)\b",
+    r"\b(zugang|einlad\w*|invit\w*|beta|key|access|ea|early\s*access|reinkomm\w*|rankomm\w*)\b",
     re.IGNORECASE,
 )
 INVITE_GAME_CONTEXT_RE = re.compile(

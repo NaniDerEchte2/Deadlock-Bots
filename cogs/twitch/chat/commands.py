@@ -82,7 +82,8 @@ if TWITCHIO_AVAILABLE:
                 auth_url = self._raid_bot.auth_manager.generate_auth_url(twitch_login)
                 await ctx.send(
                     f"@{ctx.author.name} OAuth fehlt – Anforderung: Twitch-Bot autorisieren (Pflicht für Streamer-Partner). "
-                    f"Link: {auth_url} | Auto-Raid, Chat Guard, Discord Auto-Post (Analytics WIP)"
+                    f"Link: {auth_url} | Danach aktiv: Auto-Raid, Chat Guard und Discord Auto-Post "
+                    "(bei Frage, Chat-Aktivitaet oder Viewer-Spike; mit Cooldowns)."
                 )
                 log.info("Sent raid auth link to %s via chat", twitch_login)
                 return

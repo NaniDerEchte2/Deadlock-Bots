@@ -3,6 +3,7 @@
 import type {
   MonetizationStats,
   CategoryTimings,
+  CategoryActivitySeries,
   DashboardOverview,
   MonthlyStats,
   WeekdayStats,
@@ -326,6 +327,12 @@ export async function fetchCategoryTimings(
   source: 'category' | 'tracked' = 'category'
 ): Promise<CategoryTimings> {
   return fetchApi<CategoryTimings>('/category-timings', { days, source });
+}
+
+export async function fetchCategoryActivitySeries(
+  days: TimeRange
+): Promise<CategoryActivitySeries> {
+  return fetchApi<CategoryActivitySeries>('/category-activity-series', { days });
 }
 
 // Monetization & Hype Train

@@ -461,24 +461,24 @@ class StreamerIntroView(StepView):
                 "Wir haben einen **exklusiven Streamer-Bereich** mit automatisierten Tools, "
                 "die dir als Partner das Leben leichter machen.\n\n"
                 "**Twitch Bot-Update: Das passiert im Hintergrund:**\n\n"
-                
+
                 "**1️⃣ Auto-Raid Manager**\n"
                 "Schluss mit manuellem Raid-Suchen am Ende eines langen Streams. Der Bot übernimmt das automatisch:\n"
                 "• Sobald dein Stream **offline** geht, prüft der Bot, **welche Partner aktuell live** sind und raidet einen davon\n"
                 "• **Fallback:** Wenn **kein Partner live** ist, sucht der Bot automatisch nach **deutschen Deadlock-Streamern**\n\n"
-                
+
                 "**2️⃣ Chat Guard – Schutz vor Müll im Chat**\n"
                 "Damit dein Chat sauber bleibt, ohne dass du ständig moderieren musst:\n"
                 "• **Spam-Mod:** Filtert Spam anhand einer vorgegebenen Liste (z. B. Viewer-Bots)\n"
                 "• **Erweiterbar:** Neue Spam-Wellen können wir schnell ergänzen\n"
                 "• **Wichtig:** Bitte gebt Feedback inkl. **exakter Nachricht** – nur so können wir zuverlässig bannen\n\n"
-                
-                "**3️⃣ Analytics Dashboard** *(Work in Progress 03-05/26)*\n"
+
+                "**3️⃣ Analytics Dashboard** *(Work in Progress 03–05/26)*\n"
                 "• **Retention-Analyse:** Wann droppen Zuschauer? (z. B. nach 5, 10 oder 20 Minuten)\n"
                 "• **Unique Chatters:** Wie viele **verschiedene** Menschen interagieren wirklich?\n"
                 "• **Kategorie-Vergleich (DE):** Analyse der deutschen Deadlock-Kategorie & Vergleich zwischen Streamern\n"
                 "→ Ziel: Du erkennst Muster und weißt, was du optimieren kannst.\n\n"
-                
+
                 "**4️⃣ Discord – Live-Stream Auto-Post**\n"
                 "• Sobald du **Deadlock** streamst, wird dein Stream automatisch im Discord gepostet (#🎥twitch)\n"
                 "→ Ergebnis: Mehr Sichtbarkeit in der Community, ohne dass du selbst posten musst.\n\n"
@@ -491,7 +491,7 @@ class StreamerIntroView(StepView):
                 "**Wenn du Lust hast, teste die Beta-Features direkt:**\n"
                 "Nutze #🎥streamer-austausch `!traid`, autorisiere den **Twitch-Bot** "
                 "und gib uns Feedback, wenn dir etwas auffällt oder du dir weitere Features wünschst.\n\n"
-                
+
                 "**Bereit, Partner zu werden?**"
             ),
             color=0x9146FF  # Twitch-Lila
@@ -629,43 +629,23 @@ class StreamerRequirementsView(StepView):
             """
             **📋 Voraussetzungen für Streamer-Partner:**
 
-            **1️⃣ Twitch-Bot autorisieren (Pflicht)** 🎯
-            **Ohne Twitch-Bot-Autorisierung können wir dich nicht freischalten.**
+            **1️⃣ Twitch-Bot autorisieren (Pflicht)**
+            Ohne OAuth können wir dich nicht freischalten.
 
-            **Twitch Bot-Update: Das passiert im Hintergrund**
-            • **Auto-Raid Manager:** Wenn du offline gehst, raidet der Bot automatisch einen Partner
-            • **Fallback:** Kein Partner live? → Raid zu deutschen Deadlock-Streamern
-            • **Chat Guard:** Spam-Filter + erweiterbare Ban-Liste (Feedback inkl. exakter Nachricht hilft)
-            • **Discord Auto-Post:** Live-Stream wird automatisch im Discord gepostet
-            • **Analytics (WIP 03-05/26):** Retention, Unique Chatters, Kategorie-Vergleich (DE)
+            **2️⃣ Was der Bot für dich macht**
+            • Auto-Raid beim Offline-Gehen
+            • Chat Guard gegen Spam
+            • Discord Auto-Post für Live-Streams
+
+            **3️⃣ Discord-Link im Twitch-Chat (einfach erklärt)**
+            • Bei Frage nach Zugang/Invite
+            • Bei genug Chat-Aktivität
+            • Bei Viewer-Spike
+            • Mit Cooldowns, damit es nicht spammt
 
             **Wie aktivieren?**
-            Klick auf den Button unten → Autorisiere auf Twitch → Fertig! 🎉
-            Dein **Twitch-Kanal wird automatisch erkannt** – kein manuelles Eingeben nötig.
-
-            **Berechtigungen des Bots:**
-            ✓ Raids in deinem Namen starten
-            ✓ Chat-Nachrichten lesen/senden (für Spam-Schutz)
-            ✓ Follower-Liste einsehen (als Moderator)
-
-            **2️⃣ Community-Promo (automatisch)** 🎮
-            Der Bot postet regelmäßig eine kurze Promo in deinem Chat – damit die deutsche Deadlock-Community sichtbar wird, ohne dass du selbst handeln musst.
-            • Intervall: alle ~30 Minuten (nur wenn du live bist)
-            • Inhalt: Einladung zur deutschen Community + Discord-Link
-            • Keine Aktion von dir nötig – läuft vollautomatisch ab der Autorisierung
-
-            **3️⃣ Community-Support**
-            • Post deine Streams/Content gerne in den Promo-Kanälen
-            • Erwähne den Server in deinem Stream/Chat
-            • Lade interessierte Zuschauer ein
-            *Eine Hand wäscht die andere – je aktiver die Community, desto mehr profitieren alle!*
-
-            ━━━━━━━━━━━━━━━━━━━━━━━━
-            **💬 Eigener Discord? Kein Problem!**
-            • Wir sehen uns nicht als Konkurrenz, sondern als zentralen Treffpunkt
-            • Behalte deinen eigenen Server – schau einfach ab und zu bei uns vorbei
-            • Spiele mit anderen aus der Community → mehr Sichtbarkeit für dich!
-            • Die Leute lernen dich als aktiven Teil der Community kennen
+            Klick auf den Button unten → auf Twitch autorisieren → fertig.
+            Dein Twitch-Kanal wird automatisch erkannt.
             """
         ).strip()
 
@@ -785,8 +765,10 @@ class StreamerRequirementsView(StepView):
                 return
 
             # OAuth-URL generieren (Discord-ID im State, Kanal wird automatisch erkannt)
+            # generate_discord_button_url erzeugt einen kurzen Redirect-URL (<512 Zeichen)
+            # statt des vollen Twitch-OAuth-URLs (Discord-Button-Limit: 512 Zeichen)
             state_payload = f"discord:{interaction.user.id}"
-            auth_url = auth_mgr.generate_auth_url(state_payload)
+            auth_url = auth_mgr.generate_discord_button_url(state_payload)
 
             # View mit Link-Button erstellen
             view = discord.ui.View()
@@ -802,27 +784,16 @@ class StreamerRequirementsView(StepView):
                 interaction,
                 content=(
                     "**🎯 Twitch-Bot autorisieren**\n\n"
-                    "**Pflicht für Streamer-Partner:** Ohne OAuth keine Freischaltung.\n"
-                    "Dein **Twitch-Kanal wird automatisch erkannt** – kein Link nötig.\n\n"
-                    "**Was passiert jetzt?**\n"
+                    "Ohne OAuth keine Freischaltung als Partner.\n"
+                    "Dein Twitch-Kanal wird automatisch erkannt.\n\n"
+                    "**So funktioniert der Discord-Link im Chat:**\n"
+                    "• Bei Zugangsfrage\n"
+                    "• Bei genug Chat-Aktivität\n"
+                    "• Bei Viewer-Spike\n"
+                    "• Immer mit Cooldowns (kein Spam)\n\n"
                     "1. Klick auf den Button unten\n"
-                    "2. Du wirst zu Twitch weitergeleitet\n"
-                    "3. Autorisiere den Bot (dauert nur 10 Sekunden)\n"
-                    "4. Komm zurück und klick auf **'✅ Ich habe autorisiert'**\n\n"
-                    
-                    "**Was macht der Twitch-Bot?**\n"
-                    "✓ Auto-Raid Manager (Partner live prüfen + Fallback)\n"
-                    "✓ Chat Guard (Spam-Filter)\n"
-                    "✓ Discord Auto-Post (Live-Stream im Discord)\n"
-                    "✓ Analytics Dashboard (WIP 03-05/26)\n\n"
-                    
-                    "**Berechtigungen:**\n"
-                    "✓ Raids in deinem Namen starten (NUR raiden!)\n"
-                    "✓ Chat-Nachrichten lesen (für Spam-Schutz)\n"
-                    "✓ Follower-Liste einsehen (als Mod)\n\n"
-                    
-                    "**Wichtig:**\n"
-                    "• Automatische Raids nur bei Deadlock als letzter Kategorie"
+                    "2. Autorisiere auf Twitch\n"
+                    "3. Komm zurück und klick auf **'✅ Ich habe autorisiert'**"
                 ),
                 embed=None,
                 ephemeral=True,

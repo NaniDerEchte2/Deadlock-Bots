@@ -1,19 +1,20 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
-  BarChart,
-  Bar,
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  Legend,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  ReferenceLine,
 } from 'recharts';
 import { Clock, Calendar, Info } from 'lucide-react';
-import type { CategoryTimings } from '@/types/analytics';
+import type { CategoryActivitySeries } from '@/types/analytics';
 
 interface CategoryTimingsChartProps {
-  data: CategoryTimings;
+  data: CategoryActivitySeries;
 }
 
 const TOOLTIP_STYLE = {
@@ -23,70 +24,57 @@ const TOOLTIP_STYLE = {
   fontSize: '12px',
 };
 
-function fmt(n: number | null | undefined) {
-  if (n === null || n === undefined) return '–';
-  return n.toLocaleString('de-DE', { maximumFractionDigits: 0 });
+function fmt(value: number | null | undefined, digits = 0) {
+  if (value === null || value === undefined) return '–';
+  return value.toLocaleString('de-DE', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
 }
 
-function tickFmt(v: number) {
-  if (v >= 1000) return `${(v / 1000).toFixed(1)}k`;
-  return String(v);
+function tickFmt(value: number) {
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return String(value);
 }
 
 export function CategoryTimingsChart({ data }: CategoryTimingsChartProps) {
   const [view, setView] = useState<'hourly' | 'weekly'>('hourly');
+  const rows = view === 'hourly' ? data.hourly : data.weekly;
 
-  const hourRows = [...data.hourly]
-    .sort((a, b) => a.hour - b.hour)
-    .map(s => ({
-      label: `${String(s.hour).padStart(2, '0')}:00`,
-      median: s.median,
-      p75: s.p75,
-      p25: s.p25,
-      streamers: s.streamer_count,
-      samples: s.sample_count,
-    }));
-
-  const weekRows = data.weekly.map(s => ({
-    label: s.label,
-    median: s.median,
-    p75: s.p75,
-    p25: s.p25,
-    streamers: s.streamer_count,
-    samples: s.sample_count,
-  }));
-
-  const activeRows = view === 'hourly' ? hourRows : weekRows;
-
-  // Overall median (median of all medians) as reference line
-  const validMedians = activeRows.map(r => r.median).filter((v): v is number => v !== null);
-  const overallMedian = validMedians.length
-    ? validMedians.sort((a, b) => a - b)[Math.floor(validMedians.length / 2)]
-    : null;
+  const hasPeakSeries = useMemo(
+    () => rows.some(row => row.categoryPeak !== null || row.trackedPeak !== null),
+    [rows]
+  );
 
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (!active || !payload?.length) return null;
-    const d = payload[0]?.payload;
+    const d = payload[0]?.payload ?? {};
     return (
-      <div style={TOOLTIP_STYLE} className="p-3 space-y-1 min-w-[160px]">
+      <div style={TOOLTIP_STYLE} className="p-3 space-y-1 min-w-[220px]">
         <div className="font-semibold text-white text-sm">{label}</div>
         <div className="flex justify-between gap-4 text-sm">
-          <span className="text-text-secondary">Median</span>
-          <span className="font-bold text-white">{fmt(d?.median)}</span>
+          <span className="text-text-secondary">Kategorie Ø</span>
+          <span className="font-bold text-white">{fmt(d.categoryAvg, 1)}</span>
         </div>
-        {d?.p25 != null && d?.p75 != null && (
-          <div className="flex justify-between gap-4 text-xs">
-            <span className="text-text-secondary">P25–P75</span>
-            <span className="text-text-secondary">{fmt(d.p25)} – {fmt(d.p75)}</span>
-          </div>
-        )}
-        <div className="border-t border-border/50 pt-1 mt-1 flex justify-between gap-4 text-xs">
-          <span className="text-text-secondary">Streamer</span>
-          <span className="text-text-secondary">{fmt(d?.streamers)}</span>
+        <div className="flex justify-between gap-4 text-sm">
+          <span className="text-text-secondary">Tracked Ø</span>
+          <span className="font-bold text-white">{fmt(d.trackedAvg, 1)}</span>
         </div>
         <div className="flex justify-between gap-4 text-xs">
-          <span className="text-text-secondary">Messwerte</span>
-          <span className="text-text-secondary">{fmt(d?.samples)}</span>
+          <span className="text-text-secondary">Kategorie Peak</span>
+          <span className="text-text-secondary">{fmt(d.categoryPeak)}</span>
+        </div>
+        <div className="flex justify-between gap-4 text-xs">
+          <span className="text-text-secondary">Tracked Peak</span>
+          <span className="text-text-secondary">{fmt(d.trackedPeak)}</span>
+        </div>
+        <div className="border-t border-border/50 pt-1 mt-1 flex justify-between gap-4 text-xs">
+          <span className="text-text-secondary">Kategorie Samples</span>
+          <span className="text-text-secondary">{fmt(d.categorySamples)}</span>
+        </div>
+        <div className="flex justify-between gap-4 text-xs">
+          <span className="text-text-secondary">Tracked Samples</span>
+          <span className="text-text-secondary">{fmt(d.trackedSamples)}</span>
         </div>
       </div>
     );
@@ -94,7 +82,6 @@ export function CategoryTimingsChart({ data }: CategoryTimingsChartProps) {
 
   return (
     <div className="space-y-4">
-      {/* Header + Toggle */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <div className="flex items-center gap-2">
@@ -106,8 +93,7 @@ export function CategoryTimingsChart({ data }: CategoryTimingsChartProps) {
           <div className="flex items-center gap-1.5 mt-1 text-xs text-text-secondary">
             <Info className="w-3 h-3" />
             <span>
-              Median (outlier-resistent) · {data.total_streamers} Streamer · {data.window_days}d
-              {overallMedian != null && <> · Ø Median: <strong className="text-white">{fmt(overallMedian)}</strong></>}
+              Legacy Stats Vergleich (Kategorie vs Tracked) · {data.windowDays}d
             </span>
           </div>
         </div>
@@ -131,14 +117,9 @@ export function CategoryTimingsChart({ data }: CategoryTimingsChartProps) {
         </div>
       </div>
 
-      {/* Chart */}
-      <div className="h-64">
+      <div className="h-72">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart
-            data={activeRows}
-            margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
-            barCategoryGap="20%"
-          >
+          <ComposedChart data={rows} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#2d3139" vertical={false} />
             <XAxis
               dataKey="label"
@@ -147,60 +128,87 @@ export function CategoryTimingsChart({ data }: CategoryTimingsChartProps) {
               interval={view === 'hourly' ? 1 : 0}
             />
             <YAxis
+              yAxisId="yAvg"
               stroke="#6b7280"
               tick={{ fill: '#9ca3af', fontSize: 11 }}
-              width={45}
               tickFormatter={tickFmt}
+              width={45}
+              label={{ value: 'Ø Viewer', angle: -90, position: 'insideLeft', fill: '#9bb0ff' }}
             />
-            <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-
-            {/* Median als Hauptbalken */}
-            <Bar
-              dataKey="median"
-              name="Median Viewer"
-              fill="#818cf8"
-              radius={[3, 3, 0, 0]}
-              isAnimationActive={false}
-            />
-
-            {/* P75 als schmaler Indikator-Balken (zeigt Obergrenze) */}
-            <Bar
-              dataKey="p75"
-              name="P75 (oberes Quartil)"
-              fill="#7c3aed"
-              fillOpacity={0.35}
-              radius={[3, 3, 0, 0]}
-              isAnimationActive={false}
-            />
-
-            {/* Referenzlinie: Gesamtmedian */}
-            {overallMedian != null && (
-              <ReferenceLine
-                y={overallMedian}
-                stroke="#f59e0b"
-                strokeDasharray="4 3"
-                strokeWidth={1.5}
-                label={{ value: `Ø ${fmt(overallMedian)}`, fill: '#f59e0b', fontSize: 10, position: 'insideTopRight' }}
+            {hasPeakSeries && (
+              <YAxis
+                yAxisId="yPeak"
+                orientation="right"
+                stroke="#6b7280"
+                tick={{ fill: '#9ca3af', fontSize: 11 }}
+                tickFormatter={tickFmt}
+                width={45}
+                label={{ value: 'Peak Viewer', angle: 90, position: 'insideRight', fill: '#ffb347' }}
               />
             )}
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+            <Tooltip content={<CustomTooltip />} cursor={{ stroke: '#475569', strokeOpacity: 0.4 }} />
+            <Legend wrapperStyle={{ color: '#dddddd', fontSize: '12px' }} />
 
-      {/* Legende */}
-      <div className="flex flex-wrap gap-4 text-xs text-text-secondary">
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-sm bg-indigo-400 inline-block" />
-          Median Viewer (robust, Ausreißer herausgefiltert)
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-sm bg-violet-700/50 inline-block" />
-          P75 (oberes Quartil – 75% der Streamer liegen darunter)
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-4 border-t-2 border-dashed border-amber-400 inline-block" />
-          Gesamtmedian
-        </div>
+            <Area
+              yAxisId="yAvg"
+              type="monotone"
+              dataKey="categoryAvg"
+              name="Kategorie Ø Viewer"
+              stroke="#6d4aff"
+              fill="#6d4aff"
+              fillOpacity={0.25}
+              strokeWidth={2}
+              connectNulls
+              isAnimationActive={false}
+              dot={{ r: 2 }}
+              activeDot={{ r: 4 }}
+            />
+            <Area
+              yAxisId="yAvg"
+              type="monotone"
+              dataKey="trackedAvg"
+              name="Tracked Ø Viewer"
+              stroke="#4adede"
+              fill="#4adede"
+              fillOpacity={0.2}
+              strokeWidth={2}
+              connectNulls
+              isAnimationActive={false}
+              dot={{ r: 2 }}
+              activeDot={{ r: 4 }}
+            />
+            {hasPeakSeries && (
+              <Line
+                yAxisId="yPeak"
+                type="monotone"
+                dataKey="categoryPeak"
+                name="Kategorie Peak Viewer"
+                stroke="#ffb347"
+                strokeDasharray="6 4"
+                strokeWidth={2}
+                connectNulls
+                isAnimationActive={false}
+                dot={{ r: 2 }}
+                activeDot={{ r: 4 }}
+              />
+            )}
+            {hasPeakSeries && (
+              <Line
+                yAxisId="yPeak"
+                type="monotone"
+                dataKey="trackedPeak"
+                name="Tracked Peak Viewer"
+                stroke="#ff6f91"
+                strokeDasharray="4 4"
+                strokeWidth={2}
+                connectNulls
+                isAnimationActive={false}
+                dot={{ r: 2 }}
+                activeDot={{ r: 4 }}
+              />
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
       </div>
     </div>
   );

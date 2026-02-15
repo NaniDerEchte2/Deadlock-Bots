@@ -657,7 +657,7 @@ class DashboardLiveMixin:
             "    <div>"
             "      <p class='eyebrow'>Raid Bot</p>"
             "      <h2>Twitch Bot Autorisierung</h2>"
-            "      <p class='lead'>Pflicht für Auto-Raids. Jeder Streamer muss einmal autorisieren.</p>"
+            "      <p class='lead'>Einmal autorisieren: Auto-Raid, Chat-Schutz und Discord Auto-Post (mit Cooldowns).</p>"
             "    </div>"
             "    <div class='raid-metrics'>"
             f"      <div class='mini-stat'><strong>{raid_authorized_count}</strong><span>Autorisiert</span></div>"

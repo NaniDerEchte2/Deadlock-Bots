@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchCategoryLeaderboard } from '@/api/client';
-import { useCategoryTimings } from '@/hooks/useAnalytics';
+import { useCategoryActivitySeries } from '@/hooks/useAnalytics';
 import { CategoryTimingsChart } from '@/components/charts/CategoryTimingsChart';
 import type { TimeRange, TabId } from '@/types/analytics';
 
@@ -31,7 +31,7 @@ export function Category({ streamer, days, onStreamerSelect, onNavigate }: Categ
   const [page, setPage] = useState(0);
   const [activeView] = useState<'category' | 'tracked'>('category');
 
-  const { data: timings } = useCategoryTimings(days);
+  const { data: activitySeries } = useCategoryActivitySeries(days);
 
   const { data: catLeaderboard, isLoading: loadingCat } = useQuery({
     queryKey: ['category-leaderboard-all', days],
@@ -143,13 +143,13 @@ export function Category({ streamer, days, onStreamerSelect, onNavigate }: Categ
       </div>
 
       {/* Timings Charts */}
-      {timings && (
+      {activitySeries && (
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           className="bg-card border border-border rounded-xl p-5"
         >
-          <CategoryTimingsChart data={timings} />
+          <CategoryTimingsChart data={activitySeries} />
         </motion.div>
       )}
 

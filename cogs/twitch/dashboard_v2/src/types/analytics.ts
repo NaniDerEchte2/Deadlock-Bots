@@ -580,6 +580,31 @@ export interface CategoryTimings {
   method: string;
 }
 
+export interface CategoryActivitySeriesRow {
+  label: string;
+  categoryAvg: number | null;
+  trackedAvg: number | null;
+  categoryPeak: number | null;
+  trackedPeak: number | null;
+  categorySamples: number;
+  trackedSamples: number;
+}
+
+export interface CategoryActivityHourlyRow extends CategoryActivitySeriesRow {
+  hour: number;
+}
+
+export interface CategoryActivityWeeklyRow extends CategoryActivitySeriesRow {
+  weekday: number;
+}
+
+export interface CategoryActivitySeries {
+  hourly: CategoryActivityHourlyRow[];
+  weekly: CategoryActivityWeeklyRow[];
+  windowDays: number;
+  source: string;
+}
+
 // Monetization & Hype Train
 export interface WorstAd {
   started_at: string;

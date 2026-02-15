@@ -1023,7 +1023,6 @@ class TwitchMonitoringMixin:
                                 condition={"broadcaster_user_id": str(bid)},
                                 webhook_url=webhook_url,
                                 secret=webhook_secret,
-                                oauth_token=broadcaster_token,
                                 version=version,
                             )
                             self._eventsub_track_sub(sub_type, str(bid))
@@ -1085,7 +1084,6 @@ class TwitchMonitoringMixin:
                                 },
                                 webhook_url=webhook_url,
                                 secret=webhook_secret,
-                                oauth_token=broadcaster_token,
                                 version="2",
                             )
                             self._eventsub_track_sub("channel.follow", str(bid))

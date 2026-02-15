@@ -297,11 +297,17 @@ class ModerationMixin:
         has_deadlock_context = "deadlock" in raw
         has_game_context = bool(INVITE_GAME_CONTEXT_RE.search(raw))
         has_strong_access = bool(INVITE_STRONG_ACCESS_RE.search(raw))
-        if not has_deadlock_context and not (has_game_context and has_strong_access):
+        has_access = bool(INVITE_ACCESS_RE.search(raw))
+        if not has_access:
             return False
-        if not INVITE_ACCESS_RE.search(raw):
+        has_question = "?" in raw or bool(_INVITE_QUESTION_RE.search(raw))
+        if not has_question:
             return False
-        if "?" in raw or _INVITE_QUESTION_RE.search(raw):
+        has_direct_invite_request = bool(
+            re.search(r"\b(kannst|kann|koennte|könnte|koenntest|könntest|darfst|darf)\s+du\b", raw)
+            and has_strong_access
+        )
+        if has_deadlock_context or (has_game_context and has_strong_access) or has_direct_invite_request:
             return True
         return False
 
