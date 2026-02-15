@@ -1132,7 +1132,7 @@ class RaidBot:
         """
         self.auth_manager.token_error_handler.discord_bot = discord_bot
         self.auth_manager._discord_bot = discord_bot
-        log.info("Discord bot set for token error notifications")
+        log.debug("Discord bot set for token error notifications")
 
     def set_cog(self, cog):
         """
