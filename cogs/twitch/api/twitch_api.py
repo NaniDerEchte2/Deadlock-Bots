@@ -562,6 +562,57 @@ class TwitchAPI:
             self._log.debug("get_ad_schedule failed for %s", user_id, exc_info=True)
             return None
 
+    async def get_chatters(
+        self,
+        broadcaster_id: str,
+        moderator_id: str,
+        user_token: str,
+        first: int = 1000,
+    ) -> List[Dict]:
+        """
+        Gibt alle aktuell verbundenen Chatters zurück (inkl. stille Lurker).
+        Benötigt Scope: moderator:read:chatters
+        broadcaster_id == moderator_id wenn der Streamer selbst seinen Chat abfragt.
+        """
+        if not broadcaster_id or not moderator_id or not user_token:
+            return []
+        all_chatters: List[Dict] = []
+        cursor: Optional[str] = None
+        try:
+            self._ensure_session()
+            assert self._session is not None
+            url = f"{TWITCH_API_BASE}/chat/chatters"
+            while True:
+                params: Dict[str, str] = {
+                    "broadcaster_id": broadcaster_id,
+                    "moderator_id": moderator_id,
+                    "first": str(min(first, 1000)),
+                }
+                if cursor:
+                    params["after"] = cursor
+                async with self._session.get(
+                    url,
+                    headers={"Client-ID": self.client_id, "Authorization": f"Bearer {user_token}"},
+                    params=params,
+                ) as r:
+                    if r.status != 200:
+                        txt = await r.text()
+                        self._log.debug(
+                            "GET /chat/chatters failed: HTTP %s: %s",
+                            r.status,
+                            txt[:180].replace("\n", " "),
+                        )
+                        break
+                    js = await r.json()
+                    page = js.get("data") or []
+                    all_chatters.extend(page)
+                    cursor = (js.get("pagination") or {}).get("cursor")
+                    if not cursor or not page:
+                        break
+        except Exception:
+            self._log.debug("get_chatters failed for broadcaster %s", broadcaster_id, exc_info=True)
+        return all_chatters
+
     async def subscribe_eventsub_websocket(
         self,
         *,

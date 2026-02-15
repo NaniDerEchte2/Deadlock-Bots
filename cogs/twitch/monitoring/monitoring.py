@@ -867,6 +867,48 @@ class TwitchMonitoringMixin:
             except Exception:
                 log.exception("EventSub Webhook: Hype-Train-End-Callback fehlgeschlagen für %s", login)
 
+        async def _hype_progress_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_hype_train_event(bid, event, ended=False, progress=True)
+            except Exception:
+                log.exception("EventSub Webhook: Hype-Train-Progress-Callback fehlgeschlagen für %s", login)
+
+        async def _sub_end_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_subscription_event(bid, event, "end")
+            except Exception:
+                log.exception("EventSub Webhook: subscription.end-Callback fehlgeschlagen für %s", login)
+
+        async def _ban_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_ban_event(bid, event, unbanned=False)
+            except Exception:
+                log.exception("EventSub Webhook: channel.ban-Callback fehlgeschlagen für %s", login)
+
+        async def _unban_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_ban_event(bid, event, unbanned=True)
+            except Exception:
+                log.exception("EventSub Webhook: channel.unban-Callback fehlgeschlagen für %s", login)
+
+        async def _bits_use_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_bits_event(bid, event)
+            except Exception:
+                log.exception("EventSub Webhook: channel.bits.use-Callback fehlgeschlagen für %s", login)
+
+        async def _shoutout_create_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_shoutout_event(bid, event, direction="sent")
+            except Exception:
+                log.exception("EventSub Webhook: shoutout.create-Callback fehlgeschlagen für %s", login)
+
+        async def _shoutout_receive_cb(bid: str, login: str, event: dict):
+            try:
+                await self._store_shoutout_event(bid, event, direction="received")
+            except Exception:
+                log.exception("EventSub Webhook: shoutout.receive-Callback fehlgeschlagen für %s", login)
+
         async def _online_cb(bid: str, login: str, event: dict):
             try:
                 await self._handle_stream_online(bid, login, event)
@@ -919,6 +961,13 @@ class TwitchMonitoringMixin:
         webhook_handler.set_callback("channel.cheer", _bits_cb)
         webhook_handler.set_callback("channel.hype_train.begin", _hype_begin_cb)
         webhook_handler.set_callback("channel.hype_train.end", _hype_end_cb)
+        webhook_handler.set_callback("channel.hype_train.progress", _hype_progress_cb)
+        webhook_handler.set_callback("channel.subscription.end", _sub_end_cb)
+        webhook_handler.set_callback("channel.ban", _ban_cb)
+        webhook_handler.set_callback("channel.unban", _unban_cb)
+        webhook_handler.set_callback("channel.bits.use", _bits_use_cb)
+        webhook_handler.set_callback("channel.shoutout.create", _shoutout_create_cb)
+        webhook_handler.set_callback("channel.shoutout.receive", _shoutout_receive_cb)
 
         # Go-Live Handler für Polling
         async def _handle_stream_went_live(bid: str, login: str):
@@ -1006,12 +1055,19 @@ class TwitchMonitoringMixin:
                     broadcaster_subs = [
                         # (sub_type, version, scope_info)
                         ("channel.cheer",                  "1", "bits:read"),
-                        ("channel.hype_train.begin",        "1", "channel:read:hype_train"),
-                        ("channel.hype_train.end",          "1", "channel:read:hype_train"),
-                        ("channel.subscribe",               "1", "channel:read:subscriptions"),
-                        ("channel.subscription.gift",       "1", "channel:read:subscriptions"),
-                        ("channel.subscription.message",    "1", "channel:read:subscriptions"),
-                        ("channel.ad_break.begin",          "1", "channel:read:ads"),
+                        ("channel.bits.use",               "1", "bits:read"),
+                        ("channel.hype_train.begin",       "2", "channel:read:hype_train"),
+                        ("channel.hype_train.progress",    "2", "channel:read:hype_train"),
+                        ("channel.hype_train.end",         "2", "channel:read:hype_train"),
+                        ("channel.subscribe",              "1", "channel:read:subscriptions"),
+                        ("channel.subscription.gift",      "1", "channel:read:subscriptions"),
+                        ("channel.subscription.message",   "1", "channel:read:subscriptions"),
+                        ("channel.subscription.end",       "1", "channel:read:subscriptions"),
+                        ("channel.ad_break.begin",         "1", "channel:read:ads"),
+                        ("channel.ban",                    "1", "moderator:manage:banned_users"),
+                        ("channel.unban",                  "1", "moderator:manage:banned_users"),
+                        ("channel.shoutout.create",        "1", "moderator:manage:shoutouts"),
+                        ("channel.shoutout.receive",       "1", "moderator:manage:shoutouts"),
                     ]
                     for sub_type, version, _ in broadcaster_subs:
                         if self._eventsub_has_sub(sub_type, str(bid)):

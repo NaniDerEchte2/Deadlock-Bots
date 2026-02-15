@@ -22,10 +22,12 @@ class TwitchAnalyticsMixin:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._analytics_task = self.collect_analytics_data.start()
+        self._chatters_task = self.collect_chatters_data.start()
 
     async def cog_unload(self):
         await super().cog_unload()
         self.collect_analytics_data.cancel()
+        self.collect_chatters_data.cancel()
 
     @tasks.loop(hours=6)
     async def collect_analytics_data(self):
@@ -212,6 +214,123 @@ class TwitchAnalyticsMixin:
     async def _before_analytics(self):
         await self.bot.wait_until_ready()
 
+    # ------------------------------------------------------------------
+    # Chatters Poller (alle 5 Min, nur für live Streams)
+    # Tracked Lurker via GET /helix/chat/chatters (moderator:read:chatters)
+    # ------------------------------------------------------------------
+
+    @tasks.loop(minutes=5)
+    async def collect_chatters_data(self):
+        """Pollt Chatters-Liste für alle live Streamer und speichert Lurker in twitch_session_chatters."""
+        if not self.api:
+            return
+
+        try:
+            with storage.get_conn() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT ls.twitch_user_id, ls.streamer_login, ls.active_session_id
+                    FROM twitch_live_state ls
+                    JOIN twitch_raid_auth ra ON ra.twitch_user_id = ls.twitch_user_id
+                    WHERE ls.is_live = 1
+                      AND ls.active_session_id IS NOT NULL
+                      AND ra.raid_enabled = 1
+                    """
+                ).fetchall()
+        except Exception:
+            log.exception("Chatters-Poller: Fehler beim Laden der live Streamer")
+            return
+
+        if not rows:
+            return
+
+        session = self.api.get_http_session()
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+        for row in rows:
+            user_id = row[0] if not hasattr(row, "keys") else row["twitch_user_id"]
+            login = row[1] if not hasattr(row, "keys") else row["streamer_login"]
+            session_id = row[2] if not hasattr(row, "keys") else row["active_session_id"]
+
+            if not getattr(self, "_raid_bot", None):
+                continue
+
+            token = await self._raid_bot.auth_manager.get_valid_token(user_id, session)
+            if not token:
+                continue
+
+            scopes = {s.lower() for s in self._raid_bot.auth_manager.get_scopes(user_id)}
+            if "moderator:read:chatters" not in scopes:
+                log.debug("Chatters-Poller: %s hat kein moderator:read:chatters Scope", login)
+                continue
+
+            try:
+                chatters = await self.api.get_chatters(
+                    broadcaster_id=user_id,
+                    moderator_id=user_id,
+                    user_token=token,
+                )
+            except Exception:
+                log.exception("Chatters-Poller: API-Fehler für %s", login)
+                continue
+
+            if not chatters:
+                continue
+
+            log.debug("Chatters-Poller: %d Chatters für %s (session %s)", len(chatters), login, session_id)
+
+            try:
+                with storage.get_conn() as conn:
+                    # Vorhandene Chatters dieses Sessions laden um Duplikate zu vermeiden
+                    existing = {
+                        r[0]
+                        for r in conn.execute(
+                            "SELECT chatter_login FROM twitch_session_chatters WHERE session_id = ?",
+                            (session_id,),
+                        ).fetchall()
+                    }
+                    new_lurkers = 0
+                    for chatter in chatters:
+                        c_login = (chatter.get("user_login") or "").lower().strip()
+                        c_id = str(chatter.get("user_id") or "").strip()
+                        if not c_login:
+                            continue
+                        if c_login in existing:
+                            # Nur last_seen_at updaten
+                            conn.execute(
+                                "UPDATE twitch_session_chatters SET last_seen_at = ? WHERE session_id = ? AND chatter_login = ?",
+                                (now_iso, session_id, c_login),
+                            )
+                        else:
+                            # Neuer Lurker – noch nie geschrieben
+                            conn.execute(
+                                """
+                                INSERT OR IGNORE INTO twitch_session_chatters
+                                    (session_id, streamer_login, chatter_login, chatter_id,
+                                     first_message_at, messages, is_first_time_global,
+                                     seen_via_chatters_api, last_seen_at)
+                                VALUES (?, ?, ?, ?, ?, 0, 0, 1, ?)
+                                """,
+                                (session_id, login, c_login, c_id or None, now_iso, now_iso),
+                            )
+                            existing.add(c_login)
+                            new_lurkers += 1
+
+                    if new_lurkers:
+                        log.info(
+                            "Chatters-Poller: %d neue Lurker für %s eingetragen (session %s)",
+                            new_lurkers, login, session_id,
+                        )
+            except Exception:
+                log.exception("Chatters-Poller: DB-Fehler für %s", login)
+
+            await asyncio.sleep(1)
+
+    @collect_chatters_data.before_loop
+    async def _before_chatters(self):
+        await self.bot.wait_until_ready()
+
+    # ------------------------------------------------------------------
     async def _handle_stream_online(self, broadcaster_user_id: str, broadcaster_login: str, event: dict) -> None:
         """Wird von stream.online EventSub aufgerufen – triggert sofort den Go-Live-Handler."""
         handler = getattr(self, "_handle_stream_went_live", None)
@@ -402,9 +521,9 @@ class TwitchAnalyticsMixin:
             log.exception("_store_bits_event: Fehler beim Speichern für %s", broadcaster_user_id)
 
     async def _store_hype_train_event(
-        self, broadcaster_user_id: str, event: dict, *, ended: bool
+        self, broadcaster_user_id: str, event: dict, *, ended: bool, progress: bool = False
     ) -> None:
-        """Speichert ein channel.hype_train.begin/end Event in der Datenbank."""
+        """Speichert ein channel.hype_train.begin/progress/end Event in der Datenbank."""
         started_at = (event.get("started_at") or "").strip() or None
         ended_at = (event.get("ended_at") or "").strip() or None if ended else None
         level = int(event.get("level") or 0) or None
@@ -459,12 +578,13 @@ class TwitchAnalyticsMixin:
                     ).rowcount
                     if updated:
                         return
+                phase = "progress" if progress else ("end" if ended else "begin")
                 c.execute(
                     """
                     INSERT INTO twitch_hype_train_events
                         (session_id, twitch_user_id, started_at, ended_at,
-                         duration_seconds, level, total_progress)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                         duration_seconds, level, total_progress, event_phase)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         session_id,
@@ -474,9 +594,82 @@ class TwitchAnalyticsMixin:
                         duration_seconds,
                         level,
                         total_progress,
+                        phase,
                     ),
                 )
         except Exception:
             log.exception(
                 "_store_hype_train_event: Fehler beim Speichern für %s", broadcaster_user_id
             )
+
+    async def _store_ban_event(self, broadcaster_user_id: str, event: dict, *, unbanned: bool = False) -> None:
+        """Speichert ein channel.ban / channel.unban Event."""
+        event_type = "unban" if unbanned else "ban"
+        target_login = (event.get("user_login") or event.get("user_name") or "").strip().lower() or None
+        target_id = str(event.get("user_id") or "").strip() or None
+        moderator_login = (event.get("moderator_user_login") or "").strip().lower() or None
+        reason = (event.get("reason") or "").strip() or None
+        ends_at = (event.get("ends_at") or "").strip() or None  # None = permanent
+
+        session_id: int | None = None
+        try:
+            with storage.get_conn() as c:
+                row = c.execute(
+                    "SELECT id FROM twitch_stream_sessions WHERE twitch_user_id = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1",
+                    (broadcaster_user_id,),
+                ).fetchone()
+            if row:
+                session_id = int(row[0] if not hasattr(row, "keys") else row["id"])
+        except Exception:
+            log.debug("_store_ban_event: Konnte session_id nicht ermitteln", exc_info=True)
+
+        try:
+            with storage.get_conn() as c:
+                c.execute(
+                    """
+                    INSERT INTO twitch_ban_events
+                        (session_id, twitch_user_id, event_type, target_login, target_id,
+                         moderator_login, reason, ends_at, received_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id, broadcaster_user_id, event_type, target_login, target_id,
+                        moderator_login, reason, ends_at,
+                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    ),
+                )
+        except Exception:
+            log.exception("_store_ban_event: Fehler für %s (%s)", broadcaster_user_id, event_type)
+
+    async def _store_shoutout_event(self, broadcaster_user_id: str, event: dict, *, direction: str) -> None:
+        """Speichert ein channel.shoutout.create / channel.shoutout.receive Event.
+        direction: 'sent' | 'received'
+        """
+        if direction == "sent":
+            other_id = str(event.get("to_broadcaster_user_id") or "").strip() or None
+            other_login = (event.get("to_broadcaster_user_login") or "").strip().lower() or None
+            moderator_login = (event.get("moderator_user_login") or "").strip().lower() or None
+            viewer_count = int(event.get("viewer_count") or 0)
+        else:
+            other_id = str(event.get("from_broadcaster_user_id") or "").strip() or None
+            other_login = (event.get("from_broadcaster_user_login") or "").strip().lower() or None
+            moderator_login = None
+            viewer_count = int(event.get("viewer_count") or 0)
+
+        try:
+            with storage.get_conn() as c:
+                c.execute(
+                    """
+                    INSERT INTO twitch_shoutout_events
+                        (twitch_user_id, direction, other_broadcaster_id, other_broadcaster_login,
+                         moderator_login, viewer_count, received_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        broadcaster_user_id, direction, other_id, other_login,
+                        moderator_login, viewer_count,
+                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    ),
+                )
+        except Exception:
+            log.exception("_store_shoutout_event: Fehler für %s (%s)", broadcaster_user_id, direction)

@@ -45,6 +45,8 @@ RAID_SCOPES = [
     "channel:read:ads",
     "bits:read",
     "channel:read:hype_train",
+    "moderator:read:chatters",
+    "moderator:manage:shoutouts",
 ]
 
 RAID_TARGET_COOLDOWN_DAYS = 7  # Avoid repeating the same raid target if alternatives exist
