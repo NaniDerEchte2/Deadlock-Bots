@@ -799,10 +799,9 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_payments_token ON beta_invite_pending_payments(token)"
             )
-        except sqlite3.OperationalError as exc:
+        except sqlite3.OperationalError:
             log.debug(
-                "Skipping token index creation for beta_invite_pending_payments: %s",
-                exc,
+                "Skipping pending-payments index creation due to SQLite operational error"
             )
         # Indizes ergänzen (idempotent)
         try:

@@ -139,7 +139,7 @@ class EventSubWebhookHandler:
             if not challenge:
                 self.log.error("EventSub Webhook: Challenge-Request ohne challenge-Feld")
                 return web.Response(status=400)
-            self.log.info(
+            self.log.debug(
                 "EventSub Webhook: Challenge für '%s' beantwortet",
                 data.get("subscription", {}).get("type", sub_type),
             )
