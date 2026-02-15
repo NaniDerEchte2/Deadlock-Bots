@@ -146,6 +146,7 @@ if TWITCHIO_AVAILABLE:
             # Key = channel_login (lowercase), Value = nächster erlaubter Zeitpunkt.
             self._mod_retry_cooldown: Dict[str, datetime] = {}
             self._autoban_log = Path("logs") / "twitch_autobans.log"
+            self._suspicious_log = Path("logs") / "twitch_suspicious.log"
             self._target_game_lower = (TWITCH_TARGET_GAME_NAME or "").strip().lower()
             # Cache for category checks in chat tracking (login -> (monotonic_ts, is_target_game))
             self._chat_category_cache: Dict[str, Tuple[float, bool]] = {}
