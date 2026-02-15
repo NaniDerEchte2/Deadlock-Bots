@@ -22,6 +22,16 @@ from discord.ext import commands
 from service import db
 from cogs.steam.steam_master import SteamTaskClient
 from cogs.welcome_dm import base as welcome_base
+
+try:
+    from fastapi import FastAPI, HTTPException, Request
+    import uvicorn
+except Exception:  # pragma: no cover - optional dependency in some environments
+    FastAPI = None
+    HTTPException = None
+    Request = None
+    uvicorn = None
+
 SUPPORT_CHANNEL = "https://discord.com/channels/1289721245281292288/1459628609705738539"
 BETA_INVITE_CHANNEL_URL = "https://discord.com/channels/1289721245281292288/1464736918951432222"
 
@@ -2782,11 +2792,8 @@ async def _parse_kofi_request_payload(request: Any) -> Mapping[str, Any]:
 
 
 async def _start_kofi_webhook_server(beta_invite: BetaInviteFlow) -> None:
-    try:
-        from fastapi import FastAPI, HTTPException, Request
-        import uvicorn
-    except ImportError as exc:
-        log.warning("Ko-fi Webhook deaktiviert (fastapi/uvicorn fehlt): %s", exc)
+    if not all((FastAPI, HTTPException, Request, uvicorn)):
+        log.warning("Ko-fi Webhook deaktiviert (fastapi/uvicorn fehlt)")
         beta_invite._kofi_webhook_task = None
         return
 
@@ -2859,9 +2866,18 @@ async def _start_kofi_webhook_server(beta_invite: BetaInviteFlow) -> None:
         if not payload:
             raise HTTPException(status_code=400, detail="Invalid payload")
 
+        payload_keys = list(payload.keys()) if isinstance(payload, Mapping) else None
+        _trace("kofi_webhook_http_received", payload_keys=payload_keys)
+
         token = _extract_kofi_token(payload, request.headers)
         expected = str(KOFI_VERIFICATION_TOKEN or "").strip()
         if expected and token != expected:
+            _trace(
+                "kofi_webhook_invalid_verification_token",
+                token_present=bool(token),
+                token_len=len(token or ""),
+                expected_len=len(expected or ""),
+            )
             raise HTTPException(status_code=401, detail="Invalid verification token")
 
         asyncio.create_task(beta_invite.handle_kofi_webhook(payload))
