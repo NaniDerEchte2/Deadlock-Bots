@@ -276,6 +276,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_twitch_session_chatters_login ON twitch_session_chatters(streamer_login, session_id)"
     )
+    # Lurker-Tracking: Chatters die per API gefunden wurden aber nie geschrieben haben
+    _add_column_if_missing(conn, "twitch_session_chatters", "seen_via_chatters_api", "INTEGER DEFAULT 0")
+    _add_column_if_missing(conn, "twitch_session_chatters", "last_seen_at", "TEXT")
 
     conn.execute(
         """
@@ -576,6 +579,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    _add_column_if_missing(conn, "twitch_hype_train_events", "event_phase", "TEXT DEFAULT 'end'")
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_twitch_hype_train_events_session
@@ -643,3 +647,45 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ON twitch_ad_break_events (session_id)
         """
     )
+
+    # --- Ban / Unban Events (moderator:manage:banned_users) ---
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_ban_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id      INTEGER,
+            twitch_user_id  TEXT NOT NULL,
+            event_type      TEXT NOT NULL,   -- 'ban' | 'unban'
+            target_login    TEXT,
+            target_id       TEXT,
+            moderator_login TEXT,
+            reason          TEXT,
+            ends_at         TEXT,            -- NULL = permanent ban, sonst timeout-Ablauf
+            received_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_ban_events_user ON twitch_ban_events(twitch_user_id, received_at)"
+    )
+
+    # --- Shoutout Events (moderator:manage:shoutouts) ---
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_shoutout_events (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            twitch_user_id      TEXT NOT NULL,
+            direction           TEXT NOT NULL,  -- 'sent' | 'received'
+            other_broadcaster_id   TEXT,
+            other_broadcaster_login TEXT,
+            moderator_login     TEXT,           -- Wer den Shoutout ausgelöst hat (bei sent)
+            viewer_count        INTEGER DEFAULT 0,
+            received_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_shoutout_events_user ON twitch_shoutout_events(twitch_user_id, received_at)"
+    )
+
+
