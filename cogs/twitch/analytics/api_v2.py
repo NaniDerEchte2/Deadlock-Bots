@@ -4,6 +4,7 @@ Analytics API v2 - Backend endpoints for the new React TypeScript dashboard.
 
 from __future__ import annotations
 
+import collections
 import ipaddress
 import json
 import logging
@@ -76,6 +77,31 @@ class AnalyticsV2Mixin:
     _FOLLOWER_DELTA_AVG = """AVG(CASE WHEN s.follower_delta IS NOT NULL
          AND NOT (s.followers_end = 0 AND s.followers_start > 0)
          THEN s.follower_delta ELSE NULL END)"""
+
+    def _classify_message(self, content: str) -> str:
+        if not content:
+            return 'Other'
+        content_lower = content.lower()
+        
+        if content.startswith('!'):
+            return 'Command'
+        
+        if any(w in content_lower for w in ['hi', 'hello', 'hey', 'moin', 'nabend', 'guten', 'welcome', 'hallo']):
+            return 'Greeting'
+            
+        if '?' in content or any(w in content_lower for w in ['was', 'wo', 'wer', 'wie', 'wann', 'why', 'how', 'warum', 'weshalb']):
+            return 'Question'
+            
+        if any(w in content_lower for w in ['lol', 'lmao', 'haha', 'gg', 'pog', 'lul', 'kek', 'xd', ':)', ':d', 'f', 'o7', 'wow', 'omg']):
+            return 'Reaction'
+            
+        if any(w in content_lower for w in ['deadlock', 'hero', 'build', 'skill', 'rank', 'elo', 'match', 'play', 'game', 'win', 'lose', 'mmr', 'lane', 'ult']):
+            return 'Game-Related'
+            
+        if any(w in content_lower for w in ['follow', 'sub', 'prime', 'raid', 'host', 'danke', 'thanks', 'thx', 'discord', 'social']):
+            return 'Engagement'
+            
+        return 'Other'
 
     def _get_dashboard_session(self, request: web.Request) -> Optional[Dict[str, Any]]:
         getter = getattr(self, "_get_dashboard_auth_session", None)
@@ -1202,23 +1228,53 @@ class AnalyticsV2Mixin:
                 )
 
                 # True message counts from raw chat events in the selected time range.
-                message_stats = conn.execute(
+                all_messages = conn.execute(
                     """
-                    SELECT
-                        COUNT(*) as total_messages,
-                        COALESCE(SUM(CASE WHEN cm.is_command = 1 THEN 1 ELSE 0 END), 0) as command_messages,
-                        COUNT(DISTINCT COALESCE(NULLIF(cm.chatter_login, ''), cm.chatter_id)) as distinct_chatters
-                    FROM twitch_chat_messages cm
-                    WHERE cm.message_ts >= ?
-                      AND LOWER(cm.streamer_login) = ?
+                    SELECT message_ts, content, is_command, chatter_login, chatter_id
+                    FROM twitch_chat_messages
+                    WHERE message_ts >= ?
+                      AND LOWER(streamer_login) = ?
                     """,
                     [since_date, streamer_login],
-                ).fetchone()
-                total_messages = int(message_stats[0]) if message_stats and message_stats[0] else 0
-                command_messages = int(message_stats[1]) if message_stats and message_stats[1] else 0
-                distinct_chatters_from_messages = (
-                    int(message_stats[2]) if message_stats and message_stats[2] else 0
-                )
+                ).fetchall()
+
+                total_messages = len(all_messages)
+                command_messages = 0
+                distinct_chatters_set = set()
+                
+                type_counts = collections.Counter()
+                hour_counts = collections.Counter()
+
+                for r in all_messages:
+                    ts_str = r[0]
+                    content = r[1] or ""
+                    is_cmd = r[2]
+                    chatter_key = r[3] or r[4] or ""
+                    
+                    if is_cmd:
+                        command_messages += 1
+                    if chatter_key:
+                        distinct_chatters_set.add(chatter_key)
+
+                    # Type Analysis
+                    msg_type = self._classify_message(content)
+                    type_counts[msg_type] += 1
+                    
+                    # Hourly Analysis
+                    try:
+                        # Assumes ISO format YYYY-MM-DDTHH:MM:SS...
+                        if 'T' in ts_str:
+                            # Extract HH
+                            hour_str = ts_str.split('T')[1][:2]
+                            hour_counts[int(hour_str)] += 1
+                        elif ' ' in ts_str:
+                             # Fallback for YYYY-MM-DD HH:MM:SS
+                            hour_str = ts_str.split(' ')[1][:2]
+                            hour_counts[int(hour_str)] += 1
+                    except Exception:
+                        pass
+
+                distinct_chatters_from_messages = len(distinct_chatters_set)
 
                 # Chatter cohort split + lurker stats from session-level chatter table.
                 cohort_stats = conn.execute(
@@ -1318,6 +1374,14 @@ class AnalyticsV2Mixin:
                                 ),
                             }
                             for r in top
+                        ],
+                        "messageTypes": [
+                            {"type": k, "count": v, "percentage": round(v / total_messages * 100, 1) if total_messages > 0 else 0}
+                            for k, v in type_counts.most_common()
+                        ],
+                        "hourlyActivity": [
+                            {"hour": h, "count": hour_counts.get(h, 0)}
+                            for h in range(24)
                         ],
                         "dataQuality": {
                             "sessions": session_count,

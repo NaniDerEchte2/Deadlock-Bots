@@ -109,6 +109,82 @@ export function ChatAnalytics({ streamer, days }: ChatAnalyticsProps) {
         </div>
       </motion.div>
 
+      {/* Message Analysis */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Message Types */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="bg-card rounded-xl border border-border p-6"
+        >
+          <div className="flex items-center gap-3 mb-6">
+            <MessageCircle className="w-6 h-6 text-accent" />
+            <h2 className="text-xl font-bold text-white">Nachrichtentypen</h2>
+          </div>
+          <div className="space-y-4">
+            {data.messageTypes?.map((type) => (
+              <div key={type.type}>
+                <div className="flex justify-between text-sm mb-1">
+                  <span className="text-text-secondary">{type.type}</span>
+                  <span className="text-white font-medium">{type.percentage}% ({type.count})</span>
+                </div>
+                <div className="h-2 bg-background rounded-full overflow-hidden">
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${type.percentage}%` }}
+                    transition={{ duration: 1, ease: "easeOut" }}
+                    className="h-full bg-accent"
+                  />
+                </div>
+              </div>
+            ))}
+            {(!data.messageTypes || data.messageTypes.length === 0) && (
+               <p className="text-text-secondary text-center py-4">Keine Daten verfügbar</p>
+            )}
+          </div>
+        </motion.div>
+
+        {/* Hourly Activity */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.15 }}
+          className="bg-card rounded-xl border border-border p-6"
+        >
+          <div className="flex items-center gap-3 mb-6">
+            <TrendingUp className="w-6 h-6 text-success" />
+            <h2 className="text-xl font-bold text-white">Aktivität nach Tageszeit</h2>
+          </div>
+          <div className="h-64 flex items-end gap-1">
+            {Array.from({ length: 24 }).map((_, hour) => {
+              const stat = data.hourlyActivity?.find(h => h.hour === hour);
+              const count = stat?.count || 0;
+              const maxCount = Math.max(...(data.hourlyActivity?.map(h => h.count) || [1]));
+              const height = maxCount > 0 ? (count / maxCount) * 100 : 0;
+              
+              return (
+                <div key={hour} className="flex-1 flex flex-col items-center group relative">
+                  <motion.div
+                    initial={{ height: 0 }}
+                    animate={{ height: `${height}%` }}
+                    transition={{ duration: 0.5, delay: hour * 0.02 }}
+                    className={`w-full bg-success/50 rounded-t-sm group-hover:bg-success transition-colors ${height === 0 ? 'min-h-[2px] bg-border' : ''}`}
+                  />
+                  {/* Tooltip */}
+                  <div className="absolute bottom-full mb-2 hidden group-hover:block bg-popover text-white text-xs p-2 rounded z-10 whitespace-nowrap border border-border">
+                    {hour}:00 Uhr: {count} Nachrichten
+                  </div>
+                  {hour % 4 === 0 && (
+                    <div className="text-[10px] text-text-secondary mt-1">{hour}h</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </motion.div>
+      </div>
+
       {/* Top Chatters Leaderboard */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}

@@ -63,6 +63,17 @@ export interface HourlyHeatmapData {
   avgPeak: number;
 }
 
+export interface MessageTypeStat {
+  type: string;
+  count: number;
+  percentage: number;
+}
+
+export interface HourlyActivityStat {
+  hour: number;
+  count: number;
+}
+
 export interface CalendarHeatmapData {
   date: string;
   value: number; // hours watched or stream count
@@ -78,6 +89,8 @@ export interface ChatAnalytics {
   messagesPerMinute: number;
   chatterReturnRate: number;
   topChatters: ChatterStats[];
+  messageTypes: MessageTypeStat[];
+  hourlyActivity: HourlyActivityStat[];
 }
 
 export interface ChatterStats {
