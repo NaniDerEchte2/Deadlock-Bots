@@ -30,6 +30,13 @@ from service.field_crypto import get_crypto
 log = logging.getLogger("TwitchStreams.OAuthManager")
 
 
+def _sanitize_log_value(value: Optional[str]) -> str:
+    """Prevent CRLF log-forging via untrusted values."""
+    if value is None:
+        return "<none>"
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
+
 class SocialMediaOAuthManager:
     """Manages OAuth flows for social media platforms."""
 
@@ -374,9 +381,11 @@ class SocialMediaOAuthManager:
                 )
             )
 
+            safe_platform = _sanitize_log_value(platform)
+            safe_streamer = _sanitize_log_value(streamer_login)
             log.info(
-                "Saved encrypted tokens for platform=%s, streamer=%s",
-                platform, streamer_login
+                "Saved encrypted auth data for platform=%s, streamer=%s",
+                safe_platform, safe_streamer
             )
 
     async def refresh_token(

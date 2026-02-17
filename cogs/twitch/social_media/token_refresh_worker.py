@@ -47,7 +47,7 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
         # Start background task
         self._task = bot.loop.create_task(self._refresh_loop())
         log.info(
-            "Token refresh worker started (interval=%ss, threshold=%sh)",
+            "Auth refresh worker started (interval=%ss, threshold=%sh)",
             self.interval_seconds,
             self.refresh_threshold_hours
         )
@@ -56,7 +56,7 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
         """Cleanup on cog unload."""
         if self._task:
             self._task.cancel()
-        log.info("Token refresh worker stopped")
+        log.info("Auth refresh worker stopped")
 
     async def _refresh_loop(self):
         """Main refresh loop."""
@@ -93,10 +93,10 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
             ).fetchall()
 
         if not expiring:
-            log.debug("No tokens expiring within %sh", self.refresh_threshold_hours)
+            log.debug("No auth entries expiring within %sh", self.refresh_threshold_hours)
             return
 
-        log.info("Found %s tokens expiring within %sh", len(expiring), self.refresh_threshold_hours)
+        log.info("Found %s auth entries expiring within %sh", len(expiring), self.refresh_threshold_hours)
 
         # Refresh each token
         for row in expiring:
@@ -106,7 +106,7 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
                 safe_platform = _sanitize_log_value(row["platform"])
                 safe_streamer = _sanitize_log_value(row["streamer_login"])
                 log.exception(
-                    "Failed to refresh OAuth credentials for platform=%s, streamer=%s",
+                    "Failed to refresh OAuth auth data for platform=%s, streamer=%s",
                     safe_platform,
                     safe_streamer
                 )
@@ -124,7 +124,7 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
         safe_streamer = _sanitize_log_value(streamer_login)
         row_id = f"{platform}|{streamer_login or 'global'}"
 
-        log.info("Refreshing OAuth credentials for platform=%s, streamer=%s", safe_platform, safe_streamer)
+        log.info("Refreshing OAuth auth data for platform=%s, streamer=%s", safe_platform, safe_streamer)
 
         # Decrypt refresh token
         aad_refresh = f"social_media_platform_auth|refresh_token|{row_id}|{row['enc_version']}"
@@ -152,7 +152,7 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
             )
         except Exception:
             log.error(
-                "OAuth credential refresh failed for platform=%s, streamer=%s",
+                "OAuth auth refresh failed for platform=%s, streamer=%s",
                 safe_platform,
                 safe_streamer
             )
@@ -168,7 +168,7 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
         )
 
         log.info(
-            "OAuth credentials refreshed successfully for platform=%s, streamer=%s",
+            "OAuth auth data refreshed successfully for platform=%s, streamer=%s",
             safe_platform,
             safe_streamer
         )

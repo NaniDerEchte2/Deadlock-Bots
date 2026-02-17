@@ -81,7 +81,7 @@ class SocialMediaCredentialManager:
                 safe_platform = _sanitize_log_value(platform)
                 safe_streamer = _sanitize_log_value(streamer_login)
                 log.debug(
-                    "No credentials found for platform=%s, streamer=%s",
+                    "No auth record found for platform=%s, streamer=%s",
                     safe_platform, safe_streamer
                 )
                 return None
@@ -135,7 +135,7 @@ class SocialMediaCredentialManager:
                 safe_platform = _sanitize_log_value(platform)
                 safe_streamer = _sanitize_log_value(streamer_login)
                 log.error(
-                    "Failed to decrypt credentials for platform=%s, streamer=%s",
+                    "Failed to decrypt auth record for platform=%s, streamer=%s",
                     safe_platform, safe_streamer
                 )
                 return None
@@ -143,7 +143,7 @@ class SocialMediaCredentialManager:
                 safe_platform = _sanitize_log_value(platform)
                 safe_streamer = _sanitize_log_value(streamer_login)
                 log.exception(
-                    "Unexpected error loading credentials for platform=%s, streamer=%s",
+                    "Unexpected error loading auth record for platform=%s, streamer=%s",
                     safe_platform, safe_streamer
                 )
                 return None
