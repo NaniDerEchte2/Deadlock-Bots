@@ -353,6 +353,12 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "twitch_raid_auth", "legacy_saved_at",      "TEXT")
     _add_column_if_missing(conn, "twitch_raid_auth", "needs_reauth",         "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_raid_auth", "reauth_notified_at",   "TEXT")
+    # Encrypted token storage (Phase 0: Encryption Foundation)
+    _add_column_if_missing(conn, "twitch_raid_auth", "access_token_enc",     "BLOB")
+    _add_column_if_missing(conn, "twitch_raid_auth", "refresh_token_enc",    "BLOB")
+    _add_column_if_missing(conn, "twitch_raid_auth", "enc_version",          "INTEGER DEFAULT 1")
+    _add_column_if_missing(conn, "twitch_raid_auth", "enc_kid",              "TEXT DEFAULT 'v1'")
+    _add_column_if_missing(conn, "twitch_raid_auth", "enc_migrated_at",      "TEXT")
 
     # Safety: Disable auto-raid for streamer entries without an active OAuth grant.
     try:
@@ -410,6 +416,73 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             reason          TEXT,
             added_at        TEXT DEFAULT CURRENT_TIMESTAMP
         )
+        """
+    )
+
+    # 7c) Social Media Platform OAuth (encrypted credentials)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS social_media_platform_auth (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform TEXT NOT NULL,  -- 'tiktok', 'youtube', 'instagram'
+            streamer_login TEXT,  -- NULL = bot-global
+
+            -- OAuth Data (encrypted)
+            access_token_enc BLOB NOT NULL,
+            refresh_token_enc BLOB,
+            client_id TEXT,  -- Public, not encrypted
+            client_secret_enc BLOB,
+
+            -- Metadata
+            token_expires_at TEXT,
+            scopes TEXT,
+            platform_user_id TEXT,
+            platform_username TEXT,
+
+            -- Encryption metadata
+            enc_version INTEGER DEFAULT 1,
+            enc_kid TEXT DEFAULT 'v1',
+
+            -- Timestamps
+            authorized_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_refreshed_at TEXT,
+            enabled INTEGER DEFAULT 1,
+
+            UNIQUE(platform, streamer_login)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_social_platform_auth
+        ON social_media_platform_auth(platform, streamer_login, enabled)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_social_platform_auth_expires
+        ON social_media_platform_auth(token_expires_at) WHERE enabled = 1
+        """
+    )
+
+    # 7d) OAuth State Tokens (CSRF protection)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS oauth_state_tokens (
+            state_token TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            streamer_login TEXT,
+            redirect_uri TEXT,
+            pkce_verifier TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            expires_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_oauth_state_expires
+        ON oauth_state_tokens(expires_at)
         """
     )
 
@@ -725,4 +798,270 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_twitch_channel_points_events_user ON twitch_channel_points_events(twitch_user_id, redeemed_at)"
     )
+
+    # --- Social Media Clip Publisher ---
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_clips_social_media (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            clip_id             TEXT NOT NULL UNIQUE,
+            clip_url            TEXT NOT NULL,
+            clip_title          TEXT,
+            clip_thumbnail_url  TEXT,
+            streamer_login      TEXT NOT NULL,
+            twitch_user_id      TEXT,
+            created_at          TEXT NOT NULL,
+            duration_seconds    REAL,
+            view_count          INTEGER DEFAULT 0,
+            game_name           TEXT,
+
+            -- Processing State
+            status              TEXT DEFAULT 'pending',  -- pending, processing, ready, failed
+            downloaded_at       TEXT,
+            local_file_path     TEXT,
+            converted_file_path TEXT,  -- 9:16 version für TikTok/Reels
+
+            -- Upload State
+            uploaded_tiktok     INTEGER DEFAULT 0,
+            uploaded_youtube    INTEGER DEFAULT 0,
+            uploaded_instagram  INTEGER DEFAULT 0,
+
+            -- External IDs
+            tiktok_video_id     TEXT,
+            youtube_video_id    TEXT,
+            instagram_media_id  TEXT,
+
+            -- Upload Timestamps
+            tiktok_uploaded_at  TEXT,
+            youtube_uploaded_at TEXT,
+            instagram_uploaded_at TEXT,
+
+            -- Custom Settings
+            custom_title        TEXT,
+            custom_description  TEXT,
+            hashtags            TEXT,  -- JSON Array
+            music_track         TEXT,
+
+            -- Analytics
+            last_analytics_sync TEXT,
+
+            FOREIGN KEY(streamer_login) REFERENCES twitch_streamers(twitch_login)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_clips_social_media_streamer ON twitch_clips_social_media(streamer_login, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_clips_social_media_status ON twitch_clips_social_media(status)"
+    )
+
+    # --- Social Media Analytics ---
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_clips_social_analytics (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            clip_id         INTEGER NOT NULL,
+            platform        TEXT NOT NULL,  -- tiktok, youtube, instagram
+            platform_video_id TEXT,
+
+            -- Metrics
+            views           INTEGER DEFAULT 0,
+            likes           INTEGER DEFAULT 0,
+            comments        INTEGER DEFAULT 0,
+            shares          INTEGER DEFAULT 0,
+            saves           INTEGER DEFAULT 0,  -- Instagram/TikTok
+            watch_time_avg  REAL,  -- Average watch time percentage
+            completion_rate REAL,  -- % who watched to end
+
+            -- Engagement
+            ctr             REAL,  -- Click-through rate
+            engagement_rate REAL,  -- (likes+comments+shares)/views
+
+            -- Traffic
+            external_clicks INTEGER DEFAULT 0,  -- Clicks to Twitch profile
+            new_followers   INTEGER DEFAULT 0,  -- Attributed to this clip
+
+            -- Timestamps
+            synced_at       TEXT NOT NULL,
+            posted_at       TEXT,
+
+            FOREIGN KEY(clip_id) REFERENCES twitch_clips_social_media(id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_clips_social_analytics_clip ON twitch_clips_social_analytics(clip_id, synced_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_clips_social_analytics_platform ON twitch_clips_social_analytics(platform, posted_at)"
+    )
+
+    # --- Social Media Upload Queue ---
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS twitch_clips_upload_queue (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            clip_id     INTEGER NOT NULL,
+            platform    TEXT NOT NULL,  -- tiktok, youtube, instagram
+            status      TEXT DEFAULT 'pending',  -- pending, processing, completed, failed
+            priority    INTEGER DEFAULT 0,  -- Higher = Upload first
+
+            -- Settings für diesen Upload
+            title       TEXT,
+            description TEXT,
+            hashtags    TEXT,  -- JSON Array
+            scheduled_at TEXT,  -- Optional: Scheduled post time
+
+            -- Error Handling
+            attempts    INTEGER DEFAULT 0,
+            last_error  TEXT,
+            last_attempt_at TEXT,
+
+            -- Timestamps
+            created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT,
+
+            FOREIGN KEY(clip_id) REFERENCES twitch_clips_social_media(id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_twitch_clips_upload_queue_status ON twitch_clips_upload_queue(status, priority DESC)"
+    )
+
+    # ========== Social Media Templates & Fetch History ==========
+
+    # Global Template Library (Recommended Templates)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS clip_templates_global (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            template_name TEXT NOT NULL UNIQUE,
+            description_template TEXT NOT NULL,
+            hashtags TEXT NOT NULL,
+            category TEXT,
+            usage_count INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            created_by TEXT
+        )
+        """
+    )
+
+    # Per-Streamer Custom Templates
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS clip_templates_streamer (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            streamer_login TEXT NOT NULL,
+            template_name TEXT NOT NULL,
+            description_template TEXT NOT NULL,
+            hashtags TEXT NOT NULL,
+            is_default INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(streamer_login, template_name),
+            FOREIGN KEY(streamer_login) REFERENCES twitch_streamers(twitch_login)
+        )
+        """
+    )
+
+    # Last-Used Hashtags Cache
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS clip_last_hashtags (
+            streamer_login TEXT PRIMARY KEY,
+            hashtags TEXT NOT NULL,
+            last_used_at TEXT NOT NULL,
+            FOREIGN KEY(streamer_login) REFERENCES twitch_streamers(twitch_login)
+        )
+        """
+    )
+
+    # Clip Fetch History
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS clip_fetch_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            streamer_login TEXT NOT NULL,
+            fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            clips_found INTEGER DEFAULT 0,
+            clips_new INTEGER DEFAULT 0,
+            fetch_duration_ms INTEGER,
+            error TEXT,
+            FOREIGN KEY(streamer_login) REFERENCES twitch_streamers(twitch_login)
+        )
+        """
+    )
+
+    # Indexes for templates and fetch history
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_clip_templates_streamer_login ON clip_templates_streamer(streamer_login)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_clip_fetch_history_streamer ON clip_fetch_history(streamer_login, fetched_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_clip_templates_global_category ON clip_templates_global(category)"
+    )
+
+    # Seed default global templates
+    _seed_default_templates(conn)
+
+
+def _seed_default_templates(conn: sqlite3.Connection) -> None:
+    """Seed default global templates if they don't exist."""
+    # Check if templates already exist
+    existing = conn.execute("SELECT COUNT(*) FROM clip_templates_global").fetchone()[0]
+    if existing > 0:
+        return  # Already seeded
+
+    templates = [
+        (
+            "Gaming Highlight",
+            "Epic {{game}} moment by {{streamer}}! 🎮",
+            '["gaming","twitch","{{game}}"]',
+            "Gaming",
+            "system"
+        ),
+        (
+            "Funny Moment",
+            "😂 {{title}} | {{streamer}}",
+            '["funny","gaming","twitch"]',
+            "Entertainment",
+            "system"
+        ),
+        (
+            "Pro Play",
+            "Insane {{game}} play by {{streamer}} 🔥",
+            '["esports","progaming","{{game}}"]',
+            "Competitive",
+            "system"
+        ),
+        (
+            "Clutch Moment",
+            "CLUTCH! {{title}} 💪",
+            '["clutch","gaming","{{game}}"]',
+            "Gaming",
+            "system"
+        ),
+        (
+            "Fails & Funnies",
+            "This didn't go as planned 😅 | {{streamer}}",
+            '["fail","funny","gaming"]',
+            "Entertainment",
+            "system"
+        ),
+    ]
+
+    conn.executemany(
+        """
+        INSERT INTO clip_templates_global
+        (template_name, description_template, hashtags, category, created_by)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        templates
+    )
+
+    log.info("Seeded %d default global templates", len(templates))
 

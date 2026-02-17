@@ -932,6 +932,9 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             "<div class='card'><h2 style='margin-top:0;'>Analyse Dashboard (Beta)</h2>"
             "<p class='muted'>Neues v2 Analytics Dashboard mit erweiterten Insights.</p>"
             f"<a class='btn' href='{beta_url}'>Beta Dashboard öffnen</a></div>"
+            "<div class='card'><h2 style='margin-top:0;'>📱 Social Media Publisher</h2>"
+            "<p class='muted'>Verwalte Twitch-Clips und veröffentliche auf TikTok, YouTube & Instagram</p>"
+            "<a class='btn' href='/social-media'>Social Media Dashboard öffnen</a></div>"
             "</div></div></body></html>"
         )
         return web.Response(text=html, content_type="text/html")
@@ -1654,6 +1657,32 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             return web.Response(text=msg)
         return web.Response(text="Kein Reload-Handler definiert", status=501)
 
+    def _register_social_media_routes(self, app: web.Application) -> None:
+        """Register Social Media Clip Publisher routes."""
+        try:
+            from ..social_media import ClipManager, create_social_media_app
+
+            # Create clip manager (no Twitch API dependency yet)
+            clip_manager = ClipManager()
+
+            # Create social media dashboard with auth checker
+            social_app = create_social_media_app(
+                clip_manager=clip_manager,
+                auth_checker=self._check_v2_auth,
+            )
+
+            # Mount social media routes
+            for route in social_app.router.routes():
+                app.router.add_route(
+                    route.method,
+                    route.resource.canonical,
+                    route.handler,
+                )
+
+            log.info("Social Media Dashboard routes registered successfully")
+        except Exception:
+            log.exception("Failed to register Social Media Dashboard routes")
+
     def attach(self, app: web.Application) -> None:
         app.add_routes([
             web.get("/", self.index),
@@ -1686,6 +1715,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             web.get("/twitch/api/market_data", self.api_market_data),
         ])
         self._register_v2_routes(app.router)
+        self._register_social_media_routes(app)
 
 
 @web.middleware

@@ -51,3 +51,4 @@ Gemini.ps1
 /test-scripts
 *.ps1
 /cogs/twitch/analytics/dashboard_v2/dist/assets
+/scripts

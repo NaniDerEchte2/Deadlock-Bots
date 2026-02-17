@@ -261,6 +261,20 @@ class TwitchBaseCog(commands.Cog):
             self._spawn_bg_task(self._sync_missing_user_ids(), "twitch.sync_user_ids")
             self._spawn_bg_task(self._scout_deadlock_channels(), "twitch.scout_deadlock")
 
+        # Social Media Clip Management
+        self.clip_manager = None
+        self.clip_fetcher = None
+        self.upload_worker = None
+        if self.api:
+            from .social_media.clip_manager import ClipManager
+            from .social_media.clip_fetcher import ClipFetcher
+            from .social_media.upload_worker import UploadWorker
+
+            self.clip_manager = ClipManager(twitch_api=self.api)
+            self.clip_fetcher = ClipFetcher(bot, self.api, self.clip_manager)
+            self.upload_worker = UploadWorker(bot, self.clip_manager)
+            log.info("Social Media Clip Management initialized (ClipManager + ClipFetcher + UploadWorker)")
+
     async def _scout_deadlock_channels(self):
         """Periodically scout for live German Deadlock streams and join them.
         Also cleans up monitored channels that are no longer playing Deadlock.
@@ -486,7 +500,22 @@ class TwitchBaseCog(commands.Cog):
                     log.debug("Loop gecancelt: %r", lp)
             except Exception:
                 log.exception("Konnte Loop nicht canceln: %r", lp)
-        
+
+        # 1.5 Social Media Workers stoppen
+        if self.clip_fetcher:
+            try:
+                self.clip_fetcher.cog_unload()
+                log.debug("ClipFetcher gecancelt")
+            except Exception:
+                log.exception("Konnte ClipFetcher nicht canceln")
+
+        if self.upload_worker:
+            try:
+                self.upload_worker.cog_unload()
+                log.debug("UploadWorker gecancelt")
+            except Exception:
+                log.exception("Konnte UploadWorker nicht canceln")
+
         # 2. EventSub: Webhook Handler hat keinen persistenten Zustand der explizit
         #    gestoppt werden muss. Etwaige Background-Tasks (dispatch) werden beim
         #    asyncio-Shutdown automatisch gecancelt.
