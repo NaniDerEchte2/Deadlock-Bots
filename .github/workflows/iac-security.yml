@@ -148,7 +148,7 @@ jobs:
 
       - name: Ansible Lint (SARIF)
         if: hashFiles('**/ansible/**/*.yml', '**/ansible/**/*.yaml', '**/playbook*.yml', '**/playbook*.yaml') != ''
-        uses: ansible/ansible-lint@7fe29007f249933300ef40ebbc03ba799c1ff068 # main
+        uses: ansible/ansible-lint@629cf05440966eea5c8e83707b16d5729ce06939 # main
         with:
           args: "--sarif-file ansible-lint.sarif"
         continue-on-error: true
