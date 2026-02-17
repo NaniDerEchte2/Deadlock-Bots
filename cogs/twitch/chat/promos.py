@@ -424,6 +424,11 @@ class PromoMixin:
         if not login or not self._promo_channel_allowed(login):
             return
 
+        # WICHTIG: Promo-Messages nur für PARTNER (nicht Monitored-Only)!
+        from ..partner_utils import is_partner_channel_for_chat_tracking
+        if not is_partner_channel_for_chat_tracking(login):
+            return
+
         if PROMO_IGNORE_COMMANDS:
             content = message.content or ""
             if content.strip().startswith(self.prefix or "!"):

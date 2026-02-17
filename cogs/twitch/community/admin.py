@@ -205,7 +205,7 @@ class TwitchAdminMixin:
                 c.execute(
                     "UPDATE twitch_streamers "
                     "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL, "
-                    "    twitch_user_id=? "
+                    "    twitch_user_id=?, is_monitored_only=0 "
                     "WHERE twitch_login=?",
                     (user["id"], normalized),
                 )

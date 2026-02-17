@@ -318,7 +318,11 @@ class ModerationMixin:
         return False
 
     async def _maybe_send_deadlock_access_hint(self, message) -> bool:
-        """Antwortet auf Deadlock-Zugangsfragen mit einem Discord-Invite (mit Cooldown)."""
+        """
+        Antwortet auf Deadlock-Zugangsfragen mit einem Discord-Invite (mit Cooldown).
+
+        WICHTIG: Nur für PARTNER (nicht Monitored-Only)!
+        """
         content = message.content or ""
         if not self._looks_like_deadlock_access_question(content):
             return False
@@ -333,6 +337,11 @@ class ModerationMixin:
         )
         login = channel_name.lstrip("#").lower()
         if not login:
+            return False
+
+        # WICHTIG: Discord-Invite nur für PARTNER senden!
+        from ..partner_utils import is_partner_channel_for_chat_tracking
+        if not is_partner_channel_for_chat_tracking(login):
             return False
 
         now = time.monotonic()

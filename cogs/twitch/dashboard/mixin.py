@@ -63,6 +63,7 @@ class TwitchDashboardMixin:
                         UPDATE twitch_streamers
                            SET is_on_discord=1
                          WHERE is_on_discord=0
+                           AND COALESCE(is_monitored_only, 0) = 0
                            AND (
                                 manual_verified_permanent=1
                              OR manual_verified_until IS NOT NULL
@@ -107,6 +108,7 @@ class TwitchDashboardMixin:
                                 GROUP BY LOWER(streamer_login)
                           ) AS sess
                             ON sess.streamer_login = LOWER(s.twitch_login)
+                         WHERE COALESCE(s.is_monitored_only, 0) = 0
                          ORDER BY s.twitch_login
                         """,
                         (target_game,),
@@ -1252,7 +1254,7 @@ class TwitchDashboardMixin:
                     c.execute(
                         "UPDATE twitch_streamers "
                         "SET manual_verified_permanent=1, manual_verified_until=NULL, manual_verified_at=datetime('now'), "
-                        "    manual_partner_opt_out=0, "
+                        "    manual_partner_opt_out=0, is_monitored_only=0, "
                         "    is_on_discord=1 "
                         "WHERE twitch_login=?",
                         (login,),
@@ -1262,7 +1264,7 @@ class TwitchDashboardMixin:
                     c.execute(
                         "UPDATE twitch_streamers "
                         "SET manual_verified_permanent=0, manual_verified_until=datetime('now','+30 days'), "
-                        "    manual_verified_at=datetime('now'), manual_partner_opt_out=0, is_on_discord=1 "
+                        "    manual_verified_at=datetime('now'), manual_partner_opt_out=0, is_monitored_only=0, is_on_discord=1 "
                         "WHERE twitch_login=?",
                         (login,),
                     )
@@ -1284,7 +1286,7 @@ class TwitchDashboardMixin:
                 c.execute(
                     "UPDATE twitch_streamers "
                     "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL, "
-                    "    manual_partner_opt_out=1 "
+                    "    manual_partner_opt_out=1, is_monitored_only=0 "
                     "WHERE twitch_login=?",
                     (login,),
                 )
@@ -1306,7 +1308,7 @@ class TwitchDashboardMixin:
                     c.execute(
                         "UPDATE twitch_streamers "
                         "SET manual_verified_permanent=0, manual_verified_until=NULL, manual_verified_at=NULL, "
-                        "    manual_partner_opt_out=0 "
+                        "    manual_partner_opt_out=0, is_monitored_only=0 "
                         "WHERE twitch_login=?",
                         (login,),
                     )

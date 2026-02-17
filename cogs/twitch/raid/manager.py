@@ -508,6 +508,7 @@ class RaidAuthManager:
                        manual_verified_until = NULL,
                        manual_verified_at = COALESCE(manual_verified_at, CURRENT_TIMESTAMP),
                        manual_partner_opt_out = 0,
+                       is_monitored_only = 0,
                        is_on_discord = CASE
                            WHEN COALESCE(discord_user_id, '') <> '' THEN 1
                            ELSE is_on_discord
@@ -1359,6 +1360,7 @@ class RaidBot:
                        manual_verified_until = NULL,
                        manual_verified_at = COALESCE(manual_verified_at, CURRENT_TIMESTAMP),
                        manual_partner_opt_out = 0,
+                       is_monitored_only = 0,
                        raid_bot_enabled = 1
                  WHERE twitch_user_id = ?
                     OR lower(twitch_login) = lower(?)

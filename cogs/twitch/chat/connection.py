@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from ..storage import get_conn
+from ..partner_utils import is_partner_channel_for_chat_tracking
 from .constants import eventsub
 
 log = logging.getLogger("TwitchStreams.ChatBot")
@@ -23,6 +24,11 @@ class ConnectionMixin:
             return True
         return False
 
+    @staticmethod
+    def _is_partner_channel_for_chat_tracking(login: str) -> bool:
+        """Check if channel is a partner (wrapper for partner_utils)."""
+        return is_partner_channel_for_chat_tracking(login)
+
     def _blacklist_streamer_for_bot_ban(
         self,
         broadcaster_id: Optional[str],
@@ -34,8 +40,7 @@ class ConnectionMixin:
         if not login:
             return
         try:
-            checker = getattr(self, "_is_partner_channel_for_chat_tracking", None)
-            if callable(checker) and checker(login):
+            if self._is_partner_channel_for_chat_tracking(login):
                 log.info(
                     "Blacklist übersprungen für Partner-Channel %s (_ensure_bot_is_mod)",
                     login,
@@ -378,20 +383,29 @@ class ConnectionMixin:
         return False
 
     async def join_partner_channels(self):
-        """Joint alle Kanäle, die live sind und den Bot autorisiert haben (Partner via /traid oder !raid_enable)."""
+        """
+        Joint ALLE live Channels (Partner + Monitored + Category).
+
+        Datensammlung: ALLE
+        Bot-Funktionen: Nur Partner (wird in event_message geprüft)
+        """
         with get_conn() as conn:
-            # Wir holen alle Partner ODER jeden, der raid_enabled = 1 in twitch_raid_auth hat
+            # Hole ALLE Streamer mit OAuth (Partner + wer OAuth hat)
+            # Datensammlung läuft für alle, Bot-Funktionen nur für Partner
             partners = conn.execute(
                 """
                 SELECT DISTINCT s.twitch_login, s.twitch_user_id, a.scopes, l.is_live
                 FROM twitch_streamers s
                 JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
                 LEFT JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
-                WHERE (
-                    (s.manual_verified_permanent = 1 OR s.manual_verified_until IS NOT NULL OR s.manual_verified_at IS NOT NULL)
-                    OR a.raid_enabled = 1
-                )
-                AND s.manual_partner_opt_out = 0
+                WHERE a.raid_enabled = 1
+                   OR (
+                       (s.manual_verified_permanent = 1
+                        OR s.manual_verified_until IS NOT NULL
+                        OR s.manual_verified_at IS NOT NULL)
+                       AND COALESCE(s.manual_partner_opt_out, 0) = 0
+                       AND s.archived_at IS NULL
+                   )
                 """
             ).fetchall()
 

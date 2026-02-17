@@ -673,21 +673,29 @@ if TWITCHIO_AVAILABLE:
                 return
 
             channel_login = self._normalize_channel_login_safe(getattr(message, "channel", None))
-            
-            # --- SKIP LOGIC FOR MONITORED ONLY CHANNELS ---
-            if channel_login and self._is_monitored_only(channel_login):
-                # Nur tracken, keine Commands, keine Promos, kein Ban
+
+            # --- DATENSAMMLUNG FÜR ALLE, BOT-FUNKTIONEN NUR FÜR PARTNER ---
+            is_partner = channel_login and self._is_partner_channel_for_chat_tracking(channel_login)
+
+            if not is_partner:
+                # NON-PARTNER: Nur passive Datensammlung, KEINE Bot-Funktionen!
+                # - Chat-Messages werden geloggt (für Analyse)
+                # - KEINE Auto-Moderation
+                # - KEINE Commands
+                # - KEINE Promo-Messages
+                # - KEINE Discord-Invites
                 try:
                     await self._track_chat_health(message)
                 except Exception:
                     log.debug(
-                        "Konnte Chat-Health im monitored-only Kanal nicht loggen",
+                        "Konnte Chat-Health für Non-Partner nicht loggen",
                         exc_info=True,
                     )
                 return
-            # -----------------------------------------------
+            # ---------------------------------------------------------------
 
-            if channel_login and self._is_partner_channel_for_chat_tracking(channel_login):
+            # AB HIER: Nur noch Partner! (Volle Bot-Funktionen)
+            if is_partner:
                 try:
                     spam_score, spam_reasons = self._calculate_spam_score(message.content or "")
                     has_phrase_or_fragment_signal = any(
@@ -787,7 +795,12 @@ if TWITCHIO_AVAILABLE:
             await self.process_commands(message)
 
         def _get_streamer_by_channel(self, channel_name: str) -> Optional[tuple]:
-            """Findet Streamer-Daten anhand des Channel-Namens."""
+            """
+            Findet Streamer-Daten anhand des Channel-Namens.
+
+            WICHTIG: Gibt nur PARTNER zurück (nicht Monitored-Only)!
+            Bot-Funktionen (Commands, Raids, etc.) nur für Partner.
+            """
             normalized = self._normalize_channel_login(channel_name)
             with get_conn() as conn:
                 row = conn.execute(
@@ -795,6 +808,12 @@ if TWITCHIO_AVAILABLE:
                     SELECT twitch_login, twitch_user_id, raid_bot_enabled
                     FROM twitch_streamers
                     WHERE LOWER(twitch_login) = ?
+                      AND (manual_verified_permanent = 1
+                           OR manual_verified_until IS NOT NULL
+                           OR manual_verified_at IS NOT NULL)
+                      AND COALESCE(manual_partner_opt_out, 0) = 0
+                      AND COALESCE(is_monitored_only, 0) = 0
+                      AND archived_at IS NULL
                     """,
                     (normalized,),
                 ).fetchone()
