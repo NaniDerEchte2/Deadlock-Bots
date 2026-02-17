@@ -7,6 +7,7 @@ import inspect
 import os
 import re
 import socket
+from datetime import datetime, timezone
 from typing import Any, Coroutine, Dict, List, Optional, Set
 
 from urllib.parse import urlparse
@@ -258,6 +259,188 @@ class TwitchBaseCog(commands.Cog):
         # Beim Start fehlende user_ids in twitch_streamers nachfüllen
         if self.api:
             self._spawn_bg_task(self._sync_missing_user_ids(), "twitch.sync_user_ids")
+            self._spawn_bg_task(self._scout_deadlock_channels(), "twitch.scout_deadlock")
+
+    async def _scout_deadlock_channels(self):
+        """Periodically scout for live German Deadlock streams and join them.
+        Also cleans up monitored channels that are no longer playing Deadlock.
+        """
+        await self.bot.wait_until_ready()
+        
+        # Initial delay to let other things startup
+        await asyncio.sleep(60)
+        
+        while True:
+            try:
+                if not self.api:
+                    log.warning("Scout: Twitch API not available, skipping.")
+                    await asyncio.sleep(300)
+                    continue
+
+                # Ensure we have the Game ID
+                if not self._category_id:
+                    self._category_id = await self._ensure_category_id()
+                
+                if not self._category_id:
+                    log.warning("Scout: Could not resolve Game ID for Deadlock, skipping.")
+                    await asyncio.sleep(300)
+                    continue
+
+                # --- 1. Find NEW targets ---
+                # Fetch live streams (language='de', game_id=Deadlock)
+                streams = await self.api.get_streams_for_game(
+                    game_id=self._category_id,
+                    game_name=self._target_game_name,
+                    language="de",
+                    limit=100
+                )
+                
+                current_deadlock_logins = {s.get("user_login", "").lower() for s in streams if s.get("user_login")}
+                new_logins = []
+                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+                with storage.get_conn() as conn:
+                    # Get currently monitored
+                    existing_monitored = {
+                        row[0].lower() for row in conn.execute(
+                            "SELECT twitch_login FROM twitch_streamers WHERE is_monitored_only = 1"
+                        ).fetchall()
+                    }
+
+                    for s in streams:
+                        login = s.get("user_login", "").lower()
+                        if not login:
+                            continue
+                        
+                        # Only add if not already tracked (as partner or monitor)
+                        exists = conn.execute(
+                            "SELECT 1 FROM twitch_streamers WHERE twitch_login = ?",
+                            (login,)
+                        ).fetchone()
+                        
+                        if not exists:
+                            conn.execute(
+                                """
+                                INSERT INTO twitch_streamers (twitch_login, twitch_user_id, is_monitored_only, created_at)
+                                VALUES (?, ?, 1, ?)
+                                """,
+                                (login, s.get("user_id"), now)
+                            )
+                            new_logins.append(login)
+                        
+                        # Check/Create Session
+                        session = conn.execute(
+                            "SELECT id FROM twitch_stream_sessions WHERE streamer_login = ? AND ended_at IS NULL",
+                            (login,)
+                        ).fetchone()
+                        
+                        if not session:
+                            conn.execute(
+                                """
+                                INSERT INTO twitch_stream_sessions (
+                                    streamer_login, stream_id, started_at, stream_title, 
+                                    avg_viewers, peak_viewers, language, game_name
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    login,
+                                    s.get("id"),
+                                    s.get("started_at", now), # Use stream start time if available
+                                    s.get("title", ""),
+                                    s.get("viewer_count", 0),
+                                    s.get("viewer_count", 0),
+                                    s.get("language", "de"),
+                                    s.get("game_name", self._target_game_name)
+                                )
+                            )
+
+                    if new_logins:
+                        conn.commit()
+                    else:
+                        # Commit session creations even if no new streamers
+                        conn.commit()
+
+                # --- 2. Cleanup OLD targets ---
+                # Remove monitored channels that are NO LONGER in the live Deadlock list.
+                # This covers: Offline, Switched Game, Removed 'de' tag.
+                to_remove = []
+                for login in existing_monitored:
+                    if login not in current_deadlock_logins:
+                        to_remove.append(login)
+
+                if to_remove:
+                    with storage.get_conn() as conn:
+                        # Batch delete
+                        placeholders = ",".join("?" for _ in to_remove)
+                        conn.execute(
+                            f"DELETE FROM twitch_streamers WHERE is_monitored_only = 1 AND twitch_login IN ({placeholders})",
+                            to_remove
+                        )
+                        conn.commit()
+                    log.info("Scout: Removing %d monitored channels (no longer Deadlock/DE/Live): %s", len(to_remove), ", ".join(to_remove[:10]))
+
+                # --- 3. Sync Chat Bot ---
+                chat_bot = getattr(self, "_twitch_chat_bot", None)
+                if chat_bot:
+                    # Join new
+                    if new_logins:
+                        log.info("Scout: Joining %d new channels", len(new_logins))
+                        set_monitored_channels = getattr(chat_bot, "set_monitored_channels", None)
+                        if callable(set_monitored_channels):
+                            try:
+                                set_monitored_channels(new_logins)
+                            except Exception:
+                                log.debug("Scout: set_monitored_channels failed", exc_info=True)
+
+                        join_channels = getattr(chat_bot, "join_channels", None)
+                        if callable(join_channels):
+                            await join_channels(new_logins)
+                        else:
+                            join_single = getattr(chat_bot, "join", None)
+                            if callable(join_single):
+                                joined = 0
+                                for login in new_logins:
+                                    try:
+                                        if await join_single(login):
+                                            joined += 1
+                                    except Exception:
+                                        log.debug("Scout: fallback join failed for %s", login, exc_info=True)
+                                log.warning(
+                                    "Scout: chat bot has no join_channels; fallback join used (%d/%d).",
+                                    joined,
+                                    len(new_logins),
+                                )
+                            else:
+                                log.warning(
+                                    "Scout: chat bot has neither join_channels nor join; cannot join %d channels.",
+                                    len(new_logins),
+                                )
+                    
+                    # Leave old
+                    if to_remove:
+                        part_channels = getattr(chat_bot, "part_channels", None)
+                        if callable(part_channels):
+                            log.info("Scout: Leaving %d channels", len(to_remove))
+                            await part_channels(to_remove)
+                        else:
+                            monitored = getattr(chat_bot, "_monitored_streamers", None)
+                            if isinstance(monitored, set):
+                                for login in to_remove:
+                                    monitored.discard(str(login).strip().lower())
+                            channel_ids = getattr(chat_bot, "_channel_ids", None)
+                            if isinstance(channel_ids, dict):
+                                for login in to_remove:
+                                    channel_ids.pop(str(login).strip().lower(), None)
+                            log.info(
+                                "Scout: part_channels not available; removed %d channels from local monitor cache.",
+                                len(to_remove),
+                            )
+
+            except Exception:
+                log.exception("Scout: Error during Deadlock channel scouting")
+            
+            # Run every 5 minutes
+            await asyncio.sleep(300)
 
     def _register_persistent_raid_auth_views(self) -> None:
         """Registriert persistente RaidAuthGenerateViews für alle Streamer in der DB.

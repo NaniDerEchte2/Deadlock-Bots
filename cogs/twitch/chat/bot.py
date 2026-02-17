@@ -166,8 +166,26 @@ if TWITCHIO_AVAILABLE:
             self._discord_bot: Optional[discord.Client] = None
             self._discord_invite_channel_id: Optional[int] = None
             self._promo_invite_cache: Dict[str, str] = {}
+            self._monitored_only_channels: Set[str] = set()
             self._register_inline_commands()
             log.info("Twitch Chat Bot initialized with %d initial channels", len(self._initial_channels))
+
+        def set_monitored_channels(self, channels: list[str]) -> None:
+            """Set the list of read-only monitored channels."""
+            for ch in channels:
+                self._monitored_only_channels.add(ch.lower())
+
+        def _is_monitored_only(self, channel_name: str) -> bool:
+            return channel_name.lower() in self._monitored_only_channels
+
+        def _is_partner_channel_for_chat_tracking(self, login: str) -> bool:
+            """
+            Überschreibt die Standard-Logik:
+            Erlaubt Chat-Tracking sowohl für verifizierte Partner ALS AUCH für Monitored-Only Channels.
+            """
+            if self._is_monitored_only(login):
+                return True
+            return super()._is_partner_channel_for_chat_tracking(login)
 
         def _register_inline_commands(self) -> None:
             """Register @command methods on the Bot class (TwitchIO 3.x does not auto-register)."""
@@ -655,6 +673,17 @@ if TWITCHIO_AVAILABLE:
                 return
 
             channel_login = self._normalize_channel_login_safe(getattr(message, "channel", None))
+            
+            # --- SKIP LOGIC FOR MONITORED ONLY CHANNELS ---
+            if channel_login and self._is_monitored_only(channel_login):
+                # Nur tracken, keine Commands, keine Promos, kein Ban
+                try:
+                    await self._track_chat_health(message)
+                except Exception:
+                    pass
+                return
+            # -----------------------------------------------
+
             if channel_login and self._is_partner_channel_for_chat_tracking(channel_login):
                 try:
                     spam_score, spam_reasons = self._calculate_spam_score(message.content or "")
@@ -887,7 +916,19 @@ async def create_twitch_chat_bot(
             """
         ).fetchall()
 
+        # Monitored-Only Channels abrufen (kein Auth nötig)
+        monitored_rows = conn.execute(
+            """
+            SELECT twitch_login 
+            FROM twitch_streamers 
+            WHERE is_monitored_only = 1
+            """
+        ).fetchall()
+
     initial_channels = []
+    monitored_channels = []
+
+    # 1. Partner adden
     for login, user_id, scopes_raw, is_live in partners:
         login_norm = (login or "").strip()
         if not login_norm:
@@ -903,7 +944,14 @@ async def create_twitch_chat_bot(
             continue
         initial_channels.append(login_norm)
 
-    log.info("Creating Twitch Chat Bot for %d partner channels (live + chat scope)", len(initial_channels))
+    # 2. Monitored-Only adden (immer joinen, unabhängig von Live-Status, da wir keinen Webhook haben)
+    for row in monitored_rows:
+        login = str(row[0]).strip().lower()
+        if login and login not in initial_channels:
+            initial_channels.append(login)
+            monitored_channels.append(login)
+
+    log.info("Creating Twitch Chat Bot for %d channels (%d monitored only)", len(initial_channels), len(monitored_channels))
 
     # Bot-ID via API abrufen (TwitchIO braucht diese zwingend bei user:bot Scope)
     if bot_id is None:
@@ -1004,5 +1052,6 @@ async def create_twitch_chat_bot(
         token_manager=token_mgr,
     )
     bot.set_raid_bot(raid_bot)
+    bot.set_monitored_channels(monitored_channels)
 
     return bot

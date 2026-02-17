@@ -20,9 +20,20 @@ class SteamVerifiedRole(commands.Cog):
         self.dry_run = os.getenv("DRY_RUN", "0") == "1"
         interval_min = int(os.getenv("POLL_INTERVAL_MINUTES", "15"))
         self._interval_seconds = max(60, interval_min * 60)
+        self._member_fetch_min_interval = max(0.0, float(os.getenv("VERIFIED_MEMBER_FETCH_DELAY_SECONDS", "1.0")))
+        self._member_fetch_lock = asyncio.Lock()
+        self._last_member_fetch_started_at = 0.0
         self._task = None
-        log.info("SteamVerifiedRole init: guild=%s role=%s db=%s every=%ss dry_run=%s log_ch=%s",
-                 self.guild_id, self.verified_role_id, self.db_path, self._interval_seconds, self.dry_run, self.log_channel_id)
+        log.info(
+            "SteamVerifiedRole init: guild=%s role=%s db=%s every=%ss dry_run=%s log_ch=%s fetch_delay=%ss",
+            self.guild_id,
+            self.verified_role_id,
+            self.db_path,
+            self._interval_seconds,
+            self.dry_run,
+            self.log_channel_id,
+            self._member_fetch_min_interval,
+        )
 
     # ---------- DB ----------
     def _fetch_verified_discord_ids(self) -> Set[int]:
@@ -59,6 +70,17 @@ class SteamVerifiedRole(commands.Cog):
             return False
         text = str(exc)
         return "Session is closed" in text or "ClientSession is closed" in text
+
+    async def _fetch_member_rate_limited(self, guild: discord.Guild, user_id: int) -> discord.Member:
+        async with self._member_fetch_lock:
+            if self._member_fetch_min_interval > 0:
+                loop = asyncio.get_running_loop()
+                now = loop.time()
+                remaining = self._member_fetch_min_interval - (now - self._last_member_fetch_started_at)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                self._last_member_fetch_started_at = loop.time()
+            return await guild.fetch_member(user_id)
 
     async def _resolve_guild_and_role(self) -> Tuple[discord.Guild, discord.Role]:
         if not self.guild_id:
@@ -118,7 +140,7 @@ class SteamVerifiedRole(commands.Cog):
         member = guild.get_member(user_id)
         if member is None:
             try:
-                member = await guild.fetch_member(user_id)
+                member = await self._fetch_member_rate_limited(guild, user_id)
             except discord.NotFound:
                 return False
             except Exception:
@@ -148,7 +170,7 @@ class SteamVerifiedRole(commands.Cog):
         me = guild.me
         if not me:
             try:
-                me = await guild.fetch_member(self.bot.user.id)
+                me = await self._fetch_member_rate_limited(guild, self.bot.user.id)
             except RuntimeError as exc:
                 if self._is_session_closed_error(exc):
                     log.info("HTTP-Session geschlossen beim Bot-Member-Lookup.")
@@ -181,7 +203,8 @@ class SteamVerifiedRole(commands.Cog):
                 break
             member = guild.get_member(uid)
             if member is None:
-                try: member = await guild.fetch_member(uid)
+                try:
+                    member = await self._fetch_member_rate_limited(guild, uid)
                 except discord.NotFound:
                     not_found += 1
                     continue

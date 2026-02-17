@@ -220,30 +220,32 @@ class TwitchAnalyticsMixin:
     # ------------------------------------------------------------------
 
     async def _poll_chatters_single(
-        self, user_id: str, login: str, session_id: int, now_iso: str
+        self, user_id: str, login: str, session_id: int, now_iso: str, token: Optional[str] = None
     ) -> "tuple[int, str, list[dict]] | None":
-        """Pollt Chatters für einen Streamer – gibt rohe Daten zurück, schreibt NICHT in die DB."""
-        if not getattr(self, "_raid_bot", None):
-            return None
+        """Pollt Chatters für einen Streamer – nutzt Token wenn vorhanden, sonst Public API."""
+        chatters = []
+        
+        # 1. Versuch: Offizielle API mit Token (wenn vorhanden)
+        if token:
+            scopes = {s.lower() for s in self._raid_bot.auth_manager.get_scopes(user_id)} if getattr(self, "_raid_bot", None) else set()
+            if "moderator:read:chatters" in scopes:
+                try:
+                    chatters = await self.api.get_chatters(
+                        broadcaster_id=user_id,
+                        moderator_id=user_id,
+                        user_token=token,
+                    )
+                except Exception:
+                    log.debug("Chatters-Poller: API-Fehler für %s (Token-Methode)", login)
 
-        http_session = self.api.get_http_session()
-        token = await self._raid_bot.auth_manager.get_valid_token(user_id, http_session)
-        if not token:
-            return None
-
-        scopes = {s.lower() for s in self._raid_bot.auth_manager.get_scopes(user_id)}
-        if "moderator:read:chatters" not in scopes:
-            return None
-
-        try:
-            chatters = await self.api.get_chatters(
-                broadcaster_id=user_id,
-                moderator_id=user_id,
-                user_token=token,
-            )
-        except Exception:
-            log.exception("Chatters-Poller: API-Fehler für %s", login)
-            return None
+        # 2. Versuch: Public TMI API (Fallback für Monitored Only oder Fehler)
+        if not chatters:
+            try:
+                public_chatters = await self.api.get_chatters_public(login)
+                # Format an Helix-Response anpassen: [{'user_login': 'name', 'user_id': ''}, ...]
+                chatters = [{"user_login": c, "user_id": ""} for c in public_chatters]
+            except Exception:
+                log.debug("Chatters-Poller: TMI-Fehler für %s", login)
 
         if not chatters:
             return None
@@ -253,20 +255,20 @@ class TwitchAnalyticsMixin:
 
     @tasks.loop(seconds=30)
     async def collect_chatters_data(self):
-        """Pollt Chatters-Liste für alle live Streamer parallel, dann ein einziger Batch-Write."""
+        """Pollt Chatters-Liste für alle live Streamer (Partner + Monitored) parallel."""
         if not self.api:
             return
 
         try:
             with storage.get_conn() as conn:
+                # Hole ALLE aktiven Deadlock-Streams (Partner + Monitored)
                 rows = conn.execute(
                     """
-                    SELECT ls.twitch_user_id, ls.streamer_login, ls.active_session_id
+                    SELECT ls.twitch_user_id, ls.streamer_login, ls.active_session_id, ra.twitch_user_id as has_auth
                     FROM twitch_live_state ls
-                    JOIN twitch_raid_auth ra ON ra.twitch_user_id = ls.twitch_user_id
+                    LEFT JOIN twitch_raid_auth ra ON ra.twitch_user_id = ls.twitch_user_id AND ra.raid_enabled = 1
                     WHERE ls.is_live = 1
                       AND ls.active_session_id IS NOT NULL
-                      AND ra.raid_enabled = 1
                     """
                 ).fetchall()
         except Exception:
@@ -277,22 +279,30 @@ class TwitchAnalyticsMixin:
             return
 
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        tasks_list = []
 
-        # Alle API-Calls parallel feuern – kein DB-Zugriff in dieser Phase
-        results = await asyncio.gather(
-            *(
-                self._poll_chatters_single(
-                    user_id=row[0] if not hasattr(row, "keys") else row["twitch_user_id"],
-                    login=row[1] if not hasattr(row, "keys") else row["streamer_login"],
-                    session_id=row[2] if not hasattr(row, "keys") else row["active_session_id"],
-                    now_iso=now_iso,
-                )
-                for row in rows
-            ),
-            return_exceptions=True,
-        )
+        # Token-Resolution vorbereiten (nur für Partner)
+        session = self.api.get_http_session()
+        auth_mgr = getattr(self, "_raid_bot", None) and getattr(self._raid_bot, "auth_manager", None)
 
-        # Einen einzigen DB-Lock für alle Streamer zusammen
+        for row in rows:
+            user_id = row[0] if not hasattr(row, "keys") else row["twitch_user_id"]
+            login = row[1] if not hasattr(row, "keys") else row["streamer_login"]
+            sess_id = row[2] if not hasattr(row, "keys") else row["active_session_id"]
+            has_auth = row[3] if not hasattr(row, "keys") else row["has_auth"]
+
+            async def _wrap_poll(u_id, lgn, s_id):
+                tok = None
+                if has_auth and auth_mgr:
+                    tok = await auth_mgr.get_valid_token(u_id, session)
+                return await self._poll_chatters_single(u_id, lgn, s_id, now_iso, tok)
+
+            tasks_list.append(_wrap_poll(user_id, login, sess_id))
+
+        # Alle API-Calls parallel feuern
+        results = await asyncio.gather(*tasks_list, return_exceptions=True)
+
+        # Batch-Write
         payloads = [r for r in results if isinstance(r, tuple)]
         if not payloads:
             return
@@ -308,34 +318,47 @@ class TwitchAnalyticsMixin:
                         ).fetchall()
                     }
                     new_lurkers = 0
+                    updates = 0
+                    
+                    # Batch Insert/Update vorbereiten
+                    to_insert = []
+                    to_update = []
+                    
                     for chatter in chatters:
                         c_login = (chatter.get("user_login") or "").lower().strip()
                         c_id = str(chatter.get("user_id") or "").strip()
                         if not c_login:
                             continue
+                            
                         if c_login in existing:
-                            conn.execute(
-                                "UPDATE twitch_session_chatters SET last_seen_at = ? WHERE session_id = ? AND chatter_login = ?",
-                                (now_iso, session_id, c_login),
-                            )
+                            to_update.append((now_iso, session_id, c_login))
+                            updates += 1
                         else:
-                            conn.execute(
-                                """
-                                INSERT OR IGNORE INTO twitch_session_chatters
-                                    (session_id, streamer_login, chatter_login, chatter_id,
-                                     first_message_at, messages, is_first_time_global,
-                                     seen_via_chatters_api, last_seen_at)
-                                VALUES (?, ?, ?, ?, ?, 0, 0, 1, ?)
-                                """,
-                                (session_id, login, c_login, c_id or None, now_iso, now_iso),
-                            )
+                            to_insert.append((session_id, login, c_login, c_id or None, now_iso, now_iso))
                             existing.add(c_login)
                             new_lurkers += 1
+                    
+                    if to_update:
+                        conn.executemany(
+                            "UPDATE twitch_session_chatters SET last_seen_at = ? WHERE session_id = ? AND chatter_login = ?",
+                            to_update
+                        )
+                    if to_insert:
+                        conn.executemany(
+                            """
+                            INSERT OR IGNORE INTO twitch_session_chatters
+                                (session_id, streamer_login, chatter_login, chatter_id,
+                                 first_message_at, messages, is_first_time_global,
+                                 seen_via_chatters_api, last_seen_at)
+                            VALUES (?, ?, ?, ?, ?, 0, 0, 1, ?)
+                            """,
+                            to_insert
+                        )
 
                     if new_lurkers:
-                        log.info(
-                            "Chatters-Poller: %d neue Lurker für %s eingetragen (session %s)",
-                            new_lurkers, login, session_id,
+                        log.debug(
+                            "Chatters-Poller: %d neue Lurker, %d Updates für %s (session %s)",
+                            new_lurkers, updates, login, session_id,
                         )
         except Exception:
             log.exception("Chatters-Poller: Batch-DB-Fehler")

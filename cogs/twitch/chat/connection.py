@@ -276,6 +276,36 @@ class ConnectionMixin:
                 log.error("Failed to join channel %s: %s", channel_login, e)
             return False
 
+    async def join_channels(self, channels: list[str], rate_limit_delay: float = 0.2) -> int:
+        """Kompatibilitäts-Helper für Bulk-Joins (z.B. Scout-Task)."""
+        if not channels:
+            return 0
+
+        normalized = [str(ch or "").strip().lower().lstrip("#") for ch in channels]
+        normalized = [ch for ch in normalized if ch]
+        if not normalized:
+            return 0
+
+        try:
+            set_monitored = getattr(self, "set_monitored_channels", None)
+            if callable(set_monitored):
+                set_monitored(normalized)
+        except Exception:
+            log.debug("join_channels: konnte monitored-only Liste nicht aktualisieren", exc_info=True)
+
+        joined = 0
+        for login in normalized:
+            try:
+                success = await self.join(login)
+                if success:
+                    joined += 1
+                    if rate_limit_delay > 0:
+                        await asyncio.sleep(rate_limit_delay)
+            except Exception:
+                log.exception("join_channels: unerwarteter Fehler bei %s", login)
+
+        return joined
+
     async def follow_channel(self, broadcaster_id: str) -> bool:
         """
         Prüft, ob der Bot dem Channel bereits folgt.

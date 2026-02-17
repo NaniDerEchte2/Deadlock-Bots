@@ -613,6 +613,41 @@ class TwitchAPI:
             self._log.debug("get_chatters failed for broadcaster %s", broadcaster_id, exc_info=True)
         return all_chatters
 
+    async def get_chatters_public(self, channel_login: str) -> List[str]:
+        """
+        Ruft die Chatter-Liste (Viewers) über den öffentlichen TMI-Endpoint ab.
+        Dies erfordert keine Authentifizierung und funktioniert auch ohne Mod-Rechte.
+        Gibt eine Liste von Logins zurück.
+        """
+        if not channel_login:
+            return []
+        
+        url = f"https://tmi.twitch.tv/group/user/{channel_login.lower()}/chatters"
+        try:
+            self._ensure_session()
+            assert self._session is not None
+            
+            # TMI endpoint doesn't need auth headers, but we keep a generic user-agent just in case
+            async with self._session.get(url) as r:
+                if r.status != 200:
+                    self._log.debug("get_chatters_public failed for %s: HTTP %s", channel_login, r.status)
+                    return []
+                js = await r.json()
+                
+            chatters_data = js.get("chatters", {})
+            all_chatters = []
+            
+            # TMI returns categories: broadcasters, vips, moderators, staff, admins, global_mods, viewers
+            for category_list in chatters_data.values():
+                if isinstance(category_list, list):
+                    all_chatters.extend(category_list)
+            
+            return all_chatters
+            
+        except Exception:
+            self._log.debug("get_chatters_public exception for %s", channel_login, exc_info=True)
+            return []
+
     async def subscribe_eventsub_websocket(
         self,
         *,

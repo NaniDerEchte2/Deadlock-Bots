@@ -1158,13 +1158,16 @@ class BetaInviteFlow(commands.Cog):
         ephemeral: bool = False,
         view: Optional[Any] = None,
     ) -> Any:
+        send_kwargs: dict[str, Any] = {"ephemeral": ephemeral}
+        if view is not None:
+            send_kwargs["view"] = view
         return await self._run_ui_delivery(
             interaction=interaction,
             call="interaction.response.send_message",
             content=content,
             ephemeral=ephemeral,
             view=view,
-            op=lambda: interaction.response.send_message(content, ephemeral=ephemeral, view=view),
+            op=lambda: interaction.response.send_message(content, **send_kwargs),
         )
 
     async def _followup_send(
@@ -1175,13 +1178,16 @@ class BetaInviteFlow(commands.Cog):
         ephemeral: bool = False,
         view: Optional[Any] = None,
     ) -> Any:
+        send_kwargs: dict[str, Any] = {"ephemeral": ephemeral}
+        if view is not None:
+            send_kwargs["view"] = view
         return await self._run_ui_delivery(
             interaction=interaction,
             call="interaction.followup.send",
             content=content,
             ephemeral=ephemeral,
             view=view,
-            op=lambda: interaction.followup.send(content, ephemeral=ephemeral, view=view),
+            op=lambda: interaction.followup.send(content, **send_kwargs),
         )
 
     async def _response_edit_message(
