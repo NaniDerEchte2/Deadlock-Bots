@@ -45,13 +45,13 @@ jobs:
           if-no-files-found: error
 
       - name: Attest Build Provenance
-        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: dist/source-${{ github.sha }}.tar.gz
         continue-on-error: true
 
       - name: Attest SBOM
-        uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3.0.0
         with:
           subject-path: dist/source-${{ github.sha }}.tar.gz
           sbom-path: dist/sbom.spdx.json
