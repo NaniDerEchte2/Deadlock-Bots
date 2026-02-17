@@ -45,7 +45,7 @@ jobs:
           mkdir -p .github/tmp .dast
           cat > .github/tmp/run_dashboard_dast_server.py <<'PY'
           from aiohttp import web
-          from cogs.twitch.dashboard_v2_server import build_v2_app
+          from cogs.twitch.dashboard.server_v2 import build_v2_app
 
           app = build_v2_app(
               noauth=True,
@@ -55,7 +55,7 @@ jobs:
           web.run_app(app, host="127.0.0.1", port=8787, access_log=None)
           PY
 
-          uv run --with aiohttp==3.13.3 -- python .github/tmp/run_dashboard_dast_server.py > dashboard-dast-server.log 2>&1 &
+          uv run --with aiohttp==3.13.3 --with discord.py==2.6.4 -- python .github/tmp/run_dashboard_dast_server.py > dashboard-dast-server.log 2>&1 &
           echo $! > dashboard-dast-server.pid
 
       - name: Wait for Dashboard Readiness

@@ -34,7 +34,7 @@ jobs:
           mkdir -p .github/tmp .auth-guard
           cat > .github/tmp/run_dashboard_auth_guard.py <<'PY'
           from aiohttp import web
-          from cogs.twitch.dashboard_v2_server import build_v2_app
+          from cogs.twitch.dashboard.server_v2 import build_v2_app
 
           app = build_v2_app(
               noauth=False,

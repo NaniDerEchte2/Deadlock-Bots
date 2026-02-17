@@ -19,13 +19,3 @@ updates:
       - "security"
     commit-message:
       prefix: "deps"
-
-  - package-ecosystem: "npm"
-    directory: "/cogs/twitch/dashboard_v2"
-    schedule:
-      interval: "daily"
-    labels:
-      - "dependencies"
-      - "security"
-    commit-message:
-      prefix: "deps"
