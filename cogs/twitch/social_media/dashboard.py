@@ -7,15 +7,29 @@ Bietet UI für:
 - Analytics-Dashboard
 """
 import html
-import json
 import logging
 from typing import Optional
+from urllib.parse import urlencode
 
 from aiohttp import web
 
 from .clip_manager import ClipManager
 
 log = logging.getLogger("TwitchStreams.SocialMediaDashboard")
+
+
+def _sanitize_log_value(value: Optional[str]) -> str:
+    """Prevent CRLF log-forging via untrusted values."""
+    if value is None:
+        return "<none>"
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
+
+def _dashboard_url(**params: str) -> str:
+    """Build internal dashboard URL with encoded query values."""
+    if not params:
+        return "/social-media"
+    return f"/social-media?{urlencode(params)}"
 
 
 class SocialMediaDashboard:
@@ -89,9 +103,13 @@ class SocialMediaDashboard:
                 "SELECT DISTINCT twitch_login FROM twitch_streamers WHERE archived_at IS NULL ORDER BY twitch_login"
             ).fetchall()
 
-        streamer_options = "".join([f'<option value="{s[0]}">{s[0]}</option>' for s in streamers])
-
-        streamer = request.query.get("streamer", "")
+        streamer_options = "".join(
+            [
+                f'<option value="{html.escape(s[0], quote=True)}">{html.escape(s[0])}</option>'
+                for s in streamers
+                if s[0]
+            ]
+        )
 
         html_content = f"""
 <!DOCTYPE html>
@@ -549,12 +567,18 @@ class SocialMediaDashboard:
 
     <script>
         // Global State
-        let currentStreamer = '{streamer}' || '';
+        let currentStreamer = new URLSearchParams(window.location.search).get('streamer') || '';
         let currentStatus = '';
         let allClips = [];
 
         // ========== Initialization ==========
         async function init() {{
+            if (currentStreamer) {{
+                const streamerFilter = document.getElementById('streamer-filter');
+                if (streamerFilter) {{
+                    streamerFilter.value = currentStreamer;
+                }}
+            }}
             await loadStats();
             await loadClips();
         }}
@@ -1087,35 +1111,48 @@ class SocialMediaDashboard:
             }}
         }}
 
+        function renderOAuthMessage(message, isError) {{
+            const container = document.getElementById('oauth-messages');
+            if (!container) return;
+
+            container.textContent = '';
+            const box = document.createElement('div');
+            box.style.background = isError ? '#e91e63' : '#00c853';
+            box.style.color = 'white';
+            box.style.padding = '15px';
+            box.style.borderRadius = '4px';
+            box.style.marginBottom = '20px';
+            box.textContent = isError ? `❌ Fehler: ${{message}}` : `✅ ${{message}}`;
+            container.appendChild(box);
+        }}
+
         function showOAuthMessages() {{
             const urlParams = new URLSearchParams(window.location.search);
             const success = urlParams.get('oauth_success');
             const error = urlParams.get('oauth_error');
 
-            const container = document.getElementById('oauth-messages');
-
             if (success) {{
-                container.innerHTML = `
-                    <div style="background: #00c853; color: white; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
-                        ✅ Erfolgreich mit ${{success.toUpperCase()}} verbunden!
-                    </div>
-                `;
+                renderOAuthMessage(`Erfolgreich mit ${{success.toUpperCase()}} verbunden!`, false);
 
                 // Remove URL params after showing message
                 setTimeout(() => {{
                     window.history.replaceState({{}}, document.title, '/social-media');
-                    container.innerHTML = '';
+                    const container = document.getElementById('oauth-messages');
+                    if (container) container.textContent = '';
                 }}, 5000);
             }} else if (error) {{
-                container.innerHTML = `
-                    <div style="background: #e91e63; color: white; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
-                        ❌ Fehler: ${{error}}
-                    </div>
-                `;
+                const errorMap = {{
+                    provider_error: 'OAuth-Anbieter hat den Zugriff abgelehnt.',
+                    invalid_callback: 'OAuth-Antwort ist ungültig oder abgelaufen.',
+                    callback_failed: 'OAuth-Verarbeitung fehlgeschlagen. Bitte erneut versuchen.',
+                    oauth_start_failed: 'OAuth-Start fehlgeschlagen. Bitte erneut versuchen.'
+                }};
+                renderOAuthMessage(errorMap[error] || 'OAuth-Verbindung fehlgeschlagen.', true);
 
                 setTimeout(() => {{
                     window.history.replaceState({{}}, document.title, '/social-media');
-                    container.innerHTML = '';
+                    const container = document.getElementById('oauth-messages');
+                    if (container) container.textContent = '';
                 }}, 8000);
             }}
         }}
@@ -1190,9 +1227,10 @@ class SocialMediaDashboard:
                     priority=data.get("priority", 0),
                 )
                 queued.append({"platform": platform, "queue_id": queue_id})
-            except Exception as e:
-                log.exception("Failed to queue upload for %s", platform)
-                queued.append({"platform": platform, "error": str(e)})
+            except Exception:
+                safe_platform = _sanitize_log_value(platform)
+                log.exception("Failed to queue upload for platform=%s", safe_platform)
+                queued.append({"platform": platform, "error": "queue_failed"})
 
         return web.json_response({"queued": queued})
 
@@ -1261,9 +1299,9 @@ class SocialMediaDashboard:
                 "message": "Template created/updated successfully"
             })
 
-        except Exception as e:
+        except Exception:
             log.exception("Failed to create template")
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": "template_create_failed"}, status=500)
 
     async def api_apply_template(self, request: web.Request) -> web.Response:
         """POST /api/templates/apply - Apply template to clip."""
@@ -1299,9 +1337,9 @@ class SocialMediaDashboard:
                     status=500
                 )
 
-        except Exception as e:
+        except Exception:
             log.exception("Failed to apply template")
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": "template_apply_failed"}, status=500)
 
     # ========== Batch Operations API ==========
 
@@ -1334,9 +1372,9 @@ class SocialMediaDashboard:
                 "message": f"Queued {stats['queued']} clips, {stats['errors']} errors"
             })
 
-        except Exception as e:
+        except Exception:
             log.exception("Failed to batch upload")
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": "batch_upload_failed"}, status=500)
 
     async def api_mark_uploaded(self, request: web.Request) -> web.Response:
         """POST /api/mark-uploaded - Manually mark clip as uploaded."""
@@ -1371,9 +1409,9 @@ class SocialMediaDashboard:
                     status=500
                 )
 
-        except Exception as e:
+        except Exception:
             log.exception("Failed to mark clip as uploaded")
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": "mark_uploaded_failed"}, status=500)
 
     # ========== Clip Fetching API ==========
 
@@ -1406,9 +1444,9 @@ class SocialMediaDashboard:
                 "message": f"Fetched {len(clips)} clips"
             })
 
-        except Exception as e:
+        except Exception:
             log.exception("Failed to fetch clips")
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": "fetch_clips_failed"}, status=500)
 
     async def api_last_hashtags(self, request: web.Request) -> web.Response:
         """GET /api/last-hashtags - Get last used hashtags."""
@@ -1441,10 +1479,10 @@ class SocialMediaDashboard:
             redirect_uri = str(request.url.origin()) + "/social-media/oauth/callback"
             auth_url = oauth_mgr.generate_auth_url(platform, streamer, redirect_uri)
 
-            raise web.HTTPFound(auth_url)
-        except Exception as e:
+            return web.HTTPFound(auth_url)
+        except Exception:
             log.exception("OAuth start failed")
-            return web.Response(text=f"OAuth start failed: {e}", status=500)
+            return web.HTTPFound(_dashboard_url(oauth_error="oauth_start_failed"))
 
     async def oauth_callback(self, request: web.Request) -> web.Response:
         """Handle OAuth callback from platform."""
@@ -1453,8 +1491,9 @@ class SocialMediaDashboard:
         error = request.query.get("error")
 
         if error:
-            log.error("OAuth error: %s", error)
-            return web.HTTPFound(f"/social-media?oauth_error={html.escape(error)}")
+            safe_error = _sanitize_log_value(error)
+            log.error("OAuth provider returned an error: %s", safe_error)
+            return web.HTTPFound(_dashboard_url(oauth_error="provider_error"))
 
         if not code or not state:
             return web.Response(text="Missing code or state", status=400)
@@ -1466,15 +1505,17 @@ class SocialMediaDashboard:
             result = await oauth_mgr.handle_callback(code, state)
 
             # Redirect back to dashboard with success message
-            platform = result["platform"]
-            return web.HTTPFound(f"/social-media?oauth_success={platform}")
+            platform = result.get("platform", "unknown")
+            if platform not in {"tiktok", "youtube", "instagram"}:
+                platform = "unknown"
+            return web.HTTPFound(_dashboard_url(oauth_success=platform))
 
-        except ValueError as e:
-            log.error("OAuth callback validation failed: %s", e)
-            return web.HTTPFound(f"/social-media?oauth_error={html.escape(str(e))}")
-        except Exception as e:
+        except ValueError:
+            log.warning("OAuth callback validation failed")
+            return web.HTTPFound(_dashboard_url(oauth_error="invalid_callback"))
+        except Exception:
             log.exception("OAuth callback failed")
-            return web.HTTPFound(f"/social-media?oauth_error={html.escape(str(e))}")
+            return web.HTTPFound(_dashboard_url(oauth_error="callback_failed"))
 
     async def oauth_disconnect(self, request: web.Request) -> web.Response:
         """Disconnect a platform."""
@@ -1500,12 +1541,14 @@ class SocialMediaDashboard:
                     (platform, streamer, streamer)
                 )
 
-            log.info("Disconnected platform=%s, streamer=%s", platform, streamer)
+            safe_platform = _sanitize_log_value(platform)
+            safe_streamer = _sanitize_log_value(streamer)
+            log.info("Disconnected platform=%s, streamer=%s", safe_platform, safe_streamer)
             return web.json_response({"success": True})
 
-        except Exception as e:
+        except Exception:
             log.exception("Failed to disconnect platform")
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": "disconnect_failed"}, status=500)
 
     async def api_platforms_status(self, request: web.Request) -> web.Response:
         """GET platform connection status."""
@@ -1532,9 +1575,9 @@ class SocialMediaDashboard:
 
             return web.json_response({"platforms": platforms})
 
-        except Exception as e:
+        except Exception:
             log.exception("Failed to get platform status")
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": "platform_status_failed"}, status=500)
 
 
 def create_social_media_app(

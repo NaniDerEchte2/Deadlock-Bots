@@ -23,6 +23,13 @@ from service.field_crypto import get_crypto, DecryptFailed
 log = logging.getLogger("TwitchStreams.CredentialManager")
 
 
+def _sanitize_log_value(value: Optional[str]) -> str:
+    """Prevent CRLF log-forging via untrusted values."""
+    if value is None:
+        return "<none>"
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
+
 class SocialMediaCredentialManager:
     """Manages encrypted social media platform credentials."""
 
@@ -71,9 +78,11 @@ class SocialMediaCredentialManager:
             ).fetchone()
 
             if not row:
+                safe_platform = _sanitize_log_value(platform)
+                safe_streamer = _sanitize_log_value(streamer_login)
                 log.debug(
                     "No credentials found for platform=%s, streamer=%s",
-                    platform, streamer_login
+                    safe_platform, safe_streamer
                 )
                 return None
 
@@ -122,16 +131,20 @@ class SocialMediaCredentialManager:
                     "platform_username": row["platform_username"],
                 }
 
-            except DecryptFailed as e:
+            except DecryptFailed:
+                safe_platform = _sanitize_log_value(platform)
+                safe_streamer = _sanitize_log_value(streamer_login)
                 log.error(
-                    "Failed to decrypt credentials for platform=%s, streamer=%s: %s",
-                    platform, streamer_login, e
+                    "Failed to decrypt credentials for platform=%s, streamer=%s",
+                    safe_platform, safe_streamer
                 )
                 return None
-            except Exception as e:
+            except Exception:
+                safe_platform = _sanitize_log_value(platform)
+                safe_streamer = _sanitize_log_value(streamer_login)
                 log.exception(
                     "Unexpected error loading credentials for platform=%s, streamer=%s",
-                    platform, streamer_login
+                    safe_platform, safe_streamer
                 )
                 return None
 
@@ -155,8 +168,8 @@ class SocialMediaCredentialManager:
             # Consider expired if less than 1 hour remaining
             time_remaining = (expires_at - now).total_seconds()
             return time_remaining < 3600  # 1 hour
-        except Exception as e:
-            log.error("Failed to parse expiry time: %s", e)
+        except Exception:
+            log.exception("Failed to parse expiry time")
             return True
 
     def get_all_platforms_status(

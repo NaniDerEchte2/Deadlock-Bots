@@ -24,6 +24,13 @@ from .oauth_manager import SocialMediaOAuthManager
 log = logging.getLogger("TwitchStreams.TokenRefreshWorker")
 
 
+def _sanitize_log_value(value):
+    """Prevent CRLF log-forging via untrusted values."""
+    if value is None:
+        return "<none>"
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
+
 class SocialMediaTokenRefreshWorker(commands.Cog):
     """Background worker for automatic token refresh."""
 
@@ -96,10 +103,12 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
             try:
                 await self._refresh_platform_token(row)
             except Exception:
+                safe_platform = _sanitize_log_value(row["platform"])
+                safe_streamer = _sanitize_log_value(row["streamer_login"])
                 log.exception(
-                    "Failed to refresh token for platform=%s, streamer=%s",
-                    row["platform"],
-                    row["streamer_login"]
+                    "Failed to refresh OAuth credentials for platform=%s, streamer=%s",
+                    safe_platform,
+                    safe_streamer
                 )
 
     async def _refresh_platform_token(self, row: dict):
@@ -111,9 +120,11 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
         """
         platform = row["platform"]
         streamer_login = row["streamer_login"]
+        safe_platform = _sanitize_log_value(platform)
+        safe_streamer = _sanitize_log_value(streamer_login)
         row_id = f"{platform}|{streamer_login or 'global'}"
 
-        log.info("Refreshing token: platform=%s, streamer=%s", platform, streamer_login)
+        log.info("Refreshing OAuth credentials for platform=%s, streamer=%s", safe_platform, safe_streamer)
 
         # Decrypt refresh token
         aad_refresh = f"social_media_platform_auth|refresh_token|{row_id}|{row['enc_version']}"
@@ -139,10 +150,11 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
                 client_id=row["client_id"],
                 client_secret=client_secret or ""
             )
-        except Exception as e:
+        except Exception:
             log.error(
-                "Token refresh failed for platform=%s, streamer=%s: %s",
-                platform, streamer_login, e
+                "OAuth credential refresh failed for platform=%s, streamer=%s",
+                safe_platform,
+                safe_streamer
             )
             # TODO: Send notification to user for re-auth
             return
@@ -155,7 +167,11 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
             new_tokens=new_tokens
         )
 
-        log.info("Token refreshed successfully: platform=%s, streamer=%s", platform, streamer_login)
+        log.info(
+            "OAuth credentials refreshed successfully for platform=%s, streamer=%s",
+            safe_platform,
+            safe_streamer
+        )
 
     async def _save_refreshed_tokens(
         self,

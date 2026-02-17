@@ -494,53 +494,90 @@ class ClipManager:
         """
         try:
             with get_conn() as conn:
-                where_clause = ""
-                params = []
                 if streamer_login:
-                    where_clause = "WHERE c.streamer_login = ?"
-                    params.append(streamer_login)
+                    params = (streamer_login,)
 
-                # Clip Stats
-                clip_stats = conn.execute(
-                    f"""
-                    SELECT COUNT(*) as total,
-                           SUM(CASE WHEN uploaded_tiktok = 1 THEN 1 ELSE 0 END) as tiktok_uploads,
-                           SUM(CASE WHEN uploaded_youtube = 1 THEN 1 ELSE 0 END) as youtube_uploads,
-                           SUM(CASE WHEN uploaded_instagram = 1 THEN 1 ELSE 0 END) as instagram_uploads
-                      FROM twitch_clips_social_media c
-                      {where_clause}
-                    """,
-                    params,
-                ).fetchone()
+                    # Clip Stats
+                    clip_stats = conn.execute(
+                        """
+                        SELECT COUNT(*) as total,
+                               SUM(CASE WHEN uploaded_tiktok = 1 THEN 1 ELSE 0 END) as tiktok_uploads,
+                               SUM(CASE WHEN uploaded_youtube = 1 THEN 1 ELSE 0 END) as youtube_uploads,
+                               SUM(CASE WHEN uploaded_instagram = 1 THEN 1 ELSE 0 END) as instagram_uploads
+                          FROM twitch_clips_social_media c
+                         WHERE c.streamer_login = ?
+                        """,
+                        params,
+                    ).fetchone()
 
-                # Queue Stats
-                queue_stats = conn.execute(
-                    f"""
-                    SELECT q.platform, COUNT(*) as pending
-                      FROM twitch_clips_upload_queue q
-                      JOIN twitch_clips_social_media c ON c.id = q.clip_id
-                     WHERE q.status = 'pending' {('AND ' + where_clause) if where_clause else ''}
-                     GROUP BY q.platform
-                    """,
-                    params,
-                ).fetchall()
+                    # Queue Stats
+                    queue_stats = conn.execute(
+                        """
+                        SELECT q.platform, COUNT(*) as pending
+                          FROM twitch_clips_upload_queue q
+                          JOIN twitch_clips_social_media c ON c.id = q.clip_id
+                         WHERE q.status = 'pending'
+                           AND c.streamer_login = ?
+                         GROUP BY q.platform
+                        """,
+                        params,
+                    ).fetchall()
 
-                # Analytics Stats (letzte 30 Tage)
-                analytics_stats = conn.execute(
-                    f"""
-                    SELECT a.platform,
-                           COUNT(DISTINCT a.clip_id) as clips,
-                           SUM(a.views) as total_views,
-                           SUM(a.likes) as total_likes,
-                           SUM(a.comments) as total_comments,
-                           SUM(a.shares) as total_shares
-                      FROM twitch_clips_social_analytics a
-                      JOIN twitch_clips_social_media c ON c.id = a.clip_id
-                     WHERE a.synced_at > datetime('now', '-30 days') {('AND ' + where_clause) if where_clause else ''}
-                     GROUP BY a.platform
-                    """,
-                    params,
-                ).fetchall()
+                    # Analytics Stats (letzte 30 Tage)
+                    analytics_stats = conn.execute(
+                        """
+                        SELECT a.platform,
+                               COUNT(DISTINCT a.clip_id) as clips,
+                               SUM(a.views) as total_views,
+                               SUM(a.likes) as total_likes,
+                               SUM(a.comments) as total_comments,
+                               SUM(a.shares) as total_shares
+                          FROM twitch_clips_social_analytics a
+                          JOIN twitch_clips_social_media c ON c.id = a.clip_id
+                         WHERE a.synced_at > datetime('now', '-30 days')
+                           AND c.streamer_login = ?
+                         GROUP BY a.platform
+                        """,
+                        params,
+                    ).fetchall()
+                else:
+                    # Clip Stats
+                    clip_stats = conn.execute(
+                        """
+                        SELECT COUNT(*) as total,
+                               SUM(CASE WHEN uploaded_tiktok = 1 THEN 1 ELSE 0 END) as tiktok_uploads,
+                               SUM(CASE WHEN uploaded_youtube = 1 THEN 1 ELSE 0 END) as youtube_uploads,
+                               SUM(CASE WHEN uploaded_instagram = 1 THEN 1 ELSE 0 END) as instagram_uploads
+                          FROM twitch_clips_social_media c
+                        """
+                    ).fetchone()
+
+                    # Queue Stats
+                    queue_stats = conn.execute(
+                        """
+                        SELECT q.platform, COUNT(*) as pending
+                          FROM twitch_clips_upload_queue q
+                          JOIN twitch_clips_social_media c ON c.id = q.clip_id
+                         WHERE q.status = 'pending'
+                         GROUP BY q.platform
+                        """
+                    ).fetchall()
+
+                    # Analytics Stats (letzte 30 Tage)
+                    analytics_stats = conn.execute(
+                        """
+                        SELECT a.platform,
+                               COUNT(DISTINCT a.clip_id) as clips,
+                               SUM(a.views) as total_views,
+                               SUM(a.likes) as total_likes,
+                               SUM(a.comments) as total_comments,
+                               SUM(a.shares) as total_shares
+                          FROM twitch_clips_social_analytics a
+                          JOIN twitch_clips_social_media c ON c.id = a.clip_id
+                         WHERE a.synced_at > datetime('now', '-30 days')
+                         GROUP BY a.platform
+                        """
+                    ).fetchall()
 
                 return {
                     "clips": dict(clip_stats) if clip_stats else {},
@@ -959,22 +996,42 @@ class ClipManager:
 
                 # For each platform, queue uploads
                 for platform in platforms:
-                    if platform not in {"tiktok", "youtube", "instagram"}:
+                    if platform == "tiktok":
+                        clips = conn.execute(
+                            """
+                            SELECT id, clip_id, clip_title, streamer_login, game_name,
+                                   custom_description, hashtags
+                              FROM twitch_clips_social_media
+                             WHERE streamer_login = ? AND uploaded_tiktok = 0
+                             ORDER BY created_at DESC
+                            """,
+                            (streamer_login,),
+                        ).fetchall()
+                    elif platform == "youtube":
+                        clips = conn.execute(
+                            """
+                            SELECT id, clip_id, clip_title, streamer_login, game_name,
+                                   custom_description, hashtags
+                              FROM twitch_clips_social_media
+                             WHERE streamer_login = ? AND uploaded_youtube = 0
+                             ORDER BY created_at DESC
+                            """,
+                            (streamer_login,),
+                        ).fetchall()
+                    elif platform == "instagram":
+                        clips = conn.execute(
+                            """
+                            SELECT id, clip_id, clip_title, streamer_login, game_name,
+                                   custom_description, hashtags
+                              FROM twitch_clips_social_media
+                             WHERE streamer_login = ? AND uploaded_instagram = 0
+                             ORDER BY created_at DESC
+                            """,
+                            (streamer_login,),
+                        ).fetchall()
+                    else:
                         log.warning("Invalid platform: %s", platform)
                         continue
-
-                    # Build query for non-uploaded clips
-                    upload_col = f"uploaded_{platform}"
-                    clips = conn.execute(
-                        f"""
-                        SELECT id, clip_id, clip_title, streamer_login, game_name,
-                               custom_description, hashtags
-                          FROM twitch_clips_social_media
-                         WHERE streamer_login = ? AND {upload_col} = 0
-                         ORDER BY created_at DESC
-                        """,
-                        (streamer_login,),
-                    ).fetchall()
 
                     log.info("Found %d non-uploaded clips for %s -> %s", len(clips), streamer_login, platform)
 
