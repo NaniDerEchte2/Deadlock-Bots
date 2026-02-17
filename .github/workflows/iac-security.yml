@@ -114,7 +114,7 @@ jobs:
 
       - name: KubeLinter Scan (SARIF)
         if: needs.detect-iac.outputs.has_kubernetes == 'true'
-        uses: stackrox/kube-linter-action@ca0d55b925470deb5b04b556e6c4276ea94d03c3 # v1.0.4
+        uses: stackrox/kube-linter-action@87802a2f4e01abebb3ee3c67a3002fea71f6eae5 # v1.0.7
         with:
           directory: .
           format: sarif
