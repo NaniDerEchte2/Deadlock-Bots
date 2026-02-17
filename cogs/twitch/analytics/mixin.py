@@ -11,7 +11,6 @@ from discord.ext import tasks
 
 from .. import storage
 from ..chat.irc_lurker_tracker import IRCLurkerTracker
-from ..partner_utils import get_live_partners, is_partner_channel_for_chat_tracking
 
 log = logging.getLogger("TwitchStreams.Analytics")
 
@@ -48,7 +47,7 @@ class TwitchAnalyticsMixin:
             try:
                 await self._irc_tracker_task
             except asyncio.CancelledError:
-                pass
+                log.debug("IRC tracker task cancelled during cog unload")
 
     @tasks.loop(hours=6)
     async def collect_analytics_data(self):
@@ -261,9 +260,9 @@ class TwitchAnalyticsMixin:
                     log.warning("Chatters-Poller: Helix API fehlgeschlagen für %s", login, exc_info=True)
             else:
                 log.warning(
-                    "Chatters-Poller: %s hat Token aber FEHLT 'moderator:read:chatters' Scope (hat: %s). "
-                    "Streamer muss sich neu autorisieren!",
-                    login, scopes
+                    "Chatters-Poller: %s missing required 'moderator:read:chatters' scope. "
+                    "Streamer must re-authorize.",
+                    login,
                 )
         elif not token:
             log.debug("Chatters-Poller: %s hat kein OAuth Token", login)
@@ -484,7 +483,11 @@ class TwitchAnalyticsMixin:
                                 scopes = {s.lower() for s in raid_bot.auth_manager.get_scopes(user_id)}
                                 has_scope = "moderator:read:chatters" in scopes
                             except Exception:
-                                pass
+                                log.debug(
+                                    "IRC Tracker Sync: scope lookup failed for user_id=%s",
+                                    user_id,
+                                    exc_info=True,
+                                )
 
                     # IRC tracken wenn KEIN Scope vorhanden (für ALLE zur Datensammlung)
                     if not has_scope:

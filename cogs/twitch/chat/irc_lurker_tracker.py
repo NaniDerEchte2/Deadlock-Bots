@@ -73,21 +73,21 @@ class IRCLurkerTracker:
             try:
                 await self.poll_task
             except asyncio.CancelledError:
-                pass
+                log.debug("IRC: poll task cancelled")
 
         if self.read_task:
             self.read_task.cancel()
             try:
                 await self.read_task
             except asyncio.CancelledError:
-                pass
+                log.debug("IRC: read task cancelled")
 
         if self.connect_task:
             self.connect_task.cancel()
             try:
                 await self.connect_task
             except asyncio.CancelledError:
-                pass
+                log.debug("IRC: connect task cancelled")
 
         await self._disconnect()
         log.info("IRC Lurker Tracker stopped")
@@ -139,7 +139,7 @@ class IRCLurkerTracker:
                 self.writer.close()
                 await self.writer.wait_closed()
             except Exception:
-                pass
+                log.debug("IRC: writer close failed", exc_info=True)
 
         self.connected = False
         self.reader = None
@@ -190,7 +190,7 @@ class IRCLurkerTracker:
                 await self._handle_message(msg)
 
         except asyncio.CancelledError:
-            pass
+            log.debug("IRC: read loop cancelled")
         except Exception:
             log.exception("IRC: Read loop error")
             self.connected = False
@@ -432,7 +432,7 @@ class IRCLurkerTracker:
                 self.writer.write(f"PART #{channel}\r\n".encode())
                 await self.writer.drain()
             except Exception:
-                pass
+                log.debug("IRC: failed to PART #%s", channel, exc_info=True)
 
         log.info("IRC: Stopped tracking #%s", channel)
 
