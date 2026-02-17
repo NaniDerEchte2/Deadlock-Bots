@@ -1,6 +1,5 @@
 import sqlite3
 import sys
-import os
 
 # Database path
 DB_PATH = 'service/deadlock.sqlite3'

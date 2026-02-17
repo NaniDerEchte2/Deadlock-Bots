@@ -1271,8 +1271,8 @@ class AnalyticsV2Mixin:
                              # Fallback for YYYY-MM-DD HH:MM:SS
                             hour_str = ts_str.split(' ')[1][:2]
                             hour_counts[int(hour_str)] += 1
-                    except Exception:
-                        pass
+                    except (TypeError, ValueError, IndexError):
+                        log.debug("Skipping invalid chat message timestamp: %r", ts_str, exc_info=True)
 
                 distinct_chatters_from_messages = len(distinct_chatters_set)
 
@@ -2248,8 +2248,7 @@ class AnalyticsV2Mixin:
 
                     # Best time slot
                     if data["hours"]:
-                        from collections import Counter
-                        hour_counts = Counter(data["hours"])
+                        hour_counts = collections.Counter(data["hours"])
                         best_hour = hour_counts.most_common(1)[0][0]
                         best_slot = f"{best_hour:02d}:00-{(best_hour + 4) % 24:02d}:00"
                     else:
@@ -2785,9 +2784,8 @@ class AnalyticsV2Mixin:
 
         # --- Stunde: Streamer → Stunde → Liste Viewerzahlen ---
         # hour_data[hour][streamer] = [viewer_counts...]
-        from collections import defaultdict
-        hour_data: dict = defaultdict(lambda: defaultdict(list))
-        weekday_data: dict = defaultdict(lambda: defaultdict(list))
+        hour_data: dict = collections.defaultdict(lambda: collections.defaultdict(list))
+        weekday_data: dict = collections.defaultdict(lambda: collections.defaultdict(list))
 
         for row in rows:
             streamer = row[0]

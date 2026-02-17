@@ -680,7 +680,10 @@ if TWITCHIO_AVAILABLE:
                 try:
                     await self._track_chat_health(message)
                 except Exception:
-                    pass
+                    log.debug(
+                        "Konnte Chat-Health im monitored-only Kanal nicht loggen",
+                        exc_info=True,
+                    )
                 return
             # -----------------------------------------------
 

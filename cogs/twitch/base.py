@@ -370,11 +370,9 @@ class TwitchBaseCog(commands.Cog):
 
                 if to_remove:
                     with storage.get_conn() as conn:
-                        # Batch delete
-                        placeholders = ",".join("?" for _ in to_remove)
-                        conn.execute(
-                            f"DELETE FROM twitch_streamers WHERE is_monitored_only = 1 AND twitch_login IN ({placeholders})",
-                            to_remove
+                        conn.executemany(
+                            "DELETE FROM twitch_streamers WHERE is_monitored_only = 1 AND twitch_login = ?",
+                            [(login,) for login in to_remove],
                         )
                         conn.commit()
                     log.info("Scout: Removing %d monitored channels (no longer Deadlock/DE/Live): %s", len(to_remove), ", ".join(to_remove[:10]))

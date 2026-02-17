@@ -2309,7 +2309,8 @@ class BetaInviteFlow(commands.Cog):
             f"Steam-Account: https://steamcommunity.com/profiles/{record.steam_id64}\n"
             "Bitte schaue in 1-2 Tagen unter https://store.steampowered.com/account/playtestinvites rein "
             "und nimm die Einladung dort an. Danach erscheint Deadlock automatisch in deiner Bibliothek.\n"
-            "⚠️ Verlässt du den Server wird der Invite ungültig, egal ob dein Invite noch aussteht oder du Deadlock schon hast."
+            "⚠️ WICHTIG: Dem Bot Account erst entfreunden wenn ihr das Game erhalten habt.\n"
+            "⚠️Verlässt du den Server wird der Invite ungültig, egal ob dein Invite noch aussteht oder du Deadlock schon hast."
         )
         
         if isinstance(interaction, discord.Interaction) and interaction.response.is_done():

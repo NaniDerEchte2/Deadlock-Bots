@@ -8,7 +8,6 @@ import ipaddress
 import re
 import secrets
 import time
-from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlsplit, urlunsplit
 
@@ -1613,15 +1612,16 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
                 top_logins = [c["login"] for c in channels[:5]]
                 overlap = []
                 if len(top_logins) >= 2:
-                    p = ",".join("?" for _ in top_logins)
-                    rows_overlap = conn.execute(f"""
+                    login_slots = (top_logins + ["!unused!"] * 5)[:5]
+                    rows_overlap = conn.execute("""
                         SELECT c1.streamer_login, c2.streamer_login, COUNT(DISTINCT c1.chatter_login)
                         FROM twitch_chat_messages c1
                         JOIN twitch_chat_messages c2 ON c1.chatter_login = c2.chatter_login AND c1.streamer_login < c2.streamer_login
                         WHERE c1.message_ts >= datetime('now', '-6 hours') AND c2.message_ts >= datetime('now', '-6 hours')
-                          AND c1.streamer_login IN ({p}) AND c2.streamer_login IN ({p})
+                          AND c1.streamer_login IN (?, ?, ?, ?, ?)
+                          AND c2.streamer_login IN (?, ?, ?, ?, ?)
                         GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 5
-                    """, top_logins + top_logins).fetchall()
+                    """, login_slots + login_slots).fetchall()
                     overlap = [{"a": ro[0], "b": ro[1], "shared": ro[2]} for ro in rows_overlap]
 
                 return web.json_response({

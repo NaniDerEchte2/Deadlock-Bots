@@ -100,6 +100,9 @@ class RolePermissionVoiceManager(commands.Cog):
         self._pending_channel_renames: Dict[int, str] = {}
         self._rename_tasks: Dict[int, asyncio.Task] = {}
         self._rename_tasks_lock = asyncio.Lock()  # Schützt _rename_tasks vor Race Conditions
+        # Min delay between permission writes (PUT /permissions) and rename PATCH on same channel.
+        self._post_permission_rename_delay_seconds = 5.0
+        self._last_permission_write: Dict[int, float] = {}
         self._startup_reconciled = False
 
     @staticmethod
@@ -253,6 +256,7 @@ class RolePermissionVoiceManager(commands.Cog):
                     logger.debug("Failed to cancel rename task: %s", exc, exc_info=True)
             self._rename_tasks.clear()
             self._pending_channel_renames.clear()
+            self._last_permission_write.clear()
             self._startup_reconciled = False
             logger.info("RolePermissionVoiceManager Cog entladen")
         except Exception as e:
@@ -309,6 +313,18 @@ class RolePermissionVoiceManager(commands.Cog):
             if allowed_min <= rv <= allowed_max
         }
 
+    def _mark_permission_write(self, channel_id: int) -> None:
+        self._last_permission_write[int(channel_id)] = time.monotonic()
+
+    def _permission_to_rename_delay_remaining(self, channel_id: int) -> float:
+        if self._post_permission_rename_delay_seconds <= 0:
+            return 0.0
+        last_write = self._last_permission_write.get(int(channel_id))
+        if last_write is None:
+            return 0.0
+        elapsed = time.monotonic() - last_write
+        return max(0.0, self._post_permission_rename_delay_seconds - elapsed)
+
     async def set_everyone_deny_connect(self, channel: discord.VoiceChannel) -> bool:
         try:
             if not await self.channel_exists(channel):
@@ -320,6 +336,7 @@ class RolePermissionVoiceManager(commands.Cog):
                     everyone_role,
                     overwrite=discord.PermissionOverwrite(connect=False, view_channel=True),
                 )
+                self._mark_permission_write(channel.id)
             return True
         except discord.NotFound:
             return False
@@ -343,6 +360,7 @@ class RolePermissionVoiceManager(commands.Cog):
                 changed = True
             if changed:
                 await channel.set_permissions(everyone_role, overwrite=ow)
+                self._mark_permission_write(channel.id)
             return True
         except discord.NotFound:
             return False
@@ -401,6 +419,7 @@ class RolePermissionVoiceManager(commands.Cog):
                                 connect=True, speak=True, view_channel=True
                             ),
                         )
+                        self._mark_permission_write(channel.id)
                         await asyncio.sleep(0.5)  # Erhöht von 0.4s auf 0.5s für bessere Rate-Limit-Vermeidung
                     except discord.NotFound:
                         # Channel wurde gelöscht während der Operation
@@ -430,6 +449,7 @@ class RolePermissionVoiceManager(commands.Cog):
                     and target.id not in allowed_role_ids
                 ):
                     await channel.set_permissions(target, overwrite=None)
+                    self._mark_permission_write(channel.id)
                     await asyncio.sleep(0.3)
         except Exception as e:
             logger.error(f"remove_disallowed_role_permissions Fehler: {e}")
@@ -443,6 +463,7 @@ class RolePermissionVoiceManager(commands.Cog):
                     and target.id in self.discord_rank_roles
                 ):
                     await channel.set_permissions(target, overwrite=None)
+                    self._mark_permission_write(channel.id)
                     await asyncio.sleep(0.3)
         except Exception as e:
             logger.error(f"clear_role_permissions Fehler: {e}")
@@ -489,19 +510,29 @@ class RolePermissionVoiceManager(commands.Cog):
                 return
 
             now = time.monotonic()
+            required_delay = 0.0
             if not force:
                 last_rename = self._last_channel_rename.get(channel.id)
                 if last_rename is not None:
                     elapsed = now - last_rename
                     if elapsed < self._channel_rename_interval:
-                        remaining = self._channel_rename_interval - elapsed
+                        required_delay = max(required_delay, self._channel_rename_interval - elapsed)
                         logger.debug(
                             "rename cooldown active for %s (%.1fs remaining)",
                             channel.name,
-                            remaining,
+                            required_delay,
                         )
-                        self._schedule_delayed_channel_rename(channel, new_name, remaining)
-                        return
+            perm_delay = self._permission_to_rename_delay_remaining(channel.id)
+            if perm_delay > 0:
+                required_delay = max(required_delay, perm_delay)
+                logger.debug(
+                    "rename delayed after permission update for %s (%.1fs remaining)",
+                    channel.name,
+                    perm_delay,
+                )
+            if required_delay > 0:
+                self._schedule_delayed_channel_rename(channel, new_name, required_delay)
+                return
 
             pending_task = self._rename_tasks.pop(channel.id, None)
             if pending_task and not pending_task.done():
@@ -536,6 +567,14 @@ class RolePermissionVoiceManager(commands.Cog):
                     return
                 if not await self.channel_exists(channel):
                     return
+                post_perm_delay = self._permission_to_rename_delay_remaining(channel.id)
+                if post_perm_delay > 0:
+                    await asyncio.sleep(post_perm_delay)
+                    latest_name = self._pending_channel_renames.get(channel.id)
+                    if not latest_name:
+                        return
+                    if not await self.channel_exists(channel):
+                        return
                 await self.bot.queue_channel_rename(channel.id, latest_name, reason="Rank Voice Manager Delayed Rename")
                 self._last_channel_rename[channel.id] = time.monotonic()
             except asyncio.CancelledError:
