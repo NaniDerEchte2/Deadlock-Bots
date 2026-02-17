@@ -77,7 +77,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Checkov IaC Scan (SARIF)
-        uses: bridgecrewio/checkov-action@b3c44b4437c93549fc8cfaef9208497ba4955d39 # master
+        uses: bridgecrewio/checkov-action@81ec5eb0ef150170f3bda7759e3878fa1a5bd413 # master
         with:
           directory: .
           framework: terraform,kubernetes,dockerfile,cloudformation
@@ -114,7 +114,7 @@ jobs:
 
       - name: KubeLinter Scan (SARIF)
         if: needs.detect-iac.outputs.has_kubernetes == 'true'
-        uses: stackrox/kube-linter-action@ca0d55b925470deb5b04b556e6c4276ea94d03c3 # v1.0.4
+        uses: stackrox/kube-linter-action@87802a2f4e01abebb3ee3c67a3002fea71f6eae5 # v1.0.7
         with:
           directory: .
           format: sarif
@@ -130,7 +130,7 @@ jobs:
         continue-on-error: true
 
       - name: KICS IaC Scan (SARIF)
-        uses: checkmarx/kics-github-action@8a44970e3d2eca668be41abe9d4e06709c3b3609 # v1.7.0
+        uses: checkmarx/kics-github-action@00def9108246ec656aea725db2167522d26a99d2 # v2.1.19
         with:
           path: .
           output_path: kics-results
@@ -148,7 +148,7 @@ jobs:
 
       - name: Ansible Lint (SARIF)
         if: hashFiles('**/ansible/**/*.yml', '**/ansible/**/*.yaml', '**/playbook*.yml', '**/playbook*.yaml') != ''
-        uses: ansible/ansible-lint@7fe29007f249933300ef40ebbc03ba799c1ff068 # main
+        uses: ansible/ansible-lint@629cf05440966eea5c8e83707b16d5729ce06939 # main
         with:
           args: "--sarif-file ansible-lint.sarif"
         continue-on-error: true
