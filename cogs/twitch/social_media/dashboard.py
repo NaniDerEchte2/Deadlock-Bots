@@ -7,7 +7,6 @@ Bietet UI für:
 - Analytics-Dashboard
 """
 import html
-import json
 import logging
 from typing import Optional
 from urllib.parse import urlencode
@@ -31,16 +30,6 @@ def _dashboard_url(**params: str) -> str:
     if not params:
         return "/social-media"
     return f"/social-media?{urlencode(params)}"
-
-
-def _json_for_inline_script(value: object) -> str:
-    """Serialize JSON safely for inline <script> contexts."""
-    dumped = json.dumps(value, ensure_ascii=True)
-    return (
-        dumped.replace("</", "<\\/")
-        .replace("\u2028", "\\u2028")
-        .replace("\u2029", "\\u2029")
-    )
 
 
 class SocialMediaDashboard:
@@ -307,11 +296,11 @@ anfordern.</p>
     async def index(self, request: web.Request) -> web.Response:
         """Main dashboard page with full template & batch upload UI."""
         self._require_auth(request)
-        authenticated_streamer = self._resolve_streamer_scope(request, request.query.get("streamer"))
+        authenticated_streamer = self._resolve_streamer_scope(request)
         safe_streamer_label = html.escape(
             f"@{authenticated_streamer}" if authenticated_streamer else "nicht gesetzt"
         )
-        js_streamer = _json_for_inline_script(authenticated_streamer or "")
+        safe_streamer_data = html.escape(authenticated_streamer or "", quote=True)
 
         html_content = f"""
 <!DOCTYPE html>
@@ -631,7 +620,7 @@ anfordern.</p>
         .tab-content.active {{ display: block; }}
     </style>
 </head>
-<body>
+<body data-auth-streamer="{safe_streamer_data}">
     <div class="container">
         <h1>🎬 Social Media Clip Manager</h1>
         <p class="subtitle">Verwalte deine Twitch-Clips und veröffentliche sie auf TikTok, YouTube & Instagram</p>
@@ -766,7 +755,7 @@ anfordern.</p>
 
     <script>
         // Global State
-        let currentStreamer = {js_streamer} || (new URLSearchParams(window.location.search).get('streamer') || '');
+        let currentStreamer = document.body.dataset.authStreamer || new URLSearchParams(window.location.search).get('streamer') || '';
         let currentStatus = '';
         let allClips = [];
 

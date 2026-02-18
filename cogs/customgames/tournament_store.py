@@ -352,7 +352,6 @@ async def upsert_signup_async(
             """,
             (guild, user, mode, rank_key, rank_num, team_ref, assigned_flag),
         )
-        status = "inserted"
 
     current = await get_signup_async(guild, user)
     current["status"] = status

@@ -6,7 +6,7 @@ Docs: https://developers.facebook.com/docs/instagram-api/guides/content-publishi
 """
 import aiohttp
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from .base import PlatformUploader
 

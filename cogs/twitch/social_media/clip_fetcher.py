@@ -7,7 +7,6 @@ Fetch-History in der Datenbank.
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
 from typing import Optional
 
 from discord.ext import commands

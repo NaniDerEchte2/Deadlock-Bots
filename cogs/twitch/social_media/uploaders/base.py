@@ -7,9 +7,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional
-
-import aiohttp
+from typing import Dict, List
 
 
 class PlatformUploader(ABC):
