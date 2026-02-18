@@ -81,6 +81,9 @@ class TwitchMonitoringMixin:
         if stream_id:
             if stream_guard.get(broadcaster_key) == stream_id:
                 return False
+            # Guard VOR dem Senden setzen – verhindert Doppel-Trigger durch
+            # gleichzeitige EventSub- und Polling-Pfade (race condition fix).
+            stream_guard[broadcaster_key] = stream_id
         else:
             # Fallback-Dedupe, falls stream_id temporär nicht geladen werden kann.
             fallback_guard = getattr(self, "_reauth_reminder_last_sent_ts", None)
@@ -116,8 +119,6 @@ class TwitchMonitoringMixin:
             source="migration_reminder",
         )
         if ok:
-            if stream_id:
-                stream_guard[broadcaster_key] = stream_id
             log.info(
                 "ReAuth reminder: Chat-Hinweis bei Streamstart gesendet für %s (%s)",
                 login_key,
@@ -997,12 +998,28 @@ class TwitchMonitoringMixin:
         webhook_handler.set_callback("channel.channel_points_automatic_reward_redemption.add", _points_auto_cb)
         webhook_handler.set_callback("channel.channel_points_custom_reward_redemption.add", _points_custom_cb)
 
-        # Go-Live Handler für Polling
+        # Go-Live Handler für Polling + EventSub (stream.online)
         async def _handle_stream_went_live(bid: str, login: str):
             """
-            Wird vom Polling aufgerufen wenn ein Stream live geht.
+            Wird von Polling UND EventSub stream.online aufgerufen wenn ein Stream live geht.
             Subscribed stream.offline via Webhook und joined Chat-Bot.
             """
+            # Debounce: verhindert Doppelausführung wenn EventSub + Polling fast gleichzeitig feuern.
+            # 60s-Fenster ist deutlich größer als das 15s-Poll-Intervall.
+            _golive_ts: dict = getattr(self, "_golive_last_handled_ts", None)
+            if not isinstance(_golive_ts, dict):
+                _golive_ts = {}
+                setattr(self, "_golive_last_handled_ts", _golive_ts)
+            _now = time.time()
+            _bid_key = str(bid).strip()
+            if _now - float(_golive_ts.get(_bid_key) or 0.0) < 60.0:
+                log.debug(
+                    "Go-Live Handler: Doppelaufruf innerhalb 60s für %s ignoriert",
+                    login or bid,
+                )
+                return
+            _golive_ts[_bid_key] = _now
+
             try:
                 # 1. Chat-Bot joinen (falls Partner mit Chat-Scope)
                 chat_bot = getattr(self, "_twitch_chat_bot", None)
