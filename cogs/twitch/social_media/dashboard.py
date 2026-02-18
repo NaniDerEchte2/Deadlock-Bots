@@ -7,6 +7,7 @@ Bietet UI für:
 - Analytics-Dashboard
 """
 import html
+import json
 import logging
 from typing import Optional
 from urllib.parse import urlencode
@@ -35,14 +36,16 @@ def _dashboard_url(**params: str) -> str:
 class SocialMediaDashboard:
     """Web Dashboard für Social Media Clip Management."""
 
-    def __init__(self, clip_manager: ClipManager, auth_checker=None):
+    def __init__(self, clip_manager: ClipManager, auth_checker=None, auth_session_getter=None):
         """
         Args:
             clip_manager: ClipManager instance
             auth_checker: Callable that checks authentication (from parent dashboard server)
+            auth_session_getter: Callable that resolves dashboard OAuth session (dict)
         """
         self.clip_manager = clip_manager
         self.auth_checker = auth_checker
+        self.auth_session_getter = auth_session_getter
 
     def _require_auth(self, request: web.Request) -> None:
         """Check authentication using parent dashboard's OAuth system."""
@@ -56,6 +59,90 @@ class SocialMediaDashboard:
                 text="Bitte melde dich mit deinem Twitch-Partner-Account an.",
                 headers={"Location": "/twitch/auth/login?next=/social-media"}
             )
+
+    def _get_auth_streamer_login(self, request: web.Request) -> Optional[str]:
+        """Return Twitch login from dashboard OAuth session when available."""
+        getter = self.auth_session_getter
+        if not callable(getter):
+            return None
+        try:
+            session = getter(request)
+        except Exception:
+            log.debug("Failed to resolve dashboard session for social-media", exc_info=True)
+            return None
+        if not isinstance(session, dict):
+            return None
+        login = str(session.get("twitch_login") or "").strip().lower()
+        return login or None
+
+    def _resolve_streamer_scope(
+        self,
+        request: web.Request,
+        requested_streamer: Optional[str] = None,
+        *,
+        required: bool = False,
+    ) -> Optional[str]:
+        """Resolve effective streamer with session-based ownership enforcement."""
+        requested = str(requested_streamer or "").strip().lower()
+        session_streamer = self._get_auth_streamer_login(request)
+
+        if session_streamer:
+            if requested and requested.lower() != session_streamer:
+                safe_requested = _sanitize_log_value(requested)
+                safe_session = _sanitize_log_value(session_streamer)
+                log.warning(
+                    "Blocked cross-account social-media access: requested=%s session=%s",
+                    safe_requested,
+                    safe_session,
+                )
+                raise web.HTTPForbidden(
+                    text="Du kannst nur auf deinen eigenen Twitch-Account zugreifen."
+                )
+            return session_streamer
+
+        if required and not requested:
+            raise web.HTTPBadRequest(text="streamer parameter required")
+
+        return requested or None
+
+    @staticmethod
+    def _normalize_clip_id(raw_value) -> Optional[int]:
+        """Convert user-provided clip id into positive integer."""
+        try:
+            clip_id = int(raw_value)
+        except (TypeError, ValueError):
+            return None
+        return clip_id if clip_id > 0 else None
+
+    def _clip_owned_by_streamer(self, clip_id: int, streamer_login: str) -> bool:
+        from ..storage import get_conn
+
+        with get_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM twitch_clips_social_media
+                WHERE id = ? AND LOWER(streamer_login) = LOWER(?)
+                LIMIT 1
+                """,
+                (clip_id, streamer_login),
+            ).fetchone()
+        return bool(row)
+
+    def _streamer_template_owned_by_streamer(self, template_id: int, streamer_login: str) -> bool:
+        from ..storage import get_conn
+
+        with get_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM clip_templates_streamer
+                WHERE id = ? AND LOWER(streamer_login) = LOWER(?)
+                LIMIT 1
+                """,
+                (template_id, streamer_login),
+            ).fetchone()
+        return bool(row)
 
     def _build_app(self) -> web.Application:
         """Build aiohttp app with routes."""
@@ -210,21 +297,11 @@ anfordern.</p>
     async def index(self, request: web.Request) -> web.Response:
         """Main dashboard page with full template & batch upload UI."""
         self._require_auth(request)
-
-        # Get list of streamers for dropdown
-        from ..storage import get_conn
-        with get_conn() as conn:
-            streamers = conn.execute(
-                "SELECT DISTINCT twitch_login FROM twitch_streamers WHERE archived_at IS NULL ORDER BY twitch_login"
-            ).fetchall()
-
-        streamer_options = "".join(
-            [
-                f'<option value="{html.escape(s[0], quote=True)}">{html.escape(s[0])}</option>'
-                for s in streamers
-                if s[0]
-            ]
+        authenticated_streamer = self._resolve_streamer_scope(request, request.query.get("streamer"))
+        safe_streamer_label = html.escape(
+            f"@{authenticated_streamer}" if authenticated_streamer else "nicht gesetzt"
         )
+        js_streamer = json.dumps(authenticated_streamer or "")
 
         html_content = f"""
 <!DOCTYPE html>
@@ -548,6 +625,7 @@ anfordern.</p>
     <div class="container">
         <h1>🎬 Social Media Clip Manager</h1>
         <p class="subtitle">Verwalte deine Twitch-Clips und veröffentliche sie auf TikTok, YouTube & Instagram</p>
+        <p class="subtitle">Aktiver Streamer: <strong>{safe_streamer_label}</strong></p>
 
         <div class="tabs">
             <button class="tab active" onclick="switchTab('dashboard')">📊 Dashboard</button>
@@ -560,10 +638,6 @@ anfordern.</p>
         <div id="tab-dashboard" class="tab-content active">
             <!-- Action Bar -->
             <div class="action-bar">
-                <select id="streamer-filter" onchange="filterChanged()">
-                    <option value="">Alle Streamer</option>
-                    {streamer_options}
-                </select>
                 <select id="status-filter" onchange="filterChanged()">
                     <option value="">Alle Status</option>
                     <option value="not-uploaded">Nicht hochgeladen</option>
@@ -682,18 +756,12 @@ anfordern.</p>
 
     <script>
         // Global State
-        let currentStreamer = new URLSearchParams(window.location.search).get('streamer') || '';
+        let currentStreamer = {js_streamer} || (new URLSearchParams(window.location.search).get('streamer') || '');
         let currentStatus = '';
         let allClips = [];
 
         // ========== Initialization ==========
         async function init() {{
-            if (currentStreamer) {{
-                const streamerFilter = document.getElementById('streamer-filter');
-                if (streamerFilter) {{
-                    streamerFilter.value = currentStreamer;
-                }}
-            }}
             await loadStats();
             await loadClips();
         }}
@@ -840,7 +908,9 @@ anfordern.</p>
             grid.innerHTML = '<div class="loader">Lade Clips...</div>';
 
             try {{
-                const response = await fetch('/social-media/api/clips?limit=100');
+                const params = new URLSearchParams({{ limit: 100 }});
+                if (currentStreamer) params.append('streamer', currentStreamer);
+                const response = await fetch(`/social-media/api/clips?${{params}}`);
                 const clips = await response.json();
 
                 if (clips.length === 0) {{
@@ -872,7 +942,6 @@ anfordern.</p>
 
         // ========== Filter Handling ==========
         function filterChanged() {{
-            currentStreamer = document.getElementById('streamer-filter').value;
             currentStatus = document.getElementById('status-filter').value;
 
             loadStats();
@@ -1190,9 +1259,8 @@ anfordern.</p>
         }}
 
         function connectPlatform(platform) {{
-            const streamer = document.getElementById('streamer-filter').value;
             const params = new URLSearchParams();
-            if (streamer) params.append('streamer', streamer);
+            if (currentStreamer) params.append('streamer', currentStreamer);
             window.location.href = `/social-media/oauth/start/${{platform}}?${{params}}`;
         }}
 
@@ -1204,9 +1272,8 @@ anfordern.</p>
             if (!confirm(`${{platform.toUpperCase()}} Verbindung wirklich trennen?`)) return;
 
             try {{
-                const streamer = document.getElementById('streamer-filter').value;
                 const params = new URLSearchParams();
-                if (streamer) params.append('streamer', streamer);
+                if (currentStreamer) params.append('streamer', currentStreamer);
 
                 const response = await fetch(`/social-media/oauth/disconnect/${{platform}}?${{params}}`, {{
                     method: 'POST'
@@ -1295,7 +1362,7 @@ anfordern.</p>
         """Stats API endpoint for dashboard."""
         self._require_auth(request)
 
-        streamer = request.query.get("streamer")
+        streamer = self._resolve_streamer_scope(request, request.query.get("streamer"))
         summary = self.clip_manager.get_analytics_summary(streamer_login=streamer)
 
         return web.json_response(summary)
@@ -1305,7 +1372,7 @@ anfordern.</p>
         self._require_auth(request)
 
         limit = int(request.query.get("limit", "50"))
-        streamer = request.query.get("streamer")
+        streamer = self._resolve_streamer_scope(request, request.query.get("streamer"))
         status = request.query.get("status")
 
         clips = self.clip_manager.get_clips_for_dashboard(
@@ -1321,11 +1388,21 @@ anfordern.</p>
         self._require_auth(request)
 
         data = await request.json()
-        clip_id = data.get("clip_id")
+        clip_id = self._normalize_clip_id(data.get("clip_id"))
         platforms = data.get("platforms", [])  # ['tiktok', 'youtube', 'instagram'] or 'all'
 
         if not clip_id:
             return web.json_response({"error": "clip_id required"}, status=400)
+
+        streamer = self._resolve_streamer_scope(
+            request,
+            data.get("streamer") or request.query.get("streamer"),
+        )
+        if streamer and not self._clip_owned_by_streamer(clip_id, streamer):
+            return web.json_response(
+                {"error": "forbidden: clip does not belong to authenticated streamer"},
+                status=403,
+            )
 
         if platforms == "all":
             platforms = ["tiktok", "youtube", "instagram"]
@@ -1353,7 +1430,7 @@ anfordern.</p>
         """Analytics dashboard."""
         self._require_auth(request)
 
-        streamer = request.query.get("streamer")
+        streamer = self._resolve_streamer_scope(request, request.query.get("streamer"))
         summary = self.clip_manager.get_analytics_summary(streamer_login=streamer)
 
         return web.json_response(summary)
@@ -1373,9 +1450,11 @@ anfordern.</p>
         """GET /api/templates/streamer - Get streamer templates."""
         self._require_auth(request)
 
-        streamer = request.query.get("streamer")
-        if not streamer:
-            return web.json_response({"error": "streamer parameter required"}, status=400)
+        streamer = self._resolve_streamer_scope(
+            request,
+            request.query.get("streamer"),
+            required=True,
+        )
 
         templates = self.clip_manager.get_streamer_templates(streamer_login=streamer)
 
@@ -1388,15 +1467,19 @@ anfordern.</p>
         try:
             data = await request.json()
 
-            streamer = data.get("streamer")
+            streamer = self._resolve_streamer_scope(
+                request,
+                data.get("streamer"),
+                required=True,
+            )
             template_name = data.get("template_name")
             description = data.get("description")
             hashtags = data.get("hashtags", [])
             is_default = data.get("is_default", False)
 
-            if not all([streamer, template_name, description]):
+            if not all([template_name, description]):
                 return web.json_response(
-                    {"error": "streamer, template_name, and description are required"},
+                    {"error": "template_name and description are required"},
                     status=400
                 )
 
@@ -1414,6 +1497,8 @@ anfordern.</p>
                 "message": "Template created/updated successfully"
             })
 
+        except web.HTTPException:
+            raise
         except Exception:
             log.exception("Failed to create template")
             return web.json_response({"error": "template_create_failed"}, status=500)
@@ -1425,14 +1510,29 @@ anfordern.</p>
         try:
             data = await request.json()
 
-            clip_id = data.get("clip_id")
-            template_id = data.get("template_id")
+            clip_id = self._normalize_clip_id(data.get("clip_id"))
+            template_id = self._normalize_clip_id(data.get("template_id"))
             is_global = data.get("is_global", False)
 
             if not clip_id or not template_id:
                 return web.json_response(
                     {"error": "clip_id and template_id are required"},
                     status=400
+                )
+
+            streamer = self._resolve_streamer_scope(
+                request,
+                data.get("streamer") or request.query.get("streamer"),
+            )
+            if streamer and not self._clip_owned_by_streamer(clip_id, streamer):
+                return web.json_response(
+                    {"error": "forbidden: clip does not belong to authenticated streamer"},
+                    status=403,
+                )
+            if streamer and not is_global and not self._streamer_template_owned_by_streamer(template_id, streamer):
+                return web.json_response(
+                    {"error": "forbidden: template does not belong to authenticated streamer"},
+                    status=403,
                 )
 
             success = self.clip_manager.apply_template_to_clip(
@@ -1452,6 +1552,8 @@ anfordern.</p>
                     status=500
                 )
 
+        except web.HTTPException:
+            raise
         except Exception:
             log.exception("Failed to apply template")
             return web.json_response({"error": "template_apply_failed"}, status=500)
@@ -1465,13 +1567,17 @@ anfordern.</p>
         try:
             data = await request.json()
 
-            streamer = data.get("streamer")
+            streamer = self._resolve_streamer_scope(
+                request,
+                data.get("streamer"),
+                required=True,
+            )
             platforms = data.get("platforms", [])
             apply_default_template = data.get("apply_default_template", True)
 
-            if not streamer or not platforms:
+            if not platforms:
                 return web.json_response(
-                    {"error": "streamer and platforms are required"},
+                    {"error": "platforms are required"},
                     status=400
                 )
 
@@ -1487,6 +1593,8 @@ anfordern.</p>
                 "message": f"Queued {stats['queued']} clips, {stats['errors']} errors"
             })
 
+        except web.HTTPException:
+            raise
         except Exception:
             log.exception("Failed to batch upload")
             return web.json_response({"error": "batch_upload_failed"}, status=500)
@@ -1498,13 +1606,23 @@ anfordern.</p>
         try:
             data = await request.json()
 
-            clip_id = data.get("clip_id")
+            clip_id = self._normalize_clip_id(data.get("clip_id"))
             platforms = data.get("platforms", [])
 
             if not clip_id or not platforms:
                 return web.json_response(
                     {"error": "clip_id and platforms are required"},
                     status=400
+                )
+
+            streamer = self._resolve_streamer_scope(
+                request,
+                data.get("streamer") or request.query.get("streamer"),
+            )
+            if streamer and not self._clip_owned_by_streamer(clip_id, streamer):
+                return web.json_response(
+                    {"error": "forbidden: clip does not belong to authenticated streamer"},
+                    status=403,
                 )
 
             success = self.clip_manager.mark_clip_uploaded(
@@ -1524,6 +1642,8 @@ anfordern.</p>
                     status=500
                 )
 
+        except web.HTTPException:
+            raise
         except Exception:
             log.exception("Failed to mark clip as uploaded")
             return web.json_response({"error": "mark_uploaded_failed"}, status=500)
@@ -1537,15 +1657,13 @@ anfordern.</p>
         try:
             data = await request.json()
 
-            streamer = data.get("streamer")
+            streamer = self._resolve_streamer_scope(
+                request,
+                data.get("streamer"),
+                required=True,
+            )
             limit = data.get("limit", 20)
             days = data.get("days", 7)
-
-            if not streamer:
-                return web.json_response(
-                    {"error": "streamer parameter required"},
-                    status=400
-                )
 
             clips = await self.clip_manager.fetch_recent_clips(
                 streamer_login=streamer,
@@ -1559,6 +1677,8 @@ anfordern.</p>
                 "message": f"Fetched {len(clips)} clips"
             })
 
+        except web.HTTPException:
+            raise
         except Exception:
             log.exception("Failed to fetch clips")
             return web.json_response({"error": "fetch_clips_failed"}, status=500)
@@ -1567,9 +1687,11 @@ anfordern.</p>
         """GET /api/last-hashtags - Get last used hashtags."""
         self._require_auth(request)
 
-        streamer = request.query.get("streamer")
-        if not streamer:
-            return web.json_response({"error": "streamer parameter required"}, status=400)
+        streamer = self._resolve_streamer_scope(
+            request,
+            request.query.get("streamer"),
+            required=True,
+        )
 
         hashtags = self.clip_manager.get_last_hashtags(streamer_login=streamer)
 
@@ -1582,7 +1704,11 @@ anfordern.</p>
         self._require_auth(request)
 
         platform = request.match_info["platform"]
-        streamer = request.query.get("streamer")  # Optional: per-streamer credentials
+        streamer = self._resolve_streamer_scope(
+            request,
+            request.query.get("streamer"),
+            required=True,
+        )
 
         if platform not in ["tiktok", "youtube", "instagram"]:
             return web.Response(text="Invalid platform", status=400)
@@ -1637,7 +1763,11 @@ anfordern.</p>
         self._require_auth(request)
 
         platform = request.match_info["platform"]
-        streamer = request.query.get("streamer")
+        streamer = self._resolve_streamer_scope(
+            request,
+            request.query.get("streamer"),
+            required=True,
+        )
 
         if platform not in ["tiktok", "youtube", "instagram"]:
             return web.json_response({"error": "Invalid platform"}, status=400)
@@ -1669,7 +1799,11 @@ anfordern.</p>
         """GET platform connection status."""
         self._require_auth(request)
 
-        streamer = request.query.get("streamer")
+        streamer = self._resolve_streamer_scope(
+            request,
+            request.query.get("streamer"),
+            required=True,
+        )
 
         from .credential_manager import SocialMediaCredentialManager
         cred_mgr = SocialMediaCredentialManager()
@@ -1698,6 +1832,7 @@ anfordern.</p>
 def create_social_media_app(
     clip_manager: ClipManager,
     auth_checker=None,
+    auth_session_getter=None,
 ) -> web.Application:
     """
     Create Social Media Dashboard aiohttp app.
@@ -1705,9 +1840,14 @@ def create_social_media_app(
     Args:
         clip_manager: ClipManager instance
         auth_checker: Callable that checks authentication (from parent dashboard server)
+        auth_session_getter: Callable that resolves dashboard OAuth session
 
     Returns:
         aiohttp Application
     """
-    dashboard = SocialMediaDashboard(clip_manager, auth_checker=auth_checker)
+    dashboard = SocialMediaDashboard(
+        clip_manager,
+        auth_checker=auth_checker,
+        auth_session_getter=auth_session_getter,
+    )
     return dashboard._build_app()

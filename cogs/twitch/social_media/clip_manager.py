@@ -96,7 +96,7 @@ class ClipManager:
                 )
 
                 clip_db_id = cursor.lastrowid
-                log.info(
+                log.debug(
                     "Clip registriert: %s (ID: %s) - %s",
                     clip_id,
                     clip_db_id,

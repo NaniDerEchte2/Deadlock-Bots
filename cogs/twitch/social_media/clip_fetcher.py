@@ -1,7 +1,7 @@
 """
 Background Clip Fetcher - Auto-Fetch Clips alle 6 Stunden.
 
-Fetcht automatisch neueste Clips für alle Streamer und speichert
+Fetcht automatisch neueste Clips für verifizierte Partner und speichert
 Fetch-History in der Datenbank.
 """
 import asyncio
@@ -60,7 +60,7 @@ class ClipFetcher(commands.Cog):
             await asyncio.sleep(self.interval_seconds)
 
     async def fetch_all_streamers(self):
-        """Fetch clips for all active streamers."""
+        """Fetch clips for all active, verified partner streamers."""
         stats = {
             "streamers": 0,
             "clips_total": 0,
@@ -72,17 +72,24 @@ class ClipFetcher(commands.Cog):
         start_time = time.time()
 
         try:
-            # Get all active streamers
+            # Get all active, verified partners (exclude monitored-only and opt-out)
             with get_conn() as conn:
                 streamers = conn.execute(
                     """
                     SELECT twitch_login FROM twitch_streamers
                      WHERE archived_at IS NULL
+                       AND COALESCE(manual_partner_opt_out, 0) = 0
+                       AND COALESCE(is_monitored_only, 0) = 0
+                       AND (
+                            COALESCE(manual_verified_permanent, 0) = 1
+                            OR manual_verified_until IS NOT NULL
+                            OR manual_verified_at IS NOT NULL
+                       )
                      ORDER BY twitch_login ASC
                     """
                 ).fetchall()
 
-            log.info("Starting clip fetch for %s streamers", len(streamers))
+            log.info("Starting clip fetch for %s partner streamers", len(streamers))
 
             # Fetch clips for each streamer
             for streamer_row in streamers:

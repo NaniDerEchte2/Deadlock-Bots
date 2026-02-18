@@ -1669,6 +1669,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             social_app = create_social_media_app(
                 clip_manager=clip_manager,
                 auth_checker=self._check_v2_auth,
+                auth_session_getter=self._get_dashboard_auth_session,
             )
 
             # Mount social media routes
