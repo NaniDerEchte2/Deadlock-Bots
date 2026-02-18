@@ -63,6 +63,8 @@ class SocialMediaDashboard:
 
         # HTML Pages
         app.router.add_get("/social-media", self.index)
+        app.router.add_get("/terms", self.page_terms)
+        app.router.add_get("/privacy", self.page_privacy)
 
         # API Endpoints
         app.router.add_get("/social-media/api/stats", self.api_stats)
@@ -91,6 +93,119 @@ class SocialMediaDashboard:
         app.router.add_get("/social-media/api/platforms/status", self.api_platforms_status)
 
         return app
+
+    async def page_terms(self, request: web.Request) -> web.Response:
+        """Public Terms of Service page (required for TikTok / platform OAuth apps)."""
+        body = """<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nutzungsbedingungen – Deutsche Deadlock Community Bot</title>
+<style>
+  body { font-family: sans-serif; max-width: 800px; margin: 60px auto; padding: 0 24px; color: #222; line-height: 1.7; }
+  h1 { font-size: 1.8rem; margin-bottom: 4px; }
+  h2 { font-size: 1.2rem; margin-top: 32px; }
+  p, li { font-size: 0.97rem; }
+  footer { margin-top: 48px; font-size: 0.85rem; color: #666; }
+</style>
+</head>
+<body>
+<h1>Nutzungsbedingungen</h1>
+<p><strong>Deutsche Deadlock Community Bot</strong> – zuletzt aktualisiert: Februar 2026</p>
+
+<h2>1. Geltungsbereich</h2>
+<p>Diese Nutzungsbedingungen gelten für den Einsatz des Deutsche Deadlock Community Bots
+(nachfolgend „Bot"), der Twitch-Clips automatisch auf Social-Media-Plattformen
+(TikTok, YouTube, Instagram) veröffentlicht. Der Bot wird von der Deutschen Deadlock
+Community für interne Zwecke betrieben.</p>
+
+<h2>2. Nutzung</h2>
+<p>Der Bot ist ausschließlich für autorisierte Streamer der Deutschen Deadlock Community
+bestimmt. Eine Nutzung durch Dritte ist nicht vorgesehen. Autorisierte Streamer erklären
+sich einverstanden, dass ihre öffentlichen Twitch-Clips im Rahmen der Community-Aktivitäten
+auf den verbundenen Social-Media-Kanälen veröffentlicht werden dürfen.</p>
+
+<h2>3. Inhalte</h2>
+<p>Es dürfen ausschließlich Clips hochgeladen werden, für die die erforderlichen Rechte
+vorliegen. Insbesondere sind Clips mit urheberrechtlich geschützter Musik, beleidigenden
+oder rechtswidrigen Inhalten ausgeschlossen.</p>
+
+<h2>4. Haftungsausschluss</h2>
+<p>Der Bot wird ohne Gewähr betrieben. Wir übernehmen keine Haftung für eventuelle
+Fehlfunktionen, Datenverluste oder Schäden, die durch die Nutzung des Bots entstehen.</p>
+
+<h2>5. Änderungen</h2>
+<p>Diese Bedingungen können jederzeit angepasst werden. Die jeweils aktuelle Version ist
+unter dieser URL abrufbar.</p>
+
+<h2>6. Kontakt</h2>
+<p>Bei Fragen: Discord-Server der Deutschen Deadlock Community.</p>
+
+<footer>Deutsche Deadlock Community · <a href="/privacy">Datenschutzhinweis</a></footer>
+</body>
+</html>"""
+        return web.Response(text=body, content_type="text/html", charset="utf-8")
+
+    async def page_privacy(self, request: web.Request) -> web.Response:
+        """Public Privacy Policy page (required for TikTok / platform OAuth apps)."""
+        body = """<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Datenschutzhinweis – Deutsche Deadlock Community Bot</title>
+<style>
+  body { font-family: sans-serif; max-width: 800px; margin: 60px auto; padding: 0 24px; color: #222; line-height: 1.7; }
+  h1 { font-size: 1.8rem; margin-bottom: 4px; }
+  h2 { font-size: 1.2rem; margin-top: 32px; }
+  p, li { font-size: 0.97rem; }
+  footer { margin-top: 48px; font-size: 0.85rem; color: #666; }
+</style>
+</head>
+<body>
+<h1>Datenschutzhinweis</h1>
+<p><strong>Deutsche Deadlock Community Bot</strong> – zuletzt aktualisiert: Februar 2026</p>
+
+<h2>1. Verantwortliche Stelle</h2>
+<p>Betrieben wird der Bot durch die Deutsche Deadlock Community (Discord-Server).
+Kontakt über den Discord-Server.</p>
+
+<h2>2. Erhobene Daten</h2>
+<p>Der Bot verarbeitet ausschließlich öffentlich verfügbare Daten von der Twitch-API:</p>
+<ul>
+  <li>Twitch-Benutzernamen und -IDs der Community-Streamer</li>
+  <li>Öffentliche Clip-Metadaten (Titel, URL, Vorschaubild, Spieldauer, Zuschauerzahl)</li>
+  <li>OAuth-Zugangsdaten für verbundene Social-Media-Konten (verschlüsselt gespeichert)</li>
+</ul>
+<p>Es werden keine personenbezogenen Daten von Zuschauern oder Dritten gespeichert.</p>
+
+<h2>3. Zweck der Verarbeitung</h2>
+<p>Die Daten werden ausschließlich zur automatischen Veröffentlichung von
+Community-Clips auf TikTok, YouTube und Instagram verwendet.</p>
+
+<h2>4. Speicherung & Sicherheit</h2>
+<p>Clip-Metadaten und OAuth-Tokens werden in einer lokalen SQLite-Datenbank gespeichert.
+Zugangsdaten werden mit AES-256-GCM verschlüsselt. Ein Zugriff von außen auf die
+Datenbank besteht nicht.</p>
+
+<h2>5. Weitergabe an Dritte</h2>
+<p>Daten werden nicht an Dritte weitergegeben. Für den Upload wird die jeweilige
+Plattform-API (TikTok, YouTube, Instagram) verwendet; dabei gelten deren
+Datenschutzbestimmungen.</p>
+
+<h2>6. Dauer der Speicherung</h2>
+<p>Clip-Einträge werden intern gespeichert bis sie manuell gelöscht werden.
+OAuth-Tokens werden bei Widerruf der App-Berechtigung sofort deaktiviert.</p>
+
+<h2>7. Betroffenenrechte</h2>
+<p>Autorisierte Streamer können jederzeit die Löschung ihrer Daten per Discord-Nachricht
+anfordern.</p>
+
+<footer>Deutsche Deadlock Community · <a href="/terms">Nutzungsbedingungen</a></footer>
+</body>
+</html>"""
+        return web.Response(text=body, content_type="text/html", charset="utf-8")
 
     async def index(self, request: web.Request) -> web.Response:
         """Main dashboard page with full template & batch upload UI."""
