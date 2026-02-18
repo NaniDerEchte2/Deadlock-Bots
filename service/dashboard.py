@@ -535,6 +535,37 @@ class DashboardServer:
                 return False
         return None
 
+    @staticmethod
+    def _coerce_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+        try:
+            if value is None:
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _parse_metadata_json(raw: Any) -> Dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if raw is None:
+            return {}
+        if isinstance(raw, (bytes, bytearray)):
+            try:
+                raw = raw.decode("utf-8", errors="ignore")
+            except Exception:
+                return {}
+        if not isinstance(raw, str):
+            return {}
+        text = raw.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
     def _resolve_twitch_dashboard_href(self) -> str:
         explicit = (
             os.getenv("MASTER_TWITCH_DASHBOARD_URL")
@@ -2141,6 +2172,262 @@ class DashboardServer:
         }
         return self._json(payload)
 
+    def _collect_public_vanity_links(self, guild_filter: Optional[int]) -> List[Dict[str, Any]]:
+        links: List[Dict[str, Any]] = []
+        for guild in self.bot.guilds:
+            if guild_filter is not None and int(guild.id) != int(guild_filter):
+                continue
+            code = str(getattr(guild, "vanity_url_code", "") or "").strip()
+            if not code:
+                continue
+            links.append(
+                {
+                    "guild_id": int(guild.id),
+                    "guild_name": getattr(guild, "name", None),
+                    "type": "vanity",
+                    "label": "Vanity-Link",
+                    "code": code,
+                    "url": f"https://discord.gg/{code}",
+                }
+            )
+        links.sort(key=lambda item: str(item.get("guild_name") or "").lower())
+        return links
+
+    def _build_member_source_analytics(
+        self,
+        guild_filter: Optional[int],
+        *,
+        days: int = 30,
+    ) -> Dict[str, Any]:
+        window_days = max(1, min(int(days), 365))
+        cutoff_expr = f"-{window_days} days"
+
+        join_rows = db.query_all(
+            """
+            SELECT user_id, guild_id, timestamp, display_name, metadata
+            FROM member_events
+            WHERE event_type = 'join'
+              AND timestamp >= datetime('now', ?)
+              AND (? IS NULL OR guild_id = ?)
+            ORDER BY timestamp DESC
+            """,
+            (cutoff_expr, guild_filter, guild_filter),
+        )
+
+        twitch_invite_lookup: Dict[str, str] = {}
+        twitch_assigned_links: List[Dict[str, Any]] = []
+        try:
+            twitch_rows = db.query_all(
+                """
+                SELECT streamer_login, invite_code, invite_url, created_at, last_sent_at
+                FROM twitch_streamer_invites
+                WHERE (? IS NULL OR guild_id = ?)
+                ORDER BY streamer_login ASC
+                """,
+                (guild_filter, guild_filter),
+            )
+            for row in twitch_rows:
+                streamer_login = str(row[0] or "").strip().lower()
+                invite_code = str(row[1] or "").strip()
+                invite_url = str(row[2] or "").strip()
+                created_at = row[3]
+                last_sent_at = row[4]
+
+                if invite_code and streamer_login and invite_code.lower() not in twitch_invite_lookup:
+                    twitch_invite_lookup[invite_code.lower()] = streamer_login
+
+                if streamer_login or invite_code or invite_url:
+                    twitch_assigned_links.append(
+                        {
+                            "streamer_login": streamer_login or None,
+                            "invite_code": invite_code or None,
+                            "invite_url": invite_url or (f"https://discord.gg/{invite_code}" if invite_code else None),
+                            "created_at": created_at,
+                            "last_sent_at": last_sent_at,
+                        }
+                    )
+        except sqlite3.OperationalError:
+            # Tabelle existiert nur wenn Twitch-Schema initialisiert wurde.
+            pass
+        except Exception:
+            logger.debug("Failed to load twitch invite assignments", exc_info=True)
+
+        bucket_counts: Dict[str, int] = {
+            "public": 0,
+            "twitch": 0,
+            "personal": 0,
+            "unknown": 0,
+        }
+        public_groups: Dict[str, Dict[str, Any]] = {
+            "server_discovery": {"kind": "server_discovery", "label": "Server entdecken", "count": 0},
+            "vanity": {"kind": "vanity", "label": "Vanity-Link", "count": 0},
+            "other": {"kind": "other", "label": "Public (Sonstige)", "count": 0},
+        }
+        twitch_groups: Dict[str, Dict[str, Any]] = {}
+        personal_groups: Dict[str, Dict[str, Any]] = {}
+        recent: List[Dict[str, Any]] = []
+
+        for row in join_rows:
+            user_id = self._coerce_int(row[0], 0) or 0
+            timestamp = row[2]
+            display_name = row[3] or f"User {user_id}"
+            metadata = self._parse_metadata_json(row[4])
+
+            bucket_raw = str(metadata.get("join_source_bucket") or "").strip().lower()
+            kind_raw = str(metadata.get("join_source_kind") or metadata.get("join_source_type") or "").strip().lower()
+            label_raw = str(metadata.get("join_source_label") or "").strip()
+            invite_code = str(metadata.get("invite_code") or "").strip()
+            invite_url = str(metadata.get("invite_url") or "").strip()
+            if not invite_url and invite_code:
+                invite_url = f"https://discord.gg/{invite_code}"
+            twitch_login = str(metadata.get("twitch_streamer_login") or "").strip().lower()
+            if not twitch_login and invite_code:
+                twitch_login = twitch_invite_lookup.get(invite_code.lower(), "")
+
+            bucket = bucket_raw
+            if bucket not in bucket_counts:
+                if twitch_login:
+                    bucket = "twitch"
+                elif kind_raw in {"server_discovery", "discovery", "public_discovery", "vanity", "vanity_url"}:
+                    bucket = "public"
+                elif invite_code or kind_raw in {"invite_link", "personal", "personal_invite"}:
+                    bucket = "personal"
+                else:
+                    bucket = "unknown"
+
+            bucket_counts[bucket] += 1
+
+            public_kind: Optional[str] = None
+            personal_label: Optional[str] = None
+            if bucket == "public":
+                if kind_raw in {"server_discovery", "discovery", "public_discovery"}:
+                    public_kind = "server_discovery"
+                elif kind_raw in {"vanity", "vanity_url", "public_vanity"}:
+                    public_kind = "vanity"
+                else:
+                    public_kind = "other"
+                public_groups[public_kind]["count"] += 1
+
+            if bucket == "twitch":
+                key = twitch_login or invite_code.lower() or "unknown"
+                label = twitch_login or (f"Invite {invite_code}" if invite_code else "Unbekannt")
+                entry = twitch_groups.get(key)
+                if entry is None:
+                    entry = {
+                        "streamer_login": twitch_login or None,
+                        "label": label,
+                        "invite_code": invite_code or None,
+                        "invite_url": invite_url or None,
+                        "count": 0,
+                    }
+                    twitch_groups[key] = entry
+                entry["count"] += 1
+                if invite_code and not entry.get("invite_code"):
+                    entry["invite_code"] = invite_code
+                if invite_url and not entry.get("invite_url"):
+                    entry["invite_url"] = invite_url
+
+            if bucket == "personal":
+                inviter_id = self._coerce_int(metadata.get("inviter_id"), None)
+                inviter_name = str(metadata.get("inviter_name") or "").strip()
+                if inviter_id is not None:
+                    key = f"id:{inviter_id}"
+                    personal_label = inviter_name or f"User {inviter_id}"
+                elif inviter_name:
+                    key = f"name:{inviter_name.lower()}"
+                    personal_label = inviter_name
+                elif invite_code:
+                    key = f"code:{invite_code.lower()}"
+                    personal_label = f"Invite {invite_code}"
+                else:
+                    key = "other"
+                    personal_label = "Sonstige Invite-Links"
+
+                entry = personal_groups.get(key)
+                if entry is None:
+                    entry = {
+                        "label": personal_label,
+                        "inviter_id": inviter_id,
+                        "invite_code": invite_code or None,
+                        "invite_url": invite_url or None,
+                        "count": 0,
+                    }
+                    personal_groups[key] = entry
+                entry["count"] += 1
+                if invite_code and not entry.get("invite_code"):
+                    entry["invite_code"] = invite_code
+                if invite_url and not entry.get("invite_url"):
+                    entry["invite_url"] = invite_url
+
+            source_label = label_raw
+            if not source_label:
+                if bucket == "public":
+                    if public_kind == "server_discovery":
+                        source_label = "Public: Server entdecken"
+                    elif public_kind == "vanity":
+                        source_label = "Public: Vanity-Link"
+                    else:
+                        source_label = "Public"
+                elif bucket == "twitch":
+                    source_label = f"Twitch: {twitch_login}" if twitch_login else "Twitch"
+                elif bucket == "personal":
+                    source_label = f"Persoenlich: {personal_label or 'Invite-Link'}"
+                else:
+                    source_label = "Unbekannt"
+
+            recent.append(
+                {
+                    "user_id": user_id,
+                    "display_name": display_name,
+                    "timestamp": timestamp,
+                    "bucket": bucket,
+                    "label": source_label,
+                    "invite_code": invite_code or None,
+                    "invite_url": invite_url or None,
+                    "twitch_streamer_login": twitch_login or None,
+                }
+            )
+
+        public_breakdown = [entry for entry in public_groups.values() if int(entry.get("count", 0)) > 0]
+        twitch_breakdown = sorted(
+            twitch_groups.values(),
+            key=lambda item: (-int(item.get("count", 0)), str(item.get("label") or "").lower()),
+        )
+        personal_breakdown = sorted(
+            personal_groups.values(),
+            key=lambda item: (-int(item.get("count", 0)), str(item.get("label") or "").lower()),
+        )
+        twitch_assigned_links = sorted(
+            twitch_assigned_links,
+            key=lambda item: (
+                str(item.get("streamer_login") or "").lower(),
+                str(item.get("invite_code") or "").lower(),
+            ),
+        )
+
+        known_joins = bucket_counts["public"] + bucket_counts["twitch"] + bucket_counts["personal"]
+        unknown_joins = bucket_counts["unknown"]
+
+        return {
+            "window_days": window_days,
+            "tracked_joins": len(join_rows),
+            "known_joins": known_joins,
+            "unknown_joins": unknown_joins,
+            "bucket_counts": bucket_counts,
+            "bucket_labels": {
+                "public": "Public",
+                "twitch": "Twitch",
+                "personal": "Persoenlich/Sonstige",
+                "unknown": "Unbekannt",
+            },
+            "public_breakdown": public_breakdown,
+            "public_links": self._collect_public_vanity_links(guild_filter),
+            "twitch_breakdown": twitch_breakdown,
+            "twitch_assigned_links": twitch_assigned_links,
+            "personal_breakdown": personal_breakdown,
+            "recent": recent[:20],
+        }
+
     async def _handle_server_stats(self, request: web.Request) -> web.Response:
         """Handler für aggregierte Server-Statistiken."""
         self._check_auth(request, required=bool(self.token))
@@ -2212,6 +2499,8 @@ class DashboardServer:
                 (guild_filter, guild_filter),
             )
 
+            member_sources_30d = self._build_member_source_analytics(guild_filter, days=30)
+
             payload = {
                 "member_events": {row[0]: row[1] for row in member_events_summary},
                 "total_messages": message_summary[0] if message_summary and message_summary[0] else 0,
@@ -2222,6 +2511,7 @@ class DashboardServer:
                     "leaves": growth[1] if growth else 0,
                     "net": (growth[0] or 0) - (growth[1] or 0) if growth else 0,
                 },
+                "member_sources_30d": member_sources_30d,
             }
             return self._json(payload)
 

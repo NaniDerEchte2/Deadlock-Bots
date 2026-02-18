@@ -644,6 +644,89 @@
             color: #868e96;
             font-size: 0.8rem;
         }
+        .member-source-layout {
+            display: grid;
+            grid-template-columns: minmax(220px, 280px) 1fr;
+            gap: 1rem;
+            align-items: center;
+            margin-bottom: 0.85rem;
+        }
+        .member-source-chart-wrap {
+            position: relative;
+            min-height: 240px;
+        }
+        .member-source-summary {
+            display: flex;
+            flex-direction: column;
+            gap: 0.45rem;
+        }
+        .member-source-summary-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.6rem;
+            padding: 0.45rem 0.6rem;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.06);
+        }
+        .member-source-label {
+            color: #dee2e6;
+            font-size: 0.9rem;
+        }
+        .member-source-count {
+            color: #adb5bd;
+            font-variant-numeric: tabular-nums;
+            font-size: 0.88rem;
+            white-space: nowrap;
+        }
+        .member-source-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 0.85rem;
+            margin-top: 0.5rem;
+        }
+        .member-source-section h4 {
+            margin: 0 0 0.45rem;
+            font-size: 0.9rem;
+            color: #adb5bd;
+            font-weight: 600;
+        }
+        .member-source-list {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .member-source-list li {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.55rem;
+            padding: 0.42rem 0.55rem;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.05);
+            font-size: 0.86rem;
+        }
+        .member-source-link {
+            color: #74c0fc;
+            text-decoration: none;
+            word-break: break-all;
+        }
+        .member-source-link:hover {
+            text-decoration: underline;
+        }
+        @media (max-width: 980px) {
+            .member-source-layout {
+                grid-template-columns: 1fr;
+            }
+            .member-source-chart-wrap {
+                min-height: 220px;
+            }
+        }
         .voice-columns {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -1155,6 +1238,33 @@
                     <div id="server-stats-summary" class="grid"></div>
                 </div>
                 <div class="card">
+                    <h3>Mitgliederquellen (30 Tage)</h3>
+                    <div class="member-source-layout">
+                        <div class="member-source-chart-wrap">
+                            <canvas id="member-source-chart"></canvas>
+                        </div>
+                        <div id="member-source-summary" class="member-source-summary"></div>
+                    </div>
+                    <div class="member-source-details">
+                        <div class="member-source-section">
+                            <h4>Public</h4>
+                            <ul id="member-source-public" class="member-source-list"></ul>
+                        </div>
+                        <div class="member-source-section">
+                            <h4>Twitch (Joins)</h4>
+                            <ul id="member-source-twitch" class="member-source-list"></ul>
+                        </div>
+                        <div class="member-source-section">
+                            <h4>Persönlich / Sonstige</h4>
+                            <ul id="member-source-personal" class="member-source-list"></ul>
+                        </div>
+                        <div class="member-source-section">
+                            <h4>Twitch Invite-Links</h4>
+                            <ul id="member-source-twitch-links" class="member-source-list"></ul>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
                     <h3>Member Events (Letzte 50)</h3>
                     <div id="member-events-container"></div>
                 </div>
@@ -1401,10 +1511,17 @@
 
     // Server Stats & User Activity
     const serverStatsSummary = document.getElementById('server-stats-summary');
+    const memberSourceChartCanvas = document.getElementById('member-source-chart');
+    const memberSourceSummary = document.getElementById('member-source-summary');
+    const memberSourcePublic = document.getElementById('member-source-public');
+    const memberSourceTwitch = document.getElementById('member-source-twitch');
+    const memberSourcePersonal = document.getElementById('member-source-personal');
+    const memberSourceTwitchLinks = document.getElementById('member-source-twitch-links');
     const memberEventsContainer = document.getElementById('member-events-container');
     const messageActivityContainer = document.getElementById('message-activity-container');
     const serverStatsRefreshButton = document.getElementById('server-stats-refresh');
     const serverStatsUpdated = document.getElementById('server-stats-updated');
+    let memberSourceChart = null;
 
     // User Retention
     const retentionSummary = document.getElementById('retention-summary');
@@ -2863,6 +2980,175 @@ async function loadServerStats() {
     }
 }
 
+function renderMemberSourceList(container, rows, emptyText, formatter) {
+    if (!container) return;
+    container.innerHTML = '';
+    if (!Array.isArray(rows) || rows.length === 0) {
+        const li = document.createElement('li');
+        li.textContent = emptyText;
+        container.appendChild(li);
+        return;
+    }
+    rows.forEach((row) => {
+        const formatted = formatter(row) || {};
+        const li = document.createElement('li');
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'member-source-label';
+        labelSpan.textContent = formatted.label || '-';
+        li.appendChild(labelSpan);
+
+        if (formatted.href) {
+            const link = document.createElement('a');
+            link.className = 'member-source-link';
+            link.href = formatted.href;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = formatted.hrefLabel || formatted.href;
+            li.appendChild(link);
+        }
+
+        if (formatted.count !== null && formatted.count !== undefined) {
+            const countSpan = document.createElement('span');
+            countSpan.className = 'member-source-count';
+            countSpan.textContent = Number(formatted.count || 0).toLocaleString('de-DE');
+            li.appendChild(countSpan);
+        }
+        container.appendChild(li);
+    });
+}
+
+function renderMemberSourceAnalytics(data) {
+    const analytics = data && data.member_sources_30d ? data.member_sources_30d : {};
+    const bucketCounts = analytics.bucket_counts || {};
+    const total = Number(analytics.tracked_joins || 0);
+
+    const series = [
+        { key: 'public', label: 'Public', color: '#4dabf7' },
+        { key: 'twitch', label: 'Twitch', color: '#9775fa' },
+        { key: 'personal', label: 'Persönlich/Sonstige', color: '#ffa94d' },
+        { key: 'unknown', label: 'Unbekannt', color: '#868e96' },
+    ];
+
+    if (memberSourceSummary) {
+        memberSourceSummary.innerHTML = '';
+        const header = document.createElement('div');
+        header.className = 'voice-meta';
+        const windowDays = Number(analytics.window_days || 30);
+        const known = Number(analytics.known_joins || 0);
+        header.textContent = `${total.toLocaleString('de-DE')} Joins in ${windowDays} Tagen (${known.toLocaleString('de-DE')} mit Quelle)`;
+        memberSourceSummary.appendChild(header);
+
+        series.forEach((entry) => {
+            const count = Number(bucketCounts[entry.key] || 0);
+            const row = document.createElement('div');
+            row.className = 'member-source-summary-row';
+
+            const label = document.createElement('span');
+            label.className = 'member-source-label';
+            const pct = total > 0 ? ` (${((count / total) * 100).toFixed(1)}%)` : '';
+            label.textContent = `${entry.label}${pct}`;
+            row.appendChild(label);
+
+            const value = document.createElement('span');
+            value.className = 'member-source-count';
+            value.textContent = count.toLocaleString('de-DE');
+            row.appendChild(value);
+
+            memberSourceSummary.appendChild(row);
+        });
+    }
+
+    if (memberSourceChartCanvas) {
+        if (memberSourceChart) {
+            memberSourceChart.destroy();
+        }
+        memberSourceChart = new Chart(memberSourceChartCanvas, {
+            type: 'doughnut',
+            data: {
+                labels: series.map((s) => s.label),
+                datasets: [{
+                    data: series.map((s) => Number(bucketCounts[s.key] || 0)),
+                    backgroundColor: series.map((s) => s.color),
+                    borderColor: 'rgba(18,18,18,0.9)',
+                    borderWidth: 2,
+                    hoverOffset: 4,
+                }],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { position: 'bottom', labels: { color: '#ced4da', boxWidth: 14 } },
+                    tooltip: {
+                        callbacks: {
+                            label: (ctx) => {
+                                const val = Number(ctx.parsed || 0);
+                                const pct = total > 0 ? ((val / total) * 100).toFixed(1) : '0.0';
+                                return `${ctx.label}: ${val.toLocaleString('de-DE')} (${pct}%)`;
+                            },
+                        },
+                    },
+                },
+                cutout: '58%',
+            },
+        });
+    }
+
+    const publicRows = Array.isArray(analytics.public_breakdown) ? [...analytics.public_breakdown] : [];
+    const publicLinks = Array.isArray(analytics.public_links) ? analytics.public_links : [];
+    publicLinks.forEach((link) => {
+        publicRows.push({
+            label: `Link: ${link.code ? `discord.gg/${link.code}` : 'Vanity'}`,
+            url: link.url || '',
+            count: null,
+        });
+    });
+
+    renderMemberSourceList(
+        memberSourcePublic,
+        publicRows,
+        'Keine Public-Daten.',
+        (row) => ({
+            label: row.label || row.kind || 'Public',
+            href: row.url || '',
+            hrefLabel: row.url ? 'oeffnen' : undefined,
+            count: row.count === null || row.count === undefined ? null : Number(row.count || 0),
+        }),
+    );
+
+    renderMemberSourceList(
+        memberSourceTwitch,
+        (analytics.twitch_breakdown || []).slice(0, 8),
+        'Noch keine Twitch-Zuordnung.',
+        (row) => ({
+            label: row.streamer_login ? `@${row.streamer_login}` : (row.label || 'Twitch'),
+            count: Number(row.count || 0),
+        }),
+    );
+
+    renderMemberSourceList(
+        memberSourcePersonal,
+        (analytics.personal_breakdown || []).slice(0, 8),
+        'Keine persönlichen Einladungen im Zeitraum.',
+        (row) => ({
+            label: row.label || 'Sonstige Invite-Links',
+            count: Number(row.count || 0),
+        }),
+    );
+
+    renderMemberSourceList(
+        memberSourceTwitchLinks,
+        (analytics.twitch_assigned_links || []).slice(0, 12),
+        'Keine Twitch Invite-Links gespeichert.',
+        (row) => ({
+            label: row.streamer_login ? `@${row.streamer_login}` : (row.invite_code || 'Invite'),
+            href: row.invite_url || '',
+            hrefLabel: row.invite_code ? `discord.gg/${row.invite_code}` : undefined,
+            count: null,
+        }),
+    );
+}
+
 function renderServerStats(data) {
     if (!serverStatsSummary) return;
     serverStatsSummary.innerHTML = '';
@@ -2912,6 +3198,8 @@ function renderServerStats(data) {
         el.appendChild(sub);
         serverStatsSummary.appendChild(el);
     });
+
+    renderMemberSourceAnalytics(data);
 }
 
 function renderMemberEvents(data) {

@@ -17,7 +17,7 @@ import logging
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import discord
 from discord.ext import commands, tasks
@@ -43,6 +43,11 @@ class UserActivityAnalyzer(commands.Cog):
         # Namens-Cache für Co-Player, damit Display-Namen auch nach Neustarts verfügbar bleiben
         self._display_name_cache: Dict[int, Tuple[str, float]] = {}
         self._display_name_cache_ttl = 3600.0  # Sekunden
+        # Invite-Snapshots pro Guild zur Join-Quellen-Erkennung
+        self._join_invite_snapshot: Dict[int, Dict[str, Dict[str, Any]]] = {}
+        self._join_vanity_snapshot: Dict[int, Dict[str, Any]] = {}
+        self._join_source_locks: Dict[int, asyncio.Lock] = {}
+        self._invite_warmup_task: Optional[asyncio.Task] = None
 
         logger.info("User Activity Analyzer initializing")
 
@@ -57,9 +62,17 @@ class UserActivityAnalyzer(commands.Cog):
 
         # Initialisiere neue DB-Tabellen (falls nicht vorhanden)
         self._ensure_new_tables()
+        self._invite_warmup_task = asyncio.create_task(
+            self._prime_join_source_cache(),
+            name="user-activity.join-source-prime",
+        )
 
     async def cog_unload(self):
         """Stoppt Background-Tasks sauber."""
+        if self._invite_warmup_task and not self._invite_warmup_task.done():
+            self._invite_warmup_task.cancel()
+            await asyncio.gather(self._invite_warmup_task, return_exceptions=True)
+
         tasks_to_cancel = [
             self.analyze_user_activity,
             self.track_co_players_realtime,
@@ -523,6 +536,262 @@ class UserActivityAnalyzer(commands.Cog):
         except Exception as e:
             logger.error(f"Error initializing new tables: {e}", exc_info=True)
 
+    @staticmethod
+    def _to_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+        try:
+            if value is None:
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _invite_lock_for_guild(self, guild_id: int) -> asyncio.Lock:
+        lock = self._join_source_locks.get(guild_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._join_source_locks[guild_id] = lock
+        return lock
+
+    async def _collect_join_invite_snapshot(self, guild: discord.Guild) -> Dict[str, Any]:
+        invites: Dict[str, Dict[str, Any]] = {}
+        invites_ok = False
+
+        try:
+            invite_rows = await guild.invites()
+            invites_ok = True
+            for invite in invite_rows:
+                code = str(getattr(invite, "code", "") or "").strip()
+                if not code:
+                    continue
+                inviter = getattr(invite, "inviter", None)
+                channel = getattr(invite, "channel", None)
+                invite_url = str(getattr(invite, "url", "") or "").strip() or f"https://discord.gg/{code}"
+                invites[code] = {
+                    "uses": self._to_int(getattr(invite, "uses", 0), 0) or 0,
+                    "url": invite_url,
+                    "inviter_id": self._to_int(getattr(inviter, "id", None), None),
+                    "inviter_name": str(inviter) if inviter else None,
+                    "channel_id": self._to_int(getattr(channel, "id", None), None),
+                    "channel_name": str(getattr(channel, "name", "") or "").strip() or None,
+                }
+        except discord.Forbidden:
+            logger.debug("Join source: guild.invites forbidden (guild=%s)", guild.id)
+        except discord.HTTPException as exc:
+            logger.debug("Join source: guild.invites failed (guild=%s): %s", guild.id, exc)
+        except Exception as exc:
+            logger.debug("Join source: guild.invites unexpected (guild=%s): %s", guild.id, exc, exc_info=True)
+
+        vanity_code_raw = getattr(guild, "vanity_url_code", None)
+        vanity_code = str(vanity_code_raw).strip() if vanity_code_raw else None
+        vanity_uses: Optional[int] = None
+        vanity_ok = False
+        try:
+            vanity_invite = await guild.vanity_invite()
+            if vanity_invite:
+                vanity_ok = True
+                code_from_invite = str(getattr(vanity_invite, "code", "") or "").strip()
+                if code_from_invite:
+                    vanity_code = code_from_invite
+                vanity_uses = self._to_int(getattr(vanity_invite, "uses", None), None)
+        except discord.Forbidden:
+            logger.debug("Join source: guild.vanity_invite forbidden (guild=%s)", guild.id)
+        except discord.HTTPException as exc:
+            logger.debug("Join source: guild.vanity_invite failed (guild=%s): %s", guild.id, exc)
+        except Exception as exc:
+            logger.debug("Join source: guild.vanity_invite unexpected (guild=%s): %s", guild.id, exc, exc_info=True)
+
+        return {
+            "invites": invites,
+            "invites_ok": invites_ok,
+            "vanity": {
+                "code": vanity_code,
+                "uses": vanity_uses,
+                "ok": vanity_ok,
+            },
+        }
+
+    async def _prime_join_source_cache(self) -> None:
+        try:
+            await self.bot.wait_until_ready()
+            guilds = list(getattr(self.bot, "guilds", []))
+            for guild in guilds:
+                lock = self._invite_lock_for_guild(guild.id)
+                async with lock:
+                    snapshot = await self._collect_join_invite_snapshot(guild)
+                    if snapshot.get("invites_ok"):
+                        self._join_invite_snapshot[guild.id] = snapshot.get("invites", {})
+                    else:
+                        self._join_invite_snapshot.pop(guild.id, None)
+                    self._join_vanity_snapshot[guild.id] = snapshot.get("vanity", {})
+                await asyncio.sleep(0.2)
+            logger.debug("Join source cache primed for %d guild(s)", len(guilds))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Join source cache prime failed: %s", exc, exc_info=True)
+
+    def _lookup_twitch_streamer_for_code(self, guild_id: int, invite_code: str) -> Optional[str]:
+        code = (invite_code or "").strip()
+        if not code:
+            return None
+        try:
+            row = central_db.query_one(
+                """
+                SELECT streamer_login
+                FROM twitch_streamer_invites
+                WHERE LOWER(invite_code) = LOWER(?)
+                  AND (? IS NULL OR guild_id = ?)
+                ORDER BY COALESCE(last_sent_at, created_at) DESC
+                LIMIT 1
+                """,
+                (code, guild_id, guild_id),
+            )
+        except Exception:
+            return None
+        if not row or not row[0]:
+            return None
+        login = str(row[0]).strip().lower()
+        return login or None
+
+    def _classify_join_source(
+        self,
+        *,
+        guild_id: int,
+        before_invites: Optional[Dict[str, Dict[str, Any]]],
+        after_invites: Dict[str, Dict[str, Any]],
+        before_vanity: Optional[Dict[str, Any]],
+        after_vanity: Dict[str, Any],
+        invites_ok: bool,
+    ) -> Dict[str, Any]:
+        detected_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        payload: Dict[str, Any] = {
+            "join_source_bucket": "unknown",
+            "join_source_kind": "unknown",
+            "join_source_label": "Unbekannt",
+            "join_source_confidence": "low",
+            "join_source_detected_at": detected_at,
+        }
+
+        increased_codes: List[Tuple[int, str, Dict[str, Any]]] = []
+        if before_invites is not None:
+            for code, invite_info in after_invites.items():
+                after_uses = self._to_int(invite_info.get("uses"), 0) or 0
+                before_uses = self._to_int((before_invites.get(code) or {}).get("uses"), 0) or 0
+                delta = after_uses - before_uses
+                if delta > 0:
+                    increased_codes.append((delta, code, invite_info))
+
+        if increased_codes:
+            increased_codes.sort(key=lambda item: (-item[0], item[1].lower()))
+            _, code, invite_info = increased_codes[0]
+            twitch_login = self._lookup_twitch_streamer_for_code(guild_id, code)
+
+            payload.update(
+                {
+                    "invite_code": code,
+                    "invite_url": invite_info.get("url") or f"https://discord.gg/{code}",
+                    "inviter_id": invite_info.get("inviter_id"),
+                    "inviter_name": invite_info.get("inviter_name"),
+                    "invite_channel_id": invite_info.get("channel_id"),
+                    "invite_channel_name": invite_info.get("channel_name"),
+                    "join_source_confidence": "high",
+                }
+            )
+
+            if twitch_login:
+                payload.update(
+                    {
+                        "join_source_bucket": "twitch",
+                        "join_source_kind": "twitch_streamer",
+                        "join_source_label": f"Twitch: {twitch_login}",
+                        "twitch_streamer_login": twitch_login,
+                    }
+                )
+            else:
+                payload.update(
+                    {
+                        "join_source_bucket": "personal",
+                        "join_source_kind": "invite_link",
+                        "join_source_label": "Persoenliche Einladung",
+                    }
+                )
+            return payload
+
+        before_vanity_uses = self._to_int((before_vanity or {}).get("uses"), None)
+        after_vanity_uses = self._to_int((after_vanity or {}).get("uses"), None)
+        vanity_delta: Optional[int] = None
+        if before_vanity_uses is not None and after_vanity_uses is not None:
+            vanity_delta = after_vanity_uses - before_vanity_uses
+
+        if vanity_delta and vanity_delta > 0:
+            vanity_code = str(after_vanity.get("code") or "").strip() or None
+            payload.update(
+                {
+                    "join_source_bucket": "public",
+                    "join_source_kind": "vanity",
+                    "join_source_label": "Public: Vanity-Link",
+                    "join_source_confidence": "high",
+                    "vanity_code": vanity_code,
+                    "vanity_url": f"https://discord.gg/{vanity_code}" if vanity_code else None,
+                }
+            )
+            return payload
+
+        has_baseline = before_invites is not None or before_vanity is not None
+        if has_baseline and invites_ok:
+            payload.update(
+                {
+                    "join_source_bucket": "public",
+                    "join_source_kind": "server_discovery",
+                    "join_source_label": "Public: Server entdecken",
+                    "join_source_confidence": "medium",
+                }
+            )
+            return payload
+
+        payload["join_source_reason"] = "baseline_missing" if not has_baseline else "invite_snapshot_unavailable"
+        return payload
+
+    async def _detect_join_source(self, guild: discord.Guild) -> Dict[str, Any]:
+        guild_id = guild.id
+        lock = self._invite_lock_for_guild(guild_id)
+        async with lock:
+            baseline_invites = self._join_invite_snapshot.get(guild_id)
+            baseline_vanity = self._join_vanity_snapshot.get(guild_id)
+
+            attempts = 2 if (baseline_invites is not None or baseline_vanity is not None) else 1
+            latest_snapshot: Optional[Dict[str, Any]] = None
+            detected: Optional[Dict[str, Any]] = None
+
+            for attempt in range(attempts):
+                latest_snapshot = await self._collect_join_invite_snapshot(guild)
+                detected = self._classify_join_source(
+                    guild_id=guild_id,
+                    before_invites=baseline_invites,
+                    after_invites=latest_snapshot.get("invites", {}),
+                    before_vanity=baseline_vanity,
+                    after_vanity=latest_snapshot.get("vanity", {}),
+                    invites_ok=bool(latest_snapshot.get("invites_ok")),
+                )
+                kind = str(detected.get("join_source_kind") or "").lower()
+                if kind not in {"server_discovery", "unknown"}:
+                    break
+                if attempt < attempts - 1:
+                    await asyncio.sleep(1.0)
+
+            if latest_snapshot:
+                if latest_snapshot.get("invites_ok"):
+                    self._join_invite_snapshot[guild_id] = latest_snapshot.get("invites", {})
+                self._join_vanity_snapshot[guild_id] = latest_snapshot.get("vanity", {})
+
+            return detected or {
+                "join_source_bucket": "unknown",
+                "join_source_kind": "unknown",
+                "join_source_label": "Unbekannt",
+                "join_source_confidence": "low",
+                "join_source_detected_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         """Trackt wenn ein Member dem Server beitritt."""
@@ -543,6 +812,8 @@ class UserActivityAnalyzer(commands.Cog):
                 'avatar_url': str(member.display_avatar.url) if member.display_avatar else None,
                 'is_pending': member.pending if hasattr(member, 'pending') else None,
             }
+            join_source = await self._detect_join_source(member.guild)
+            metadata.update(join_source)
 
             central_db.execute(
                 """
@@ -556,7 +827,14 @@ class UserActivityAnalyzer(commands.Cog):
                  account_created, join_position, json.dumps(metadata))
             )
 
-            logger.info(f"Member join tracked: {member.display_name} ({member.id}) -> {member.guild.name}")
+            logger.info(
+                "Member join tracked: %s (%s) -> %s [source=%s/%s]",
+                member.display_name,
+                member.id,
+                member.guild.name,
+                metadata.get("join_source_bucket", "unknown"),
+                metadata.get("join_source_kind", "unknown"),
+            )
 
         except Exception as e:
             logger.error(f"Error tracking member join: {e}", exc_info=True)
