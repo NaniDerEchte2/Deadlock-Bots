@@ -136,8 +136,12 @@ class RaidAuthManager:
             return None
         try:
             return crypto.decrypt_field(bytes(blob), aad)
-        except Exception as exc:
-            log.warning("Token-Entschlüsselung fehlgeschlagen [%s]: %s", context, exc)
+        except Exception:
+            log.warning(
+                "Secure field decode failed [%s]; encrypted value will be ignored.",
+                context,
+            )
+            log.debug("Secure field decode traceback [%s]", context, exc_info=True)
             return None
 
     def _try_encrypt(self, plaintext, aad: str, context: str):
@@ -149,8 +153,12 @@ class RaidAuthManager:
             return None
         try:
             return crypto.encrypt_field(str(plaintext), aad)
-        except Exception as exc:
-            log.error("Token-Verschlüsselung fehlgeschlagen [%s]: %s", context, exc)
+        except Exception:
+            log.error(
+                "Secure field encode failed [%s]; fallback remains active.",
+                context,
+            )
+            log.debug("Secure field encode traceback [%s]", context, exc_info=True)
             return None
 
     def _resolve_token(self, enc_blob, plaintext, aad: str, field_name: str, user_id: str):
@@ -163,17 +171,17 @@ class RaidAuthManager:
         if enc_blob is not None:
             decrypted = self._try_decrypt(enc_blob, aad, ctx)
             if decrypted is not None:
-                log.debug("Token gelesen (verschlüsselt) [%s]", ctx)
+                log.debug("Encrypted field loaded [%s]", ctx)
                 return decrypted
             log.warning(
-                "Verschlüsselter Token nicht lesbar [%s] – "
-                "Klartext-Fallback aktiv. enc-Spalte sollte neu befüllt werden.",
+                "Encrypted field unreadable [%s] - "
+                "fallback active. Re-save settings to repopulate enc columns.",
                 ctx,
             )
         else:
             log.warning(
-                "Kein enc-Token vorhanden (enc=NULL) [%s] – "
-                "Klartext-Fallback aktiv. save_auth/Migration hat enc noch nicht gesetzt?",
+                "Encrypted field missing (enc=NULL) [%s] - "
+                "fallback active. save_auth/migration has not set enc yet.",
                 ctx,
             )
         return plaintext or None
@@ -198,8 +206,7 @@ class RaidAuthManager:
         )
         if access_enc is None:
             log.warning(
-                "Token-Refresh für user_id=%s: enc-Verschlüsselung fehlgeschlagen – "
-                "nur Klartext gespeichert.",
+                "Refresh for user_id=%s: encrypted write failed; fallback value saved.",
                 _mask_log_identifier(user_id),
             )
         conn.execute(
