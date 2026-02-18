@@ -39,6 +39,7 @@ from .constants import (
 )
 from .moderation import ModerationMixin
 from .promos import PromoMixin
+from .service_pitch_warning import ServicePitchWarningMixin
 from .tokens import (
     _KEYRING_SERVICE,
     TokenPersistenceMixin,
@@ -83,6 +84,7 @@ if TWITCHIO_AVAILABLE:
     class RaidChatBot(
         TokenPersistenceMixin,
         ModerationMixin,
+        ServicePitchWarningMixin,
         PromoMixin,
         ConnectionMixin,
         RaidCommandsMixin,
@@ -147,6 +149,7 @@ if TWITCHIO_AVAILABLE:
             self._mod_retry_cooldown: Dict[str, datetime] = {}
             self._autoban_log = Path("logs") / "twitch_autobans.log"
             self._suspicious_log = Path("logs") / "twitch_suspicious.log"
+            self._init_service_pitch_warning()
             self._target_game_lower = (TWITCH_TARGET_GAME_NAME or "").strip().lower()
             # Cache for category checks in chat tracking (login -> (monotonic_ts, is_target_game))
             self._chat_category_cache: Dict[str, Tuple[float, bool]] = {}
@@ -705,6 +708,11 @@ if TWITCHIO_AVAILABLE:
 
             # AB HIER: Nur noch Partner! (Volle Bot-Funktionen)
             if is_partner:
+                try:
+                    await self._maybe_warn_service_pitch(message, channel_login=channel_login)
+                except Exception:
+                    log.debug("Service-Pitch-Warnung fehlgeschlagen", exc_info=True)
+
                 try:
                     spam_score, spam_reasons = self._calculate_spam_score(message.content or "")
                     has_phrase_or_fragment_signal = any(
