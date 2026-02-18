@@ -55,7 +55,20 @@ jobs:
           web.run_app(app, host="127.0.0.1", port=8787, access_log=None)
           PY
 
-          uv run --with aiohttp==3.13.3 --with discord.py==2.6.4 -- python .github/tmp/run_dashboard_dast_server.py > dashboard-dast-server.log 2>&1 &
+          uv run \
+            --with aiohttp==3.12.15 \
+            --with aiohttp-jinja2==1.6 \
+            --with aiohttp-session==2.12.1 \
+            --with aiohttp-basicauth==1.1.0 \
+            --with "discord.py==2.6.3" \
+            --with jinja2==3.1.6 \
+            --with pydantic==2.11.9 \
+            --with pydantic-settings==2.10.1 \
+            --with beautifulsoup4==4.13.5 \
+            --with cryptography==42.0.8 \
+            --with requests==2.32.3 \
+            --with aiosqlite==0.21.0 \
+            -- python .github/tmp/run_dashboard_dast_server.py > dashboard-dast-server.log 2>&1 &
           echo $! > dashboard-dast-server.pid
 
       - name: Wait for Dashboard Readiness
