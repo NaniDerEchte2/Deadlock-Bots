@@ -674,8 +674,17 @@ if TWITCHIO_AVAILABLE:
 
             channel_login = self._normalize_channel_login_safe(getattr(message, "channel", None))
 
-            # --- DATENSAMMLUNG FÜR ALLE, BOT-FUNKTIONEN NUR FÜR PARTNER ---
-            is_partner = channel_login and self._is_partner_channel_for_chat_tracking(channel_login)
+            # --- DATENSAMMLUNG FÜR ALLE, BOT-FUNKTIONEN NUR FÜR ECHTE PARTNER ---
+            # WICHTIG: Monitored-Only Channels sind KEINE Partner!
+            # _is_partner_channel_for_chat_tracking() ist in dieser Klasse überschrieben
+            # und gibt True für monitored-only zurück (für Datensammlung), daher explizit
+            # ausschließen, damit monitored-only Channels KEINE Bot-Funktionen bekommen.
+            is_monitored_only_ch = bool(channel_login and self._is_monitored_only(channel_login))
+            is_partner = (
+                bool(channel_login)
+                and not is_monitored_only_ch
+                and self._is_partner_channel_for_chat_tracking(channel_login)
+            )
 
             if not is_partner:
                 # NON-PARTNER: Nur passive Datensammlung, KEINE Bot-Funktionen!

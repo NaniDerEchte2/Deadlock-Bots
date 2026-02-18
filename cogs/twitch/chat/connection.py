@@ -232,6 +232,17 @@ class ConnectionMixin:
                     log.error("join(): Retry für %s fehlgeschlagen: %s", channel_login, retry_err)
                 return False
             if "403" in msg and "subscription missing proper authorization" in msg:
+                # Monitored-Only Channels: kein Mod-Versuch, einfach überspringen.
+                # Diese Channels haben keinen Streamer-Token, daher ist _ensure_bot_is_mod
+                # sinnlos und würde nur Warnungen produzieren.
+                if self._is_monitored_only(normalized_login):
+                    log.info(
+                        "join(): 403 für Monitored-Only Channel %s – kein Mod-Versuch, "
+                        "Channel wird übersprungen (kein Streamer-Token verfügbar).",
+                        channel_login,
+                    )
+                    return False
+
                 # Cooldown-Prüfung: Bei gebannen Bots nicht wiederholt versuchen
                 cd_key = normalized_login
                 cd_until = self._mod_retry_cooldown.get(cd_key)
