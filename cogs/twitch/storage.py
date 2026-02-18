@@ -845,7 +845,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             -- Analytics
             last_analytics_sync TEXT,
 
-            FOREIGN KEY(streamer_login) REFERENCES twitch_streamers(twitch_login)
+            FOREIGN KEY(streamer_login) REFERENCES twitch_streamers(twitch_login) ON DELETE CASCADE
         )
         """
     )
@@ -961,7 +961,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(streamer_login, template_name),
-            FOREIGN KEY(streamer_login) REFERENCES twitch_streamers(twitch_login)
+            FOREIGN KEY(streamer_login) REFERENCES twitch_streamers(twitch_login) ON DELETE CASCADE
         )
         """
     )
@@ -973,7 +973,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             streamer_login TEXT PRIMARY KEY,
             hashtags TEXT NOT NULL,
             last_used_at TEXT NOT NULL,
-            FOREIGN KEY(streamer_login) REFERENCES twitch_streamers(twitch_login)
+            FOREIGN KEY(streamer_login) REFERENCES twitch_streamers(twitch_login) ON DELETE CASCADE
         )
         """
     )
@@ -989,7 +989,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             clips_new INTEGER DEFAULT 0,
             fetch_duration_ms INTEGER,
             error TEXT,
-            FOREIGN KEY(streamer_login) REFERENCES twitch_streamers(twitch_login)
+            FOREIGN KEY(streamer_login) REFERENCES twitch_streamers(twitch_login) ON DELETE CASCADE
         )
         """
     )
@@ -1064,4 +1064,39 @@ def _seed_default_templates(conn: sqlite3.Connection) -> None:
     )
 
     log.info("Seeded %d default global templates", len(templates))
+
+
+def delete_streamer(conn: sqlite3.Connection, login: str) -> int:
+    """Delete a streamer and all dependent records in correct FK order.
+
+    Handles the cascade that SQLite's ON DELETE CASCADE would provide on new
+    installs, but which existing production tables may lack (schema was updated
+    to add CASCADE but existing tables cannot be altered in SQLite without
+    recreation).
+
+    Returns the number of streamer rows deleted (0 or 1).
+    """
+    # Grandchild tables (reference twitch_clips_social_media.id)
+    conn.execute(
+        """DELETE FROM twitch_clips_social_analytics
+           WHERE clip_id IN (
+               SELECT id FROM twitch_clips_social_media WHERE streamer_login = ?
+           )""",
+        (login,),
+    )
+    conn.execute(
+        """DELETE FROM twitch_clips_upload_queue
+           WHERE clip_id IN (
+               SELECT id FROM twitch_clips_social_media WHERE streamer_login = ?
+           )""",
+        (login,),
+    )
+    # Child tables (reference twitch_streamers.twitch_login)
+    conn.execute("DELETE FROM twitch_clips_social_media WHERE streamer_login = ?", (login,))
+    conn.execute("DELETE FROM clip_templates_streamer WHERE streamer_login = ?", (login,))
+    conn.execute("DELETE FROM clip_last_hashtags WHERE streamer_login = ?", (login,))
+    conn.execute("DELETE FROM clip_fetch_history WHERE streamer_login = ?", (login,))
+    # The streamer itself
+    cur = conn.execute("DELETE FROM twitch_streamers WHERE twitch_login = ?", (login,))
+    return cur.rowcount or 0
 

@@ -243,8 +243,7 @@ class TwitchAdminMixin:
         deleted = 0
         try:
             with storage.get_conn() as c:
-                cur = c.execute("DELETE FROM twitch_streamers WHERE twitch_login=?", (normalized,))
-                deleted = cur.rowcount or 0
+                deleted = storage.delete_streamer(c, normalized)
                 c.execute("DELETE FROM twitch_live_state WHERE streamer_login=?", (normalized,))
         except Exception:
             log.exception("DB-Fehler beim Entfernen von %s", normalized)
