@@ -5,7 +5,7 @@
 discord.py==2.6.3
 
 # HTTP / Dashboard
-aiohttp==3.12.15
+aiohttp==3.13.3
 aiohttp-jinja2==1.6
 aiohttp-session==2.12.1
 aiohttp-basicauth==1.1.0
@@ -28,5 +28,5 @@ requests==2.32.3
 beautifulsoup4==4.13.5
 
 # Crypto / auth
-cryptography==42.0.8
+cryptography==46.0.5
 keyring==25.7.0
