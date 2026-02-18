@@ -469,9 +469,13 @@ class PromoMixin:
         now = time.monotonic()
         live_channels = await self._get_live_channels_for_promo()
 
+        from ..partner_utils import is_partner_channel_for_chat_tracking
+
         if _PROMO_ACTIVITY_ENABLED or PROMO_VIEWER_SPIKE_ENABLED:
             for login, broadcaster_id in live_channels:
                 if not self._promo_channel_allowed(login):
+                    continue
+                if not is_partner_channel_for_chat_tracking(login):
                     continue
                 sent = False
                 if _PROMO_ACTIVITY_ENABLED:
@@ -482,6 +486,8 @@ class PromoMixin:
 
         interval_sec = max(_PROMO_INTERVAL_MIN * 60, self._overall_promo_cooldown_sec())
         for login, broadcaster_id in live_channels:
+            if not is_partner_channel_for_chat_tracking(login):
+                continue
             last = self._last_promo_sent.get(login)
             if last is None:
                 self._last_promo_sent[login] = now
