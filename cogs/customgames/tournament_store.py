@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +27,21 @@ TEAM_NAME_MAX = 32
 
 TEAMS_TABLE = "customgames_tournament_teams"
 SIGNUPS_TABLE = "customgames_tournament_signups"
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _sql_identifier(value: str) -> str:
+    """Return a validated SQL identifier wrapped in double quotes."""
+    if not _IDENTIFIER_RE.fullmatch(value or ""):
+        raise ValueError(f"Invalid SQL identifier: {value!r}")
+    return f'"{value}"'
+
+
+TEAMS_TABLE_SQL = _sql_identifier(TEAMS_TABLE)
+SIGNUPS_TABLE_SQL = _sql_identifier(SIGNUPS_TABLE)
+TEAMS_GUILD_INDEX_SQL = _sql_identifier(f"idx_{TEAMS_TABLE}_guild")
+SIGNUPS_GUILD_INDEX_SQL = _sql_identifier(f"idx_{SIGNUPS_TABLE}_guild")
 
 
 def normalize_rank(raw: str) -> str:
@@ -81,42 +97,40 @@ def _row_to_dict(row: Any) -> Dict[str, Any]:
 
 
 def ensure_schema() -> None:
-    db.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {TEAMS_TABLE}(
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          guild_id INTEGER NOT NULL,
-          name TEXT NOT NULL,
-          name_key TEXT NOT NULL,
-          created_by INTEGER,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          UNIQUE(guild_id, name_key)
+    with db.get_conn() as conn:
+        conn.executescript(
+            f"""
+            CREATE TABLE IF NOT EXISTS {TEAMS_TABLE_SQL}(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              guild_id INTEGER NOT NULL,
+              name TEXT NOT NULL,
+              name_key TEXT NOT NULL,
+              created_by INTEGER,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(guild_id, name_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS {SIGNUPS_TABLE_SQL}(
+              guild_id INTEGER NOT NULL,
+              user_id INTEGER NOT NULL,
+              registration_mode TEXT NOT NULL CHECK (registration_mode IN ('solo', 'team')),
+              rank TEXT NOT NULL,
+              rank_value INTEGER NOT NULL,
+              team_id INTEGER,
+              assigned_by_admin INTEGER NOT NULL DEFAULT 0,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY(guild_id, user_id),
+              FOREIGN KEY(team_id) REFERENCES {TEAMS_TABLE_SQL}(id) ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS {TEAMS_GUILD_INDEX_SQL}
+              ON {TEAMS_TABLE_SQL}(guild_id, name_key);
+
+            CREATE INDEX IF NOT EXISTS {SIGNUPS_GUILD_INDEX_SQL}
+              ON {SIGNUPS_TABLE_SQL}(guild_id, team_id);
+            """
         )
-        """
-    )
-    db.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {SIGNUPS_TABLE}(
-          guild_id INTEGER NOT NULL,
-          user_id INTEGER NOT NULL,
-          registration_mode TEXT NOT NULL CHECK (registration_mode IN ('solo', 'team')),
-          rank TEXT NOT NULL,
-          rank_value INTEGER NOT NULL,
-          team_id INTEGER,
-          assigned_by_admin INTEGER NOT NULL DEFAULT 0,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          PRIMARY KEY(guild_id, user_id),
-          FOREIGN KEY(team_id) REFERENCES {TEAMS_TABLE}(id) ON DELETE SET NULL
-        )
-        """
-    )
-    db.execute(
-        f"CREATE INDEX IF NOT EXISTS idx_{TEAMS_TABLE}_guild ON {TEAMS_TABLE}(guild_id, name_key)"
-    )
-    db.execute(
-        f"CREATE INDEX IF NOT EXISTS idx_{SIGNUPS_TABLE}_guild ON {SIGNUPS_TABLE}(guild_id, team_id)"
-    )
 
 
 async def ensure_schema_async() -> None:
@@ -435,4 +449,3 @@ async def guild_signup_counts_async() -> Dict[int, int]:
     for row in rows or []:
         counts[int(row["guild_id"])] = int(row["signups"])
     return counts
-

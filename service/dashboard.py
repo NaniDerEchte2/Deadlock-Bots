@@ -2675,7 +2675,11 @@ class DashboardServer:
         try:
             team = await tstore.get_or_create_team_async(guild_id, name, created_by=created_by)
         except ValueError as exc:
-            raise web.HTTPBadRequest(text=str(exc)) from exc
+            logger.warning(
+                "Tournament team creation rejected: %s",
+                self._safe_log_value(exc),
+            )
+            raise web.HTTPBadRequest(text="Invalid team payload") from exc
 
         return self._json(
             {
@@ -2718,7 +2722,11 @@ class DashboardServer:
                 team_id=team_id,
             )
         except ValueError as exc:
-            raise web.HTTPBadRequest(text=str(exc)) from exc
+            logger.warning(
+                "Tournament signup assignment rejected: %s",
+                self._safe_log_value(exc),
+            )
+            raise web.HTTPBadRequest(text="Invalid team assignment payload") from exc
 
         if not updated:
             raise web.HTTPNotFound(text="Signup not found")

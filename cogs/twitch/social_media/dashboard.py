@@ -33,6 +33,16 @@ def _dashboard_url(**params: str) -> str:
     return f"/social-media?{urlencode(params)}"
 
 
+def _json_for_inline_script(value: object) -> str:
+    """Serialize JSON safely for inline <script> contexts."""
+    dumped = json.dumps(value, ensure_ascii=True)
+    return (
+        dumped.replace("</", "<\\/")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 class SocialMediaDashboard:
     """Web Dashboard für Social Media Clip Management."""
 
@@ -301,7 +311,7 @@ anfordern.</p>
         safe_streamer_label = html.escape(
             f"@{authenticated_streamer}" if authenticated_streamer else "nicht gesetzt"
         )
-        js_streamer = json.dumps(authenticated_streamer or "")
+        js_streamer = _json_for_inline_script(authenticated_streamer or "")
 
         html_content = f"""
 <!DOCTYPE html>
