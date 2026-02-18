@@ -427,7 +427,7 @@ class TwitchAnalyticsMixin:
                 # Start Channel Sync Task
                 self._irc_tracker_task = asyncio.create_task(self._sync_irc_channels())
             else:
-                log.warning("IRC Lurker Tracker konnte nicht gestartet werden (Client ID oder Bot Token fehlt)")
+                log.info("IRC Lurker Tracker nicht gestartet (Client ID oder Bot Token fehlt)")
         except Exception:
             log.exception("IRC Lurker Tracker Start fehlgeschlagen")
 

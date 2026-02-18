@@ -116,7 +116,7 @@ class UploadWorker(commands.Cog):
             log.exception("Failed to initialize Instagram uploader")
 
         if not uploaders:
-            log.warning(
+            log.info(
                 "No platform uploaders initialized. "
                 "Use Social Media Dashboard to connect platforms via OAuth."
             )
