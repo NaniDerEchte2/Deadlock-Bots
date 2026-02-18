@@ -2863,6 +2863,7 @@ async def _start_kofi_webhook_server(beta_invite: BetaInviteFlow) -> None:
         title="Deadlock Ko-fi Webhook",
         docs_url=None,
         redoc_url=None,
+        openapi_url=None,
     )
 
     @app.get("/kofi-health")

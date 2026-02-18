@@ -138,32 +138,23 @@ class ClipManager:
                 if cursor:
                     params["after"] = cursor
 
-                # Nutze Helix API
-                url = "https://api.twitch.tv/helix/clips"
-                async with self.api.get_http_session() as session:
-                    headers = {
-                        "Client-ID": self.api.client_id,
-                        "Authorization": f"Bearer {self.api.app_token}",
-                    }
-                    async with session.get(url, params=params, headers=headers) as r:
-                        if r.status != 200:
-                            log.warning(
-                                "Clips fetch failed: HTTP %s", r.status
-                            )
-                            break
+                try:
+                    data = await self.api._get("/clips", params=params)
+                except Exception:
+                    log.warning("Clips fetch failed for %s", streamer_login, exc_info=True)
+                    break
 
-                        data = await r.json()
-                        page_clips = data.get("data", [])
-                        if not page_clips:
-                            break
+                page_clips = data.get("data", [])
+                if not page_clips:
+                    break
 
-                        clips.extend(page_clips)
+                clips.extend(page_clips)
 
-                        # Pagination
-                        pagination = data.get("pagination", {})
-                        cursor = pagination.get("cursor")
-                        if not cursor:
-                            break
+                # Pagination
+                pagination = data.get("pagination", {})
+                cursor = pagination.get("cursor")
+                if not cursor:
+                    break
 
             # Registriere Clips in DB
             registered_clips = []

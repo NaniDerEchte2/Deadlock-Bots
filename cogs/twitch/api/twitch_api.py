@@ -32,6 +32,11 @@ class TwitchAPI:
 
     # ---- Session lifecycle -------------------------------------------------
     def _ensure_session(self) -> None:
+        if self._session is not None and self._session.closed:
+            self._log.warning("Detected closed TwitchAPI HTTP session; creating a new session")
+            self._session = None
+            self._own_session = False
+
         if self._session is None:
             connector = build_resilient_connector()
             timeout = aiohttp.ClientTimeout(total=20)
@@ -42,6 +47,10 @@ class TwitchAPI:
             )
             self._own_session = True
 
+    @staticmethod
+    def _is_closed_session_error(exc: BaseException) -> bool:
+        return isinstance(exc, RuntimeError) and "Session is closed" in str(exc)
+
     def get_http_session(self) -> aiohttp.ClientSession:
         """Return the internal aiohttp session, ensuring it exists."""
         self._ensure_session()
@@ -51,6 +60,8 @@ class TwitchAPI:
     async def aclose(self) -> None:
         if self._own_session and self._session and not self._session.closed:
             await self._session.close()
+        self._session = None
+        self._own_session = False
 
     async def __aenter__(self):
         self._ensure_session()
@@ -61,25 +72,41 @@ class TwitchAPI:
 
     # ---- OAuth -------------------------------------------------------------
     async def _ensure_token(self):
-        self._ensure_session()
         async with self._lock:
             if self._token and time.time() < self._token_expiry - 60:
                 return
-            assert self._session is not None
             data = {
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
                 "grant_type": "client_credentials",
             }
-            async with self._session.post(TWITCH_TOKEN_URL, data=data) as r:
-                if r.status != 200:
-                    txt = await r.text()
-                    self._log.error("twitch token exchange failed: HTTP %s: %s", r.status, txt[:300].replace("\n", " "))
-                    r.raise_for_status()
-                js = await r.json()
-                self._token = js.get("access_token")
-                expires = js.get("expires_in", 3600)
-                self._token_expiry = time.time() + float(expires)
+            for attempt in range(3):
+                self._ensure_session()
+                assert self._session is not None
+                try:
+                    async with self._session.post(TWITCH_TOKEN_URL, data=data) as r:
+                        if r.status != 200:
+                            txt = await r.text()
+                            self._log.error("twitch token exchange failed: HTTP %s: %s", r.status, txt[:300].replace("\n", " "))
+                            r.raise_for_status()
+                        js = await r.json()
+                        self._token = js.get("access_token")
+                        expires = js.get("expires_in", 3600)
+                        self._token_expiry = time.time() + float(expires)
+                        return
+                except RuntimeError as exc:
+                    if not self._is_closed_session_error(exc):
+                        raise
+                    self._log.warning(
+                        "Token request retry %s/3 after closed HTTP session",
+                        attempt + 1,
+                    )
+                    self._session = None
+                    self._own_session = False
+                    if attempt < 2:
+                        await asyncio.sleep(0.2 * (attempt + 1))
+                        continue
+                    raise
 
     def _headers(self) -> Dict[str, str]:
         return {"Client-ID": self.client_id, "Authorization": f"Bearer {self._token}"}
@@ -103,8 +130,6 @@ class TwitchAPI:
             await self._ensure_token()
             token_override = self._token or ""
 
-        self._ensure_session()
-        assert self._session is not None
         url = f"{TWITCH_API_BASE}{path}"
         last_exc: Optional[Exception] = None
         attempts = max(1, min(int(max_attempts or 1), 5))
@@ -113,6 +138,8 @@ class TwitchAPI:
             request_timeout = aiohttp.ClientTimeout(total=max(0.1, float(request_timeout_total)))
 
         for attempt in range(attempts):
+            self._ensure_session()
+            assert self._session is not None
             try:
                 headers = {"Client-ID": self.client_id, "Authorization": f"Bearer {token_override}"}
                 request_kwargs = {"headers": headers, "json": json}
@@ -138,6 +165,25 @@ class TwitchAPI:
                             headers=r.headers,
                         )
                     return await r.json()
+            except RuntimeError as exc:
+                if not self._is_closed_session_error(exc):
+                    raise
+                last_exc = exc
+                if attempt < attempts - 1:
+                    delay = 0.2 * (attempt + 1)
+                    self._log.warning(
+                        "POST %s retry %s/%s after closed HTTP session (%ss)",
+                        path,
+                        attempt + 1,
+                        attempts,
+                        delay,
+                    )
+                    self._session = None
+                    self._own_session = False
+                    await asyncio.sleep(delay)
+                    continue
+                self._log.error("POST %s failed after retries: closed HTTP session", path)
+                raise last_exc
             except aiohttp.ClientResponseError:
                 raise
             except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
@@ -168,11 +214,11 @@ class TwitchAPI:
         log_on_error: bool = True,
     ) -> Dict:
         await self._ensure_token()
-        self._ensure_session()
-        assert self._session is not None
         url = f"{TWITCH_API_BASE}{path}"
         last_exc: Optional[Exception] = None
         for attempt in range(3):
+            self._ensure_session()
+            assert self._session is not None
             try:
                 async with self._session.get(url, headers=self._headers(), params=params) as r:
                     if r.status != 200:
@@ -198,6 +244,19 @@ class TwitchAPI:
                             continue
                         r.raise_for_status()
                     return await r.json()
+            except RuntimeError as exc:
+                if not self._is_closed_session_error(exc):
+                    raise
+                last_exc = exc
+                if attempt < 2:
+                    delay = 0.2 * (attempt + 1)
+                    self._log.warning("GET %s retry %s/3 after closed HTTP session (%ss)", path, attempt + 1, delay)
+                    self._session = None
+                    self._own_session = False
+                    await asyncio.sleep(delay)
+                    continue
+                self._log.error("GET %s failed after retries: closed HTTP session", path)
+                raise last_exc
             except aiohttp.ClientResponseError:
                 raise
             except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:

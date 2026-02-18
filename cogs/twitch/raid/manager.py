@@ -409,8 +409,14 @@ class RaidAuthManager:
                     # Kleines Delay um API Spikes zu vermeiden
                     await asyncio.sleep(0.5)
 
-                except Exception:
-                    log.error("Background refresh failed for %s", login) # Log & Continue
+                except Exception as exc:
+                    if isinstance(exc, RuntimeError) and "Session is closed" in str(exc):
+                        log.warning(
+                            "Background refresh aborted for %s: shared HTTP session is closed",
+                            login,
+                        )
+                        raise
+                    log.error("Background refresh failed for %s: %s", login, exc)
                     
         if refreshed_count > 0:
             log.info("Maintenance: Refreshed %d user tokens", refreshed_count)
@@ -1040,7 +1046,7 @@ class RaidBot:
     ):
         self.auth_manager = RaidAuthManager(client_id, client_secret, redirect_uri)
         self.raid_executor = RaidExecutor(client_id, self.auth_manager)
-        self.session = session
+        self._session = session
         self.chat_bot = None  # Wird später gesetzt
         self._bot_id = None   # Wird bei set_chat_bot gesetzt als Fallback
         self._cog = None  # Referenz zum TwitchStreamCog für EventSub subscriptions
@@ -1052,6 +1058,30 @@ class RaidBot:
 
         # Cleanup-Task starten
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
+
+    @property
+    def session(self) -> Optional[aiohttp.ClientSession]:
+        """Return an active HTTP session; refresh from cog/api if the cached one is closed."""
+        if self._session is not None and not self._session.closed:
+            return self._session
+
+        cog = getattr(self, "_cog", None)
+        api = getattr(cog, "api", None) if cog is not None else None
+        if api is not None:
+            try:
+                refreshed = api.get_http_session()
+                if refreshed is not None and not refreshed.closed:
+                    if self._session is not refreshed:
+                        log.warning("RaidBot detected closed HTTP session; switched to fresh TwitchAPI session")
+                    self._session = refreshed
+                    return refreshed
+            except Exception:
+                log.debug("RaidBot could not refresh HTTP session from TwitchAPI", exc_info=True)
+        return None
+
+    @session.setter
+    def session(self, value: Optional[aiohttp.ClientSession]) -> None:
+        self._session = value
 
     async def cleanup(self):
         """Stoppt Hintergrund-Tasks."""
@@ -1091,10 +1121,24 @@ class RaidBot:
                     last_state_cleanup = now
 
                 # 2. Token Maintenance (alle 30min; refresh_all_tokens prüft intern Expiry)
-                if self.session and now - last_token_refresh >= token_refresh_interval:
-                    await self.auth_manager.refresh_all_tokens(self.session)
-                    self.auth_manager.clear_legacy_tokens_for_fully_authed()
-                    last_token_refresh = now
+                if now - last_token_refresh >= token_refresh_interval:
+                    active_session = self.session
+                    if active_session is None:
+                        log.warning("Skipping token maintenance: no active HTTP session available")
+                    else:
+                        try:
+                            await self.auth_manager.refresh_all_tokens(active_session)
+                        except RuntimeError as exc:
+                            if "Session is closed" in str(exc):
+                                self.session = None
+                                log.warning(
+                                    "Token maintenance deferred: shared HTTP session closed; retrying next tick"
+                                )
+                            else:
+                                raise
+                        else:
+                            self.auth_manager.clear_legacy_tokens_for_fully_authed()
+                            last_token_refresh = now
 
                 # Token Blacklist Cleanup (alle 3.5h)
                 if now - last_blacklist_cleanup >= blacklist_cleanup_interval:
