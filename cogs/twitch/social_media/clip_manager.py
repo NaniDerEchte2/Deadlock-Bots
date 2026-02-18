@@ -65,6 +65,13 @@ class ClipManager:
                     log.debug("Clip %s bereits registriert (ID: %s)", clip_id, existing[0])
                     return existing[0]
 
+                # Sicherstellen dass Streamer in twitch_streamers existiert (FK-Anforderung).
+                # Race Condition: Scout kann Streamer löschen während ClipFetcher läuft.
+                conn.execute(
+                    "INSERT OR IGNORE INTO twitch_streamers (twitch_login, twitch_user_id) VALUES (?, ?)",
+                    (streamer_login, twitch_user_id),
+                )
+
                 # Neuen Clip erstellen
                 cursor = conn.execute(
                     """

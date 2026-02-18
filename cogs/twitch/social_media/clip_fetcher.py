@@ -106,6 +106,10 @@ class ClipFetcher(commands.Cog):
                     # Record fetch history
                     with get_conn() as conn:
                         conn.execute(
+                            "INSERT OR IGNORE INTO twitch_streamers (twitch_login) VALUES (?)",
+                            (streamer,),
+                        )
+                        conn.execute(
                             """
                             INSERT INTO clip_fetch_history
                                 (streamer_login, clips_found, clips_new, fetch_duration_ms)
@@ -129,6 +133,10 @@ class ClipFetcher(commands.Cog):
 
                     # Record error in fetch history
                     with get_conn() as conn:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO twitch_streamers (twitch_login) VALUES (?)",
+                            (streamer,),
+                        )
                         conn.execute(
                             """
                             INSERT INTO clip_fetch_history
@@ -176,6 +184,10 @@ class ClipFetcher(commands.Cog):
 
             # Record fetch history
             with get_conn() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO twitch_streamers (twitch_login) VALUES (?)",
+                    (streamer_login,),
+                )
                 conn.execute(
                     """
                     INSERT INTO clip_fetch_history
