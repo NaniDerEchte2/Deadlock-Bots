@@ -113,6 +113,109 @@ class RaidAuthManager:
         _parts = redirect_uri.split("/twitch/", 1)
         self._base_url: str = _parts[0] if len(_parts) > 1 else ""
 
+    # ------------------------------------------------------------------
+    # Encryption helpers (field-level AES-256-GCM)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_crypto_optional():
+        """Gibt FieldCrypto zurück oder None wenn nicht verfügbar."""
+        try:
+            from service.field_crypto import get_crypto  # noqa: PLC0415
+            return get_crypto()
+        except Exception as exc:
+            log.warning("field_crypto nicht verfügbar: %s", exc)
+            return None
+
+    def _try_decrypt(self, blob, aad: str, context: str):
+        """Entschlüsselt ein enc-Blob; gibt None zurück wenn nicht möglich."""
+        if not blob:
+            return None
+        crypto = self._get_crypto_optional()
+        if not crypto:
+            return None
+        try:
+            return crypto.decrypt_field(bytes(blob), aad)
+        except Exception as exc:
+            log.warning("Token-Entschlüsselung fehlgeschlagen [%s]: %s", context, exc)
+            return None
+
+    def _try_encrypt(self, plaintext, aad: str, context: str):
+        """Verschlüsselt Plaintext zu enc-Blob; gibt None zurück wenn nicht möglich."""
+        if not plaintext:
+            return None
+        crypto = self._get_crypto_optional()
+        if not crypto:
+            return None
+        try:
+            return crypto.encrypt_field(str(plaintext), aad)
+        except Exception as exc:
+            log.error("Token-Verschlüsselung fehlgeschlagen [%s]: %s", context, exc)
+            return None
+
+    def _resolve_token(self, enc_blob, plaintext, aad: str, field_name: str, user_id: str):
+        """
+        Liest Token: erst enc, bei Fehler Klartext-Fallback mit WARNING.
+
+        Gibt None zurück, wenn weder enc noch Klartext verfügbar.
+        """
+        ctx = f"{field_name}|user={_mask_log_identifier(user_id)}"
+        if enc_blob is not None:
+            decrypted = self._try_decrypt(enc_blob, aad, ctx)
+            if decrypted is not None:
+                log.debug("Token gelesen (verschlüsselt) [%s]", ctx)
+                return decrypted
+            log.warning(
+                "Verschlüsselter Token nicht lesbar [%s] – "
+                "Klartext-Fallback aktiv. enc-Spalte sollte neu befüllt werden.",
+                ctx,
+            )
+        else:
+            log.warning(
+                "Kein enc-Token vorhanden (enc=NULL) [%s] – "
+                "Klartext-Fallback aktiv. save_auth/Migration hat enc noch nicht gesetzt?",
+                ctx,
+            )
+        return plaintext or None
+
+    def _write_token_refresh(
+        self, conn, user_id: str, access_token: str, refresh_token: str, expires_at_iso: str
+    ) -> None:
+        """
+        Schreibt refreshte Tokens dual: Klartext + verschlüsselt.
+
+        Wenn enc fehlschlägt, wird trotzdem Klartext gespeichert (mit WARNING).
+        """
+        access_enc = self._try_encrypt(
+            access_token,
+            f"twitch_raid_auth|access_token|{user_id}|1",
+            f"access_token|user={_mask_log_identifier(user_id)}",
+        )
+        refresh_enc = self._try_encrypt(
+            refresh_token,
+            f"twitch_raid_auth|refresh_token|{user_id}|1",
+            f"refresh_token|user={_mask_log_identifier(user_id)}",
+        )
+        if access_enc is None:
+            log.warning(
+                "Token-Refresh für user_id=%s: enc-Verschlüsselung fehlgeschlagen – "
+                "nur Klartext gespeichert.",
+                _mask_log_identifier(user_id),
+            )
+        conn.execute(
+            """
+            UPDATE twitch_raid_auth
+               SET access_token = ?, refresh_token = ?,
+                   access_token_enc = ?, refresh_token_enc = ?,
+                   enc_version = 1, enc_kid = 'v1',
+                   token_expires_at = ?, last_refreshed_at = CURRENT_TIMESTAMP
+             WHERE twitch_user_id = ?
+            """,
+            (access_token, refresh_token, access_enc, refresh_enc, expires_at_iso, user_id),
+        )
+
+    # ------------------------------------------------------------------
+
     def generate_auth_url(self, twitch_login: str) -> str:
         """Generiert eine OAuth-URL für Streamer-Autorisierung."""
         state = secrets.token_urlsafe(16)
@@ -304,7 +407,9 @@ class RaidAuthManager:
             # Hole alle User mit raid_enabled=1
             rows = conn.execute(
                 """
-                SELECT twitch_user_id, twitch_login, refresh_token, token_expires_at
+                SELECT twitch_user_id, twitch_login,
+                       refresh_token, refresh_token_enc,
+                       enc_version, token_expires_at
                 FROM twitch_raid_auth
                 WHERE raid_enabled = 1
                 """
@@ -319,7 +424,14 @@ class RaidAuthManager:
         for row in rows:
             user_id = row["twitch_user_id"]
             login = row["twitch_login"]
-            refresh_tok = row["refresh_token"]
+            _enc_v = row["enc_version"] or 1
+            refresh_tok = self._resolve_token(
+                row["refresh_token_enc"],
+                row["refresh_token"],
+                f"twitch_raid_auth|refresh_token|{user_id}|{_enc_v}",
+                "refresh_token",
+                str(user_id),
+            )
             expires_iso = row["token_expires_at"]
 
             # Sicherheits-Check: Falls doch auf Blacklist, überspringen
@@ -393,15 +505,7 @@ class RaidAuthManager:
                     new_expires_iso = datetime.fromtimestamp(new_expires_at, timezone.utc).isoformat()
 
                     with get_conn() as conn:
-                        conn.execute(
-                            """
-                            UPDATE twitch_raid_auth
-                            SET access_token = ?, refresh_token = ?,
-                                token_expires_at = ?, last_refreshed_at = CURRENT_TIMESTAMP
-                            WHERE twitch_user_id = ?
-                            """,
-                            (new_access, new_refresh, new_expires_iso, user_id),
-                        )
+                        self._write_token_refresh(conn, user_id, new_access, new_refresh, new_expires_iso)
                         conn.commit()
                     # Erfolgreicher Refresh → eventuelle Fehler-Counter zurücksetzen
                     self.token_error_handler.clear_failure_count(user_id)
@@ -485,19 +589,38 @@ class RaidAuthManager:
         expires_at_iso = datetime.fromtimestamp(expires_at, timezone.utc).isoformat()
         authorized_at = now.isoformat()
 
+        access_enc = self._try_encrypt(
+            access_token,
+            f"twitch_raid_auth|access_token|{twitch_user_id}|1",
+            f"access_token|user={_mask_log_identifier(twitch_user_id)}",
+        )
+        refresh_enc = self._try_encrypt(
+            refresh_token,
+            f"twitch_raid_auth|refresh_token|{twitch_user_id}|1",
+            f"refresh_token|user={_mask_log_identifier(twitch_user_id)}",
+        )
+        if access_enc is None:
+            log.warning(
+                "save_auth für user_id=%s: enc-Verschlüsselung fehlgeschlagen – nur Klartext gespeichert.",
+                _mask_log_identifier(twitch_user_id),
+            )
+
         with get_conn() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO twitch_raid_auth
                 (twitch_user_id, twitch_login, access_token, refresh_token,
+                 access_token_enc, refresh_token_enc, enc_version, enc_kid,
                  token_expires_at, scopes, authorized_at, raid_enabled)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                VALUES (?, ?, ?, ?, ?, ?, 1, 'v1', ?, ?, ?, 1)
                 """,
                 (
                     twitch_user_id,
                     twitch_login,
                     access_token,
                     refresh_token,
+                    access_enc,
+                    refresh_enc,
                     expires_at_iso,
                     " ".join(scopes),
                     authorized_at,
@@ -576,7 +699,9 @@ class RaidAuthManager:
         with get_conn() as conn:
             row = conn.execute(
                 """
-                SELECT access_token, refresh_token, token_expires_at, twitch_login
+                SELECT access_token, access_token_enc,
+                       refresh_token, refresh_token_enc,
+                       enc_version, token_expires_at, twitch_login
                 FROM twitch_raid_auth
                 WHERE twitch_user_id = ?
                 """,
@@ -586,7 +711,18 @@ class RaidAuthManager:
         if not row:
             return None
 
-        access_token, refresh_token, expires_at_iso, twitch_login = row
+        _enc_v = row["enc_version"] or 1
+        _uid = str(twitch_user_id)
+        access_token = self._resolve_token(
+            row["access_token_enc"], row["access_token"],
+            f"twitch_raid_auth|access_token|{_uid}|{_enc_v}", "access_token", _uid,
+        )
+        refresh_token = self._resolve_token(
+            row["refresh_token_enc"], row["refresh_token"],
+            f"twitch_raid_auth|refresh_token|{_uid}|{_enc_v}", "refresh_token", _uid,
+        )
+        expires_at_iso = row["token_expires_at"]
+        twitch_login = row["twitch_login"]
         expires_at = datetime.fromisoformat(expires_at_iso.replace("Z", "+00:00")).timestamp()
 
         # Token noch gültig? (5 Minuten Puffer)
@@ -598,12 +734,26 @@ class RaidAuthManager:
             # Erneuter Check innerhalb des Locks (Double-Check Locking Pattern)
             with get_conn() as conn:
                 row_check = conn.execute(
-                    "SELECT token_expires_at, access_token, refresh_token FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                    """SELECT token_expires_at,
+                              access_token, access_token_enc,
+                              refresh_token, refresh_token_enc,
+                              enc_version
+                       FROM twitch_raid_auth WHERE twitch_user_id = ?""",
                     (twitch_user_id,),
                 ).fetchone()
 
             if row_check:
-                curr_expires_iso, curr_access, curr_refresh = row_check
+                _dc_uid = str(twitch_user_id)
+                _dc_v = row_check["enc_version"] or 1
+                curr_expires_iso = row_check["token_expires_at"]
+                curr_access = self._resolve_token(
+                    row_check["access_token_enc"], row_check["access_token"],
+                    f"twitch_raid_auth|access_token|{_dc_uid}|{_dc_v}", "access_token.dc", _dc_uid,
+                )
+                curr_refresh = self._resolve_token(
+                    row_check["refresh_token_enc"], row_check["refresh_token"],
+                    f"twitch_raid_auth|refresh_token|{_dc_uid}|{_dc_v}", "refresh_token.dc", _dc_uid,
+                )
                 curr_expires = datetime.fromisoformat(curr_expires_iso.replace("Z", "+00:00")).timestamp()
                 if time.time() < curr_expires - 300:
                     return curr_access, curr_refresh
@@ -630,15 +780,7 @@ class RaidAuthManager:
                 ).isoformat()
 
                 with get_conn() as conn:
-                    conn.execute(
-                        """
-                        UPDATE twitch_raid_auth
-                        SET access_token = ?, refresh_token = ?,
-                            token_expires_at = ?, last_refreshed_at = CURRENT_TIMESTAMP
-                        WHERE twitch_user_id = ?
-                        """,
-                        (new_access_token, new_refresh_token, new_expires_at_iso, twitch_user_id),
-                    )
+                    self._write_token_refresh(conn, twitch_user_id, new_access_token, new_refresh_token, new_expires_at_iso)
                     conn.commit()
 
                 self.token_error_handler.clear_failure_count(twitch_user_id)
@@ -677,7 +819,9 @@ class RaidAuthManager:
         with get_conn() as conn:
             row = conn.execute(
                 """
-                SELECT access_token, refresh_token, token_expires_at, twitch_login
+                SELECT access_token, access_token_enc,
+                       refresh_token, refresh_token_enc,
+                       enc_version, token_expires_at, twitch_login
                 FROM twitch_raid_auth
                 WHERE twitch_user_id = ? AND raid_enabled = 1
                 """,
@@ -687,7 +831,18 @@ class RaidAuthManager:
         if not row:
             return None
 
-        access_token, refresh_token, expires_at_iso, twitch_login = row
+        _enc_v = row["enc_version"] or 1
+        _uid = str(twitch_user_id)
+        access_token = self._resolve_token(
+            row["access_token_enc"], row["access_token"],
+            f"twitch_raid_auth|access_token|{_uid}|{_enc_v}", "access_token", _uid,
+        )
+        refresh_token = self._resolve_token(
+            row["refresh_token_enc"], row["refresh_token"],
+            f"twitch_raid_auth|refresh_token|{_uid}|{_enc_v}", "refresh_token", _uid,
+        )
+        expires_at_iso = row["token_expires_at"]
+        twitch_login = row["twitch_login"]
         expires_at = datetime.fromisoformat(expires_at_iso.replace("Z", "+00:00")).timestamp()
 
         # SCHRITT 3: Token noch gültig?
@@ -699,12 +854,20 @@ class RaidAuthManager:
             # Double-Check Locking
             with get_conn() as conn:
                 row_check = conn.execute(
-                    "SELECT token_expires_at, access_token FROM twitch_raid_auth WHERE twitch_user_id = ?",
+                    """SELECT token_expires_at,
+                              access_token, access_token_enc, enc_version
+                       FROM twitch_raid_auth WHERE twitch_user_id = ?""",
                     (twitch_user_id,),
                 ).fetchone()
 
             if row_check:
-                curr_expires_iso, curr_access = row_check
+                _dc_uid = str(twitch_user_id)
+                _dc_v = row_check["enc_version"] or 1
+                curr_expires_iso = row_check["token_expires_at"]
+                curr_access = self._resolve_token(
+                    row_check["access_token_enc"], row_check["access_token"],
+                    f"twitch_raid_auth|access_token|{_dc_uid}|{_dc_v}", "access_token.dc", _dc_uid,
+                )
                 curr_expires = datetime.fromisoformat(curr_expires_iso.replace("Z", "+00:00")).timestamp()
                 if time.time() < curr_expires - 300:
                     return curr_access
@@ -729,15 +892,7 @@ class RaidAuthManager:
                 ).isoformat()
 
                 with get_conn() as conn:
-                    conn.execute(
-                        """
-                        UPDATE twitch_raid_auth
-                        SET access_token = ?, refresh_token = ?,
-                            token_expires_at = ?, last_refreshed_at = CURRENT_TIMESTAMP
-                        WHERE twitch_user_id = ?
-                        """,
-                        (new_access_token, new_refresh_token, new_expires_at_iso, twitch_user_id),
-                    )
+                    self._write_token_refresh(conn, twitch_user_id, new_access_token, new_refresh_token, new_expires_at_iso)
                     conn.commit()
 
                 self.token_error_handler.clear_failure_count(twitch_user_id)
