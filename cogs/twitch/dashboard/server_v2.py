@@ -648,6 +648,60 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         safe_destination = self._safe_internal_redirect(destination, fallback=fallback)
         raise web.HTTPFound(safe_destination)
 
+    async def public_home(self, request: web.Request) -> web.StreamResponse:
+        """Public homepage for OAuth verification and app information."""
+        dashboard_url = "/twitch/dashboards" if self._check_v2_auth(request) else "/twitch/auth/login?next=%2Ftwitch%2Fdashboards"
+        dashboard_label = "Dashboard oeffnen" if self._check_v2_auth(request) else "Mit Twitch anmelden"
+
+        page = (
+            "<!doctype html><html lang='de'><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>Deutsche Deadlock Community</title>"
+            "<style>"
+            ":root{color-scheme:light;}"
+            "body{margin:0;background:#f8fafc;color:#0f172a;font-family:Segoe UI,Arial,sans-serif;line-height:1.55;}"
+            ".wrap{max-width:980px;margin:0 auto;padding:30px 18px 44px;}"
+            ".top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;}"
+            "h1{margin:0;font-size:1.85rem;}"
+            ".tag{display:inline-block;margin-top:10px;padding:5px 10px;border-radius:999px;background:#dbeafe;color:#1e3a8a;font-weight:600;font-size:.85rem;}"
+            ".panel{margin-top:18px;background:#ffffff;border:1px solid #dbe2ea;border-radius:14px;padding:18px;}"
+            ".muted{color:#334155;}"
+            ".actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;}"
+            ".btn{display:inline-block;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:600;}"
+            ".btn-primary{background:#2563eb;color:#fff;}"
+            ".btn-secondary{border:1px solid #cbd5e1;color:#0f172a;background:#fff;}"
+            "footer{margin-top:22px;padding-top:12px;border-top:1px solid #e2e8f0;color:#475569;font-size:.92rem;}"
+            "a{color:#1d4ed8;}"
+            "</style></head><body><main class='wrap'>"
+            "<div class='top'>"
+            "<h1>Deutsche Deadlock Community</h1>"
+            "<a href='/privacy'>Datenschutzerklaerung</a>"
+            "</div>"
+            "<div class='tag'>Offizielle App-Startseite</div>"
+            "<section class='panel'>"
+            "<h2 style='margin-top:0;'>Wozu dient diese App?</h2>"
+            "<p class='muted'>"
+            "Diese App wird von der <strong>Deutsche Deadlock Community</strong> betrieben und unterstuetzt "
+            "verifizierte Community-Streamer bei Twitch-Funktionen: Analytics-Dashboard, Raid-Autorisierung "
+            "und Clip-Management inklusive Social-Media-Veroeffentlichung."
+            "</p>"
+            "<p class='muted'>"
+            "Die App ist ein Community-Tool fuer Streamer-Partner. Allgemeine Informationen (inklusive "
+            "Datenschutz und Nutzungsbedingungen) sind ohne Anmeldung aufrufbar."
+            "</p>"
+            "<div class='actions'>"
+            f"<a class='btn btn-primary' href='{dashboard_url}'>{dashboard_label}</a>"
+            "<a class='btn btn-secondary' href='/terms'>Nutzungsbedingungen</a>"
+            "<a class='btn btn-secondary' href='/privacy'>Datenschutzerklaerung</a>"
+            "</div>"
+            "</section>"
+            "<footer>"
+            "App-Name im OAuth-Zustimmungsbildschirm: <strong>Deutsche Deadlock Community</strong>"
+            "</footer>"
+            "</main></body></html>"
+        )
+        return web.Response(text=page, content_type="text/html", charset="utf-8")
+
     async def admin(self, request: web.Request) -> web.StreamResponse:
         """Legacy partner admin surface (streamer management)."""
         return await DashboardLiveMixin.index(self, request)
@@ -1680,7 +1734,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
 
     def attach(self, app: web.Application) -> None:
         app.add_routes([
-            web.get("/", self.index),
+            web.get("/", self.public_home),
             web.get("/twitch", self.index),
             web.get("/twitch/", self.index),
             web.get("/twitch/admin", self.admin),
