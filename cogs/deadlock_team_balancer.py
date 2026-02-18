@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 import discord
 from discord.ext import commands
 
+from cogs.customgames import tournament_store as tstore
 from service import db
 
 
@@ -27,6 +28,7 @@ MATCH_CATEGORY_ID = 1289721245281292290  # Pflichtkategorie für die zwei Team-V
 TEAM_SIZE_CAP = 6                        # max 6 pro Team => 6v6
 MOVE_SLEEP = 0.35                        # Rate-Limit-Schoner beim Move
 SELECTION_TIMEOUT = 90.0                 # Sekunden für interaktive Auswahl
+TOURNAMENT_UI_TIMEOUT = 240.0            # Timeout fuer Turnier-Menues
 # --------------------------
 
 # Rang-Mapping (Name -> Wert)
@@ -249,6 +251,265 @@ class SelectionView(discord.ui.View):
         self.refresh_confirm()
         await interaction.response.edit_message(content=f"🎲 {len(self.selected)} Spieler zufällig ausgewählt.", view=self)
 
+# ================= Turnier-Registrierung =================
+
+def _signup_status_text(status: str) -> str:
+    if status == "inserted":
+        return "eingetragen"
+    if status == "updated":
+        return "aktualisiert"
+    return "bereits unveraendert vorhanden"
+
+
+class RestrictedUserView(discord.ui.View):
+    def __init__(self, owner_id: int, *, timeout: float = TOURNAMENT_UI_TIMEOUT):
+        super().__init__(timeout=timeout)
+        self.owner_id = int(owner_id)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "Dieses Menue gehoert dir nicht. Bitte starte dein eigenes.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+
+class SoloRankSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label=label,
+                value=value,
+                description=f"Setze {label} als Turnier-Rang",
+            )
+            for label, value, _ in tstore.rank_choices()
+        ]
+        super().__init__(
+            placeholder="Waehle deinen aktuellen Rang...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view: "SoloSignupView" = self.view  # type: ignore
+        view.selected_rank = self.values[0]
+        await interaction.response.defer()
+
+
+class SoloSignupView(RestrictedUserView):
+    def __init__(self, owner_id: int, guild_id: int):
+        super().__init__(owner_id)
+        self.guild_id = int(guild_id)
+        self.selected_rank: Optional[str] = None
+        self.add_item(SoloRankSelect())
+
+    @discord.ui.button(label="Eintragen", style=discord.ButtonStyle.success, emoji="✅")
+    async def submit_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not self.selected_rank:
+            await interaction.response.send_message(
+                "Bitte waehle zuerst deinen Rang aus.",
+                ephemeral=True,
+            )
+            return
+        result = await tstore.upsert_signup_async(
+            self.guild_id,
+            interaction.user.id,
+            registration_mode="solo",
+            rank=self.selected_rank,
+            team_id=None,
+            assigned_by_admin=False,
+        )
+        text = (
+            f"✅ Turnier-Eintrag {_signup_status_text(str(result.get('status')))}.\n"
+            f"Modus: Solo\n"
+            f"Rang: {tstore.rank_label(str(result.get('rank', self.selected_rank)))}"
+        )
+        await interaction.response.edit_message(content=text, embed=None, view=None)
+
+
+class TeamNameModal(discord.ui.Modal, title="Team erstellen"):
+    team_name = discord.ui.TextInput(
+        label="Teamname",
+        placeholder="z. B. Early Salty",
+        min_length=tstore.TEAM_NAME_MIN,
+        max_length=tstore.TEAM_NAME_MAX,
+    )
+
+    def __init__(self, parent_view: "TeamSignupView"):
+        super().__init__(timeout=TOURNAMENT_UI_TIMEOUT)
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            team = await tstore.get_or_create_team_async(
+                self.parent_view.guild_id,
+                str(self.team_name),
+                created_by=interaction.user.id,
+            )
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        self.parent_view.selected_team_id = int(team["id"])
+        self.parent_view.selected_team_name = str(team["name"])
+        state = "neu erstellt" if bool(team.get("created")) else "bereits vorhanden"
+        await interaction.response.send_message(
+            f"✅ Team **{team['name']}** ist {state} und ausgewaehlt.",
+            ephemeral=True,
+        )
+
+
+class TeamSelect(discord.ui.Select):
+    CREATE_VALUE = "__create__"
+
+    def __init__(self, teams: List[Dict[str, object]]):
+        options: List[discord.SelectOption] = []
+        for team in teams[:24]:
+            team_id = int(team.get("id", 0) or 0)
+            if team_id <= 0:
+                continue
+            team_name = str(team.get("name") or f"Team {team_id}")
+            members = int(team.get("member_count", 0) or 0)
+            options.append(
+                discord.SelectOption(
+                    label=team_name[:100],
+                    value=str(team_id),
+                    description=f"{members} Spieler bereits eingetragen",
+                )
+            )
+        options.append(
+            discord.SelectOption(
+                label="Neues Team erstellen",
+                value=self.CREATE_VALUE,
+                description="Falls dein Team noch nicht existiert",
+                emoji="➕",
+            )
+        )
+        super().__init__(
+            placeholder="Team waehlen oder neu erstellen...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view: "TeamSignupView" = self.view  # type: ignore
+        selected = self.values[0]
+        if selected == self.CREATE_VALUE:
+            await interaction.response.send_modal(TeamNameModal(view))
+            return
+        try:
+            team_id = int(selected)
+        except ValueError:
+            await interaction.response.send_message("❌ Ungueltige Team-Auswahl.", ephemeral=True)
+            return
+        view.selected_team_id = team_id
+        view.selected_team_name = view.team_name_by_id.get(team_id)
+        await interaction.response.defer()
+
+
+class TeamRankSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label=label,
+                value=value,
+                description=f"Setze {label} als Turnier-Rang",
+            )
+            for label, value, _ in tstore.rank_choices()
+        ]
+        super().__init__(
+            placeholder="Rang fuer Turnier-Eintrag auswaehlen...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view: "TeamSignupView" = self.view  # type: ignore
+        view.selected_rank = self.values[0]
+        await interaction.response.defer()
+
+
+class TeamSignupView(RestrictedUserView):
+    def __init__(self, owner_id: int, guild_id: int, teams: List[Dict[str, object]]):
+        super().__init__(owner_id)
+        self.guild_id = int(guild_id)
+        self.selected_rank: Optional[str] = None
+        self.selected_team_id: Optional[int] = None
+        self.selected_team_name: Optional[str] = None
+        self.team_name_by_id: Dict[int, str] = {
+            int(team["id"]): str(team.get("name") or "")
+            for team in teams
+            if team.get("id") is not None
+        }
+        self.add_item(TeamSelect(teams))
+        self.add_item(TeamRankSelect())
+
+    @discord.ui.button(label="Eintragen", style=discord.ButtonStyle.success, emoji="✅")
+    async def submit_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not self.selected_team_id:
+            await interaction.response.send_message(
+                "Bitte waehle zuerst ein Team aus oder erstelle eines.",
+                ephemeral=True,
+            )
+            return
+        if not self.selected_rank:
+            await interaction.response.send_message(
+                "Bitte waehle zuerst deinen Rang aus.",
+                ephemeral=True,
+            )
+            return
+        result = await tstore.upsert_signup_async(
+            self.guild_id,
+            interaction.user.id,
+            registration_mode="team",
+            rank=self.selected_rank,
+            team_id=self.selected_team_id,
+            assigned_by_admin=False,
+        )
+        team_name = str(result.get("team_name") or self.selected_team_name or f"Team {self.selected_team_id}")
+        text = (
+            f"✅ Turnier-Eintrag {_signup_status_text(str(result.get('status')))}.\n"
+            f"Modus: Team\n"
+            f"Team: {team_name}\n"
+            f"Rang: {tstore.rank_label(str(result.get('rank', self.selected_rank)))}"
+        )
+        await interaction.response.edit_message(content=text, embed=None, view=None)
+
+
+class TournamentPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Als Team eintragen",
+        style=discord.ButtonStyle.primary,
+        emoji="🛡️",
+        custom_id="deadlock_tournament_entry_team",
+    )
+    async def team_entry_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+        cog = interaction.client.get_cog("DeadlockTeamBalancer")
+        if not cog:
+            await interaction.response.send_message("❌ Turnier-Cog nicht verfuegbar.", ephemeral=True)
+            return
+        await cog.open_tournament_team_entry(interaction)
+
+    @discord.ui.button(
+        label="Alleine eintragen",
+        style=discord.ButtonStyle.secondary,
+        emoji="🎯",
+        custom_id="deadlock_tournament_entry_solo",
+    )
+    async def solo_entry_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+        cog = interaction.client.get_cog("DeadlockTeamBalancer")
+        if not cog:
+            await interaction.response.send_message("❌ Turnier-Cog nicht verfuegbar.", ephemeral=True)
+            return
+        await cog.open_tournament_solo_entry(interaction)
+
 # ================= Haupt-Cog =================
 
 @dataclass
@@ -271,8 +532,12 @@ class DeadlockTeamBalancer(commands.Cog):
 
     # ---------- Lifecycle ----------
     async def cog_load(self):
-        # DB is managed centrally by service.db - no setup needed
-        logger.info("DeadlockTeamBalancer bereit (DB verbunden)")
+        await tstore.ensure_schema_async()
+        # Persistente Panel-Buttons fuer Turnier-Anmeldungen
+        if not getattr(self.bot, "_deadlock_tournament_panel_registered", False):
+            self.bot.add_view(TournamentPanelView())
+            setattr(self.bot, "_deadlock_tournament_panel_registered", True)
+        logger.info("DeadlockTeamBalancer bereit (DB verbunden, Turnier-Schema aktiv)")
         print("✅ DeadlockTeamBalancer Cog geladen")
 
     # ---------- Rank-Ermittlung ----------
@@ -282,6 +547,49 @@ class DeadlockTeamBalancer(commands.Cog):
             return rn, rv
         # Fallback to DB lookup using central DB
         return await _fetch_rank_from_db(member.id)
+
+    async def open_tournament_solo_entry(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ Turnier-Anmeldung funktioniert nur auf dem Server.",
+                ephemeral=True,
+            )
+            return
+        await tstore.ensure_schema_async()
+        view = SoloSignupView(interaction.user.id, interaction.guild.id)
+        embed = discord.Embed(
+            title="🎯 Solo-Turnieranmeldung",
+            description="Waehle deinen aktuellen Deadlock-Rang und bestaetige deinen Eintrag.",
+            color=discord.Color.blurple(),
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    async def open_tournament_team_entry(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ Turnier-Anmeldung funktioniert nur auf dem Server.",
+                ephemeral=True,
+            )
+            return
+        await tstore.ensure_schema_async()
+        teams = await tstore.list_teams_async(interaction.guild.id)
+        embed = discord.Embed(
+            title="🛡️ Team-Turnieranmeldung",
+            description=(
+                "Waehle ein bestehendes Team oder erstelle ein neues Team.\n"
+                "Danach Rang auswaehlen und Eintrag absenden."
+            ),
+            color=discord.Color.green(),
+        )
+        embed.add_field(
+            name="Teams",
+            value=f"Es gibt aktuell **{len(teams)}** Team(s) in der Datenbank.",
+            inline=False,
+        )
+        if len(teams) > 24:
+            embed.set_footer(text="Hinweis: Dropdown zeigt max. 24 Teams. Existiert dein Team nicht: Neues Team erstellen.")
+        view = TeamSignupView(interaction.user.id, interaction.guild.id, teams)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     # ---------- Commands ----------
     @commands.group(name="balance", aliases=["bal", "teams"], invoke_without_command=True)
@@ -301,7 +609,10 @@ class DeadlockTeamBalancer(commands.Cog):
                 "`!balance status [@user]` – Rank-Status\n"
                 "`!balance matches` – aktive Matches\n"
                 "`!balance end <id> [skip_debrief]` – Match beenden (+ Nachbesprechung)\n"
-                "`!balance cleanup <hours>` – alte Matches löschen"
+                "`!balance cleanup <hours>` – alte Matches löschen\n"
+                "`!balance turnierpanel` – Turnier-Menü posten (Admin)\n"
+                "`!balance turnierstatus` – dein Turnier-Eintrag\n"
+                "`!balance austragen` – Turnier-Eintrag entfernen"
             ),
             inline=False
         )
@@ -376,14 +687,124 @@ class DeadlockTeamBalancer(commands.Cog):
 
         await self._run_balance_and_start(ctx, players)
 
+    @balance_root.command(name="turnierpanel", aliases=["tournamentpanel", "cupmenu"])
+    @commands.has_permissions(manage_guild=True)
+    async def balance_tournament_panel(self, ctx: commands.Context):
+        if not ctx.guild:
+            await ctx.send("❌ Dieser Befehl funktioniert nur in einem Server.")
+            return
+        await tstore.ensure_schema_async()
+        embed = discord.Embed(
+            title="🏆 Deadlock Turnier-Anmeldung",
+            description=(
+                "Trage dich hier fuer das Turnier ein:\n"
+                "• Als Team (Team waehlen oder neu erstellen)\n"
+                "• Oder alleine\n\n"
+                "Der aktuelle Rang wird ueber das Dropdown abgefragt."
+            ),
+            color=discord.Color.gold(),
+        )
+        embed.set_footer(text="Doppelte Eintraege und doppelte Team-Namen werden automatisch verhindert.")
+        await ctx.send(embed=embed, view=TournamentPanelView())
+
+    @balance_root.command(name="turnierstatus", aliases=["cupstatus"])
+    async def balance_tournament_status(self, ctx: commands.Context, member: Optional[discord.Member] = None):
+        if not ctx.guild:
+            await ctx.send("❌ Dieser Befehl funktioniert nur in einem Server.")
+            return
+        target = member or ctx.author
+        if target.id != ctx.author.id:
+            perms = ctx.author.guild_permissions
+            if not (perms.manage_guild or perms.administrator):
+                await ctx.send("❌ Du darfst nur deinen eigenen Turnierstatus anzeigen.")
+                return
+
+        await tstore.ensure_schema_async()
+        signup = await tstore.get_signup_async(ctx.guild.id, target.id)
+        if not signup:
+            await ctx.send(f"ℹ️ {target.mention} hat aktuell keinen Turnier-Eintrag.")
+            return
+
+        mode = str(signup.get("registration_mode", "solo"))
+        rank_key = str(signup.get("rank", "initiate"))
+        rank_num = int(signup.get("rank_value", tstore.rank_value(rank_key)) or 0)
+        team_name = signup.get("team_name")
+        assigned = bool(int(signup.get("assigned_by_admin", 0) or 0))
+
+        emb = discord.Embed(
+            title=f"🏆 Turnierstatus: {target.display_name}",
+            color=discord.Color.orange(),
+        )
+        emb.add_field(name="Modus", value="Team" if mode == "team" else "Solo", inline=True)
+        emb.add_field(
+            name="Rang",
+            value=f"{tstore.rank_label(rank_key)} ({rank_num})",
+            inline=True,
+        )
+        emb.add_field(
+            name="Team",
+            value=str(team_name) if team_name else "Kein Team zugewiesen",
+            inline=True,
+        )
+        if assigned:
+            emb.set_footer(text="Hinweis: Team-Zuweisung wurde im Admin-Panel gesetzt.")
+        await ctx.send(embed=emb)
+
+    @balance_root.command(name="turnierliste", aliases=["cuplist"])
+    @commands.has_permissions(manage_guild=True)
+    async def balance_tournament_list(self, ctx: commands.Context):
+        if not ctx.guild:
+            await ctx.send("❌ Dieser Befehl funktioniert nur in einem Server.")
+            return
+        await tstore.ensure_schema_async()
+        signups = await tstore.list_signups_async(ctx.guild.id)
+        summary = await tstore.summary_async(ctx.guild.id)
+        if not signups:
+            await ctx.send("📭 Keine Turnier-Anmeldungen vorhanden.")
+            return
+
+        emb = discord.Embed(
+            title="📋 Turnier-Anmeldungen",
+            description=(
+                f"Gesamt: **{summary['signups_total']}** | "
+                f"Solo: **{summary['solo_count']}** | "
+                f"Team: **{summary['team_count']}** | "
+                f"Teams: **{summary['teams_count']}**"
+            ),
+            color=discord.Color.teal(),
+        )
+        lines: List[str] = []
+        for row in signups[:20]:
+            user_id = int(row.get("user_id") or 0)
+            member = ctx.guild.get_member(user_id)
+            display = member.display_name if member else str(user_id)
+            mode = "Team" if str(row.get("registration_mode")) == "team" else "Solo"
+            rank_lbl = tstore.rank_label(str(row.get("rank", "initiate")))
+            team = str(row.get("team_name") or "—")
+            lines.append(f"• **{display}** | {mode} | {rank_lbl} | {team}")
+        if len(signups) > 20:
+            lines.append(f"... und {len(signups) - 20} weitere")
+        emb.add_field(name="Eintraege", value="\n".join(lines), inline=False)
+        await ctx.send(embed=emb)
+
+    @balance_root.command(name="austragen", aliases=["turnierexit", "unregister"])
+    async def balance_tournament_unregister(self, ctx: commands.Context):
+        if not ctx.guild:
+            await ctx.send("❌ Dieser Befehl funktioniert nur in einem Server.")
+            return
+        await tstore.ensure_schema_async()
+        removed = await tstore.remove_signup_async(ctx.guild.id, ctx.author.id)
+        if removed:
+            await ctx.send("✅ Dein Turnier-Eintrag wurde entfernt.")
+        else:
+            await ctx.send("ℹ️ Du warst nicht als Turnier-Teilnehmer eingetragen.")
+
     @balance_root.command(name="status")
     async def balance_status(self, ctx: commands.Context, member: Optional[discord.Member] = None):
         member = member or ctx.author
         nm, val = await self.get_user_rank(member)
         role_nm, role_val = _rank_from_roles(member)
-        db_nm, db_val = ("Obscurus", 0)
-        if self.db:
-            db_nm, db_val = await _fetch_rank_from_db(member.id)
+        db_nm, db_val = await _fetch_rank_from_db(member.id)
         emb = discord.Embed(title=f"📊 Rank-Status: {member.display_name}", color=discord.Color.blue())
         emb.add_field(name="🎯 Aktueller Rank", value=f"**{nm}** ({val})", inline=True)
         emb.add_field(name="🎭 Discord-Rollen", value=f"{role_nm} ({role_val})" if role_val else "Keine Rank-Rolle", inline=True)

@@ -196,6 +196,10 @@ class DashboardServer:
                     web.get("/api/co-player-network", self._handle_co_player_network),
                     web.get("/api/co-player-network/", self._handle_co_player_network),
                     web.get("/api/server-stats", self._handle_server_stats),
+                    web.get("/api/tournament/overview", self._handle_tournament_overview),
+                    web.post("/api/tournament/team", self._handle_tournament_team_create),
+                    web.post("/api/tournament/assign", self._handle_tournament_assign),
+                    web.post("/api/tournament/remove", self._handle_tournament_remove),
                     web.post("/api/cogs/discover", self._handle_discover),
                     web.get("/api/logs", self._handle_log_index),
                     web.get("/api/logs/{name}", self._handle_log_read),
@@ -2204,7 +2208,7 @@ class DashboardServer:
 
         join_rows = db.query_all(
             """
-            SELECT user_id, guild_id, timestamp, display_name, metadata
+            SELECT id, user_id, guild_id, timestamp, display_name, metadata
             FROM member_events
             WHERE event_type = 'join'
               AND timestamp >= datetime('now', ?)
@@ -2266,12 +2270,15 @@ class DashboardServer:
         twitch_groups: Dict[str, Dict[str, Any]] = {}
         personal_groups: Dict[str, Dict[str, Any]] = {}
         recent: List[Dict[str, Any]] = []
+        backfill_updates: List[Tuple[str, int]] = []
 
         for row in join_rows:
-            user_id = self._coerce_int(row[0], 0) or 0
-            timestamp = row[2]
-            display_name = row[3] or f"User {user_id}"
-            metadata = self._parse_metadata_json(row[4])
+            event_id = self._coerce_int(row[0], None)
+            user_id = self._coerce_int(row[1], 0) or 0
+            timestamp = row[3]
+            display_name = row[4] or f"User {user_id}"
+            metadata = self._parse_metadata_json(row[5])
+            metadata_changed = False
 
             bucket_raw = str(metadata.get("join_source_bucket") or "").strip().lower()
             kind_raw = str(metadata.get("join_source_kind") or metadata.get("join_source_type") or "").strip().lower()
@@ -2280,9 +2287,14 @@ class DashboardServer:
             invite_url = str(metadata.get("invite_url") or "").strip()
             if not invite_url and invite_code:
                 invite_url = f"https://discord.gg/{invite_code}"
+                metadata["invite_url"] = invite_url
+                metadata_changed = True
             twitch_login = str(metadata.get("twitch_streamer_login") or "").strip().lower()
             if not twitch_login and invite_code:
                 twitch_login = twitch_invite_lookup.get(invite_code.lower(), "")
+                if twitch_login:
+                    metadata["twitch_streamer_login"] = twitch_login
+                    metadata_changed = True
 
             bucket = bucket_raw
             if bucket not in bucket_counts:
@@ -2294,6 +2306,8 @@ class DashboardServer:
                     bucket = "personal"
                 else:
                     bucket = "unknown"
+                metadata["join_source_bucket"] = bucket
+                metadata_changed = True
 
             bucket_counts[bucket] += 1
 
@@ -2307,6 +2321,23 @@ class DashboardServer:
                 else:
                     public_kind = "other"
                 public_groups[public_kind]["count"] += 1
+
+            if not kind_raw:
+                if bucket == "twitch":
+                    kind_raw = "twitch_streamer"
+                elif bucket == "personal":
+                    kind_raw = "invite_link"
+                elif bucket == "public":
+                    if public_kind == "server_discovery":
+                        kind_raw = "server_discovery"
+                    elif public_kind == "vanity":
+                        kind_raw = "vanity"
+                    else:
+                        kind_raw = "public_other"
+                else:
+                    kind_raw = "unknown"
+                metadata["join_source_kind"] = kind_raw
+                metadata_changed = True
 
             if bucket == "twitch":
                 key = twitch_login or invite_code.lower() or "unknown"
@@ -2375,6 +2406,26 @@ class DashboardServer:
                 else:
                     source_label = "Unbekannt"
 
+            if not label_raw:
+                metadata["join_source_label"] = source_label
+                metadata_changed = True
+
+            if not str(metadata.get("join_source_confidence") or "").strip():
+                confidence = "high"
+                if bucket == "unknown":
+                    confidence = "low"
+                elif bucket == "public" and kind_raw in {"server_discovery", "discovery", "public_discovery"}:
+                    confidence = "medium"
+                metadata["join_source_confidence"] = confidence
+                metadata_changed = True
+
+            if not str(metadata.get("join_source_detected_at") or "").strip():
+                metadata["join_source_detected_at"] = timestamp or _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                metadata_changed = True
+
+            if metadata_changed and event_id is not None:
+                backfill_updates.append((json.dumps(metadata, separators=(",", ":")), int(event_id)))
+
             recent.append(
                 {
                     "user_id": user_id,
@@ -2387,6 +2438,16 @@ class DashboardServer:
                     "twitch_streamer_login": twitch_login or None,
                 }
             )
+
+        if backfill_updates:
+            try:
+                db.executemany(
+                    "UPDATE member_events SET metadata = ? WHERE id = ?",
+                    backfill_updates,
+                )
+                logger.info("Member-source metadata backfilled for %d join event(s)", len(backfill_updates))
+            except Exception:
+                logger.debug("Failed to persist member-source metadata backfill", exc_info=True)
 
         public_breakdown = [entry for entry in public_groups.values() if int(entry.get("count", 0)) > 0]
         twitch_breakdown = sorted(
@@ -2518,6 +2579,173 @@ class DashboardServer:
         except Exception as exc:
             logging.exception("Failed to load server stats: %s", exc)
             raise web.HTTPInternalServerError(text="Server stats unavailable") from exc
+
+    def _resolve_tournament_guild_id(self, raw_value: Any) -> int:
+        parsed = self._coerce_int(raw_value, None)
+        if parsed is not None:
+            return int(parsed)
+        if self.bot.guilds:
+            return int(self.bot.guilds[0].id)
+        raise web.HTTPBadRequest(text="guild_id is required")
+
+    async def _tournament_guilds_payload(self) -> List[Dict[str, Any]]:
+        from cogs.customgames import tournament_store as tstore
+
+        counts = await tstore.guild_signup_counts_async()
+        payload: List[Dict[str, Any]] = []
+        known_ids: Set[int] = set()
+        for guild in sorted(self.bot.guilds, key=lambda g: (g.name or "").lower()):
+            guild_id = int(guild.id)
+            known_ids.add(guild_id)
+            payload.append(
+                {
+                    "id": guild_id,
+                    "name": guild.name,
+                    "signups": int(counts.get(guild_id, 0)),
+                }
+            )
+        for guild_id, signups in sorted(counts.items(), key=lambda item: item[0]):
+            gid = int(guild_id)
+            if gid in known_ids:
+                continue
+            payload.append(
+                {
+                    "id": gid,
+                    "name": f"Guild {gid}",
+                    "signups": int(signups),
+                }
+            )
+        return payload
+
+    def _decorate_tournament_signups(
+        self,
+        guild_id: int,
+        signups: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        guild = self.bot.get_guild(int(guild_id))
+        decorated: List[Dict[str, Any]] = []
+        for row in signups:
+            item = dict(row)
+            user_id = int(item.get("user_id") or 0)
+            member = guild.get_member(user_id) if guild else None
+            item["display_name"] = member.display_name if member else f"User {user_id}"
+            item["mention"] = member.mention if member else None
+            rank_key = str(item.get("rank") or "initiate")
+            item["rank_label"] = rank_key.capitalize()
+            decorated.append(item)
+        return decorated
+
+    async def _handle_tournament_overview(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        from cogs.customgames import tournament_store as tstore
+
+        await tstore.ensure_schema_async()
+        guild_id = self._resolve_tournament_guild_id(request.query.get("guild_id"))
+        teams = await tstore.list_teams_async(guild_id)
+        signups = await tstore.list_signups_async(guild_id)
+        summary = await tstore.summary_async(guild_id)
+
+        payload = {
+            "guild_id": guild_id,
+            "guilds": await self._tournament_guilds_payload(),
+            "summary": summary,
+            "teams": teams,
+            "signups": self._decorate_tournament_signups(guild_id, signups),
+        }
+        return self._json(payload)
+
+    async def _handle_tournament_team_create(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        from cogs.customgames import tournament_store as tstore
+
+        try:
+            payload = await request.json()
+        except Exception as exc:  # noqa: BLE001
+            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+        if not isinstance(payload, dict):
+            raise web.HTTPBadRequest(text="Payload must be a JSON object")
+
+        await tstore.ensure_schema_async()
+        guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise web.HTTPBadRequest(text="'name' is required")
+        created_by = self._coerce_int(payload.get("created_by"), None)
+
+        try:
+            team = await tstore.get_or_create_team_async(guild_id, name, created_by=created_by)
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
+
+        return self._json(
+            {
+                "ok": True,
+                "team": team,
+                "created": bool(team.get("created")),
+            },
+            status=201 if bool(team.get("created")) else 200,
+        )
+
+    async def _handle_tournament_assign(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        from cogs.customgames import tournament_store as tstore
+
+        try:
+            payload = await request.json()
+        except Exception as exc:  # noqa: BLE001
+            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+        if not isinstance(payload, dict):
+            raise web.HTTPBadRequest(text="Payload must be a JSON object")
+
+        await tstore.ensure_schema_async()
+        guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
+        user_id = self._coerce_int(payload.get("user_id"), None)
+        if user_id is None:
+            raise web.HTTPBadRequest(text="'user_id' must be an integer")
+
+        team_raw = payload.get("team_id")
+        if team_raw in (None, ""):
+            team_id: Optional[int] = None
+        else:
+            team_id = self._coerce_int(team_raw, None)
+            if team_id is None:
+                raise web.HTTPBadRequest(text="'team_id' must be an integer or null")
+
+        try:
+            updated = await tstore.assign_signup_team_async(
+                guild_id,
+                int(user_id),
+                team_id=team_id,
+            )
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
+
+        if not updated:
+            raise web.HTTPNotFound(text="Signup not found")
+
+        signup = await tstore.get_signup_async(guild_id, int(user_id))
+        decorated = self._decorate_tournament_signups(guild_id, [signup]) if signup else []
+        return self._json({"ok": True, "signup": decorated[0] if decorated else signup})
+
+    async def _handle_tournament_remove(self, request: web.Request) -> web.Response:
+        self._check_auth(request, required=bool(self.token))
+        from cogs.customgames import tournament_store as tstore
+
+        try:
+            payload = await request.json()
+        except Exception as exc:  # noqa: BLE001
+            raise web.HTTPBadRequest(text="Invalid JSON payload") from exc
+        if not isinstance(payload, dict):
+            raise web.HTTPBadRequest(text="Payload must be a JSON object")
+
+        await tstore.ensure_schema_async()
+        guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
+        user_id = self._coerce_int(payload.get("user_id"), None)
+        if user_id is None:
+            raise web.HTTPBadRequest(text="'user_id' must be an integer")
+
+        removed = await tstore.remove_signup_async(guild_id, int(user_id))
+        return self._json({"ok": removed, "removed": removed})
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))

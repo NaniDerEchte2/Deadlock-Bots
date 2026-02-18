@@ -677,7 +677,7 @@ if TWITCHIO_AVAILABLE:
                     try:
                         self._raid_bot.mark_manual_raid_started(
                             broadcaster_id=str(twitch_user_id),
-                            ttl_seconds=28800.0,  # 8 Stunden: verhindert Auto-Raid nach manuellem Raid
+                            ttl_seconds=180.0,  # 3 Minuten: verhindert Auto-Raid nach manuellem Raid
                         )
                     except Exception:
                         log.debug("Konnte Manual-Raid-Suppression nicht setzen für %s", twitch_login, exc_info=True)

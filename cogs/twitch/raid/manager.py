@@ -1822,10 +1822,10 @@ class RaidBot:
             if not from_broadcaster_key:
                 from_broadcaster_key = self._resolve_streamer_id_by_login(from_broadcaster_login) or ""
             if from_broadcaster_key:
-                self.mark_manual_raid_started(from_broadcaster_key, ttl_seconds=28800.0)
+                self.mark_manual_raid_started(from_broadcaster_key, ttl_seconds=180.0)
                 log.info(
                     "External/manual raid detected via EventSub: %s -> %s. "
-                    "Suppressing next offline auto-raid for broadcaster_id=%s (ttl=28800s/8h)",
+                    "Suppressing next offline auto-raid for broadcaster_id=%s (ttl=180s/3min)",
                     from_broadcaster_login,
                     to_broadcaster_login,
                     from_broadcaster_key,
@@ -2415,6 +2415,14 @@ class RaidBot:
         - Auto-Retry bei Fehlern (z.B. Ziel hat Raids deaktiviert)
         - Blacklist-Management für nicht raidbare Kanäle
         """
+        # Prüfen, ob Auto-Raid durch manuellen Raid unterdrückt ist
+        if self.is_offline_auto_raid_suppressed(broadcaster_id):
+            log.info(
+                "Auto-raid suppressed for %s (manual raid detected recently)",
+                broadcaster_login
+            )
+            return None
+
         # Prüfen, ob Streamer Auto-Raid aktiviert hat
         with get_conn() as conn:
             row = conn.execute(
