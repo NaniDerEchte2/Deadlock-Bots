@@ -908,18 +908,6 @@ class ModerationMixin:
                     break
         return False
 
-    @staticmethod
-    def _parse_db_datetime(value: Optional[str]) -> Optional[datetime]:
-        if not value:
-            return None
-        try:
-            dt = datetime.fromisoformat(value)
-        except ValueError:
-            return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-
     def _is_partner_channel_for_chat_tracking(self, login: str) -> bool:
         """Nur verifizierte Partner-Channels (ohne Opt-out/Archiv) tracken."""
         if not login:
@@ -946,12 +934,8 @@ class ModerationMixin:
             with get_conn() as conn:
                 row = conn.execute(
                     """
-                    SELECT manual_verified_permanent,
-                           manual_verified_until,
-                           manual_verified_at,
-                           manual_partner_opt_out,
-                           archived_at
-                      FROM twitch_streamers
+                    SELECT is_partner_active
+                      FROM twitch_streamers_partner_state
                      WHERE LOWER(twitch_login) = ?
                      LIMIT 1
                     """,
@@ -959,27 +943,7 @@ class ModerationMixin:
                 ).fetchone()
 
             if row:
-                if hasattr(row, "keys"):
-                    permanent_raw = row["manual_verified_permanent"]
-                    until_raw = row["manual_verified_until"]
-                    verified_at_raw = row["manual_verified_at"]
-                    opt_out_raw = row["manual_partner_opt_out"]
-                    archived_at_raw = row["archived_at"]
-                else:
-                    permanent_raw = row[0]
-                    until_raw = row[1]
-                    verified_at_raw = row[2]
-                    opt_out_raw = row[3]
-                    archived_at_raw = row[4]
-
-                opt_out = bool(int(opt_out_raw or 0))
-                archived = bool(str(archived_at_raw or "").strip())
-                permanent = bool(int(permanent_raw or 0))
-                until_dt = self._parse_db_datetime(str(until_raw)) if until_raw else None
-                until_active = bool(until_dt and until_dt >= datetime.now(timezone.utc))
-                legacy_verified = bool(str(verified_at_raw or "").strip())
-                verified = permanent or until_active or legacy_verified
-                is_partner = (not opt_out) and (not archived) and verified
+                is_partner = bool(row["is_partner_active"] if hasattr(row, "keys") else row[0])
         except Exception:
             log.debug("Konnte Partner-Status für Chat-Tracking nicht prüfen (%s)", login, exc_info=True)
             is_partner = False

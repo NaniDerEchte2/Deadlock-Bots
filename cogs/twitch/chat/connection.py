@@ -406,17 +406,11 @@ class ConnectionMixin:
             partners = conn.execute(
                 """
                 SELECT DISTINCT s.twitch_login, s.twitch_user_id, a.scopes, l.is_live
-                FROM twitch_streamers s
+                FROM twitch_streamers_partner_state s
                 JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
                 LEFT JOIN twitch_live_state l ON s.twitch_user_id = l.twitch_user_id
                 WHERE a.raid_enabled = 1
-                   OR (
-                       (s.manual_verified_permanent = 1
-                        OR s.manual_verified_until IS NOT NULL
-                        OR s.manual_verified_at IS NOT NULL)
-                       AND COALESCE(s.manual_partner_opt_out, 0) = 0
-                       AND s.archived_at IS NULL
-                   )
+                   OR s.is_partner_active = 1
                 """
             ).fetchall()
 

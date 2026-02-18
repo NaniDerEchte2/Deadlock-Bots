@@ -635,13 +635,9 @@ class TwitchMonitoringMixin:
                 rows = c.execute(
                     """
                     SELECT s.twitch_user_id, s.twitch_login, a.scopes
-                      FROM twitch_streamers s
+                      FROM twitch_streamers_partner_state s
                       JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
-                     WHERE (s.manual_verified_permanent = 1
-                            OR s.manual_verified_until IS NOT NULL
-                            OR s.manual_verified_at IS NOT NULL)
-                       AND s.manual_partner_opt_out = 0
-                       AND s.archived_at IS NULL
+                     WHERE s.is_partner_active = 1
                        AND s.twitch_user_id IS NOT NULL
                        AND s.twitch_login IS NOT NULL
                     """
@@ -1514,11 +1510,10 @@ class TwitchMonitoringMixin:
             with storage.get_conn() as c:
                 rows = c.execute(
                     "SELECT twitch_login, twitch_user_id, require_discord_link, "
-                    "       manual_verified_permanent, manual_verified_until, archived_at "
-                    "FROM twitch_streamers"
+                    "       archived_at, is_partner "
+                    "FROM twitch_streamers_partner_state"
                 ).fetchall()
             tracked: List[Dict[str, object]] = []
-            now_utc = datetime.now(timezone.utc)
             for row in rows:
                 row_dict = dict(row)
                 login = str(row_dict.get("twitch_login") or "").strip()
@@ -1534,11 +1529,7 @@ class TwitchMonitoringMixin:
                     except Exception:
                         archived_dt = None
                 is_archived = archived_dt is not None
-                is_verified = False
-                try:
-                    is_verified = self._is_partner_verified(row_dict, now_utc)
-                except Exception:
-                    log.debug("Konnte Verifizierungsstatus für %s nicht bestimmen", login, exc_info=True)
+                is_verified = bool(row_dict.get("is_partner"))
 
                 tracked.append(
                     {
@@ -2022,15 +2013,12 @@ class TwitchMonitoringMixin:
                                  WHEN LOWER(COALESCE(sess.game_name,'')) = LOWER(?)
                                  THEN COALESCE(sess.ended_at, sess.started_at)
                                END
-                           ) AS last_deadlock_stream_at
-                      FROM twitch_streamers s
+                            ) AS last_deadlock_stream_at
+                      FROM twitch_streamers_partner_state s
                       LEFT JOIN twitch_stream_sessions sess
                         ON LOWER(sess.streamer_login) = LOWER(s.twitch_login)
-                     WHERE s.manual_partner_opt_out = 0
-                       AND (s.manual_verified_permanent = 1
-                            OR s.manual_verified_until IS NOT NULL
-                            OR s.manual_verified_at IS NOT NULL)
-                    GROUP BY s.twitch_login, s.archived_at
+                     WHERE s.is_partner = 1
+                     GROUP BY s.twitch_login, s.archived_at
                     """,
                     (target_game,),
                 ).fetchall()

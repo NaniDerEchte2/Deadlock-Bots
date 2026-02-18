@@ -100,6 +100,44 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_twitch_streamers_user_id ON twitch_streamers(twitch_user_id)"
     )
 
+    # 1b) Zentrale Partner-Flags (Single Source of Truth)
+    conn.execute(
+        """
+        CREATE VIEW IF NOT EXISTS twitch_streamers_partner_state AS
+        SELECT
+            base.*,
+            CASE
+                WHEN base.is_verified = 1
+                     AND COALESCE(base.manual_partner_opt_out, 0) = 0
+                     AND COALESCE(base.is_monitored_only, 0) = 0
+                THEN 1 ELSE 0
+            END AS is_partner,
+            CASE
+                WHEN base.is_verified = 1
+                     AND COALESCE(base.manual_partner_opt_out, 0) = 0
+                     AND COALESCE(base.is_monitored_only, 0) = 0
+                     AND base.archived_at IS NULL
+                THEN 1 ELSE 0
+            END AS is_partner_active
+        FROM (
+            SELECT
+                s.*,
+                CASE
+                    WHEN (
+                        COALESCE(s.manual_verified_permanent, 0) = 1
+                        OR (
+                            s.manual_verified_until IS NOT NULL
+                            AND julianday(s.manual_verified_until) >= julianday('now')
+                        )
+                        OR s.manual_verified_at IS NOT NULL
+                    )
+                    THEN 1 ELSE 0
+                END AS is_verified
+            FROM twitch_streamers s
+        ) AS base
+        """
+    )
+
     # 2) twitch_live_state
     conn.execute(
         """

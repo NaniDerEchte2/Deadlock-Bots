@@ -92,16 +92,12 @@ def get_all_partners(include_archived: bool = False) -> List[Dict]:
                    is_on_discord,
                    discord_user_id,
                    discord_display_name
-              FROM twitch_streamers
-             WHERE (manual_verified_permanent = 1
-                    OR manual_verified_until IS NOT NULL
-                    OR manual_verified_at IS NOT NULL)
-               AND COALESCE(manual_partner_opt_out, 0) = 0
-               AND COALESCE(is_monitored_only, 0) = 0
+              FROM twitch_streamers_partner_state
+             WHERE is_partner = 1
         """
 
         if not include_archived:
-            query += " AND archived_at IS NULL"
+            query += " AND is_partner_active = 1"
 
         query += " ORDER BY twitch_login"
 
@@ -131,15 +127,10 @@ def get_live_partners() -> List[Dict]:
                    l.stream_title,
                    l.game_name,
                    l.viewer_count
-              FROM twitch_streamers s
+              FROM twitch_streamers_partner_state s
               JOIN twitch_live_state l ON l.twitch_user_id = s.twitch_user_id
              WHERE l.is_live = 1
-               AND (s.manual_verified_permanent = 1
-                    OR s.manual_verified_until IS NOT NULL
-                    OR s.manual_verified_at IS NOT NULL)
-               AND COALESCE(s.manual_partner_opt_out, 0) = 0
-               AND COALESCE(s.is_monitored_only, 0) = 0
-               AND s.archived_at IS NULL
+               AND s.is_partner_active = 1
              ORDER BY s.twitch_login
         """).fetchall()
 
@@ -180,30 +171,15 @@ def is_partner_channel_for_chat_tracking(login: str) -> bool:
 
     with get_conn() as conn:
         row = conn.execute("""
-            SELECT manual_verified_permanent,
-                   manual_verified_until,
-                   manual_verified_at,
-                   manual_partner_opt_out,
-                   is_monitored_only,
-                   archived_at
-              FROM twitch_streamers
+            SELECT is_partner_active
+              FROM twitch_streamers_partner_state
              WHERE LOWER(twitch_login) = ?
         """, (login_lower,)).fetchone()
 
         if not row:
             return False
 
-        # Prüfe Partner-Status
-        row_dict = dict(row) if hasattr(row, "keys") else {
-            "manual_verified_permanent": row[0],
-            "manual_verified_until": row[1],
-            "manual_verified_at": row[2],
-            "manual_partner_opt_out": row[3],
-            "is_monitored_only": row[4],
-            "archived_at": row[5],
-        }
-
-        return is_partner(row_dict)
+        return bool(row["is_partner_active"] if hasattr(row, "keys") else row[0])
 
 
 def get_partner_stats() -> Dict:
@@ -217,13 +193,8 @@ def get_partner_stats() -> Dict:
         # Partner Count
         partner_count = conn.execute("""
             SELECT COUNT(*)
-              FROM twitch_streamers
-             WHERE (manual_verified_permanent = 1
-                    OR manual_verified_until IS NOT NULL
-                    OR manual_verified_at IS NOT NULL)
-               AND COALESCE(manual_partner_opt_out, 0) = 0
-               AND COALESCE(is_monitored_only, 0) = 0
-               AND archived_at IS NULL
+              FROM twitch_streamers_partner_state
+             WHERE is_partner_active = 1
         """).fetchone()[0]
 
         # Monitored-Only Count
@@ -236,26 +207,17 @@ def get_partner_stats() -> Dict:
         # Live Partner Count
         live_partners = conn.execute("""
             SELECT COUNT(*)
-              FROM twitch_streamers s
+              FROM twitch_streamers_partner_state s
               JOIN twitch_live_state l ON l.twitch_user_id = s.twitch_user_id
              WHERE l.is_live = 1
-               AND (s.manual_verified_permanent = 1
-                    OR s.manual_verified_until IS NOT NULL
-                    OR s.manual_verified_at IS NOT NULL)
-               AND COALESCE(s.manual_partner_opt_out, 0) = 0
-               AND COALESCE(s.is_monitored_only, 0) = 0
-               AND s.archived_at IS NULL
+               AND s.is_partner_active = 1
         """).fetchone()[0]
 
         # Archived Partner Count
         archived_count = conn.execute("""
             SELECT COUNT(*)
-              FROM twitch_streamers
-             WHERE (manual_verified_permanent = 1
-                    OR manual_verified_until IS NOT NULL
-                    OR manual_verified_at IS NOT NULL)
-               AND COALESCE(manual_partner_opt_out, 0) = 0
-               AND COALESCE(is_monitored_only, 0) = 0
+              FROM twitch_streamers_partner_state
+             WHERE is_partner = 1
                AND archived_at IS NOT NULL
         """).fetchone()[0]
 

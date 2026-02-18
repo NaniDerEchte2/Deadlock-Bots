@@ -1674,9 +1674,8 @@ class AnalyticsV2Mixin:
                 # Partners (verified)
                 partners = conn.execute("""
                     SELECT twitch_login
-                    FROM twitch_streamers
-                    WHERE archived_at IS NULL
-                      AND (manual_verified_permanent = 1 OR manual_verified_until > datetime('now'))
+                    FROM twitch_streamers_partner_state
+                    WHERE is_partner_active = 1
                     ORDER BY twitch_login
                 """).fetchall()
 
@@ -1685,10 +1684,10 @@ class AnalyticsV2Mixin:
                     SELECT DISTINCT s.streamer_login
                     FROM twitch_stream_sessions s
                     WHERE s.started_at >= datetime('now', '-30 days')
-                      AND s.streamer_login NOT IN (
-                          SELECT twitch_login FROM twitch_streamers
-                          WHERE archived_at IS NULL
-                            AND (manual_verified_permanent = 1 OR manual_verified_until > datetime('now'))
+                      AND LOWER(s.streamer_login) NOT IN (
+                          SELECT LOWER(twitch_login)
+                            FROM twitch_streamers_partner_state
+                           WHERE is_partner_active = 1
                       )
                     ORDER BY s.streamer_login
                 """).fetchall()

@@ -197,13 +197,9 @@ class TwitchRaidMixin:
                             s.archived_at,
                             a.raid_enabled,
                             a.authorized_at
-              FROM twitch_streamers s
+              FROM twitch_streamers_partner_state s
               LEFT JOIN twitch_raid_auth a ON s.twitch_user_id = a.twitch_user_id
-             WHERE (s.manual_verified_permanent = 1
-                    OR s.manual_verified_until IS NOT NULL
-                    OR s.manual_verified_at IS NOT NULL)
-               AND s.manual_partner_opt_out = 0
-               AND s.archived_at IS NULL
+             WHERE s.is_partner_active = 1
                AND s.twitch_user_id IS NOT NULL
                AND s.twitch_user_id != ?
             """,

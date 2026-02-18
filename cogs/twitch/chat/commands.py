@@ -567,11 +567,8 @@ if TWITCHIO_AVAILABLE:
                 partners = conn.execute(
                     """
                     SELECT twitch_login, twitch_user_id
-                      FROM twitch_streamers
-                     WHERE (manual_verified_permanent = 1
-                            OR manual_verified_until IS NOT NULL
-                            OR manual_verified_at IS NOT NULL)
-                       AND manual_partner_opt_out = 0
+                      FROM twitch_streamers_partner_state
+                     WHERE is_partner_active = 1
                        AND twitch_user_id IS NOT NULL
                        AND twitch_login IS NOT NULL
                        AND twitch_user_id != ?

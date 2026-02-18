@@ -560,14 +560,8 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             row = conn.execute(
                 """
                 SELECT twitch_login, twitch_user_id
-                FROM twitch_streamers
-                WHERE archived_at IS NULL
-                  AND COALESCE(manual_partner_opt_out, 0) = 0
-                  AND (
-                      COALESCE(manual_verified_permanent, 0) = 1
-                      OR manual_verified_at IS NOT NULL
-                      OR (manual_verified_until IS NOT NULL AND manual_verified_until > datetime('now'))
-                  )
+                FROM twitch_streamers_partner_state
+                WHERE is_partner_active = 1
                   AND (
                       LOWER(twitch_login) = LOWER(?)
                       OR (? != '' AND twitch_user_id = ?)

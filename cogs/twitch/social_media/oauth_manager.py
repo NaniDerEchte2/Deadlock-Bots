@@ -121,13 +121,18 @@ class SocialMediaOAuthManager:
 
     def _youtube_auth_url(self, state: str, redirect_uri: str, verifier: str) -> str:
         """Generate YouTube OAuth URL with PKCE."""
+        client_id = os.environ.get("YOUTUBE_CLIENT_ID", "")
+        if not client_id:
+            raise ValueError(
+                "YOUTUBE_CLIENT_ID nicht konfiguriert. "
+                "Bitte im Windows-Vault unter 'DeadlockBot' / 'YOUTUBE_CLIENT_ID' eintragen."
+            )
+
         # PKCE challenge
         challenge = urlsafe_b64encode(
             hashlib.sha256(verifier.encode()).digest()
         ).decode().rstrip('=')
 
-        # TODO: Load from config or DB
-        client_id = "YOUR_GOOGLE_CLIENT_ID"
         scopes = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
 
         params = {
@@ -146,8 +151,12 @@ class SocialMediaOAuthManager:
 
     def _instagram_auth_url(self, state: str, redirect_uri: str) -> str:
         """Generate Instagram OAuth URL (via Facebook/Meta)."""
-        # TODO: Load from config or DB
-        client_id = "YOUR_FACEBOOK_APP_ID"
+        client_id = os.environ.get("INSTAGRAM_CLIENT_ID", "")
+        if not client_id:
+            raise ValueError(
+                "INSTAGRAM_CLIENT_ID nicht konfiguriert. "
+                "Bitte im Windows-Vault unter 'DeadlockBot' / 'INSTAGRAM_CLIENT_ID' eintragen."
+            )
         scopes = "instagram_basic,instagram_content_publish"
 
         params = {
@@ -257,9 +266,8 @@ class SocialMediaOAuthManager:
 
     async def _youtube_exchange_code(self, code: str, redirect_uri: str, verifier: str) -> Dict:
         """Exchange YouTube authorization code for tokens (with PKCE)."""
-        # TODO: Load from config or DB
-        client_id = "YOUR_GOOGLE_CLIENT_ID"
-        client_secret = "YOUR_GOOGLE_CLIENT_SECRET"
+        client_id = os.environ.get("YOUTUBE_CLIENT_ID", "")
+        client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET", "")
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -289,9 +297,8 @@ class SocialMediaOAuthManager:
 
     async def _instagram_exchange_code(self, code: str, redirect_uri: str) -> Dict:
         """Exchange Instagram authorization code for tokens."""
-        # TODO: Load from config or DB
-        client_id = "YOUR_FACEBOOK_APP_ID"
-        client_secret = "YOUR_FACEBOOK_APP_SECRET"
+        client_id = os.environ.get("INSTAGRAM_CLIENT_ID", "")
+        client_secret = os.environ.get("INSTAGRAM_CLIENT_SECRET", "")
 
         async with aiohttp.ClientSession() as session:
             async with session.post(

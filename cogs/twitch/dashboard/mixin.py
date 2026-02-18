@@ -63,11 +63,11 @@ class TwitchDashboardMixin:
                         UPDATE twitch_streamers
                            SET is_on_discord=1
                          WHERE is_on_discord=0
-                           AND COALESCE(is_monitored_only, 0) = 0
-                           AND (
-                                manual_verified_permanent=1
-                             OR manual_verified_until IS NOT NULL
-                             OR manual_verified_at IS NOT NULL
+                           AND EXISTS (
+                               SELECT 1
+                                 FROM twitch_streamers_partner_state ps
+                                WHERE LOWER(ps.twitch_login) = LOWER(twitch_streamers.twitch_login)
+                                  AND ps.is_partner = 1
                            )
                         """
                     )
