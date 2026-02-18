@@ -15,7 +15,8 @@ def _load_vault_secrets():
         keys = [
             "DISCORD_TOKEN", "OWNER_ID", "COMMAND_PREFIX", "STEAM_API_KEY",
             "TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET", "TWITCH_BOT_TOKEN",
-            "OPENAI_API_KEY", "GEMINI_API_KEY", "PUBLIC_BASE_URL"
+            "OPENAI_API_KEY", "GEMINI_API_KEY", "PUBLIC_BASE_URL",
+            "TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET",
         ]
         count = 0
         for key in keys:

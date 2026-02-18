@@ -16,6 +16,7 @@ Platforms:
 
 import hashlib
 import logging
+import os
 import secrets
 from base64 import urlsafe_b64encode
 from datetime import datetime, timedelta, timezone
@@ -64,8 +65,8 @@ class SocialMediaOAuthManager:
         # Generate CSRF state token
         state = secrets.token_urlsafe(32)
 
-        # Generate PKCE verifier (for YouTube)
-        pkce_verifier = secrets.token_urlsafe(64) if platform == "youtube" else None
+        # Generate PKCE verifier (TikTok v2 and YouTube both require PKCE)
+        pkce_verifier = secrets.token_urlsafe(64) if platform in ("tiktok", "youtube") else None
 
         # Store state in DB (expires in 10 minutes)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
@@ -82,7 +83,7 @@ class SocialMediaOAuthManager:
 
         # Generate platform-specific URL
         if platform == "tiktok":
-            return self._tiktok_auth_url(state, redirect_uri)
+            return self._tiktok_auth_url(state, redirect_uri, pkce_verifier)
         elif platform == "youtube":
             return self._youtube_auth_url(state, redirect_uri, pkce_verifier)
         elif platform == "instagram":
@@ -90,10 +91,20 @@ class SocialMediaOAuthManager:
         else:
             raise ValueError(f"Unknown platform: {platform}")
 
-    def _tiktok_auth_url(self, state: str, redirect_uri: str) -> str:
-        """Generate TikTok OAuth URL."""
-        # TODO: Load from config or DB
-        client_key = "YOUR_TIKTOK_CLIENT_KEY"  # Will be replaced with DB lookup
+    def _tiktok_auth_url(self, state: str, redirect_uri: str, verifier: str) -> str:
+        """Generate TikTok OAuth URL with PKCE (required by TikTok API v2)."""
+        client_key = os.environ.get("TIKTOK_CLIENT_KEY", "")
+        if not client_key:
+            raise ValueError(
+                "TIKTOK_CLIENT_KEY nicht konfiguriert. "
+                "Bitte im Windows-Vault unter 'DeadlockBot' / 'TIKTOK_CLIENT_KEY' eintragen."
+            )
+
+        # PKCE challenge (S256)
+        challenge = urlsafe_b64encode(
+            hashlib.sha256(verifier.encode()).digest()
+        ).decode().rstrip("=")
+
         scopes = "user.info.basic,video.upload,video.publish"
 
         params = {
@@ -102,6 +113,8 @@ class SocialMediaOAuthManager:
             "response_type": "code",
             "redirect_uri": redirect_uri,
             "state": state,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
         }
 
         return f"https://www.tiktok.com/v2/auth/authorize/?{urlencode(params)}"
@@ -193,7 +206,7 @@ class SocialMediaOAuthManager:
 
         # Exchange code for tokens
         if platform == "tiktok":
-            tokens = await self._tiktok_exchange_code(code, redirect_uri)
+            tokens = await self._tiktok_exchange_code(code, redirect_uri, pkce_verifier)
         elif platform == "youtube":
             tokens = await self._youtube_exchange_code(code, redirect_uri, pkce_verifier)
         elif platform == "instagram":
@@ -209,21 +222,22 @@ class SocialMediaOAuthManager:
             "streamer_login": streamer_login,
         }
 
-    async def _tiktok_exchange_code(self, code: str, redirect_uri: str) -> Dict:
-        """Exchange TikTok authorization code for tokens."""
-        # TODO: Load from config or DB
-        client_key = "YOUR_TIKTOK_CLIENT_KEY"
-        client_secret = "YOUR_TIKTOK_CLIENT_SECRET"
+    async def _tiktok_exchange_code(self, code: str, redirect_uri: str, verifier: str) -> Dict:
+        """Exchange TikTok authorization code for tokens (with PKCE code_verifier)."""
+        client_key = os.environ.get("TIKTOK_CLIENT_KEY", "")
+        client_secret = os.environ.get("TIKTOK_CLIENT_SECRET", "")
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 "https://open.tiktokapis.com/v2/oauth/token/",
-                json={
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={
                     "client_key": client_key,
                     "client_secret": client_secret,
                     "code": code,
                     "grant_type": "authorization_code",
                     "redirect_uri": redirect_uri,
+                    "code_verifier": verifier,
                 }
             ) as resp:
                 data = await resp.json()
