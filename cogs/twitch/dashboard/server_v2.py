@@ -28,6 +28,10 @@ TWITCH_OAUTH_AUTHORIZE_URL = "https://id.twitch.tv/oauth2/authorize"
 TWITCH_OAUTH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 TWITCH_HELIX_USERS_URL = "https://api.twitch.tv/helix/users"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
+TWITCH_DASHBOARDS_LOGIN_URL = "/twitch/auth/login?next=%2Ftwitch%2Fdashboards"
+TWITCH_DASHBOARD_V2_LOGIN_URL = "/twitch/auth/login?next=%2Ftwitch%2Fdashboard-v2"
+TWITCH_ADMIN_DISCORD_LOGIN_URL = "/twitch/auth/discord/login?next=%2Ftwitch%2Fadmin"
+TWITCH_DASHBOARDS_DISCORD_LOGIN_URL = "/twitch/auth/discord/login?next=%2Ftwitch%2Fdashboards"
 LOGIN_RE = re.compile(r"^[A-Za-z0-9_]{3,25}$")
 DEFAULT_DASHBOARD_MODERATOR_ROLE_ID = 1337518124647579661
 DEFAULT_DASHBOARD_OWNER_USER_ID = 662995601738170389
@@ -295,6 +299,14 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         )
         return f"/twitch/auth/discord/login?{urlencode({'next': normalized_next})}"
 
+    @staticmethod
+    def _canonical_discord_admin_post_login_path(raw: Optional[str]) -> str:
+        normalized = DashboardV2Server._normalize_discord_admin_next_path(raw)
+        normalized_path = (urlsplit(normalized).path or "").rstrip("/") or "/"
+        if normalized_path == "/twitch/dashboards":
+            return "/twitch/dashboards"
+        return "/twitch/admin"
+
     def _normalized_discord_admin_redirect_uri(self) -> Optional[str]:
         raw = (self._discord_admin_redirect_uri or "").strip()
         if not raw:
@@ -487,8 +499,8 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         existing = self._get_discord_admin_session(request)
         next_path = self._normalize_discord_admin_next_path(request.query.get("next"))
         if existing:
-            safe_next = self._safe_internal_redirect(next_path, fallback="/twitch/admin")
-            raise web.HTTPFound(safe_next)
+            destination = self._canonical_discord_admin_post_login_path(next_path)
+            raise web.HTTPFound(destination)
 
         redirect_uri = self._normalized_discord_admin_redirect_uri()
         if not redirect_uri:
@@ -601,7 +613,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             self._sanitize_log_value(self._peer_host(request)),
         )
 
-        destination = self._normalize_discord_admin_next_path(state_data.get("next_path"))
+        destination = self._canonical_discord_admin_post_login_path(state_data.get("next_path"))
         response = web.HTTPFound(destination)
         self._set_discord_admin_cookie(response, request, session_id)
         raise response
@@ -610,10 +622,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         session_id = (request.cookies.get(self._discord_admin_cookie_name) or "").strip()
         if session_id:
             self._discord_admin_sessions.pop(session_id, None)
-        login_url = self._safe_internal_redirect(
-            self._build_discord_admin_login_url(request, next_path="/twitch/admin"),
-            fallback="/twitch/auth/discord/login?next=%2Ftwitch%2Fadmin",
-        )
+        login_url = TWITCH_ADMIN_DISCORD_LOGIN_URL if self._discord_admin_required else "/twitch/admin"
         response = web.HTTPFound(login_url)
         self._clear_discord_admin_cookie(response)
         raise response
@@ -652,10 +661,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
                 return
             if self._check_admin_token(token):
                 return
-            login_url = self._safe_internal_redirect(
-                self._build_discord_admin_login_url(request, next_path="/twitch/admin"),
-                fallback="/twitch/auth/discord/login?next=%2Ftwitch%2Fadmin",
-            )
+            login_url = TWITCH_ADMIN_DISCORD_LOGIN_URL if self._discord_admin_required else "/twitch/admin"
             if request.method in {"GET", "HEAD"}:
                 raise web.HTTPFound(login_url)
             raise web.HTTPUnauthorized(
@@ -1103,9 +1109,9 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         dashboard_url = (
             "/twitch/dashboards"
             if self._check_v2_auth(request)
-            else self._build_discord_admin_login_url(request, next_path="/twitch/dashboards")
+            else TWITCH_DASHBOARDS_DISCORD_LOGIN_URL
             if self._should_use_discord_admin_login(request)
-            else "/twitch/auth/login?next=%2Ftwitch%2Fdashboards"
+            else TWITCH_DASHBOARDS_LOGIN_URL
         )
         dashboard_label = (
             "Dashboard oeffnen"
@@ -1417,15 +1423,11 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         """Canonical public entrypoint that links old + beta analytics dashboards."""
         if not self._check_v2_auth(request):
             login_url = (
-                self._build_discord_admin_login_url(request, next_path="/twitch/dashboards")
+                TWITCH_DASHBOARDS_DISCORD_LOGIN_URL
                 if self._should_use_discord_admin_login(request)
-                else "/twitch/auth/login?next=%2Ftwitch%2Fdashboards"
+                else TWITCH_DASHBOARDS_LOGIN_URL
             )
-            safe_login_url = self._safe_internal_redirect(
-                login_url,
-                fallback="/twitch/auth/login?next=%2Ftwitch%2Fdashboards",
-            )
-            raise web.HTTPFound(safe_login_url)
+            raise web.HTTPFound(login_url)
 
         legacy_url = self._resolve_legacy_stats_url()
         beta_url = "/twitch/dashboard-v2"
@@ -1738,7 +1740,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
                 self._sanitize_log_value(self._peer_host(request)),
             )
 
-        response = web.HTTPFound("/twitch/auth/login?next=%2Ftwitch%2Fdashboard-v2")
+        response = web.HTTPFound(TWITCH_DASHBOARD_V2_LOGIN_URL)
         self._clear_session_cookie(response)
         raise response
 

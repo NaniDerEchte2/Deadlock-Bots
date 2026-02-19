@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -18,8 +19,6 @@ TOKEN_REFRESH_SAVED_AT_KEY = "STEAM_REFRESH_TOKEN_SAVED_AT"
 TOKEN_MACHINE_SAVED_AT_KEY = "STEAM_MACHINE_AUTH_TOKEN_SAVED_AT"
 
 _FALSE_VALUES = {"0", "false", "no", "off"}
-_KEYRING_READY = False
-_KEYRING = None
 
 
 def _flag_enabled(name: str, default: bool = True) -> bool:
@@ -40,24 +39,20 @@ def _keyring_targets(secret_key: str) -> Tuple[Tuple[str, str], Tuple[str, str]]
     )
 
 
+@lru_cache(maxsize=1)
 def _get_keyring():
-    global _KEYRING_READY, _KEYRING
-    if _KEYRING_READY:
-        return _KEYRING
-    _KEYRING_READY = True
-
     if not _vault_enabled():
-        _KEYRING = None
         return None
 
     try:
         import keyring  # type: ignore
-
-        _KEYRING = keyring
-    except Exception as exc:
-        log.debug("Steam token vault unavailable: %s", exc)
-        _KEYRING = None
-    return _KEYRING
+        return keyring
+    except Exception:
+        log.debug(
+            "Steam vault backend unavailable; using file token storage.",
+            exc_info=log.isEnabledFor(logging.DEBUG),
+        )
+        return None
 
 
 def token_storage_mode() -> str:
@@ -201,7 +196,7 @@ def _read_token(
         saved_at = _file_mtime_iso(file_path) or _now_iso()
         _vault_set(saved_at_key, saved_at)
         _remove_file(file_path)
-        log.info("Migrated Steam token to Windows vault (%s).", token_key)
+        log.info("Migrated Steam credential from file storage to Windows vault.")
 
     return token
 

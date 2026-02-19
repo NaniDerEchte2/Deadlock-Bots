@@ -41,8 +41,20 @@ MASTER_DASHBOARD_DISCORD_REDIRECT_URI = (
     os.getenv("MASTER_DASHBOARD_DISCORD_REDIRECT_URI")
     or f"{MASTER_DASHBOARD_PUBLIC_URL.rstrip('/')}/auth/discord/callback"
 ).strip()
+MASTER_DASHBOARD_STEAM_PUBLIC_URL = (
+    os.getenv("MASTER_DASHBOARD_STEAM_PUBLIC_URL")
+    or os.getenv("PUBLIC_BASE_URL")
+    or ""
+).strip()
+MASTER_DASHBOARD_STEAM_RETURN_URL = (
+    os.getenv("MASTER_DASHBOARD_STEAM_RETURN_URL") or ""
+).strip()
+MASTER_DASHBOARD_STEAM_RETURN_PATH = (
+    os.getenv("STEAM_RETURN_PATH") or "/steam/return"
+).strip() or "/steam/return"
 MASTER_DASHBOARD_DEFAULT_SCHEME = "http"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
+MASTER_DISCORD_ADMIN_LOGIN_URL = "/auth/discord/login?next=%2Fadmin"
 DEFAULT_NSSM_SERVICE_NAME = KEYRING_SERVICE_NAME
 DEFAULT_NSSM_RESTART_DELAY_SECONDS = 1.0
 DEFAULT_BOT_RESTART_MIN_INTERVAL_SECONDS = 15.0
@@ -95,12 +107,10 @@ class DashboardServer:
         *,
         host: str = "127.0.0.1",
         port: int = 8766,
-        token: Optional[str] = None,
     ) -> None:
         self.bot = bot
         self.host = host
         self.port = port
-        self.token = (token or "").strip() or None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
         self._lock = asyncio.Lock()
@@ -116,8 +126,6 @@ class DashboardServer:
         self._powershell_executable = (os.getenv("MASTER_POWERSHELL_EXE") or "").strip()
         nssm_enabled_raw = (os.getenv("MASTER_NSSM_RESTART_ENABLED") or "1").strip().lower()
         self._nssm_service_restart_enabled = nssm_enabled_raw not in {"0", "false", "no", "off"}
-        allow_query_token_raw = (os.getenv("MASTER_DASHBOARD_ALLOW_QUERY_TOKEN") or "0").strip().lower()
-        self._allow_query_token = allow_query_token_raw in {"1", "true", "yes", "on"}
         self._nssm_restart_delay_seconds = self._parse_positive_float(
             os.getenv(
                 "MASTER_NSSM_RESTART_DELAY_SECONDS",
@@ -187,23 +195,16 @@ class DashboardServer:
         self._health_targets = self._build_health_targets()
         self._log_dir = Path(__file__).resolve().parent.parent / "logs"
         if self._discord_auth_enabled and not self._is_discord_oauth_configured():
-            if self.token:
-                logging.warning(
-                    "Dashboard Discord OAuth ist unvollständig (Client ID/Secret fehlt). "
-                    "Fallback auf Token-only Auth."
-                )
-                self._discord_auth_required = False
-            else:
-                logging.error(
-                    "Dashboard Auth-Konfiguration ungültig: Discord OAuth aktiviert, aber Client ID/Secret "
-                    "nicht im Windows-Tresor (%s) vorhanden. Dashboard bleibt gesperrt.",
-                    KEYRING_SERVICE_NAME,
-                )
-                self._discord_auth_required = False
-                self._auth_misconfigured = True
-        if not self._discord_auth_required and not self.token and not self._auth_misconfigured:
+            logging.error(
+                "Dashboard Auth-Konfiguration ungültig: Discord OAuth aktiviert, aber Client ID/Secret "
+                "nicht im Windows-Tresor (%s) vorhanden. Dashboard bleibt gesperrt.",
+                KEYRING_SERVICE_NAME,
+            )
+            self._discord_auth_required = False
+            self._auth_misconfigured = True
+        if not self._discord_auth_required and not self._auth_misconfigured:
             logging.warning(
-                "Dashboard läuft ohne Auth (kein Discord OAuth und kein Dashboard-Token gesetzt)."
+                "Dashboard läuft ohne Auth (Discord OAuth deaktiviert)."
             )
 
     @staticmethod
@@ -464,17 +465,7 @@ class DashboardServer:
         return bool(self._discord_client_id and self._discord_client_secret and self._discord_redirect_uri)
 
     def _is_auth_enforced(self) -> bool:
-        return bool(self.token or self._discord_auth_required or self._auth_misconfigured)
-
-    def _extract_bearer_token(self, request: web.Request) -> str:
-        header = request.headers.get("Authorization", "")
-        if header.startswith("Bearer "):
-            token = header.split(" ", 1)[1].strip()
-        else:
-            token = header.strip()
-        if not token and self._allow_query_token:
-            token = (request.query.get("token") or "").strip()
-        return token
+        return bool(self._discord_auth_required or self._auth_misconfigured)
 
     @staticmethod
     def _host_without_port(raw: Optional[str]) -> str:
@@ -824,15 +815,9 @@ class DashboardServer:
         return data if isinstance(data, dict) else None
 
     def _has_valid_auth(self, request: web.Request) -> bool:
-        if self._discord_auth_required and self._get_discord_auth_session(request):
-            return True
-        if self.token:
-            provided = self._extract_bearer_token(request)
-            if provided and secrets.compare_digest(provided, self.token):
-                return True
-        return False
+        return bool(self._discord_auth_required and self._get_discord_auth_session(request))
 
-    def _check_auth(self, request: web.Request, *, required: bool = True) -> None:
+    def _check_auth(self, request: web.Request, *, required: bool = False) -> None:
         enforce = required or self._is_auth_enforced()
         if not enforce:
             return
@@ -851,16 +836,10 @@ class DashboardServer:
                 if not self._check_csrf(request, session):
                     raise web.HTTPForbidden(text="CSRF validation failed")
             return
-        if self.token:
-            provided = self._extract_bearer_token(request)
-            if provided and secrets.compare_digest(provided, self.token):
-                return
 
         next_path = "/admin" if request.path.startswith("/api/") else None
         login_url = self._build_discord_login_url(request, next_path=next_path)
         headers: Dict[str, str] = {"X-Auth-Login": login_url}
-        if self.token:
-            headers["WWW-Authenticate"] = "Bearer"
         raise web.HTTPUnauthorized(text="Authentication required", headers=headers)
 
     def _list_log_files(self) -> List[Dict[str, Any]]:
@@ -1174,11 +1153,26 @@ class DashboardServer:
         return f"{base.rstrip('/')}/twitch/admin"
 
     def _derive_steam_return_url(self) -> Optional[str]:
-        base = (self._public_base_url or "").strip().rstrip("/")
+        if MASTER_DASHBOARD_STEAM_RETURN_URL:
+            try:
+                return self._normalize_public_url(
+                    MASTER_DASHBOARD_STEAM_RETURN_URL,
+                    default_scheme="https",
+                )
+            except Exception as exc:
+                logging.warning(
+                    "Master dashboard Steam return URL '%s' invalid (%s) – falling back to derived URL",
+                    MASTER_DASHBOARD_STEAM_RETURN_URL,
+                    exc,
+                )
+
+        base = (
+            MASTER_DASHBOARD_STEAM_PUBLIC_URL
+            or (self._public_base_url or "")
+        ).strip().rstrip("/")
         if not base:
             return None
-        path = "/steam/return"
-        path = "/" + path.lstrip("/")
+        path = "/" + MASTER_DASHBOARD_STEAM_RETURN_PATH.lstrip("/")
         return f"{base}{path}"
 
     def _derive_raid_health_url(self) -> Optional[str]:
@@ -1291,8 +1285,7 @@ class DashboardServer:
         existing = self._get_discord_auth_session(request)
         next_path = self._normalize_auth_next_path(request.query.get("next"))
         if existing:
-            safe_next = self._safe_internal_redirect(next_path, fallback="/admin")
-            raise web.HTTPFound(safe_next)
+            raise web.HTTPFound("/admin")
 
         redirect_uri = self._normalized_discord_redirect_uri()
         if not redirect_uri:
@@ -1413,10 +1406,7 @@ class DashboardServer:
         session_id = (request.cookies.get(self._discord_session_cookie) or "").strip()
         if session_id:
             self._discord_sessions.pop(session_id, None)
-        login_url = self._safe_internal_redirect(
-            self._build_discord_login_url(request, next_path="/admin"),
-            fallback="/auth/discord/login?next=%2Fadmin",
-        )
+        login_url = MASTER_DISCORD_ADMIN_LOGIN_URL if self._discord_auth_required else "/admin"
         response = web.HTTPFound(login_url)
         self._clear_discord_session_cookie(response)
         raise response
@@ -1427,23 +1417,12 @@ class DashboardServer:
                 {
                     "enabled": False,
                     "authenticated": False,
-                    "mode": "token" if self.token else "none",
+                    "mode": "none",
                 }
             )
 
         session = self._get_discord_auth_session(request)
         if not session:
-            provided = self._extract_bearer_token(request)
-            if self.token and provided and secrets.compare_digest(provided, self.token):
-                return self._json(
-                    {
-                        "enabled": bool(self._discord_auth_required),
-                        "authenticated": True,
-                        "mode": "token",
-                        "user": None,
-                        "csrf_token": None,
-                    }
-                )
             self._check_auth(request)
             raise web.HTTPUnauthorized(text="Authentication required")
 
@@ -1472,10 +1451,7 @@ class DashboardServer:
             )
         if self._is_auth_enforced() and not self._has_valid_auth(request):
             if self._discord_auth_required:
-                login_url = self._safe_internal_redirect(
-                    self._build_discord_login_url(request, next_path="/admin"),
-                    fallback="/auth/discord/login?next=%2Fadmin",
-                )
+                login_url = MASTER_DISCORD_ADMIN_LOGIN_URL
                 raise web.HTTPFound(login_url)
             self._check_auth(request)
 
@@ -1652,7 +1628,7 @@ class DashboardServer:
                 return web.json_response({"ok": False, "error": "Internal server error"}, status=500)
 
     async def _handle_twitch_metrics(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
 
         raw_hours = request.query.get("hours")
         try:
@@ -1966,7 +1942,7 @@ class DashboardServer:
         return self._json(payload)
 
     async def _handle_voice_stats(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         raw_limit = request.query.get("limit")
         try:
             limit = int(raw_limit) if raw_limit else 10
@@ -2065,7 +2041,7 @@ class DashboardServer:
         return self._json(payload)
 
     async def _handle_voice_history(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         range_raw = request.query.get("range")
         top_raw = request.query.get("top")
         mode_raw = request.query.get("mode") or "hour"
@@ -2325,7 +2301,7 @@ class DashboardServer:
         Liefert Kennzahlen für den User-Retention-Cog.
         Nutzt die gleichen Default-Schwellen wie im Cog (siehe RetentionConfig in cogs/user_retention.py).
         """
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
 
         # Defaults aus RetentionConfig
         min_weekly_sessions = 0.5
@@ -2533,7 +2509,7 @@ class DashboardServer:
 
     async def _handle_member_events(self, request: web.Request) -> web.Response:
         """Handler für Member-Events (Joins, Leaves, Bans)."""
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
 
         raw_limit = request.query.get("limit")
         event_type = request.query.get("type")  # optional filter
@@ -2642,7 +2618,7 @@ class DashboardServer:
 
     async def _handle_message_activity(self, request: web.Request) -> web.Response:
         """Handler für Message-Activity."""
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
 
         raw_limit = request.query.get("limit")
         guild_id_raw = request.query.get("guild_id")
@@ -2724,7 +2700,7 @@ class DashboardServer:
 
     async def _handle_co_player_network(self, request: web.Request) -> web.Response:
         """Aggregiertes Co-Player-Netzwerk mit persistierten Anzeigenamen."""
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
 
         raw_limit = request.query.get("limit")
         raw_min_sessions = request.query.get("min_sessions")
@@ -3216,7 +3192,7 @@ class DashboardServer:
 
     async def _handle_server_stats(self, request: web.Request) -> web.Response:
         """Handler für aggregierte Server-Statistiken."""
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
 
         guild_id_raw = request.query.get("guild_id")
 
@@ -3361,7 +3337,7 @@ class DashboardServer:
         return decorated
 
     async def _handle_tournament_overview(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         from cogs.customgames import tournament_store as tstore
 
         await tstore.ensure_schema_async()
@@ -3380,7 +3356,7 @@ class DashboardServer:
         return self._json(payload)
 
     async def _handle_tournament_team_create(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         from cogs.customgames import tournament_store as tstore
 
         try:
@@ -3416,7 +3392,7 @@ class DashboardServer:
         )
 
     async def _handle_tournament_assign(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         from cogs.customgames import tournament_store as tstore
 
         try:
@@ -3461,7 +3437,7 @@ class DashboardServer:
         return self._json({"ok": True, "signup": decorated[0] if decorated else signup})
 
     async def _handle_tournament_remove(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         from cogs.customgames import tournament_store as tstore
 
         try:
@@ -3481,7 +3457,7 @@ class DashboardServer:
         return self._json({"ok": removed, "removed": removed})
 
     async def _handle_status(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         auth_session = self._auth_session_for_request(request)
 
         bot = self.bot
@@ -3559,7 +3535,7 @@ class DashboardServer:
                 "mode": (
                     "discord"
                     if self._discord_auth_required
-                    else ("token" if self.token else "none")
+                    else "none"
                 ),
                 "discord_enabled": self._discord_auth_required,
                 "login_url": self._build_discord_login_url(request, next_path="/admin"),
@@ -3581,7 +3557,7 @@ class DashboardServer:
         return self._json(payload)
 
     async def _handle_bot_restart(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         safe_remote = self._safe_log_value(request.remote)
         logger.warning("AUDIT master-dashboard bot_restart requested from %s", safe_remote)
         async with self._bot_restart_lock:
@@ -3646,7 +3622,7 @@ class DashboardServer:
             )
 
     async def _handle_dashboard_restart(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         if self._restart_task and not self._restart_task.done():
             return self._json({"ok": True, "message": "Dashboard restart already running"})
 
@@ -4117,12 +4093,12 @@ class DashboardServer:
         )
 
     async def _handle_log_index(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         entries = self._list_log_files()
         return self._json({"logs": entries})
 
     async def _handle_log_read(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         name = request.match_info.get("name", "")
         lines_raw = request.query.get("lines")
         try:
@@ -4158,12 +4134,12 @@ class DashboardServer:
 
 
     async def _handle_standalone_list(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         data = await self._collect_standalone_snapshot()
         return self._json({"bots": data})
 
     async def _handle_standalone_logs(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         manager = self._require_standalone_manager()
         key = request.match_info.get("key", "").strip()
         limit_raw = request.query.get("limit")
@@ -4183,7 +4159,7 @@ class DashboardServer:
         return self._json({"logs": logs})
 
     async def _handle_standalone_start(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         manager = self._require_standalone_manager()
         key = request.match_info.get("key", "").strip()
         safe_key = self._safe_log_value(key)
@@ -4207,7 +4183,7 @@ class DashboardServer:
         return self._json({"standalone": status})
 
     async def _handle_standalone_stop(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         manager = self._require_standalone_manager()
         key = request.match_info.get("key", "").strip()
         safe_key = self._safe_log_value(key)
@@ -4231,7 +4207,7 @@ class DashboardServer:
         return self._json({"standalone": status})
 
     async def _handle_standalone_restart(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         manager = self._require_standalone_manager()
         key = request.match_info.get("key", "").strip()
         safe_key = self._safe_log_value(key)
@@ -4252,7 +4228,7 @@ class DashboardServer:
         return self._json({"standalone": status})
 
     async def _handle_standalone_autostart(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         manager = self._require_standalone_manager()
         key = request.match_info.get("key", "").strip()
         try:
@@ -4302,7 +4278,7 @@ class DashboardServer:
         return self._json({"standalone": status})
 
     async def _handle_standalone_command(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
+        self._check_auth(request)
         manager = self._require_standalone_manager()
         key = request.match_info.get("key", "").strip()
         safe_key = self._safe_log_value(key)

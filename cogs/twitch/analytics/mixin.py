@@ -10,7 +10,6 @@ from typing import Optional
 from discord.ext import tasks
 
 from .. import storage
-from ..chat.irc_lurker_tracker import IRCLurkerTracker
 
 log = logging.getLogger("TwitchStreams.Analytics")
 
@@ -26,28 +25,10 @@ class TwitchAnalyticsMixin:
         self._analytics_task = self.collect_analytics_data.start()
         self._chatters_task = self.collect_chatters_data.start()
 
-        # IRC Lurker Tracker (Fallback für Streamer ohne OAuth Scope)
-        self._irc_lurker_tracker: Optional[IRCLurkerTracker] = None
-        self._irc_tracker_task: Optional[asyncio.Task] = None
-
     async def cog_unload(self):
         await super().cog_unload()
         self.collect_analytics_data.cancel()
         self.collect_chatters_data.cancel()
-
-        # Stop IRC Lurker Tracker
-        if self._irc_lurker_tracker:
-            try:
-                await self._irc_lurker_tracker.stop()
-            except Exception:
-                log.debug("IRC Lurker Tracker stop failed", exc_info=True)
-
-        if self._irc_tracker_task:
-            self._irc_tracker_task.cancel()
-            try:
-                await self._irc_tracker_task
-            except asyncio.CancelledError:
-                log.debug("IRC tracker task cancelled during cog unload")
 
     @tasks.loop(hours=6)
     async def collect_analytics_data(self):
@@ -242,7 +223,7 @@ class TwitchAnalyticsMixin:
     async def _poll_chatters_single(
         self, user_id: str, login: str, session_id: int, now_iso: str, token: Optional[str] = None
     ) -> "tuple[int, str, list[dict]] | None":
-        """Pollt Chatters für einen Streamer – nutzt Token wenn vorhanden, sonst Public API."""
+        """Pollt Chatters für einen Streamer via Helix API (nur wenn Token + moderator:read:chatters Scope vorhanden)."""
         chatters = []
         
         # 1. Versuch: Offizielle API mit Token (wenn vorhanden)
@@ -264,23 +245,6 @@ class TwitchAnalyticsMixin:
                     "Streamer must re-authorize.",
                     login,
                 )
-        elif not token:
-            log.debug("Chatters-Poller: %s hat kein OAuth Token", login)
-
-        # 2. Versuch: Public TMI API (Fallback für Monitored Only oder Fehler)
-        # WICHTIG: TMI API ist seit ~2024 tot (404), dieser Code funktioniert nicht mehr!
-        if not chatters:
-            try:
-                public_chatters = await self.api.get_chatters_public(login)
-                # Format an Helix-Response anpassen: [{'user_login': 'name', 'user_id': ''}, ...]
-                chatters = [{"user_login": c, "user_id": ""} for c in public_chatters]
-                if chatters:
-                    log.info("Chatters-Poller: %d Chatters via TMI (überraschend, funktioniert wieder?) für %s", len(chatters), login)
-            except Exception as e:
-                # TMI gibt meist 404, das ist normal
-                if "404" not in str(e):
-                    log.debug("Chatters-Poller: TMI-Fehler (erwartet, API ist tot) für %s: %s", login, e)
-
         if not chatters:
             return None
 
@@ -352,55 +316,18 @@ class TwitchAnalyticsMixin:
         try:
             with storage.get_conn() as conn:
                 for session_id, login, chatters in payloads:
-                    existing = {
-                        r[0]
-                        for r in conn.execute(
-                            "SELECT chatter_login FROM twitch_session_chatters WHERE session_id = ?",
-                            (session_id,),
-                        ).fetchall()
-                    }
-                    new_lurkers = 0
-                    updates = 0
-                    
-                    # Batch Insert/Update vorbereiten
-                    to_insert = []
+                    # Nur last_seen_at für bereits bekannte Chatter aktualisieren.
+                    # Neue Einträge kommen ausschließlich über _track_chat_health (IRC Bot).
                     to_update = []
-                    
                     for chatter in chatters:
                         c_login = (chatter.get("user_login") or "").lower().strip()
-                        c_id = str(chatter.get("user_id") or "").strip()
-                        if not c_login:
-                            continue
-                            
-                        if c_login in existing:
+                        if c_login:
                             to_update.append((now_iso, session_id, c_login))
-                            updates += 1
-                        else:
-                            to_insert.append((session_id, login, c_login, c_id or None, now_iso, now_iso))
-                            existing.add(c_login)
-                            new_lurkers += 1
-                    
+
                     if to_update:
                         conn.executemany(
                             "UPDATE twitch_session_chatters SET last_seen_at = ? WHERE session_id = ? AND chatter_login = ?",
-                            to_update
-                        )
-                    if to_insert:
-                        conn.executemany(
-                            """
-                            INSERT OR IGNORE INTO twitch_session_chatters
-                                (session_id, streamer_login, chatter_login, chatter_id,
-                                 first_message_at, messages, is_first_time_global,
-                                 seen_via_chatters_api, last_seen_at)
-                            VALUES (?, ?, ?, ?, ?, 0, 0, 1, ?)
-                            """,
-                            to_insert
-                        )
-
-                    if new_lurkers:
-                        log.debug(
-                            "Chatters-Poller: %d neue Lurker, %d Updates für %s (session %s)",
-                            new_lurkers, updates, login, session_id,
+                            to_update,
                         )
         except Exception:
             log.exception("Chatters-Poller: Batch-DB-Fehler")
@@ -408,118 +335,6 @@ class TwitchAnalyticsMixin:
     @collect_chatters_data.before_loop
     async def _before_chatters(self):
         await self.bot.wait_until_ready()
-
-        # Start IRC Lurker Tracker (parallel zum EventSub WebSocket)
-        try:
-            client_id = getattr(self, "client_id", None)
-            # Nutze Bot Token falls vorhanden
-            chat_bot = getattr(self, "_chat_bot", None)
-            bot_token = getattr(chat_bot, "_bot_token", None) if chat_bot else None
-
-            if client_id and bot_token:
-                log.info("Starting IRC Lurker Tracker (Fallback für Streamer ohne moderator:read:chatters Scope)")
-                self._irc_lurker_tracker = IRCLurkerTracker(
-                    client_id=client_id,
-                    access_token=bot_token.replace("oauth:", "")
-                )
-                await self._irc_lurker_tracker.start()
-
-                # Start Channel Sync Task
-                self._irc_tracker_task = asyncio.create_task(self._sync_irc_channels())
-            else:
-                log.info("IRC Lurker Tracker nicht gestartet (Client ID oder Bot Token fehlt)")
-        except Exception:
-            log.exception("IRC Lurker Tracker Start fehlgeschlagen")
-
-    async def _sync_irc_channels(self):
-        """
-        Synchronisiert IRC Lurker Tracker mit ALLEN live Streamern.
-
-        WICHTIG: Datensammlung (Lurker, Messages) für ALLE.
-        Bot-Funktionen nur in partner_utils geprüft!
-        """
-        await asyncio.sleep(60)  # Initiale Wartezeit
-
-        while True:
-            try:
-                if not self._irc_lurker_tracker:
-                    break
-
-                # Hole ALLE live Streamer (Partner + Monitored + Category)
-                with storage.get_conn() as conn:
-                    rows = conn.execute(
-                        """
-                        SELECT ls.streamer_login, ls.twitch_user_id, ra.twitch_user_id as has_auth
-                        FROM twitch_live_state ls
-                        LEFT JOIN twitch_raid_auth ra ON ra.twitch_user_id = ls.twitch_user_id AND ra.raid_enabled = 1
-                        WHERE ls.is_live = 1
-                        """
-                    ).fetchall()
-
-                live_channels = set()
-                total_count = 0
-                irc_tracking_count = 0
-
-                for row in rows:
-                    login = row[0] if not hasattr(row, "keys") else row["streamer_login"]
-                    user_id = row[1] if not hasattr(row, "keys") else row["twitch_user_id"]
-                    has_auth = row[2] if not hasattr(row, "keys") else row["has_auth"]
-
-                    if not login:
-                        continue
-
-                    login_lower = login.lower()
-                    live_channels.add(login_lower)
-                    total_count += 1
-
-                    # Prüfe ob Streamer den moderator:read:chatters Scope hat
-                    # Wenn JA: Helix API wird genutzt, IRC nicht nötig
-                    # Wenn NEIN: IRC Fallback nutzen (für ALLE, nicht nur Partner!)
-                    has_scope = False
-                    if user_id and has_auth and hasattr(self, "_raid_bot"):
-                        raid_bot = getattr(self, "_raid_bot", None)
-                        if raid_bot and hasattr(raid_bot, "auth_manager"):
-                            try:
-                                scopes = {s.lower() for s in raid_bot.auth_manager.get_scopes(user_id)}
-                                has_scope = "moderator:read:chatters" in scopes
-                            except Exception:
-                                log.debug(
-                                    "IRC Tracker Sync: scope lookup failed for user_id=%s",
-                                    user_id,
-                                    exc_info=True,
-                                )
-
-                    # IRC tracken wenn KEIN Scope vorhanden (für ALLE zur Datensammlung)
-                    if not has_scope:
-                        if login_lower not in self._irc_lurker_tracker.channels:
-                            await self._irc_lurker_tracker.track_channel(login_lower)
-                            log.info("IRC Tracker: Added #%s (Datensammlung)", login_lower)
-                        irc_tracking_count += 1
-                    elif has_scope and login_lower in self._irc_lurker_tracker.channels:
-                        # Hat jetzt Scope, IRC nicht mehr nötig
-                        await self._irc_lurker_tracker.untrack_channel(login_lower)
-                        log.info("IRC Tracker: Removed #%s (hat jetzt Helix API Zugriff)", login_lower)
-
-                # Entferne Channels die nicht mehr live sind
-                for channel in list(self._irc_lurker_tracker.channels):
-                    if channel not in live_channels:
-                        await self._irc_lurker_tracker.untrack_channel(channel)
-                        log.info("IRC Tracker: Removed #%s (nicht mehr live)", channel)
-
-                if total_count > 0:
-                    log.debug(
-                        "IRC Tracker Sync: %d live Streamer (alle), %d via IRC tracked",
-                        total_count, irc_tracking_count
-                    )
-
-                # Sync alle 2 Minuten
-                await asyncio.sleep(120)
-
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                log.exception("IRC Channel Sync fehlgeschlagen")
-                await asyncio.sleep(60)
 
     # ------------------------------------------------------------------
     async def _handle_stream_online(self, broadcaster_user_id: str, broadcaster_login: str, event: dict) -> None:

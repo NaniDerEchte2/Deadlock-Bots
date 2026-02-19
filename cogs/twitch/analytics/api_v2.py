@@ -18,6 +18,8 @@ from .. import storage
 from .coaching_engine import CoachingEngine
 
 log = logging.getLogger("TwitchStreams.AnalyticsV2")
+DASHBOARD_V2_LOGIN_URL = "/twitch/auth/login?next=%2Ftwitch%2Fdashboard-v2"
+DASHBOARD_V2_DISCORD_LOGIN_URL = "/twitch/auth/discord/login?next=%2Ftwitch%2Fdashboard-v2"
 
 
 def _is_loopback_host(raw_value: str) -> bool:
@@ -144,7 +146,7 @@ class AnalyticsV2Mixin:
 
     @staticmethod
     def _safe_internal_login_redirect(candidate: Optional[str]) -> str:
-        fallback = "/twitch/auth/login?next=%2Ftwitch%2Fdashboard-v2"
+        fallback = DASHBOARD_V2_LOGIN_URL
         value = (candidate or "").strip()
         if not value:
             return fallback
@@ -403,7 +405,11 @@ class AnalyticsV2Mixin:
     async def _serve_dashboard_v2(self, request: web.Request) -> web.Response:
         """Serve the main dashboard HTML."""
         if not self._check_v2_auth(request):
-            login_url = self._safe_internal_login_redirect(self._get_dashboard_login_url(request))
+            should_use_discord = getattr(self, "_should_use_discord_admin_login", None)
+            if callable(should_use_discord) and bool(should_use_discord(request)):
+                login_url = DASHBOARD_V2_DISCORD_LOGIN_URL
+            else:
+                login_url = DASHBOARD_V2_LOGIN_URL
             raise web.HTTPFound(login_url)
         import pathlib
         dist_path = pathlib.Path(__file__).parent / "dashboard_v2" / "dist" / "index.html"

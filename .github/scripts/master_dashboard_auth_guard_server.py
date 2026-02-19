@@ -115,7 +115,7 @@ async def _run() -> None:
         try:
             loop.add_signal_handler(sig, stop_event.set)
         except NotImplementedError:
-            pass
+            continue
 
     try:
         await stop_event.wait()

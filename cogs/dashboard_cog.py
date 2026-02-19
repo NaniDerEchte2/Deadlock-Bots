@@ -28,7 +28,7 @@ class DashboardCog(commands.Cog):
         try:
             from service.dashboard import DashboardServer
 
-            self.dashboard = DashboardServer(self.bot, host=DASHBOARD_HOST, port=DASHBOARD_PORT, token=None)
+            self.dashboard = DashboardServer(self.bot, host=DASHBOARD_HOST, port=DASHBOARD_PORT)
             log.info("Dashboard initialized in cog (Host %s, Port %s)", DASHBOARD_HOST, DASHBOARD_PORT)
 
         except Exception as e:

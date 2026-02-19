@@ -985,19 +985,6 @@
             align-items: center;
             gap: 0.5rem;
         }
-        .top-nav-left input {
-            padding: 0.4rem 0.6rem;
-            border-radius: 6px;
-            border: 1px solid rgba(255,255,255,0.1);
-            background: #1f1f1f;
-            color: inherit;
-            width: 180px;
-            font-size: 0.85rem;
-        }
-        .top-nav-left strong {
-            color: #adb5bd;
-            font-size: 0.85rem;
-        }
         .auth-user {
             display: inline-flex;
             align-items: center;
@@ -1007,24 +994,6 @@
             font-size: 0.85rem;
             color: #dee2e6;
             background: rgba(255, 255, 255, 0.05);
-        }
-        .token-tools {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.45rem;
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 10px;
-            padding: 0.25rem 0.5rem;
-            background: rgba(255,255,255,0.03);
-        }
-        .token-tools > summary {
-            cursor: pointer;
-            font-size: 0.8rem;
-            color: #adb5bd;
-            user-select: none;
-        }
-        .token-tools > summary::-webkit-details-marker {
-            color: #adb5bd;
         }
 
         /* ─── Bot Section (compact, grid) ─── */
@@ -1238,12 +1207,6 @@
             <span id="auth-user-label" class="auth-user">{{AUTH_USER_LABEL}}</span>
             <a id="auth-login-link" href="{{DISCORD_LOGIN_URL}}" rel="nofollow">Discord Login</a>
             <a id="auth-logout-link" href="{{AUTH_LOGOUT_URL}}" rel="nofollow">Logout</a>
-            <details class="token-tools">
-                <summary>Token Fallback</summary>
-                <strong>Token:</strong>
-                <input id="token-input" type="password" placeholder="Bearer Token">
-                <button id="apply-token">Apply</button>
-            </details>
         </div>
         <div class="top-nav-right">
             <a href="{{TWITCH_URL}}" target="_blank" rel="noopener">Twitch Dashboard</a>
@@ -1597,7 +1560,6 @@
     const logsRefreshButton = document.getElementById('logs-refresh');
     const logsLinesInput = document.getElementById('logs-lines');
     const treeContainer = document.getElementById('tree-container');
-    const tokenInput = document.getElementById('token-input');
     const authUserLabel = document.getElementById('auth-user-label');
     const authLoginLink = document.getElementById('auth-login-link');
     const authLogoutLink = document.getElementById('auth-logout-link');
@@ -1701,7 +1663,6 @@
     const toggleUnmanageableButton = document.getElementById('toggle-unmanageable');
     const logOpenState = new Map();
     let isRefreshingStandalone = false;
-    let authToken = localStorage.getItem('master-dashboard-token') || '';
     let csrfToken = '';
     let logIndex = [];
     let selectedLogName = '';
@@ -1710,9 +1671,6 @@
     let selectedNode = null;
     let showHiddenCogs = false;
     let lastTreeData = null;
-    if (tokenInput) {
-        tokenInput.value = authToken;
-    }
     if (authLogoutLink) {
         authLogoutLink.style.display = 'none';
     }
@@ -1729,9 +1687,6 @@
 
     function headers() {
         const h = { 'Content-Type': 'application/json' };
-        if (authToken) {
-            h['Authorization'] = 'Bearer ' + authToken;
-        }
         if (csrfToken) {
             h['X-CSRF-Token'] = csrfToken;
         }
@@ -4918,18 +4873,6 @@ async function fetchStandaloneLogs(key, limit = 200) {
     if (resetSelectionBtn) {
         resetSelectionBtn.addEventListener('click', () => {
             clearSelection();
-        });
-    }
-
-    const applyTokenBtn = document.getElementById('apply-token');
-    if (applyTokenBtn && tokenInput) {
-        applyTokenBtn.addEventListener('click', () => {
-            authToken = tokenInput.value.trim();
-            localStorage.setItem('master-dashboard-token', authToken);
-            loadStatus();
-            if (logsInitialized) {
-                loadLogIndex();
-            }
         });
     }
 
