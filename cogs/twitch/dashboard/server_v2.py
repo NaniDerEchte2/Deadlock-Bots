@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import html
 import ipaddress
+import os
 import re
 import secrets
 import time
@@ -31,7 +32,15 @@ LOGIN_RE = re.compile(r"^[A-Za-z0-9_]{3,25}$")
 DEFAULT_DASHBOARD_MODERATOR_ROLE_ID = 1337518124647579661
 DEFAULT_DASHBOARD_OWNER_USER_ID = 662995601738170389
 KEYRING_SERVICE_NAME = "DeadlockBot"
-TWITCH_ADMIN_DISCORD_REDIRECT_URI = "https://admin.earlysalty.de/twitch/auth/discord/callback"
+TWITCH_ADMIN_PUBLIC_URL = (
+    os.getenv("TWITCH_ADMIN_PUBLIC_URL")
+    or os.getenv("MASTER_DASHBOARD_PUBLIC_URL")
+    or "https://admin.earlysalty.com"
+).strip()
+TWITCH_ADMIN_DISCORD_REDIRECT_URI = (
+    os.getenv("TWITCH_ADMIN_DISCORD_REDIRECT_URI")
+    or f"{TWITCH_ADMIN_PUBLIC_URL.rstrip('/')}/twitch/auth/discord/callback"
+).strip()
 
 
 class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2Mixin):
@@ -483,10 +492,14 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
 
         redirect_uri = self._normalized_discord_admin_redirect_uri()
         if not redirect_uri:
+            expected_redirect = (
+                str(self._discord_admin_redirect_uri or "").strip()
+                or "https://admin.earlysalty.com/twitch/auth/discord/callback"
+            )
             return web.Response(
                 text=(
                     "Discord OAuth Redirect URI ist ungültig. "
-                    "Erwartet wird exakt: https://admin.earlysalty.de/twitch/auth/discord/callback."
+                    f"Erwartet wird exakt: {expected_redirect}."
                 ),
                 status=503,
             )

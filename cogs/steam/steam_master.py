@@ -31,6 +31,12 @@ from typing import Any, Dict, Optional
 
 from discord.ext import commands
 
+from cogs.steam.token_vault import (
+    clear_tokens as clear_steam_tokens,
+    machine_auth_token_exists,
+    refresh_token_exists,
+    token_storage_mode,
+)
 from service import db
 
 log = logging.getLogger(__name__)
@@ -282,8 +288,10 @@ class SteamMaster(commands.Cog):
 
         refresh = _refresh_token_path()
         machine = _machine_auth_path()
-        lines.append(f"refresh_token={'yes' if refresh.exists() else 'no'} ({refresh})")
-        lines.append(f"machine_auth={'yes' if machine.exists() else 'no'} ({machine})")
+        lines.append(f"token_storage={token_storage_mode()}")
+        lines.append(f"refresh_token={'yes' if refresh_token_exists(refresh) else 'no'}")
+        lines.append(f"machine_auth={'yes' if machine_auth_token_exists(machine) else 'no'}")
+        lines.append(f"token_fallback_paths refresh={refresh} machine={machine}")
 
         fr_stats = _fetch_group_counts(
             "SELECT status, COUNT(*) FROM steam_friend_requests GROUP BY status"
@@ -425,10 +433,14 @@ class SteamMaster(commands.Cog):
         refresh = _refresh_token_path()
         machine = _machine_auth_path()
         await ctx.reply(
-            "🔐 refresh_token: {r}\n📁 Pfad: `{rp}`\n🖥️ machine_auth: {m}\n📁 Pfad: `{mp}`".format(
-                r="vorhanden" if refresh.exists() else "nicht vorhanden",
+            "🔐 Speicher: {storage}\n"
+            "refresh_token: {r}\n"
+            "machine_auth: {m}\n"
+            "Fallback-Pfade:\n- `{rp}`\n- `{mp}`".format(
+                storage=token_storage_mode(),
+                r="vorhanden" if refresh_token_exists(refresh) else "nicht vorhanden",
+                m="vorhanden" if machine_auth_token_exists(machine) else "nicht vorhanden",
                 rp=refresh,
-                m="vorhanden" if machine.exists() else "nicht vorhanden",
                 mp=machine,
             )
         )
@@ -440,14 +452,7 @@ class SteamMaster(commands.Cog):
 
         refresh = _refresh_token_path()
         machine = _machine_auth_path()
-        removed = []
-        for path, label in ((refresh, "refresh_token"), (machine, "machine_auth")):
-            try:
-                if path.exists():
-                    path.unlink()
-                    removed.append(label)
-            except Exception:  # pragma: no cover - best effort cleanup
-                log.exception("Failed to delete Steam token", extra={"path": str(path)})
+        removed = clear_steam_tokens(refresh_file_path=refresh, machine_file_path=machine)
 
         if removed:
             await ctx.reply("🧹 Gelöscht: {}".format(", ".join(removed)))

@@ -23,6 +23,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const https = require('https');
 const { URL } = require('url');
 const protobuf = require('protobufjs');
@@ -243,6 +244,11 @@ const WEB_API_HTTP_TIMEOUT_MS = Math.max(
 // NOTE: External Deadlock API removed - now using In-Game GC for build discovery
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
+const STEAM_TOKEN_VAULT_SCRIPT = path.join(PROJECT_ROOT, 'cogs', 'steam', 'steam_token_vault_cli.py');
+const STEAM_TOKEN_VAULT_ENABLED = process.platform === 'win32'
+  && !['0', 'false', 'no', 'off'].includes(String(process.env.STEAM_USE_WINDOWS_VAULT || '1').trim().toLowerCase());
+const STEAM_VAULT_REFRESH_TOKEN = 'refresh';
+const STEAM_VAULT_MACHINE_TOKEN = 'machine';
 const GC_TRACE_LOG_PATH = path.join(PROJECT_ROOT, 'logs', 'deadlock_gc_messages.log');
 let gcTraceLineCount = 0;
 
@@ -578,20 +584,158 @@ function ensureDir(dirPath) {
   try { fs.mkdirSync(dirPath, { recursive: true }); } catch (err) { if (err && err.code !== 'EEXIST') throw err; }
 }
 
-function readToken(filePath) {
-  try { return fs.readFileSync(filePath, 'utf8').trim(); }
-  catch (err) {
+let vaultPythonRunner = null;
+let vaultPythonProbeDone = false;
+let vaultUnavailableLogged = false;
+let vaultScriptMissingLogged = false;
+
+function _resolveVaultRunner() {
+  if (!STEAM_TOKEN_VAULT_ENABLED) return null;
+  if (vaultPythonProbeDone) return vaultPythonRunner;
+  vaultPythonProbeDone = true;
+
+  const configured = String(process.env.STEAM_VAULT_PYTHON || process.env.PYTHON || '').trim();
+  const candidates = [];
+  if (configured) candidates.push({ cmd: configured, prefix: [] });
+  candidates.push({ cmd: 'python', prefix: [] });
+  if (process.platform === 'win32') candidates.push({ cmd: 'py', prefix: ['-3'] });
+
+  for (const candidate of candidates) {
+    try {
+      const probe = spawnSync(
+        candidate.cmd,
+        [...candidate.prefix, '--version'],
+        { encoding: 'utf8', windowsHide: true, timeout: 4000 }
+      );
+      if (probe.error && probe.error.code === 'ENOENT') continue;
+      if (probe.status === 0 || !probe.error) {
+        vaultPythonRunner = candidate;
+        break;
+      }
+    } catch (err) {
+      continue;
+    }
+  }
+
+  if (!vaultPythonRunner && !vaultUnavailableLogged) {
+    vaultUnavailableLogged = true;
+    log('warn', 'Windows vault enabled, but no Python interpreter found. Falling back to token files.');
+  }
+  return vaultPythonRunner;
+}
+
+function _runVaultCli(command, tokenType, value = null, savedAtIso = null) {
+  if (!STEAM_TOKEN_VAULT_ENABLED || !tokenType) return { ok: false, output: '' };
+  if (!fs.existsSync(STEAM_TOKEN_VAULT_SCRIPT)) {
+    if (!vaultScriptMissingLogged) {
+      vaultScriptMissingLogged = true;
+      log('warn', 'Steam vault helper script missing. Falling back to token files.', {
+        script: STEAM_TOKEN_VAULT_SCRIPT,
+      });
+    }
+    return { ok: false, output: '' };
+  }
+  const runner = _resolveVaultRunner();
+  if (!runner) return { ok: false, output: '' };
+
+  const args = [...runner.prefix, STEAM_TOKEN_VAULT_SCRIPT, command, '--token', tokenType];
+  if (command === 'set') {
+    args.push('--value', value || '');
+    if (savedAtIso) args.push('--saved-at', savedAtIso);
+  }
+
+  let result = null;
+  try {
+    result = spawnSync(runner.cmd, args, { encoding: 'utf8', windowsHide: true, timeout: 8000 });
+  } catch (err) {
+    log('warn', 'Failed to execute Steam vault helper', {
+      operation: command,
+      token_type: tokenType,
+      error: err && err.message ? err.message : String(err),
+    });
+    return { ok: false, output: '' };
+  }
+
+  if (result.error) {
+    log('warn', 'Steam vault helper execution error', {
+      operation: command,
+      token_type: tokenType,
+      error: result.error && result.error.message ? result.error.message : String(result.error),
+    });
+    return { ok: false, output: '' };
+  }
+  if (result.status !== 0) {
+    log('warn', 'Steam vault helper returned non-zero exit code', {
+      operation: command,
+      token_type: tokenType,
+      exit_code: result.status,
+    });
+    return { ok: false, output: '' };
+  }
+  const output = String(result.stdout || '').replace(/\r?\n$/, '');
+  return { ok: true, output };
+}
+
+function readToken(filePath, tokenType = null) {
+  if (tokenType) {
+    const vaultRead = _runVaultCli('get', tokenType);
+    if (vaultRead.ok && vaultRead.output) return vaultRead.output.trim();
+  }
+
+  try {
+    const token = fs.readFileSync(filePath, 'utf8').trim();
+    if (!token) return '';
+
+    // Migrate existing file-based tokens into Windows vault if available.
+    if (tokenType && STEAM_TOKEN_VAULT_ENABLED) {
+      let savedAtIso = null;
+      try {
+        savedAtIso = fs.statSync(filePath).mtime.toISOString();
+      } catch (err) {
+        savedAtIso = null;
+      }
+      const migrated = _runVaultCli('set', tokenType, token, savedAtIso);
+      if (migrated.ok && migrated.output === 'windows_vault') {
+        try { fs.rmSync(filePath, { force: true }); } catch (err) { }
+        log('info', 'Migrated Steam token from file to Windows vault', { token_type: tokenType });
+      }
+    }
+
+    return token;
+  } catch (err) {
     if (err && err.code === 'ENOENT') return '';
     log('warn', 'Failed to read token file', { path: filePath, error: err.message });
     return '';
   }
 }
 
-function writeToken(filePath, value) {
+function writeToken(filePath, value, tokenType = null) {
+  const normalized = value ? String(value).trim() : '';
+
+  if (tokenType) {
+    const vaultResult = normalized
+      ? _runVaultCli('set', tokenType, normalized)
+      : _runVaultCli('delete', tokenType);
+    if (vaultResult.ok && vaultResult.output === 'windows_vault') {
+      try { fs.rmSync(filePath, { force: true }); } catch (err) { }
+      return 'windows_vault';
+    }
+    if (vaultResult.ok && vaultResult.output === 'file') {
+      return 'file';
+    }
+  }
+
   try {
-    if (!value) { fs.rmSync(filePath, { force: true }); return; }
-    fs.writeFileSync(filePath, `${value}\n`, 'utf8');
-  } catch (err) { log('warn', 'Failed to persist token', { path: filePath, error: err.message }); }
+    if (!normalized) {
+      fs.rmSync(filePath, { force: true });
+      return 'file';
+    }
+    fs.writeFileSync(filePath, `${normalized}\n`, 'utf8');
+    return 'file';
+  } catch (err) {
+    log('warn', 'Failed to persist token', { path: filePath, error: err.message });
+    return 'file';
+  }
 }
 
 function safeJsonStringify(value) {
@@ -1224,8 +1368,8 @@ function verifySteamLink(steamId64, displayName) {
 }
 
 // ---------- Steam State ----------
-let refreshToken = readToken(REFRESH_TOKEN_PATH);
-let machineAuthToken = readToken(MACHINE_TOKEN_PATH);
+let refreshToken = readToken(REFRESH_TOKEN_PATH, STEAM_VAULT_REFRESH_TOKEN);
+let machineAuthToken = readToken(MACHINE_TOKEN_PATH, STEAM_VAULT_MACHINE_TOKEN);
 
 const runtimeState = {
   account_name: ACCOUNT_NAME || null,
@@ -3226,8 +3370,16 @@ client.on('steamGuard', (domain, callback, lastCodeWrong) => {
   log('info', 'Steam Guard challenge received', { domain: domain || null, lastCodeWrong: Boolean(lastCodeWrong) });
   scheduleStatePublish({ reason: 'steam_guard', domain: domain || null, last_code_wrong: Boolean(lastCodeWrong) });
 });
-client.on('refreshToken', (token) => { updateRefreshToken(token); writeToken(REFRESH_TOKEN_PATH, refreshToken); log('info', 'Stored refresh token', { path: REFRESH_TOKEN_PATH }); });
-client.on('machineAuthToken', (token) => { updateMachineToken(token); writeToken(MACHINE_TOKEN_PATH, machineAuthToken); log('info', 'Stored machine auth token', { path: MACHINE_TOKEN_PATH }); });
+client.on('refreshToken', (token) => {
+  updateRefreshToken(token);
+  const storage = writeToken(REFRESH_TOKEN_PATH, refreshToken, STEAM_VAULT_REFRESH_TOKEN);
+  log('info', 'Stored refresh token', { storage });
+});
+client.on('machineAuthToken', (token) => {
+  updateMachineToken(token);
+  const storage = writeToken(MACHINE_TOKEN_PATH, machineAuthToken, STEAM_VAULT_MACHINE_TOKEN);
+  log('info', 'Stored machine auth token', { storage });
+});
 client.on('_gcTokens', () => {
   const count = getDeadlockGcTokenCount();
   const delta = count - lastLoggedGcTokenCount;
@@ -3472,7 +3624,11 @@ client.on('error', (err) => {
   const text = String(err && err.message ? err.message : '').toLowerCase();
   log('error', 'Steam client error', { error: runtimeState.last_error.message, eresult: runtimeState.last_error.eresult });
   if (text.includes('invalid refresh') || text.includes('expired') || text.includes('refresh token')) {
-    if (refreshToken) { log('warn', 'Clearing refresh token after authentication failure'); updateRefreshToken(''); writeToken(REFRESH_TOKEN_PATH, ''); }
+    if (refreshToken) {
+      log('warn', 'Clearing refresh token after authentication failure');
+      updateRefreshToken('');
+      writeToken(REFRESH_TOKEN_PATH, '', STEAM_VAULT_REFRESH_TOKEN);
+    }
     return;
   }
   if (text.includes('ratelimit') || text.includes('rate limit') || text.includes('throttle')) {

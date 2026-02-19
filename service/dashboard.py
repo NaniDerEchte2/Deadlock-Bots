@@ -34,8 +34,13 @@ LOG_TAIL_MAX_BYTES = 4 * 1024 * 1024
 DEFAULT_DASHBOARD_MODERATOR_ROLE_ID = 1337518124647579661
 DEFAULT_DASHBOARD_OWNER_USER_ID = 662995601738170389
 KEYRING_SERVICE_NAME = "DeadlockBot"
-MASTER_DASHBOARD_PUBLIC_URL = "https://admin.earlysalty.de"
-MASTER_DASHBOARD_DISCORD_REDIRECT_URI = "https://admin.earlysalty.de/auth/discord/callback"
+MASTER_DASHBOARD_PUBLIC_URL = (
+    os.getenv("MASTER_DASHBOARD_PUBLIC_URL") or "https://admin.earlysalty.com"
+).strip()
+MASTER_DASHBOARD_DISCORD_REDIRECT_URI = (
+    os.getenv("MASTER_DASHBOARD_DISCORD_REDIRECT_URI")
+    or f"{MASTER_DASHBOARD_PUBLIC_URL.rstrip('/')}/auth/discord/callback"
+).strip()
 MASTER_DASHBOARD_DEFAULT_SCHEME = "http"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
 DEFAULT_NSSM_SERVICE_NAME = KEYRING_SERVICE_NAME
@@ -1291,10 +1296,14 @@ class DashboardServer:
 
         redirect_uri = self._normalized_discord_redirect_uri()
         if not redirect_uri:
+            expected_redirect = (
+                str(self._discord_redirect_uri or "").strip()
+                or "https://admin.earlysalty.com/auth/discord/callback"
+            )
             raise web.HTTPServiceUnavailable(
                 text=(
                     "Discord OAuth Redirect URI ist ungültig. "
-                    "Erwartet wird exakt: https://admin.earlysalty.de/auth/discord/callback."
+                    f"Erwartet wird exakt: {expected_redirect}."
                 )
             )
 

@@ -13,13 +13,26 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 from discord.ext import commands, tasks
 
+from cogs.steam.token_vault import (
+    get_refresh_token_age_days,
+    refresh_token_exists,
+    write_refresh_token,
+)
 from service import db
 
 log = logging.getLogger(__name__)
+
+
+def _refresh_token_path() -> Path:
+    configured = (os.getenv("STEAM_PRESENCE_DATA_DIR") or "").strip()
+    if configured:
+        return Path(configured).expanduser() / "refresh.token"
+    return Path(__file__).parent / "steam_presence" / ".steam-data" / "refresh.token"
 
 
 class SteamGuardAutoConfig:
@@ -246,17 +259,7 @@ class SteamGuardAuto(commands.Cog):
 
     def _get_token_age_days(self) -> Optional[int]:
         """Get age of current refresh token in days."""
-        import os
-        from pathlib import Path
-
-        token_path = Path(__file__).parent / 'steam_presence' / '.steam-data' / 'refresh.token'
-        if not token_path.exists():
-            return None
-
-        from datetime import datetime
-        mtime = datetime.fromtimestamp(token_path.stat().st_mtime)
-        age = (datetime.now() - mtime).days
-        return age
+        return get_refresh_token_age_days(_refresh_token_path())
 
     async def _trigger_token_refresh(self):
         """Trigger a token refresh by re-authenticating."""
@@ -285,12 +288,10 @@ class SteamGuardAuto(commands.Cog):
             log.info(f"Enqueued AUTH_LOGOUT task #{task_id}")
             await asyncio.sleep(3)
 
-            # Delete token file
-            from pathlib import Path
-            token_path = Path(__file__).parent / 'steam_presence' / '.steam-data' / 'refresh.token'
-            if token_path.exists():
-                token_path.unlink()
-                log.info("Deleted old refresh.token")
+            # Delete previous token from vault/file storage.
+            token_path = _refresh_token_path()
+            write_refresh_token("", token_path)
+            log.info("Cleared previous refresh token from storage")
 
             # Start new login (this will trigger Steam Guard email)
             with db.get_conn() as conn:
@@ -313,9 +314,9 @@ class SteamGuardAuto(commands.Cog):
                 await asyncio.sleep(10)
 
                 # Check if we have a new token
-                if token_path.exists():
+                if refresh_token_exists(token_path):
                     age = self._get_token_age_days()
-                    if age == 0:  # Fresh token
+                    if age is not None and age == 0:  # Fresh token
                         log.info("✅ Token refresh completed successfully!")
                         self._refresh_in_progress = False
                         return
