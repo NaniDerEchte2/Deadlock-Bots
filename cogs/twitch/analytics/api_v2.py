@@ -403,7 +403,8 @@ class AnalyticsV2Mixin:
     async def _serve_dashboard_v2(self, request: web.Request) -> web.Response:
         """Serve the main dashboard HTML."""
         if not self._check_v2_auth(request):
-            raise web.HTTPFound(self._get_dashboard_login_url(request))
+            login_url = self._safe_internal_login_redirect(self._get_dashboard_login_url(request))
+            raise web.HTTPFound(login_url)
         import pathlib
         dist_path = pathlib.Path(__file__).parent / "dashboard_v2" / "dist" / "index.html"
         if dist_path.exists():

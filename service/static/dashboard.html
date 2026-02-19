@@ -1702,6 +1702,7 @@
     const logOpenState = new Map();
     let isRefreshingStandalone = false;
     let authToken = localStorage.getItem('master-dashboard-token') || '';
+    let csrfToken = '';
     let logIndex = [];
     let selectedLogName = '';
     let logsInitialized = false;
@@ -1730,6 +1731,9 @@
         const h = { 'Content-Type': 'application/json' };
         if (authToken) {
             h['Authorization'] = 'Bearer ' + authToken;
+        }
+        if (csrfToken) {
+            h['X-CSRF-Token'] = csrfToken;
         }
         return h;
     }
@@ -2062,8 +2066,11 @@
             botRestartBtn.disabled = true;
             botRestartBtn.textContent = 'Restart angefordert...';
             try {
-                await fetchJSON('/api/bot/restart', { method: 'POST', body: JSON.stringify({}) });
-                log('Bot-Restart ausgelöst', 'success');
+                const data = await fetchJSON('/api/bot/restart', { method: 'POST', body: JSON.stringify({}) });
+                if (!data || data.ok === false) {
+                    throw new Error((data && data.message) || 'Restart wurde nicht angenommen');
+                }
+                log(data.message || 'Bot-Restart ausgelöst', 'success');
                 setTimeout(loadStatus, 1200);
             } catch (err) {
                 log('Bot-Restart fehlgeschlagen: ' + err.message, 'error');
@@ -2206,6 +2213,7 @@
     }
 
     function renderAuth(info = {}) {
+        csrfToken = info && info.csrf_token ? String(info.csrf_token) : '';
         const user = info.user || null;
         const display = user && user.display_name
             ? user.display_name

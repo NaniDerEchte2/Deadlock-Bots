@@ -11,6 +11,7 @@ import logging
 import os
 import secrets
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
@@ -37,6 +38,17 @@ MASTER_DASHBOARD_PUBLIC_URL = "https://admin.earlysalty.de"
 MASTER_DASHBOARD_DISCORD_REDIRECT_URI = "https://admin.earlysalty.de/auth/discord/callback"
 MASTER_DASHBOARD_DEFAULT_SCHEME = "http"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
+DEFAULT_NSSM_SERVICE_NAME = KEYRING_SERVICE_NAME
+DEFAULT_NSSM_RESTART_DELAY_SECONDS = 1.0
+DEFAULT_BOT_RESTART_MIN_INTERVAL_SECONDS = 15.0
+NSSM_PATH_CANDIDATES = (
+    r"C:\ProgramData\chocolatey\bin\nssm.exe",
+    r"C:\nssm\win64\nssm.exe",
+    r"C:\nssm\nssm.exe",
+)
+POWERSHELL_PATH_CANDIDATES = (
+    r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+)
 
 try:
     from service.standalone_manager import (
@@ -92,6 +104,33 @@ class DashboardServer:
         self._restart_task: Optional[asyncio.Task] = None
         self._last_restart: Dict[str, Any] = {"at": None, "ok": None, "error": None}
         self._lifecycle = getattr(bot, "lifecycle", None)
+        self._nssm_service_name = (
+            os.getenv("MASTER_NSSM_SERVICE_NAME") or DEFAULT_NSSM_SERVICE_NAME
+        ).strip()
+        self._nssm_executable = (os.getenv("MASTER_NSSM_EXE") or "").strip()
+        self._powershell_executable = (os.getenv("MASTER_POWERSHELL_EXE") or "").strip()
+        nssm_enabled_raw = (os.getenv("MASTER_NSSM_RESTART_ENABLED") or "1").strip().lower()
+        self._nssm_service_restart_enabled = nssm_enabled_raw not in {"0", "false", "no", "off"}
+        allow_query_token_raw = (os.getenv("MASTER_DASHBOARD_ALLOW_QUERY_TOKEN") or "0").strip().lower()
+        self._allow_query_token = allow_query_token_raw in {"1", "true", "yes", "on"}
+        self._nssm_restart_delay_seconds = self._parse_positive_float(
+            os.getenv(
+                "MASTER_NSSM_RESTART_DELAY_SECONDS",
+                str(DEFAULT_NSSM_RESTART_DELAY_SECONDS),
+            ),
+            default=DEFAULT_NSSM_RESTART_DELAY_SECONDS,
+            env_name="MASTER_NSSM_RESTART_DELAY_SECONDS",
+        )
+        self._bot_restart_min_interval_seconds = self._parse_positive_float(
+            os.getenv(
+                "MASTER_BOT_RESTART_MIN_INTERVAL_SECONDS",
+                str(DEFAULT_BOT_RESTART_MIN_INTERVAL_SECONDS),
+            ),
+            default=DEFAULT_BOT_RESTART_MIN_INTERVAL_SECONDS,
+            env_name="MASTER_BOT_RESTART_MIN_INTERVAL_SECONDS",
+        )
+        self._bot_restart_lock = asyncio.Lock()
+        self._last_bot_restart_request_monotonic = 0.0
         keyring_client_id = self._read_keyring_secret("DISCORD_OAUTH_CLIENT_ID")
         app_client_id = str(getattr(bot, "application_id", "") or "").strip()
         self._discord_client_id = (keyring_client_id or app_client_id).strip()
@@ -122,6 +161,7 @@ class DashboardServer:
                 exc,
             )
             self._public_base_url = self._listen_base_url
+        self._allowed_request_origins = self._build_allowed_request_origins()
 
         self._twitch_dashboard_href = self._resolve_twitch_dashboard_href()
         self._steam_return_url = self._derive_steam_return_url()
@@ -421,14 +461,13 @@ class DashboardServer:
     def _is_auth_enforced(self) -> bool:
         return bool(self.token or self._discord_auth_required or self._auth_misconfigured)
 
-    @staticmethod
-    def _extract_bearer_token(request: web.Request) -> str:
+    def _extract_bearer_token(self, request: web.Request) -> str:
         header = request.headers.get("Authorization", "")
         if header.startswith("Bearer "):
             token = header.split(" ", 1)[1].strip()
         else:
             token = header.strip()
-        if not token:
+        if not token and self._allow_query_token:
             token = (request.query.get("token") or "").strip()
         return token
 
@@ -502,6 +541,45 @@ class DashboardServer:
             return candidate
         return fallback
 
+    @staticmethod
+    def _safe_internal_redirect(location: Optional[str], *, fallback: str = "/admin") -> str:
+        candidate = (location or "").strip()
+        if not candidate:
+            return fallback
+        if "\r" in candidate or "\n" in candidate:
+            return fallback
+        try:
+            parsed = urlparse(candidate)
+        except Exception:
+            return fallback
+        if parsed.scheme or parsed.netloc:
+            return fallback
+        if not candidate.startswith("/"):
+            return fallback
+        return candidate
+
+    @staticmethod
+    def _safe_template_href(location: Optional[str], *, fallback: str = "/admin") -> str:
+        candidate = (location or "").strip()
+        if not candidate:
+            return fallback
+        if any(ch in candidate for ch in {"\r", "\n", "<", ">", "\"", "'"}):
+            return fallback
+        try:
+            parsed = urlparse(candidate)
+        except Exception:
+            return fallback
+        scheme = (parsed.scheme or "").strip().lower()
+        if scheme:
+            if scheme not in {"http", "https"}:
+                return fallback
+            if not parsed.netloc:
+                return fallback
+            return candidate
+        if parsed.netloc or not candidate.startswith("/"):
+            return fallback
+        return candidate
+
     def _build_discord_login_url(self, request: web.Request, *, next_path: Optional[str] = None) -> str:
         if not self._discord_auth_required:
             return "/admin"
@@ -509,6 +587,77 @@ class DashboardServer:
             next_path or (request.rel_url.path_qs if request.rel_url else "/admin")
         )
         return f"/auth/discord/login?{urlencode({'next': normalized})}"
+
+    @staticmethod
+    def _normalize_origin(raw: Optional[str]) -> Optional[str]:
+        value = (raw or "").strip()
+        if not value:
+            return None
+        try:
+            parsed = urlparse(value)
+        except Exception:
+            return None
+        scheme = (parsed.scheme or "").strip().lower()
+        netloc = (parsed.netloc or "").strip().lower()
+        if scheme not in {"http", "https"} or not netloc:
+            return None
+        return f"{scheme}://{netloc}"
+
+    def _build_allowed_request_origins(self) -> Set[str]:
+        origins: Set[str] = set()
+        for base_url in (self._public_base_url, self._listen_base_url):
+            normalized = self._normalize_origin(base_url)
+            if normalized:
+                origins.add(normalized)
+
+        extra_raw = (os.getenv("MASTER_DASHBOARD_ALLOWED_ORIGINS") or "").strip()
+        if extra_raw:
+            for part in extra_raw.split(","):
+                normalized = self._normalize_origin(part)
+                if normalized:
+                    origins.add(normalized)
+
+        return origins
+
+    def _request_origin(self, request: web.Request) -> Optional[str]:
+        origin = self._normalize_origin(request.headers.get("Origin"))
+        if origin:
+            return origin
+
+        referer = (request.headers.get("Referer") or "").strip()
+        if not referer:
+            return None
+        return self._normalize_origin(referer)
+
+    def _is_allowed_request_origin(self, request: web.Request) -> bool:
+        if not self._allowed_request_origins:
+            return True
+        request_origin = self._request_origin(request)
+        if not request_origin:
+            return False
+        return request_origin in self._allowed_request_origins
+
+    @staticmethod
+    def _requires_csrf_check(request: web.Request) -> bool:
+        return request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+
+    def _ensure_session_csrf_token(self, session: Dict[str, Any]) -> str:
+        token = str(session.get("csrf_token") or "").strip()
+        if token:
+            return token
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+        return token
+
+    def _check_csrf(self, request: web.Request, session: Dict[str, Any]) -> bool:
+        expected = self._ensure_session_csrf_token(session)
+        provided = (request.headers.get("X-CSRF-Token") or "").strip()
+        if not provided:
+            return False
+        try:
+            return secrets.compare_digest(provided, expected)
+        except Exception:
+            return False
 
     def _cleanup_discord_auth_state(self) -> None:
         now = time.time()
@@ -576,6 +725,7 @@ class DashboardServer:
             return None
         session["expires_at"] = now + self._discord_session_ttl
         session["last_seen_at"] = now
+        self._ensure_session_csrf_token(session)
         return session
 
     def _auth_session_for_request(self, request: web.Request) -> Optional[Dict[str, Any]]:
@@ -609,7 +759,12 @@ class DashboardServer:
                 if permissions and bool(getattr(permissions, "administrator", False)):
                     return True, f"guild_admin:{guild.id}"
             except Exception:
-                pass
+                logger.debug(
+                    "Failed to evaluate guild admin permissions for discord user %s in guild %s",
+                    discord_user_id,
+                    getattr(guild, "id", "?"),
+                    exc_info=True,
+                )
             try:
                 role_ids = {int(r.id) for r in getattr(member, "roles", []) if getattr(r, "id", None)}
             except Exception:
@@ -668,7 +823,7 @@ class DashboardServer:
             return True
         if self.token:
             provided = self._extract_bearer_token(request)
-            if provided and provided == self.token:
+            if provided and secrets.compare_digest(provided, self.token):
                 return True
         return False
 
@@ -683,8 +838,18 @@ class DashboardServer:
                     "Discord OAuth Client-ID/Secret fehlen im Windows-Tresor (DeadlockBot)."
                 )
             )
-        if self._has_valid_auth(request):
+        session = self._get_discord_auth_session(request) if self._discord_auth_required else None
+        if session:
+            if self._requires_csrf_check(request):
+                if not self._is_allowed_request_origin(request):
+                    raise web.HTTPForbidden(text="Origin validation failed")
+                if not self._check_csrf(request, session):
+                    raise web.HTTPForbidden(text="CSRF validation failed")
             return
+        if self.token:
+            provided = self._extract_bearer_token(request)
+            if provided and secrets.compare_digest(provided, self.token):
+                return
 
         next_path = "/admin" if request.path.startswith("/api/") else None
         login_url = self._build_discord_login_url(request, next_path=next_path)
@@ -835,6 +1000,103 @@ class DashboardServer:
         return urlunparse(
             (fallback.scheme, netloc, path, fallback.params, fallback.query, fallback.fragment)
         )
+
+    def _resolve_nssm_executable_path(self) -> Optional[str]:
+        configured = (self._nssm_executable or "").strip()
+        if configured:
+            configured_path = Path(configured).expanduser()
+            if configured_path.is_absolute() and configured_path.is_file():
+                return str(configured_path)
+            return None
+
+        for candidate in NSSM_PATH_CANDIDATES:
+            if Path(candidate).is_file():
+                return candidate
+        return None
+
+    def _resolve_powershell_executable_path(self) -> Optional[str]:
+        configured = (self._powershell_executable or "").strip()
+        if configured:
+            configured_path = Path(configured).expanduser()
+            if configured_path.is_absolute() and configured_path.is_file():
+                return str(configured_path)
+            return None
+
+        for candidate in POWERSHELL_PATH_CANDIDATES:
+            if Path(candidate).is_file():
+                return candidate
+        return None
+
+    @staticmethod
+    def _powershell_literal(value: str) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    def _build_nssm_restart_script(self, nssm_executable: str) -> str:
+        delay_ms = max(250, int(self._nssm_restart_delay_seconds * 1000))
+        return (
+            "$ErrorActionPreference = 'Stop'; "
+            f"Start-Sleep -Milliseconds {delay_ms}; "
+            f"& {self._powershell_literal(nssm_executable)} restart {self._powershell_literal(self._nssm_service_name)}"
+        )
+
+    def _schedule_nssm_service_restart(self) -> Tuple[bool, str]:
+        if not self._nssm_service_restart_enabled:
+            return False, "NSSM restart disabled (MASTER_NSSM_RESTART_ENABLED=0)"
+        if os.name != "nt":
+            return False, "NSSM restart is only available on Windows hosts"
+        if not self._nssm_service_name:
+            return False, "NSSM service name missing (MASTER_NSSM_SERVICE_NAME)"
+
+        nssm_executable = self._resolve_nssm_executable_path()
+        if not nssm_executable:
+            if self._nssm_executable:
+                return False, (
+                    "NSSM executable not found or not absolute file path: "
+                    f"{self._nssm_executable}"
+                )
+            return False, "nssm.exe not found in hardened path list (set MASTER_NSSM_EXE)"
+
+        powershell_exe = self._resolve_powershell_executable_path()
+        if not powershell_exe:
+            if self._powershell_executable:
+                return False, (
+                    "PowerShell executable not found or not absolute file path: "
+                    f"{self._powershell_executable}"
+                )
+            return False, "powershell.exe not found in hardened path list"
+
+        creationflags = 0
+        for flag_name in ("CREATE_NEW_PROCESS_GROUP", "DETACHED_PROCESS", "CREATE_NO_WINDOW"):
+            creationflags |= int(getattr(subprocess, flag_name, 0) or 0)
+
+        command = [
+            powershell_exe,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            self._build_nssm_restart_script(nssm_executable),
+        ]
+        try:
+            subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+                cwd=str(Path(__file__).resolve().parent.parent),
+            )
+        except Exception as exc:
+            logger.exception("Failed to launch NSSM restart for service '%s': %s", self._nssm_service_name, exc)
+            return False, f"Failed to launch NSSM restart: {exc}"
+
+        logger.info(
+            "NSSM restart scheduled for service '%s' (nssm=%s, delay=%.2fs)",
+            self._safe_log_value(self._nssm_service_name),
+            self._safe_log_value(nssm_executable),
+            self._nssm_restart_delay_seconds,
+        )
+        return True, f"Service restart requested ({self._nssm_service_name})"
 
     @staticmethod
     def _parse_positive_float(raw: Optional[str], *, default: float, env_name: str) -> float:
@@ -1024,7 +1286,8 @@ class DashboardServer:
         existing = self._get_discord_auth_session(request)
         next_path = self._normalize_auth_next_path(request.query.get("next"))
         if existing:
-            raise web.HTTPFound(next_path)
+            safe_next = self._safe_internal_redirect(next_path, fallback="/admin")
+            raise web.HTTPFound(safe_next)
 
         redirect_uri = self._normalized_discord_redirect_uri()
         if not redirect_uri:
@@ -1118,6 +1381,7 @@ class DashboardServer:
             "username": username,
             "display_name": display_name,
             "reason": reason,
+            "csrf_token": secrets.token_urlsafe(32),
             "created_at": now,
             "last_seen_at": now,
             "expires_at": now + self._discord_session_ttl,
@@ -1131,7 +1395,8 @@ class DashboardServer:
         )
 
         destination = self._normalize_auth_next_path(state_data.get("next_path"))
-        response = web.HTTPFound(destination)
+        safe_destination = self._safe_internal_redirect(destination, fallback="/admin")
+        response = web.HTTPFound(safe_destination)
         self._set_discord_session_cookie(response, request, session_id)
         raise response
 
@@ -1139,7 +1404,11 @@ class DashboardServer:
         session_id = (request.cookies.get(self._discord_session_cookie) or "").strip()
         if session_id:
             self._discord_sessions.pop(session_id, None)
-        response = web.HTTPFound(self._build_discord_login_url(request, next_path="/admin"))
+        login_url = self._safe_internal_redirect(
+            self._build_discord_login_url(request, next_path="/admin"),
+            fallback="/auth/discord/login?next=%2Fadmin",
+        )
+        response = web.HTTPFound(login_url)
         self._clear_discord_session_cookie(response)
         raise response
 
@@ -1156,18 +1425,20 @@ class DashboardServer:
         session = self._get_discord_auth_session(request)
         if not session:
             provided = self._extract_bearer_token(request)
-            if self.token and provided and provided == self.token:
+            if self.token and provided and secrets.compare_digest(provided, self.token):
                 return self._json(
                     {
                         "enabled": bool(self._discord_auth_required),
                         "authenticated": True,
                         "mode": "token",
                         "user": None,
+                        "csrf_token": None,
                     }
                 )
             self._check_auth(request)
             raise web.HTTPUnauthorized(text="Authentication required")
 
+        csrf_token = self._ensure_session_csrf_token(session)
         return self._json(
             {
                 "enabled": True,
@@ -1178,6 +1449,7 @@ class DashboardServer:
                     "display_name": session.get("display_name"),
                     "username": session.get("username"),
                 },
+                "csrf_token": csrf_token,
             }
         )
 
@@ -1191,17 +1463,36 @@ class DashboardServer:
             )
         if self._is_auth_enforced() and not self._has_valid_auth(request):
             if self._discord_auth_required:
-                raise web.HTTPFound(self._build_discord_login_url(request, next_path="/admin"))
+                login_url = self._safe_internal_redirect(
+                    self._build_discord_login_url(request, next_path="/admin"),
+                    fallback="/auth/discord/login?next=%2Fadmin",
+                )
+                raise web.HTTPFound(login_url)
             self._check_auth(request)
 
         session = self._get_discord_auth_session(request)
         display_name = str((session or {}).get("display_name") or "Nicht angemeldet")
+        safe_twitch_url = html.escape(
+            self._safe_template_href(self._twitch_dashboard_href or "", fallback="/twitch/admin"),
+            quote=True,
+        )
+        safe_discord_login_url = html.escape(
+            self._safe_template_href(
+                self._build_discord_login_url(request, next_path="/admin"),
+                fallback="/auth/discord/login?next=%2Fadmin",
+            ),
+            quote=True,
+        )
+        safe_auth_logout_url = html.escape(
+            self._safe_template_href("/auth/logout", fallback="/auth/logout"),
+            quote=True,
+        )
         html_text = (
             _load_index_html()
-            .replace("{{TWITCH_URL}}", self._twitch_dashboard_href or "")
+            .replace("{{TWITCH_URL}}", safe_twitch_url)
             .replace("{{AUTH_USER_LABEL}}", html.escape(display_name, quote=True))
-            .replace("{{DISCORD_LOGIN_URL}}", self._build_discord_login_url(request, next_path="/admin"))
-            .replace("{{AUTH_LOGOUT_URL}}", "/auth/logout")
+            .replace("{{DISCORD_LOGIN_URL}}", safe_discord_login_url)
+            .replace("{{AUTH_LOGOUT_URL}}", safe_auth_logout_url)
         )
         return web.Response(text=html_text, content_type="text/html")
 
@@ -3225,6 +3516,7 @@ class DashboardServer:
 
         restart_in_progress = bool(self._restart_task and not self._restart_task.done())
         last_restart = self._last_restart if any(self._last_restart.values()) else None
+        csrf_token = self._ensure_session_csrf_token(auth_session) if auth_session else None
 
         payload = {
             "bot": {
@@ -3263,6 +3555,7 @@ class DashboardServer:
                 "discord_enabled": self._discord_auth_required,
                 "login_url": self._build_discord_login_url(request, next_path="/admin"),
                 "logout_url": "/auth/logout",
+                "csrf_token": csrf_token,
                 "user": (
                     {
                         "id": auth_session.get("user_id"),
@@ -3282,14 +3575,66 @@ class DashboardServer:
         self._check_auth(request, required=bool(self.token))
         safe_remote = self._safe_log_value(request.remote)
         logger.warning("AUDIT master-dashboard bot_restart requested from %s", safe_remote)
-        lifecycle = self._lifecycle or getattr(self.bot, "lifecycle", None)
-        if not lifecycle:
-            return self._json({"ok": False, "message": "Restart nicht verfügbar (kein Lifecycle angebunden)"})
+        async with self._bot_restart_lock:
+            now = time.monotonic()
+            since_last = now - self._last_bot_restart_request_monotonic
+            if (
+                self._last_bot_restart_request_monotonic > 0
+                and since_last < self._bot_restart_min_interval_seconds
+            ):
+                retry_after = max(0.0, self._bot_restart_min_interval_seconds - since_last)
+                return self._json(
+                    {
+                        "ok": False,
+                        "message": f"Restart cooldown active ({retry_after:.1f}s remaining)",
+                        "retry_after_seconds": round(retry_after, 1),
+                    }
+                )
 
-        scheduled = await lifecycle.request_restart(reason="dashboard")
-        if scheduled:
-            return self._json({"ok": True, "message": "Bot restart scheduled"})
-        return self._json({"ok": False, "message": "Restart bereits angefordert"})
+            service_restart_ok, service_message = self._schedule_nssm_service_restart()
+            if service_restart_ok:
+                self._last_bot_restart_request_monotonic = now
+                return self._json(
+                    {
+                        "ok": True,
+                        "message": service_message,
+                        "restart_mode": "nssm_service",
+                    }
+                )
+
+            logger.warning("NSSM service restart unavailable: %s", self._safe_log_value(service_message))
+            lifecycle = self._lifecycle or getattr(self.bot, "lifecycle", None)
+            if not lifecycle:
+                return self._json(
+                    {
+                        "ok": False,
+                        "message": (
+                            "Restart unavailable (NSSM failed and no lifecycle fallback attached): "
+                            f"{service_message}"
+                        ),
+                    }
+                )
+
+            scheduled = await lifecycle.request_restart(reason="dashboard_lifecycle_fallback")
+            if scheduled:
+                self._last_bot_restart_request_monotonic = now
+                return self._json(
+                    {
+                        "ok": True,
+                        "message": (
+                            "Lifecycle restart scheduled (NSSM service restart unavailable): "
+                            f"{service_message}"
+                        ),
+                        "restart_mode": "lifecycle_fallback",
+                    }
+                )
+            return self._json(
+                {
+                    "ok": False,
+                    "message": "Restart already pending (lifecycle fallback path)",
+                    "restart_mode": "lifecycle_fallback",
+                }
+            )
 
     async def _handle_dashboard_restart(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))

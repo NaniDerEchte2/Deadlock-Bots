@@ -478,7 +478,8 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         existing = self._get_discord_admin_session(request)
         next_path = self._normalize_discord_admin_next_path(request.query.get("next"))
         if existing:
-            raise web.HTTPFound(next_path)
+            safe_next = self._safe_internal_redirect(next_path, fallback="/twitch/admin")
+            raise web.HTTPFound(safe_next)
 
         redirect_uri = self._normalized_discord_admin_redirect_uri()
         if not redirect_uri:
@@ -596,7 +597,11 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         session_id = (request.cookies.get(self._discord_admin_cookie_name) or "").strip()
         if session_id:
             self._discord_admin_sessions.pop(session_id, None)
-        response = web.HTTPFound(self._build_discord_admin_login_url(request, next_path="/twitch/admin"))
+        login_url = self._safe_internal_redirect(
+            self._build_discord_admin_login_url(request, next_path="/twitch/admin"),
+            fallback="/twitch/auth/discord/login?next=%2Ftwitch%2Fadmin",
+        )
+        response = web.HTTPFound(login_url)
         self._clear_discord_admin_cookie(response)
         raise response
 
@@ -634,7 +639,10 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
                 return
             if self._check_admin_token(token):
                 return
-            login_url = self._build_discord_admin_login_url(request, next_path="/twitch/admin")
+            login_url = self._safe_internal_redirect(
+                self._build_discord_admin_login_url(request, next_path="/twitch/admin"),
+                fallback="/twitch/auth/discord/login?next=%2Ftwitch%2Fadmin",
+            )
             if request.method in {"GET", "HEAD"}:
                 raise web.HTTPFound(login_url)
             raise web.HTTPUnauthorized(
@@ -909,10 +917,25 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
     def _should_use_discord_admin_login(self, request: web.Request) -> bool:
         if not self._discord_admin_required:
             return False
-        dashboard_context = (request.headers.get("X-Dashboard-Context") or "").strip().lower()
-        if dashboard_context == "public":
-            return False
-        return True
+        admin_context_prefixes = (
+            "/twitch/admin",
+            "/twitch/live",
+            "/twitch/add_any",
+            "/twitch/add_url",
+            "/twitch/add_login",
+            "/twitch/add_streamer",
+            "/twitch/remove",
+            "/twitch/verify",
+            "/twitch/archive",
+            "/twitch/discord_flag",
+            "/twitch/discord_link",
+            "/twitch/raid/auth",
+            "/twitch/raid/requirements",
+            "/twitch/raid/history",
+            "/twitch/reload",
+            "/twitch/market",
+        )
+        return request.path.startswith(admin_context_prefixes)
 
     def _resolve_legacy_stats_url(self) -> str:
         # The legacy stats dashboard is now always served locally.
@@ -1078,6 +1101,11 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             if self._should_use_discord_admin_login(request)
             else "Mit Twitch anmelden"
         )
+        safe_dashboard_url = html.escape(
+            self._safe_internal_redirect(dashboard_url, fallback="/twitch/dashboards"),
+            quote=True,
+        )
+        safe_dashboard_label = html.escape(dashboard_label, quote=True)
 
         page = (
             "<!doctype html><html lang='de'><head><meta charset='utf-8'>"
@@ -1116,7 +1144,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             "Datenschutz und Nutzungsbedingungen) sind ohne Anmeldung aufrufbar."
             "</p>"
             "<div class='actions'>"
-            f"<a class='btn btn-primary' href='{dashboard_url}'>{dashboard_label}</a>"
+            f"<a class='btn btn-primary' href='{safe_dashboard_url}'>{safe_dashboard_label}</a>"
             "<a class='btn btn-secondary' href='/terms'>Nutzungsbedingungen</a>"
             "<a class='btn btn-secondary' href='/privacy'>Datenschutzerklaerung</a>"
             "</div>"
@@ -1380,7 +1408,11 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
                 if self._should_use_discord_admin_login(request)
                 else "/twitch/auth/login?next=%2Ftwitch%2Fdashboards"
             )
-            raise web.HTTPFound(login_url)
+            safe_login_url = self._safe_internal_redirect(
+                login_url,
+                fallback="/twitch/auth/login?next=%2Ftwitch%2Fdashboards",
+            )
+            raise web.HTTPFound(safe_login_url)
 
         legacy_url = self._resolve_legacy_stats_url()
         beta_url = "/twitch/dashboard-v2"
