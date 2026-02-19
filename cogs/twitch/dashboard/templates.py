@@ -55,7 +55,8 @@ class DashboardTemplateMixin:
   * {{ box-sizing: border-box; }}
   body {{
     font-family: "Space Grotesk", "Segoe UI", sans-serif;
-    max-width: 1320px;
+    width: 100%;
+    max-width: none;
     margin: 0 auto;
     padding: 2.6rem 1.8rem 3.4rem;
     color:var(--text);
@@ -100,7 +101,7 @@ class DashboardTemplateMixin:
   th, td {{ border-bottom:1px solid var(--bd); padding:.75rem .6rem; text-align:left; vertical-align: top; }}
   th {{ color:var(--accent-3); text-transform:uppercase; letter-spacing:.08em; font-size:.75rem; }}
   tr:hover td {{ background:rgba(124,58,237,0.08); }}
-  input[type="text"] {{ background:var(--bg-alt); border:1px solid var(--bd); color:var(--text); padding:.5rem .65rem; border-radius:.6rem; width:28rem; }}
+  input[type="text"] {{ background:var(--bg-alt); border:1px solid var(--bd); color:var(--text); padding:.5rem .65rem; border-radius:.6rem; width:100%; min-width:0; max-width:100%; }}
   input[type="number"], select {{ background:var(--bg-alt); border:1px solid var(--bd); color:var(--text); padding:.5rem .65rem; border-radius:.6rem; }}
   input:disabled, select:disabled {{ opacity:.65; cursor:not-allowed; }}
   small {{ color:var(--muted); }}
@@ -131,9 +132,9 @@ class DashboardTemplateMixin:
   .add-streamer-card {{ margin-top:1.4rem; }}
   .add-streamer-card h2 {{ margin:0 0 .6rem 0; font-size:1.1rem; color:var(--accent-3); }}
   .add-streamer-card form {{ display:flex; flex-direction:column; gap:.8rem; }}
-  .add-streamer-card .form-grid {{ display:flex; flex-wrap:wrap; gap:1.2rem; align-items:flex-end; }}
-  .add-streamer-card label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
-  .add-streamer-card input[type="text"] {{ min-width:14rem; }}
+  .add-streamer-card .form-grid {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:1rem; align-items:end; }}
+  .add-streamer-card label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); min-width:0; }}
+  .add-streamer-card input[type="text"] {{ width:100%; min-width:0; }}
   .add-streamer-card .form-actions {{ display:flex; gap:.8rem; align-items:center; flex-wrap:wrap; }}
   .add-streamer-card .hint {{ margin-top:.2rem; font-size:.8rem; color:var(--muted); max-width:38rem; }}
   .non-partner-card {{ margin-top:2.2rem; padding:1.2rem; background:linear-gradient(160deg, rgba(124,58,237,.2), rgba(244,114,182,.1)); border-radius:1rem; border:1px solid rgba(124,58,237,.35); box-shadow:0 12px 24px var(--shadow); }}
@@ -220,7 +221,9 @@ class DashboardTemplateMixin:
     color:var(--muted);
   }}
   .discord-inline-body input[type="text"] {{
-    min-width:14rem;
+    width:100%;
+    min-width:0;
+    max-width:100%;
   }}
   .discord-inline-body .form-actions {{
     display:flex;
@@ -230,9 +233,9 @@ class DashboardTemplateMixin:
   details.advanced-details > summary {{ cursor:pointer; font-size:.85rem; color:var(--accent); }}
   details.advanced-details[open] > summary {{ color:var(--accent-3); }}
   .advanced-content {{ margin-top:.8rem; display:flex; flex-direction:column; gap:.8rem; background:var(--bg-alt); padding:.8rem; border:1px solid var(--bd); border-radius:.6rem; }}
-  .advanced-content .form-row {{ display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-end; }}
-  .advanced-content label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); }}
-  .advanced-content input[type="text"] {{ background:var(--bg-alt); border:1px solid var(--bd); color:var(--text); padding:.4rem .6rem; border-radius:.5rem; min-width:14rem; }}
+  .advanced-content .form-row {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:1rem; align-items:end; }}
+  .advanced-content label {{ display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; color:var(--muted); min-width:0; }}
+  .advanced-content input[type="text"] {{ background:var(--bg-alt); border:1px solid var(--bd); color:var(--text); padding:.4rem .6rem; border-radius:.5rem; width:100%; min-width:0; max-width:100%; }}
   .discord-preview {{ display:flex; flex-direction:column; gap:.4rem; padding:.6rem; background:var(--bg-alt); border:1px solid var(--bd); border-radius:.5rem; font-size:.8rem; color:var(--muted); }}
   .discord-preview-row {{ display:flex; gap:.8rem; align-items:center; flex-wrap:wrap; }}
   .discord-preview-row .preview-label {{ color:var(--accent); font-weight:700; min-width:4.5rem; }}
@@ -245,7 +248,7 @@ class DashboardTemplateMixin:
   .eyebrow {{ text-transform:uppercase; letter-spacing:.18em; font-size:.7rem; color:var(--muted); margin:0 0 .4rem 0; }}
   .lead {{ margin:.4rem 0 0 0; color:var(--muted); max-width:32rem; }}
   .panel-grid {{ display:grid; gap:2.2rem; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); }}
-  .panel-grid .card {{ margin-top:0; animation: rise .6s ease both; }}
+  .panel-grid .card {{ margin-top:0; animation: rise .6s ease both; min-width:0; }}
   .panel-grid .card:nth-child(2) {{ animation-delay:.08s; }}
   .panel-grid .card:nth-child(3) {{ animation-delay:.16s; }}
   .table-wrap {{ overflow-x:auto; border-radius:1rem; border:1px solid var(--bd); background:var(--card); box-shadow:0 12px 30px var(--shadow); animation: rise .6s ease both; animation-delay:.15s; }}
@@ -256,7 +259,8 @@ class DashboardTemplateMixin:
   .pill.warn {{ background:var(--warn-bg); border-color:var(--warn-bd); color:var(--warn-fg); }}
   .chip {{ display:inline-flex; align-items:center; gap:.4rem; padding:.25rem .55rem; border-radius:999px; background:var(--chip-bg); color:var(--text); border:1px solid rgba(124,58,237,.35); font-size:.75rem; font-weight:600; }}
   .raid-form {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:1rem; align-items:end; margin-top:1rem; }}
-  .raid-form label {{ display:flex; flex-direction:column; gap:.35rem; font-size:.85rem; color:var(--muted); }}
+  .raid-form label {{ display:flex; flex-direction:column; gap:.35rem; font-size:.85rem; color:var(--muted); min-width:0; }}
+  .raid-form input[type="text"] {{ width:100%; min-width:0; max-width:100%; }}
   .raid-meta {{ display:flex; flex-wrap:wrap; gap:.6rem; margin-top:1rem; }}
   .raid-metrics {{ display:flex; flex-wrap:wrap; gap:1rem; margin-top:.8rem; }}
   .mini-stat {{ background:var(--bg-alt); border:1px solid var(--bd); border-radius:.7rem; padding:.6rem .8rem; display:flex; flex-direction:column; min-width:120px; }}
