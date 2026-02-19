@@ -77,12 +77,11 @@ async def _run() -> None:
     except ValueError:
         port = 8790
 
-    token = (os.getenv("MASTER_GUARD_TOKEN") or "guard-token").strip()
     session_id = (os.getenv("MASTER_GUARD_SESSION_ID") or "guard-session").strip()
     csrf_token = (os.getenv("MASTER_GUARD_CSRF_TOKEN") or "guard-csrf").strip()
 
     bot = _DummyBot()
-    dashboard = DashboardServer(bot, host=host, port=port, token=token)
+    dashboard = DashboardServer(bot, host=host, port=port)
 
     # Force a deterministic session-auth path for CSRF/Origin regression tests.
     dashboard._discord_auth_required = True
