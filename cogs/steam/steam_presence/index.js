@@ -2904,11 +2904,9 @@ function processNextTask() {
         const promise = (async () => {
           if (!runtimeState.logged_on) throw new Error('Not logged in');
 
-          // Get friends from Web API
-          const friendIds = await loadWebApiFriendIds(true);
-          if (!friendIds) {
-            throw new Error('Failed to load friends list from Steam Web API');
-          }
+          // Prefer native Steam client friend cache (no API key required),
+          // and merge WebAPI data when available.
+          const { ids: friendIds, clientCount, webCount } = await collectKnownFriendIds();
 
           const friends = [];
           for (const steamId64 of friendIds) {
@@ -2923,6 +2921,10 @@ function processNextTask() {
             ok: true,
             data: {
               count: friends.length,
+              source: {
+                client_count: Number(clientCount) || 0,
+                webapi_count: Number(webCount) || 0,
+              },
               friends: friends,
             },
           };
