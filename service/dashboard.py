@@ -67,6 +67,9 @@ NSSM_PATH_CANDIDATES = (
 POWERSHELL_PATH_CANDIDATES = (
     r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
 )
+SC_PATH_CANDIDATES = (
+    r"C:\Windows\System32\sc.exe",
+)
 
 try:
     from service.standalone_manager import (
@@ -1010,6 +1013,70 @@ class DashboardServer:
         for candidate in POWERSHELL_PATH_CANDIDATES:
             if Path(candidate).is_file():
                 return candidate
+        return None
+
+    @staticmethod
+    def _resolve_sc_executable_path() -> Optional[str]:
+        for candidate in SC_PATH_CANDIDATES:
+            if Path(candidate).is_file():
+                return candidate
+        return None
+
+    def _query_windows_service_pid(self, service_name: str) -> Optional[int]:
+        if os.name != "nt":
+            return None
+        normalized_name = (service_name or "").strip()
+        if not normalized_name:
+            return None
+
+        sc_executable = self._resolve_sc_executable_path()
+        if not sc_executable:
+            return None
+
+        try:
+            process = subprocess.run(
+                [sc_executable, "queryex", normalized_name],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=3.0,
+                check=False,
+            )
+        except Exception as exc:
+            logger.debug(
+                "SC queryex failed for service '%s': %s",
+                self._safe_log_value(normalized_name),
+                exc,
+            )
+            return None
+
+        if process.returncode != 0:
+            detail_lines = (process.stderr or process.stdout or "").strip().splitlines()
+            detail = detail_lines[0] if detail_lines else f"exit code {process.returncode}"
+            logger.debug(
+                "SC queryex returned non-zero for service '%s': %s",
+                self._safe_log_value(normalized_name),
+                self._safe_log_value(detail),
+            )
+            return None
+
+        for line in (process.stdout or "").splitlines():
+            stripped = line.strip()
+            if not stripped.upper().startswith("PID"):
+                continue
+            if ":" not in stripped:
+                continue
+            _, raw_value = stripped.split(":", 1)
+            value = raw_value.strip()
+            if not value:
+                continue
+            try:
+                return int(value)
+            except ValueError:
+                continue
         return None
 
     @staticmethod
@@ -3565,6 +3632,14 @@ class DashboardServer:
                 "running": self._started,
                 "restart_in_progress": restart_in_progress,
                 "last_restart": last_restart,
+                "bot_restart_available": bool(
+                    lifecycle
+                    or (
+                        self._nssm_service_restart_enabled
+                        and os.name == "nt"
+                        and bool(self._nssm_service_name)
+                    )
+                ),
             },
             "lifecycle": lifecycle_state or {"enabled": False},
             "settings": {
@@ -3616,6 +3691,42 @@ class DashboardServer:
                     }
                 )
 
+            lifecycle = self._lifecycle or getattr(self.bot, "lifecycle", None)
+            service_pid = self._query_windows_service_pid(self._nssm_service_name)
+            current_pid = os.getpid()
+            parent_pid = os.getppid()
+
+            if lifecycle and service_pid is not None and service_pid not in {current_pid, parent_pid}:
+                logger.warning(
+                    "Skipping NSSM restart for service '%s' (service PID=%s, current PID=%s, "
+                    "parent PID=%s); using lifecycle restart instead.",
+                    self._safe_log_value(self._nssm_service_name),
+                    service_pid,
+                    current_pid,
+                    parent_pid,
+                )
+                scheduled = await lifecycle.request_restart(reason="dashboard_lifecycle_pid_mismatch")
+                if scheduled:
+                    self._last_bot_restart_request_monotonic = now
+                    return self._json(
+                        {
+                            "ok": True,
+                            "message": (
+                                "Lifecycle restart scheduled (configured NSSM service PID does not "
+                                "match current process tree: "
+                                f"service={service_pid}, current={current_pid}, parent={parent_pid})"
+                            ),
+                            "restart_mode": "lifecycle_fallback",
+                        }
+                    )
+                return self._json(
+                    {
+                        "ok": False,
+                        "message": "Restart already pending (lifecycle fallback path)",
+                        "restart_mode": "lifecycle_fallback",
+                    }
+                )
+
             service_restart_ok, service_message = self._schedule_nssm_service_restart()
             if service_restart_ok:
                 self._last_bot_restart_request_monotonic = now
@@ -3628,7 +3739,6 @@ class DashboardServer:
                 )
 
             logger.warning("NSSM service restart unavailable: %s", self._safe_log_value(service_message))
-            lifecycle = self._lifecycle or getattr(self.bot, "lifecycle", None)
             if not lifecycle:
                 return self._json(
                     {

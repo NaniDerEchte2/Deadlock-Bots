@@ -7,8 +7,8 @@ on:
     - cron: "43 1 * * *"
   workflow_dispatch:
 
-permissions: read-all
-
+permissions:
+  contents: read
 jobs:
   sbom-and-attestations:
     name: "SBOM + Dependency Graph + Attestations"
@@ -48,11 +48,8 @@ jobs:
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: dist/source-${{ github.sha }}.tar.gz
-        continue-on-error: true
-
       - name: Attest SBOM
         uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3.0.0
         with:
           subject-path: dist/source-${{ github.sha }}.tar.gz
           sbom-path: dist/sbom.spdx.json
-        continue-on-error: true

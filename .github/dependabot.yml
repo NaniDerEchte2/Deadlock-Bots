@@ -19,3 +19,13 @@ updates:
       - "security"
     commit-message:
       prefix: "deps"
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "deps"

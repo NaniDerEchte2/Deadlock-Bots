@@ -145,13 +145,12 @@ jobs:
           config-file: ./.github/codeql/codeql-config.yml
 
       # Für compiled langs übernimmt CodeQL bei 'autobuild' den Versuch automatisch.
-      # Fehlschläge sollen NICHT den gesamten Workflow killen.
+      # Fehlschläge müssen den Workflow blockieren.
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         with:
           category: "/language:${{ matrix.language }}"
           upload: true
-        continue-on-error: true
 
       - name: Archive SARIF
         if: always()

@@ -15,8 +15,8 @@ on:
       - "📦 Supply Chain Provenance"
     types: [completed]
 
-permissions: read-all
-
+permissions:
+  contents: read
 jobs:
   incident-tracker:
     name: "Update Security Incident Tracker"

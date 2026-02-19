@@ -494,6 +494,11 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
               name       TEXT,
               verified   INTEGER DEFAULT 0,
               primary_account INTEGER DEFAULT 0,
+              deadlock_rank INTEGER,
+              deadlock_rank_name TEXT,
+              deadlock_subrank INTEGER,
+              deadlock_badge_level INTEGER,
+              deadlock_rank_updated_at INTEGER,
               created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
               PRIMARY KEY(user_id, steam_id)
@@ -781,6 +786,19 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             "ALTER TABLE live_player_state ADD COLUMN deadlock_hero TEXT",
             "ALTER TABLE live_player_state ADD COLUMN deadlock_party_hint TEXT",
             "ALTER TABLE live_player_state ADD COLUMN deadlock_updated_at INTEGER",
+        ):
+            try:
+                c.execute(alter_sql)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+        # Steam link rank extensions (Deadlock rank snapshot from GC profile cards)
+        for alter_sql in (
+            "ALTER TABLE steam_links ADD COLUMN deadlock_rank INTEGER",
+            "ALTER TABLE steam_links ADD COLUMN deadlock_rank_name TEXT",
+            "ALTER TABLE steam_links ADD COLUMN deadlock_subrank INTEGER",
+            "ALTER TABLE steam_links ADD COLUMN deadlock_badge_level INTEGER",
+            "ALTER TABLE steam_links ADD COLUMN deadlock_rank_updated_at INTEGER",
         ):
             try:
                 c.execute(alter_sql)

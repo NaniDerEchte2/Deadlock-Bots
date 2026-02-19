@@ -8,8 +8,8 @@ on:
     - cron: '0 4 * * *'
   workflow_dispatch:
 
-permissions: read-all
-
+permissions:
+  contents: read
 jobs:
   # ============================================================================
   # CHECK IF DOCKER/CONTAINER FILES EXIST
@@ -66,17 +66,13 @@ jobs:
           framework: dockerfile
           output_format: sarif
           output_file_path: checkov-docker.sarif
-          soft_fail: true
-        continue-on-error: true
-
+          soft_fail: false
       - name: Upload Checkov Dockerfile SARIF
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('checkov-docker.sarif') != ''
         with:
           sarif_file: checkov-docker.sarif
           category: checkov-docker
-        continue-on-error: true
-
       - name: Checkov Compose Scan
         if: needs.detect-container-files.outputs.has_compose == 'true'
         uses: bridgecrewio/checkov-action@05d9f3cd4807c3dea7444d4e60dc44ad57928ab5 # master
@@ -85,17 +81,13 @@ jobs:
           framework: docker_compose
           output_format: sarif
           output_file_path: checkov-compose.sarif
-          soft_fail: true
-        continue-on-error: true
-
+          soft_fail: false
       - name: Upload Checkov Compose SARIF
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('checkov-compose.sarif') != ''
         with:
           sarif_file: checkov-compose.sarif
           category: checkov-compose
-        continue-on-error: true
-
       - name: Trivy Container Filesystem Scan (SARIF)
         uses: aquasecurity/trivy-action@c1824fd6edce30d7ab345a9989de00bbd46ef284 # master
         with:
@@ -104,17 +96,13 @@ jobs:
           format: sarif
           output: trivy-docker.sarif
           severity: HIGH,CRITICAL
-          exit-code: 0
-        continue-on-error: true
-
+          exit-code: 1
       - name: Upload Trivy Container SARIF
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('trivy-docker.sarif') != ''
         with:
           sarif_file: trivy-docker.sarif
           category: trivy-docker
-        continue-on-error: true
-
       - name: Upload Container SAST Artifacts
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
@@ -147,17 +135,13 @@ jobs:
           dockerfile: Dockerfile
           format: sarif
           output-file: hadolint.sarif
-          no-fail: true
-        continue-on-error: true
-
+          no-fail: false
       - name: Upload Hadolint SARIF
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('hadolint.sarif') != ''
         with:
           sarif_file: hadolint.sarif
           category: 'hadolint'
-        continue-on-error: true
-
       - name: Upload Hadolint Report
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
@@ -187,8 +171,6 @@ jobs:
             echo "Validating docker-compose.yaml..."
             docker compose -f docker-compose.yaml config > /dev/null && echo "✅ Valid" || echo "⚠️ Invalid"
           fi
-        continue-on-error: true
-
   # ============================================================================
   # BEST PRACTICES CHECK - ONLY IF DOCKERFILE EXISTS
   # ============================================================================

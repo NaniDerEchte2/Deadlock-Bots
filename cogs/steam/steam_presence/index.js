@@ -16,6 +16,7 @@
  *   - AUTH_LOGIN
  *   - AUTH_GUARD_CODE
  *   - AUTH_LOGOUT
+ *   - GC_GET_PROFILE_CARD
  *
  * Erfordert: steam-user, better-sqlite3
  */
@@ -32,6 +33,7 @@ const Database = require('better-sqlite3');
 const { StatusAnzeige } = require('./statusanzeige');
 const { DeadlockGcBot } = require('./deadlock_gc_bot');
 const { GcBuildSearch, GC_MSG_FIND_HERO_BUILDS_RESPONSE } = require('./gc_build_search');
+const { GcProfileCard } = require('./gc_profile_card');
 const { BuildCatalogManager } = require('./build_catalog_manager');
 const {
   DEADLOCK_GC_PROTOCOL_OVERRIDE_PATH,
@@ -1142,11 +1144,32 @@ db.prepare(`
     name       TEXT,
     verified   INTEGER DEFAULT 0,
     primary_account INTEGER DEFAULT 0,
+    deadlock_rank INTEGER,
+    deadlock_rank_name TEXT,
+    deadlock_subrank INTEGER,
+    deadlock_badge_level INTEGER,
+    deadlock_rank_updated_at INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(user_id, steam_id)
   )
 `).run();
+for (const alterSql of [
+  "ALTER TABLE steam_links ADD COLUMN deadlock_rank INTEGER",
+  "ALTER TABLE steam_links ADD COLUMN deadlock_rank_name TEXT",
+  "ALTER TABLE steam_links ADD COLUMN deadlock_subrank INTEGER",
+  "ALTER TABLE steam_links ADD COLUMN deadlock_badge_level INTEGER",
+  "ALTER TABLE steam_links ADD COLUMN deadlock_rank_updated_at INTEGER",
+]) {
+  try {
+    db.prepare(alterSql).run();
+  } catch (err) {
+    const text = String((err && err.message) || "").toLowerCase();
+    if (!text.includes("duplicate column name")) {
+      log('warn', 'Failed to alter steam_links table', { alterSql, error: err && err.message ? err.message : String(err) });
+    }
+  }
+}
 db.prepare(`CREATE INDEX IF NOT EXISTS idx_steam_links_user ON steam_links(user_id)`).run();
 db.prepare(`CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)`).run();
 
@@ -1423,6 +1446,12 @@ const gcBuildSearch = new GcBuildSearch({
   log: (level, msg, extra) => log(level, msg, extra),
   trace: writeDeadlockGcTrace,
   db,
+  appId: DEADLOCK_APP_ID,
+});
+const gcProfileCard = new GcProfileCard({
+  client,
+  log: (level, msg, extra) => log(level, msg, extra),
+  trace: writeDeadlockGcTrace,
   appId: DEADLOCK_APP_ID,
 });
 // BuildCatalogManager needs gcBuildSearch and getPersonaName (defined later)
@@ -2902,6 +2931,64 @@ function processNextTask() {
         break;
       }
 
+      case 'GC_GET_PROFILE_CARD': {
+        const promise = (async () => {
+          if (!runtimeState.logged_on) throw new Error('Not logged in');
+
+          const accountIdRaw = payload?.account_id;
+          const steamInput = payload?.steam_id ?? payload?.steam_id64;
+          const requestTimeoutRaw = payload?.timeout_ms ?? payload?.request_timeout_ms;
+          const gcReadyTimeoutRaw = payload?.gc_ready_timeout_ms ?? payload?.gc_timeout_ms;
+          const gcRetryRaw = payload?.gc_ready_retry_attempts ?? payload?.gc_retry_attempts;
+
+          let sid = null;
+          if (steamInput !== undefined && steamInput !== null && String(steamInput).trim()) {
+            sid = parseSteamID(steamInput);
+          }
+
+          const accountId = accountIdRaw != null
+            ? Number(accountIdRaw)
+            : (sid ? Number(sid.accountid) : null);
+          if (!Number.isFinite(accountId) || accountId <= 0) {
+            throw new Error('account_id missing or invalid');
+          }
+
+          const gcTimeoutMs = Number.isFinite(Number(gcReadyTimeoutRaw))
+            ? Number(gcReadyTimeoutRaw)
+            : DEFAULT_GC_READY_TIMEOUT_MS;
+          const gcRetryAttempts = Number.isFinite(Number(gcRetryRaw))
+            ? Number(gcRetryRaw)
+            : DEFAULT_GC_READY_ATTEMPTS;
+
+          await waitForDeadlockGcReady(gcTimeoutMs, { retryAttempts: gcRetryAttempts });
+
+          const timeoutMs = Number.isFinite(Number(requestTimeoutRaw))
+            ? Number(requestTimeoutRaw)
+            : undefined;
+          const profileCard = await gcProfileCard.fetchPlayerCard({
+            accountId: Number(accountId),
+            timeoutMs,
+            friendAccessHint: payload?.friend_access_hint !== false,
+            devAccessHint: payload?.dev_access_hint,
+          });
+
+          const steamId64 = sid && typeof sid.getSteamID64 === 'function'
+            ? sid.getSteamID64()
+            : null;
+
+          return {
+            ok: true,
+            data: {
+              steam_id64: steamId64,
+              account_id: Number(accountId),
+              card: profileCard,
+            },
+          };
+        })();
+        isAsync = finalizeTaskRun(task, promise);
+        break;
+      }
+
       // ========== BUILD DISCOVERY (via GC) ==========
       // Discover builds from watched authors using In-Game GC (replaces external API)
       case 'DISCOVER_WATCHED_BUILDS': {
@@ -3426,6 +3513,7 @@ client.on('appQuit', (appId) => {
   runtimeState.deadlock_gc_ready = false;
   flushDeadlockGcWaiters(new Error('Deadlock app quit'));
   flushPendingPlaytestInvites(new Error('Deadlock app quit'));
+  gcProfileCard.flushPending(new Error('Deadlock app quit'));
 });
 
 // Track friend relationship changes to auto-save steam links to DB
@@ -3571,6 +3659,11 @@ client.on('receivedFromGC', (appId, msgType, payload) => {
     }
   }
 
+  // Fallback path: some GC responses may not be routed via steam-user job callbacks.
+  if (isDeadlockApp && gcProfileCard.handleGcMessage(appId, msgType, payload)) {
+    return;
+  }
+
   if ((messageId === GC_MSG_CLIENT_WELCOME || messageId === 9019) && isDeadlockApp) {
     log('info', '?? RECEIVED DEADLOCK GC WELCOME - GC CONNECTION ESTABLISHED!', {
       appId,
@@ -3614,6 +3707,7 @@ client.on('disconnected', (eresult, msg) => {
   lastLoggedGcTokenCount = 0;
   flushDeadlockGcWaiters(new Error('Steam disconnected'));
   flushPendingPlaytestInvites(new Error('Steam disconnected'));
+  gcProfileCard.flushPending(new Error('Steam disconnected'));
   log('warn', 'Steam disconnected', { eresult, msg });
   scheduleReconnect('disconnect');
   scheduleStatePublish({ reason: 'disconnected', eresult });
@@ -3712,6 +3806,7 @@ function shutdown(code = 0) {
     statusAnzeige.stop();
     flushPendingPlaytestInvites(new Error('Service shutting down'));
     flushDeadlockGcWaiters(new Error('Service shutting down'));
+    gcProfileCard.flushPending(new Error('Service shutting down'));
     client.logOff();
   } catch (err) {
     log('warn', 'Error during shutdown cleanup', { error: err && err.message ? err.message : String(err) });

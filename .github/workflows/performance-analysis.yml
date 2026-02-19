@@ -6,8 +6,8 @@ on:
     - cron: '0 5 * * 0'  # Weekly on Sunday
   workflow_dispatch:
 
-permissions: read-all
-
+permissions:
+  contents: read
 jobs:
   # ============================================================================
   # DETECT PROJECT TYPE

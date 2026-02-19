@@ -2189,7 +2189,9 @@
     function renderDashboard(info = {}, lifecycle = {}) {
         const restarting = Boolean(info.restart_in_progress);
         const running = info.running === undefined ? true : Boolean(info.running);
-        const restartAvailable = lifecycle.enabled !== false;
+        const restartAvailable = info.bot_restart_available !== undefined
+            ? Boolean(info.bot_restart_available)
+            : lifecycle.enabled !== false;
         const restartPending = Boolean(lifecycle.restart_requested);
 
         if (dashboardStatusPill) {

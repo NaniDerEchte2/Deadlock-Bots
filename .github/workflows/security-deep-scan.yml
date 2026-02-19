@@ -8,8 +8,8 @@ on:
     - cron: '0 2 * * *'
   workflow_dispatch:
 
-permissions: read-all
-
+permissions:
+  contents: read
 jobs:
   # ============================================================================
   # CHECK WHAT'S AVAILABLE
@@ -94,13 +94,9 @@ jobs:
       - name: Bandit Security Scan
         run: |
           echo "Running Bandit security scan..."
-          uvx --with bandit==1.9.3 bandit -r . -f json -o bandit-report.json -ll || true
-          if [ -f bandit-report.json ]; then
-            echo "✅ Bandit scan completed"
-            uvx --with bandit==1.9.3 bandit -r . -ll || echo "⚠️ Security issues found (check artifact)"
-          fi
-        continue-on-error: true
-
+          uvx --with bandit==1.9.3 bandit -r . -f json -o bandit-report.json -ll
+          echo "✅ Bandit scan completed"
+          uvx --with bandit==1.9.3 bandit -r . -ll
       # Safety - Known Vulnerabilities (recursive requirements scan)
       - name: Safety Vulnerability Check
         if: needs.detect-languages.outputs.has_requirements == 'true'
@@ -108,12 +104,15 @@ jobs:
           echo "Running Safety vulnerability check (recursive requirements scan)..."
           mkdir -p safety-reports
           found=0
+          audit_fail=0
           while IFS= read -r req_file; do
             found=1
             rel_path="${req_file#./}"
             safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
             echo "Safety scan for $req_file"
-            uvx --with safety==3.7.0 safety check -r "$req_file" --json > "safety-reports/${safe_name}.json" || true
+            if ! uvx --with safety==3.7.0 safety check -r "$req_file" --json > "safety-reports/${safe_name}.json"; then
+              audit_fail=1
+            fi
           done < <(find . -type f -name "requirements*.txt" \
             -not -path "*/.venv/*" \
             -not -path "*/venv/*" \
@@ -124,8 +123,11 @@ jobs:
           else
             echo "✅ Safety recursive scan completed"
           fi
-        continue-on-error: true
 
+          if [ "$audit_fail" -ne 0 ]; then
+            echo "❌ Safety found vulnerable dependencies (see artifacts)."
+            exit 1
+          fi
       # Pip-Audit (recursive requirements scan)
       - name: Pip-Audit Deep Scan
         if: needs.detect-languages.outputs.has_requirements == 'true'
@@ -133,12 +135,15 @@ jobs:
           echo "Running pip-audit (recursive requirements scan)..."
           mkdir -p pip-audit-reports
           found=0
+          audit_fail=0
           while IFS= read -r req_file; do
             found=1
             rel_path="${req_file#./}"
             safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
             echo "pip-audit for $req_file"
-            uvx --with pip-audit==2.10.0 pip-audit -r "$req_file" --format json --output "pip-audit-reports/${safe_name}.json" || true
+            if ! uvx --with pip-audit==2.10.0 pip-audit -r "$req_file" --format json --output "pip-audit-reports/${safe_name}.json"; then
+              audit_fail=1
+            fi
           done < <(find . -type f -name "requirements*.txt" \
             -not -path "*/.venv/*" \
             -not -path "*/venv/*" \
@@ -149,8 +154,11 @@ jobs:
           else
             echo "✅ Pip-audit recursive scan completed"
           fi
-        continue-on-error: true
 
+          if [ "$audit_fail" -ne 0 ]; then
+            echo "❌ pip-audit found vulnerable dependencies (see artifacts)."
+            exit 1
+          fi
       # Radon - Complexity Analysis
       - name: Complexity Analysis
         run: |
@@ -158,8 +166,6 @@ jobs:
           uvx --with radon==6.0.1 radon cc . -a -nb --total-average > radon-complexity.txt || true
           uvx --with radon==6.0.1 radon mi . -nb > radon-maintainability.txt || true
           echo "✅ Complexity analysis completed"
-        continue-on-error: true
-
       # Vulture - Dead Code Detection
       - name: Find Dead Code
         run: |
@@ -169,15 +175,11 @@ jobs:
             lines=$(wc -l < vulture-report.txt)
             echo "Found $lines potential dead code items"
           fi
-        continue-on-error: true
-
       # Dodgy - Suspicious code patterns
       - name: Dodgy Suspicious Pattern Check
         run: |
           echo "Running dodgy..."
-          uvx --with dodgy==0.2.1 dodgy > dodgy-report.txt || true
-        continue-on-error: true
-
+          uvx --with dodgy==0.2.1 dodgy > dodgy-report.txt
       - name: Upload Python Security Reports
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
@@ -211,10 +213,8 @@ jobs:
       - name: Property-Based Fuzzing (fast-check)
         if: hashFiles('cogs/steam/steam_presence/fuzz/*.js') != ''
         run: |
-          npm ci --prefix cogs/steam/steam_presence --include=dev --ignore-scripts || true
-          npm --prefix cogs/steam/steam_presence run fuzz:protocol --if-present || true
-        continue-on-error: true
-
+          npm ci --prefix cogs/steam/steam_presence --include=dev --ignore-scripts
+          npm --prefix cogs/steam/steam_presence run fuzz:protocol --if-present
       # NPM Audit - recursive lockfile scan
       - name: NPM Audit
         if: hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != ''
@@ -222,16 +222,19 @@ jobs:
           echo "Running NPM audit (recursive lockfile scan)..."
           mkdir -p npm-audit-reports
           found=0
+          audit_fail=0
           while IFS= read -r lock_file; do
             found=1
             dir_path="$(dirname "$lock_file")"
             rel_dir="${dir_path#./}"
             safe_name="$(echo "${rel_dir:-root}" | sed 's#[^A-Za-z0-9._-]#_#g')"
             echo "NPM audit for $dir_path"
-            (
+            if ! (
               cd "$dir_path"
-              npm audit --json > "$GITHUB_WORKSPACE/npm-audit-reports/${safe_name}.json" || true
-            )
+              npm audit --json > "$GITHUB_WORKSPACE/npm-audit-reports/${safe_name}.json"
+            ); then
+              audit_fail=1
+            fi
           done < <(find . -type f \( -name "package-lock.json" -o -name "npm-shrinkwrap.json" \) \
             -not -path "*/node_modules/*" \
             -not -path "*/.git/*" | sort)
@@ -241,25 +244,24 @@ jobs:
           else
             echo "✅ NPM recursive audit completed"
           fi
-        continue-on-error: true
 
+          if [ "$audit_fail" -ne 0 ]; then
+            echo "❌ npm audit found vulnerable dependencies (see artifacts)."
+            exit 1
+          fi
       # RetireJS - Check for vulnerable JS libraries
       - name: RetireJS Scan
         run: |
           echo "Running RetireJS scan..."
-          npx --yes retire@5.4.2 --path . --outputformat json --outputpath retirejs-report.json || true
+          npx --yes retire@5.4.2 --path . --outputformat json --outputpath retirejs-report.json
           if [ -f retirejs-report.json ]; then
             echo "✅ RetireJS scan completed"
           fi
-        continue-on-error: true
-
       # ESLint Security Plugin
       - name: ESLint Security Scan
         if: hashFiles('**/package.json') != ''
         run: |
-          npx --yes -p eslint@10.0.0 -p eslint-plugin-security@3.0.1 -p eslint-plugin-no-secrets@2.2.2 eslint . --ext .js,.ts,.jsx,.tsx --format json --output-file eslint-security.json || true
-        continue-on-error: true
-
+          npx --yes -p eslint@10.0.0 -p eslint-plugin-security@3.0.1 -p eslint-plugin-no-secrets@2.2.2 eslint . --ext .js,.ts,.jsx,.tsx --format json --output-file eslint-security.json
       # Snyk Scan (optional, requires repository secret SNYK_TOKEN)
       - name: Snyk Security Scan
         if: hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != ''
@@ -270,10 +272,8 @@ jobs:
             echo "ℹ️ SNYK_TOKEN not configured; skipping Snyk scan."
             exit 0
           fi
-          npx --yes snyk@1.1302.1 auth "$SNYK_TOKEN" || true
-          npx --yes snyk@1.1302.1 test --all-projects --severity-threshold=low --json-file-output=snyk-report.json || true
-        continue-on-error: true
-
+          npx --yes snyk@1.1302.1 auth "$SNYK_TOKEN"
+          npx --yes snyk@1.1302.1 test --all-projects --severity-threshold=low --json-file-output=snyk-report.json
       - name: Upload JS Security Reports
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
@@ -306,6 +306,7 @@ jobs:
         run: |
           semgrep scan \
             --config auto \
+            --error \
             --json \
             --output semgrep.json \
             --exclude .venv \
@@ -313,13 +314,12 @@ jobs:
             --exclude node_modules \
             --exclude dist \
             --exclude build \
-            . || true
-        continue-on-error: true
-
+            .
       - name: Run Semgrep (SARIF for Code Scanning)
         run: |
           semgrep scan \
             --config auto \
+            --error \
             --sarif \
             --output semgrep.sarif \
             --exclude .venv \
@@ -327,14 +327,13 @@ jobs:
             --exclude node_modules \
             --exclude dist \
             --exclude build \
-            . || true
-        continue-on-error: true
-
+            .
       - name: Run Semgrep (Custom Auth Header Guardrails)
         if: hashFiles('.semgrep/rules/*.yml', '.semgrep/rules/*.yaml') != ''
         run: |
           semgrep scan \
             --config .semgrep/rules \
+            --error \
             --sarif \
             --output semgrep-custom.sarif \
             --exclude .venv \
@@ -342,9 +341,7 @@ jobs:
             --exclude node_modules \
             --exclude dist \
             --exclude build \
-            . || true
-        continue-on-error: true
-
+            .
       - name: Upload Semgrep Results to Security Tab
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('semgrep.sarif') != ''
@@ -352,16 +349,12 @@ jobs:
           sarif_file: semgrep.sarif
           # Keep the historical category stable so existing Semgrep alerts can auto-close.
           category: semgrep
-        continue-on-error: true
-
       - name: Upload Custom Semgrep Results to Security Tab
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('semgrep-custom.sarif') != ''
         with:
           sarif_file: semgrep-custom.sarif
           category: semgrep-custom-auth
-        continue-on-error: true
-
       - name: Upload Semgrep Artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
@@ -394,17 +387,13 @@ jobs:
           format: 'sarif'
           output: 'trivy-fs.sarif'
           severity: 'HIGH,CRITICAL'
-          exit-code: 0
-        continue-on-error: true
-
+          exit-code: 1
       - name: Upload Trivy Results to Security Tab
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('trivy-fs.sarif') != ''
         with:
           sarif_file: 'trivy-fs.sarif'
           category: 'trivy-filesystem'
-        continue-on-error: true
-
       - name: Upload Trivy Artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
@@ -471,18 +460,19 @@ jobs:
           if [ "$found" -eq 0 ]; then
             echo "ℹ️ No requirements*.txt files found for dependency manifest snapshot"
           fi
-        continue-on-error: true
-
       - name: Python Dependency Vulnerability Report
         if: needs.detect-languages.outputs.has_requirements == 'true'
         run: |
           mkdir -p dependency-analysis/python-vulns
           found=0
+          audit_fail=0
           while IFS= read -r req_file; do
             found=1
             rel_path="${req_file#./}"
             safe_name="$(echo "$rel_path" | sed 's#[^A-Za-z0-9._-]#_#g')"
-            uvx --with pip-audit==2.10.0 pip-audit -r "$req_file" --format json --output "dependency-analysis/python-vulns/${safe_name}.pip-audit.json" || true
+            if ! uvx --with pip-audit==2.10.0 pip-audit -r "$req_file" --format json --output "dependency-analysis/python-vulns/${safe_name}.pip-audit.json"; then
+              audit_fail=1
+            fi
           done < <(find . -type f -name "requirements*.txt" \
             -not -path "*/.venv/*" \
             -not -path "*/venv/*" \
@@ -490,8 +480,10 @@ jobs:
           if [ "$found" -eq 0 ]; then
             echo "ℹ️ No requirements*.txt files found for Python vulnerability reporting"
           fi
-        continue-on-error: true
-
+          if [ "$audit_fail" -ne 0 ]; then
+            echo "❌ Python dependency vulnerability report detected issues."
+            exit 1
+          fi
       # NPM License Check
       - name: NPM License Scanner
         if: needs.detect-languages.outputs.has_package_json == 'true' && hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != ''
@@ -514,8 +506,6 @@ jobs:
           if [ "$found" -eq 0 ]; then
             echo "ℹ️ No npm lockfiles found for license scan"
           fi
-        continue-on-error: true
-
       - name: Upload Dependency Reports
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
@@ -547,16 +537,12 @@ jobs:
           results_file: scorecard-results.sarif
           results_format: sarif
           publish_results: true
-        continue-on-error: true
-
       - name: Upload Scorecard SARIF
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('scorecard-results.sarif') != ''
         with:
           sarif_file: scorecard-results.sarif
           category: scorecard
-        continue-on-error: true
-
       - name: Upload Scorecard Artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()

@@ -42,7 +42,7 @@ const KNOWN_TASK_TYPES = [
   "AUTH_STATUS", "AUTH_LOGIN", "AUTH_GUARD_CODE", "AUTH_LOGOUT",
   "AUTH_REFRESH_GAME_VERSION", "AUTH_SEND_FRIEND_REQUEST",
   "AUTH_CHECK_FRIENDSHIP", "BUILD_PUBLISH", "BUILD_CATALOG_CYCLE",
-  "GC_SEARCH_BUILDS",
+  "GC_SEARCH_BUILDS", "GC_GET_PROFILE_CARD",
 ];
 
 // ── Arbitraries ────────────────────────────────────────────────────────────────

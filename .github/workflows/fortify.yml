@@ -1,0 +1,56 @@
+name: Fortify AST Scan
+
+on:
+  push:
+    branches: ["main", "master", "develop"]
+  pull_request:
+    branches: ["main", "master", "develop"]
+  schedule:
+    - cron: "44 1 * * 0"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  fortify-ast-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Out Source Code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run Fortify Scan
+        uses: fortify/github-action@ef5539bf4bd9c45c0bd971978f635a69eae55297 # v1.6.2
+        with:
+          sast-scan: true
+          debricked-sca-scan: true
+        env:
+          # Fortify on Demand (FoD)
+          FOD_URL: https://ams.fortify.com
+          FOD_TENANT: ${{ secrets.FOD_TENANT }}
+          # Prefer OAuth client credentials when available; fallback to user/PAT.
+          FOD_CLIENT_ID: ${{ secrets.FOD_CLIENT_ID }}
+          FOD_CLIENT_SECRET: ${{ secrets.FOD_CLIENT_SECRET }}
+          FOD_USER: ${{ secrets.FOD_CLIENT_ID != '' && '' || secrets.FOD_USER }}
+          FOD_PASSWORD: ${{ secrets.FOD_CLIENT_ID != '' && '' || secrets.FOD_PAT }}
+
+          # Enforce scan completion and policy gating
+          DO_WAIT: true
+          DO_POLICY_CHECK: true
+          DO_JOB_SUMMARY: true
+          DO_EXPORT: true
+
+          # Optional
+          # FOD_RELEASE: MyApp:MyRelease
+          # DO_SETUP: true
+          # DO_PR_COMMENT: true
+
+          # Alternative: Fortify SSC/ScanCentral (use this OR FoD, not both)
+          # SSC_URL: ${{ vars.SSC_URL }}
+          # SSC_TOKEN: ${{ secrets.SSC_TOKEN }}
+          # SC_SAST_TOKEN: ${{ secrets.SC_CLIENT_AUTH_TOKEN }}
+          # DEBRICKED_TOKEN: ${{ secrets.DEBRICKED_TOKEN }}
+          # SC_SAST_SENSOR_VERSION: 24.4.0

@@ -8,8 +8,8 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch:
 
-permissions: read-all
-
+permissions:
+  contents: read
 jobs:
   # ============================================================================
   # DETECT IAC FILES
@@ -83,35 +83,27 @@ jobs:
           framework: terraform,kubernetes,dockerfile,cloudformation
           output_format: sarif
           output_file_path: checkov-iac.sarif
-          soft_fail: true
-        continue-on-error: true
-
+          soft_fail: false
       - name: Upload Checkov SARIF
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('checkov-iac.sarif') != ''
         with:
           sarif_file: checkov-iac.sarif
           category: checkov-iac
-        continue-on-error: true
-
       - name: tfsec Terraform Scan (SARIF)
         if: needs.detect-iac.outputs.has_terraform == 'true'
         uses: aquasecurity/tfsec-action@b466648d6e39e7c75324f25d83891162a721f2d6 # v1.0.3
         with:
           working_directory: .
           format: sarif
-          soft_fail: true
+          soft_fail: false
           output_file: tfsec.sarif
-        continue-on-error: true
-
       - name: Upload tfsec SARIF
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('tfsec.sarif') != ''
         with:
           sarif_file: tfsec.sarif
           category: tfsec
-        continue-on-error: true
-
       - name: KubeLinter Scan (SARIF)
         if: needs.detect-iac.outputs.has_kubernetes == 'true'
         uses: stackrox/kube-linter-action@87802a2f4e01abebb3ee3c67a3002fea71f6eae5 # v1.0.7
@@ -119,16 +111,12 @@ jobs:
           directory: .
           format: sarif
           output-file: kubelinter.sarif
-        continue-on-error: true
-
       - name: Upload KubeLinter SARIF
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('kubelinter.sarif') != ''
         with:
           sarif_file: kubelinter.sarif
           category: kubelinter
-        continue-on-error: true
-
       - name: KICS IaC Scan (SARIF)
         uses: checkmarx/kics-github-action@00def9108246ec656aea725db2167522d26a99d2 # v2.1.19
         with:
@@ -136,31 +124,23 @@ jobs:
           output_path: kics-results
           output_formats: sarif
           fail_on: high
-        continue-on-error: true
-
       - name: Upload KICS SARIF
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('kics-results/results.sarif') != ''
         with:
           sarif_file: kics-results/results.sarif
           category: kics
-        continue-on-error: true
-
       - name: Ansible Lint (SARIF)
         if: hashFiles('**/ansible/**/*.yml', '**/ansible/**/*.yaml', '**/playbook*.yml', '**/playbook*.yaml') != ''
         uses: ansible/ansible-lint@629cf05440966eea5c8e83707b16d5729ce06939 # main
         with:
           args: "--sarif-file ansible-lint.sarif"
-        continue-on-error: true
-
       - name: Upload Ansible Lint SARIF
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('ansible-lint.sarif') != ''
         with:
           sarif_file: ansible-lint.sarif
           category: ansible-lint
-        continue-on-error: true
-
       - name: Trivy Config Scan (SARIF)
         uses: aquasecurity/trivy-action@c1824fd6edce30d7ab345a9989de00bbd46ef284 # master
         with:
@@ -169,17 +149,13 @@ jobs:
           format: sarif
           output: trivy-config.sarif
           severity: LOW,MEDIUM,HIGH,CRITICAL
-          exit-code: 0
-        continue-on-error: true
-
+          exit-code: 1
       - name: Upload Trivy Config SARIF
         uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4
         if: always() && hashFiles('trivy-config.sarif') != ''
         with:
           sarif_file: trivy-config.sarif
           category: trivy-config
-        continue-on-error: true
-
       - name: Upload IaC SAST Artifacts
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
