@@ -86,31 +86,6 @@ class TwitchRaidMixin:
             )
             return
 
-        # DB-Fallback: Prüfe ob in den letzten 8h ein erfolgreicher Raid durchgeführt wurde
-        # (schützt auch nach Bot-Restart, wenn in-memory Suppression verloren ging)
-        try:
-            started_at_str = previous_state.get("last_started_at")
-            if started_at_str:
-                with get_conn() as conn:
-                    recent_raid = conn.execute(
-                        """
-                        SELECT id FROM twitch_raid_history
-                        WHERE from_broadcaster_id = ?
-                          AND success = 1
-                          AND executed_at >= ?
-                        ORDER BY executed_at DESC LIMIT 1
-                        """,
-                        (twitch_user_id, started_at_str),
-                    ).fetchone()
-                if recent_raid:
-                    log.info(
-                        "Auto-Raid übersprungen für %s: manueller Raid seit Stream-Start erkannt (DB)",
-                        login,
-                    )
-                    return
-        except Exception:
-            log.debug("DB-Fallback-Check für manuellen Raid fehlgeschlagen", exc_info=True)
-
         get_target_lower = getattr(self, "_get_target_game_lower", None)
         target_game_lower = get_target_lower() if callable(get_target_lower) else ""
         if not target_game_lower:
