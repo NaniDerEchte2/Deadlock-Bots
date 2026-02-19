@@ -59,6 +59,7 @@ DEFAULT_NSSM_SERVICE_NAME = KEYRING_SERVICE_NAME
 DEFAULT_NSSM_RESTART_DELAY_SECONDS = 1.0
 DEFAULT_BOT_RESTART_MIN_INTERVAL_SECONDS = 15.0
 NSSM_PATH_CANDIDATES = (
+    r"C:\ProgramData\chocolatey\lib\NSSM\tools\nssm.exe",
     r"C:\ProgramData\chocolatey\bin\nssm.exe",
     r"C:\nssm\win64\nssm.exe",
     r"C:\nssm\nssm.exe",
@@ -1050,7 +1051,11 @@ class DashboardServer:
             return False, "powershell.exe not found in hardened path list"
 
         creationflags = 0
-        for flag_name in ("CREATE_NEW_PROCESS_GROUP", "DETACHED_PROCESS", "CREATE_NO_WINDOW"):
+        for flag_name in (
+            "CREATE_NEW_PROCESS_GROUP",
+            "CREATE_NO_WINDOW",
+            "CREATE_BREAKAWAY_FROM_JOB",
+        ):
             creationflags |= int(getattr(subprocess, flag_name, 0) or 0)
 
         command = [
@@ -1061,18 +1066,53 @@ class DashboardServer:
             "-Command",
             self._build_nssm_restart_script(nssm_executable),
         ]
+        probe_timeout = max(2.0, self._nssm_restart_delay_seconds + 1.5)
         try:
-            subprocess.Popen(
+            process = subprocess.Popen(
                 command,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 creationflags=creationflags,
                 cwd=str(Path(__file__).resolve().parent.parent),
             )
         except Exception as exc:
             logger.exception("Failed to launch NSSM restart for service '%s': %s", self._nssm_service_name, exc)
             return False, f"Failed to launch NSSM restart: {exc}"
+
+        try:
+            stdout, stderr = process.communicate(timeout=probe_timeout)
+        except subprocess.TimeoutExpired:
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+            logger.info(
+                "NSSM restart command still running after %.1fs for service '%s'",
+                probe_timeout,
+                self._safe_log_value(self._nssm_service_name),
+            )
+        else:
+            if process.returncode != 0:
+                detail_lines = (stderr or stdout or "").strip().splitlines()
+                detail = detail_lines[0] if detail_lines else f"exit code {process.returncode}"
+                safe_detail = self._safe_log_value(detail)
+                logger.warning(
+                    "NSSM restart command failed for service '%s' (exit=%s, detail=%s)",
+                    self._safe_log_value(self._nssm_service_name),
+                    process.returncode,
+                    safe_detail,
+                )
+                return False, (
+                    f"NSSM restart command failed (exit={process.returncode}): {safe_detail}"
+                )
+            logger.info(
+                "NSSM restart command exited quickly with code 0 for service '%s'",
+                self._safe_log_value(self._nssm_service_name),
+            )
 
         logger.info(
             "NSSM restart scheduled for service '%s' (nssm=%s, delay=%.2fs)",
