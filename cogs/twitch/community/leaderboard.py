@@ -644,6 +644,19 @@ class TwitchLeaderboardMixin:
          WHERE source_key = ?
            AND ts_utc >= datetime('now', '-30 days')
            AND (
+                (source_key = 'tracked' AND LOWER(streamer) IN (
+                    SELECT LOWER(twitch_login)
+                      FROM twitch_streamers_partner_state
+                     WHERE is_partner_active = 1
+                ))
+                OR
+                (source_key = 'category' AND LOWER(streamer) NOT IN (
+                    SELECT LOWER(twitch_login)
+                      FROM twitch_streamers_partner_state
+                     WHERE is_partner_active = 1
+                ))
+           )
+           AND (
                 ? = 'none'
                 OR (? = 'between' AND CAST(strftime('%H', ts_utc) AS INTEGER) BETWEEN ? AND ?)
                 OR (? = 'wrap' AND (
@@ -669,6 +682,19 @@ class TwitchLeaderboardMixin:
           FROM source_rows
          WHERE source_key = ?
            AND ts_utc >= datetime('now', '-30 days')
+           AND (
+                (source_key = 'tracked' AND LOWER(streamer) IN (
+                    SELECT LOWER(twitch_login)
+                      FROM twitch_streamers_partner_state
+                     WHERE is_partner_active = 1
+                ))
+                OR
+                (source_key = 'category' AND LOWER(streamer) NOT IN (
+                    SELECT LOWER(twitch_login)
+                      FROM twitch_streamers_partner_state
+                     WHERE is_partner_active = 1
+                ))
+           )
            AND (
                 ? = 'none'
                 OR (? = 'between' AND CAST(strftime('%H', ts_utc) AS INTEGER) BETWEEN ? AND ?)
@@ -696,6 +722,19 @@ class TwitchLeaderboardMixin:
          WHERE source_key = ?
            AND ts_utc >= datetime('now', '-30 days')
            AND (
+                (source_key = 'tracked' AND LOWER(streamer) IN (
+                    SELECT LOWER(twitch_login)
+                      FROM twitch_streamers_partner_state
+                     WHERE is_partner_active = 1
+                ))
+                OR
+                (source_key = 'category' AND LOWER(streamer) NOT IN (
+                    SELECT LOWER(twitch_login)
+                      FROM twitch_streamers_partner_state
+                     WHERE is_partner_active = 1
+                ))
+           )
+           AND (
                 ? = 'none'
                 OR (? = 'between' AND CAST(strftime('%H', ts_utc) AS INTEGER) BETWEEN ? AND ?)
                 OR (? = 'wrap' AND (
@@ -722,6 +761,19 @@ class TwitchLeaderboardMixin:
           FROM source_rows
          WHERE source_key = ?
            AND ts_utc >= datetime('now', '-30 days')
+           AND (
+                (source_key = 'tracked' AND LOWER(streamer) IN (
+                    SELECT LOWER(twitch_login)
+                      FROM twitch_streamers_partner_state
+                     WHERE is_partner_active = 1
+                ))
+                OR
+                (source_key = 'category' AND LOWER(streamer) NOT IN (
+                    SELECT LOWER(twitch_login)
+                      FROM twitch_streamers_partner_state
+                     WHERE is_partner_active = 1
+                ))
+           )
            AND streamer = ?
            AND (
                 ? = 'none'
@@ -748,6 +800,19 @@ class TwitchLeaderboardMixin:
           FROM source_rows
          WHERE source_key = ?
            AND ts_utc >= datetime('now', '-30 days')
+           AND (
+                (source_key = 'tracked' AND LOWER(streamer) IN (
+                    SELECT LOWER(twitch_login)
+                      FROM twitch_streamers_partner_state
+                     WHERE is_partner_active = 1
+                ))
+                OR
+                (source_key = 'category' AND LOWER(streamer) NOT IN (
+                    SELECT LOWER(twitch_login)
+                      FROM twitch_streamers_partner_state
+                     WHERE is_partner_active = 1
+                ))
+           )
            AND streamer = ?
            AND (
                 ? = 'none'
@@ -775,6 +840,19 @@ class TwitchLeaderboardMixin:
           FROM source_rows
          WHERE source_key = ?
            AND ts_utc >= datetime('now', '-30 days')
+           AND (
+                (source_key = 'tracked' AND LOWER(streamer) IN (
+                    SELECT LOWER(twitch_login)
+                      FROM twitch_streamers_partner_state
+                     WHERE is_partner_active = 1
+                ))
+                OR
+                (source_key = 'category' AND LOWER(streamer) NOT IN (
+                    SELECT LOWER(twitch_login)
+                      FROM twitch_streamers_partner_state
+                     WHERE is_partner_active = 1
+                ))
+           )
            AND streamer = ?
            AND (
                 ? = 'none'

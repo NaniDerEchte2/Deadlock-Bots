@@ -1104,6 +1104,32 @@ def _seed_default_templates(conn: sqlite3.Connection) -> None:
     log.info("Seeded %d default global templates", len(templates))
 
 
+def backfill_tracked_stats_from_category(conn: sqlite3.Connection, login: str) -> int:
+    """Copy historic category stats into tracked stats for one streamer (idempotent)."""
+    normalized = (login or "").strip().lower()
+    if not normalized:
+        return 0
+
+    cur = conn.execute(
+        """
+        INSERT INTO twitch_stats_tracked
+            (ts_utc, streamer, viewer_count, is_partner, game_name, stream_title, tags)
+        SELECT c.ts_utc, c.streamer, c.viewer_count, c.is_partner,
+               c.game_name, c.stream_title, c.tags
+          FROM twitch_stats_category c
+         WHERE LOWER(c.streamer) = ?
+           AND NOT EXISTS (
+               SELECT 1
+                 FROM twitch_stats_tracked t
+                WHERE LOWER(t.streamer) = LOWER(c.streamer)
+                  AND t.ts_utc = c.ts_utc
+           )
+        """,
+        (normalized,),
+    )
+    return int(cur.rowcount or 0)
+
+
 def delete_streamer(conn: sqlite3.Connection, login: str) -> int:
     """Delete a streamer and all dependent records in correct FK order.
 

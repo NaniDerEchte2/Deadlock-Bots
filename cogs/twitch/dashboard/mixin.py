@@ -1238,6 +1238,7 @@ class TwitchDashboardMixin:
         if mode in {"permanent", "temp"}:
             row_data = None
             should_notify = False
+            copied = 0
             with storage.get_conn() as c:
                 row = c.execute(
                     (
@@ -1269,8 +1270,11 @@ class TwitchDashboardMixin:
                         (login,),
                     )
                     base_msg = f"{login} für 30 Tage verifiziert"
+                copied = storage.backfill_tracked_stats_from_category(c, login)
 
             notes: List[str] = []
+            if copied:
+                notes.append(f"({copied} historische Datenpunkte übernommen)")
             if should_notify:
                 dm_note = await self._notify_verification_success(login, row_data)
                 if dm_note:

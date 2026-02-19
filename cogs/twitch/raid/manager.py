@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 import aiohttp
 import discord
 
-from ..storage import get_conn
+from ..storage import get_conn, backfill_tracked_stats_from_category
 from ..api.token_error_handler import TokenErrorHandler
 
 TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
@@ -672,10 +672,17 @@ class RaidAuthManager:
                        legacy_refresh_token = NULL,
                        legacy_scopes = NULL,
                        legacy_saved_at = NULL
-                 WHERE twitch_user_id = ?
+                WHERE twitch_user_id = ?
                 """,
                 (twitch_user_id,),
             )
+            copied = backfill_tracked_stats_from_category(conn, twitch_login)
+            if copied:
+                log.info(
+                    "Backfilled %d category samples into tracked for %s during raid auth save",
+                    copied,
+                    twitch_login,
+                )
             conn.commit()
 
         # Bei erfolgreicher Auth: Von Blacklist entfernen (falls vorhanden)
@@ -1581,6 +1588,13 @@ class RaidBot:
                     twitch_login,
                 ),
             )
+            copied = backfill_tracked_stats_from_category(conn, twitch_login)
+            if copied:
+                log.info(
+                    "Backfilled %d category samples into tracked for %s during partner sync",
+                    copied,
+                    twitch_login,
+                )
             conn.commit()
 
         if final_discord_id:

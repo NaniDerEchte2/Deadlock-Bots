@@ -1257,7 +1257,7 @@ class DashboardStatsMixin:
 
 <div class="card" style="margin-top:1.4rem;">
   <div class="card-header">
-    <h2>Top Deadlock Streamer (Kategorie gesamt)</h2>
+    <h2>Top Deadlock Streamer (Kategorie ohne aktive Partner)</h2>
     <div style="color:var(--muted); font-size:.9rem;">Ansicht: {current_view_label}</div>
   </div>
   <table class="sortable-table" data-table="category">
