@@ -26,32 +26,37 @@ Diese Suite führt automatisch folgende Analysen durch:
    - Testet Header-Spoofing (`X-Dashboard-Context`, `X-Forwarded-*`)
    - Verhindert Auth-Bypass-Regressionen
 
-4. **Container Security** (`container-security.yml`)
+4. **Master Dashboard Auth Guardrails** (`master-dashboard-auth-guard.yml`)
+   - Startet den Master-Dashboard-Server (`service/dashboard.py`) im CI-Job
+   - Prüft `/api/bot/restart` auf Auth-Bypass, Query-Token-Abuse, Origin/Referer und CSRF
+   - Validiert Session- und Bearer-Token-Flows getrennt
+
+5. **Container Security** (`container-security.yml`)
    - Dockerfile Security: Hadolint, Checkov
    - Image Scanning: Trivy
    - Docker Compose Security
    - Best Practices Check
    - Image Size Optimization (Dive)
 
-5. **Infrastructure as Code** (`iac-security.yml`)
+6. **Infrastructure as Code** (`iac-security.yml`)
    - **Terraform**: TFLint, TFSec, Checkov
    - **Kubernetes**: KubeLinter, KICS
    - **CloudFormation**: CFN-Lint, Checkov
    - **Ansible**: ansible-lint
    - Configuration File Security
 
-6. **Secret Scanning** (`secret-scanning.yml`)
+7. **Secret Scanning** (`secret-scanning.yml`)
    - Gitleaks: Git history scanning
    - Trivy Secrets: Filesystem scanning
 
-7. **Dependency Review** (`dependency-review.yml`)
+8. **Dependency Review** (`dependency-review.yml`)
    - GitHub Dependency Review
    - NPM Audit
    - Python Safety Check
 
 ### ⚡ **Performance Workflows**
 
-8. **Performance Analysis** (`performance-analysis.yml`)
+9. **Performance Analysis** (`performance-analysis.yml`)
    - **Python**: Memory profiling, Leak detection, Complexity analysis
    - **JavaScript**: Bundle size, Memory patterns
    - **Database**: Query optimization, N+1 detection
@@ -60,7 +65,7 @@ Diese Suite führt automatisch folgende Analysen durch:
 
 ### ✅ **Compliance Workflows**
 
-9. **Compliance Check** (`compliance-check.yml`)
+10. **Compliance Check** (`compliance-check.yml`)
    - **License Compliance**: Python (pip-licenses), Node (license-checker), FOSSA
    - **Code Style**: Black, Ruff, isort, Flake8, Prettier, ESLint
    - **Documentation**: README, CONTRIBUTING, LICENSE, CODE_OF_CONDUCT checks
@@ -69,7 +74,7 @@ Diese Suite führt automatisch folgende Analysen durch:
 
 ### 🎯 **Master Workflow**
 
-10. **Master Dashboard** (`master-dashboard.yml`)
+11. **Master Dashboard** (`master-dashboard.yml`)
    - Orchestriert alle Workflows
    - Aggregiert Ergebnisse
    - Erstellt umfassendes Dashboard

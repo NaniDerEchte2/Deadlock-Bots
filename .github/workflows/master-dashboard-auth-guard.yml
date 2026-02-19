@@ -1,0 +1,218 @@
+name: "🧱 Master Dashboard Auth Guardrails"
+
+on:
+  push:
+    branches: [ "main", "master", "develop" ]
+  pull_request:
+  schedule:
+    - cron: "40 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  master-auth-guard:
+    name: "🛡️ Master Dashboard Header/Auth Guard"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+
+      - name: Start Master Dashboard Guard Server
+        env:
+          DEADLOCK_DB_PATH: ${{ github.workspace }}/.master-auth-guard/deadlock.sqlite3
+          MASTER_NSSM_RESTART_ENABLED: "0"
+          MASTER_DASHBOARD_ALLOW_QUERY_TOKEN: "0"
+          MASTER_GUARD_HOST: "127.0.0.1"
+          MASTER_GUARD_PORT: "8790"
+          MASTER_GUARD_TOKEN: "guard-token"
+          MASTER_GUARD_SESSION_ID: "guard-session"
+          MASTER_GUARD_CSRF_TOKEN: "guard-csrf"
+        run: |
+          mkdir -p .master-auth-guard
+          uv run \
+            --with aiohttp==3.12.15 \
+            -- python .github/scripts/master_dashboard_auth_guard_server.py > master-dashboard-auth-guard.log 2>&1 &
+          echo $! > master-dashboard-auth-guard.pid
+
+      - name: Wait for Master Dashboard Readiness
+        run: |
+          for i in $(seq 1 40); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST \
+              -H "Authorization: Bearer guard-token" \
+              -H "Content-Type: application/json" \
+              --data '{}' \
+              http://127.0.0.1:8790/api/bot/restart || true)
+            if [ "$code" = "200" ]; then
+              echo "Master dashboard guard server is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Master dashboard guard server did not become ready in time"
+          cat master-dashboard-auth-guard.log || true
+          exit 1
+
+      - name: Verify Master Dashboard Auth Guardrails
+        run: |
+          request_json() {
+            name="$1"
+            expected="$2"
+            shift 2
+            tmp=$(mktemp)
+            code=$(curl -sS -o "$tmp" -w "%{http_code}" "$@" || true)
+            echo "$name -> HTTP $code" >&2
+            if [ "$code" != "$expected" ]; then
+              echo "::error::$name expected HTTP $expected but got $code" >&2
+              cat "$tmp" >&2 || true
+              rm -f "$tmp"
+              exit 1
+            fi
+            cat "$tmp"
+            rm -f "$tmp"
+          }
+
+          BASE_URL="http://127.0.0.1:8790"
+          COOKIE_HEADER="Cookie: master_dash_session=guard-session"
+          JSON_HEADER="Content-Type: application/json"
+
+          # Unauthenticated write request must be blocked.
+          request_json "unauthenticated-restart-blocked" 401 \
+            -X POST \
+            -H "$JSON_HEADER" \
+            --data '{}' \
+            "$BASE_URL/api/bot/restart" > /dev/null
+
+          # Query tokens must stay disabled (header token only).
+          request_json "query-token-restart-blocked" 401 \
+            -X POST \
+            -H "$JSON_HEADER" \
+            --data '{}' \
+            "$BASE_URL/api/bot/restart?token=guard-token" > /dev/null
+
+          # Bearer token auth must still work.
+          bearer_resp=$(request_json "bearer-token-restart-allowed" 200 \
+            -X POST \
+            -H "$JSON_HEADER" \
+            -H "Authorization: Bearer guard-token" \
+            --data '{}' \
+            "$BASE_URL/api/bot/restart")
+          RESP="$bearer_resp" python - <<'PY'
+          import json
+          import os
+          data = json.loads(os.environ["RESP"])
+          assert data.get("ok") is True, data
+          assert data.get("restart_mode") == "nssm_service", data
+          PY
+
+          # Session auth + CSRF but missing origin/referer must fail.
+          request_json "session-without-origin-blocked" 403 \
+            -X POST \
+            -H "$JSON_HEADER" \
+            -H "$COOKIE_HEADER" \
+            -H "X-CSRF-Token: guard-csrf" \
+            --data '{}' \
+            "$BASE_URL/api/bot/restart" > /dev/null
+
+          # Wrong origin must fail.
+          request_json "session-wrong-origin-blocked" 403 \
+            -X POST \
+            -H "$JSON_HEADER" \
+            -H "$COOKIE_HEADER" \
+            -H "Origin: https://evil.example" \
+            -H "X-CSRF-Token: guard-csrf" \
+            --data '{}' \
+            "$BASE_URL/api/bot/restart" > /dev/null
+
+          # Missing CSRF token must fail even with valid origin.
+          request_json "session-missing-csrf-blocked" 403 \
+            -X POST \
+            -H "$JSON_HEADER" \
+            -H "$COOKIE_HEADER" \
+            -H "Origin: https://admin.earlysalty.de" \
+            --data '{}' \
+            "$BASE_URL/api/bot/restart" > /dev/null
+
+          # Valid origin + csrf via session cookie must succeed.
+          session_resp=$(request_json "session-origin-csrf-allowed" 200 \
+            -X POST \
+            -H "$JSON_HEADER" \
+            -H "$COOKIE_HEADER" \
+            -H "Origin: https://admin.earlysalty.de" \
+            -H "X-CSRF-Token: guard-csrf" \
+            --data '{}' \
+            "$BASE_URL/api/bot/restart")
+          RESP="$session_resp" python - <<'PY'
+          import json
+          import os
+          data = json.loads(os.environ["RESP"])
+          assert data.get("ok") is True, data
+          assert data.get("restart_mode") == "nssm_service", data
+          PY
+
+          # Referer fallback (without Origin) should also pass with valid CSRF.
+          referer_resp=$(request_json "session-referer-csrf-allowed" 200 \
+            -X POST \
+            -H "$JSON_HEADER" \
+            -H "$COOKIE_HEADER" \
+            -H "Referer: https://admin.earlysalty.de/admin" \
+            -H "X-CSRF-Token: guard-csrf" \
+            --data '{}' \
+            "$BASE_URL/api/bot/restart")
+          RESP="$referer_resp" python - <<'PY'
+          import json
+          import os
+          data = json.loads(os.environ["RESP"])
+          assert data.get("ok") is True, data
+          PY
+
+          # Session auth me must expose csrf token.
+          auth_session_resp=$(request_json "auth-me-session" 200 \
+            -H "$COOKIE_HEADER" \
+            "$BASE_URL/api/auth/me")
+          RESP="$auth_session_resp" python - <<'PY'
+          import json
+          import os
+          data = json.loads(os.environ["RESP"])
+          assert data.get("authenticated") is True, data
+          assert data.get("mode") == "discord", data
+          assert data.get("csrf_token") == "guard-csrf", data
+          PY
+
+          # Token auth me should not expose csrf token.
+          auth_token_resp=$(request_json "auth-me-token" 200 \
+            -H "Authorization: Bearer guard-token" \
+            "$BASE_URL/api/auth/me")
+          RESP="$auth_token_resp" python - <<'PY'
+          import json
+          import os
+          data = json.loads(os.environ["RESP"])
+          assert data.get("authenticated") is True, data
+          assert data.get("mode") == "token", data
+          assert data.get("csrf_token") is None, data
+          PY
+
+      - name: Upload Master Guard Server Log
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: master-dashboard-auth-guard-log
+          path: master-dashboard-auth-guard.log
+          if-no-files-found: ignore
+
+      - name: Stop Master Dashboard Guard Server
+        if: always()
+        run: |
+          if [ -f master-dashboard-auth-guard.pid ]; then
+            kill "$(cat master-dashboard-auth-guard.pid)" || true
+          fi

@@ -80,6 +80,7 @@ jobs:
           echo "- 🔒 **CodeQL Advanced** - Static code analysis" >> $GITHUB_STEP_SUMMARY
           echo "- 🛡️ **Deep Security Scan** - Comprehensive security analysis" >> $GITHUB_STEP_SUMMARY
           echo "- 🚧 **Dashboard Auth Guardrails** - Admin bypass regression checks" >> $GITHUB_STEP_SUMMARY
+          echo "- 🧱 **Master Dashboard Auth Guardrails** - Header/Auth/CSRF regression checks" >> $GITHUB_STEP_SUMMARY
           echo "- 🔍 **Secret Scanning** - Credential detection" >> $GITHUB_STEP_SUMMARY
           echo "- 📦 **Dependency Review** - Vulnerability scanning" >> $GITHUB_STEP_SUMMARY
           echo "- 🌐 **Dashboard DAST** - Dynamic endpoint security tests" >> $GITHUB_STEP_SUMMARY
@@ -169,6 +170,7 @@ jobs:
               "codeql.yml",
               "security-deep-scan.yml",
               "dashboard-auth-guard.yml",
+              "master-dashboard-auth-guard.yml",
               "secret-scanning.yml",
               "dependency-review.yml",
               "dashboard-dast.yml",

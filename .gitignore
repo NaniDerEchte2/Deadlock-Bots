@@ -1,6 +1,10 @@
 .env
 .env.worker
 .env.*
+id_rsa
+id_dsa
+machine_auth_token.txt
+refresh.token
 __pycache__
 node_modules/
 /Backup
