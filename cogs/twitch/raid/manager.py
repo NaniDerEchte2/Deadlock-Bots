@@ -499,7 +499,7 @@ class RaidAuthManager:
                     log.warning("Double-check failed for %s, skipping refresh to be safe: %s", login, exc)
                     continue
 
-                log.info("Auto-refreshing OAuth grant for %s (background maintenance)", login)
+                log.debug("Auto-refreshing OAuth grant for %s (background maintenance)", login)
                 try:
                     token_data = await self.refresh_token(
                         refresh_tok, session, twitch_user_id=user_id, twitch_login=login

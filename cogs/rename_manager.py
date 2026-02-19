@@ -256,7 +256,7 @@ class RenameManagerCog(commands.Cog):
 
                 try:
                     await channel.edit(name=new_name, reason=reason)
-                    logger.info("Channel renamed (DB queue): %s -> %s (Reason: %s)", channel.name, new_name, reason)
+                    logger.debug("Channel renamed (DB queue): %s -> %s (Reason: %s)", channel.name, new_name, reason)
                     self._last_rename_attempt_by_channel[channel_id] = time.monotonic()
                     await self._set_request_done(req_id)
                 except discord.HTTPException as e:

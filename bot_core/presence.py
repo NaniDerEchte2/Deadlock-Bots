@@ -137,7 +137,7 @@ class PresenceMixin:
                     if issues:
                         logging.warning(f"Critical Health Check: Issues found: {issues}")
                     else:
-                        logging.info("Critical Health Check: Core cogs operational")
+                        logging.debug("Critical Health Check: Core cogs operational")
 
                     last_critical_check = current
 
