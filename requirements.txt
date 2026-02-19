@@ -17,7 +17,7 @@ aiosqlite==0.21.0
 Jinja2==3.1.6
 
 # Data / validation
-pydantic==2.11.9
+pydantic==2.12.5
 pydantic-settings==2.13.1
 pytz==2025.2
 
