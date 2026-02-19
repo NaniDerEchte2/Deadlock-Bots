@@ -4,9 +4,7 @@ on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: read-all
 
 jobs:
   dependabot-automerge:
@@ -14,6 +12,8 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
 
     steps:
       - name: Approve Dependabot PR
@@ -77,15 +77,4 @@ jobs:
               core.info(`Enabled auto-merge for PR #${pr.number}.`);
             } catch (e) {
               core.info(`Auto-merge not enabled: ${e.message}`);
-              try {
-                await github.rest.pulls.merge({
-                  owner,
-                  repo,
-                  pull_number: pr.number,
-                  merge_method: "squash"
-                });
-                core.info(`Merged PR #${pr.number} directly.`);
-              } catch (mergeErr) {
-                core.info(`Direct merge not possible yet: ${mergeErr.message}`);
-              }
             }

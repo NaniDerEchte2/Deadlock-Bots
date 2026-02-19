@@ -7,14 +7,13 @@ on:
     - cron: "43 1 * * *"
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: read-all
 jobs:
   sbom-and-attestations:
     name: "SBOM + Dependency Graph + Attestations"
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       id-token: write
       attestations: write
       artifact-metadata: write
@@ -35,7 +34,7 @@ jobs:
           output-file: dist/sbom.spdx.json
           artifact-name: source-sbom.spdx.json
           upload-release-assets: false
-          dependency-snapshot: true
+          dependency-snapshot: false
 
       - name: Upload Source Artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

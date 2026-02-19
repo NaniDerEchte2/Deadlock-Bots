@@ -96,7 +96,7 @@ def _configure_git_hooks_path(git_root: Path) -> None:
             ["git", "config", "core.hooksPath", ".git/hooks"],
             cwd=str(git_root),
             capture_output=True,
-            text=True,
+            universal_newlines=True,
             timeout=5
         )
         

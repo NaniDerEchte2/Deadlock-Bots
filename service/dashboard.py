@@ -1039,9 +1039,7 @@ class DashboardServer:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+                universal_newlines=True,
                 timeout=3.0,
                 check=False,
             )
@@ -1140,9 +1138,7 @@ class DashboardServer:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+                universal_newlines=True,
                 creationflags=creationflags,
                 cwd=str(Path(__file__).resolve().parent.parent),
             )

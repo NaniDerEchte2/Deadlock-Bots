@@ -61,6 +61,8 @@ RANK_ROLE_IDS: dict[int, int] = {
     11: 1331458087349129296,  # Eternus
 }
 RANK_ROLE_ID_SET = frozenset(RANK_ROLE_IDS.values())
+SUBRANK_MIN = 1
+SUBRANK_MAX = 6
 
 
 @dataclass(slots=True)
@@ -142,23 +144,35 @@ class DeadlockFriendRank(commands.Cog):
             return None
 
     @staticmethod
-    def _linked_steam_id_for_discord_user(discord_user_id: int) -> Optional[str]:
-        row = db.query_one(
+    def _linked_steam_ids_for_discord_user(discord_user_id: int) -> list[str]:
+        rows = db.query_all(
             """
             SELECT steam_id
             FROM steam_links
             WHERE user_id = ? AND steam_id IS NOT NULL AND steam_id != ''
             ORDER BY primary_account DESC, verified DESC, updated_at DESC
-            LIMIT 1
             """,
             (int(discord_user_id),),
         )
-        if not row:
-            return None
-        steam_id = str(row["steam_id"]).strip()
-        if not steam_id:
-            return None
-        return steam_id
+        if not rows:
+            return []
+
+        out: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            steam_id = str(row["steam_id"]).strip()
+            if not steam_id or not STEAM_ID64_RE.fullmatch(steam_id):
+                continue
+            if steam_id in seen:
+                continue
+            seen.add(steam_id)
+            out.append(steam_id)
+        return out
+
+    @staticmethod
+    def _linked_steam_id_for_discord_user(discord_user_id: int) -> Optional[str]:
+        steam_ids = DeadlockFriendRank._linked_steam_ids_for_discord_user(discord_user_id)
+        return steam_ids[0] if steam_ids else None
 
     @staticmethod
     def _extract_rank_fields(card: Dict[str, Any]) -> tuple[Optional[int], Optional[int], Optional[int], Optional[str]]:
@@ -166,14 +180,15 @@ class DeadlockFriendRank(commands.Cog):
         rank_num = DeadlockFriendRank._safe_int(card.get("ranked_rank"))
         subrank = DeadlockFriendRank._safe_int(card.get("ranked_subrank"))
 
-        if rank_num is None and badge is not None:
+        if badge is not None and badge >= 0:
+            # Canonical mapping: badge XY -> tier X, subrank Y (1..6).
             rank_num = badge // 10
-        if subrank is None and badge is not None:
-            subrank = badge % 10
+            parsed_subrank = badge % 10
+            subrank = parsed_subrank if SUBRANK_MIN <= parsed_subrank <= SUBRANK_MAX else None
 
         if rank_num is not None and rank_num < 0:
             rank_num = None
-        if subrank is not None and subrank < 0:
+        if subrank is not None and (subrank < SUBRANK_MIN or subrank > SUBRANK_MAX):
             subrank = None
 
         rank_name = RANK_TIERS.get(rank_num) if rank_num is not None else None
@@ -673,8 +688,8 @@ class DeadlockFriendRank(commands.Cog):
         """Rank lookup by Discord user mention (defaults to caller)."""
 
         target = user or ctx.author
-        steam_id = self._linked_steam_id_for_discord_user(int(target.id))
-        if not steam_id:
+        steam_ids = self._linked_steam_ids_for_discord_user(int(target.id))
+        if not steam_ids:
             await ctx.reply(
                 f"❌ Für {getattr(target, 'mention', f'`{target}`')} ist kein Steam-Link gespeichert.",
                 mention_author=False,
@@ -682,11 +697,54 @@ class DeadlockFriendRank(commands.Cog):
             return
 
         mention = getattr(target, "mention", f"`{target}`")
-        lookup = RankLookupTarget(
-            payload={"steam_id": steam_id},
-            label=f"{mention} (`{steam_id}`)",
-        )
-        await self._reply_rank_for_lookup(ctx, lookup)
+        if len(steam_ids) == 1:
+            steam_id = steam_ids[0]
+            lookup = RankLookupTarget(
+                payload={"steam_id": steam_id},
+                label=f"{mention} (`{steam_id}`)",
+            )
+            await self._reply_rank_for_lookup(ctx, lookup)
+            return
+
+        max_accounts = 5
+        lines = [
+            f"🎯 **Deadlock Rank** für {mention}",
+            f"- Gefundene Steam-Links: `{len(steam_ids)}`",
+        ]
+
+        for index, steam_id in enumerate(steam_ids[:max_accounts], start=1):
+            card, data, outcome = await self._fetch_profile_card({"steam_id": steam_id}, timeout=45.0)
+
+            if outcome.timed_out:
+                lines.append(f"- {index}. `{steam_id}`: ⏳ Timeout (Task #{outcome.task_id})")
+                continue
+
+            if not outcome.ok:
+                lines.append(
+                    f"- {index}. `{steam_id}`: ❌ {outcome.error or 'Unbekannter Fehler'}"
+                )
+                continue
+
+            if not isinstance(card, dict):
+                lines.append(f"- {index}. `{steam_id}`: ❌ Keine PlayerCard im Ergebnis")
+                continue
+
+            account_id = card.get("account_id")
+            if account_id is None and isinstance(data, dict):
+                account_id = data.get("account_id")
+
+            rank_line = self._format_rank_line(card)
+            if account_id is not None:
+                lines.append(f"- {index}. `{steam_id}`: {rank_line} · Account `{account_id}`")
+            else:
+                lines.append(f"- {index}. `{steam_id}`: {rank_line}")
+
+        remaining = len(steam_ids) - max_accounts
+        if remaining > 0:
+            lines.append(f"- … plus `{remaining}` weitere verknüpfte Accounts")
+
+        lines.append("- Tipp: Nutze `/steam_rank <steamid64>` für eine gezielte Einzelabfrage.")
+        await ctx.reply("\n".join(lines), mention_author=False)
 
 
 async def setup(bot: commands.Bot) -> None:
