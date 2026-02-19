@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import errno
+import html
+import ipaddress
 import json
 import math
 import logging
 import os
+import secrets
 import sqlite3
 import time
 from pathlib import Path
@@ -27,6 +30,13 @@ DEFAULT_RETENTION_EXCLUDED_ROLE_IDS = {
 LOG_TAIL_DEFAULT_LINES = 400
 LOG_TAIL_MAX_LINES = 5000
 LOG_TAIL_MAX_BYTES = 4 * 1024 * 1024
+DEFAULT_DASHBOARD_MODERATOR_ROLE_ID = 1337518124647579661
+DEFAULT_DASHBOARD_OWNER_USER_ID = 662995601738170389
+KEYRING_SERVICE_NAME = "DeadlockBot"
+MASTER_DASHBOARD_PUBLIC_URL = "https://admin.earlysalty.de"
+MASTER_DASHBOARD_DISCORD_REDIRECT_URI = "https://admin.earlysalty.de/auth/discord/callback"
+MASTER_DASHBOARD_DEFAULT_SCHEME = "http"
+DISCORD_API_BASE_URL = "https://discord.com/api/v10"
 
 try:
     from service.standalone_manager import (
@@ -73,7 +83,7 @@ class DashboardServer:
         self.bot = bot
         self.host = host
         self.port = port
-        self.token = token or os.getenv("MASTER_DASHBOARD_TOKEN")
+        self.token = (token or "").strip() or None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
         self._lock = asyncio.Lock()
@@ -82,24 +92,35 @@ class DashboardServer:
         self._restart_task: Optional[asyncio.Task] = None
         self._last_restart: Dict[str, Any] = {"at": None, "ok": None, "error": None}
         self._lifecycle = getattr(bot, "lifecycle", None)
-        scheme_env = (os.getenv("MASTER_DASHBOARD_SCHEME") or "").strip().lower()
-        self._scheme = scheme_env or "http"
+        keyring_client_id = self._read_keyring_secret("DISCORD_OAUTH_CLIENT_ID")
+        app_client_id = str(getattr(bot, "application_id", "") or "").strip()
+        self._discord_client_id = (keyring_client_id or app_client_id).strip()
+        self._discord_client_secret = self._read_keyring_secret("DISCORD_OAUTH_CLIENT_SECRET").strip()
+        self._discord_redirect_uri = MASTER_DASHBOARD_DISCORD_REDIRECT_URI
+        self._discord_auth_enabled = True
+        self._discord_owner_user_id = DEFAULT_DASHBOARD_OWNER_USER_ID
+        self._discord_moderator_role_id = DEFAULT_DASHBOARD_MODERATOR_ROLE_ID
+        self._discord_auth_guild_ids: Tuple[int, ...] = ()
+        self._discord_session_cookie = "master_dash_session"
+        self._discord_sessions: Dict[str, Dict[str, Any]] = {}
+        self._discord_oauth_states: Dict[str, Dict[str, Any]] = {}
+        self._discord_oauth_state_ttl = 600
+        self._discord_session_ttl = 12 * 3600
+        self._discord_auth_required = self._discord_auth_enabled and self._is_discord_oauth_configured()
+        self._auth_misconfigured = False
+        self._scheme = MASTER_DASHBOARD_DEFAULT_SCHEME
         self._listen_base_url = self._format_base_url(self.host, self.port, self._scheme)
-        public_env = (os.getenv("MASTER_DASHBOARD_PUBLIC_URL") or os.getenv("PUBLIC_BASE_URL") or "https://link.earlysalty.com").strip()
-        if public_env:
-            try:
-                self._public_base_url = self._normalize_public_url(
-                    public_env,
-                    default_scheme=self._scheme,
-                )
-            except Exception as exc:
-                logging.warning(
-                    "MASTER_DASHBOARD_PUBLIC_URL '%s' invalid (%s) - falling back to listen URL",
-                    public_env,
-                    exc,
-                )
-                self._public_base_url = self._listen_base_url
-        else:
+        try:
+            self._public_base_url = self._normalize_public_url(
+                MASTER_DASHBOARD_PUBLIC_URL,
+                default_scheme="https",
+            )
+        except Exception as exc:
+            logging.warning(
+                "Master dashboard public URL '%s' invalid (%s) - falling back to listen URL",
+                MASTER_DASHBOARD_PUBLIC_URL,
+                exc,
+            )
             self._public_base_url = self._listen_base_url
 
         self._twitch_dashboard_href = self._resolve_twitch_dashboard_href()
@@ -109,21 +130,36 @@ class DashboardServer:
         self._health_cache_expiry = 0.0
         self._health_cache_lock = asyncio.Lock()
         self._health_cache_ttl = self._parse_positive_float(
-            os.getenv("DASHBOARD_HEALTHCHECK_CACHE_SECONDS"),
+            "30.0",
             default=30.0,
             env_name="DASHBOARD_HEALTHCHECK_CACHE_SECONDS",
         )
         self._health_timeout = self._parse_positive_float(
-            os.getenv("DASHBOARD_HEALTHCHECK_TIMEOUT_SECONDS"),
+            "6.0",
             default=6.0,
             env_name="DASHBOARD_HEALTHCHECK_TIMEOUT_SECONDS",
         )
         self._health_targets = self._build_health_targets()
-        log_dir_env = (os.getenv("MASTER_DASHBOARD_LOG_DIR") or "").strip()
-        if log_dir_env:
-            self._log_dir = Path(os.path.expandvars(log_dir_env)).expanduser()
-        else:
-            self._log_dir = Path(__file__).resolve().parent.parent / "logs"
+        self._log_dir = Path(__file__).resolve().parent.parent / "logs"
+        if self._discord_auth_enabled and not self._is_discord_oauth_configured():
+            if self.token:
+                logging.warning(
+                    "Dashboard Discord OAuth ist unvollständig (Client ID/Secret fehlt). "
+                    "Fallback auf Token-only Auth."
+                )
+                self._discord_auth_required = False
+            else:
+                logging.error(
+                    "Dashboard Auth-Konfiguration ungültig: Discord OAuth aktiviert, aber Client ID/Secret "
+                    "nicht im Windows-Tresor (%s) vorhanden. Dashboard bleibt gesperrt.",
+                    KEYRING_SERVICE_NAME,
+                )
+                self._discord_auth_required = False
+                self._auth_misconfigured = True
+        if not self._discord_auth_required and not self.token and not self._auth_misconfigured:
+            logging.warning(
+                "Dashboard läuft ohne Auth (kein Discord OAuth und kein Dashboard-Token gesetzt)."
+            )
 
     @staticmethod
     def _sanitize(value: Any) -> Any:
@@ -168,6 +204,11 @@ class DashboardServer:
                 response.headers.setdefault("X-Frame-Options", "DENY")
                 response.headers.setdefault("X-Content-Type-Options", "nosniff")
                 response.headers.setdefault("X-XSS-Protection", "1; mode=block")
+                response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+                response.headers.setdefault(
+                    "Permissions-Policy",
+                    "geolocation=(), microphone=(), camera=(), payment=()",
+                )
                 return response
 
             app = web.Application(middlewares=[_security_headers])
@@ -176,6 +217,11 @@ class DashboardServer:
                 [
                     web.get("/", self._handle_index),
                     web.get("/admin", self._handle_index),
+                    web.get("/auth/discord/login", self._handle_discord_login),
+                    web.get("/auth/discord/callback", self._handle_discord_callback),
+                    web.get("/auth/logout", self._handle_logout),
+                    web.post("/auth/logout", self._handle_logout),
+                    web.get("/api/auth/me", self._handle_auth_me),
                     web.get("/api/status", self._handle_status),
                     web.post("/api/bot/restart", self._handle_bot_restart),
                     web.post("/api/twitch/reload", self._handle_twitch_reload),
@@ -352,20 +398,300 @@ class DashboardServer:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    def _check_auth(self, request: web.Request, *, required: bool = True) -> None:
-        if not self.token:
-            return
+    @staticmethod
+    def _read_keyring_secret(key: str) -> str:
+        secret_key = (key or "").strip()
+        if not secret_key:
+            return ""
+        try:
+            import keyring
+        except Exception:
+            return ""
+        try:
+            value = keyring.get_password(KEYRING_SERVICE_NAME, secret_key)
+            if not value:
+                value = keyring.get_password(f"{secret_key}@{KEYRING_SERVICE_NAME}", secret_key)
+        except Exception:
+            return ""
+        return str(value or "").strip()
+
+    def _is_discord_oauth_configured(self) -> bool:
+        return bool(self._discord_client_id and self._discord_client_secret and self._discord_redirect_uri)
+
+    def _is_auth_enforced(self) -> bool:
+        return bool(self.token or self._discord_auth_required or self._auth_misconfigured)
+
+    @staticmethod
+    def _extract_bearer_token(request: web.Request) -> str:
         header = request.headers.get("Authorization", "")
         if header.startswith("Bearer "):
-            provided = header.split(" ", 1)[1]
+            token = header.split(" ", 1)[1].strip()
         else:
-            provided = header
-        if not provided:
-            provided = request.query.get("token", "")
-        if provided != self.token:
-            if required:
-                raise web.HTTPUnauthorized(text="Missing or invalid dashboard token", headers={"WWW-Authenticate": "Bearer"})
-            raise web.HTTPUnauthorized(text="Missing or invalid dashboard token", headers={"WWW-Authenticate": "Bearer"})
+            token = header.strip()
+        if not token:
+            token = (request.query.get("token") or "").strip()
+        return token
+
+    @staticmethod
+    def _host_without_port(raw: Optional[str]) -> str:
+        if not raw:
+            return ""
+        value = raw.split(",")[0].strip()
+        if not value:
+            return ""
+        if value.startswith("["):
+            end = value.find("]")
+            if end != -1:
+                value = value[1:end]
+        elif ":" in value:
+            host_part, port_part = value.rsplit(":", 1)
+            if port_part.isdigit():
+                value = host_part
+        return value.lower()
+
+    @staticmethod
+    def _is_loopback_host(raw: Optional[str]) -> bool:
+        host = DashboardServer._host_without_port(raw)
+        if not host:
+            return False
+        if host == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _peer_host(request: web.Request) -> str:
+        remote = (request.remote or "").strip() if hasattr(request, "remote") else ""
+        if remote:
+            return remote
+        transport = getattr(request, "transport", None)
+        if transport is None:
+            return ""
+        peer = transport.get_extra_info("peername")
+        if isinstance(peer, tuple) and peer:
+            return str(peer[0]).strip()
+        if isinstance(peer, str):
+            return peer.strip()
+        return ""
+
+    def _is_secure_request(self, request: web.Request) -> bool:
+        peer = self._peer_host(request)
+        if self._is_loopback_host(peer):
+            forwarded_proto = (request.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+            if forwarded_proto:
+                return forwarded_proto == "https"
+        return bool(request.secure)
+
+    @staticmethod
+    def _normalize_auth_next_path(raw: Optional[str]) -> str:
+        fallback = "/admin"
+        candidate = (raw or "").strip()
+        if not candidate:
+            return fallback
+        try:
+            parsed = urlparse(candidate)
+        except Exception:
+            return fallback
+        if parsed.scheme or parsed.netloc:
+            return fallback
+        if not candidate.startswith("/"):
+            return fallback
+        if candidate.startswith("/admin") or candidate.startswith("/api/"):
+            return candidate
+        return fallback
+
+    def _build_discord_login_url(self, request: web.Request, *, next_path: Optional[str] = None) -> str:
+        if not self._discord_auth_required:
+            return "/admin"
+        normalized = self._normalize_auth_next_path(
+            next_path or (request.rel_url.path_qs if request.rel_url else "/admin")
+        )
+        return f"/auth/discord/login?{urlencode({'next': normalized})}"
+
+    def _cleanup_discord_auth_state(self) -> None:
+        now = time.time()
+        expired_states = [
+            key
+            for key, row in self._discord_oauth_states.items()
+            if now - float(row.get("created_at", 0.0)) > self._discord_oauth_state_ttl
+        ]
+        for key in expired_states:
+            self._discord_oauth_states.pop(key, None)
+
+        expired_sessions = [
+            sid
+            for sid, row in self._discord_sessions.items()
+            if float(row.get("expires_at", 0.0)) <= now
+        ]
+        for sid in expired_sessions:
+            self._discord_sessions.pop(sid, None)
+
+        max_states = 1000
+        if len(self._discord_oauth_states) > max_states:
+            oldest = sorted(
+                self._discord_oauth_states.items(),
+                key=lambda item: float(item[1].get("created_at", 0.0)),
+            )
+            for state_key, _ in oldest[: len(self._discord_oauth_states) - max_states]:
+                self._discord_oauth_states.pop(state_key, None)
+
+        max_sessions = 5000
+        if len(self._discord_sessions) > max_sessions:
+            oldest_sessions = sorted(
+                self._discord_sessions.items(),
+                key=lambda item: float(item[1].get("created_at", 0.0)),
+            )
+            for session_key, _ in oldest_sessions[: len(self._discord_sessions) - max_sessions]:
+                self._discord_sessions.pop(session_key, None)
+
+    def _set_discord_session_cookie(self, response: web.StreamResponse, request: web.Request, session_id: str) -> None:
+        response.set_cookie(
+            self._discord_session_cookie,
+            session_id,
+            max_age=self._discord_session_ttl,
+            httponly=True,
+            secure=self._is_secure_request(request),
+            samesite="Lax",
+            path="/",
+        )
+
+    def _clear_discord_session_cookie(self, response: web.StreamResponse) -> None:
+        response.del_cookie(self._discord_session_cookie, path="/")
+
+    def _get_discord_auth_session(self, request: web.Request) -> Optional[Dict[str, Any]]:
+        if not self._discord_auth_required:
+            return None
+        self._cleanup_discord_auth_state()
+        session_id = (request.cookies.get(self._discord_session_cookie) or "").strip()
+        if not session_id:
+            return None
+        session = self._discord_sessions.get(session_id)
+        if not session:
+            return None
+        now = time.time()
+        if float(session.get("expires_at", 0.0)) <= now:
+            self._discord_sessions.pop(session_id, None)
+            return None
+        session["expires_at"] = now + self._discord_session_ttl
+        session["last_seen_at"] = now
+        return session
+
+    def _auth_session_for_request(self, request: web.Request) -> Optional[Dict[str, Any]]:
+        return self._get_discord_auth_session(request)
+
+    async def _check_discord_member_access(self, discord_user_id: int) -> Tuple[bool, str]:
+        if discord_user_id == self._discord_owner_user_id:
+            return True, "owner_override"
+
+        guilds: List[Any] = []
+        seen: set[int] = set()
+        for guild_id in self._discord_auth_guild_ids:
+            guild = self.bot.get_guild(guild_id)
+            if guild and guild.id not in seen:
+                guilds.append(guild)
+                seen.add(guild.id)
+        if not guilds:
+            guilds = list(getattr(self.bot, "guilds", []) or [])
+
+        for guild in guilds:
+            member = guild.get_member(discord_user_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(discord_user_id)
+                except Exception:
+                    member = None
+            if member is None:
+                continue
+            try:
+                permissions = getattr(member, "guild_permissions", None)
+                if permissions and bool(getattr(permissions, "administrator", False)):
+                    return True, f"guild_admin:{guild.id}"
+            except Exception:
+                pass
+            try:
+                role_ids = {int(r.id) for r in getattr(member, "roles", []) if getattr(r, "id", None)}
+            except Exception:
+                role_ids = set()
+            if self._discord_moderator_role_id in role_ids:
+                return True, f"moderator_role:{guild.id}"
+        return False, "missing_admin_or_moderator_role"
+
+    async def _exchange_discord_code(self, code: str, redirect_uri: str) -> Optional[Dict[str, Any]]:
+        payload = {
+            "client_id": self._discord_client_id,
+            "client_secret": self._discord_client_secret,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+        }
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        timeout = ClientTimeout(total=20)
+        async with ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{DISCORD_API_BASE_URL}/oauth2/token",
+                data=payload,
+                headers=headers,
+            ) as response:
+                if response.status != 200:
+                    body = await response.text()
+                    logger.warning(
+                        "Discord OAuth code exchange failed (status=%s, body=%s)",
+                        response.status,
+                        self._safe_log_value(body[:200]),
+                    )
+                    return None
+                data = await response.json()
+        return data if isinstance(data, dict) else None
+
+    async def _fetch_discord_user(self, access_token: str) -> Optional[Dict[str, Any]]:
+        if not access_token:
+            return None
+        timeout = ClientTimeout(total=20)
+        headers = {"Authorization": f"Bearer {access_token}"}
+        async with ClientSession(timeout=timeout) as session:
+            async with session.get(f"{DISCORD_API_BASE_URL}/users/@me", headers=headers) as response:
+                if response.status != 200:
+                    body = await response.text()
+                    logger.warning(
+                        "Discord user lookup failed (status=%s, body=%s)",
+                        response.status,
+                        self._safe_log_value(body[:200]),
+                    )
+                    return None
+                data = await response.json()
+        return data if isinstance(data, dict) else None
+
+    def _has_valid_auth(self, request: web.Request) -> bool:
+        if self._discord_auth_required and self._get_discord_auth_session(request):
+            return True
+        if self.token:
+            provided = self._extract_bearer_token(request)
+            if provided and provided == self.token:
+                return True
+        return False
+
+    def _check_auth(self, request: web.Request, *, required: bool = True) -> None:
+        enforce = required or self._is_auth_enforced()
+        if not enforce:
+            return
+        if self._auth_misconfigured:
+            raise web.HTTPServiceUnavailable(
+                text=(
+                    "Dashboard Auth ist nicht korrekt konfiguriert. "
+                    "Discord OAuth Client-ID/Secret fehlen im Windows-Tresor (DeadlockBot)."
+                )
+            )
+        if self._has_valid_auth(request):
+            return
+
+        next_path = "/admin" if request.path.startswith("/api/") else None
+        login_url = self._build_discord_login_url(request, next_path=next_path)
+        headers: Dict[str, str] = {"X-Auth-Login": login_url}
+        if self.token:
+            headers["WWW-Authenticate"] = "Bearer"
+        raise web.HTTPUnauthorized(text="Authentication required", headers=headers)
 
     def _list_log_files(self) -> List[Dict[str, Any]]:
         log_dir = self._log_dir
@@ -571,61 +897,25 @@ class DashboardServer:
         return parsed if isinstance(parsed, dict) else {}
 
     def _resolve_twitch_dashboard_href(self) -> str:
-        explicit = (
-            os.getenv("MASTER_TWITCH_DASHBOARD_URL")
-            or os.getenv("TWITCH_DASHBOARD_URL")
-            or ""
-        ).strip()
-        if explicit:
-            try:
-                return self._normalize_public_url(explicit, default_scheme=self._scheme)
-            except Exception as exc:
-                logging.warning(
-                    "Twitch dashboard URL '%s' invalid (%s) – falling back to derived host/port",
-                    explicit,
-                    exc,
-                )
+        public_base = (self._public_base_url or "").rstrip("/")
+        if public_base.lower().endswith("/admin"):
+            public_base = public_base[:-6]
+        if public_base and not self._is_loopback_host(urlparse(public_base).hostname or ""):
+            return f"{public_base}/twitch/admin"
 
-        host = (os.getenv("TWITCH_DASHBOARD_HOST") or "127.0.0.1").strip() or "127.0.0.1"
-        scheme = (os.getenv("TWITCH_DASHBOARD_SCHEME") or self._scheme).strip() or self._scheme
-        port_value = (os.getenv("TWITCH_DASHBOARD_PORT") or "").strip()
-        port: Optional[int] = None
-        if port_value:
-            try:
-                port = int(port_value)
-            except ValueError:
-                logging.warning(
-                    "TWITCH_DASHBOARD_PORT '%s' invalid – using default 8765",
-                    port_value,
-                )
-        if port is None:
-            port = 8765
-
-        base = self._format_base_url(host, port, scheme)
+        base = self._format_base_url("127.0.0.1", 8765, self._scheme)
         return f"{base.rstrip('/')}/twitch/admin"
 
     def _derive_steam_return_url(self) -> Optional[str]:
-        base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+        base = (self._public_base_url or "").strip().rstrip("/")
         if not base:
             return None
-        path = (os.getenv("STEAM_RETURN_PATH") or "/steam/return").strip() or "/steam/return"
+        path = "/steam/return"
         path = "/" + path.lstrip("/")
         return f"{base}{path}"
 
     def _derive_raid_health_url(self) -> Optional[str]:
-        redirect = (os.getenv("TWITCH_RAID_REDIRECT_URI") or "").strip()
-        if not redirect:
-            return None
-        try:
-            parsed = urlparse(redirect if "://" in redirect else f"{self._scheme}://{redirect}")
-        except Exception as exc:
-            logging.warning("TWITCH_RAID_REDIRECT_URI '%s' invalid (%s) - skipping raid health target", redirect, exc)
-            return None
-        if not parsed.netloc:
-            return None
-        scheme = parsed.scheme or self._scheme
-        base = f"{scheme}://{parsed.netloc}"
-        return f"{base}/health"
+        return "https://raid.earlysalty.com/health"
 
     def _build_health_targets(self) -> List[Dict[str, Any]]:
         targets: List[Dict[str, Any]] = []
@@ -691,83 +981,7 @@ class DashboardServer:
         # /twitch/stats requires auth; use a public endpoint to avoid false 401 alarms.
         _add_target("Twitch Stats", "https://twitch.earlysalty.com/twitch/api/v2/auth-status", key="twitch-stats")
 
-        extra_raw = (
-            os.getenv("DASHBOARD_HEALTHCHECKS")
-            or os.getenv("DASHBOARD_HEALTHCHECK_URLS")
-            or os.getenv("MASTER_HEALTHCHECK_URLS")
-            or ""
-        ).strip()
-        if extra_raw:
-            for extra in self._parse_healthcheck_env(extra_raw):
-                _add_target(
-                    extra.get("label") or extra.get("name") or extra.get("title") or extra.get("url", ""),
-                    extra.get("url", ""),
-                    key=extra.get("key"),
-                    method=extra.get("method", "GET"),
-                )
-
         return targets
-
-    def _parse_healthcheck_env(self, raw: str) -> List[Dict[str, Any]]:
-        trimmed = raw.strip()
-        if not trimmed:
-            return []
-        try:
-            loaded = json.loads(trimmed)
-        except json.JSONDecodeError:
-            entries: List[Dict[str, Any]] = []
-            normalized_raw = trimmed.replace(";", "\n")
-            for line in normalized_raw.splitlines():
-                item = line.strip()
-                if not item:
-                    continue
-                parts = [part.strip() for part in item.split("|")]
-                if len(parts) == 1:
-                    label = parts[0]
-                    url = parts[0]
-                    method = "GET"
-                elif len(parts) == 2:
-                    label, url = parts
-                    method = "GET"
-                else:
-                    label, method, url = parts[0], parts[1], parts[2]
-                    method = method.strip().upper() or "GET"
-                if not url:
-                    continue
-                entries.append({"label": label or url, "url": url, "method": method})
-            return entries
-
-        entries: List[Dict[str, Any]] = []
-        if isinstance(loaded, dict):
-            loaded = [loaded]
-        if not isinstance(loaded, list):
-            logging.warning("DASHBOARD_HEALTHCHECKS JSON must be a list or object.")
-            return entries
-        for idx, item in enumerate(loaded):
-            if not isinstance(item, dict):
-                logging.warning("Healthcheck entry #%s must be an object – skipping", idx)
-                continue
-            url = str(item.get("url") or "").strip()
-            if not url:
-                logging.warning("Healthcheck entry #%s missing 'url' – skipping", idx)
-                continue
-            method = str(item.get("method") or "GET").strip().upper() or "GET"
-            label = str(
-                item.get("label")
-                or item.get("name")
-                or item.get("title")
-                or url
-            ).strip() or url
-            entry: Dict[str, Any] = {
-                "label": label,
-                "url": url,
-                "method": method,
-            }
-            for optional_key in ("key", "timeout", "expect_status", "allow_redirects", "verify_ssl"):
-                if optional_key in item:
-                    entry[optional_key] = item[optional_key]
-            entries.append(entry)
-        return entries
 
     @staticmethod
     def _slugify_health_key(value: str) -> str:
@@ -775,9 +989,220 @@ class DashboardServer:
         pieces = [part for part in slug.split("-") if part]
         return "-".join(pieces) or "health"
 
+    def _normalized_discord_redirect_uri(self) -> Optional[str]:
+        raw = (self._discord_redirect_uri or "").strip()
+        if not raw:
+            return None
+        candidate = raw if "://" in raw else f"https://{raw}"
+        try:
+            parsed = urlparse(candidate)
+        except Exception:
+            return None
+        scheme = (parsed.scheme or "").strip().lower()
+        host = (parsed.hostname or "").strip().lower()
+        if scheme not in {"http", "https"}:
+            return None
+        if scheme == "http" and host not in {"127.0.0.1", "localhost", "::1"}:
+            return None
+        if parsed.username or parsed.password or not parsed.netloc:
+            return None
+        if (parsed.path or "").rstrip("/") != "/auth/discord/callback":
+            return None
+        return urlunparse((scheme, parsed.netloc, "/auth/discord/callback", "", "", ""))
+
+    async def _handle_discord_login(self, request: web.Request) -> web.StreamResponse:
+        if self._auth_misconfigured:
+            raise web.HTTPServiceUnavailable(
+                text=(
+                    "Dashboard Auth ist nicht korrekt konfiguriert. "
+                    "Discord OAuth Client-ID/Secret fehlen im Windows-Tresor (DeadlockBot)."
+                )
+            )
+        if not self._discord_auth_required:
+            raise web.HTTPFound("/admin")
+
+        existing = self._get_discord_auth_session(request)
+        next_path = self._normalize_auth_next_path(request.query.get("next"))
+        if existing:
+            raise web.HTTPFound(next_path)
+
+        redirect_uri = self._normalized_discord_redirect_uri()
+        if not redirect_uri:
+            raise web.HTTPServiceUnavailable(
+                text=(
+                    "Discord OAuth Redirect URI ist ungültig. "
+                    "Erwartet wird exakt: https://admin.earlysalty.de/auth/discord/callback."
+                )
+            )
+
+        self._cleanup_discord_auth_state()
+        state = secrets.token_urlsafe(32)
+        self._discord_oauth_states[state] = {
+            "created_at": time.time(),
+            "next_path": next_path,
+            "redirect_uri": redirect_uri,
+        }
+        query = urlencode(
+            {
+                "client_id": self._discord_client_id,
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": "identify",
+                "state": state,
+            }
+        )
+        raise web.HTTPFound(f"{DISCORD_API_BASE_URL}/oauth2/authorize?{query}")
+
+    async def _handle_discord_callback(self, request: web.Request) -> web.StreamResponse:
+        if not self._discord_auth_required:
+            raise web.HTTPFound("/admin")
+
+        error = (request.query.get("error") or "").strip()
+        if error:
+            return web.Response(text=f"Discord OAuth Fehler: {error}", status=401)
+
+        state = (request.query.get("state") or "").strip()
+        code = (request.query.get("code") or "").strip()
+        if not state or not code:
+            return web.Response(text="Fehlender OAuth state/code.", status=400)
+
+        self._cleanup_discord_auth_state()
+        state_data = self._discord_oauth_states.pop(state, None)
+        if not state_data:
+            return web.Response(text="OAuth state ungültig oder abgelaufen.", status=400)
+
+        token_data = await self._exchange_discord_code(code, str(state_data.get("redirect_uri") or ""))
+        access_token = str((token_data or {}).get("access_token") or "").strip()
+        if not access_token:
+            return web.Response(text="OAuth Austausch fehlgeschlagen.", status=401)
+
+        user = await self._fetch_discord_user(access_token)
+        if not user:
+            return web.Response(text="Discord-User konnte nicht geladen werden.", status=401)
+
+        user_id = self._coerce_int(user.get("id"), None)
+        if not user_id:
+            return web.Response(text="Ungültige Discord-User-ID.", status=401)
+
+        allowed, reason = await self._check_discord_member_access(int(user_id))
+        if not allowed:
+            logger.warning(
+                "AUDIT master-dashboard login denied: discord_user=%s reason=%s peer=%s",
+                user_id,
+                self._safe_log_value(reason),
+                self._safe_log_value(self._peer_host(request)),
+            )
+            return web.Response(
+                text=(
+                    "Kein Zugriff auf das Admin-Dashboard. "
+                    "Benötigt: Administrator-Recht oder Moderator-Rolle."
+                ),
+                status=403,
+            )
+
+        username = str(user.get("username") or "").strip()
+        global_name = str(user.get("global_name") or "").strip()
+        discriminator = str(user.get("discriminator") or "0").strip()
+        if global_name:
+            display_name = global_name
+        elif discriminator and discriminator != "0":
+            display_name = f"{username}#{discriminator}"
+        else:
+            display_name = username or f"User {user_id}"
+
+        self._cleanup_discord_auth_state()
+        now = time.time()
+        session_id = secrets.token_urlsafe(32)
+        self._discord_sessions[session_id] = {
+            "user_id": int(user_id),
+            "username": username,
+            "display_name": display_name,
+            "reason": reason,
+            "created_at": now,
+            "last_seen_at": now,
+            "expires_at": now + self._discord_session_ttl,
+        }
+
+        logger.info(
+            "AUDIT master-dashboard login success: discord_user=%s reason=%s peer=%s",
+            user_id,
+            self._safe_log_value(reason),
+            self._safe_log_value(self._peer_host(request)),
+        )
+
+        destination = self._normalize_auth_next_path(state_data.get("next_path"))
+        response = web.HTTPFound(destination)
+        self._set_discord_session_cookie(response, request, session_id)
+        raise response
+
+    async def _handle_logout(self, request: web.Request) -> web.StreamResponse:
+        session_id = (request.cookies.get(self._discord_session_cookie) or "").strip()
+        if session_id:
+            self._discord_sessions.pop(session_id, None)
+        response = web.HTTPFound(self._build_discord_login_url(request, next_path="/admin"))
+        self._clear_discord_session_cookie(response)
+        raise response
+
+    async def _handle_auth_me(self, request: web.Request) -> web.Response:
+        if not self._discord_auth_required:
+            return self._json(
+                {
+                    "enabled": False,
+                    "authenticated": False,
+                    "mode": "token" if self.token else "none",
+                }
+            )
+
+        session = self._get_discord_auth_session(request)
+        if not session:
+            provided = self._extract_bearer_token(request)
+            if self.token and provided and provided == self.token:
+                return self._json(
+                    {
+                        "enabled": bool(self._discord_auth_required),
+                        "authenticated": True,
+                        "mode": "token",
+                        "user": None,
+                    }
+                )
+            self._check_auth(request)
+            raise web.HTTPUnauthorized(text="Authentication required")
+
+        return self._json(
+            {
+                "enabled": True,
+                "authenticated": True,
+                "mode": "discord",
+                "user": {
+                    "id": session.get("user_id"),
+                    "display_name": session.get("display_name"),
+                    "username": session.get("username"),
+                },
+            }
+        )
+
     async def _handle_index(self, request: web.Request) -> web.Response:
-        self._check_auth(request, required=bool(self.token))
-        html_text = _load_index_html().replace("{{TWITCH_URL}}", self._twitch_dashboard_href or "")
+        if self._auth_misconfigured:
+            raise web.HTTPServiceUnavailable(
+                text=(
+                    "Dashboard Auth ist nicht korrekt konfiguriert. "
+                    "Discord OAuth Client-ID/Secret fehlen im Windows-Tresor (DeadlockBot)."
+                )
+            )
+        if self._is_auth_enforced() and not self._has_valid_auth(request):
+            if self._discord_auth_required:
+                raise web.HTTPFound(self._build_discord_login_url(request, next_path="/admin"))
+            self._check_auth(request)
+
+        session = self._get_discord_auth_session(request)
+        display_name = str((session or {}).get("display_name") or "Nicht angemeldet")
+        html_text = (
+            _load_index_html()
+            .replace("{{TWITCH_URL}}", self._twitch_dashboard_href or "")
+            .replace("{{AUTH_USER_LABEL}}", html.escape(display_name, quote=True))
+            .replace("{{DISCORD_LOGIN_URL}}", self._build_discord_login_url(request, next_path="/admin"))
+            .replace("{{AUTH_LOGOUT_URL}}", "/auth/logout")
+        )
         return web.Response(text=html_text, content_type="text/html")
 
     def _voice_cog(self) -> Any:
@@ -2757,6 +3182,7 @@ class DashboardServer:
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         self._check_auth(request, required=bool(self.token))
+        auth_session = self._auth_session_for_request(request)
 
         bot = self.bot
         tz = bot.startup_time.tzinfo
@@ -2826,6 +3252,26 @@ class DashboardServer:
             "lifecycle": lifecycle_state or {"enabled": False},
             "settings": {
                 "per_cog_unload_timeout": bot.per_cog_unload_timeout,
+            },
+            "auth": {
+                "enforced": self._is_auth_enforced(),
+                "mode": (
+                    "discord"
+                    if self._discord_auth_required
+                    else ("token" if self.token else "none")
+                ),
+                "discord_enabled": self._discord_auth_required,
+                "login_url": self._build_discord_login_url(request, next_path="/admin"),
+                "logout_url": "/auth/logout",
+                "user": (
+                    {
+                        "id": auth_session.get("user_id"),
+                        "display_name": auth_session.get("display_name"),
+                        "username": auth_session.get("username"),
+                    }
+                    if auth_session
+                    else None
+                ),
             },
             "health": await self._collect_health_checks(),
             "standalone": await self._collect_standalone_snapshot(),

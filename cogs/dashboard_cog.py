@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import TYPE_CHECKING, Optional
 
 from discord.ext import commands
@@ -12,6 +11,9 @@ if TYPE_CHECKING:
     from main_bot import MasterBot
 
 log = logging.getLogger(__name__)
+
+DASHBOARD_HOST = "127.0.0.1"
+DASHBOARD_PORT = 8766
 
 
 class DashboardCog(commands.Cog):
@@ -22,30 +24,12 @@ class DashboardCog(commands.Cog):
         self.dashboard: Optional[object] = None
         self._start_task: Optional[asyncio.Task] = None
 
-        # Read dashboard config from environment (default: enabled)
-        dash_env = (os.getenv("MASTER_DASHBOARD_ENABLED", "1") or "1").strip().lower()
-        dashboard_enabled = dash_env in {"1", "true", "yes", "on"}
-
-        if not dashboard_enabled:
-            log.info("Dashboard disabled via MASTER_DASHBOARD_ENABLED")
-            return
-
         # Import and create dashboard server
         try:
             from service.dashboard import DashboardServer
 
-            host = os.getenv("MASTER_DASHBOARD_HOST", "127.0.0.1")
-            port_str = os.getenv("MASTER_DASHBOARD_PORT", "8766")
-            try:
-                port = int(port_str)
-            except ValueError:
-                log.error("Invalid MASTER_DASHBOARD_PORT: %s", port_str)
-                return
-
-            token = os.getenv("MASTER_DASHBOARD_TOKEN", "").strip() or None
-
-            self.dashboard = DashboardServer(self.bot, host=host, port=port, token=token)
-            log.info("Dashboard initialized in cog (Host %s, Port %s)", host, port)
+            self.dashboard = DashboardServer(self.bot, host=DASHBOARD_HOST, port=DASHBOARD_PORT, token=None)
+            log.info("Dashboard initialized in cog (Host %s, Port %s)", DASHBOARD_HOST, DASHBOARD_PORT)
 
         except Exception as e:
             log.error("Could not initialize dashboard in cog: %s", e)

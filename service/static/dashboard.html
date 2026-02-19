@@ -978,6 +978,12 @@
             display: flex;
             align-items: center;
             gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .top-nav-right {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
         .top-nav-left input {
             padding: 0.4rem 0.6rem;
@@ -991,6 +997,34 @@
         .top-nav-left strong {
             color: #adb5bd;
             font-size: 0.85rem;
+        }
+        .auth-user {
+            display: inline-flex;
+            align-items: center;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 999px;
+            padding: 0.35rem 0.75rem;
+            font-size: 0.85rem;
+            color: #dee2e6;
+            background: rgba(255, 255, 255, 0.05);
+        }
+        .token-tools {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 10px;
+            padding: 0.25rem 0.5rem;
+            background: rgba(255,255,255,0.03);
+        }
+        .token-tools > summary {
+            cursor: pointer;
+            font-size: 0.8rem;
+            color: #adb5bd;
+            user-select: none;
+        }
+        .token-tools > summary::-webkit-details-marker {
+            color: #adb5bd;
         }
 
         /* ─── Bot Section (compact, grid) ─── */
@@ -1201,11 +1235,19 @@
     <!-- ─── Top Nav ─── -->
     <div class="top-nav">
         <div class="top-nav-left">
-            <strong>Token:</strong>
-            <input id="token-input" type="password" placeholder="Bearer Token">
-            <button id="apply-token">Apply</button>
+            <span id="auth-user-label" class="auth-user">{{AUTH_USER_LABEL}}</span>
+            <a id="auth-login-link" href="{{DISCORD_LOGIN_URL}}" rel="nofollow">Discord Login</a>
+            <a id="auth-logout-link" href="{{AUTH_LOGOUT_URL}}" rel="nofollow">Logout</a>
+            <details class="token-tools">
+                <summary>Token Fallback</summary>
+                <strong>Token:</strong>
+                <input id="token-input" type="password" placeholder="Bearer Token">
+                <button id="apply-token">Apply</button>
+            </details>
         </div>
-        <a href="{{TWITCH_URL}}" target="_blank" rel="noopener">Twitch Dashboard</a>
+        <div class="top-nav-right">
+            <a href="{{TWITCH_URL}}" target="_blank" rel="noopener">Twitch Dashboard</a>
+        </div>
     </div>
 
     <!-- ─── Bot Status (always visible) ─── -->
@@ -1556,6 +1598,9 @@
     const logsLinesInput = document.getElementById('logs-lines');
     const treeContainer = document.getElementById('tree-container');
     const tokenInput = document.getElementById('token-input');
+    const authUserLabel = document.getElementById('auth-user-label');
+    const authLoginLink = document.getElementById('auth-login-link');
+    const authLogoutLink = document.getElementById('auth-logout-link');
     const selectionTitle = document.getElementById('selection-title');
     const selectionDescription = document.getElementById('selection-description');
     const resetSelectionBtn = document.getElementById('reset-selection');
@@ -1664,7 +1709,12 @@
     let selectedNode = null;
     let showHiddenCogs = false;
     let lastTreeData = null;
-    tokenInput.value = authToken;
+    if (tokenInput) {
+        tokenInput.value = authToken;
+    }
+    if (authLogoutLink) {
+        authLogoutLink.style.display = 'none';
+    }
 
     function log(message, type='info') {
         const entry = document.createElement('div');
@@ -1687,6 +1737,13 @@
     async function fetchJSON(url, options = {}) {
         const response = await fetch(url, { headers: headers(), ...options });
         if (!response.ok) {
+            if (response.status === 401) {
+                const loginUrl = response.headers.get('X-Auth-Login');
+                if (loginUrl) {
+                    window.location.href = loginUrl;
+                    throw new Error('Weiterleitung zur Anmeldung...');
+                }
+            }
             const text = await response.text();
             throw new Error(text || response.statusText);
         }
@@ -2133,6 +2190,7 @@
             document.getElementById('bot-latency').textContent = 'Latency: ' + formatLatency(data.bot.latency_ms);
 
             renderDashboard(data.dashboard || {}, data.lifecycle || {});
+            renderAuth(data.auth || {});
 
             const healthChecks = data.health || [];
             renderHealth(healthChecks);
@@ -2144,6 +2202,24 @@
             renderTree(tree);
         } catch (err) {
             log('Status konnte nicht geladen werden: ' + err.message, 'error');
+        }
+    }
+
+    function renderAuth(info = {}) {
+        const user = info.user || null;
+        const display = user && user.display_name
+            ? user.display_name
+            : 'Nicht angemeldet';
+        if (authUserLabel) {
+            authUserLabel.textContent = user ? ('Angemeldet: ' + display) : 'Nicht angemeldet';
+        }
+        if (authLoginLink) {
+            authLoginLink.href = info.login_url || '{{DISCORD_LOGIN_URL}}';
+            authLoginLink.style.display = user ? 'none' : 'inline-flex';
+        }
+        if (authLogoutLink) {
+            authLogoutLink.href = info.logout_url || '{{AUTH_LOGOUT_URL}}';
+            authLogoutLink.style.display = user ? 'inline-flex' : 'none';
         }
     }
 
@@ -4837,14 +4913,17 @@ async function fetchStandaloneLogs(key, limit = 200) {
         });
     }
 
-    document.getElementById('apply-token').addEventListener('click', () => {
-        authToken = tokenInput.value.trim();
-        localStorage.setItem('master-dashboard-token', authToken);
-        loadStatus();
-        if (logsInitialized) {
-            loadLogIndex();
-        }
-    });
+    const applyTokenBtn = document.getElementById('apply-token');
+    if (applyTokenBtn && tokenInput) {
+        applyTokenBtn.addEventListener('click', () => {
+            authToken = tokenInput.value.trim();
+            localStorage.setItem('master-dashboard-token', authToken);
+            loadStatus();
+            if (logsInitialized) {
+                loadLogIndex();
+            }
+        });
+    }
 
     document.getElementById('reload-all').addEventListener('click', async () => {
         try {

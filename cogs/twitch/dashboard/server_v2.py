@@ -8,7 +8,7 @@ import ipaddress
 import re
 import secrets
 import time
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlsplit, urlunsplit
 
 import aiohttp
@@ -26,7 +26,12 @@ from ..raid.views import RaidAuthGenerateView, build_raid_requirements_embed
 TWITCH_OAUTH_AUTHORIZE_URL = "https://id.twitch.tv/oauth2/authorize"
 TWITCH_OAUTH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 TWITCH_HELIX_USERS_URL = "https://api.twitch.tv/helix/users"
+DISCORD_API_BASE_URL = "https://discord.com/api/v10"
 LOGIN_RE = re.compile(r"^[A-Za-z0-9_]{3,25}$")
+DEFAULT_DASHBOARD_MODERATOR_ROLE_ID = 1337518124647579661
+DEFAULT_DASHBOARD_OWNER_USER_ID = 662995601738170389
+KEYRING_SERVICE_NAME = "DeadlockBot"
+TWITCH_ADMIN_DISCORD_REDIRECT_URI = "https://admin.earlysalty.de/twitch/auth/discord/callback"
 
 
 class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTemplateMixin, AnalyticsV2Mixin):
@@ -83,6 +88,39 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             str(getattr(getattr(raid_bot, "auth_manager", None), "redirect_uri", "") or "").strip()
         )
         self._master_dashboard_href = "/admin"
+        keyring_client_id = self._read_keyring_secret("DISCORD_OAUTH_CLIENT_ID")
+        discord_bot = None
+        auth_manager = getattr(raid_bot, "auth_manager", None) if raid_bot else None
+        if auth_manager is not None:
+            discord_bot = getattr(auth_manager, "_discord_bot", None)
+        if discord_bot is None and raid_bot is not None:
+            discord_bot = getattr(raid_bot, "_discord_bot", None)
+        app_client_id = str(getattr(discord_bot, "application_id", "") or "").strip()
+        self._discord_admin_client_id = (keyring_client_id or app_client_id).strip()
+        self._discord_admin_client_secret = self._read_keyring_secret("DISCORD_OAUTH_CLIENT_SECRET").strip()
+        self._discord_admin_redirect_uri = TWITCH_ADMIN_DISCORD_REDIRECT_URI
+        self._discord_admin_enabled = True
+        self._discord_admin_owner_user_id = DEFAULT_DASHBOARD_OWNER_USER_ID
+        self._discord_admin_moderator_role_id = DEFAULT_DASHBOARD_MODERATOR_ROLE_ID
+        self._discord_admin_guild_ids: Tuple[int, ...] = ()
+        self._discord_admin_cookie_name = "twitch_admin_session"
+        self._discord_admin_session_ttl = 12 * 3600
+        self._discord_admin_state_ttl = 600
+        self._discord_admin_oauth_states: Dict[str, Dict[str, Any]] = {}
+        self._discord_admin_sessions: Dict[str, Dict[str, Any]] = {}
+        self._discord_admin_required = (
+            self._discord_admin_enabled
+            and bool(
+                self._discord_admin_client_id
+                and self._discord_admin_client_secret
+                and self._discord_admin_redirect_uri
+            )
+        )
+        if self._discord_admin_enabled and not self._discord_admin_required:
+            log.warning(
+                "Twitch Admin Discord OAuth ist unvollständig (Client ID/Secret/Redirect fehlen). "
+                "Fallback auf Token/localhost."
+            )
 
     async def _empty_add(self, _: str, __: bool) -> str:
         return "Add-Funktion ist aktuell nicht verfügbar"
@@ -107,6 +145,23 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
 
     async def _empty_raid_history(self, **_: Any) -> List[dict]:
         return []
+
+    @staticmethod
+    def _read_keyring_secret(key: str) -> str:
+        secret_key = (key or "").strip()
+        if not secret_key:
+            return ""
+        try:
+            import keyring
+        except Exception:
+            return ""
+        try:
+            value = keyring.get_password(KEYRING_SERVICE_NAME, secret_key)
+            if not value:
+                value = keyring.get_password(f"{secret_key}@{KEYRING_SERVICE_NAME}", secret_key)
+        except Exception:
+            return ""
+        return str(value or "").strip()
 
     def _check_admin_token(self, token: Optional[str]) -> bool:
         if self._noauth:
@@ -207,6 +262,344 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         text = "" if value is None else str(value)
         return text.replace("\r", "\\r").replace("\n", "\\n")
 
+    @staticmethod
+    def _normalize_discord_admin_next_path(raw: Optional[str]) -> str:
+        fallback = "/twitch/admin"
+        candidate = (raw or "").strip()
+        if not candidate:
+            return fallback
+        try:
+            parts = urlsplit(candidate)
+        except Exception:
+            return fallback
+        if parts.scheme or parts.netloc:
+            return fallback
+        if not candidate.startswith("/") or not candidate.startswith("/twitch"):
+            return fallback
+        return candidate
+
+    def _build_discord_admin_login_url(self, request: web.Request, *, next_path: Optional[str] = None) -> str:
+        if not self._discord_admin_required:
+            return "/twitch/admin"
+        normalized_next = self._normalize_discord_admin_next_path(
+            next_path or (request.rel_url.path_qs if request.rel_url else "/twitch/admin")
+        )
+        return f"/twitch/auth/discord/login?{urlencode({'next': normalized_next})}"
+
+    def _normalized_discord_admin_redirect_uri(self) -> Optional[str]:
+        raw = (self._discord_admin_redirect_uri or "").strip()
+        if not raw:
+            return None
+        candidate = raw if "://" in raw else f"https://{raw}"
+        try:
+            parsed = urlparse(candidate)
+        except Exception:
+            return None
+        scheme = (parsed.scheme or "").strip().lower()
+        host = (parsed.hostname or "").strip().lower()
+        if scheme not in {"http", "https"}:
+            return None
+        if scheme == "http" and host not in {"127.0.0.1", "localhost", "::1"}:
+            return None
+        if parsed.username or parsed.password or not parsed.netloc:
+            return None
+        if (parsed.path or "").rstrip("/") != "/twitch/auth/discord/callback":
+            return None
+        return urlunsplit((scheme, parsed.netloc, "/twitch/auth/discord/callback", "", ""))
+
+    def _cleanup_discord_admin_state(self) -> None:
+        now = time.time()
+        expired_states = [
+            key
+            for key, row in self._discord_admin_oauth_states.items()
+            if now - float(row.get("created_at", 0.0)) > self._discord_admin_state_ttl
+        ]
+        for key in expired_states:
+            self._discord_admin_oauth_states.pop(key, None)
+
+        expired_sessions = [
+            key
+            for key, row in self._discord_admin_sessions.items()
+            if float(row.get("expires_at", 0.0)) <= now
+        ]
+        for key in expired_sessions:
+            self._discord_admin_sessions.pop(key, None)
+
+        max_states = 1000
+        if len(self._discord_admin_oauth_states) > max_states:
+            oldest_states = sorted(
+                self._discord_admin_oauth_states.items(),
+                key=lambda item: float(item[1].get("created_at", 0.0)),
+            )
+            for key, _ in oldest_states[: len(self._discord_admin_oauth_states) - max_states]:
+                self._discord_admin_oauth_states.pop(key, None)
+
+        max_sessions = 5000
+        if len(self._discord_admin_sessions) > max_sessions:
+            oldest_sessions = sorted(
+                self._discord_admin_sessions.items(),
+                key=lambda item: float(item[1].get("created_at", 0.0)),
+            )
+            for key, _ in oldest_sessions[: len(self._discord_admin_sessions) - max_sessions]:
+                self._discord_admin_sessions.pop(key, None)
+
+    def _set_discord_admin_cookie(
+        self,
+        response: web.StreamResponse,
+        request: web.Request,
+        session_id: str,
+    ) -> None:
+        response.set_cookie(
+            self._discord_admin_cookie_name,
+            session_id,
+            max_age=self._discord_admin_session_ttl,
+            httponly=True,
+            secure=self._is_secure_request(request),
+            samesite="Lax",
+            path="/",
+        )
+
+    def _clear_discord_admin_cookie(self, response: web.StreamResponse) -> None:
+        response.del_cookie(self._discord_admin_cookie_name, path="/")
+
+    def _get_discord_admin_session(self, request: web.Request) -> Optional[Dict[str, Any]]:
+        if not self._discord_admin_required:
+            return None
+        self._cleanup_discord_admin_state()
+        session_id = (request.cookies.get(self._discord_admin_cookie_name) or "").strip()
+        if not session_id:
+            return None
+        session = self._discord_admin_sessions.get(session_id)
+        if not session:
+            return None
+        now = time.time()
+        if float(session.get("expires_at", 0.0)) <= now:
+            self._discord_admin_sessions.pop(session_id, None)
+            return None
+        session["expires_at"] = now + self._discord_admin_session_ttl
+        session["last_seen_at"] = now
+        session.setdefault("auth_type", "discord_admin")
+        return session
+
+    def _is_discord_admin_request(self, request: web.Request) -> bool:
+        return bool(self._get_discord_admin_session(request))
+
+    async def _exchange_discord_admin_code(
+        self,
+        code: str,
+        redirect_uri: str,
+    ) -> Optional[Dict[str, Any]]:
+        payload = {
+            "client_id": self._discord_admin_client_id,
+            "client_secret": self._discord_admin_client_secret,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+        }
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{DISCORD_API_BASE_URL}/oauth2/token",
+                data=payload,
+                headers=headers,
+            ) as response:
+                if response.status != 200:
+                    body = await response.text()
+                    log.warning(
+                        "Discord admin OAuth exchange failed (status=%s body=%s)",
+                        response.status,
+                        self._sanitize_log_value(body[:200]),
+                    )
+                    return None
+                data = await response.json()
+        return data if isinstance(data, dict) else None
+
+    async def _fetch_discord_admin_user(self, access_token: str) -> Optional[Dict[str, Any]]:
+        if not access_token:
+            return None
+        timeout = aiohttp.ClientTimeout(total=20)
+        headers = {"Authorization": f"Bearer {access_token}"}
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"{DISCORD_API_BASE_URL}/users/@me", headers=headers) as response:
+                if response.status != 200:
+                    body = await response.text()
+                    log.warning(
+                        "Discord admin user lookup failed (status=%s body=%s)",
+                        response.status,
+                        self._sanitize_log_value(body[:200]),
+                    )
+                    return None
+                data = await response.json()
+        return data if isinstance(data, dict) else None
+
+    async def _check_discord_admin_membership(self, user_id: int) -> Tuple[bool, str]:
+        if user_id == self._discord_admin_owner_user_id:
+            return True, "owner_override"
+
+        discord_bot = None
+        raid_bot = getattr(self, "_raid_bot", None)
+        if raid_bot is not None:
+            auth_manager = getattr(raid_bot, "auth_manager", None)
+            discord_bot = getattr(auth_manager, "_discord_bot", None) if auth_manager else None
+            if discord_bot is None:
+                discord_bot = getattr(raid_bot, "_discord_bot", None)
+
+        guilds: List[Any] = []
+        seen: set[int] = set()
+        for guild_id in self._discord_admin_guild_ids:
+            guild = discord_bot.get_guild(guild_id) if discord_bot else None
+            if guild and guild.id not in seen:
+                guilds.append(guild)
+                seen.add(guild.id)
+        if not guilds and discord_bot:
+            guilds = list(getattr(discord_bot, "guilds", []) or [])
+
+        for guild in guilds:
+            member = guild.get_member(user_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except Exception:
+                    member = None
+            if member is None:
+                continue
+            perms = getattr(member, "guild_permissions", None)
+            if perms and bool(getattr(perms, "administrator", False)):
+                return True, f"guild_admin:{guild.id}"
+            role_ids = {int(role.id) for role in getattr(member, "roles", []) if getattr(role, "id", None)}
+            if self._discord_admin_moderator_role_id in role_ids:
+                return True, f"moderator_role:{guild.id}"
+        return False, "missing_admin_or_moderator_role"
+
+    async def discord_auth_login(self, request: web.Request) -> web.StreamResponse:
+        if not self._discord_admin_required:
+            raise web.HTTPFound("/twitch/admin")
+        existing = self._get_discord_admin_session(request)
+        next_path = self._normalize_discord_admin_next_path(request.query.get("next"))
+        if existing:
+            raise web.HTTPFound(next_path)
+
+        redirect_uri = self._normalized_discord_admin_redirect_uri()
+        if not redirect_uri:
+            return web.Response(
+                text=(
+                    "Discord OAuth Redirect URI ist ungültig. "
+                    "Erwartet wird exakt: https://admin.earlysalty.de/twitch/auth/discord/callback."
+                ),
+                status=503,
+            )
+
+        self._cleanup_discord_admin_state()
+        state = secrets.token_urlsafe(32)
+        self._discord_admin_oauth_states[state] = {
+            "created_at": time.time(),
+            "next_path": next_path,
+            "redirect_uri": redirect_uri,
+        }
+        query = urlencode(
+            {
+                "client_id": self._discord_admin_client_id,
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": "identify",
+                "state": state,
+            }
+        )
+        raise web.HTTPFound(f"{DISCORD_API_BASE_URL}/oauth2/authorize?{query}")
+
+    async def discord_auth_callback(self, request: web.Request) -> web.StreamResponse:
+        if not self._discord_admin_required:
+            raise web.HTTPFound("/twitch/admin")
+
+        error = (request.query.get("error") or "").strip()
+        if error:
+            return web.Response(text=f"Discord OAuth Fehler: {error}", status=401)
+
+        state = (request.query.get("state") or "").strip()
+        code = (request.query.get("code") or "").strip()
+        if not state or not code:
+            return web.Response(text="Fehlender OAuth state/code.", status=400)
+
+        self._cleanup_discord_admin_state()
+        state_data = self._discord_admin_oauth_states.pop(state, None)
+        if not state_data:
+            return web.Response(text="OAuth state ungültig oder abgelaufen.", status=400)
+
+        token_data = await self._exchange_discord_admin_code(
+            code,
+            str(state_data.get("redirect_uri") or ""),
+        )
+        access_token = str((token_data or {}).get("access_token") or "").strip()
+        if not access_token:
+            return web.Response(text="OAuth Austausch fehlgeschlagen.", status=401)
+
+        user = await self._fetch_discord_admin_user(access_token)
+        if not user:
+            return web.Response(text="Discord User konnte nicht geladen werden.", status=401)
+
+        user_id_raw = str(user.get("id") or "").strip()
+        if not user_id_raw.isdigit():
+            return web.Response(text="Ungültige Discord User-ID.", status=401)
+        user_id = int(user_id_raw)
+        allowed, reason = await self._check_discord_admin_membership(user_id)
+        if not allowed:
+            log.warning(
+                "AUDIT twitch-dashboard discord login denied: user=%s reason=%s peer=%s",
+                user_id,
+                self._sanitize_log_value(reason),
+                self._sanitize_log_value(self._peer_host(request)),
+            )
+            return web.Response(
+                text=(
+                    "Kein Zugriff. Es wird Administrator-Recht oder die Moderator-Rolle benötigt."
+                ),
+                status=403,
+            )
+
+        username = str(user.get("username") or "").strip()
+        global_name = str(user.get("global_name") or "").strip()
+        discriminator = str(user.get("discriminator") or "0").strip()
+        if global_name:
+            display_name = global_name
+        elif discriminator and discriminator != "0":
+            display_name = f"{username}#{discriminator}"
+        else:
+            display_name = username or f"User {user_id}"
+
+        now = time.time()
+        session_id = secrets.token_urlsafe(32)
+        self._discord_admin_sessions[session_id] = {
+            "auth_type": "discord_admin",
+            "user_id": user_id,
+            "username": username,
+            "display_name": display_name,
+            "reason": reason,
+            "created_at": now,
+            "last_seen_at": now,
+            "expires_at": now + self._discord_admin_session_ttl,
+        }
+
+        log.info(
+            "AUDIT twitch-dashboard discord login success: user=%s reason=%s peer=%s",
+            user_id,
+            self._sanitize_log_value(reason),
+            self._sanitize_log_value(self._peer_host(request)),
+        )
+
+        destination = self._normalize_discord_admin_next_path(state_data.get("next_path"))
+        response = web.HTTPFound(destination)
+        self._set_discord_admin_cookie(response, request, session_id)
+        raise response
+
+    async def discord_auth_logout(self, request: web.Request) -> web.StreamResponse:
+        session_id = (request.cookies.get(self._discord_admin_cookie_name) or "").strip()
+        if session_id:
+            self._discord_admin_sessions.pop(session_id, None)
+        response = web.HTTPFound(self._build_discord_admin_login_url(request, next_path="/twitch/admin"))
+        self._clear_discord_admin_cookie(response)
+        raise response
+
     async def _do_add(self, raw: str) -> str:
         login = self._normalize_login(raw)
         if not login:
@@ -234,9 +627,20 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             "/twitch/market",
         )
         if request.path.startswith(admin_only_prefixes):
+            token = request.headers.get("X-Admin-Token") or request.query.get("token")
             if self._is_local_request(request):
                 return
-            raise web.HTTPForbidden(text="admin dashboard is localhost-only")
+            if self._is_discord_admin_request(request):
+                return
+            if self._check_admin_token(token):
+                return
+            login_url = self._build_discord_admin_login_url(request, next_path="/twitch/admin")
+            if request.method in {"GET", "HEAD"}:
+                raise web.HTTPFound(login_url)
+            raise web.HTTPUnauthorized(
+                text="Admin authentication required",
+                headers={"X-Auth-Login": login_url},
+            )
 
         if self._check_v2_auth(request):
             return
@@ -498,7 +902,17 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
 
     def _build_dashboard_login_url(self, request: web.Request) -> str:
         next_path = self._normalize_next_path(request.rel_url.path_qs if request.rel_url else "/twitch/dashboard-v2")
+        if self._should_use_discord_admin_login(request):
+            return self._build_discord_admin_login_url(request, next_path=next_path)
         return f"/twitch/auth/login?{urlencode({'next': next_path})}"
+
+    def _should_use_discord_admin_login(self, request: web.Request) -> bool:
+        if not self._discord_admin_required:
+            return False
+        dashboard_context = (request.headers.get("X-Dashboard-Context") or "").strip().lower()
+        if dashboard_context == "public":
+            return False
+        return True
 
     def _resolve_legacy_stats_url(self) -> str:
         # The legacy stats dashboard is now always served locally.
@@ -637,7 +1051,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         Local requests should land directly in the legacy stats/admin UI.
         Public/proxied requests keep the dashboard selection page.
         """
-        if self._is_local_request(request):
+        if self._is_local_request(request) or self._is_discord_admin_request(request):
             destination = "/twitch/admin"
             fallback = "/twitch/admin"
         else:
@@ -650,8 +1064,20 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
 
     async def public_home(self, request: web.Request) -> web.StreamResponse:
         """Public homepage for OAuth verification and app information."""
-        dashboard_url = "/twitch/dashboards" if self._check_v2_auth(request) else "/twitch/auth/login?next=%2Ftwitch%2Fdashboards"
-        dashboard_label = "Dashboard oeffnen" if self._check_v2_auth(request) else "Mit Twitch anmelden"
+        dashboard_url = (
+            "/twitch/dashboards"
+            if self._check_v2_auth(request)
+            else self._build_discord_admin_login_url(request, next_path="/twitch/dashboards")
+            if self._should_use_discord_admin_login(request)
+            else "/twitch/auth/login?next=%2Ftwitch%2Fdashboards"
+        )
+        dashboard_label = (
+            "Dashboard oeffnen"
+            if self._check_v2_auth(request)
+            else "Mit Discord anmelden"
+            if self._should_use_discord_admin_login(request)
+            else "Mit Twitch anmelden"
+        )
 
         page = (
             "<!doctype html><html lang='de'><head><meta charset='utf-8'>"
@@ -949,11 +1375,20 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
     async def stats_entry(self, request: web.Request) -> web.StreamResponse:
         """Canonical public entrypoint that links old + beta analytics dashboards."""
         if not self._check_v2_auth(request):
-            raise web.HTTPFound("/twitch/auth/login?next=%2Ftwitch%2Fdashboards")
+            login_url = (
+                self._build_discord_admin_login_url(request, next_path="/twitch/dashboards")
+                if self._should_use_discord_admin_login(request)
+                else "/twitch/auth/login?next=%2Ftwitch%2Fdashboards"
+            )
+            raise web.HTTPFound(login_url)
 
         legacy_url = self._resolve_legacy_stats_url()
         beta_url = "/twitch/dashboard-v2"
-        logout_url = "/twitch/auth/logout"
+        logout_url = (
+            "/twitch/auth/discord/logout"
+            if self._is_discord_admin_request(request)
+            else "/twitch/auth/logout"
+        )
 
         html = (
             "<!doctype html><html lang='de'><head><meta charset='utf-8'>"
@@ -1000,7 +1435,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
 
         if not self._is_oauth_configured():
             return web.Response(
-                text="Twitch OAuth nicht konfiguriert. Bitte TWITCH_CLIENT_ID und TWITCH_CLIENT_SECRET setzen.",
+                text="Twitch OAuth ist aktuell nicht konfiguriert.",
                 status=503,
             )
 
@@ -1010,8 +1445,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             return web.Response(
                 text=(
                     "Twitch OAuth Redirect-URI ist nicht konfiguriert oder ungültig. "
-                    "Bitte TWITCH_DASHBOARD_AUTH_REDIRECT_URI auf "
-                    "https://<dein-host>/twitch/auth/callback setzen."
+                    "Bitte eine gültige /twitch/auth/callback URL konfigurieren."
                 ),
                 status=503,
             )
@@ -1757,6 +2191,9 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
             web.get("/twitch/auth/login", self.auth_login),
             web.get("/twitch/auth/callback", self.auth_callback),
             web.get("/twitch/auth/logout", self.auth_logout),
+            web.get("/twitch/auth/discord/login", self.discord_auth_login),
+            web.get("/twitch/auth/discord/callback", self.discord_auth_callback),
+            web.get("/twitch/auth/discord/logout", self.discord_auth_logout),
             web.get("/twitch/raid/callback", self.raid_oauth_callback),
             web.post("/twitch/discord_link", self.discord_link),
             web.post("/twitch/reload", self.reload_cog),

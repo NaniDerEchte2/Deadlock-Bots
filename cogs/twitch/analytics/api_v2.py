@@ -104,6 +104,18 @@ class AnalyticsV2Mixin:
         return 'Other'
 
     def _get_dashboard_session(self, request: web.Request) -> Optional[Dict[str, Any]]:
+        admin_getter = getattr(self, "_get_discord_admin_session", None)
+        if callable(admin_getter):
+            try:
+                admin_session = admin_getter(request)
+            except Exception:
+                log.debug("Could not resolve Discord admin dashboard session", exc_info=True)
+                admin_session = None
+            if isinstance(admin_session, dict):
+                session_copy = dict(admin_session)
+                session_copy.setdefault("auth_type", "discord_admin")
+                return session_copy
+
         getter = getattr(self, "_get_dashboard_auth_session", None)
         if not callable(getter):
             return None
@@ -207,7 +219,11 @@ class AnalyticsV2Mixin:
         if not self._check_v2_auth(request):
             login_url = self._get_dashboard_login_url(request)
             if request.path.startswith("/twitch/api/"):
-                login_url = f"/twitch/auth/login?{urlencode({'next': '/twitch/dashboard-v2'})}"
+                should_use_discord = getattr(self, "_should_use_discord_admin_login", None)
+                if callable(should_use_discord) and bool(should_use_discord(request)):
+                    login_url = "/twitch/auth/discord/login?next=%2Ftwitch%2Fdashboard-v2"
+                else:
+                    login_url = "/twitch/auth/login?next=%2Ftwitch%2Fdashboard-v2"
             payload = {
                 "error": "Authentication required. Use Twitch login, partner_token, or access from localhost.",
                 "loginUrl": login_url,
@@ -233,7 +249,11 @@ class AnalyticsV2Mixin:
         if getattr(self, "_noauth", False):
             return "localhost"
 
-        if self._get_dashboard_session(request):
+        dashboard_session = self._get_dashboard_session(request)
+        if dashboard_session:
+            auth_type = str(dashboard_session.get("auth_type") or "").strip().lower()
+            if auth_type == "discord_admin":
+                return "admin"
             return "partner"
 
         admin_token = getattr(self, "_token", None)
@@ -383,7 +403,7 @@ class AnalyticsV2Mixin:
     async def _serve_dashboard_v2(self, request: web.Request) -> web.Response:
         """Serve the main dashboard HTML."""
         if not self._check_v2_auth(request):
-            raise web.HTTPFound("/twitch/auth/login?next=%2Ftwitch%2Fdashboard-v2")
+            raise web.HTTPFound(self._get_dashboard_login_url(request))
         import pathlib
         dist_path = pathlib.Path(__file__).parent / "dashboard_v2" / "dist" / "index.html"
         if dist_path.exists():
