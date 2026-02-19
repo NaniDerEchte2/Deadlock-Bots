@@ -35,7 +35,7 @@ KEYRING_SERVICE_NAME = "DeadlockBot"
 TWITCH_ADMIN_PUBLIC_URL = (
     os.getenv("TWITCH_ADMIN_PUBLIC_URL")
     or os.getenv("MASTER_DASHBOARD_PUBLIC_URL")
-    or "https://admin.earlysalty.com"
+    or "https://admin.earlysalty.de"
 ).strip()
 TWITCH_ADMIN_DISCORD_REDIRECT_URI = (
     os.getenv("TWITCH_ADMIN_DISCORD_REDIRECT_URI")
@@ -494,7 +494,7 @@ class DashboardV2Server(DashboardLiveMixin, DashboardStatsMixin, DashboardTempla
         if not redirect_uri:
             expected_redirect = (
                 str(self._discord_admin_redirect_uri or "").strip()
-                or "https://admin.earlysalty.com/twitch/auth/discord/callback"
+                or "https://admin.earlysalty.de/twitch/auth/discord/callback"
             )
             return web.Response(
                 text=(

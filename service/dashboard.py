@@ -35,7 +35,7 @@ DEFAULT_DASHBOARD_MODERATOR_ROLE_ID = 1337518124647579661
 DEFAULT_DASHBOARD_OWNER_USER_ID = 662995601738170389
 KEYRING_SERVICE_NAME = "DeadlockBot"
 MASTER_DASHBOARD_PUBLIC_URL = (
-    os.getenv("MASTER_DASHBOARD_PUBLIC_URL") or "https://admin.earlysalty.com"
+    os.getenv("MASTER_DASHBOARD_PUBLIC_URL") or "https://admin.earlysalty.de"
 ).strip()
 MASTER_DASHBOARD_DISCORD_REDIRECT_URI = (
     os.getenv("MASTER_DASHBOARD_DISCORD_REDIRECT_URI")
@@ -1298,7 +1298,7 @@ class DashboardServer:
         if not redirect_uri:
             expected_redirect = (
                 str(self._discord_redirect_uri or "").strip()
-                or "https://admin.earlysalty.com/auth/discord/callback"
+                or "https://admin.earlysalty.de/auth/discord/callback"
             )
             raise web.HTTPServiceUnavailable(
                 text=(
