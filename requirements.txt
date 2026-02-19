@@ -2,7 +2,7 @@
 # Generated from .venv (2026-02-18) — only direct project dependencies
 
 # Discord
-discord.py==2.6.3
+discord.py==2.6.4
 
 # HTTP / Dashboard
 aiohttp==3.13.3
