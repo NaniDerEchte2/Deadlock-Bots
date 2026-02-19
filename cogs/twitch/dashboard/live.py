@@ -33,6 +33,26 @@ _REQUIRED_SCOPES: list[str] = [
     "channel:read:redemptions",
 ]
 
+_SCOPE_COLUMN_LABELS: dict[str, str] = {
+    "channel:manage:raids": "Raids",
+    "moderator:read:followers": "Follower",
+    "moderator:manage:banned_users": "Bans",
+    "moderator:manage:chat_messages": "Chat Mod",
+    "channel:read:subscriptions": "Subs",
+    "analytics:read:games": "Analytics",
+    "channel:manage:moderators": "Mods",
+    "channel:bot": "Bot",
+    "chat:read": "Chat Read",
+    "chat:edit": "Chat Edit",
+    "clips:edit": "Clips",
+    "channel:read:ads": "Ads",
+    "bits:read": "Bits",
+    "channel:read:hype_train": "Hype",
+    "moderator:read:chatters": "Chatters",
+    "moderator:manage:shoutouts": "Shoutouts",
+    "channel:read:redemptions": "Points",
+}
+
 # Scopes die besonders wichtig für Analytics/Lurker-Tracking sind
 _CRITICAL_SCOPES: set[str] = {
     "moderator:read:chatters",   # Lurker-Tracking via Chatters API
@@ -716,69 +736,75 @@ class DashboardLiveMixin:
 
         # --- Scope Status Card ---
         scope_rows: List[str] = []
+        scope_headers_html = "".join(
+            (
+                f"<th class='scope-header' title='{html.escape(scope, quote=True)}'>"
+                f"{html.escape(_SCOPE_COLUMN_LABELS.get(scope, scope))}"
+                "</th>"
+            )
+            for scope in _REQUIRED_SCOPES
+        )
+        scope_table_colspan = 2 + len(_REQUIRED_SCOPES)
+        total_authorized = 0
+        full_scope_count = 0
         try:
             with _storage.get_conn() as _sc:
                 auth_rows = _sc.execute(
                     "SELECT twitch_login, scopes, needs_reauth FROM twitch_raid_auth ORDER BY twitch_login"
                 ).fetchall()
             for auth_row in auth_rows:
+                total_authorized += 1
                 _login = str(auth_row[0] if not hasattr(auth_row, "keys") else auth_row["twitch_login"])
                 _scopes_raw = str(auth_row[1] if not hasattr(auth_row, "keys") else auth_row["scopes"] or "")
                 _needs_reauth = bool(auth_row[2] if not hasattr(auth_row, "keys") else auth_row["needs_reauth"])
                 _token_scopes = set(_scopes_raw.split()) if _scopes_raw else set()
                 _missing = [s for s in _REQUIRED_SCOPES if s not in _token_scopes]
                 _missing_critical = [s for s in _missing if s in _CRITICAL_SCOPES]
-                _has_chatters = "moderator:read:chatters" in _token_scopes
 
                 if _needs_reauth:
                     row_class = "scope-row scope-reauth"
                     status_pill = "<span class='pill err'>Re-Auth nötig</span>"
                 elif _missing_critical:
                     row_class = "scope-row scope-critical"
-                    status_pill = f"<span class='pill warn'>{len(_missing_critical)} kritisch fehlt</span>"
+                    status_pill = "<span class='pill warn'>Kritisch unvollständig</span>"
                 elif _missing:
                     row_class = "scope-row scope-partial"
-                    status_pill = f"<span class='pill neutral'>{len(_missing)} fehlt</span>"
+                    status_pill = "<span class='pill neutral'>Unvollständig</span>"
                 else:
                     row_class = "scope-row scope-full"
                     status_pill = "<span class='pill ok'>Vollständig</span>"
+                    full_scope_count += 1
 
-                chatters_icon = "✅" if _has_chatters else "❌"
-                redemptions_icon = "✅" if "channel:read:redemptions" in _token_scopes else "❌"
-                bits_icon = "✅" if "bits:read" in _token_scopes else "❌"
-                hype_icon = "✅" if "channel:read:hype_train" in _token_scopes else "❌"
-                subs_icon = "✅" if "channel:read:subscriptions" in _token_scopes else "❌"
-
-                missing_chips_html = ""
-                if _missing:
-                    missing_chips_html = "<div class='scope-missing'>" + "".join(
-                        f"<span class='chip {'chip-crit' if s in _CRITICAL_SCOPES else ''}'>{html.escape(s)}</span>"
-                        for s in _missing
-                    ) + "</div>"
+                scope_cells_html = "".join(
+                    (
+                        f"<td class='scope-check {'yes' if scope in _token_scopes else 'no'}' "
+                        f"title='{html.escape(scope, quote=True)}'>"
+                        f"{'☑' if scope in _token_scopes else '☐'}"
+                        "</td>"
+                    )
+                    for scope in _REQUIRED_SCOPES
+                )
 
                 scope_rows.append(
                     f"<tr class='{row_class}'>"
                     f"  <td><strong>{html.escape(_login)}</strong></td>"
                     f"  <td>{status_pill}</td>"
-                    f"  <td title='moderator:read:chatters (Lurker)'>{chatters_icon}</td>"
-                    f"  <td title='channel:read:redemptions'>{redemptions_icon}</td>"
-                    f"  <td title='bits:read'>{bits_icon}</td>"
-                    f"  <td title='channel:read:hype_train'>{hype_icon}</td>"
-                    f"  <td title='channel:read:subscriptions'>{subs_icon}</td>"
-                    f"  <td>{missing_chips_html}</td>"
+                    f"  {scope_cells_html}"
                     f"</tr>"
                 )
         except Exception:
             log.debug("Scope-Status Card: DB-Fehler", exc_info=True)
-            scope_rows = ["<tr><td colspan='8'>Fehler beim Laden der Scope-Daten</td></tr>"]
+            scope_rows = [f"<tr><td colspan='{scope_table_colspan}'>Fehler beim Laden der Scope-Daten</td></tr>"]
 
-        total_authorized = len(scope_rows)
-        full_scope_count = sum(1 for r in scope_rows if "scope-full" in r)
-
+        missing_scope_count = total_authorized - full_scope_count
         scope_summary_pills = (
             f"<span class='pill ok'>{full_scope_count} vollständig</span>"
-            f"<span class='pill warn'>{total_authorized - full_scope_count} unvollständig</span>"
+            f"<span class='pill warn'>{missing_scope_count} unvollständig</span>"
         )
+        scope_empty_row_html = (
+            f"<tr><td colspan='{scope_table_colspan}'>Kein Streamer mit OAuth autorisiert</td></tr>"
+        )
+        scope_body_html = "".join(scope_rows) if scope_rows else scope_empty_row_html
 
         scope_card_html = (
             "<div class='card scope-card'>"
@@ -791,7 +817,7 @@ class DashboardLiveMixin:
             "    <div class='raid-metrics'>"
             f"      <div class='mini-stat'><strong>{total_authorized}</strong><span>Mit OAuth</span></div>"
             f"      <div class='mini-stat'><strong>{full_scope_count}</strong><span>Vollständig</span></div>"
-            f"      <div class='mini-stat'><strong>{total_authorized - full_scope_count}</strong><span>Fehlt</span></div>"
+            f"      <div class='mini-stat'><strong>{missing_scope_count}</strong><span>Unvollständig</span></div>"
             "    </div>"
             "  </div>"
             "  <div class='status-meta' style='margin-bottom:.8rem;'>"
@@ -803,14 +829,9 @@ class DashboardLiveMixin:
             "    <thead><tr>"
             "      <th>Streamer</th>"
             "      <th>Status</th>"
-            "      <th title='moderator:read:chatters'>👁 Chatters</th>"
-            "      <th title='channel:read:redemptions'>🎁 Points</th>"
-            "      <th title='bits:read'>💎 Bits</th>"
-            "      <th title='channel:read:hype_train'>🚂 Hype</th>"
-            "      <th title='channel:read:subscriptions'>⭐ Subs</th>"
-            "      <th>Fehlende Scopes</th>"
+            f"      {scope_headers_html}"
             "    </tr></thead>"
-            f"    <tbody>{''.join(scope_rows) if scope_rows else '<tr><td colspan=8>Kein Streamer mit OAuth autorisiert</td></tr>'}</tbody>"
+            f"    <tbody>{scope_body_html}</tbody>"
             "  </table>"
             "  </div>"
             "</div>"

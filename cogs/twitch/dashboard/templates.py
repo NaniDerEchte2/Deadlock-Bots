@@ -266,6 +266,10 @@ class DashboardTemplateMixin:
   .pill.err {{ background:var(--err-bg); border-color:var(--err-bd); color:var(--err-fg); }}
   .pill.neutral {{ background:rgba(124,58,237,0.15); color:var(--text); border-color:rgba(124,58,237,0.35); }}
   .scope-card {{ margin-top:1.4rem; }}
+  .scope-header {{ white-space:nowrap; text-align:center; min-width:5.4rem; }}
+  .scope-check {{ text-align:center; font-size:1rem; font-weight:700; white-space:nowrap; }}
+  .scope-check.yes {{ color:var(--ok-fg); }}
+  .scope-check.no {{ color:var(--muted); }}
   .scope-missing {{ display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.3rem; }}
   .chip-crit {{ background:rgba(239,68,68,.18); border-color:rgba(239,68,68,.55); color:#fca5a5; }}
   .scope-row.scope-reauth td {{ background:rgba(239,68,68,.08); }}
