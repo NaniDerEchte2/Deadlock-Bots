@@ -1419,7 +1419,7 @@ class DashboardServer:
     def _stringify_ids(data: Any) -> Any:
         """Recursively convert large integer IDs to strings for JSON safety."""
         if isinstance(data, list):
-            return [Dashboard._stringify_ids(x) for x in data]
+            return [DashboardServer._stringify_ids(x) for x in data]
         if isinstance(data, dict):
             new_dict = {}
             for k, v in data.items():
@@ -1436,7 +1436,7 @@ class DashboardServer:
                 ) and isinstance(v, int) and v > 1000000:
                     new_dict[k] = str(v)
                 else:
-                    new_dict[k] = Dashboard._stringify_ids(v)
+                    new_dict[k] = DashboardServer._stringify_ids(v)
             return new_dict
         return data
 
