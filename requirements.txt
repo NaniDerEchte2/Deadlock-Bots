@@ -11,7 +11,7 @@ aiohttp-session==2.12.1
 aiohttp-basicauth==1.1.0
 
 # Database
-aiosqlite==0.21.0
+aiosqlite==0.22.1
 
 # Templating
 Jinja2==3.1.6
