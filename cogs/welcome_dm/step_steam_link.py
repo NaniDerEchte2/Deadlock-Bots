@@ -105,7 +105,7 @@ def build_steam_intro_embed() -> discord.Embed:
         description=steam_link_detailed_description(),
         colour=discord.Colour.blurple(),
     )
-    em.set_footer(text="Kurzbefehle: /steam link, /steam link_steam")
+    em.set_footer(text="Kurzbefehl: /account_verknüpfen")
     return em
 
 

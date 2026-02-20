@@ -199,7 +199,7 @@ async def security_headers_mw(request: web.Request, handler):
 class SteamLink(commands.Cog):
     """
     Linking-Flow:
-      1) /steam link → Discord OAuth2 (identify + connections) (Lazy-Start)
+      1) /account_verknüpfen → Discord OAuth2 (identify + connections) (Lazy-Start)
       2) Keine Steam-Verknüpfung gefunden → seamless Redirect zu Steam OpenID
       3) /steam/return → SteamID64 extrahieren → speichern
       4) Erfolg → DM an User
@@ -561,8 +561,8 @@ class SteamLink(commands.Cog):
         html_doc = (
             "<html><body style='font-family: system-ui, sans-serif'>"
             "<h2>Deadlock Bot - Link Service</h2>"
-            "<p>✅ Server läuft. Nutze im Discord <code>/steam link</code>, "
-            "<code>/steam setprimary</code> oder <code>/steam link_steam</code>.</p>"
+            "<p>✅ Server läuft. Nutze im Discord <code>/account_verknüpfen</code> "
+            "oder <code>/steam setprimary</code>.</p>"
             "<p><a href='/health'>Health-Check</a></p>"
             "</body></html>"
         )
@@ -775,62 +775,73 @@ class SteamLink(commands.Cog):
         else:
             await ctx.reply(c if c is not discord.utils.MISSING else "", embed=e if e is not discord.utils.MISSING else None, view=view)
 
-    
-    
+    async def _send_account_link_panel(self, ctx: commands.Context) -> None:
+        desc = (
+            "Waehle, wie du deinen Account verknüpfen willst:\n"
+            "- **Discord**: liest deine verbundenen Accounts und erkennt Steam automatisch.\n"
+            "- **Steam**: direkter OpenID-Login bei Steam.\n\n"
+            "Nach erfolgreicher Verknüpfung bekommst du automatisch eine Steam-Freundschaftsanfrage vom Bot."
+        )
+        embed = discord.Embed(
+            title="Account verknüpfen",
+            description=desc,
+            color=discord.Color.green(),
+        )
+        if LINK_COVER_IMAGE:
+            embed.set_image(url=LINK_COVER_IMAGE)
+        embed.set_author(name=LINK_COVER_LABEL)
+
+        if not PUBLIC_BASE_URL:
+            await self._send_ephemeral(ctx, "⚠️ PUBLIC_BASE_URL fehlt - Start-Links können nicht gebaut werden.")
+            return
+
+        discord_start_url = f"{PUBLIC_BASE_URL}/discord/login?uid={ctx.author.id}"
+        steam_start_url = f"{PUBLIC_BASE_URL}/steam/login?uid={ctx.author.id}"
+        view = discord.ui.View()
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label=LINK_BUTTON_LABEL,
+                url=discord_start_url,
+            )
+        )
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label=STEAM_BUTTON_LABEL,
+                url=steam_start_url,
+            )
+        )
+        await self._send_ephemeral(ctx, embed=embed, view=view)
+
+    @commands.hybrid_command(
+        name="account_verknüpfen",
+        description="Zeigt die Verknüpfungsoptionen für Discord und Steam",
+    )
+    async def account_verknuepfen(self, ctx: commands.Context) -> None:
+        await self._send_account_link_panel(ctx)
+
     @commands.hybrid_group(name="steam", description="Steam-Links verwalten", invoke_without_command=True)
     async def steam(self, ctx: commands.Context) -> None:
         # Fallback: ohne Subcommand direkt den Link-Flow starten
         if ctx.invoked_subcommand is None:
-            await self.steam_link(ctx)
+            await self._send_account_link_panel(ctx)
 
     @steam.command(
         name="link",
-        description="Verknüpfe deine Steam-Accounts (Discord -> connections; Fallback Steam OpenID)"
+        with_app_command=False,
+        description="Legacy-Alias für die Account-Verknüpfung"
     )
     async def steam_link(self, ctx: commands.Context) -> None:
-        desc = (
-            "- Wenn in deinem Discord-Profil **kein** Steam verknüpft ist, leite ich dich automatisch zu Steam weiter.\n"
-            "- Anmeldedaten bleiben bei Steam.\n"
-            "- Ich schicke dir eine DM, sobald die Verknüpfung durch ist.\n"
-            "- Nach erfolgreicher Verknüpfung erhältst du automatisch eine Steam-Freundschaftsanfrage vom Bot."
-        )
-
-        embed = discord.Embed(title="Steam/Discord verknüpfen", description=desc, color=discord.Color.green())
-        if LINK_COVER_IMAGE:
-            embed.set_image(url=LINK_COVER_IMAGE)
-        embed.set_author(name=LINK_COVER_LABEL)
-
-        if not PUBLIC_BASE_URL:
-            await self._send_ephemeral(ctx, "⚠️ PUBLIC_BASE_URL fehlt - Start-Links können nicht gebaut werden.")
-            return
-
-        start_url = f"{PUBLIC_BASE_URL}/discord/login?uid={ctx.author.id}"
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label=LINK_BUTTON_LABEL, url=start_url))
-        await self._send_ephemeral(ctx, embed=embed, view=view)
+        await self._send_account_link_panel(ctx)
 
     @steam.command(
         name="link_steam",
-        description="Direkt: Steam-Login (OpenID) starten"
+        with_app_command=False,
+        description="Legacy-Alias für die Account-Verknüpfung"
     )
     async def steam_link_steam(self, ctx: commands.Context) -> None:
-        desc = (
-            "Bestätige deinen Account via Steam OpenID. "
-            "Nach dem Abschluss senden wir dir automatisch eine Freundschaftsanfrage vom Bot. "
-        )
-        embed = discord.Embed(title="Direkt bei Steam anmelden", description=desc, color=discord.Color.green())
-        if LINK_COVER_IMAGE:
-            embed.set_image(url=LINK_COVER_IMAGE)
-        embed.set_author(name=LINK_COVER_LABEL)
-
-        if not PUBLIC_BASE_URL:
-            await self._send_ephemeral(ctx, "⚠️ PUBLIC_BASE_URL fehlt - Start-Links können nicht gebaut werden.")
-            return
-
-        start_url = f"{PUBLIC_BASE_URL}/steam/login?uid={ctx.author.id}"
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label=STEAM_BUTTON_LABEL, url=start_url))
-        await self._send_ephemeral(ctx, embed=embed, view=view)
+        await self._send_account_link_panel(ctx)
 
     @steam.command(name="links", description="Zeigt deine gespeicherten Steam-Links")
     async def steam_links(self, ctx: commands.Context) -> None:
@@ -841,7 +852,7 @@ class SteamLink(commands.Cog):
             (ctx.author.id,),
         )
         if not rows:
-            await self._send_ephemeral(ctx, "Keine Steam-Links gefunden. Nutze `/steam link` oder `/steam link_steam`.")
+            await self._send_ephemeral(ctx, "Keine Steam-Links gefunden. Nutze `/account_verknüpfen`.")
             return
         lines = []
         for r in rows:
@@ -899,7 +910,7 @@ class SteamLink(commands.Cog):
             (ctx.author.id, sid),
         )
         if not existing:
-            await self._send_ephemeral(ctx, "Kein gespeicherter Steam-Link gefunden. Bitte zuerst `/steam link` oder `/steam link_steam` nutzen.")
+            await self._send_ephemeral(ctx, "Kein gespeicherter Steam-Link gefunden. Bitte zuerst `/account_verknüpfen` nutzen.")
             return
 
         try:

@@ -557,7 +557,7 @@ class AIOnboarding(commands.Cog):
             f"- Erwartungen: {answers.expectations or '-'}\n"
             f"- Stil: {answers.style or 'locker'}\n\n"
             "Starte gern mit #spieler-suche, schau im Temp Voice Panel vorbei und goenn dir einen Blick in #ankuendigungen. "
-            "Fuer Fragen: /faq. Steam kannst du mit /steam link koppeln. Viel Spass! :)"
+            "Fuer Fragen: /faq. Steam kannst du mit /account_verknüpfen koppeln. Viel Spass! :)"
         )
         meta.setdefault("provider", "fallback")
         meta.setdefault("error", "no_ai_available")

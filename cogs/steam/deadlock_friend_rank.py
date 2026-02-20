@@ -331,7 +331,7 @@ class DeadlockFriendRank(commands.Cog):
             steam_id = self._linked_steam_id_for_discord_user(author_id)
             if not steam_id:
                 raise ValueError(
-                    "Kein verknüpfter Steam-Account gefunden. Nutze zuerst `/steam link` oder gib eine SteamID an."
+                    "Kein verknüpfter Steam-Account gefunden. Nutze zuerst `/account_verknüpfen` oder gib eine SteamID an."
                 )
             return RankLookupTarget(
                 payload={"steam_id": steam_id},
