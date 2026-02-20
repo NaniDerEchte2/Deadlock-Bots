@@ -814,6 +814,8 @@ class SteamLink(commands.Cog):
         )
         await self._send_ephemeral(ctx, embed=embed, view=view)
 
+    @discord.app_commands.allowed_installs(guilds=True, users=True)
+    @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @commands.hybrid_command(
         name="account_verknüpfen",
         description="Zeigt die Verknüpfungsoptionen für Discord und Steam",
@@ -821,6 +823,8 @@ class SteamLink(commands.Cog):
     async def account_verknuepfen(self, ctx: commands.Context) -> None:
         await self._send_account_link_panel(ctx)
 
+    @discord.app_commands.allowed_installs(guilds=True, users=True)
+    @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @commands.hybrid_group(name="steam", description="Steam-Links verwalten", invoke_without_command=True)
     async def steam(self, ctx: commands.Context) -> None:
         # Fallback: ohne Subcommand direkt den Link-Flow starten
