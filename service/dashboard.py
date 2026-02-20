@@ -1416,6 +1416,31 @@ class DashboardServer:
             return default
 
     @staticmethod
+    def _stringify_ids(data: Any) -> Any:
+        """Recursively convert large integer IDs to strings for JSON safety."""
+        if isinstance(data, list):
+            return [Dashboard._stringify_ids(x) for x in data]
+        if isinstance(data, dict):
+            new_dict = {}
+            for k, v in data.items():
+                # Discord IDs and other large numbers need to be strings in JSON
+                if k in (
+                    "id",
+                    "guild_id",
+                    "user_id",
+                    "created_by",
+                    "team_id",
+                    "period_id",
+                    "message_id",
+                    "channel_id",
+                ) and isinstance(v, int) and v > 1000000:
+                    new_dict[k] = str(v)
+                else:
+                    new_dict[k] = Dashboard._stringify_ids(v)
+            return new_dict
+        return data
+
+    @staticmethod
     def _parse_metadata_json(raw: Any) -> Dict[str, Any]:
         if isinstance(raw, dict):
             return raw
@@ -3846,7 +3871,7 @@ class DashboardServer:
             known_ids.add(guild_id)
             payload.append(
                 {
-                    "id": guild_id,
+                    "id": str(guild_id),
                     "name": guild.name,
                     "signups": int(counts.get(guild_id, 0)),
                 }
@@ -3857,7 +3882,7 @@ class DashboardServer:
                 continue
             payload.append(
                 {
-                    "id": gid,
+                    "id": str(gid),
                     "name": f"Guild {gid}",
                     "signups": int(signups),
                 }
@@ -3874,6 +3899,9 @@ class DashboardServer:
         for row in signups:
             item = dict(row)
             user_id = int(item.get("user_id") or 0)
+            item["user_id"] = str(user_id)
+            if "guild_id" in item:
+                item["guild_id"] = str(item["guild_id"])
             member = guild.get_member(user_id) if guild else None
             item["display_name"] = member.display_name if member else f"User {user_id}"
             item["mention"] = member.mention if member else None
@@ -4169,17 +4197,16 @@ class DashboardServer:
         period = await tstore.get_active_period_async(guild_id)
         periods = await tstore.list_periods_async(guild_id)
 
-        return self._json(
-            {
-                "guild_id": guild_id,
-                "guilds": await self._tournament_guilds_payload(),
-                "summary": summary,
-                "teams": teams,
-                "signups": self._decorate_tournament_signups(guild_id, signups),
-                "active_period": period,
-                "periods": periods,
-            }
-        )
+        payload = {
+            "guild_id": str(guild_id),
+            "guilds": await self._tournament_guilds_payload(),
+            "summary": summary,
+            "teams": teams,
+            "signups": self._decorate_tournament_signups(guild_id, signups),
+            "active_period": period,
+            "periods": periods,
+        }
+        return self._json(self._stringify_ids(payload))
 
     async def _handle_turnier_bracket(self, request: web.Request) -> web.Response:
         self._check_turnier_auth(request)
@@ -4192,7 +4219,8 @@ class DashboardServer:
             guild_id, await tstore.list_signups_async(guild_id)
         )
         bracket = self._generate_bracket(signups, teams)
-        return self._json({"guild_id": guild_id, "bracket": bracket})
+        payload = {"guild_id": str(guild_id), "bracket": bracket}
+        return self._json(self._stringify_ids(payload))
 
     async def _handle_turnier_period_create(self, request: web.Request) -> web.Response:
         self._check_turnier_auth(request)
@@ -4226,7 +4254,7 @@ class DashboardServer:
             team_size=team_size,
             created_by=created_by,
         )
-        return self._json({"ok": True, "period": period}, status=201)
+        return self._json(self._stringify_ids({"ok": True, "period": period}), status=201)
 
     async def _handle_turnier_period_close(self, request: web.Request) -> web.Response:
         self._check_turnier_auth(request)
@@ -4250,7 +4278,7 @@ class DashboardServer:
             period_id = int(period["id"])
 
         closed = await tstore.close_period_async(guild_id, int(period_id))
-        return self._json({"ok": closed, "closed": closed})
+        return self._json(self._stringify_ids({"ok": closed, "closed": closed}))
 
     async def _handle_turnier_team_create(self, request: web.Request) -> web.Response:
         self._check_turnier_auth(request)
@@ -4276,7 +4304,9 @@ class DashboardServer:
             raise web.HTTPBadRequest(text=str(exc)) from exc
 
         return self._json(
-            {"ok": True, "team": team, "created": bool(team.get("created"))},
+            self._stringify_ids(
+                {"ok": True, "team": team, "created": bool(team.get("created"))}
+            ),
             status=201 if team.get("created") else 200,
         )
 
@@ -4300,7 +4330,7 @@ class DashboardServer:
         deleted = await tstore.delete_team_async(guild_id, int(team_id))
         if not deleted:
             raise web.HTTPNotFound(text="Team not found")
-        return self._json({"ok": True, "deleted": True})
+        return self._json(self._stringify_ids({"ok": True, "deleted": True}))
 
     async def _handle_turnier_assign(self, request: web.Request) -> web.Response:
         self._check_turnier_auth(request)
@@ -4330,7 +4360,9 @@ class DashboardServer:
             raise web.HTTPNotFound(text="Signup not found")
         signup = await tstore.get_signup_async(guild_id, int(user_id))
         decorated = self._decorate_tournament_signups(guild_id, [signup]) if signup else []
-        return self._json({"ok": True, "signup": decorated[0] if decorated else signup})
+        return self._json(
+            self._stringify_ids({"ok": True, "signup": decorated[0] if decorated else signup})
+        )
 
     async def _handle_turnier_remove(self, request: web.Request) -> web.Response:
         self._check_turnier_auth(request)
@@ -4350,7 +4382,7 @@ class DashboardServer:
             raise web.HTTPBadRequest(text="'user_id' is required")
 
         removed = await tstore.remove_signup_async(guild_id, int(user_id))
-        return self._json({"ok": removed, "removed": removed})
+        return self._json(self._stringify_ids({"ok": removed, "removed": removed}))
 
     async def _handle_turnier_clear(self, request: web.Request) -> web.Response:
         self._check_turnier_auth(request)
@@ -4366,7 +4398,7 @@ class DashboardServer:
         await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
         count = await tstore.clear_all_signups_async(guild_id)
-        return self._json({"ok": True, "cleared": count})
+        return self._json(self._stringify_ids({"ok": True, "cleared": count}))
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         self._check_auth(request)
