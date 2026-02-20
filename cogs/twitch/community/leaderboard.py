@@ -119,15 +119,27 @@ class LeaderboardOptions:
         self.partner_filter = order[(idx + 1) % len(order)]
 
     def cycle_min_samples(self) -> None:
-        idx = self._SAMPLES_STEPS.index(self.min_samples) if self.min_samples in self._SAMPLES_STEPS else 0
+        idx = (
+            self._SAMPLES_STEPS.index(self.min_samples)
+            if self.min_samples in self._SAMPLES_STEPS
+            else 0
+        )
         self.min_samples = self._SAMPLES_STEPS[(idx + 1) % len(self._SAMPLES_STEPS)]
 
     def cycle_min_avg(self) -> None:
-        idx = self._AVG_STEPS.index(self.min_avg) if self.min_avg in self._AVG_STEPS else 0
+        idx = (
+            self._AVG_STEPS.index(self.min_avg)
+            if self.min_avg in self._AVG_STEPS
+            else 0
+        )
         self.min_avg = self._AVG_STEPS[(idx + 1) % len(self._AVG_STEPS)]
 
     def cycle_limit(self) -> None:
-        idx = self._LIMIT_STEPS.index(self.limit) if self.limit in self._LIMIT_STEPS else 0
+        idx = (
+            self._LIMIT_STEPS.index(self.limit)
+            if self.limit in self._LIMIT_STEPS
+            else 0
+        )
         self.limit = self._LIMIT_STEPS[(idx + 1) % len(self._LIMIT_STEPS)]
 
     def reset(self) -> None:
@@ -247,7 +259,9 @@ class TwitchLeaderboardView(discord.ui.View):
             try:
                 await self._message.edit(view=self)
             except Exception as exc:
-                log.debug("Konnte Leaderboard-Timeout-Nachricht nicht aktualisieren: %s", exc)
+                log.debug(
+                    "Konnte Leaderboard-Timeout-Nachricht nicht aktualisieren: %s", exc
+                )
 
     @discord.ui.button(
         label="Sortierung",
@@ -537,7 +551,8 @@ class TwitchLeaderboardMixin:
                         "manual_verified_until",
                     )
                     row_data = {
-                        key: row[idx] if idx < len(row) else None for idx, key in enumerate(columns)
+                        key: row[idx] if idx < len(row) else None
+                        for idx, key in enumerate(columns)
                     }
                 elif hasattr(row, "keys"):
                     row_data = {key: row[key] for key in row.keys()}
@@ -559,11 +574,17 @@ class TwitchLeaderboardMixin:
                     if row_data.get("manual_verified_permanent"):
                         is_verified = True
                     else:
-                        until_dt = _parse_db_datetime(row_data.get("manual_verified_until"))
+                        until_dt = _parse_db_datetime(
+                            row_data.get("manual_verified_until")
+                        )
                         if until_dt and until_dt >= now_utc:
                             is_verified = True
                 except Exception:
-                    log.debug("Konnte Verifizierungsstatus für %s nicht lesen", login, exc_info=True)
+                    log.debug(
+                        "Konnte Verifizierungsstatus für %s nicht lesen",
+                        login,
+                        exc_info=True,
+                    )
 
                 if is_verified:
                     verified_logins.add(login)
@@ -885,13 +906,17 @@ class TwitchLeaderboardMixin:
                 login = str(item.get("streamer") or "").strip().lower()
                 info = discord_lookup.get(login, {})
                 discord_user_id = info.get("discord_user_id") if info else None
-                discord_display_name = info.get("discord_display_name") if info else None
+                discord_display_name = (
+                    info.get("discord_display_name") if info else None
+                )
                 has_profile = bool(
                     (discord_user_id and str(discord_user_id).strip())
                     or (discord_display_name and str(discord_display_name).strip())
                 )
                 default_member = login in assumed_members
-                is_member = default_member or bool(info.get("is_on_discord")) or has_profile
+                is_member = (
+                    default_member or bool(info.get("is_on_discord")) or has_profile
+                )
                 item["is_on_discord"] = 1 if is_member else 0
                 item["discord_user_id"] = discord_user_id
                 item["discord_display_name"] = discord_display_name
@@ -907,10 +932,18 @@ class TwitchLeaderboardMixin:
             assume_members=verified_logins,
         )
 
-        out["tracked"]["hourly"] = _aggregate(hourly_sql, ("tracked", *hour_filter_params))
-        out["category"]["hourly"] = _aggregate(hourly_sql, ("category", *hour_filter_params))
-        out["tracked"]["weekday"] = _aggregate(weekday_sql, ("tracked", *hour_filter_params))
-        out["category"]["weekday"] = _aggregate(weekday_sql, ("category", *hour_filter_params))
+        out["tracked"]["hourly"] = _aggregate(
+            hourly_sql, ("tracked", *hour_filter_params)
+        )
+        out["category"]["hourly"] = _aggregate(
+            hourly_sql, ("category", *hour_filter_params)
+        )
+        out["tracked"]["weekday"] = _aggregate(
+            weekday_sql, ("tracked", *hour_filter_params)
+        )
+        out["category"]["weekday"] = _aggregate(
+            weekday_sql, ("category", *hour_filter_params)
+        )
 
         if streamer is not None:
             normalized_login = self._normalize_login(streamer)
@@ -926,7 +959,9 @@ class TwitchLeaderboardMixin:
                 "weekday": [],
                 "source": None,
                 "had_results": False,
-                "is_tracked": normalized_login in tracked_logins if normalized_login else False,
+                "is_tracked": normalized_login in tracked_logins
+                if normalized_login
+                else False,
                 "discord_user_id": None,
                 "discord_display_name": None,
                 "is_on_discord": 0,
@@ -941,7 +976,11 @@ class TwitchLeaderboardMixin:
                     or (discord_display_name and str(discord_display_name).strip())
                 )
                 default_member = normalized_login in verified_logins
-                is_member = default_member or bool(discord_info.get("is_on_discord")) or has_profile
+                is_member = (
+                    default_member
+                    or bool(discord_info.get("is_on_discord"))
+                    or has_profile
+                )
                 user_entry["discord_user_id"] = discord_user_id
                 user_entry["discord_display_name"] = discord_display_name
                 user_entry["is_on_discord"] = 1 if is_member else 0
@@ -951,15 +990,15 @@ class TwitchLeaderboardMixin:
                         # Subs
                         sub_row = c.execute(
                             "SELECT total, points, snapshot_at FROM twitch_subscriptions_snapshot WHERE twitch_login = ? ORDER BY snapshot_at DESC LIMIT 1",
-                            (normalized_login,)
+                            (normalized_login,),
                         ).fetchone()
                         if sub_row:
                             user_entry["subs"] = {
                                 "total": sub_row[0],
                                 "points": sub_row[1],
-                                "updated_at": sub_row[2]
+                                "updated_at": sub_row[2],
                             }
-                        
+
                         # Shared Audience
                         shared_rows = c.execute(
                             """
@@ -973,7 +1012,7 @@ class TwitchLeaderboardMixin:
                             ORDER BY overlap DESC
                             LIMIT 10
                             """,
-                            (normalized_login, normalized_login)
+                            (normalized_login, normalized_login),
                         ).fetchall()
                         user_entry["shared_audience"] = [
                             {"streamer": r[0], "overlap": r[1]} for r in shared_rows
@@ -1006,7 +1045,9 @@ class TwitchLeaderboardMixin:
                     user_entry["hourly"] = user_payload["hourly"]
                     user_entry["weekday"] = user_payload["weekday"]
                     user_entry["source"] = user_payload["source"]
-                    user_entry["display_login"] = str(summary.get("streamer") or normalized_login)
+                    user_entry["display_login"] = str(
+                        summary.get("streamer") or normalized_login
+                    )
                     user_entry["had_results"] = True
             out["streamer"] = user_entry
 
@@ -1066,7 +1107,9 @@ class TwitchLeaderboardMixin:
                     """
                 ).fetchone()
         except Exception:
-            log.debug("Konnte erweiterte Twitch-Metriken nicht berechnen", exc_info=True)
+            log.debug(
+                "Konnte erweiterte Twitch-Metriken nicht berechnen", exc_info=True
+            )
         else:
             sessions_count = len(session_rows)
 
@@ -1076,10 +1119,26 @@ class TwitchLeaderboardMixin:
                 except Exception:
                     return default
 
-            ret5_vals = [float(_num(row, "retention_5m")) for row in session_rows if row["retention_5m"] is not None]
-            ret10_vals = [float(_num(row, "retention_10m")) for row in session_rows if row["retention_10m"] is not None]
-            ret20_vals = [float(_num(row, "retention_20m")) for row in session_rows if row["retention_20m"] is not None]
-            drop_vals = [float(_num(row, "dropoff_pct")) for row in session_rows if row["dropoff_pct"] is not None]
+            ret5_vals = [
+                float(_num(row, "retention_5m"))
+                for row in session_rows
+                if row["retention_5m"] is not None
+            ]
+            ret10_vals = [
+                float(_num(row, "retention_10m"))
+                for row in session_rows
+                if row["retention_10m"] is not None
+            ]
+            ret20_vals = [
+                float(_num(row, "retention_20m"))
+                for row in session_rows
+                if row["retention_20m"] is not None
+            ]
+            drop_vals = [
+                float(_num(row, "dropoff_pct"))
+                for row in session_rows
+                if row["dropoff_pct"] is not None
+            ]
 
             def _avg(values: List[float]) -> Optional[float]:
                 return sum(values) / len(values) if values else None
@@ -1112,7 +1171,11 @@ class TwitchLeaderboardMixin:
             }
 
             peak_vals = [int(_num(row, "peak_viewers", 0)) for row in session_rows]
-            follower_deltas = [int(row["follower_delta"]) for row in session_rows if row["follower_delta"] is not None]
+            follower_deltas = [
+                int(row["follower_delta"])
+                for row in session_rows
+                if row["follower_delta"] is not None
+            ]
             follower_per_hour: List[float] = []
             for row in session_rows:
                 delta = row["follower_delta"]
@@ -1122,17 +1185,29 @@ class TwitchLeaderboardMixin:
                 hours = max(0.1, duration / 3600.0)
                 follower_per_hour.append(float(delta) / hours)
 
-            unique_chat_sessions = [row for row in session_rows if _num(row, "unique_chatters", 0) > 0]
-            total_unique_chatters = sum(_num(row, "unique_chatters", 0) for row in unique_chat_sessions)
-            total_first_chatters = sum(_num(row, "first_time_chatters", 0) for row in unique_chat_sessions)
-            total_returning_chatters = sum(_num(row, "returning_chatters", 0) for row in unique_chat_sessions)
+            unique_chat_sessions = [
+                row for row in session_rows if _num(row, "unique_chatters", 0) > 0
+            ]
+            total_unique_chatters = sum(
+                _num(row, "unique_chatters", 0) for row in unique_chat_sessions
+            )
+            total_first_chatters = sum(
+                _num(row, "first_time_chatters", 0) for row in unique_chat_sessions
+            )
+            total_returning_chatters = sum(
+                _num(row, "returning_chatters", 0) for row in unique_chat_sessions
+            )
 
             unique_per_100: Optional[float] = None
             if unique_chat_sessions:
                 ratios: List[float] = []
                 for row in unique_chat_sessions:
-                    viewers_base = _num(row, "avg_viewers", 0.0) or _num(row, "start_viewers", 1)
-                    ratios.append((_num(row, "unique_chatters", 0) / max(1, viewers_base)) * 100.0)
+                    viewers_base = _num(row, "avg_viewers", 0.0) or _num(
+                        row, "start_viewers", 1
+                    )
+                    ratios.append(
+                        (_num(row, "unique_chatters", 0) / max(1, viewers_base)) * 100.0
+                    )
                 unique_per_100 = _avg(ratios)
 
             chat_peaks = []
@@ -1141,7 +1216,9 @@ class TwitchLeaderboardMixin:
                     {
                         "session_id": _num(row, "session_id", 0),
                         "streamer": _num(row, "streamer_login", ""),
-                        "minute": row["minute_bucket"] if hasattr(row, "__getitem__") else "",
+                        "minute": row["minute_bucket"]
+                        if hasattr(row, "__getitem__")
+                        else "",
                         "messages": _num(row, "messages", 0),
                         "started_at": _num(row, "started_at", ""),
                     }
@@ -1149,8 +1226,12 @@ class TwitchLeaderboardMixin:
 
             chat_payload = {
                 "unique_per_100": unique_per_100,
-                "first_share": (total_first_chatters / total_unique_chatters) if total_unique_chatters else None,
-                "returning_share": (total_returning_chatters / total_unique_chatters) if total_unique_chatters else None,
+                "first_share": (total_first_chatters / total_unique_chatters)
+                if total_unique_chatters
+                else None,
+                "returning_share": (total_returning_chatters / total_unique_chatters)
+                if total_unique_chatters
+                else None,
                 "peaks": chat_peaks,
                 "total_unique": total_unique_chatters,
             }
@@ -1178,26 +1259,28 @@ class TwitchLeaderboardMixin:
                 notify = _num(row, "notification_text", "")
                 if not title and not notify:
                     continue
-                
+
                 followers_start = _num(row, "followers_start", 0)
                 peak = _num(row, "peak_viewers", 0)
                 avg = _num(row, "avg_viewers", 0.0)
-                
+
                 engagement_ratio = None
                 if followers_start > 0:
                     engagement_ratio = (peak / followers_start) * 100.0
 
-                content_performance.append({
-                    "streamer": _num(row, "streamer_login", ""),
-                    "started_at": _num(row, "started_at", ""),
-                    "title": title,
-                    "notification": notify,
-                    "peak_viewers": peak,
-                    "avg_viewers": avg,
-                    "followers_start": followers_start,
-                    "engagement_ratio": engagement_ratio
-                })
-            
+                content_performance.append(
+                    {
+                        "streamer": _num(row, "streamer_login", ""),
+                        "started_at": _num(row, "started_at", ""),
+                        "title": title,
+                        "notification": notify,
+                        "peak_viewers": peak,
+                        "avg_viewers": avg,
+                        "followers_start": followers_start,
+                        "engagement_ratio": engagement_ratio,
+                    }
+                )
+
             # Sort by peak viewers to show best performing content first
             content_performance.sort(key=lambda x: x["peak_viewers"], reverse=True)
             content_performance = content_performance[:20]  # Top 20
@@ -1314,7 +1397,11 @@ class TwitchLeaderboardMixin:
             description="\n".join(description_lines),
             color=discord.Color.purple(),
         )
-        embed.add_field(name="Top Tracked", value=_format_lines(tracked_sorted), inline=False)
-        embed.add_field(name="Top Kategorie", value=_format_lines(category_sorted), inline=False)
+        embed.add_field(
+            name="Top Tracked", value=_format_lines(tracked_sorted), inline=False
+        )
+        embed.add_field(
+            name="Top Kategorie", value=_format_lines(category_sorted), inline=False
+        )
         embed.set_footer(text="Nutze !twl help für weitere Optionen.")
         return embed

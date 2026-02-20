@@ -8,11 +8,14 @@ from discord.ext import commands
 LOG = logging.getLogger(__name__)
 
 # Lies die Channel-ID aus .env (z.B. BOT_LOG_CHANNEL_ID=123456789012345678)
-#ENV_CHANNEL_ID = os.getenv("BOT_LOG_CHANNEL_ID")
-#DEFAULT_CHANNEL_ID: Optional[int] = int(ENV_CHANNEL_ID) if ENV_CHANNEL_ID and ENV_CHANNEL_ID.isdigit() else None
+# ENV_CHANNEL_ID = os.getenv("BOT_LOG_CHANNEL_ID")
+# DEFAULT_CHANNEL_ID: Optional[int] = int(ENV_CHANNEL_ID) if ENV_CHANNEL_ID and ENV_CHANNEL_ID.isdigit() else None
 DEFAULT_CHANNEL_ID = 1374364800817303632
+
+
 class _DiscordChannelHandler(logging.Handler):
     """Schickt Logeinträge gesammelt in einen Discord-Channel (Rate-Limit-freundlich)."""
+
     def __init__(self, bot: commands.Bot, channel_id: int, level=logging.INFO) -> None:
         super().__init__(level)
         self.bot = bot
@@ -20,7 +23,9 @@ class _DiscordChannelHandler(logging.Handler):
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.task: Optional[asyncio.Task] = None
         # dezente Formatierung
-        self.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+        self.setFormatter(
+            logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+        )
 
     def start(self) -> None:
         if self.task is None:
@@ -53,7 +58,11 @@ class _DiscordChannelHandler(logging.Handler):
                 # kurze Sammelwartezeit
                 try:
                     await asyncio.sleep(0.8)
-                    while not self.queue.empty() and len("\n".join(buffer)) < 1800 and len(buffer) < 12:
+                    while (
+                        not self.queue.empty()
+                        and len("\n".join(buffer)) < 1800
+                        and len(buffer) < 12
+                    ):
                         buffer.append(self.queue.get_nowait())
                 except Exception as exc:
                     LOG.debug("LogBridge queue bundling failed: %s", exc, exc_info=True)
@@ -95,11 +104,15 @@ class LogBridgeCog(commands.Cog):
 
     async def cog_load(self) -> None:
         if self.channel_id is None:
-            LOG.info("LogBridgeCog loaded (kein BOT_LOG_CHANNEL_ID gesetzt) – bleibt passiv.")
+            LOG.info(
+                "LogBridgeCog loaded (kein BOT_LOG_CHANNEL_ID gesetzt) – bleibt passiv."
+            )
             return
         # Nur bestimmte Logger weiterleiten (hier: steam.presence + Warnungen+ allgemein)
         steam_logger = logging.getLogger("steam.presence")
-        self.handler = _DiscordChannelHandler(self.bot, self.channel_id, level=logging.INFO)
+        self.handler = _DiscordChannelHandler(
+            self.bot, self.channel_id, level=logging.INFO
+        )
 
         class _OnlySteamStdout(logging.Filter):
             def filter(self, record: logging.LogRecord) -> bool:
@@ -111,34 +124,46 @@ class LogBridgeCog(commands.Cog):
         steam_logger.addHandler(self.handler)
         steam_logger.setLevel(logging.INFO)
         self.handler.start()
-        LOG.info("LogBridgeCog active -> forwarding 'steam.presence' to channel %s", self.channel_id)
+        LOG.info(
+            "LogBridgeCog active -> forwarding 'steam.presence' to channel %s",
+            self.channel_id,
+        )
 
     async def cog_unload(self) -> None:
         if self.handler:
             try:
                 logging.getLogger("steam.presence").removeHandler(self.handler)
             except Exception as exc:
-                LOG.debug("Failed to remove steam.presence handler: %s", exc, exc_info=True)
+                LOG.debug(
+                    "Failed to remove steam.presence handler: %s", exc, exc_info=True
+                )
             try:
                 await self.handler.aclose()
             except Exception as exc:
-                LOG.debug("Failed to close LogBridge handler task: %s", exc, exc_info=True)
+                LOG.debug(
+                    "Failed to close LogBridge handler task: %s", exc, exc_info=True
+                )
             self.handler = None
 
     # Optionaler Command, um ad hoc einen anderen Channel zu nutzen (nur Admins)
     @commands.command(name="set_log_channel")
     @commands.has_permissions(administrator=True)
-    async def set_log_channel(self, ctx: commands.Context, channel: discord.TextChannel):
+    async def set_log_channel(
+        self, ctx: commands.Context, channel: discord.TextChannel
+    ):
         self.channel_id = channel.id
         # neu starten des Handlers:
         if self.handler:
             logging.getLogger("steam.presence").removeHandler(self.handler)
             self.handler = None
         steam_logger = logging.getLogger("steam.presence")
-        self.handler = _DiscordChannelHandler(self.bot, self.channel_id, level=logging.INFO)
+        self.handler = _DiscordChannelHandler(
+            self.bot, self.channel_id, level=logging.INFO
+        )
         steam_logger.addHandler(self.handler)
         self.handler.start()
         await ctx.reply(f"✅ Log-Channel gesetzt auf {channel.mention}")
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(LogBridgeCog(bot, DEFAULT_CHANNEL_ID))

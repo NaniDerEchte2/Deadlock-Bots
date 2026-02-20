@@ -4,6 +4,7 @@ Instagram Reels Uploader - Instagram Graph API Integration.
 WICHTIG: Instagram benötigt eine öffentliche Video-URL (kein direkter Upload).
 Docs: https://developers.facebook.com/docs/instagram-api/guides/content-publishing
 """
+
 import aiohttp
 from pathlib import Path
 from typing import Dict, List
@@ -47,7 +48,9 @@ class InstagramUploader(PlatformUploader):
                         return False
 
                     data = await resp.json()
-                    self.log.info("Instagram authentication valid: %s", data.get("name"))
+                    self.log.info(
+                        "Instagram authentication valid: %s", data.get("name")
+                    )
                     return True
 
         except Exception:
@@ -89,7 +92,9 @@ class InstagramUploader(PlatformUploader):
 
             if not video_url:
                 # If video_path looks like URL, use it
-                if video_path.startswith("http://") or video_path.startswith("https://"):
+                if video_path.startswith("http://") or video_path.startswith(
+                    "https://"
+                ):
                     video_url = video_path
                 else:
                     raise ValueError(
@@ -232,7 +237,9 @@ class InstagramUploader(PlatformUploader):
         if file_size_mb > 1024:
             raise ValueError(f"Video too large: {file_size_mb:.1f}MB (max 1024MB)")
 
-        self.log.info("Instagram video validation passed: %s (%.1f MB)", video_path, file_size_mb)
+        self.log.info(
+            "Instagram video validation passed: %s (%.1f MB)", video_path, file_size_mb
+        )
         return True
 
     async def upload_to_temporary_host(self, video_path: str) -> str:

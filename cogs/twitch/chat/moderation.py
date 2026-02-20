@@ -29,7 +29,9 @@ class ModerationMixin:
         channel = getattr(message, "channel", None)
         if channel is not None:
             return channel
-        return getattr(message, "source_broadcaster", None) or getattr(message, "broadcaster", None)
+        return getattr(message, "source_broadcaster", None) or getattr(
+            message, "broadcaster", None
+        )
 
     @staticmethod
     def _extract_mentions(content: str) -> list[str]:
@@ -121,7 +123,9 @@ class ModerationMixin:
 
         return known
 
-    async def _resolve_existing_twitch_users(self, logins: list[str]) -> tuple[set[str], bool]:
+    async def _resolve_existing_twitch_users(
+        self, logins: list[str]
+    ) -> tuple[set[str], bool]:
         """Löst Logins via Twitch auf. Rückgabe: (gefunden, lookup_ok)."""
         normalized = []
         seen = set()
@@ -162,10 +166,10 @@ class ModerationMixin:
             resolved = set()
             for user in users or []:
                 login = (
-                    getattr(user, "login", None)
-                    or getattr(user, "name", None)
-                    or ""
-                ).strip().lower()
+                    (getattr(user, "login", None) or getattr(user, "name", None) or "")
+                    .strip()
+                    .lower()
+                )
                 if login:
                     resolved.add(login)
 
@@ -229,7 +233,9 @@ class ModerationMixin:
         if not maybe_random:
             return hits, reasons
 
-        existing_users, lookup_ok = await self._resolve_existing_twitch_users(maybe_random)
+        existing_users, lookup_ok = await self._resolve_existing_twitch_users(
+            maybe_random
+        )
         unresolved = [m for m in maybe_random if m not in existing_users]
         if not unresolved:
             return hits, reasons
@@ -310,10 +316,17 @@ class ModerationMixin:
         if not has_question:
             return False
         has_direct_invite_request = bool(
-            re.search(r"\b(kannst|kann|koennte|könnte|koenntest|könntest|darfst|darf)\s+du\b", raw)
+            re.search(
+                r"\b(kannst|kann|koennte|könnte|koenntest|könntest|darfst|darf)\s+du\b",
+                raw,
+            )
             and has_strong_access
         )
-        if has_deadlock_context or (has_game_context and has_strong_access) or has_direct_invite_request:
+        if (
+            has_deadlock_context
+            or (has_game_context and has_strong_access)
+            or has_direct_invite_request
+        ):
             return True
         return False
 
@@ -331,9 +344,7 @@ class ModerationMixin:
 
         channel = self._resolve_message_channel(message)
         channel_name = (
-            getattr(channel, "name", "")
-            or getattr(channel, "login", "")
-            or ""
+            getattr(channel, "name", "") or getattr(channel, "login", "") or ""
         )
         login = channel_name.lstrip("#").lower()
         if not login:
@@ -341,12 +352,16 @@ class ModerationMixin:
 
         # WICHTIG: Discord-Invite nur für PARTNER senden!
         from ..partner_utils import is_partner_channel_for_chat_tracking
+
         if not is_partner_channel_for_chat_tracking(login):
             return False
 
         now = time.monotonic()
         last_channel = self._last_invite_reply.get(login)
-        if last_channel and (now - last_channel) < _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC:
+        if (
+            last_channel
+            and (now - last_channel) < _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC
+        ):
             return False
 
         author = getattr(message, "author", None)
@@ -366,7 +381,9 @@ class ModerationMixin:
         if channel is None:
             return False
 
-        mention = f"@{getattr(author, 'name', '')} " if getattr(author, "name", None) else ""
+        mention = (
+            f"@{getattr(author, 'name', '')} " if getattr(author, "name", None) else ""
+        )
         msg = mention + DEADLOCK_INVITE_REPLY.format(invite=invite)
         ok = await self._send_chat_message(channel, msg)
         if ok:
@@ -381,14 +398,22 @@ class ModerationMixin:
                     marker(login)
         return ok
 
-    async def _get_moderation_context(self, twitch_user_id: str) -> tuple[Optional[object], Optional[dict]]:
+    async def _get_moderation_context(
+        self, twitch_user_id: str
+    ) -> tuple[Optional[object], Optional[dict]]:
         """Holt Session + Auth-Header für Moderationscalls."""
-        auth_mgr = getattr(self._raid_bot, "auth_manager", None) if self._raid_bot else None
-        http_session = getattr(self._raid_bot, "session", None) if self._raid_bot else None
+        auth_mgr = (
+            getattr(self._raid_bot, "auth_manager", None) if self._raid_bot else None
+        )
+        http_session = (
+            getattr(self._raid_bot, "session", None) if self._raid_bot else None
+        )
         if not auth_mgr or not http_session:
             return None, None
         try:
-            tokens = await auth_mgr.get_tokens_for_user(str(twitch_user_id), http_session)
+            tokens = await auth_mgr.get_tokens_for_user(
+                str(twitch_user_id), http_session
+            )
             if not tokens:
                 return None, None
             access_token = tokens[0]
@@ -398,7 +423,11 @@ class ModerationMixin:
             }
             return http_session, headers
         except Exception:
-            log.debug("Konnte Moderations-Kontext nicht laden (%s)", twitch_user_id, exc_info=True)
+            log.debug(
+                "Konnte Moderations-Kontext nicht laden (%s)",
+                twitch_user_id,
+                exc_info=True,
+            )
             return None, None
 
     def _record_autoban(
@@ -479,7 +508,11 @@ class ModerationMixin:
                 )
                 return
         except Exception:
-            log.debug("Partner-Check vor Blacklist fehlgeschlagen fuer %s", login, exc_info=True)
+            log.debug(
+                "Partner-Check vor Blacklist fehlgeschlagen fuer %s",
+                login,
+                exc_info=True,
+            )
 
         raw_id = str(getattr(channel, "id", "") or "").strip()
         target_id = raw_id if raw_id else None
@@ -505,15 +538,27 @@ class ModerationMixin:
                     )
                     conn.commit()
             except Exception:
-                log.debug("Konnte Bot-Ban-Blacklist nicht schreiben fuer %s", login, exc_info=True)
+                log.debug(
+                    "Konnte Bot-Ban-Blacklist nicht schreiben fuer %s",
+                    login,
+                    exc_info=True,
+                )
 
-        log.warning("Bot-Ban erkannt (source=%s): %s auf Raid-Blacklist gesetzt.", source_tag, login)
+        log.warning(
+            "Bot-Ban erkannt (source=%s): %s auf Raid-Blacklist gesetzt.",
+            source_tag,
+            login,
+        )
 
-    def _blacklist_streamer_for_promo(self, channel, status: Optional[int], text: str) -> None:
+    def _blacklist_streamer_for_promo(
+        self, channel, status: Optional[int], text: str
+    ) -> None:
         """Backward-compatible wrapper for promo ban blacklisting."""
         self._blacklist_streamer_for_source(channel, status, text, source="promo")
 
-    async def _send_announcement(self, channel, text: str, color: str = "purple", source: Optional[str] = None) -> bool:
+    async def _send_announcement(
+        self, channel, text: str, color: str = "purple", source: Optional[str] = None
+    ) -> bool:
         """Sendet eine Announcement (hervorgehobene Nachricht) via Helix API.
 
         Erfordert ``moderator:manage:announcements`` Scope.
@@ -530,14 +575,20 @@ class ModerationMixin:
                 if user:
                     b_id = str(user.id)
             except Exception as exc:
-                log.debug("Konnte broadcaster_id aus Channel-Namen nicht aufloesen", exc_info=exc)
+                log.debug(
+                    "Konnte broadcaster_id aus Channel-Namen nicht aufloesen",
+                    exc_info=exc,
+                )
 
         safe_bot_id = self.bot_id_safe or self.bot_id
         if not (b_id and safe_bot_id and self._token_manager):
-            log.debug("_send_announcement: fehlende IDs oder Token-Manager, Fallback auf normale Nachricht")
+            log.debug(
+                "_send_announcement: fehlende IDs oder Token-Manager, Fallback auf normale Nachricht"
+            )
             return await self._send_chat_message(channel, text, source=source)
 
         import aiohttp
+
         for attempt in range(2):
             try:
                 tokens = await self._token_manager.get_valid_token()
@@ -563,23 +614,37 @@ class ModerationMixin:
                             return True
                         if r.status == 401 and attempt == 0:
                             log.debug("_send_announcement: 401, triggere Token-Refresh")
-                            await self._token_manager.get_valid_token(force_refresh=True)
+                            await self._token_manager.get_valid_token(
+                                force_refresh=True
+                            )
                             continue
                         txt = await r.text()
-                        if self._should_blacklist_for_source(source) and self._looks_like_ban_error(r.status, txt):
-                            self._blacklist_streamer_for_source(channel, r.status, txt, source)
+                        if self._should_blacklist_for_source(
+                            source
+                        ) and self._looks_like_ban_error(r.status, txt):
+                            self._blacklist_streamer_for_source(
+                                channel, r.status, txt, source
+                            )
                         log.warning(
                             "_send_announcement fehlgeschlagen: HTTP %s - %s, Fallback auf normale Nachricht",
-                            r.status, txt,
+                            r.status,
+                            txt,
                         )
-                        return await self._send_chat_message(channel, text, source=source)
+                        return await self._send_chat_message(
+                            channel, text, source=source
+                        )
             except Exception as e:
-                log.error("Fehler bei _send_announcement: %s, Fallback auf normale Nachricht", e)
+                log.error(
+                    "Fehler bei _send_announcement: %s, Fallback auf normale Nachricht",
+                    e,
+                )
                 return await self._send_chat_message(channel, text, source=source)
 
         return await self._send_chat_message(channel, text, source=source)
 
-    async def _send_chat_message(self, channel, text: str, source: Optional[str] = None) -> bool:
+    async def _send_chat_message(
+        self, channel, text: str, source: Optional[str] = None
+    ) -> bool:
         """Best-effort Chat-Nachricht senden (EventSub-kompatibel)."""
         try:
             # 1. Direktes .send() (z.B. Context, 2.x Channel oder 3.x Broadcaster)
@@ -588,8 +653,12 @@ class ModerationMixin:
                     await channel.send(text)
                     return True
                 except Exception as exc:
-                    if self._should_blacklist_for_source(source) and self._looks_like_ban_error(None, str(exc)):
-                        self._blacklist_streamer_for_source(channel, None, str(exc), source)
+                    if self._should_blacklist_for_source(
+                        source
+                    ) and self._looks_like_ban_error(None, str(exc)):
+                        self._blacklist_streamer_for_source(
+                            channel, None, str(exc), source
+                        )
                     raise
 
             # 2. Fallback: Direkte Helix API Call (TwitchIO 3.x kompatibel)
@@ -610,6 +679,7 @@ class ModerationMixin:
             if b_id and safe_bot_id and self._token_manager:
                 # Nutze Helix API direkt (user:write:chat scope erforderlich)
                 import aiohttp
+
                 for attempt in range(2):
                     try:
                         tokens = await self._token_manager.get_valid_token()
@@ -622,26 +692,41 @@ class ModerationMixin:
                         headers = {
                             "Client-ID": self._client_id,
                             "Authorization": f"Bearer {access_token}",
-                            "Content-Type": "application/json"
+                            "Content-Type": "application/json",
                         }
                         payload = {
                             "broadcaster_id": str(b_id),
                             "sender_id": str(safe_bot_id),
-                            "message": text
+                            "message": text,
                         }
 
                         async with aiohttp.ClientSession() as session:
-                            async with session.post(url, headers=headers, json=payload) as r:
+                            async with session.post(
+                                url, headers=headers, json=payload
+                            ) as r:
                                 if r.status in {200, 204}:
                                     return True
                                 if r.status == 401 and attempt == 0:
-                                    log.debug("_send_chat_message: 401 in %s, triggere Token-Refresh", b_id)
-                                    await self._token_manager.get_valid_token(force_refresh=True)
+                                    log.debug(
+                                        "_send_chat_message: 401 in %s, triggere Token-Refresh",
+                                        b_id,
+                                    )
+                                    await self._token_manager.get_valid_token(
+                                        force_refresh=True
+                                    )
                                     continue
                                 txt = await r.text()
-                                if self._should_blacklist_for_source(source) and self._looks_like_ban_error(r.status, txt):
-                                    self._blacklist_streamer_for_source(channel, r.status, txt, source)
-                                log.warning("Twitch hat die Bot-Nachricht abgelehnt: HTTP %s - %s", r.status, txt)
+                                if self._should_blacklist_for_source(
+                                    source
+                                ) and self._looks_like_ban_error(r.status, txt):
+                                    self._blacklist_streamer_for_source(
+                                        channel, r.status, txt, source
+                                    )
+                                log.warning(
+                                    "Twitch hat die Bot-Nachricht abgelehnt: HTTP %s - %s",
+                                    r.status,
+                                    txt,
+                                )
                                 return False
                     except Exception as e:
                         log.error("Fehler beim Senden der Helix Chat-Nachricht: %s", e)
@@ -672,9 +757,7 @@ class ModerationMixin:
         """Bannt erkannte Spam-Bots und löscht die Nachricht (als Bot)."""
         channel = self._resolve_message_channel(message)
         channel_name = (
-            getattr(channel, "name", "")
-            or getattr(channel, "login", "")
-            or ""
+            getattr(channel, "name", "") or getattr(channel, "login", "") or ""
         )
         channel_key = self._normalize_channel_login(channel_name)
         if not self._is_partner_channel_for_chat_tracking(channel_key):
@@ -699,27 +782,33 @@ class ModerationMixin:
         # --- ÄNDERUNG: Wir nutzen jetzt das BOT-Token für Moderation, nicht das Streamer-Token ---
         safe_bot_id = self.bot_id_safe or self.bot_id
         if not safe_bot_id or not self._token_manager:
-            log.warning("Spam erkannt in %s, aber kein Bot-ID oder Token-Manager für Auto-Ban verfügbar.", channel_name)
+            log.warning(
+                "Spam erkannt in %s, aber kein Bot-ID oder Token-Manager für Auto-Ban verfügbar.",
+                channel_name,
+            )
             return False
 
         for attempt in range(2):  # Maximal 2 Versuche (Original + 1 Retry nach Refresh)
             try:
                 tokens = await self._token_manager.get_valid_token()
                 if not tokens:
-                    log.warning("Spam erkannt in %s, aber kein valides Bot-Token für Auto-Ban verfügbar.", channel_name)
+                    log.warning(
+                        "Spam erkannt in %s, aber kein valides Bot-Token für Auto-Ban verfügbar.",
+                        channel_name,
+                    )
                     return False
                 access_token, _ = tokens
 
                 headers = {
                     "Client-ID": self._client_id,
                     "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
                 }
 
                 # Wir nutzen eine temporäre Session für die API-Calls des Bots
                 import aiohttp
-                async with aiohttp.ClientSession() as session:
 
+                async with aiohttp.ClientSession() as session:
                     # 1. Nachricht löschen
                     message_id = self._extract_message_id(message)
                     if message_id:
@@ -734,8 +823,13 @@ class ModerationMixin:
                                 },
                             ) as resp:
                                 if resp.status == 401 and attempt == 0:
-                                    log.warning("Delete message 401 in %s, triggering refresh...", channel_name)
-                                    await self._token_manager.get_valid_token(force_refresh=True)
+                                    log.warning(
+                                        "Delete message 401 in %s, triggering refresh...",
+                                        channel_name,
+                                    )
+                                    await self._token_manager.get_valid_token(
+                                        force_refresh=True
+                                    )
                                     continue  # Retry outer loop
 
                                 if resp.status not in {200, 204}:
@@ -748,19 +842,35 @@ class ModerationMixin:
                                         txt[:180].replace("\n", " "),
                                     )
                         except Exception:
-                            log.debug("Auto-Delete fehlgeschlagen (%s)", channel_name, exc_info=True)
+                            log.debug(
+                                "Auto-Delete fehlgeschlagen (%s)",
+                                channel_name,
+                                exc_info=True,
+                            )
 
                     # 2. User bannen
                     try:
-                        payload = {"data": {"user_id": chatter_id, "reason": "Automatischer Spam-Ban (Bot-Phrase)"}}
+                        payload = {
+                            "data": {
+                                "user_id": chatter_id,
+                                "reason": "Automatischer Spam-Ban (Bot-Phrase)",
+                            }
+                        }
                         async with session.post(
                             "https://api.twitch.tv/helix/moderation/bans",
                             headers=headers,
-                            params={"broadcaster_id": twitch_user_id, "moderator_id": safe_bot_id},  # Bot ist der Moderator
+                            params={
+                                "broadcaster_id": twitch_user_id,
+                                "moderator_id": safe_bot_id,
+                            },  # Bot ist der Moderator
                             json=payload,
                         ) as resp:
                             if resp.status in {200, 201, 202}:
-                                log.info("Auto-Ban (durch Bot) ausgelöst in %s für %s", channel_name, chatter_login or chatter_id)
+                                log.info(
+                                    "Auto-Ban (durch Bot) ausgelöst in %s für %s",
+                                    channel_name,
+                                    chatter_login or chatter_id,
+                                )
                                 self._last_autoban[channel_key] = {
                                     "user_id": chatter_id,
                                     "login": chatter_login,
@@ -772,7 +882,7 @@ class ModerationMixin:
                                     chatter_login=chatter_login,
                                     chatter_id=chatter_id,
                                     content=original_content,
-                                    status="BANNED"
+                                    status="BANNED",
                                 )
                                 # Nachricht an den Chat senden, WARUM gebannt wurde (wenn nicht silent)
                                 silent = False
@@ -782,19 +892,30 @@ class ModerationMixin:
                                             "SELECT silent_ban FROM twitch_streamers WHERE twitch_user_id = ?",
                                             (twitch_user_id,),
                                         ).fetchone()
-                                        silent = bool(int((_sb_row[0] if _sb_row else 0) or 0))
+                                        silent = bool(
+                                            int((_sb_row[0] if _sb_row else 0) or 0)
+                                        )
                                 except Exception as exc:
-                                    log.debug("Konnte silent_ban nicht ermitteln fuer %s", channel_name, exc_info=exc)
+                                    log.debug(
+                                        "Konnte silent_ban nicht ermitteln fuer %s",
+                                        channel_name,
+                                        exc_info=exc,
+                                    )
                                 if not silent:
                                     await self._send_chat_message(
                                         channel,
-                                        f"🛡️ Auto-Mod: {chatter_login} wurde wegen Spam-Verdacht gebannt. (!unban zum Rückgängigmachen)"
+                                        f"🛡️ Auto-Mod: {chatter_login} wurde wegen Spam-Verdacht gebannt. (!unban zum Rückgängigmachen)",
                                     )
                                 return True
 
                             if resp.status == 401 and attempt == 0:
-                                log.warning("Ban user 401 in %s, triggering refresh...", channel_name)
-                                await self._token_manager.get_valid_token(force_refresh=True)
+                                log.warning(
+                                    "Ban user 401 in %s, triggering refresh...",
+                                    channel_name,
+                                )
+                                await self._token_manager.get_valid_token(
+                                    force_refresh=True
+                                )
                                 continue  # Retry outer loop
 
                             txt = await resp.text()
@@ -821,9 +942,15 @@ class ModerationMixin:
                                 return True
 
                             if resp.status == 403:
-                                log.warning("Auto-Ban fehlgeschlagen in %s (403 Forbidden): Bot ist wahrscheinlich kein Moderator!", channel_name)
+                                log.warning(
+                                    "Auto-Ban fehlgeschlagen in %s (403 Forbidden): Bot ist wahrscheinlich kein Moderator!",
+                                    channel_name,
+                                )
                             elif resp.status == 401:
-                                log.warning("Auto-Ban fehlgeschlagen in %s (401 Unauthorized) nach Refresh!", channel_name)
+                                log.warning(
+                                    "Auto-Ban fehlgeschlagen in %s (401 Unauthorized) nach Refresh!",
+                                    channel_name,
+                                )
                             else:
                                 log.warning(
                                     "Auto-Ban fehlgeschlagen in %s (user=%s): HTTP %s %s",
@@ -833,7 +960,9 @@ class ModerationMixin:
                                     txt[:180].replace("\n", " "),
                                 )
                     except Exception:
-                        log.debug("Auto-Ban Exception in %s", channel_name, exc_info=True)
+                        log.debug(
+                            "Auto-Ban Exception in %s", channel_name, exc_info=True
+                        )
 
                 # Wenn wir hier sind ohne return True, ist der Ban fehlgeschlagen (und kein 401 Retry möglich)
                 break
@@ -857,7 +986,9 @@ class ModerationMixin:
         """Hebt einen Ban auf (als Bot)."""
         safe_bot_id = self.bot_id_safe or self.bot_id
         if not safe_bot_id or not self._token_manager:
-            log.warning("Unban nicht möglich: Keine Bot-Auth/ID verfügbar in %s", channel_name)  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+            log.warning(
+                "Unban nicht möglich: Keine Bot-Auth/ID verfügbar in %s", channel_name
+            )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
             return False
 
         for attempt in range(2):
@@ -874,6 +1005,7 @@ class ModerationMixin:
                 }
 
                 import aiohttp
+
                 async with aiohttp.ClientSession() as session:
                     async with session.delete(
                         "https://api.twitch.tv/helix/moderation/bans",
@@ -885,12 +1017,20 @@ class ModerationMixin:
                         },
                     ) as resp:
                         if resp.status in {200, 204}:
-                            log.info("Unban (durch Bot) ausgeführt in %s für %s", channel_name, login_hint or target_user_id)
+                            log.info(
+                                "Unban (durch Bot) ausgeführt in %s für %s",
+                                channel_name,
+                                login_hint or target_user_id,
+                            )
                             return True
 
                         if resp.status == 401 and attempt == 0:
-                            log.warning("Unban 401 in %s, triggering refresh...", channel_name)
-                            await self._token_manager.get_valid_token(force_refresh=True)
+                            log.warning(
+                                "Unban 401 in %s, triggering refresh...", channel_name
+                            )
+                            await self._token_manager.get_valid_token(
+                                force_refresh=True
+                            )
                             continue
 
                         txt = await resp.text()
@@ -903,7 +1043,12 @@ class ModerationMixin:
                         )
                 break
             except Exception:
-                log.debug("Unban Exception in %s (Versuch %d)", channel_name, attempt + 1, exc_info=True)
+                log.debug(
+                    "Unban Exception in %s (Versuch %d)",
+                    channel_name,
+                    attempt + 1,
+                    exc_info=True,
+                )
                 if attempt == 1:
                     break
         return False
@@ -927,7 +1072,9 @@ class ModerationMixin:
                 if now_mono - float(cached_ts) <= cache_ttl:
                     return bool(cached_value)
             except (TypeError, ValueError) as exc:
-                log.debug("Partner-Cache-Eintrag ungueltig fuer %s", login, exc_info=exc)
+                log.debug(
+                    "Partner-Cache-Eintrag ungueltig fuer %s", login, exc_info=exc
+                )
 
         is_partner = False
         try:
@@ -943,9 +1090,15 @@ class ModerationMixin:
                 ).fetchone()
 
             if row:
-                is_partner = bool(row["is_partner_active"] if hasattr(row, "keys") else row[0])
+                is_partner = bool(
+                    row["is_partner_active"] if hasattr(row, "keys") else row[0]
+                )
         except Exception:
-            log.debug("Konnte Partner-Status für Chat-Tracking nicht prüfen (%s)", login, exc_info=True)
+            log.debug(
+                "Konnte Partner-Status für Chat-Tracking nicht prüfen (%s)",
+                login,
+                exc_info=True,
+            )
             is_partner = False
 
         cache[login] = (now_mono, is_partner)
@@ -963,9 +1116,13 @@ class ModerationMixin:
 
         return is_partner
 
-    def _is_target_game_live_for_chat(self, login: str, session_id: Optional[int]) -> bool:
+    def _is_target_game_live_for_chat(
+        self, login: str, session_id: Optional[int]
+    ) -> bool:
         """Returns True when chat persistence should run for the channel."""
-        target_game_lower = (getattr(self, "_target_game_lower", "") or "").strip().lower()
+        target_game_lower = (
+            (getattr(self, "_target_game_lower", "") or "").strip().lower()
+        )
         if not target_game_lower:
             return True
 
@@ -992,11 +1149,27 @@ class ModerationMixin:
 
                 if state_row:
                     is_live = bool(
-                        int((state_row["is_live"] if hasattr(state_row, "keys") else state_row[0]) or 0)
+                        int(
+                            (
+                                state_row["is_live"]
+                                if hasattr(state_row, "keys")
+                                else state_row[0]
+                            )
+                            or 0
+                        )
                     )
-                    last_game = str(
-                        (state_row["last_game"] if hasattr(state_row, "keys") else state_row[1]) or ""
-                    ).strip().lower()
+                    last_game = (
+                        str(
+                            (
+                                state_row["last_game"]
+                                if hasattr(state_row, "keys")
+                                else state_row[1]
+                            )
+                            or ""
+                        )
+                        .strip()
+                        .lower()
+                    )
                     should_track = is_live and last_game == target_game_lower
                 elif session_id is not None:
                     session_row = conn.execute(
@@ -1008,12 +1181,25 @@ class ModerationMixin:
                         (session_id,),
                     ).fetchone()
                     if session_row:
-                        game_name = str(
-                            (session_row["game_name"] if hasattr(session_row, "keys") else session_row[0]) or ""
-                        ).strip().lower()
+                        game_name = (
+                            str(
+                                (
+                                    session_row["game_name"]
+                                    if hasattr(session_row, "keys")
+                                    else session_row[0]
+                                )
+                                or ""
+                            )
+                            .strip()
+                            .lower()
+                        )
                         should_track = game_name == target_game_lower
         except Exception:
-            log.debug("Konnte Chat-Kategorie-Filter nicht pruefen fuer %s", login, exc_info=True)
+            log.debug(
+                "Konnte Chat-Kategorie-Filter nicht pruefen fuer %s",
+                login,
+                exc_info=True,
+            )
             return False
 
         if isinstance(cache, dict):
@@ -1036,9 +1222,7 @@ class ModerationMixin:
         """Loggt Chat-Events für Chat-Gesundheit und Retention-Metriken."""
         channel = self._resolve_message_channel(message)
         channel_name = (
-            getattr(channel, "name", "")
-            or getattr(channel, "login", "")
-            or ""
+            getattr(channel, "name", "") or getattr(channel, "login", "") or ""
         )
         login = channel_name.lstrip("#").lower()
         if not login:

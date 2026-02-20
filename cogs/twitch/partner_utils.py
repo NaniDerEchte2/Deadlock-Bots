@@ -5,6 +5,7 @@ Klare Trennung zwischen:
 - PARTNER: Vollständige Features (IRC, Raids, Analytics, Chat Bot)
 - MONITORED-ONLY: Nur Stats-Tracking (keine Chat-Features)
 """
+
 import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set
@@ -170,11 +171,14 @@ def is_partner_channel_for_chat_tracking(login: str) -> bool:
     login_lower = str(login).lower().lstrip("#")
 
     with get_conn() as conn:
-        row = conn.execute("""
+        row = conn.execute(
+            """
             SELECT is_partner_active
               FROM twitch_streamers_partner_state
              WHERE LOWER(twitch_login) = ?
-        """, (login_lower,)).fetchone()
+        """,
+            (login_lower,),
+        ).fetchone()
 
         if not row:
             return False

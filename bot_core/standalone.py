@@ -23,7 +23,9 @@ class StandaloneMixin:
     def setup_standalone_manager(self: "MasterBot") -> None:
         self.standalone_manager = None
         if StandaloneBotManager is None or StandaloneBotConfig is None:
-            logging.getLogger(__name__).info("Standalone manager Modul nicht verfügbar - überspringe")
+            logging.getLogger(__name__).info(
+                "Standalone manager Modul nicht verfügbar - überspringe"
+            )
             return
 
         try:
@@ -74,7 +76,9 @@ class StandaloneMixin:
 
                 default_data_dir = steam_dir / ".steam-data"
                 if os.getenv("STEAM_PRESENCE_DATA_DIR"):
-                    steam_env["STEAM_PRESENCE_DATA_DIR"] = os.getenv("STEAM_PRESENCE_DATA_DIR", "")
+                    steam_env["STEAM_PRESENCE_DATA_DIR"] = os.getenv(
+                        "STEAM_PRESENCE_DATA_DIR", ""
+                    )
                 else:
                     steam_env["STEAM_PRESENCE_DATA_DIR"] = str(default_data_dir)
 
@@ -107,10 +111,15 @@ class StandaloneMixin:
                 )
                 logging.info("Standalone manager: Steam Bridge registriert")
             else:
-                logging.warning("Steam Bridge Script %s nicht gefunden – Registrierung übersprungen", steam_script)
+                logging.warning(
+                    "Steam Bridge Script %s nicht gefunden – Registrierung übersprungen",
+                    steam_script,
+                )
         except Exception as exc:
             logging.getLogger(__name__).error(
-                "Standalone manager konnte nicht initialisiert werden: %s", exc, exc_info=True
+                "Standalone manager konnte nicht initialisiert werden: %s",
+                exc,
+                exc_info=True,
             )
             self.standalone_manager = None
 
@@ -285,7 +294,9 @@ class StandaloneMixin:
                 """,
             )
 
-            def _format_command_rows(rows: List[Any], *, include_finished: bool) -> List[Dict[str, Any]]:
+            def _format_command_rows(
+                rows: List[Any], *, include_finished: bool
+            ) -> List[Dict[str, Any]]:
                 formatted: List[Dict[str, Any]] = []
                 for row in rows:
                     keys = set(row.keys()) if hasattr(row, "keys") else set()
@@ -295,8 +306,12 @@ class StandaloneMixin:
                             "command": row["command"],
                             "status": row["status"],
                             "created_at": row["created_at"],
-                            "finished_at": row["finished_at"] if include_finished and "finished_at" in keys else None,
-                            "error": row["error"] if include_finished and "error" in keys else None,
+                            "finished_at": row["finished_at"]
+                            if include_finished and "finished_at" in keys
+                            else None,
+                            "error": row["error"]
+                            if include_finished and "error" in keys
+                            else None,
                         }
                     )
                 return formatted
@@ -350,8 +365,12 @@ class StandaloneMixin:
             return {
                 "state": payload,
                 "runtime": payload.get("runtime", {}),
-                "pending_commands": _format_command_rows(pending_rows, include_finished=False),
-                "recent_commands": _format_command_rows(recent_rows, include_finished=True),
+                "pending_commands": _format_command_rows(
+                    pending_rows, include_finished=False
+                ),
+                "recent_commands": _format_command_rows(
+                    recent_rows, include_finished=True
+                ),
                 "tasks": {
                     "counts": task_counts,
                     "recent": _format_recent_tasks(recent_tasks),
@@ -359,10 +378,14 @@ class StandaloneMixin:
                 "quick_invites": {
                     "counts": quick_counts,
                     "recent": quick_recent,
-                    "available": int(quick_available_row["count"]) if quick_available_row and quick_available_row["count"] is not None else 0,
+                    "available": int(quick_available_row["count"])
+                    if quick_available_row and quick_available_row["count"] is not None
+                    else 0,
                     "total": sum(quick_counts.values()),
                 },
-                "heartbeat": int(state_row["heartbeat"]) if state_row and state_row["heartbeat"] is not None else None,
+                "heartbeat": int(state_row["heartbeat"])
+                if state_row and state_row["heartbeat"] is not None
+                else None,
                 "updated_at": state_row["updated_at"] if state_row else None,
             }
 

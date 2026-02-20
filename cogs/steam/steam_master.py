@@ -57,13 +57,21 @@ class SteamLoginFlags(commands.FlagConverter, case_insensitive=True):
     """Supported flags for the ``steam_login`` command."""
 
     use_refresh_token: Optional[bool] = commands.flag(default=None, aliases=["refresh"])
-    force_credentials: bool = commands.flag(default=False, aliases=["force", "credentials"])
-    account_name: Optional[str] = commands.flag(default=None, aliases=["account", "user", "username"])
+    force_credentials: bool = commands.flag(
+        default=False, aliases=["force", "credentials"]
+    )
+    account_name: Optional[str] = commands.flag(
+        default=None, aliases=["account", "user", "username"]
+    )
     password: Optional[str] = commands.flag(default=None, aliases=["pass", "pw"])
     refresh_token: Optional[str] = commands.flag(default=None, aliases=["rtoken"])
-    two_factor_code: Optional[str] = commands.flag(default=None, aliases=["twofactor", "totp"])
+    two_factor_code: Optional[str] = commands.flag(
+        default=None, aliases=["twofactor", "totp"]
+    )
     auth_code: Optional[str] = commands.flag(default=None, aliases=["guard"])
-    remember_password: Optional[bool] = commands.flag(default=None, aliases=["remember"])
+    remember_password: Optional[bool] = commands.flag(
+        default=None, aliases=["remember"]
+    )
     machine_auth_token: Optional[str] = commands.flag(default=None, aliases=["machine"])
 
 
@@ -85,7 +93,9 @@ class SteamTaskOutcome:
 class SteamTaskClient:
     """Small helper around the ``steam_tasks`` table."""
 
-    def __init__(self, *, poll_interval: float = 0.5, default_timeout: float = 15.0) -> None:
+    def __init__(
+        self, *, poll_interval: float = 0.5, default_timeout: float = 15.0
+    ) -> None:
         self.poll_interval = poll_interval
         self.default_timeout = default_timeout
 
@@ -116,10 +126,15 @@ class SteamTaskClient:
         try:
             return json.loads(result)
         except (TypeError, ValueError):  # pragma: no cover - logging only
-            log.warning("Konnte Steam-Task-Resultat nicht als JSON lesen", extra={"result": result})
+            log.warning(
+                "Konnte Steam-Task-Resultat nicht als JSON lesen",
+                extra={"result": result},
+            )
             return result
 
-    async def wait(self, task_id: int, *, timeout: Optional[float] = None) -> SteamTaskOutcome:
+    async def wait(
+        self, task_id: int, *, timeout: Optional[float] = None
+    ) -> SteamTaskOutcome:
         poll_interval = max(0.1, float(self.poll_interval))
         timeout = timeout if timeout is not None else self.default_timeout
         deadline = time.monotonic() + max(poll_interval, float(timeout))
@@ -132,17 +147,23 @@ class SteamTaskClient:
                 ).fetchone()
 
             if row is None:
-                return SteamTaskOutcome(task_id, "MISSING", None, "Task nicht gefunden", timed_out=True)
+                return SteamTaskOutcome(
+                    task_id, "MISSING", None, "Task nicht gefunden", timed_out=True
+                )
 
             status = str(row["status"]) if row["status"] is not None else "UNKNOWN"
             result = self._decode_result(row["result"])
             error = str(row["error"]) if row["error"] is not None else None
 
             if status.upper() in {"DONE", "FAILED"}:
-                return SteamTaskOutcome(task_id, status.upper(), result, error, timed_out=False)
+                return SteamTaskOutcome(
+                    task_id, status.upper(), result, error, timed_out=False
+                )
 
             if time.monotonic() >= deadline:
-                return SteamTaskOutcome(task_id, status.upper(), result, error, timed_out=True)
+                return SteamTaskOutcome(
+                    task_id, status.upper(), result, error, timed_out=True
+                )
 
             await asyncio.sleep(poll_interval)
 
@@ -215,13 +236,17 @@ def _count_single(sql: str) -> Optional[int]:
 class SteamMaster(commands.Cog):
     """Discord cog providing hub-style Steam helpers."""
 
-    def __init__(self, bot: commands.Bot, *, mode: Optional[SteamMasterMode] = None) -> None:
+    def __init__(
+        self, bot: commands.Bot, *, mode: Optional[SteamMasterMode] = None
+    ) -> None:
         self.bot = bot
         self.mode = mode or _determine_mode()
         self.tasks = SteamTaskClient()
         log.info("SteamMaster initialised in %s mode", self.mode.value)
 
-    def enqueue_task(self, task_type: str, payload: Optional[Dict[str, Any]] = None) -> int:
+    def enqueue_task(
+        self, task_type: str, payload: Optional[Dict[str, Any]] = None
+    ) -> int:
         """Expose task creation for other components."""
 
         return self.tasks.enqueue(task_type, payload)
@@ -241,7 +266,9 @@ class SteamMaster(commands.Cog):
     def _format_stats(title: str, stats: Dict[str, int]) -> str:
         if not stats:
             return f"{title}: keine Einträge"
-        parts = ", ".join(f"{status}={count}" for status, count in sorted(stats.items()))
+        parts = ", ".join(
+            f"{status}={count}" for status, count in sorted(stats.items())
+        )
         return f"{title}: {parts}"
 
     async def _bridge_status_lines(self) -> Dict[str, str]:
@@ -289,8 +316,12 @@ class SteamMaster(commands.Cog):
         refresh = _refresh_token_path()
         machine = _machine_auth_path()
         lines.append(f"token_storage={token_storage_mode()}")
-        lines.append(f"refresh_token={'yes' if refresh_token_exists(refresh) else 'no'}")
-        lines.append(f"machine_auth={'yes' if machine_auth_token_exists(machine) else 'no'}")
+        lines.append(
+            f"refresh_token={'yes' if refresh_token_exists(refresh) else 'no'}"
+        )
+        lines.append(
+            f"machine_auth={'yes' if machine_auth_token_exists(machine) else 'no'}"
+        )
         lines.append(f"token_fallback_paths refresh={refresh} machine={machine}")
 
         fr_stats = _fetch_group_counts(
@@ -389,7 +420,9 @@ class SteamMaster(commands.Cog):
             return
 
         if not outcome.ok:
-            await ctx.reply(f"❌ Guard-Code fehlgeschlagen: {outcome.error or 'unbekannter Fehler'}")
+            await ctx.reply(
+                f"❌ Guard-Code fehlgeschlagen: {outcome.error or 'unbekannter Fehler'}"
+            )
             return
 
         result = outcome.result if isinstance(outcome.result, dict) else {}
@@ -411,7 +444,9 @@ class SteamMaster(commands.Cog):
             return
 
         if not outcome.ok:
-            await ctx.reply(f"❌ Logout fehlgeschlagen: {outcome.error or 'unbekannter Fehler'}")
+            await ctx.reply(
+                f"❌ Logout fehlgeschlagen: {outcome.error or 'unbekannter Fehler'}"
+            )
             return
 
         await ctx.reply("✅ Logout ausgelöst.")
@@ -439,7 +474,9 @@ class SteamMaster(commands.Cog):
             "Fallback-Pfade:\n- `{rp}`\n- `{mp}`".format(
                 storage=token_storage_mode(),
                 r="vorhanden" if refresh_token_exists(refresh) else "nicht vorhanden",
-                m="vorhanden" if machine_auth_token_exists(machine) else "nicht vorhanden",
+                m="vorhanden"
+                if machine_auth_token_exists(machine)
+                else "nicht vorhanden",
                 rp=refresh,
                 mp=machine,
             )
@@ -452,7 +489,9 @@ class SteamMaster(commands.Cog):
 
         refresh = _refresh_token_path()
         machine = _machine_auth_path()
-        removed = clear_steam_tokens(refresh_file_path=refresh, machine_file_path=machine)
+        removed = clear_steam_tokens(
+            refresh_file_path=refresh, machine_file_path=machine
+        )
 
         if removed:
             await ctx.reply("🧹 Gelöscht: {}".format(", ".join(removed)))
@@ -463,6 +502,9 @@ class SteamMaster(commands.Cog):
 async def setup(bot: commands.Bot) -> None:
     mode = _determine_mode()
     if mode is SteamMasterMode.DISABLED:
-        log.info("SteamMaster cog disabled via STEAM_MASTER_MODE=%s", os.getenv("STEAM_MASTER_MODE"))
+        log.info(
+            "SteamMaster cog disabled via STEAM_MASTER_MODE=%s",
+            os.getenv("STEAM_MASTER_MODE"),
+        )
         return
     await bot.add_cog(SteamMaster(bot, mode=mode))

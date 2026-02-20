@@ -35,21 +35,25 @@ log = logging.getLogger(__name__)
 
 class CryptoError(Exception):
     """Base exception for crypto operations."""
+
     pass
 
 
 class KeyMissing(CryptoError):
     """Encryption key not found."""
+
     pass
 
 
 class DecryptFailed(CryptoError):
     """Decryption failed (wrong key, corrupted data, AAD mismatch)."""
+
     pass
 
 
 class InvalidPayload(CryptoError):
     """Invalid encrypted payload format."""
+
     pass
 
 
@@ -58,7 +62,7 @@ class FieldCrypto:
 
     VERSION = 1
     NONCE_SIZE = 12  # 96 bits (recommended for GCM)
-    KEY_SIZE = 32    # 256 bits
+    KEY_SIZE = 32  # 256 bits
 
     def __init__(self):
         """Initialize crypto with keys from Windows Credential Manager."""
@@ -96,12 +100,7 @@ class FieldCrypto:
                 f"(expected {self.KEY_SIZE})"
             )
 
-    def encrypt_field(
-        self,
-        plaintext: str,
-        aad: str,
-        kid: str = "v1"
-    ) -> bytes:
+    def encrypt_field(self, plaintext: str, aad: str, kid: str = "v1") -> bytes:
         """
         Encrypt a field value.
 
@@ -130,35 +129,26 @@ class FieldCrypto:
         aesgcm = AESGCM(key)
         try:
             ciphertext = aesgcm.encrypt(
-                nonce,
-                plaintext.encode('utf-8'),
-                aad.encode('utf-8')
+                nonce, plaintext.encode("utf-8"), aad.encode("utf-8")
             )
         except Exception as e:
             log.error("Encryption failed: %s", e)
             raise CryptoError(f"Encryption failed: {e}")
 
         # Pack: version(1) + kid_len(1) + kid(var) + nonce(12) + ciphertext+tag
-        kid_bytes = kid.encode('ascii')
+        kid_bytes = kid.encode("ascii")
         kid_len = len(kid_bytes)
 
         if kid_len > 255:
             raise ValueError("Key ID too long (max 255 bytes)")
 
-        blob = struct.pack('BB', self.VERSION, kid_len) + kid_bytes + nonce + ciphertext
+        blob = struct.pack("BB", self.VERSION, kid_len) + kid_bytes + nonce + ciphertext
 
-        log.debug(
-            "Encrypted field: kid=%s, aad=%s, size=%d bytes",
-            kid, aad, len(blob)
-        )
+        log.debug("Encrypted field: kid=%s, aad=%s, size=%d bytes", kid, aad, len(blob))
 
         return blob
 
-    def decrypt_field(
-        self,
-        blob: bytes,
-        aad: str
-    ) -> str:
+    def decrypt_field(self, blob: bytes, aad: str) -> str:
         """
         Decrypt a field value.
 
@@ -181,10 +171,12 @@ class FieldCrypto:
             raise InvalidPayload(f"Blob too short: {len(blob)} bytes")
 
         # Unpack header
-        version, kid_len = struct.unpack('BB', blob[:2])
+        version, kid_len = struct.unpack("BB", blob[:2])
 
         if version != self.VERSION:
-            raise InvalidPayload(f"Unknown version: {version} (expected {self.VERSION})")
+            raise InvalidPayload(
+                f"Unknown version: {version} (expected {self.VERSION})"
+            )
 
         # Extract kid
         kid_start = 2
@@ -194,7 +186,7 @@ class FieldCrypto:
             raise InvalidPayload("Blob truncated (missing nonce)")
 
         try:
-            kid = blob[kid_start:kid_end].decode('ascii')
+            kid = blob[kid_start:kid_end].decode("ascii")
         except UnicodeDecodeError as e:
             raise InvalidPayload(f"Invalid key ID encoding: {e}")
 
@@ -216,8 +208,8 @@ class FieldCrypto:
         # Decrypt with AAD verification
         aesgcm = AESGCM(key)
         try:
-            plaintext_bytes = aesgcm.decrypt(nonce, ciphertext, aad.encode('utf-8'))
-            plaintext = plaintext_bytes.decode('utf-8')
+            plaintext_bytes = aesgcm.decrypt(nonce, ciphertext, aad.encode("utf-8"))
+            plaintext = plaintext_bytes.decode("utf-8")
         except Exception as e:
             log.error("Decryption failed for kid=%s, aad=%s: %s", kid, aad, e)
             raise DecryptFailed(f"Decryption failed: {e}")

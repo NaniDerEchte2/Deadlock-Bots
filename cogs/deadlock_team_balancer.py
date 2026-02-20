@@ -25,10 +25,10 @@ logger = logging.getLogger(__name__)
 
 # --------- KONFIG ---------
 MATCH_CATEGORY_ID = 1289721245281292290  # Pflichtkategorie für die zwei Team-VCs
-TEAM_SIZE_CAP = 6                        # max 6 pro Team => 6v6
-MOVE_SLEEP = 0.35                        # Rate-Limit-Schoner beim Move
-SELECTION_TIMEOUT = 90.0                 # Sekunden für interaktive Auswahl
-TOURNAMENT_UI_TIMEOUT = 240.0            # Timeout fuer Turnier-Menues
+TEAM_SIZE_CAP = 6  # max 6 pro Team => 6v6
+MOVE_SLEEP = 0.35  # Rate-Limit-Schoner beim Move
+SELECTION_TIMEOUT = 90.0  # Sekunden für interaktive Auswahl
+TOURNAMENT_UI_TIMEOUT = 240.0  # Timeout fuer Turnier-Menues
 # --------------------------
 
 # Rang-Mapping (Name -> Wert)
@@ -64,12 +64,15 @@ DISCORD_RANK_ROLES: Dict[int, Tuple[str, int]] = {
 
 # ================= Helper & DB =================
 
+
 def _normalize_rank_name(raw: str) -> str:
     return (raw or "").strip().title()
+
 
 @lru_cache(maxsize=10000)
 def _rank_value_from_name_cached(name: str) -> int:
     return DEADLOCK_RANKS.get(_normalize_rank_name(name), 0)
+
 
 async def _fetch_rank_from_db(user_id: int) -> Tuple[str, int]:
     """Fetch user rank from central DB using async wrapper."""
@@ -85,6 +88,7 @@ async def _fetch_rank_from_db(user_id: int) -> Tuple[str, int]:
         logger.warning(f"DB rank fetch failed for {user_id}: {e}")
     return "Obscurus", 0
 
+
 def _rank_from_roles(member: discord.Member) -> Tuple[str, int]:
     best = ("Obscurus", 0)
     for role in member.roles:
@@ -92,6 +96,7 @@ def _rank_from_roles(member: discord.Member) -> Tuple[str, int]:
         if meta and meta[1] > best[1]:
             best = meta
     return best
+
 
 def _balance_score(team_a: List[int], team_b: List[int]) -> float:
     # Kombiniert Summe-/Ø-Differenz + Varianz – je kleiner desto besser
@@ -105,7 +110,10 @@ def _balance_score(team_a: List[int], team_b: List[int]) -> float:
     diff_avg = abs(avg_a - avg_b)
     return diff_sum * 1.0 + diff_avg * 2.0 + (var_a + var_b) * 0.5
 
-def _best_split(players: List[Tuple[discord.Member, int]]) -> Tuple[List[Tuple[discord.Member, int]], List[Tuple[discord.Member, int]]]:
+
+def _best_split(
+    players: List[Tuple[discord.Member, int]],
+) -> Tuple[List[Tuple[discord.Member, int]], List[Tuple[discord.Member, int]]]:
     """
     players: [(member, rank_value)]
     -> zwei Teams (gleiche Größe, max TEAM_SIZE_CAP) mit bester Balance
@@ -130,13 +138,18 @@ def _best_split(players: List[Tuple[discord.Member, int]]) -> Tuple[List[Tuple[d
             best_score = score
             best = (team_a, team_b)
 
-    return best if best else (players[:team_size], players[team_size:team_size*2])
+    return best if best else (players[:team_size], players[team_size : team_size * 2])
 
-def _team_embed(team_a: List[Tuple[discord.Member, int]], team_b: List[Tuple[discord.Member, int]], title: str) -> discord.Embed:
+
+def _team_embed(
+    team_a: List[Tuple[discord.Member, int]],
+    team_b: List[Tuple[discord.Member, int]],
+    title: str,
+) -> discord.Embed:
     def fmt(team: List[Tuple[discord.Member, int]]) -> Tuple[str, float, float]:
         vals = [v for _, v in team]
-        avg = sum(vals)/len(vals) if vals else 0.0
-        var = (sum((x-avg)**2 for x in vals)/len(vals)) if vals else 0.0
+        avg = sum(vals) / len(vals) if vals else 0.0
+        var = (sum((x - avg) ** 2 for x in vals) / len(vals)) if vals else 0.0
         lines = []
         for m, v in team:
             nm = next((k for k, val in DEADLOCK_RANKS.items() if val == v), "Obscurus")
@@ -159,21 +172,25 @@ def _team_embed(team_a: List[Tuple[discord.Member, int]], team_b: List[Tuple[dis
     )
     return emb
 
+
 # ================= Auswahl-UI (>12 Spieler) =================
+
 
 class PlayerButton(discord.ui.Button):
     def __init__(self, member: discord.Member, rank_val: int, idx: int):
         super().__init__(
             label=f"{member.display_name}",
             style=discord.ButtonStyle.secondary,
-            row=(idx % 20) // 5  # 5 Buttons je Reihe (0..3), Reihe 4 = Control
+            row=(idx % 20) // 5,  # 5 Buttons je Reihe (0..3), Reihe 4 = Control
         )
         self.member = member
         self.rank_val = rank_val
         self.idx = idx
 
     def set_selected(self, selected: bool):
-        self.style = discord.ButtonStyle.success if selected else discord.ButtonStyle.secondary
+        self.style = (
+            discord.ButtonStyle.success if selected else discord.ButtonStyle.secondary
+        )
 
     async def callback(self, interaction: discord.Interaction):
         view: "SelectionView" = self.view  # type: ignore
@@ -191,18 +208,26 @@ class PlayerButton(discord.ui.Button):
         view.refresh_confirm()
         await interaction.response.edit_message(view=view)
 
+
 class SelectionView(discord.ui.View):
     MAX_COMPONENTS = 25
     CONTROL_COUNT = 2  # confirm + random
 
-    def __init__(self, ctx: commands.Context, players: List[Tuple[discord.Member, str, int]], max_players: int = 12):
+    def __init__(
+        self,
+        ctx: commands.Context,
+        players: List[Tuple[discord.Member, str, int]],
+        max_players: int = 12,
+    ):
         super().__init__(timeout=SELECTION_TIMEOUT)
         self.ctx = ctx
         self.players = players
         self.max_players = max_players
         self.selected: set[int] = set()
 
-        allowed = min(len(players), self.MAX_COMPONENTS - self.CONTROL_COUNT)  # 23 Buttons
+        allowed = min(
+            len(players), self.MAX_COMPONENTS - self.CONTROL_COUNT
+        )  # 23 Buttons
         for i, (m, _nm, rv) in enumerate(players[:allowed]):
             btn = PlayerButton(m, rv, i)
             self.add_item(btn)
@@ -212,7 +237,7 @@ class SelectionView(discord.ui.View):
             style=discord.ButtonStyle.success,
             emoji="🎮",
             row=4,
-            disabled=True
+            disabled=True,
         )
         self.confirm_btn.callback = self._confirm_cb
         self.add_item(self.confirm_btn)
@@ -221,7 +246,7 @@ class SelectionView(discord.ui.View):
             label="Zufällige Auswahl",
             style=discord.ButtonStyle.secondary,
             emoji="🎲",
-            row=4
+            row=4,
         )
         self.random_btn.callback = self._random_cb
         self.add_item(self.random_btn)
@@ -232,9 +257,15 @@ class SelectionView(discord.ui.View):
         self.confirm_btn.disabled = c < 4 or c > self.max_players
 
     async def _confirm_cb(self, interaction: discord.Interaction):
-        chosen = [self.players[i] for i in sorted(self.selected) if i < len(self.players)]
+        chosen = [
+            self.players[i] for i in sorted(self.selected) if i < len(self.players)
+        ]
         self.stop()
-        await interaction.response.edit_message(content=f"🎮 Starte Match mit {len(chosen)} ausgewählten Spielern …", view=None, embed=None)
+        await interaction.response.edit_message(
+            content=f"🎮 Starte Match mit {len(chosen)} ausgewählten Spielern …",
+            view=None,
+            embed=None,
+        )
         cog: "DeadlockTeamBalancer" = interaction.client.get_cog("DeadlockTeamBalancer")  # type: ignore
         if not cog:
             return
@@ -242,16 +273,24 @@ class SelectionView(discord.ui.View):
 
     async def _random_cb(self, interaction: discord.Interaction):
         self.selected.clear()
-        count = min(self.max_players, len(self.players), self.MAX_COMPONENTS - self.CONTROL_COUNT)
+        count = min(
+            self.max_players,
+            len(self.players),
+            self.MAX_COMPONENTS - self.CONTROL_COUNT,
+        )
         for i in random.sample(range(count), k=min(count, self.max_players)):
             self.selected.add(i)
         for child in self.children:
             if isinstance(child, PlayerButton):
                 child.set_selected(child.idx in self.selected)
         self.refresh_confirm()
-        await interaction.response.edit_message(content=f"🎲 {len(self.selected)} Spieler zufällig ausgewählt.", view=self)
+        await interaction.response.edit_message(
+            content=f"🎲 {len(self.selected)} Spieler zufällig ausgewählt.", view=self
+        )
+
 
 # ================= Turnier-Registrierung =================
+
 
 def _signup_status_text(status: str) -> str:
     if status == "inserted":
@@ -307,7 +346,9 @@ class SoloSignupView(RestrictedUserView):
         self.add_item(SoloRankSelect())
 
     @discord.ui.button(label="Eintragen", style=discord.ButtonStyle.success, emoji="✅")
-    async def submit_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+    async def submit_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ):
         if not self.selected_rank:
             await interaction.response.send_message(
                 "Bitte waehle zuerst deinen Rang aus.",
@@ -403,7 +444,9 @@ class TeamSelect(discord.ui.Select):
         try:
             team_id = int(selected)
         except ValueError:
-            await interaction.response.send_message("❌ Ungueltige Team-Auswahl.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ Ungueltige Team-Auswahl.", ephemeral=True
+            )
             return
         view.selected_team_id = team_id
         view.selected_team_name = view.team_name_by_id.get(team_id)
@@ -449,7 +492,9 @@ class TeamSignupView(RestrictedUserView):
         self.add_item(TeamRankSelect())
 
     @discord.ui.button(label="Eintragen", style=discord.ButtonStyle.success, emoji="✅")
-    async def submit_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+    async def submit_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ):
         if not self.selected_team_id:
             await interaction.response.send_message(
                 "Bitte waehle zuerst ein Team aus oder erstelle eines.",
@@ -470,7 +515,11 @@ class TeamSignupView(RestrictedUserView):
             team_id=self.selected_team_id,
             assigned_by_admin=False,
         )
-        team_name = str(result.get("team_name") or self.selected_team_name or f"Team {self.selected_team_id}")
+        team_name = str(
+            result.get("team_name")
+            or self.selected_team_name
+            or f"Team {self.selected_team_id}"
+        )
         text = (
             f"✅ Turnier-Eintrag {_signup_status_text(str(result.get('status')))}.\n"
             f"Modus: Team\n"
@@ -490,10 +539,14 @@ class TournamentPanelView(discord.ui.View):
         emoji="🛡️",
         custom_id="deadlock_tournament_entry_team",
     )
-    async def team_entry_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+    async def team_entry_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ):
         cog = interaction.client.get_cog("DeadlockTeamBalancer")
         if not cog:
-            await interaction.response.send_message("❌ Turnier-Cog nicht verfuegbar.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ Turnier-Cog nicht verfuegbar.", ephemeral=True
+            )
             return
         await cog.open_tournament_team_entry(interaction)
 
@@ -503,14 +556,20 @@ class TournamentPanelView(discord.ui.View):
         emoji="🎯",
         custom_id="deadlock_tournament_entry_solo",
     )
-    async def solo_entry_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+    async def solo_entry_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ):
         cog = interaction.client.get_cog("DeadlockTeamBalancer")
         if not cog:
-            await interaction.response.send_message("❌ Turnier-Cog nicht verfuegbar.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ Turnier-Cog nicht verfuegbar.", ephemeral=True
+            )
             return
         await cog.open_tournament_solo_entry(interaction)
 
+
 # ================= Haupt-Cog =================
+
 
 @dataclass
 class MatchInfo:
@@ -520,6 +579,7 @@ class MatchInfo:
     players: List[int]
     started_at: datetime
     original_channel_id: Optional[int] = None
+
 
 class DeadlockTeamBalancer(commands.Cog):
     """Teambalancer: 2 Teams nach Rängen, strikt 2 VC in Kategorie MATCH_CATEGORY_ID, Auto-Move, volle Befehlsparität."""
@@ -548,7 +608,9 @@ class DeadlockTeamBalancer(commands.Cog):
         # Fallback to DB lookup using central DB
         return await _fetch_rank_from_db(member.id)
 
-    async def open_tournament_solo_entry(self, interaction: discord.Interaction) -> None:
+    async def open_tournament_solo_entry(
+        self, interaction: discord.Interaction
+    ) -> None:
         if not interaction.guild:
             await interaction.response.send_message(
                 "❌ Turnier-Anmeldung funktioniert nur auf dem Server.",
@@ -564,7 +626,9 @@ class DeadlockTeamBalancer(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    async def open_tournament_team_entry(self, interaction: discord.Interaction) -> None:
+    async def open_tournament_team_entry(
+        self, interaction: discord.Interaction
+    ) -> None:
         if not interaction.guild:
             await interaction.response.send_message(
                 "❌ Turnier-Anmeldung funktioniert nur auf dem Server.",
@@ -587,17 +651,21 @@ class DeadlockTeamBalancer(commands.Cog):
             inline=False,
         )
         if len(teams) > 24:
-            embed.set_footer(text="Hinweis: Dropdown zeigt max. 24 Teams. Existiert dein Team nicht: Neues Team erstellen.")
+            embed.set_footer(
+                text="Hinweis: Dropdown zeigt max. 24 Teams. Existiert dein Team nicht: Neues Team erstellen."
+            )
         view = TeamSignupView(interaction.user.id, interaction.guild.id, teams)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     # ---------- Commands ----------
-    @commands.group(name="balance", aliases=["bal", "teams"], invoke_without_command=True)
+    @commands.group(
+        name="balance", aliases=["bal", "teams"], invoke_without_command=True
+    )
     async def balance_root(self, ctx: commands.Context):
         emb = discord.Embed(
             title="⚖️ Deadlock Team Balancer",
             description="Teilt Spieler in **2 Teams** nach Rang auf und **erstellt immer 2 Voice-Channels** in der Match-Kategorie.",
-            color=0x0099FF
+            color=0x0099FF,
         )
         emb.add_field(
             name="Befehle",
@@ -614,12 +682,12 @@ class DeadlockTeamBalancer(commands.Cog):
                 "`!balance turnierstatus` – dein Turnier-Eintrag\n"
                 "`!balance austragen` – Turnier-Eintrag entfernen"
             ),
-            inline=False
+            inline=False,
         )
         emb.add_field(
             name="Spielerzahl",
             value="Min. 4 Spieler, max. 12 (6v6). Bei >12: interaktive Auswahl.",
-            inline=False
+            inline=False,
         )
         await ctx.send(embed=emb)
 
@@ -627,7 +695,9 @@ class DeadlockTeamBalancer(commands.Cog):
     async def balance_auto(self, ctx: commands.Context):
         members = self._voice_members(ctx)
         if len(members) < 4:
-            await ctx.send(f"❌ Mindestens 4 Spieler benötigt (aktuell: {len(members)})")
+            await ctx.send(
+                f"❌ Mindestens 4 Spieler benötigt (aktuell: {len(members)})"
+            )
             return
         players: List[Tuple[discord.Member, str, int]] = []
         for m in members:
@@ -645,10 +715,14 @@ class DeadlockTeamBalancer(commands.Cog):
     @balance_root.command(name="manual")
     async def balance_manual(self, ctx: commands.Context, *members: discord.Member):
         if len(members) < 4:
-            await ctx.send(f"❌ Mindestens 4 Spieler benötigt (angegeben: {len(members)})")
+            await ctx.send(
+                f"❌ Mindestens 4 Spieler benötigt (angegeben: {len(members)})"
+            )
             return
         if len(members) > TEAM_SIZE_CAP * 2:
-            await ctx.send(f"❌ Maximal {TEAM_SIZE_CAP*2} Spieler unterstützt (angegeben: {len(members)})")
+            await ctx.send(
+                f"❌ Maximal {TEAM_SIZE_CAP * 2} Spieler unterstützt (angegeben: {len(members)})"
+            )
             return
         players: List[Tuple[discord.Member, str, int]] = []
         for m in members:
@@ -661,7 +735,9 @@ class DeadlockTeamBalancer(commands.Cog):
         """Erstellt ZWINGEND zwei Voice-Channels in der Match-Kategorie und moved die Spieler in 2 Teams."""
         members = self._voice_members(ctx)
         if len(members) < 4:
-            await ctx.send(f"❌ Mindestens 4 Spieler benötigt (aktuell: {len(members)})")
+            await ctx.send(
+                f"❌ Mindestens 4 Spieler benötigt (aktuell: {len(members)})"
+            )
             return
 
         players: List[Tuple[discord.Member, str, int]] = []
@@ -672,16 +748,18 @@ class DeadlockTeamBalancer(commands.Cog):
         if len(players) > TEAM_SIZE_CAP * 2:
             embed = discord.Embed(
                 title="👥 Zu viele Spieler",
-                description=f"Es sind **{len(players)}** Spieler im Channel – wähle bis zu **{TEAM_SIZE_CAP*2}** Spieler aus.",
-                color=discord.Color.orange()
+                description=f"Es sind **{len(players)}** Spieler im Channel – wähle bis zu **{TEAM_SIZE_CAP * 2}** Spieler aus.",
+                color=discord.Color.orange(),
             )
             lines = []
             for i, (mem, nm, val) in enumerate(players[:20], 1):
                 lines.append(f"{i}. **{mem.display_name}** — {nm} ({val})")
             if len(players) > 20:
-                lines.append(f"... und {len(players)-20} weitere")
-            embed.add_field(name="Spieler (Ausschnitt)", value="\n".join(lines), inline=False)
-            view = SelectionView(ctx, players, max_players=TEAM_SIZE_CAP*2)
+                lines.append(f"... und {len(players) - 20} weitere")
+            embed.add_field(
+                name="Spieler (Ausschnitt)", value="\n".join(lines), inline=False
+            )
+            view = SelectionView(ctx, players, max_players=TEAM_SIZE_CAP * 2)
             await ctx.send(embed=embed, view=view)
             return
 
@@ -704,11 +782,15 @@ class DeadlockTeamBalancer(commands.Cog):
             ),
             color=discord.Color.gold(),
         )
-        embed.set_footer(text="Doppelte Eintraege und doppelte Team-Namen werden automatisch verhindert.")
+        embed.set_footer(
+            text="Doppelte Eintraege und doppelte Team-Namen werden automatisch verhindert."
+        )
         await ctx.send(embed=embed, view=TournamentPanelView())
 
     @balance_root.command(name="turnierstatus", aliases=["cupstatus"])
-    async def balance_tournament_status(self, ctx: commands.Context, member: Optional[discord.Member] = None):
+    async def balance_tournament_status(
+        self, ctx: commands.Context, member: Optional[discord.Member] = None
+    ):
         if not ctx.guild:
             await ctx.send("❌ Dieser Befehl funktioniert nur in einem Server.")
             return
@@ -716,7 +798,9 @@ class DeadlockTeamBalancer(commands.Cog):
         if target.id != ctx.author.id:
             perms = ctx.author.guild_permissions
             if not (perms.manage_guild or perms.administrator):
-                await ctx.send("❌ Du darfst nur deinen eigenen Turnierstatus anzeigen.")
+                await ctx.send(
+                    "❌ Du darfst nur deinen eigenen Turnierstatus anzeigen."
+                )
                 return
 
         await tstore.ensure_schema_async()
@@ -735,7 +819,9 @@ class DeadlockTeamBalancer(commands.Cog):
             title=f"🏆 Turnierstatus: {target.display_name}",
             color=discord.Color.orange(),
         )
-        emb.add_field(name="Modus", value="Team" if mode == "team" else "Solo", inline=True)
+        emb.add_field(
+            name="Modus", value="Team" if mode == "team" else "Solo", inline=True
+        )
         emb.add_field(
             name="Rang",
             value=f"{tstore.rank_label(rank_key)} ({rank_num})",
@@ -800,15 +886,27 @@ class DeadlockTeamBalancer(commands.Cog):
             await ctx.send("ℹ️ Du warst nicht als Turnier-Teilnehmer eingetragen.")
 
     @balance_root.command(name="status")
-    async def balance_status(self, ctx: commands.Context, member: Optional[discord.Member] = None):
+    async def balance_status(
+        self, ctx: commands.Context, member: Optional[discord.Member] = None
+    ):
         member = member or ctx.author
         nm, val = await self.get_user_rank(member)
         role_nm, role_val = _rank_from_roles(member)
         db_nm, db_val = await _fetch_rank_from_db(member.id)
-        emb = discord.Embed(title=f"📊 Rank-Status: {member.display_name}", color=discord.Color.blue())
+        emb = discord.Embed(
+            title=f"📊 Rank-Status: {member.display_name}", color=discord.Color.blue()
+        )
         emb.add_field(name="🎯 Aktueller Rank", value=f"**{nm}** ({val})", inline=True)
-        emb.add_field(name="🎭 Discord-Rollen", value=f"{role_nm} ({role_val})" if role_val else "Keine Rank-Rolle", inline=True)
-        emb.add_field(name="🗃️ DB-Fallback", value=f"{db_nm} ({db_val})" if db_val else "Nicht in DB", inline=True)
+        emb.add_field(
+            name="🎭 Discord-Rollen",
+            value=f"{role_nm} ({role_val})" if role_val else "Keine Rank-Rolle",
+            inline=True,
+        )
+        emb.add_field(
+            name="🗃️ DB-Fallback",
+            value=f"{db_nm} ({db_val})" if db_val else "Nicht in DB",
+            inline=True,
+        )
         await ctx.send(embed=emb)
 
     @balance_root.command(name="matches")
@@ -816,7 +914,9 @@ class DeadlockTeamBalancer(commands.Cog):
         if not self.active_matches:
             await ctx.send("📭 Keine aktiven Matches")
             return
-        emb = discord.Embed(title="🎮 Aktive Deadlock Matches", color=discord.Color.green())
+        emb = discord.Embed(
+            title="🎮 Aktive Deadlock Matches", color=discord.Color.green()
+        )
         for match_id, info in self.active_matches.items():
             guild = self.bot.get_guild(info.guild_id)
             if not guild:
@@ -832,8 +932,9 @@ class DeadlockTeamBalancer(commands.Cog):
             dur = datetime.utcnow() - info.started_at
             emb.add_field(
                 name=f"Match {match_id}",
-                value=f"Dauer: {dur.seconds//60}min {dur.seconds%60}s\n" + "\n".join(lines),
-                inline=False
+                value=f"Dauer: {dur.seconds // 60}min {dur.seconds % 60}s\n"
+                + "\n".join(lines),
+                inline=False,
             )
         await ctx.send(embed=emb)
 
@@ -844,7 +945,11 @@ class DeadlockTeamBalancer(commands.Cog):
             await ctx.send("❌ Stunden müssen zwischen 1–24 liegen")
             return
         cutoff = datetime.utcnow() - timedelta(hours=hours)
-        targets = [(mid, mi) for mid, mi in self.active_matches.items() if mi.started_at < cutoff]
+        targets = [
+            (mid, mi)
+            for mid, mi in self.active_matches.items()
+            if mi.started_at < cutoff
+        ]
         if not targets:
             await ctx.send(f"🧹 Keine Matches älter als {hours}h gefunden")
             return
@@ -862,12 +967,21 @@ class DeadlockTeamBalancer(commands.Cog):
                     except discord.HTTPException as e:
                         logger.debug("Cleanup: HTTP error deleting %s: %r", ch_id, e)
                     except Exception as e:
-                        logger.debug("Cleanup: unexpected error deleting %s: %r", ch_id, e)
+                        logger.debug(
+                            "Cleanup: unexpected error deleting %s: %r", ch_id, e
+                        )
             self.active_matches.pop(match_id, None)
-        await ctx.send(f"🧹 {len(targets)} Matches bereinigt ({deleted_ch} Channels gelöscht)")
+        await ctx.send(
+            f"🧹 {len(targets)} Matches bereinigt ({deleted_ch} Channels gelöscht)"
+        )
 
     @balance_root.command(name="end")
-    async def balance_end(self, ctx: commands.Context, match_id: Optional[str] = None, skip_debrief: Optional[bool] = False):
+    async def balance_end(
+        self,
+        ctx: commands.Context,
+        match_id: Optional[str] = None,
+        skip_debrief: Optional[bool] = False,
+    ):
         if not match_id:
             await ctx.send("❌ Bitte Match-ID angeben: `!balance end <id>`")
             return
@@ -887,7 +1001,7 @@ class DeadlockTeamBalancer(commands.Cog):
                     debrief_ch = await ctx.guild.create_voice_channel(
                         name=f"💬 Nachbesprechung • {match_id}",
                         category=cat,
-                        reason=f"Match {match_id} Nachbesprechung"
+                        reason=f"Match {match_id} Nachbesprechung",
                     )
                 except Exception as e:
                     logger.warning(f"Debrief-VC create failed: {e}")
@@ -896,8 +1010,16 @@ class DeadlockTeamBalancer(commands.Cog):
                 for uid in info.players:
                     try:
                         m = ctx.guild.get_member(uid)
-                        if m and m.voice and m.voice.channel and m.voice.channel.id in (info.team1_channel_id, info.team2_channel_id):
-                            await m.move_to(debrief_ch, reason=f"Match {match_id} beendet – Debrief")
+                        if (
+                            m
+                            and m.voice
+                            and m.voice.channel
+                            and m.voice.channel.id
+                            in (info.team1_channel_id, info.team2_channel_id)
+                        ):
+                            await m.move_to(
+                                debrief_ch, reason=f"Match {match_id} beendet – Debrief"
+                            )
                             moved += 1
                             await asyncio.sleep(0.3)
                     except discord.Forbidden:
@@ -918,41 +1040,59 @@ class DeadlockTeamBalancer(commands.Cog):
                     deleted.append(ch.name)
                     await asyncio.sleep(0.4)
                 except Exception as e:
-                    failed.append(f"{ch.mention if hasattr(ch,'mention') else ch.id} ({e})")
+                    failed.append(
+                        f"{ch.mention if hasattr(ch, 'mention') else ch.id} ({e})"
+                    )
             else:
                 failed.append(f"{ch_id} (nicht gefunden)")
 
         self.active_matches.pop(match_id, None)
 
         # 3) Ergebnis
-        emb = discord.Embed(title=f"🏁 Match {match_id} beendet", color=discord.Color.green() if debrief_ch else discord.Color.orange())
+        emb = discord.Embed(
+            title=f"🏁 Match {match_id} beendet",
+            color=discord.Color.green() if debrief_ch else discord.Color.orange(),
+        )
         if debrief_ch:
             emb.add_field(
                 name="💬 Nachbesprechungs-Lane",
                 value=f"{debrief_ch.mention}\nSpieler bewegt: {moved}/{len(info.players)}",
-                inline=False
+                inline=False,
             )
             if move_fail:
                 emb.add_field(
                     name="⚠️ Nicht bewegt",
-                    value="\n".join(move_fail[:6]) + (f"\n… und {len(move_fail)-6} weitere" if len(move_fail) > 6 else ""),
-                    inline=False
+                    value="\n".join(move_fail[:6])
+                    + (
+                        f"\n… und {len(move_fail) - 6} weitere"
+                        if len(move_fail) > 6
+                        else ""
+                    ),
+                    inline=False,
                 )
         if deleted:
-            emb.add_field(name="🗑️ Gelöschte Team-Channels", value="\n".join(deleted), inline=False)
+            emb.add_field(
+                name="🗑️ Gelöschte Team-Channels", value="\n".join(deleted), inline=False
+            )
         if failed:
-            emb.add_field(name="⚠️ Nicht gelöscht", value="\n".join(failed), inline=False)
+            emb.add_field(
+                name="⚠️ Nicht gelöscht", value="\n".join(failed), inline=False
+            )
         dur = datetime.utcnow() - info.started_at
-        emb.add_field(name="📊 Dauer", value=f"{dur.seconds//60}min {dur.seconds%60}s", inline=True)
+        emb.add_field(
+            name="📊 Dauer",
+            value=f"{dur.seconds // 60}min {dur.seconds % 60}s",
+            inline=True,
+        )
         emb.add_field(name="👥 Spieler", value=str(len(info.players)), inline=True)
         await ctx.send(embed=emb)
 
     # ---------- Kernablauf ----------
-    async def _run_balance_and_start(self, ctx: commands.Context, players_in: List[Tuple[discord.Member, str, int]]):
+    async def _run_balance_and_start(
+        self, ctx: commands.Context, players_in: List[Tuple[discord.Member, str, int]]
+    ):
         players_mv: List[Tuple[discord.Member, int]] = sorted(
-            [(m, v) for (m, _nm, v) in players_in],
-            key=lambda t: t[1],
-            reverse=True
+            [(m, v) for (m, _nm, v) in players_in], key=lambda t: t[1], reverse=True
         )
 
         team_a, team_b = _best_split(players_mv)
@@ -960,7 +1100,9 @@ class DeadlockTeamBalancer(commands.Cog):
         # Immer zwei Channels in der Kategorie erstellen (Pflicht)
         cat = ctx.guild.get_channel(MATCH_CATEGORY_ID)
         if not isinstance(cat, discord.CategoryChannel):
-            await ctx.send(f"❌ Kategorie `{MATCH_CATEGORY_ID}` nicht gefunden oder keine Kategorie.")
+            await ctx.send(
+                f"❌ Kategorie `{MATCH_CATEGORY_ID}` nicht gefunden oder keine Kategorie."
+            )
             return
 
         match_id = self._next_match_id()
@@ -970,9 +1112,13 @@ class DeadlockTeamBalancer(commands.Cog):
 
         async with lock:
             try:
-                ch1 = await ctx.guild.create_voice_channel(name=team1_name, category=cat, reason=f"Match {match_id}")
+                ch1 = await ctx.guild.create_voice_channel(
+                    name=team1_name, category=cat, reason=f"Match {match_id}"
+                )
                 await asyncio.sleep(0.4)
-                ch2 = await ctx.guild.create_voice_channel(name=team2_name, category=cat, reason=f"Match {match_id}")
+                ch2 = await ctx.guild.create_voice_channel(
+                    name=team2_name, category=cat, reason=f"Match {match_id}"
+                )
             except discord.Forbidden:
                 await ctx.send("❌ Keine Berechtigung, Voice-Channels zu erstellen.")
                 return
@@ -984,31 +1130,42 @@ class DeadlockTeamBalancer(commands.Cog):
         moved_a, moved_b, fail = await self._move_teams(team_a, team_b, ch1, ch2)
 
         # persistieren
-        orig = ctx.author.voice.channel.id if ctx.author.voice and ctx.author.voice.channel else None
+        orig = (
+            ctx.author.voice.channel.id
+            if ctx.author.voice and ctx.author.voice.channel
+            else None
+        )
         self.active_matches[match_id] = MatchInfo(
             guild_id=ctx.guild.id,
             team1_channel_id=ch1.id,
             team2_channel_id=ch2.id,
             players=[m.id for m, _ in (team_a + team_b)],
             started_at=datetime.utcnow(),
-            original_channel_id=orig
+            original_channel_id=orig,
         )
 
         # Embed mit Balance & Move-Ergebnis
-        embed = _team_embed(team_a, team_b, f"🎮 Match {match_id} – Teams erstellt & Spieler verschoben")
+        embed = _team_embed(
+            team_a, team_b, f"🎮 Match {match_id} – Teams erstellt & Spieler verschoben"
+        )
         embed.add_field(
             name="Move",
-            value=(f"{ch1.mention}: {moved_a}/{len(team_a)}\n"
-                   f"{ch2.mention}: {moved_b}/{len(team_b)}"),
-            inline=False
+            value=(
+                f"{ch1.mention}: {moved_a}/{len(team_a)}\n"
+                f"{ch2.mention}: {moved_b}/{len(team_b)}"
+            ),
+            inline=False,
         )
         if fail:
             embed.add_field(
                 name="⚠️ Nicht bewegt",
-                value="\n".join(fail[:6]) + (f"\n… und {len(fail)-6} weitere" if len(fail) > 6 else ""),
-                inline=False
+                value="\n".join(fail[:6])
+                + (f"\n… und {len(fail) - 6} weitere" if len(fail) > 6 else ""),
+                inline=False,
             )
-        embed.set_footer(text=f"Match-ID: {match_id} • Beenden: !balance end {match_id}")
+        embed.set_footer(
+            text=f"Match-ID: {match_id} • Beenden: !balance end {match_id}"
+        )
         await ctx.send(embed=embed)
 
     async def _move_teams(
@@ -1016,12 +1173,14 @@ class DeadlockTeamBalancer(commands.Cog):
         team_a: List[Tuple[discord.Member, int]],
         team_b: List[Tuple[discord.Member, int]],
         ch1: discord.VoiceChannel,
-        ch2: discord.VoiceChannel
+        ch2: discord.VoiceChannel,
     ) -> Tuple[int, int, List[str]]:
         moved_a = moved_b = 0
         failed: List[str] = []
 
-        order = [(team_a[i], ch1) for i in range(len(team_a))] + [(team_b[i], ch2) for i in range(len(team_b))]
+        order = [(team_a[i], ch1) for i in range(len(team_a))] + [
+            (team_b[i], ch2) for i in range(len(team_b))
+        ]
         for (m, _), target in order:
             try:
                 if m.voice and m.voice.channel:
@@ -1044,7 +1203,9 @@ class DeadlockTeamBalancer(commands.Cog):
 
     # ---------- Utils ----------
     def _voice_members(self, ctx: commands.Context) -> List[discord.Member]:
-        if not ctx.author.voice or not isinstance(ctx.author.voice.channel, discord.VoiceChannel):
+        if not ctx.author.voice or not isinstance(
+            ctx.author.voice.channel, discord.VoiceChannel
+        ):
             return []
         return [m for m in ctx.author.voice.channel.members if not m.bot]
 
@@ -1052,7 +1213,9 @@ class DeadlockTeamBalancer(commands.Cog):
         self._match_counter += 1
         return f"{self._match_counter:03d}"
 
+
 # ================= Setup =================
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DeadlockTeamBalancer(bot))

@@ -19,7 +19,12 @@ class TwitchAPI:
     - Hilfsfunktionen für Users, Streams & Kategorien
     """
 
-    def __init__(self, client_id: str, client_secret: str, session: Optional[aiohttp.ClientSession] = None):
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        session: Optional[aiohttp.ClientSession] = None,
+    ):
         self.client_id = client_id
         self.client_secret = client_secret
         self._session = session
@@ -33,7 +38,9 @@ class TwitchAPI:
     # ---- Session lifecycle -------------------------------------------------
     def _ensure_session(self) -> None:
         if self._session is not None and self._session.closed:
-            self._log.warning("Detected closed TwitchAPI HTTP session; creating a new session")
+            self._log.warning(
+                "Detected closed TwitchAPI HTTP session; creating a new session"
+            )
             self._session = None
             self._own_session = False
 
@@ -87,7 +94,11 @@ class TwitchAPI:
                     async with self._session.post(TWITCH_TOKEN_URL, data=data) as r:
                         if r.status != 200:
                             txt = await r.text()
-                            self._log.error("twitch token exchange failed: HTTP %s: %s", r.status, txt[:300].replace("\n", " "))
+                            self._log.error(
+                                "twitch token exchange failed: HTTP %s: %s",
+                                r.status,
+                                txt[:300].replace("\n", " "),
+                            )
                             r.raise_for_status()
                         js = await r.json()
                         self._token = js.get("access_token")
@@ -135,13 +146,18 @@ class TwitchAPI:
         attempts = max(1, min(int(max_attempts or 1), 5))
         request_timeout = None
         if request_timeout_total is not None:
-            request_timeout = aiohttp.ClientTimeout(total=max(0.1, float(request_timeout_total)))
+            request_timeout = aiohttp.ClientTimeout(
+                total=max(0.1, float(request_timeout_total))
+            )
 
         for attempt in range(attempts):
             self._ensure_session()
             assert self._session is not None
             try:
-                headers = {"Client-ID": self.client_id, "Authorization": f"Bearer {token_override}"}
+                headers = {
+                    "Client-ID": self.client_id,
+                    "Authorization": f"Bearer {token_override}",
+                }
                 request_kwargs = {"headers": headers, "json": json}
                 if request_timeout is not None:
                     request_kwargs["timeout"] = request_timeout
@@ -151,11 +167,17 @@ class TwitchAPI:
                         txt_one_line = txt[:300].replace("\n", " ")
                         if log_on_error:
                             self._log.error(
-                                "POST %s failed: HTTP %s: %s", path, r.status, txt_one_line
+                                "POST %s failed: HTTP %s: %s",
+                                path,
+                                r.status,
+                                txt_one_line,
                             )
                         else:
                             self._log.debug(
-                                "POST %s failed (quiet): HTTP %s: %s", path, r.status, txt[:180].replace("\n", " ")
+                                "POST %s failed (quiet): HTTP %s: %s",
+                                path,
+                                r.status,
+                                txt[:180].replace("\n", " "),
                             )
                         raise aiohttp.ClientResponseError(
                             request_info=r.request_info,
@@ -182,7 +204,9 @@ class TwitchAPI:
                     self._own_session = False
                     await asyncio.sleep(delay)
                     continue
-                self._log.error("POST %s failed after retries: closed HTTP session", path)
+                self._log.error(
+                    "POST %s failed after retries: closed HTTP session", path
+                )
                 raise last_exc
             except aiohttp.ClientResponseError:
                 raise
@@ -220,16 +244,24 @@ class TwitchAPI:
             self._ensure_session()
             assert self._session is not None
             try:
-                async with self._session.get(url, headers=self._headers(), params=params) as r:
+                async with self._session.get(
+                    url, headers=self._headers(), params=params
+                ) as r:
                     if r.status != 200:
                         txt = await r.text()
                         if log_on_error:
                             self._log.error(
-                                "GET %s failed: HTTP %s: %s", path, r.status, txt[:300].replace("\n", " ")
+                                "GET %s failed: HTTP %s: %s",
+                                path,
+                                r.status,
+                                txt[:300].replace("\n", " "),
                             )
                         else:
                             self._log.debug(
-                                "GET %s failed (quiet): HTTP %s: %s", path, r.status, txt[:180].replace("\n", " ")
+                                "GET %s failed (quiet): HTTP %s: %s",
+                                path,
+                                r.status,
+                                txt[:180].replace("\n", " "),
                             )
                         if r.status in {500, 502, 503, 504} and attempt < 2:
                             delay = 0.5 * (attempt + 1)
@@ -250,12 +282,19 @@ class TwitchAPI:
                 last_exc = exc
                 if attempt < 2:
                     delay = 0.2 * (attempt + 1)
-                    self._log.warning("GET %s retry %s/3 after closed HTTP session (%ss)", path, attempt + 1, delay)
+                    self._log.warning(
+                        "GET %s retry %s/3 after closed HTTP session (%ss)",
+                        path,
+                        attempt + 1,
+                        delay,
+                    )
                     self._session = None
                     self._own_session = False
                     await asyncio.sleep(delay)
                     continue
-                self._log.error("GET %s failed after retries: closed HTTP session", path)
+                self._log.error(
+                    "GET %s failed after retries: closed HTTP session", path
+                )
                 raise last_exc
             except aiohttp.ClientResponseError:
                 raise
@@ -263,7 +302,13 @@ class TwitchAPI:
                 last_exc = exc
                 if attempt < 2:
                     delay = 0.5 * (attempt + 1)
-                    self._log.warning("GET %s retry %s/3 after %s (%s)", path, attempt + 1, delay, exc.__class__.__name__)
+                    self._log.warning(
+                        "GET %s retry %s/3 after %s (%s)",
+                        path,
+                        attempt + 1,
+                        delay,
+                        exc.__class__.__name__,
+                    )
                     await asyncio.sleep(delay)
                     continue
                 self._log.error("GET %s failed after retries: %s", path, exc)
@@ -278,7 +323,9 @@ class TwitchAPI:
         ql = query.lower()
         if ql in self._category_cache:
             return self._category_cache[ql]
-        js = await self._get("/search/categories", params={"query": query, "first": "25"})
+        js = await self._get(
+            "/search/categories", params={"query": query, "first": "25"}
+        )
         best: Optional[str] = None
         for item in js.get("data", []) or []:
             name = (item.get("name") or "").strip()
@@ -300,7 +347,7 @@ class TwitchAPI:
         if not logins:
             return out
         for i in range(0, len(logins), 100):
-            chunk = logins[i:i + 100]
+            chunk = logins[i : i + 100]
             params: List[Tuple[str, str]] = [("login", x) for x in chunk]
             js = await self._get("/users", params=params)
             for u in js.get("data", []) or []:
@@ -388,7 +435,9 @@ class TwitchAPI:
             out = out[:limit]
         return out
 
-    async def get_streams_by_logins(self, logins: List[str], language: Optional[str] = None) -> List[Dict]:
+    async def get_streams_by_logins(
+        self, logins: List[str], language: Optional[str] = None
+    ) -> List[Dict]:
         """Return live streams for the given user logins.
         Wrapper around Helix /streams with user_login filters (batched).
         """
@@ -397,7 +446,7 @@ class TwitchAPI:
         await self._ensure_token()
         out: List[Dict] = []
         for i in range(0, len(logins), 100):
-            chunk = [x for x in logins[i:i+100] if x]
+            chunk = [x for x in logins[i : i + 100] if x]
             if not chunk:
                 continue
             params: List[Tuple[str, str]] = []
@@ -409,11 +458,15 @@ class TwitchAPI:
             out.extend(js.get("data", []) or [])
         return out
 
-    async def get_streams_by_category(self, category_id: str, language: Optional[str] = None, limit: int = 500) -> List[Dict]:
+    async def get_streams_by_category(
+        self, category_id: str, language: Optional[str] = None, limit: int = 500
+    ) -> List[Dict]:
         """Return live streams for a given category/game id.
         Convenience wrapper that delegates to get_streams_for_game.
         """
-        return await self.get_streams_for_game(game_id=category_id, game_name="", language=language, limit=limit)
+        return await self.get_streams_for_game(
+            game_id=category_id, game_name="", language=language, limit=limit
+        )
 
     async def create_clip(
         self,
@@ -461,7 +514,9 @@ class TwitchAPI:
                     return None
                 js = await r.json()
         except Exception:
-            self._log.debug("create_clip failed for broadcaster=%s", broadcaster_id, exc_info=True)
+            self._log.debug(
+                "create_clip failed for broadcaster=%s", broadcaster_id, exc_info=True
+            )
             return None
 
         data = js.get("data", []) if isinstance(js, dict) else []
@@ -469,7 +524,9 @@ class TwitchAPI:
             return None
         return data[0]
 
-    async def get_latest_vod_thumbnail(self, *, user_id: Optional[str] = None, login: Optional[str] = None) -> Optional[str]:
+    async def get_latest_vod_thumbnail(
+        self, *, user_id: Optional[str] = None, login: Optional[str] = None
+    ) -> Optional[str]:
         """Best-effort: Thumbnail des neuesten VOD (type=archive) als 1280x720-URL."""
         target_user_id = (user_id or "").strip()
         login_normalized = (login or "").strip().lower()
@@ -485,9 +542,14 @@ class TwitchAPI:
             try:
                 users = await self.get_users([login_normalized])
                 if login_normalized in users:
-                    target_user_id = str(users[login_normalized].get("id") or "").strip()
+                    target_user_id = str(
+                        users[login_normalized].get("id") or ""
+                    ).strip()
             except Exception:
-                self._log.exception("get_latest_vod_thumbnail: konnte user-id nicht ermitteln (%s)", login_normalized)
+                self._log.exception(
+                    "get_latest_vod_thumbnail: konnte user-id nicht ermitteln (%s)",
+                    login_normalized,
+                )
                 return None
 
         if not target_user_id:
@@ -499,10 +561,13 @@ class TwitchAPI:
                 params={"user_id": target_user_id, "type": "archive", "first": "1"},
             )
         except Exception:
-            self._log.exception("get_latest_vod_thumbnail: API-Fehler fuer %s", login_normalized or target_user_id)
+            self._log.exception(
+                "get_latest_vod_thumbnail: API-Fehler fuer %s",
+                login_normalized or target_user_id,
+            )
             return None
 
-        first = (js.get("data", []) or [])
+        first = js.get("data", []) or []
         if not first:
             return None
         thumb = (first[0].get("thumbnail_url") or "").strip()
@@ -511,7 +576,9 @@ class TwitchAPI:
         thumb = thumb.replace("{width}", "1280").replace("{height}", "720")
         return f"{thumb}?rand={int(time.time())}"
 
-    async def get_followers_total(self, user_id: str, user_token: Optional[str] = None) -> Optional[int]:
+    async def get_followers_total(
+        self, user_id: str, user_token: Optional[str] = None
+    ) -> Optional[int]:
         """Liefert die Follower-Gesamtzahl für einen Broadcaster (best-effort, via /channels/followers)."""
         if not user_id:
             return None
@@ -522,7 +589,10 @@ class TwitchAPI:
                 url = f"{TWITCH_API_BASE}/channels/followers"
                 async with self._session.get(
                     url,
-                    headers={"Client-ID": self.client_id, "Authorization": f"Bearer {user_token}"},
+                    headers={
+                        "Client-ID": self.client_id,
+                        "Authorization": f"Bearer {user_token}",
+                    },
                     params={"broadcaster_id": user_id, "first": "1"},
                 ) as r:
                     if r.status != 200:
@@ -546,7 +616,9 @@ class TwitchAPI:
             return int(total) if total is not None else None
         except aiohttp.ClientResponseError as exc:
             if exc.status in {401, 403, 404, 410}:
-                self._log.debug("Follower-API nicht verfuegbar (%s) fuer %s", exc.status, user_id)
+                self._log.debug(
+                    "Follower-API nicht verfuegbar (%s) fuer %s", exc.status, user_id
+                )
                 return None
             self._log.debug("Follower-API Fehler fuer %s: %s", user_id, exc)
             return None
@@ -554,7 +626,9 @@ class TwitchAPI:
             self._log.debug("get_followers_total failed for %s", user_id, exc_info=True)
             return None
 
-    async def get_broadcaster_subscriptions(self, user_id: str, user_token: str) -> Optional[Dict]:
+    async def get_broadcaster_subscriptions(
+        self, user_id: str, user_token: str
+    ) -> Optional[Dict]:
         """
         Liefert Subscription-Daten für einen Broadcaster.
         Benötigt Scope: channel:read:subscriptions
@@ -567,7 +641,10 @@ class TwitchAPI:
             url = f"{TWITCH_API_BASE}/subscriptions"
             async with self._session.get(
                 url,
-                headers={"Client-ID": self.client_id, "Authorization": f"Bearer {user_token}"},
+                headers={
+                    "Client-ID": self.client_id,
+                    "Authorization": f"Bearer {user_token}",
+                },
                 params={"broadcaster_id": user_id, "first": "1"},
             ) as r:
                 if r.status != 200:
@@ -581,7 +658,9 @@ class TwitchAPI:
                 js = await r.json()
                 return js
         except Exception:
-            self._log.debug("get_broadcaster_subscriptions failed for %s", user_id, exc_info=True)
+            self._log.debug(
+                "get_broadcaster_subscriptions failed for %s", user_id, exc_info=True
+            )
             return None
 
     async def get_ad_schedule(self, user_id: str, user_token: str) -> Optional[Dict]:
@@ -600,7 +679,10 @@ class TwitchAPI:
             url = f"{TWITCH_API_BASE}/channels/ads"
             async with self._session.get(
                 url,
-                headers={"Client-ID": self.client_id, "Authorization": f"Bearer {token}"},
+                headers={
+                    "Client-ID": self.client_id,
+                    "Authorization": f"Bearer {token}",
+                },
                 params={"broadcaster_id": user_id},
             ) as r:
                 if r.status != 200:
@@ -651,7 +733,10 @@ class TwitchAPI:
                     params["after"] = cursor
                 async with self._session.get(
                     url,
-                    headers={"Client-ID": self.client_id, "Authorization": f"Bearer {user_token}"},
+                    headers={
+                        "Client-ID": self.client_id,
+                        "Authorization": f"Bearer {user_token}",
+                    },
                     params=params,
                 ) as r:
                     if r.status != 200:
@@ -669,7 +754,9 @@ class TwitchAPI:
                     if not cursor or not page:
                         break
         except Exception:
-            self._log.debug("get_chatters failed for broadcaster %s", broadcaster_id, exc_info=True)
+            self._log.debug(
+                "get_chatters failed for broadcaster %s", broadcaster_id, exc_info=True
+            )
         return all_chatters
 
     async def subscribe_eventsub_websocket(
@@ -734,7 +821,9 @@ class TwitchAPI:
                 return {"already_exists": True}
             raise
 
-    async def delete_eventsub_subscription(self, subscription_id: str, oauth_token: Optional[str] = None) -> bool:
+    async def delete_eventsub_subscription(
+        self, subscription_id: str, oauth_token: Optional[str] = None
+    ) -> bool:
         """Löscht eine EventSub Subscription per ID."""
         await self._ensure_token()
         self._ensure_session()
@@ -747,16 +836,30 @@ class TwitchAPI:
             token_override = self._token or ""
 
         url = f"{TWITCH_API_BASE}/eventsub/subscriptions"
-        headers = {"Client-ID": self.client_id, "Authorization": f"Bearer {token_override}"}
+        headers = {
+            "Client-ID": self.client_id,
+            "Authorization": f"Bearer {token_override}",
+        }
         try:
-            async with self._session.delete(url, headers=headers, params={"id": subscription_id}) as r:
+            async with self._session.delete(
+                url, headers=headers, params={"id": subscription_id}
+            ) as r:
                 if r.status == 204:
                     return True
                 txt = await r.text()
-                self._log.warning("DELETE /eventsub/subscriptions?id=%s: HTTP %s: %s", subscription_id, r.status, txt[:200])
+                self._log.warning(
+                    "DELETE /eventsub/subscriptions?id=%s: HTTP %s: %s",
+                    subscription_id,
+                    r.status,
+                    txt[:200],
+                )
                 return False
         except Exception as exc:
-            self._log.error("delete_eventsub_subscription(%s) fehlgeschlagen: %s", subscription_id, exc)
+            self._log.error(
+                "delete_eventsub_subscription(%s) fehlgeschlagen: %s",
+                subscription_id,
+                exc,
+            )
             return False
 
     async def list_eventsub_subscriptions(
@@ -776,7 +879,10 @@ class TwitchAPI:
         if not token_override:
             token_override = self._token or ""
 
-        headers = {"Client-ID": self.client_id, "Authorization": f"Bearer {token_override}"}
+        headers = {
+            "Client-ID": self.client_id,
+            "Authorization": f"Bearer {token_override}",
+        }
         url = f"{TWITCH_API_BASE}/eventsub/subscriptions"
         results: List[Dict] = []
         cursor: Optional[str] = None
@@ -788,10 +894,16 @@ class TwitchAPI:
             if cursor:
                 params.append(("after", cursor))
             try:
-                async with self._session.get(url, headers=headers, params=params or None) as r:
+                async with self._session.get(
+                    url, headers=headers, params=params or None
+                ) as r:
                     if r.status != 200:
                         txt = await r.text()
-                        self._log.warning("GET /eventsub/subscriptions: HTTP %s: %s", r.status, txt[:200])
+                        self._log.warning(
+                            "GET /eventsub/subscriptions: HTTP %s: %s",
+                            r.status,
+                            txt[:200],
+                        )
                         break
                     js = await r.json()
             except Exception as exc:

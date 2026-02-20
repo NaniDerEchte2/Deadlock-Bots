@@ -28,11 +28,14 @@ STEAM_OPENID_ENDPOINT = "https://steamcommunity.com/openid/login"
 OPENID_NS = "http://specs.openid.net/auth/2.0"
 IDENTIFIER_SELECT = "http://specs.openid.net/auth/2.0/identifier_select"
 
-PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "https://link.earlysalty.com").rstrip("/")
+PUBLIC_BASE_URL = (
+    os.getenv("PUBLIC_BASE_URL") or "https://link.earlysalty.com"
+).rstrip("/")
 STEAM_RETURN_PATH = os.getenv("STEAM_RETURN_PATH", "/steam/return")
 STEAM_RETURN_URL = (
     urljoin(PUBLIC_BASE_URL + "/", STEAM_RETURN_PATH.lstrip("/"))
-    if PUBLIC_BASE_URL else ""
+    if PUBLIC_BASE_URL
+    else ""
 )
 
 HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")  # nosec B104
@@ -46,7 +49,9 @@ STATE_TTL_SEC = 600  # 10 min
 LINK_COVER_IMAGE = (os.getenv("LINK_COVER_IMAGE") or "").strip()
 LINK_COVER_LABEL = (os.getenv("LINK_COVER_LABEL") or "link.earlysalty.com").strip()
 LINK_BUTTON_LABEL = (os.getenv("LINK_BUTTON_LABEL") or "Via Discord verknüpfen").strip()
-STEAM_BUTTON_LABEL = (os.getenv("STEAM_BUTTON_LABEL") or "Direkt bei Steam anmelden").strip()
+STEAM_BUTTON_LABEL = (
+    os.getenv("STEAM_BUTTON_LABEL") or "Direkt bei Steam anmelden"
+).strip()
 
 # ---------------------------------------------------------------------------
 # Öffentliche Schnittstelle für andere Cogs (Welcome-DM, Rules-Panel, etc.)
@@ -57,6 +62,7 @@ __all__ = ("get_public_urls", "start_urls_for")
 def _safe_log_repr(value: Any) -> str:
     """Return a repr-style string with control chars escaped for safe logging."""
     return repr(sanitize_log_value(value))
+
 
 def _env_client_id(bot: commands.Bot) -> str:
     cid = (os.getenv("DISCORD_OAUTH_CLIENT_ID") or "").strip()
@@ -80,7 +86,9 @@ def get_public_urls() -> dict:
     base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
     if not base:
         # entspricht Vorgabe: hart abbrechen, kein Fallback
-        raise ImportError("PUBLIC_BASE_URL ist nicht gesetzt – keine öffentlichen URLs verfügbar.")
+        raise ImportError(
+            "PUBLIC_BASE_URL ist nicht gesetzt – keine öffentlichen URLs verfügbar."
+        )
 
     urls = {
         # Startpunkte (an diese hängen die UIs ?uid=<id>)
@@ -92,11 +100,18 @@ def get_public_urls() -> dict:
     }
 
     # Minimalvalidierung
-    for k in ("discord_start", "steam_openid_start", "discord_callback", "steam_return"):
+    for k in (
+        "discord_start",
+        "steam_openid_start",
+        "discord_callback",
+        "steam_return",
+    ):
         u = urls.get(k)
         if not u or "://" not in u:
             raise ImportError(f"Ungültige URL für {k}: {u!r}")
     return urls
+
+
 def start_urls_for(uid: int) -> dict:
     """
     Liefert user-spezifische Start-URLs MIT ?uid=... für Discord-OAuth und Steam-OpenID.
@@ -130,11 +145,17 @@ def _ensure_schema() -> None:
         )
         """
     )
-    db.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_user ON steam_links(user_id)")
-    db.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)")
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_steam_links_user ON steam_links(user_id)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)"
+    )
 
 
-def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: int = 0) -> None:
+def _save_steam_link_row(
+    user_id: int, steam_id: str, name: str = "", verified: int = 0
+) -> None:
     db.execute(
         """
         INSERT INTO steam_links(user_id, steam_id, name, verified)
@@ -235,43 +256,60 @@ class SteamLink(commands.Cog):
 
         cid = _env_client_id(self.bot)
         if not cid:
-            log.warning("Discord OAuth CLIENT_ID fehlt (DISCORD_OAUTH_CLIENT_ID oder bot.application_id).")
+            log.warning(
+                "Discord OAuth CLIENT_ID fehlt (DISCORD_OAUTH_CLIENT_ID oder bot.application_id)."
+            )
         if not CLIENT_SECRET:
-            log.warning("DISCORD_OAUTH_CLIENT_SECRET fehlt – Token-Exchange wird scheitern.")
+            log.warning(
+                "DISCORD_OAUTH_CLIENT_SECRET fehlt – Token-Exchange wird scheitern."
+            )
 
         if not PUBLIC_BASE_URL:
-            log.error("PUBLIC_BASE_URL ist NICHT gesetzt – Start-/Return-Routen brauchen sie.")
+            log.error(
+                "PUBLIC_BASE_URL ist NICHT gesetzt – Start-/Return-Routen brauchen sie."
+            )
         else:
             log.info("Steam OpenID return_to: %s", STEAM_RETURN_URL)
 
         self._runner = web.AppRunner(self.app)
         await self._runner.setup()
-        
+
         # Retry logic for port availability during reloads
         max_retries = 5
         retry_delay = 0.5
-        
+
         for attempt in range(max_retries):
             try:
                 site = web.TCPSite(self._runner, host=HTTP_HOST, port=HTTP_PORT)
                 await site.start()
                 log.info(
                     "OAuth/OpenID Callback-Server läuft auf %s:%s (Discord redirect=%s, STATE_TTL_SEC=%ss)",
-                    HTTP_HOST, HTTP_PORT, _env_redirect(), STATE_TTL_SEC
+                    HTTP_HOST,
+                    HTTP_PORT,
+                    _env_redirect(),
+                    STATE_TTL_SEC,
                 )
                 return
             except OSError as e:
                 # Check for address in use (WinError 10048 or EADDRINUSE)
                 import errno
+
                 is_addr_in_use = e.errno == 10048 or e.errno == errno.EADDRINUSE
-                
+
                 if is_addr_in_use and attempt < max_retries - 1:
-                    log.debug("Steam OAuth port %s belegt, versuche es erneut in %ss... (Versuch %s/%s)", 
-                              HTTP_PORT, retry_delay, attempt + 1, max_retries)
+                    log.debug(
+                        "Steam OAuth port %s belegt, versuche es erneut in %ss... (Versuch %s/%s)",
+                        HTTP_PORT,
+                        retry_delay,
+                        attempt + 1,
+                        max_retries,
+                    )
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2
                     continue
-                log.exception("Konnte OAuth Callback-Server nicht starten (Port belegt oder anderer Fehler)")
+                log.exception(
+                    "Konnte OAuth Callback-Server nicht starten (Port belegt oder anderer Fehler)"
+                )
                 break
             except Exception:
                 log.exception("Konnte OAuth Callback-Server nicht starten")
@@ -301,7 +339,11 @@ class SteamLink(commands.Cog):
             user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
             if not user:
                 return f"@{uid}"
-            at = getattr(user, "global_name", None) or getattr(user, "display_name", None) or user.name
+            at = (
+                getattr(user, "global_name", None)
+                or getattr(user, "display_name", None)
+                or user.name
+            )
             at = str(at).strip() if at else str(uid)
             if at.startswith("@"):
                 return at
@@ -309,7 +351,9 @@ class SteamLink(commands.Cog):
         except Exception:
             return f"@{uid}"
 
-    async def _cleanup_recent_bot_dms(self, user: Union[discord.User, discord.Member], *, limit: int = 25) -> None:
+    async def _cleanup_recent_bot_dms(
+        self, user: Union[discord.User, discord.Member], *, limit: int = 25
+    ) -> None:
         try:
             dm = user.dm_channel or await user.create_dm()
             bot_id = self.bot.user.id if self.bot.user else None
@@ -320,9 +364,19 @@ class SteamLink(commands.Cog):
                     try:
                         await msg.delete()
                     except Exception as e:
-                        log.debug("DM-Cleanup scheiterte (user_id=%s): %s", getattr(user, "id", "?"), e, exc_info=True)
+                        log.debug(
+                            "DM-Cleanup scheiterte (user_id=%s): %s",
+                            getattr(user, "id", "?"),
+                            e,
+                            exc_info=True,
+                        )
         except Exception as e:
-            log.debug("DM-Cleanup übersprungen/fehlgeschlagen (user_id=%s): %s", getattr(user, "id", "?"), e, exc_info=True)
+            log.debug(
+                "DM-Cleanup übersprungen/fehlgeschlagen (user_id=%s): %s",
+                getattr(user, "id", "?"),
+                e,
+                exc_info=True,
+            )
 
     async def _notify_user_linked(self, user_id: int, steam_ids: List[str]) -> None:
         try:
@@ -330,7 +384,9 @@ class SteamLink(commands.Cog):
         except Exception:
             ids_for_log = steam_ids or []
             steam_id_count = len(ids_for_log)
-            invalid_ids = any(not re.fullmatch(r"\d{17,20}", str(sid)) for sid in ids_for_log)
+            invalid_ids = any(
+                not re.fullmatch(r"\d{17,20}", str(sid)) for sid in ids_for_log
+            )
             try:
                 safe_user = int(user_id)
             except Exception:
@@ -361,9 +417,13 @@ class SteamLink(commands.Cog):
         client_id = _env_client_id(self.bot)
         redirect_uri = _env_redirect()
         if not client_id:
-            raise RuntimeError("DISCORD_OAUTH_CLIENT_ID/bot.application_id nicht gesetzt")
+            raise RuntimeError(
+                "DISCORD_OAUTH_CLIENT_ID/bot.application_id nicht gesetzt"
+            )
         if not redirect_uri:
-            raise RuntimeError("DISCORD_OAUTH_REDIRECT/PUBLIC_BASE_URL/HTTP_HOST fehlen")
+            raise RuntimeError(
+                "DISCORD_OAUTH_REDIRECT/PUBLIC_BASE_URL/HTTP_HOST fehlen"
+            )
 
         params = {
             "client_id": client_id,
@@ -419,18 +479,26 @@ class SteamLink(commands.Cog):
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
         async with aiohttp.ClientSession() as s:
-            async with s.post(f"{DISCORD_API}/oauth2/token", data=data, headers=headers) as r:
+            async with s.post(
+                f"{DISCORD_API}/oauth2/token", data=data, headers=headers
+            ) as r:
                 if r.status != 200:
                     log.warning("Discord OAuth exchange failed (HTTP %s).", r.status)
                     return None
                 return await r.json()
 
-    async def _discord_fetch_connections(self, access_token: str) -> Optional[List[dict]]:
+    async def _discord_fetch_connections(
+        self, access_token: str
+    ) -> Optional[List[dict]]:
         headers = {"Authorization": f"Bearer {access_token}"}
         async with aiohttp.ClientSession() as s:
-            async with s.get(f"{DISCORD_API}/users/@me/connections", headers=headers) as r:
+            async with s.get(
+                f"{DISCORD_API}/users/@me/connections", headers=headers
+            ) as r:
                 if r.status != 200:
-                    log.warning("Discord Connections-API fehlgeschlagen (HTTP %s).", r.status)
+                    log.warning(
+                        "Discord Connections-API fehlgeschlagen (HTTP %s).", r.status
+                    )
                     return None
                 return await r.json()
 
@@ -543,10 +611,14 @@ class SteamLink(commands.Cog):
         verify_params["openid.mode"] = "check_authentication"
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(STEAM_OPENID_ENDPOINT, data=verify_params, timeout=15) as resp:
+            async with session.post(
+                STEAM_OPENID_ENDPOINT, data=verify_params, timeout=15
+            ) as resp:
                 body = await resp.text()
                 if resp.status != 200 or "is_valid:true" not in body:
-                    log.warning("Steam OpenID verify fehlgeschlagen (HTTP %s).", resp.status)
+                    log.warning(
+                        "Steam OpenID verify fehlgeschlagen (HTTP %s).", resp.status
+                    )
                     return None
 
         claimed_id = query.get("openid.claimed_id", "")
@@ -575,7 +647,9 @@ class SteamLink(commands.Cog):
         return web.Response(status=204)
 
     async def handle_robots(self, request: web.Request) -> web.Response:
-        return web.Response(text="User-agent: *\nDisallow: /\n", content_type="text/plain")
+        return web.Response(
+            text="User-agent: *\nDisallow: /\n", content_type="text/plain"
+        )
 
     async def handle_discord_login(self, request: web.Request) -> web.Response:
         uid_q = request.query.get("uid")
@@ -674,7 +748,9 @@ class SteamLink(commands.Cog):
             if not steam_id:
                 return web.Response(text="OpenID validation failed", status=400)
 
-            display_name = await self._fetch_persona(steam_id) or await self._discord_at_name(uid)
+            display_name = await self._fetch_persona(
+                steam_id
+            ) or await self._discord_at_name(uid)
             # Verified=0, da wir erst die Freundschaftsanfrage abwarten wollen
             _save_steam_link_row(uid, steam_id, display_name, verified=0)
             await self._notify_user_linked(uid, [steam_id])
@@ -701,7 +777,9 @@ class SteamLink(commands.Cog):
             )
 
     # --------------- Connections → SteamIDs ----------------------------------
-    async def _save_steam_links_from_discord(self, uid: int, conns: List[dict]) -> List[str]:
+    async def _save_steam_links_from_discord(
+        self, uid: int, conns: List[dict]
+    ) -> List[str]:
         saved: List[str] = []
         if not conns:
             return saved
@@ -718,7 +796,9 @@ class SteamLink(commands.Cog):
                     steam_id = sid_raw
                 else:
                     name_or_vanity = str(c.get("name") or "").strip()
-                    steam_id = await self._resolve_steam_input(sid_raw) or await self._resolve_steam_input(name_or_vanity)
+                    steam_id = await self._resolve_steam_input(
+                        sid_raw
+                    ) or await self._resolve_steam_input(name_or_vanity)
 
                 if not steam_id:
                     meta = c.get("metadata") or {}
@@ -727,7 +807,10 @@ class SteamLink(commands.Cog):
                         steam_id = meta_sid
 
                 if not steam_id:
-                    log.info("Ignoriere Verbindung ohne gültige SteamID: %s", _safe_log_repr(c))
+                    log.info(
+                        "Ignoriere Verbindung ohne gültige SteamID: %s",
+                        _safe_log_repr(c),
+                    )
                     continue
 
                 persona = await self._fetch_persona(steam_id) or (c.get("name") or "")
@@ -753,8 +836,12 @@ class SteamLink(commands.Cog):
             try:
                 await ctx.interaction.response.defer(ephemeral=True)
             except Exception as e:
-                log.debug("Defer fehlgeschlagen (ctx.user_id=%s): %s",
-                          getattr(getattr(ctx, "author", None), "id", "?"), e, exc_info=True)
+                log.debug(
+                    "Defer fehlgeschlagen (ctx.user_id=%s): %s",
+                    getattr(getattr(ctx, "author", None), "id", "?"),
+                    e,
+                    exc_info=True,
+                )
 
     async def _send_ephemeral(
         self,
@@ -762,18 +849,24 @@ class SteamLink(commands.Cog):
         content: Optional[str] = None,
         *,
         embed: Optional[discord.Embed] = None,
-        view: Optional[discord.ui.View] = None
+        view: Optional[discord.ui.View] = None,
     ) -> None:
         c = content if content is not None else discord.utils.MISSING
         e = embed if embed is not None else discord.utils.MISSING
         v = view if view is not None else discord.utils.MISSING
 
         if getattr(ctx, "interaction", None) and not ctx.interaction.response.is_done():
-            await ctx.interaction.response.send_message(c, embed=e, view=v, ephemeral=True)
+            await ctx.interaction.response.send_message(
+                c, embed=e, view=v, ephemeral=True
+            )
         elif getattr(ctx, "interaction", None):
             await ctx.interaction.followup.send(c, embed=e, view=v, ephemeral=True)
         else:
-            await ctx.reply(c if c is not discord.utils.MISSING else "", embed=e if e is not discord.utils.MISSING else None, view=view)
+            await ctx.reply(
+                c if c is not discord.utils.MISSING else "",
+                embed=e if e is not discord.utils.MISSING else None,
+                view=view,
+            )
 
     async def _send_account_link_panel(self, ctx: commands.Context) -> None:
         desc = (
@@ -792,7 +885,9 @@ class SteamLink(commands.Cog):
         embed.set_author(name=LINK_COVER_LABEL)
 
         if not PUBLIC_BASE_URL:
-            await self._send_ephemeral(ctx, "⚠️ PUBLIC_BASE_URL fehlt - Start-Links können nicht gebaut werden.")
+            await self._send_ephemeral(
+                ctx, "⚠️ PUBLIC_BASE_URL fehlt - Start-Links können nicht gebaut werden."
+            )
             return
 
         discord_start_url = f"{PUBLIC_BASE_URL}/discord/login?uid={ctx.author.id}"
@@ -825,7 +920,9 @@ class SteamLink(commands.Cog):
 
     @discord.app_commands.allowed_installs(guilds=True, users=True)
     @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-    @commands.hybrid_group(name="steam", description="Steam-Links verwalten", invoke_without_command=True)
+    @commands.hybrid_group(
+        name="steam", description="Steam-Links verwalten", invoke_without_command=True
+    )
     async def steam(self, ctx: commands.Context) -> None:
         # Fallback: ohne Subcommand direkt den Link-Flow starten
         if ctx.invoked_subcommand is None:
@@ -834,7 +931,7 @@ class SteamLink(commands.Cog):
     @steam.command(
         name="link",
         with_app_command=False,
-        description="Legacy-Alias für die Account-Verknüpfung"
+        description="Legacy-Alias für die Account-Verknüpfung",
     )
     async def steam_link(self, ctx: commands.Context) -> None:
         await self._send_account_link_panel(ctx)
@@ -842,7 +939,7 @@ class SteamLink(commands.Cog):
     @steam.command(
         name="link_steam",
         with_app_command=False,
-        description="Legacy-Alias für die Account-Verknüpfung"
+        description="Legacy-Alias für die Account-Verknüpfung",
     )
     async def steam_link_steam(self, ctx: commands.Context) -> None:
         await self._send_account_link_panel(ctx)
@@ -856,7 +953,9 @@ class SteamLink(commands.Cog):
             (ctx.author.id,),
         )
         if not rows:
-            await self._send_ephemeral(ctx, "Keine Steam-Links gefunden. Nutze `/account_verknüpfen`.")
+            await self._send_ephemeral(
+                ctx, "Keine Steam-Links gefunden. Nutze `/account_verknüpfen`."
+            )
             return
         lines = []
         for r in rows:
@@ -865,22 +964,28 @@ class SteamLink(commands.Cog):
             chk = " ✅" if r["verified"] else ""
             prim = " [primary]" if r["primary_account"] else ""
             lines.append(f"- **{sid}** ({nm}){chk}{prim}")
-        await self._send_ephemeral(ctx, "Deine verknüpften Accounts:\n" + "\n".join(lines))
+        await self._send_ephemeral(
+            ctx, "Deine verknüpften Accounts:\n" + "\n".join(lines)
+        )
 
     @steam.command(
         name="whoami",
-        description="Prüft ID/Vanity/Profil-Link und zeigt Persona + SteamID"
+        description="Prüft ID/Vanity/Profil-Link und zeigt Persona + SteamID",
     )
     async def steam_whoami(self, ctx: commands.Context, steam: str) -> None:
         await self._defer_if_needed(ctx)
         try:
             sid = await asyncio.wait_for(self._resolve_steam_input(steam), timeout=8)
         except asyncio.TimeoutError:
-            await self._send_ephemeral(ctx, "⚠️ Steam/Netzwerk langsam. Bitte nochmal versuchen.")
+            await self._send_ephemeral(
+                ctx, "⚠️ Steam/Netzwerk langsam. Bitte nochmal versuchen."
+            )
             return
 
         if not sid:
-            await self._send_ephemeral(ctx, "❌ Konnte aus deiner Eingabe keine SteamID bestimmen.")
+            await self._send_ephemeral(
+                ctx, "❌ Konnte aus deiner Eingabe keine SteamID bestimmen."
+            )
             return
 
         try:
@@ -891,22 +996,31 @@ class SteamLink(commands.Cog):
         if persona:
             await self._send_ephemeral(ctx, f"✅ **{persona}** -> SteamID64: `{sid}`")
         else:
-            await self._send_ephemeral(ctx, f"SteamID64: `{sid}` (Persona nicht abrufbar)")
+            await self._send_ephemeral(
+                ctx, f"SteamID64: `{sid}` (Persona nicht abrufbar)"
+            )
 
     @steam.command(
         name="setprimary",
-        description="Markiert einen bestehenden Steam-Account als Primär (akzeptiert ID/Vanity/Link)."
+        description="Markiert einen bestehenden Steam-Account als Primär (akzeptiert ID/Vanity/Link).",
     )
-    async def steam_setprimary(self, ctx: commands.Context, steam: str, name: Optional[str] = None) -> None:
+    async def steam_setprimary(
+        self, ctx: commands.Context, steam: str, name: Optional[str] = None
+    ) -> None:
         await self._defer_if_needed(ctx)
         try:
             sid = await asyncio.wait_for(self._resolve_steam_input(steam), timeout=8)
         except asyncio.TimeoutError:
-            await self._send_ephemeral(ctx, "⚠️ Steam/Netzwerk langsam. Bitte nochmal versuchen.")
+            await self._send_ephemeral(
+                ctx, "⚠️ Steam/Netzwerk langsam. Bitte nochmal versuchen."
+            )
             return
 
         if not sid:
-            await self._send_ephemeral(ctx, "❌ Ungültige Eingabe. Erwarte SteamID64, Vanity oder steamcommunity-Link.")
+            await self._send_ephemeral(
+                ctx,
+                "❌ Ungültige Eingabe. Erwarte SteamID64, Vanity oder steamcommunity-Link.",
+            )
             return
 
         existing = db.query_one(
@@ -914,7 +1028,10 @@ class SteamLink(commands.Cog):
             (ctx.author.id, sid),
         )
         if not existing:
-            await self._send_ephemeral(ctx, "Kein gespeicherter Steam-Link gefunden. Bitte zuerst `/account_verknüpfen` nutzen.")
+            await self._send_ephemeral(
+                ctx,
+                "Kein gespeicherter Steam-Link gefunden. Bitte zuerst `/account_verknüpfen` nutzen.",
+            )
             return
 
         try:
@@ -929,23 +1046,35 @@ class SteamLink(commands.Cog):
                 (display_name, ctx.author.id, sid),
             )
 
-        db.execute("UPDATE steam_links SET primary_account=0 WHERE user_id=?", (ctx.author.id,))
+        db.execute(
+            "UPDATE steam_links SET primary_account=0 WHERE user_id=?", (ctx.author.id,)
+        )
         db.execute(
             "UPDATE steam_links SET primary_account=1, updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND steam_id=?",
             (ctx.author.id, sid),
         )
         await self._send_ephemeral(ctx, f"✅ Primär gesetzt: `{sid}`")
 
-    @steam.command(name="unlink", description="Entfernt einen Steam-Link (ID/Vanity/Profil-Link möglich)")
+    @steam.command(
+        name="unlink",
+        description="Entfernt einen Steam-Link (ID/Vanity/Profil-Link möglich)",
+    )
     async def steam_unlink(self, ctx: commands.Context, steam: str) -> None:
         sid = await self._resolve_steam_input(steam)
         if not sid and re.fullmatch(r"\d{17,20}", steam or ""):
             sid = steam
         if not sid:
-            await self._send_ephemeral(ctx, "❌ Ungültige Eingabe. Erwarte SteamID64, Vanity oder steamcommunity-Link.")
+            await self._send_ephemeral(
+                ctx,
+                "❌ Ungültige Eingabe. Erwarte SteamID64, Vanity oder steamcommunity-Link.",
+            )
             return
-        db.execute("DELETE FROM steam_links WHERE user_id=? AND steam_id=?", (ctx.author.id, sid))
+        db.execute(
+            "DELETE FROM steam_links WHERE user_id=? AND steam_id=?",
+            (ctx.author.id, sid),
+        )
         await self._send_ephemeral(ctx, f"Entfernt: `{sid}`")
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SteamLink(bot))

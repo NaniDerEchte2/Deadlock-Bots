@@ -43,7 +43,9 @@ class _DummyBot:
     def normalize_namespace(self, namespace: Any) -> str:
         return str(namespace or "").strip()
 
-    def is_namespace_blocked(self, _namespace: str, *, assume_normalized: bool = False) -> bool:
+    def is_namespace_blocked(
+        self, _namespace: str, *, assume_normalized: bool = False
+    ) -> bool:
         _ = assume_normalized
         return False
 
@@ -53,7 +55,9 @@ class _DummyBot:
     async def reload_cog(self, _name: str) -> Tuple[bool, str]:
         return False, "unsupported"
 
-    async def unload_many(self, _names: Iterable[str], *, timeout: float = 3.0) -> Dict[str, Any]:
+    async def unload_many(
+        self, _names: Iterable[str], *, timeout: float = 3.0
+    ) -> Dict[str, Any]:
         _ = timeout
         return {}
 

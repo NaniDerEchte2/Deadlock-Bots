@@ -38,7 +38,9 @@ class BuildPublisher(commands.Cog):
         self._lock = asyncio.Lock()
         self.last_run_ts: Optional[int] = None
         self.last_error: Optional[str] = None
-        self.consecutive_skips = 0  # Track how many times we skipped due to GC not ready
+        self.consecutive_skips = (
+            0  # Track how many times we skipped due to GC not ready
+        )
 
         if self.enabled:
             self._publisher_task = bot.loop.create_task(self._publisher_loop())
@@ -89,7 +91,13 @@ class BuildPublisher(commands.Cog):
             return {"skipped": 1}
 
         async with self._lock:
-            stats = {"checked": 0, "queued": 0, "skipped": 0, "errors": 0, "cancelled_excess": 0}
+            stats = {
+                "checked": 0,
+                "queued": 0,
+                "skipped": 0,
+                "errors": 0,
+                "cancelled_excess": 0,
+            }
             # Check if Steam bridge is ready
             conn = db.connect_proxy()
             cursor = conn.execute("""
@@ -99,7 +107,9 @@ class BuildPublisher(commands.Cog):
             state_row = cursor.fetchone()
 
             if state_row:
-                payload = json.loads(state_row["payload"]) if state_row["payload"] else {}
+                payload = (
+                    json.loads(state_row["payload"]) if state_row["payload"] else {}
+                )
                 # Extract runtime state from nested payload structure
                 runtime = payload.get("runtime", {})
                 logged_in = runtime.get("logged_on", False)
@@ -109,18 +119,20 @@ class BuildPublisher(commands.Cog):
                     self.consecutive_skips += 1
                     log.warning(
                         "Build publisher skipped: Steam not logged in (skip #%s)",
-                        self.consecutive_skips
+                        self.consecutive_skips,
                     )
                     stats["skipped"] = 1
                     return stats
 
                 if not gc_ready:
                     self.consecutive_skips += 1
-                    skip_duration_min = self.consecutive_skips * (self.interval_seconds / 60)
+                    skip_duration_min = self.consecutive_skips * (
+                        self.interval_seconds / 60
+                    )
                     log.warning(
                         "Build publisher skipped: Deadlock GC not ready (skip #%s, total: %.0f min, waiting for handshake)",
                         self.consecutive_skips,
-                        skip_duration_min
+                        skip_duration_min,
                     )
                     stats["skipped"] = 1
                     # Log error if GC not ready for too long
@@ -128,13 +140,16 @@ class BuildPublisher(commands.Cog):
                         log.error(
                             "Build publisher: GC not ready for %s intervals (%.0f min). Check Steam bridge status!",
                             self.consecutive_skips,
-                            skip_duration_min
+                            skip_duration_min,
                         )
                     return stats
 
             # Reset skip counter on successful check
             if self.consecutive_skips > 0:
-                log.info("GC is now ready, resuming build publishing after %s skips", self.consecutive_skips)
+                log.info(
+                    "GC is now ready, resuming build publishing after %s skips",
+                    self.consecutive_skips,
+                )
             self.consecutive_skips = 0
 
             try:
@@ -263,11 +278,14 @@ class BuildPublisher(commands.Cog):
                         status_info = 'Cancelled: Excluded by 3-build-per-hero rule based on priority/recency.'
                     WHERE ROWID IN (SELECT ROWID FROM RankedPendingClones WHERE rn > 3);
                     """,
-                    (self.max_attempts,)
+                    (self.max_attempts,),
                 )
                 stats["cancelled_excess"] = cancel_cursor.rowcount
                 if stats["cancelled_excess"] > 0:
-                    log.info("Build publisher: Cancelled %s excess pending builds due to 3-build-per-hero rule.", stats["cancelled_excess"])
+                    log.info(
+                        "Build publisher: Cancelled %s excess pending builds due to 3-build-per-hero rule.",
+                        stats["cancelled_excess"],
+                    )
 
                 self.last_run_ts = int(time.time())
                 self.last_error = None
@@ -314,8 +332,7 @@ class BuildPublisher(commands.Cog):
         stats["reset_stale"] = stale_cursor.rowcount
         if stats["reset_stale"] > 0:
             log.warning(
-                "Reset %s stale builds stuck in processing state",
-                stats["reset_stale"]
+                "Reset %s stale builds stuck in processing state", stats["reset_stale"]
             )
             # Autocommit mode - no explicit commit needed
 
@@ -368,7 +385,9 @@ class BuildPublisher(commands.Cog):
                     ),
                 )
                 stats["completed"] += 1
-                log.info("Build %s published successfully as #%s", origin_id, uploaded_id)
+                log.info(
+                    "Build %s published successfully as #%s", origin_id, uploaded_id
+                )
 
             elif task_status == "FAILED":
                 error_msg = row["error"] or "Unknown error"
@@ -389,7 +408,9 @@ class BuildPublisher(commands.Cog):
                     ),
                 )
                 stats["failed"] += 1
-                log.warning("Build %s publishing failed: %s", origin_id, error_msg[:100])
+                log.warning(
+                    "Build %s publishing failed: %s", origin_id, error_msg[:100]
+                )
 
         # conn.commit() removed - db.py uses autocommit mode (isolation_level=None)
         # NOTE: Do NOT close the connection - it's the global shared connection

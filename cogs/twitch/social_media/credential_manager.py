@@ -38,9 +38,7 @@ class SocialMediaCredentialManager:
         self.crypto = get_crypto()
 
     def get_credentials(
-        self,
-        platform: str,
-        streamer_login: Optional[str] = None
+        self, platform: str, streamer_login: Optional[str] = None
     ) -> Optional[Dict]:
         """
         Fetch and decrypt credentials for a platform.
@@ -74,7 +72,7 @@ class SocialMediaCredentialManager:
                 ORDER BY streamer_login IS NOT NULL DESC
                 LIMIT 1
                 """,
-                (platform, streamer_login, streamer_login)
+                (platform, streamer_login, streamer_login),
             ).fetchone()
 
             if not row:
@@ -82,7 +80,8 @@ class SocialMediaCredentialManager:
                 safe_streamer = _sanitize_log_value(streamer_login)
                 log.debug(
                     "No auth record found for platform=%s, streamer=%s",
-                    safe_platform, safe_streamer
+                    safe_platform,
+                    safe_streamer,
                 )
                 return None
 
@@ -94,8 +93,7 @@ class SocialMediaCredentialManager:
                 # Decrypt access token
                 aad_access = f"social_media_platform_auth|access_token|{row_id}|{row['enc_version']}"
                 access_token = self.crypto.decrypt_field(
-                    row["access_token_enc"],
-                    aad_access
+                    row["access_token_enc"], aad_access
                 )
 
                 # Decrypt refresh token (if exists)
@@ -103,8 +101,7 @@ class SocialMediaCredentialManager:
                 if row["refresh_token_enc"]:
                     aad_refresh = f"social_media_platform_auth|refresh_token|{row_id}|{row['enc_version']}"
                     refresh_token = self.crypto.decrypt_field(
-                        row["refresh_token_enc"],
-                        aad_refresh
+                        row["refresh_token_enc"], aad_refresh
                     )
 
                 # Decrypt client secret (if exists)
@@ -112,8 +109,7 @@ class SocialMediaCredentialManager:
                 if row["client_secret_enc"]:
                     aad_secret = f"social_media_platform_auth|client_secret|{row_id}|{row['enc_version']}"
                     client_secret = self.crypto.decrypt_field(
-                        row["client_secret_enc"],
-                        aad_secret
+                        row["client_secret_enc"], aad_secret
                     )
 
                 # Return decrypted credentials
@@ -136,7 +132,8 @@ class SocialMediaCredentialManager:
                 safe_streamer = _sanitize_log_value(streamer_login)
                 log.error(
                     "Failed to decrypt auth record for platform=%s, streamer=%s",
-                    safe_platform, safe_streamer
+                    safe_platform,
+                    safe_streamer,
                 )
                 return None
             except Exception:
@@ -144,7 +141,8 @@ class SocialMediaCredentialManager:
                 safe_streamer = _sanitize_log_value(streamer_login)
                 log.exception(
                     "Unexpected error loading auth record for platform=%s, streamer=%s",
-                    safe_platform, safe_streamer
+                    safe_platform,
+                    safe_streamer,
                 )
                 return None
 
@@ -162,7 +160,9 @@ class SocialMediaCredentialManager:
             return True
 
         try:
-            expires_at = datetime.fromisoformat(credentials["expires_at"].replace("Z", "+00:00"))
+            expires_at = datetime.fromisoformat(
+                credentials["expires_at"].replace("Z", "+00:00")
+            )
             now = datetime.now(timezone.utc)
 
             # Consider expired if less than 1 hour remaining
@@ -173,8 +173,7 @@ class SocialMediaCredentialManager:
             return True
 
     def get_all_platforms_status(
-        self,
-        streamer_login: Optional[str] = None
+        self, streamer_login: Optional[str] = None
     ) -> Dict[str, Dict]:
         """
         Get connection status for all platforms.

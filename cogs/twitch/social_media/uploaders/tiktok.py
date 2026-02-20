@@ -4,6 +4,7 @@ TikTok Uploader - TikTok Content Posting API Integration.
 Verwendet TikTok Content Posting API (Business Account erforderlich).
 Docs: https://developers.tiktok.com/doc/content-posting-api-overview/
 """
+
 import aiohttp
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -285,5 +286,7 @@ class TikTokUploader(PlatformUploader):
 
         # Note: Duration and aspect ratio checks require ffprobe
         # These are performed by VideoProcessor before upload
-        self.log.info("TikTok video validation passed: %s (%.1f MB)", video_path, file_size_mb)
+        self.log.info(
+            "TikTok video validation passed: %s (%.1f MB)", video_path, file_size_mb
+        )
         return True

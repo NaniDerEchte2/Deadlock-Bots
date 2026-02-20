@@ -24,7 +24,9 @@ class CoachingEngine:
     """Generates coaching data from the Twitch analytics database."""
 
     @staticmethod
-    def get_coaching_data(conn: sqlite3.Connection, streamer: str, days: int) -> Dict[str, Any]:
+    def get_coaching_data(
+        conn: sqlite3.Connection, streamer: str, days: int
+    ) -> Dict[str, Any]:
         streamer_login = streamer.lower()
         since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
@@ -35,7 +37,12 @@ class CoachingEngine:
         ).fetchone()[0]
 
         if count == 0:
-            return {"streamer": streamer, "days": days, "empty": True, "aiSummary": None}
+            return {
+                "streamer": streamer,
+                "days": days,
+                "empty": True,
+                "aiSummary": None,
+            }
 
         result: Dict[str, Any] = {
             "streamer": streamer,
@@ -45,16 +52,28 @@ class CoachingEngine:
 
         result["efficiency"] = _efficiency(conn, streamer_login, since_date)
         result["titleAnalysis"] = _title_analysis(conn, streamer_login, since_date)
-        result["scheduleOptimizer"] = _schedule_optimizer(conn, streamer_login, since_date)
-        result["durationAnalysis"] = _duration_analysis(conn, streamer_login, since_date)
+        result["scheduleOptimizer"] = _schedule_optimizer(
+            conn, streamer_login, since_date
+        )
+        result["durationAnalysis"] = _duration_analysis(
+            conn, streamer_login, since_date
+        )
         result["crossCommunity"] = _cross_community(conn, streamer_login, since_date)
         result["tagOptimization"] = _tag_optimization(conn, streamer_login, since_date)
-        result["retentionCoaching"] = _retention_coaching(conn, streamer_login, since_date)
-        result["doubleStreamDetection"] = _double_stream_detection(conn, streamer_login, since_date)
-        result["chatConcentration"] = _chat_concentration(conn, streamer_login, since_date)
+        result["retentionCoaching"] = _retention_coaching(
+            conn, streamer_login, since_date
+        )
+        result["doubleStreamDetection"] = _double_stream_detection(
+            conn, streamer_login, since_date
+        )
+        result["chatConcentration"] = _chat_concentration(
+            conn, streamer_login, since_date
+        )
         result["raidNetwork"] = _raid_network(conn, streamer_login, since_date)
         result["peerComparison"] = _peer_comparison(conn, streamer_login, since_date)
-        result["competitionDensity"] = _competition_density(conn, streamer_login, since_date)
+        result["competitionDensity"] = _competition_density(
+            conn, streamer_login, since_date
+        )
         result["recommendations"] = _build_recommendations(result)
         result["aiSummary"] = None  # Hybrid-ready placeholder
 
@@ -64,6 +83,7 @@ class CoachingEngine:
 # ---------------------------------------------------------------------------
 # 1. Effizienz-Analyse
 # ---------------------------------------------------------------------------
+
 
 def _efficiency(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str, Any]:
     # Per-streamer efficiency: viewer-hours / stream-hours
@@ -97,9 +117,12 @@ def _efficiency(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str
 
     if not ratios:
         return {
-            "viewerHoursPerStreamHour": 0, "categoryAvg": 0,
-            "topPerformers": [], "percentile": 0,
-            "totalStreamHours": 0, "totalViewerHours": 0,
+            "viewerHoursPerStreamHour": 0,
+            "categoryAvg": 0,
+            "topPerformers": [],
+            "percentile": 0,
+            "totalStreamHours": 0,
+            "totalViewerHours": 0,
         }
 
     all_ratios = [r[1] for r in ratios]
@@ -125,7 +148,10 @@ def _efficiency(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str
 # 2. Titel-Coach
 # ---------------------------------------------------------------------------
 
-def _title_analysis(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str, Any]:
+
+def _title_analysis(
+    conn: sqlite3.Connection, streamer: str, since: str
+) -> Dict[str, Any]:
     # Your titles
     your_titles = conn.execute(
         """
@@ -187,10 +213,13 @@ def _title_analysis(conn: sqlite3.Connection, streamer: str, since: str) -> Dict
     top_patterns = list(top_words)[:10]
 
     # --- Title variety comparison ---
-    own_total = conn.execute(
-        "SELECT COUNT(*) FROM twitch_stream_sessions WHERE streamer_login = ? AND started_at >= ? AND duration_seconds > 300",
-        (streamer, since),
-    ).fetchone()[0] or 0
+    own_total = (
+        conn.execute(
+            "SELECT COUNT(*) FROM twitch_stream_sessions WHERE streamer_login = ? AND started_at >= ? AND duration_seconds > 300",
+            (streamer, since),
+        ).fetchone()[0]
+        or 0
+    )
     own_unique = len(your_titles)
     own_variety_pct = round(own_unique / own_total * 100, 1) if own_total > 0 else 0
 
@@ -215,7 +244,12 @@ def _title_analysis(conn: sqlite3.Connection, streamer: str, since: str) -> Dict
     peer_pcts = [float(r[3]) for r in peer_variety]
     avg_peer_variety = round(sum(peer_pcts) / len(peer_pcts), 1) if peer_pcts else 0
     peer_variety_list = [
-        {"streamer": r[0], "uniqueTitles": r[1], "totalSessions": r[2], "varietyPct": float(r[3])}
+        {
+            "streamer": r[0],
+            "uniqueTitles": r[1],
+            "totalSessions": r[2],
+            "varietyPct": float(r[3]),
+        }
         for r in peer_variety[:10]
     ]
 
@@ -235,13 +269,39 @@ def _title_analysis(conn: sqlite3.Connection, streamer: str, since: str) -> Dict
 def _extract_keywords(titles: List[str]) -> List[str]:
     """Extract meaningful keywords from stream titles."""
     stopwords = {
-        "der", "die", "das", "und", "oder", "mit", "in", "auf", "an", "von",
-        "the", "and", "or", "with", "for", "to", "a", "is", "on", "at",
-        "|", "-", "!", "?", "#", ":", "~", "//", ">>",
+        "der",
+        "die",
+        "das",
+        "und",
+        "oder",
+        "mit",
+        "in",
+        "auf",
+        "an",
+        "von",
+        "the",
+        "and",
+        "or",
+        "with",
+        "for",
+        "to",
+        "a",
+        "is",
+        "on",
+        "at",
+        "|",
+        "-",
+        "!",
+        "?",
+        "#",
+        ":",
+        "~",
+        "//",
+        ">>",
     }
     counter: Counter = Counter()
     for title in titles:
-        words = re.findall(r'[A-Za-z0-9äöüÄÖÜß]+', title.lower())
+        words = re.findall(r"[A-Za-z0-9äöüÄÖÜß]+", title.lower())
         for w in words:
             if len(w) >= 3 and w not in stopwords:
                 counter[w] += 1
@@ -252,7 +312,10 @@ def _extract_keywords(titles: List[str]) -> List[str]:
 # 3. Schedule-Optimizer
 # ---------------------------------------------------------------------------
 
-def _schedule_optimizer(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str, Any]:
+
+def _schedule_optimizer(
+    conn: sqlite3.Connection, streamer: str, since: str
+) -> Dict[str, Any]:
     # Category competition heatmap
     competition = conn.execute(
         """
@@ -294,8 +357,7 @@ def _schedule_optimizer(conn: sqlite3.Connection, streamer: str, since: str) -> 
     ).fetchall()
 
     current_slots = [
-        {"weekday": int(r[0]), "hour": int(r[1]), "count": r[2]}
-        for r in your_slots
+        {"weekday": int(r[0]), "hour": int(r[1]), "count": r[2]} for r in your_slots
     ]
 
     # Sweet spots: high category viewers, low competition
@@ -305,13 +367,15 @@ def _schedule_optimizer(conn: sqlite3.Connection, streamer: str, since: str) -> 
             opportunity = cell["categoryViewers"] / cell["competitors"]
         else:
             opportunity = cell["categoryViewers"]
-        sweet_spots.append({
-            "weekday": cell["weekday"],
-            "hour": cell["hour"],
-            "categoryViewers": cell["categoryViewers"],
-            "competitors": cell["competitors"],
-            "opportunityScore": round(opportunity, 1),
-        })
+        sweet_spots.append(
+            {
+                "weekday": cell["weekday"],
+                "hour": cell["hour"],
+                "categoryViewers": cell["categoryViewers"],
+                "competitors": cell["competitors"],
+                "opportunityScore": round(opportunity, 1),
+            }
+        )
 
     sweet_spots.sort(key=lambda x: x["opportunityScore"], reverse=True)
 
@@ -326,7 +390,10 @@ def _schedule_optimizer(conn: sqlite3.Connection, streamer: str, since: str) -> 
 # 4. Dauer-Analyse
 # ---------------------------------------------------------------------------
 
-def _duration_analysis(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str, Any]:
+
+def _duration_analysis(
+    conn: sqlite3.Connection, streamer: str, since: str
+) -> Dict[str, Any]:
     rows = conn.execute(
         """
         SELECT
@@ -343,7 +410,10 @@ def _duration_analysis(conn: sqlite3.Connection, streamer: str, since: str) -> D
 
     if not rows:
         return {
-            "buckets": [], "optimalLabel": "", "currentAvgHours": 0, "correlation": 0,
+            "buckets": [],
+            "optimalLabel": "",
+            "currentAvgHours": 0,
+            "correlation": 0,
         }
 
     buckets_def = [
@@ -359,10 +429,16 @@ def _duration_analysis(conn: sqlite3.Connection, streamer: str, since: str) -> D
     for label, lo, hi in buckets_def:
         subset = [r for r in rows if lo <= r[0] < hi]
         if not subset:
-            buckets.append({
-                "label": label, "streamCount": 0, "avgViewers": 0,
-                "avgChatters": 0, "avgRetention5m": 0, "efficiencyRatio": 0,
-            })
+            buckets.append(
+                {
+                    "label": label,
+                    "streamCount": 0,
+                    "avgViewers": 0,
+                    "avgChatters": 0,
+                    "avgRetention5m": 0,
+                    "efficiencyRatio": 0,
+                }
+            )
             continue
 
         avg_v = sum(r[1] for r in subset) / len(subset)
@@ -372,14 +448,16 @@ def _duration_analysis(conn: sqlite3.Connection, streamer: str, since: str) -> D
         avg_dur = sum(r[0] for r in subset) / len(subset)
         eff = (avg_v * avg_dur / 3600) / (avg_dur / 3600) if avg_dur > 0 else 0
 
-        buckets.append({
-            "label": label,
-            "streamCount": len(subset),
-            "avgViewers": round(avg_v, 1),
-            "avgChatters": round(avg_c, 1),
-            "avgRetention5m": round(avg_ret, 1),
-            "efficiencyRatio": round(eff, 1),
-        })
+        buckets.append(
+            {
+                "label": label,
+                "streamCount": len(subset),
+                "avgViewers": round(avg_v, 1),
+                "avgChatters": round(avg_c, 1),
+                "avgRetention5m": round(avg_ret, 1),
+                "efficiencyRatio": round(eff, 1),
+            }
+        )
 
     # Find optimal bucket (highest avg viewers among buckets with >= 2 streams)
     valid = [b for b in buckets if b["streamCount"] >= 2]
@@ -403,7 +481,10 @@ def _duration_analysis(conn: sqlite3.Connection, streamer: str, since: str) -> D
 # 5. Cross-Community
 # ---------------------------------------------------------------------------
 
-def _cross_community(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str, Any]:
+
+def _cross_community(
+    conn: sqlite3.Connection, streamer: str, since: str
+) -> Dict[str, Any]:
     # Your unique chatters
     your_chatters_row = conn.execute(
         """
@@ -417,8 +498,10 @@ def _cross_community(conn: sqlite3.Connection, streamer: str, since: str) -> Dic
 
     if total_unique == 0:
         return {
-            "totalUniqueChatters": 0, "chatterSources": [],
-            "isolatedChatters": 0, "isolatedPercentage": 0,
+            "totalUniqueChatters": 0,
+            "chatterSources": [],
+            "isolatedChatters": 0,
+            "isolatedPercentage": 0,
             "ecosystemSummary": "Keine Chatter-Daten verfuegbar.",
         }
 
@@ -489,7 +572,10 @@ def _cross_community(conn: sqlite3.Connection, streamer: str, since: str) -> Dic
 # 6. Tag-Optimierung
 # ---------------------------------------------------------------------------
 
-def _tag_optimization(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str, Any]:
+
+def _tag_optimization(
+    conn: sqlite3.Connection, streamer: str, since: str
+) -> Dict[str, Any]:
     # Your tags
     your_rows = conn.execute(
         """
@@ -539,7 +625,9 @@ def _tag_optimization(conn: sqlite3.Connection, streamer: str, since: str) -> Di
     # Find underperforming tags (your tags that perform below your average)
     if your_tags:
         your_avg = sum(t["avgViewers"] for t in your_tags) / len(your_tags)
-        underperforming = [t["tags"] for t in your_tags if t["avgViewers"] < your_avg * 0.8]
+        underperforming = [
+            t["tags"] for t in your_tags if t["avgViewers"] < your_avg * 0.8
+        ]
     else:
         underperforming = []
 
@@ -556,7 +644,7 @@ def _split_tags_from_rows(rows: list) -> set:
     tags = set()
     for r in rows:
         raw = r[0] if isinstance(r[0], str) else ""
-        for part in re.split(r'[,;|]', raw):
+        for part in re.split(r"[,;|]", raw):
             cleaned = part.strip().lower()
             if cleaned:
                 tags.add(cleaned)
@@ -567,7 +655,10 @@ def _split_tags_from_rows(rows: list) -> set:
 # 7. Retention-Coaching
 # ---------------------------------------------------------------------------
 
-def _retention_coaching(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str, Any]:
+
+def _retention_coaching(
+    conn: sqlite3.Connection, streamer: str, since: str
+) -> Dict[str, Any]:
     # Your 5-min retention average
     your_ret = conn.execute(
         """
@@ -604,7 +695,9 @@ def _retention_coaching(conn: sqlite3.Connection, streamer: str, since: str) -> 
         (streamer, since),
     ).fetchall()
 
-    your_curve = _build_viewer_curve(conn, [r[0] for r in your_sessions], [r[1] for r in your_sessions])
+    your_curve = _build_viewer_curve(
+        conn, [r[0] for r in your_sessions], [r[1] for r in your_sessions]
+    )
 
     # Top performer curve (top 5 by avg_viewers)
     top_sessions = conn.execute(
@@ -620,7 +713,9 @@ def _retention_coaching(conn: sqlite3.Connection, streamer: str, since: str) -> 
         (since, streamer),
     ).fetchall()
 
-    top_curve = _build_viewer_curve(conn, [r[0] for r in top_sessions], [r[1] for r in top_sessions])
+    top_curve = _build_viewer_curve(
+        conn, [r[0] for r in top_sessions], [r[1] for r in top_sessions]
+    )
 
     # Find critical drop-off minute
     critical_minute = 0
@@ -689,7 +784,10 @@ def _build_viewer_curve(
 # 8. Doppel-Stream-Erkennung
 # ---------------------------------------------------------------------------
 
-def _double_stream_detection(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str, Any]:
+
+def _double_stream_detection(
+    conn: sqlite3.Connection, streamer: str, since: str
+) -> Dict[str, Any]:
     rows = conn.execute(
         """
         SELECT
@@ -728,7 +826,9 @@ def _double_stream_detection(conn: sqlite3.Connection, streamer: str, since: str
         """,
         (streamer, since),
     ).fetchone()
-    single_avg = round(single_avg_row[0], 1) if single_avg_row and single_avg_row[0] else 0
+    single_avg = (
+        round(single_avg_row[0], 1) if single_avg_row and single_avg_row[0] else 0
+    )
 
     double_avg_row = conn.execute(
         """
@@ -742,7 +842,9 @@ def _double_stream_detection(conn: sqlite3.Connection, streamer: str, since: str
         """,
         (streamer, since),
     ).fetchone()
-    double_avg = round(double_avg_row[0], 1) if double_avg_row and double_avg_row[0] else 0
+    double_avg = (
+        round(double_avg_row[0], 1) if double_avg_row and double_avg_row[0] else 0
+    )
 
     return {
         "detected": len(occurrences) > 0,
@@ -757,7 +859,10 @@ def _double_stream_detection(conn: sqlite3.Connection, streamer: str, since: str
 # 9. Chat-Konzentration & Loyalty
 # ---------------------------------------------------------------------------
 
-def _chat_concentration(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str, Any]:
+
+def _chat_concentration(
+    conn: sqlite3.Connection, streamer: str, since: str
+) -> Dict[str, Any]:
     """Analyse chat dependency and chatter loyalty distribution."""
     # Loyalty buckets
     buckets_raw = conn.execute(
@@ -805,13 +910,15 @@ def _chat_concentration(conn: sqlite3.Connection, streamer: str, since: str) -> 
     for r in top:
         share = round(r[1] / total_msgs * 100, 1) if total_msgs > 0 else 0
         cumulative += share
-        top_chatters.append({
-            "login": r[0],
-            "messages": r[1],
-            "sessions": r[2],
-            "sharePct": share,
-            "cumulativePct": round(cumulative, 1),
-        })
+        top_chatters.append(
+            {
+                "login": r[0],
+                "messages": r[1],
+                "sessions": r[2],
+                "sharePct": share,
+                "cumulativePct": round(cumulative, 1),
+            }
+        )
 
     # HHI index (higher = more concentrated, 10000 = monopoly)
     hhi = sum((r[1] / total_msgs) ** 2 for r in top) * 10000 if total_msgs > 0 else 0
@@ -836,9 +943,15 @@ def _chat_concentration(conn: sqlite3.Connection, streamer: str, since: str) -> 
 
     own_one_timer_pct = buckets.get("oneTimer", {}).get("pct", 0)
     peer_one_timer_pcts = [
-        round(r[2] / r[1] * 100, 1) for r in peer_loyalty if r[0] != streamer and r[1] > 0
+        round(r[2] / r[1] * 100, 1)
+        for r in peer_loyalty
+        if r[0] != streamer and r[1] > 0
     ]
-    avg_peer_one_timer = round(sum(peer_one_timer_pcts) / len(peer_one_timer_pcts), 1) if peer_one_timer_pcts else 0
+    avg_peer_one_timer = (
+        round(sum(peer_one_timer_pcts) / len(peer_one_timer_pcts), 1)
+        if peer_one_timer_pcts
+        else 0
+    )
 
     return {
         "totalChatters": total_chatters,
@@ -858,7 +971,10 @@ def _chat_concentration(conn: sqlite3.Connection, streamer: str, since: str) -> 
 # 10. Raid-Netzwerk
 # ---------------------------------------------------------------------------
 
-def _raid_network(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str, Any]:
+
+def _raid_network(
+    conn: sqlite3.Connection, streamer: str, since: str
+) -> Dict[str, Any]:
     """Analyse raid send/receive balance and partner reciprocity."""
     sent = conn.execute(
         """
@@ -882,23 +998,41 @@ def _raid_network(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[s
         (streamer, since),
     ).fetchall()
 
-    sent_map = {r[0]: {"count": r[1], "avgViewers": round(r[2] or 0, 1), "totalViewers": int(r[3] or 0)} for r in sent}
-    recv_map = {r[0]: {"count": r[1], "avgViewers": round(r[2] or 0, 1), "totalViewers": int(r[3] or 0)} for r in received}
+    sent_map = {
+        r[0]: {
+            "count": r[1],
+            "avgViewers": round(r[2] or 0, 1),
+            "totalViewers": int(r[3] or 0),
+        }
+        for r in sent
+    }
+    recv_map = {
+        r[0]: {
+            "count": r[1],
+            "avgViewers": round(r[2] or 0, 1),
+            "totalViewers": int(r[3] or 0),
+        }
+        for r in received
+    }
 
     all_partners = set(sent_map.keys()) | set(recv_map.keys())
     partners = []
     for p in all_partners:
         s = sent_map.get(p, {"count": 0, "avgViewers": 0, "totalViewers": 0})
         r = recv_map.get(p, {"count": 0, "avgViewers": 0, "totalViewers": 0})
-        partners.append({
-            "login": p,
-            "sentCount": s["count"],
-            "sentAvgViewers": s["avgViewers"],
-            "receivedCount": r["count"],
-            "receivedAvgViewers": r["avgViewers"],
-            "reciprocity": "mutual" if s["count"] > 0 and r["count"] > 0 else ("sentOnly" if s["count"] > 0 else "receivedOnly"),
-            "balance": r["count"] - s["count"],
-        })
+        partners.append(
+            {
+                "login": p,
+                "sentCount": s["count"],
+                "sentAvgViewers": s["avgViewers"],
+                "receivedCount": r["count"],
+                "receivedAvgViewers": r["avgViewers"],
+                "reciprocity": "mutual"
+                if s["count"] > 0 and r["count"] > 0
+                else ("sentOnly" if s["count"] > 0 else "receivedOnly"),
+                "balance": r["count"] - s["count"],
+            }
+        )
     partners.sort(key=lambda x: x["sentCount"] + x["receivedCount"], reverse=True)
 
     total_sent = sum(v["count"] for v in sent_map.values())
@@ -913,7 +1047,9 @@ def _raid_network(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[s
         "totalSentViewers": total_sent_v,
         "totalReceivedViewers": total_recv_v,
         "avgSentViewers": round(total_sent_v / total_sent, 1) if total_sent > 0 else 0,
-        "avgReceivedViewers": round(total_recv_v / total_recv, 1) if total_recv > 0 else 0,
+        "avgReceivedViewers": round(total_recv_v / total_recv, 1)
+        if total_recv > 0
+        else 0,
         "reciprocityRatio": round(total_recv / total_sent, 2) if total_sent > 0 else 0,
         "mutualPartners": mutual,
         "totalPartners": len(partners),
@@ -925,7 +1061,10 @@ def _raid_network(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[s
 # 11. Peer-Vergleich (Detail-Tabelle)
 # ---------------------------------------------------------------------------
 
-def _peer_comparison(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str, Any]:
+
+def _peer_comparison(
+    conn: sqlite3.Connection, streamer: str, since: str
+) -> Dict[str, Any]:
     """Multi-metric comparison vs similar and aspirational peers."""
     all_rows = conn.execute(
         """
@@ -976,11 +1115,22 @@ def _peer_comparison(conn: sqlite3.Connection, streamer: str, since: str) -> Dic
     # Per-metric ranks
     metrics_ranked = {}
     if own_data:
-        for metric in ["avgViewers", "maxPeak", "avgChatters", "retention5m", "titleVariety", "sessions"]:
+        for metric in [
+            "avgViewers",
+            "maxPeak",
+            "avgChatters",
+            "retention5m",
+            "titleVariety",
+            "sessions",
+        ]:
             sorted_list = sorted(peers, key=lambda p: p[metric], reverse=True)
             for j, p in enumerate(sorted_list):
                 if p["login"] == streamer:
-                    metrics_ranked[metric] = {"rank": j + 1, "total": total, "value": p[metric]}
+                    metrics_ranked[metric] = {
+                        "rank": j + 1,
+                        "total": total,
+                        "value": p[metric],
+                    }
                     break
 
     # Similar peers (within 50% avg viewers)
@@ -1022,7 +1172,10 @@ def _peer_comparison(conn: sqlite3.Connection, streamer: str, since: str) -> Dic
 # 12. Konkurrenz-Dichte nach Uhrzeit
 # ---------------------------------------------------------------------------
 
-def _competition_density(conn: sqlite3.Connection, streamer: str, since: str) -> Dict[str, Any]:
+
+def _competition_density(
+    conn: sqlite3.Connection, streamer: str, since: str
+) -> Dict[str, Any]:
     """Competition density using actual stream sessions (not aggregated stats)."""
     # How many streamers are active per hour-of-day?
     density = conn.execute(
@@ -1057,7 +1210,15 @@ def _competition_density(conn: sqlite3.Connection, streamer: str, since: str) ->
         (streamer, since),
     ).fetchall()
 
-    own_map = {r[0]: {"count": r[1], "avgViewers": round(r[2] or 0, 1), "avgPeak": round(r[3] or 0, 1), "avgChatters": round(r[4] or 0, 1)} for r in own_hours}
+    own_map = {
+        r[0]: {
+            "count": r[1],
+            "avgViewers": round(r[2] or 0, 1),
+            "avgPeak": round(r[3] or 0, 1),
+            "avgChatters": round(r[4] or 0, 1),
+        }
+        for r in own_hours
+    }
 
     hourly = []
     for r in density:
@@ -1066,14 +1227,16 @@ def _competition_density(conn: sqlite3.Connection, streamer: str, since: str) ->
         avg_v = round(r[2] or 0, 1)
         avg_p = round(r[3] or 0, 1)
         opp = round(avg_v / streamers, 2) if streamers > 0 else 0
-        hourly.append({
-            "hour": hour,
-            "activeStreamers": streamers,
-            "avgViewers": avg_v,
-            "avgPeak": avg_p,
-            "opportunityScore": opp,
-            "yourData": own_map.get(hour),
-        })
+        hourly.append(
+            {
+                "hour": hour,
+                "activeStreamers": streamers,
+                "avgViewers": avg_v,
+                "avgPeak": avg_p,
+                "opportunityScore": opp,
+                "yourData": own_map.get(hour),
+            }
+        )
 
     # Same but by weekday
     weekday_density = conn.execute(
@@ -1104,19 +1267,28 @@ def _competition_density(conn: sqlite3.Connection, streamer: str, since: str) ->
         (streamer, since),
     ).fetchall()
 
-    own_wd_map = {r[0]: {"count": r[1], "avgViewers": round(r[2] or 0, 1), "avgPeak": round(r[3] or 0, 1)} for r in own_weekdays}
+    own_wd_map = {
+        r[0]: {
+            "count": r[1],
+            "avgViewers": round(r[2] or 0, 1),
+            "avgPeak": round(r[3] or 0, 1),
+        }
+        for r in own_weekdays
+    }
 
     weekday_names = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"]
     weekly = []
     for r in weekday_density:
         wd = r[0]
-        weekly.append({
-            "weekday": wd,
-            "weekdayLabel": weekday_names[wd],
-            "activeStreamers": r[1],
-            "avgViewers": round(r[2] or 0, 1),
-            "yourData": own_wd_map.get(wd),
-        })
+        weekly.append(
+            {
+                "weekday": wd,
+                "weekdayLabel": weekday_names[wd],
+                "activeStreamers": r[1],
+                "avgViewers": round(r[2] or 0, 1),
+                "yourData": own_wd_map.get(wd),
+            }
+        )
 
     # Best opportunity hours (low competition, high viewers)
     sweet_spots = sorted(hourly, key=lambda x: x["opportunityScore"], reverse=True)[:5]
@@ -1132,6 +1304,7 @@ def _competition_density(conn: sqlite3.Connection, streamer: str, since: str) ->
 # 13. Priorisierte Empfehlungen
 # ---------------------------------------------------------------------------
 
+
 def _build_recommendations(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Rule-based recommendation engine."""
     recs: List[Dict[str, Any]] = []
@@ -1144,95 +1317,122 @@ def _build_recommendations(data: Dict[str, Any]) -> List[Dict[str, Any]]:
             diff = ds["singleDayAvg"] - ds["doubleDayAvg"]
             if diff > 0:
                 impact = f"An Single-Stream-Tagen hast du {diff:.0f} mehr Ø Viewer."
-        recs.append({
-            "priority": "critical",
-            "category": "Schedule",
-            "title": "Doppel-Streams erkannt",
-            "description": f"{ds['count']}x hast du an einem Tag mehrfach gestreamt. Das kann dein Wachstum bremsen, weil Viewer nicht wissen, wann du ON bist.",
-            "estimatedImpact": impact or "Konsistenter Schedule = bessere Zuschauerbindung",
-            "evidence": f"{ds['count']} Tage mit mehreren Sessions",
-            "icon": "AlertTriangle",
-        })
+        recs.append(
+            {
+                "priority": "critical",
+                "category": "Schedule",
+                "title": "Doppel-Streams erkannt",
+                "description": f"{ds['count']}x hast du an einem Tag mehrfach gestreamt. Das kann dein Wachstum bremsen, weil Viewer nicht wissen, wann du ON bist.",
+                "estimatedImpact": impact
+                or "Konsistenter Schedule = bessere Zuschauerbindung",
+                "evidence": f"{ds['count']} Tage mit mehreren Sessions",
+                "icon": "AlertTriangle",
+            }
+        )
 
     # Efficiency < 25th percentile
     eff = data.get("efficiency", {})
     if eff.get("percentile", 50) < 25 and eff.get("totalStreamHours", 0) > 5:
-        recs.append({
-            "priority": "critical",
-            "category": "Effizienz",
-            "title": "Unterdurchschnittliche Effizienz",
-            "description": f"Deine Viewer-Hours pro Stream-Hour ({eff['viewerHoursPerStreamHour']}) liegen unter dem 25. Perzentil. Der Kategorie-Durchschnitt liegt bei {eff['categoryAvg']}.",
-            "estimatedImpact": "Kuerzere, fokussiertere Streams koennten deine Effizienz deutlich steigern",
-            "evidence": f"Perzentil {eff['percentile']}% | Du: {eff['viewerHoursPerStreamHour']} vs Kat: {eff['categoryAvg']}",
-            "icon": "TrendingDown",
-        })
+        recs.append(
+            {
+                "priority": "critical",
+                "category": "Effizienz",
+                "title": "Unterdurchschnittliche Effizienz",
+                "description": f"Deine Viewer-Hours pro Stream-Hour ({eff['viewerHoursPerStreamHour']}) liegen unter dem 25. Perzentil. Der Kategorie-Durchschnitt liegt bei {eff['categoryAvg']}.",
+                "estimatedImpact": "Kuerzere, fokussiertere Streams koennten deine Effizienz deutlich steigern",
+                "evidence": f"Perzentil {eff['percentile']}% | Du: {eff['viewerHoursPerStreamHour']} vs Kat: {eff['categoryAvg']}",
+                "icon": "TrendingDown",
+            }
+        )
 
     # Retention < 50% of category avg
     ret = data.get("retentionCoaching", {})
     if ret.get("category5mRetention") and ret.get("your5mRetention"):
-        if ret["your5mRetention"] < ret["category5mRetention"] * 0.5 and ret["category5mRetention"] > 0:
-            recs.append({
-                "priority": "high",
-                "category": "Retention",
-                "title": "Niedrige 5-Minuten-Retention",
-                "description": f"Deine 5-Min-Retention ({ret['your5mRetention']}%) liegt deutlich unter dem Kategorie-Schnitt ({ret['category5mRetention']}%). Viewer springen frueh ab.",
-                "estimatedImpact": "Bessere Intros und fruehe Interaktion koennen die Retention verdoppeln",
-                "evidence": f"Du: {ret['your5mRetention']}% vs Kategorie: {ret['category5mRetention']}%",
-                "icon": "UserMinus",
-            })
+        if (
+            ret["your5mRetention"] < ret["category5mRetention"] * 0.5
+            and ret["category5mRetention"] > 0
+        ):
+            recs.append(
+                {
+                    "priority": "high",
+                    "category": "Retention",
+                    "title": "Niedrige 5-Minuten-Retention",
+                    "description": f"Deine 5-Min-Retention ({ret['your5mRetention']}%) liegt deutlich unter dem Kategorie-Schnitt ({ret['category5mRetention']}%). Viewer springen frueh ab.",
+                    "estimatedImpact": "Bessere Intros und fruehe Interaktion koennen die Retention verdoppeln",
+                    "evidence": f"Du: {ret['your5mRetention']}% vs Kategorie: {ret['category5mRetention']}%",
+                    "icon": "UserMinus",
+                }
+            )
 
     # Duration > 150% of optimal
     dur = data.get("durationAnalysis", {})
     if dur.get("optimalLabel") and dur.get("currentAvgHours"):
-        optimal_hours_map = {"< 1h": 0.5, "1-2h": 1.5, "2-3h": 2.5, "3-4h": 3.5, "4-5h": 4.5, "5h+": 6}
+        optimal_hours_map = {
+            "< 1h": 0.5,
+            "1-2h": 1.5,
+            "2-3h": 2.5,
+            "3-4h": 3.5,
+            "4-5h": 4.5,
+            "5h+": 6,
+        }
         optimal_mid = optimal_hours_map.get(dur["optimalLabel"], 3)
         if dur["currentAvgHours"] > optimal_mid * 1.5 and dur["currentAvgHours"] > 2:
-            recs.append({
-                "priority": "high",
-                "category": "Dauer",
-                "title": "Streams zu lang",
-                "description": f"Dein Ø Stream dauert {dur['currentAvgHours']:.1f}h, aber dein Sweet-Spot liegt bei {dur['optimalLabel']}. Laengere Streams verwassern deine Metriken.",
-                "estimatedImpact": f"Kuerze auf {dur['optimalLabel']} fuer bessere Viewer-Zahlen",
-                "evidence": f"Optimaler Bucket: {dur['optimalLabel']} | Aktuell: {dur['currentAvgHours']:.1f}h",
-                "icon": "Clock",
-            })
+            recs.append(
+                {
+                    "priority": "high",
+                    "category": "Dauer",
+                    "title": "Streams zu lang",
+                    "description": f"Dein Ø Stream dauert {dur['currentAvgHours']:.1f}h, aber dein Sweet-Spot liegt bei {dur['optimalLabel']}. Laengere Streams verwassern deine Metriken.",
+                    "estimatedImpact": f"Kuerze auf {dur['optimalLabel']} fuer bessere Viewer-Zahlen",
+                    "evidence": f"Optimaler Bucket: {dur['optimalLabel']} | Aktuell: {dur['currentAvgHours']:.1f}h",
+                    "icon": "Clock",
+                }
+            )
 
     # Schedule mismatch
     sched = data.get("scheduleOptimizer", {})
     if sched.get("yourCurrentSlots") and sched.get("competitionHeatmap"):
         your_slots_set = {(s["weekday"], s["hour"]) for s in sched["yourCurrentSlots"]}
         # Find high-competition slots
-        sorted_comp = sorted(sched["competitionHeatmap"], key=lambda x: x["competitors"], reverse=True)
-        top_competition = sorted_comp[:len(sorted_comp) // 4] if sorted_comp else []
+        sorted_comp = sorted(
+            sched["competitionHeatmap"], key=lambda x: x["competitors"], reverse=True
+        )
+        top_competition = sorted_comp[: len(sorted_comp) // 4] if sorted_comp else []
         high_comp_set = {(s["weekday"], s["hour"]) for s in top_competition}
 
         if your_slots_set and high_comp_set:
             overlap = your_slots_set & high_comp_set
-            overlap_pct = len(overlap) / len(your_slots_set) * 100 if your_slots_set else 0
+            overlap_pct = (
+                len(overlap) / len(your_slots_set) * 100 if your_slots_set else 0
+            )
             if overlap_pct > 70:
-                recs.append({
-                    "priority": "high",
-                    "category": "Schedule",
-                    "title": "Zu viel Konkurrenz in deinen Slots",
-                    "description": f"{overlap_pct:.0f}% deiner Streams laufen in den konkurrenzstaerksten Zeitfenstern. Verschiebe einige Streams in Sweet-Spots.",
-                    "estimatedImpact": "Weniger Konkurrenz = mehr Discovery durch Browse-Tab",
-                    "evidence": f"{len(overlap)}/{len(your_slots_set)} Slots in Top-25% Konkurrenz",
-                    "icon": "Calendar",
-                })
+                recs.append(
+                    {
+                        "priority": "high",
+                        "category": "Schedule",
+                        "title": "Zu viel Konkurrenz in deinen Slots",
+                        "description": f"{overlap_pct:.0f}% deiner Streams laufen in den konkurrenzstaerksten Zeitfenstern. Verschiebe einige Streams in Sweet-Spots.",
+                        "estimatedImpact": "Weniger Konkurrenz = mehr Discovery durch Browse-Tab",
+                        "evidence": f"{len(overlap)}/{len(your_slots_set)} Slots in Top-25% Konkurrenz",
+                        "icon": "Calendar",
+                    }
+                )
 
     # Missing top tags
     tags = data.get("tagOptimization", {})
     if tags.get("missingHighPerformers"):
         missing = tags["missingHighPerformers"][:3]
-        recs.append({
-            "priority": "high",
-            "category": "Tags",
-            "title": "Erfolgreiche Tags fehlen",
-            "description": f"Dir fehlen Tags, die in der Kategorie gut performen: {', '.join(missing)}. Tags beeinflussen die Sichtbarkeit im Browse-Tab.",
-            "estimatedImpact": "Bessere Tags = mehr Discovery ueber Twitch Browse",
-            "evidence": f"{len(tags['missingHighPerformers'])} fehlende High-Performer Tags",
-            "icon": "Tag",
-        })
+        recs.append(
+            {
+                "priority": "high",
+                "category": "Tags",
+                "title": "Erfolgreiche Tags fehlen",
+                "description": f"Dir fehlen Tags, die in der Kategorie gut performen: {', '.join(missing)}. Tags beeinflussen die Sichtbarkeit im Browse-Tab.",
+                "estimatedImpact": "Bessere Tags = mehr Discovery ueber Twitch Browse",
+                "evidence": f"{len(tags['missingHighPerformers'])} fehlende High-Performer Tags",
+                "icon": "Tag",
+            }
+        )
 
     # Same title used > 5 times
     titles = data.get("titleAnalysis", {})
@@ -1240,122 +1440,147 @@ def _build_recommendations(data: Dict[str, Any]) -> List[Dict[str, Any]]:
         max_reuse = max((t["usageCount"] for t in titles["yourTitles"]), default=0)
         if max_reuse > 5:
             reused = [t for t in titles["yourTitles"] if t["usageCount"] > 5]
-            recs.append({
-                "priority": "medium",
-                "category": "Titel",
-                "title": "Titel-Wiederholung",
-                "description": f"Du nutzt denselben Titel zu oft ({max_reuse}x). Variiere deine Titel, um im Browse-Tab aufzufallen.",
-                "estimatedImpact": "Einzigartige Titel erhoehen die Klickrate",
-                "evidence": f"'{reused[0]['title'][:40]}...' wurde {max_reuse}x benutzt" if reused else "",
-                "icon": "Type",
-            })
+            recs.append(
+                {
+                    "priority": "medium",
+                    "category": "Titel",
+                    "title": "Titel-Wiederholung",
+                    "description": f"Du nutzt denselben Titel zu oft ({max_reuse}x). Variiere deine Titel, um im Browse-Tab aufzufallen.",
+                    "estimatedImpact": "Einzigartige Titel erhoehen die Klickrate",
+                    "evidence": f"'{reused[0]['title'][:40]}...' wurde {max_reuse}x benutzt"
+                    if reused
+                    else "",
+                    "icon": "Type",
+                }
+            )
 
     # Community dependency > 80% external
     comm = data.get("crossCommunity", {})
     if comm.get("isolatedPercentage") is not None:
         if comm["isolatedPercentage"] < 20 and comm.get("totalUniqueChatters", 0) > 10:
-            recs.append({
-                "priority": "medium",
-                "category": "Community",
-                "title": "Hohe Abhaengigkeit vom Oekosystem",
-                "description": f"Nur {comm['isolatedPercentage']:.0f}% deiner Chatter sind exklusiv in deinem Channel. Du bist stark vom Deadlock-Oekosystem abhaengig.",
-                "estimatedImpact": "Eigene Community aufbauen = nachhaltiges Wachstum",
-                "evidence": f"{comm['isolatedChatters']} von {comm['totalUniqueChatters']} Chattern nur bei dir",
-                "icon": "Users",
-            })
+            recs.append(
+                {
+                    "priority": "medium",
+                    "category": "Community",
+                    "title": "Hohe Abhaengigkeit vom Oekosystem",
+                    "description": f"Nur {comm['isolatedPercentage']:.0f}% deiner Chatter sind exklusiv in deinem Channel. Du bist stark vom Deadlock-Oekosystem abhaengig.",
+                    "estimatedImpact": "Eigene Community aufbauen = nachhaltiges Wachstum",
+                    "evidence": f"{comm['isolatedChatters']} von {comm['totalUniqueChatters']} Chattern nur bei dir",
+                    "icon": "Users",
+                }
+            )
 
     # Missing title keywords
     if titles.get("yourMissingPatterns"):
         keywords = titles["yourMissingPatterns"][:5]
-        recs.append({
-            "priority": "low",
-            "category": "Titel",
-            "title": "Fehlende Titel-Keywords",
-            "description": f"Erfolgreiche Streamer nutzen Keywords, die du nicht verwendest: {', '.join(keywords)}.",
-            "estimatedImpact": "Kleine Optimierung fuer bessere Discoverability",
-            "evidence": f"{len(titles['yourMissingPatterns'])} fehlende Patterns",
-            "icon": "Search",
-        })
+        recs.append(
+            {
+                "priority": "low",
+                "category": "Titel",
+                "title": "Fehlende Titel-Keywords",
+                "description": f"Erfolgreiche Streamer nutzen Keywords, die du nicht verwendest: {', '.join(keywords)}.",
+                "estimatedImpact": "Kleine Optimierung fuer bessere Discoverability",
+                "evidence": f"{len(titles['yourMissingPatterns'])} fehlende Patterns",
+                "icon": "Search",
+            }
+        )
 
     # Duration-Viewers correlation warning
     if dur.get("correlation") is not None and dur["correlation"] < -0.3:
-        recs.append({
-            "priority": "medium",
-            "category": "Dauer",
-            "title": "Negative Korrelation: Laenge vs Viewer",
-            "description": f"Je laenger du streamst, desto weniger Viewer hast du (r={dur['correlation']:.2f}). Das deutet auf Ermuedung hin.",
-            "estimatedImpact": "Kuerzere Streams koennen den Viewer-Schnitt steigern",
-            "evidence": f"Pearson r = {dur['correlation']:.2f}",
-            "icon": "TrendingDown",
-        })
+        recs.append(
+            {
+                "priority": "medium",
+                "category": "Dauer",
+                "title": "Negative Korrelation: Laenge vs Viewer",
+                "description": f"Je laenger du streamst, desto weniger Viewer hast du (r={dur['correlation']:.2f}). Das deutet auf Ermuedung hin.",
+                "estimatedImpact": "Kuerzere Streams koennen den Viewer-Schnitt steigern",
+                "evidence": f"Pearson r = {dur['correlation']:.2f}",
+                "icon": "TrendingDown",
+            }
+        )
 
     # --- NEW: Title variety ---
     if titles.get("varietyPct") is not None and titles.get("avgPeerVarietyPct"):
         own_var = titles["varietyPct"]
         peer_var = titles["avgPeerVarietyPct"]
         if own_var < peer_var * 0.5 and titles.get("totalSessionCount", 0) >= 5:
-            recs.append({
-                "priority": "critical",
-                "category": "Titel",
-                "title": "Extrem geringe Titel-Vielfalt",
-                "description": f"Nur {own_var}% einzigartige Titel vs {peer_var}% Peer-Durchschnitt. "
-                               f"{titles.get('uniqueTitleCount', 0)} verschiedene bei {titles.get('totalSessionCount', 0)} Sessions.",
-                "estimatedImpact": "Verschiedene Titel locken verschiedene Zielgruppen in der Browse-Page an",
-                "evidence": f"Du: {own_var}% | Peers: {peer_var}%",
-                "icon": "Type",
-            })
+            recs.append(
+                {
+                    "priority": "critical",
+                    "category": "Titel",
+                    "title": "Extrem geringe Titel-Vielfalt",
+                    "description": f"Nur {own_var}% einzigartige Titel vs {peer_var}% Peer-Durchschnitt. "
+                    f"{titles.get('uniqueTitleCount', 0)} verschiedene bei {titles.get('totalSessionCount', 0)} Sessions.",
+                    "estimatedImpact": "Verschiedene Titel locken verschiedene Zielgruppen in der Browse-Page an",
+                    "evidence": f"Du: {own_var}% | Peers: {peer_var}%",
+                    "icon": "Type",
+                }
+            )
 
     # --- NEW: Chat concentration ---
     chat = data.get("chatConcentration", {})
     if chat.get("top1Pct", 0) > 50 and chat.get("totalMessages", 0) > 50:
-        recs.append({
-            "priority": "high",
-            "category": "Community",
-            "title": "Chat abhaengig von einer Person",
-            "description": f"Ein einzelner Chatter macht {chat['top1Pct']}% aller Nachrichten aus. "
-                           f"Wenn diese Person wegfaellt, stirbt der Chat.",
-            "estimatedImpact": "Neue Chatter aktiv einbinden, Fragen stellen, namentlich ansprechen",
-            "evidence": f"Top-Chatter: {chat['topChatters'][0]['login']} ({chat['top1Pct']}%)" if chat.get("topChatters") else "",
-            "icon": "Users",
-        })
+        recs.append(
+            {
+                "priority": "high",
+                "category": "Community",
+                "title": "Chat abhaengig von einer Person",
+                "description": f"Ein einzelner Chatter macht {chat['top1Pct']}% aller Nachrichten aus. "
+                f"Wenn diese Person wegfaellt, stirbt der Chat.",
+                "estimatedImpact": "Neue Chatter aktiv einbinden, Fragen stellen, namentlich ansprechen",
+                "evidence": f"Top-Chatter: {chat['topChatters'][0]['login']} ({chat['top1Pct']}%)"
+                if chat.get("topChatters")
+                else "",
+                "icon": "Users",
+            }
+        )
     elif chat.get("top3Pct", 0) > 70 and chat.get("totalMessages", 0) > 50:
-        recs.append({
-            "priority": "high",
-            "category": "Community",
-            "title": "Chat von Top-3 dominiert",
-            "description": f"Top 3 Chatter machen {chat['top3Pct']}% aller Nachrichten. "
-                           f"Dein Chat ist fragil - diversifiziere die Beteiligung.",
-            "estimatedImpact": "Interaktive Formate (Coaching, Q&A) bringen neue Stimmen",
-            "evidence": f"HHI-Index: {chat.get('concentrationIndex', 0):.0f} (>2500 = hochkonzentriert)",
-            "icon": "Users",
-        })
+        recs.append(
+            {
+                "priority": "high",
+                "category": "Community",
+                "title": "Chat von Top-3 dominiert",
+                "description": f"Top 3 Chatter machen {chat['top3Pct']}% aller Nachrichten. "
+                f"Dein Chat ist fragil - diversifiziere die Beteiligung.",
+                "estimatedImpact": "Interaktive Formate (Coaching, Q&A) bringen neue Stimmen",
+                "evidence": f"HHI-Index: {chat.get('concentrationIndex', 0):.0f} (>2500 = hochkonzentriert)",
+                "icon": "Users",
+            }
+        )
 
     # One-timer rate
-    if chat.get("ownOneTimerPct", 0) > chat.get("avgPeerOneTimerPct", 0) + 10 and chat.get("totalChatters", 0) >= 5:
-        recs.append({
-            "priority": "medium",
-            "category": "Community",
-            "title": "Zu viele Einmal-Chatter",
-            "description": f"{chat['ownOneTimerPct']}% deiner Chatter kommen nur einmal (Peers: {chat['avgPeerOneTimerPct']}%). "
-                           f"Follow-up Strategien einsetzen: Discord, Social Media, persoenliche Begruessung.",
-            "estimatedImpact": "Senkung der One-Timer-Rate um 10% = deutlich stabilerer Chat",
-            "evidence": f"Du: {chat['ownOneTimerPct']}% | Peers: {chat['avgPeerOneTimerPct']}%",
-            "icon": "UserMinus",
-        })
+    if (
+        chat.get("ownOneTimerPct", 0) > chat.get("avgPeerOneTimerPct", 0) + 10
+        and chat.get("totalChatters", 0) >= 5
+    ):
+        recs.append(
+            {
+                "priority": "medium",
+                "category": "Community",
+                "title": "Zu viele Einmal-Chatter",
+                "description": f"{chat['ownOneTimerPct']}% deiner Chatter kommen nur einmal (Peers: {chat['avgPeerOneTimerPct']}%). "
+                f"Follow-up Strategien einsetzen: Discord, Social Media, persoenliche Begruessung.",
+                "estimatedImpact": "Senkung der One-Timer-Rate um 10% = deutlich stabilerer Chat",
+                "evidence": f"Du: {chat['ownOneTimerPct']}% | Peers: {chat['avgPeerOneTimerPct']}%",
+                "icon": "UserMinus",
+            }
+        )
 
     # --- NEW: Raid network ---
     raids = data.get("raidNetwork", {})
     if raids.get("totalSent", 0) > 5 and raids.get("reciprocityRatio", 0) < 0.3:
-        recs.append({
-            "priority": "medium",
-            "category": "Netzwerk",
-            "title": "Einseitiges Raid-Netzwerk",
-            "description": f"Du sendest {raids['totalSent']} Raids, erhaeltst aber nur {raids['totalReceived']}. "
-                           f"Reziprozitaet: {raids['reciprocityRatio']}x. Aktiv gegenseitige Raid-Partnerschaften aufbauen.",
-            "estimatedImpact": "Gegenseitige Raids bringen neue Viewer in deinen Channel",
-            "evidence": f"Gesendet: {raids['totalSent']} | Erhalten: {raids['totalReceived']} | Mutual: {raids.get('mutualPartners', 0)}",
-            "icon": "Users",
-        })
+        recs.append(
+            {
+                "priority": "medium",
+                "category": "Netzwerk",
+                "title": "Einseitiges Raid-Netzwerk",
+                "description": f"Du sendest {raids['totalSent']} Raids, erhaeltst aber nur {raids['totalReceived']}. "
+                f"Reziprozitaet: {raids['reciprocityRatio']}x. Aktiv gegenseitige Raid-Partnerschaften aufbauen.",
+                "estimatedImpact": "Gegenseitige Raids bringen neue Viewer in deinen Channel",
+                "evidence": f"Gesendet: {raids['totalSent']} | Erhalten: {raids['totalReceived']} | Mutual: {raids.get('mutualPartners', 0)}",
+                "icon": "Users",
+            }
+        )
 
     # --- NEW: Competition density ---
     comp = data.get("competitionDensity", {})
@@ -1365,16 +1590,18 @@ def _build_recommendations(data: Dict[str, Any]) -> List[Dict[str, Any]]:
         best_hour = sweet[0]
         # Check if streamer streams at the best hour
         if not best_hour.get("yourData"):
-            recs.append({
-                "priority": "high",
-                "category": "Schedule",
-                "title": f"Ungenutzter Sweet-Spot: {best_hour['hour']:02d}:00 UTC",
-                "description": f"Um {best_hour['hour']:02d}:00 UTC gibt es nur {best_hour['activeStreamers']} aktive Streamer "
-                               f"bei {best_hour['avgViewers']} Ø Viewern. Du streamst dort nicht.",
-                "estimatedImpact": f"Opportunity-Score {best_hour['opportunityScore']} - hoechstes Viewer/Konkurrenz-Verhaeltnis",
-                "evidence": f"{best_hour['activeStreamers']} Streamer | {best_hour['avgViewers']} Ø Viewer",
-                "icon": "Calendar",
-            })
+            recs.append(
+                {
+                    "priority": "high",
+                    "category": "Schedule",
+                    "title": f"Ungenutzter Sweet-Spot: {best_hour['hour']:02d}:00 UTC",
+                    "description": f"Um {best_hour['hour']:02d}:00 UTC gibt es nur {best_hour['activeStreamers']} aktive Streamer "
+                    f"bei {best_hour['avgViewers']} Ø Viewern. Du streamst dort nicht.",
+                    "estimatedImpact": f"Opportunity-Score {best_hour['opportunityScore']} - hoechstes Viewer/Konkurrenz-Verhaeltnis",
+                    "evidence": f"{best_hour['activeStreamers']} Streamer | {best_hour['avgViewers']} Ø Viewer",
+                    "icon": "Calendar",
+                }
+            )
 
     # Sort by priority
     priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -1386,6 +1613,7 @@ def _build_recommendations(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _pearson(x: List[float], y: List[float]) -> float:
     """Simple Pearson correlation coefficient."""

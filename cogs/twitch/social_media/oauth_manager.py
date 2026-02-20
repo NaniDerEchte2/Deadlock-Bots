@@ -46,10 +46,7 @@ class SocialMediaOAuthManager:
         self.crypto = get_crypto()
 
     def generate_auth_url(
-        self,
-        platform: str,
-        streamer_login: Optional[str],
-        redirect_uri: str
+        self, platform: str, streamer_login: Optional[str], redirect_uri: str
     ) -> str:
         """
         Generate OAuth authorization URL.
@@ -66,7 +63,9 @@ class SocialMediaOAuthManager:
         state = secrets.token_urlsafe(32)
 
         # Generate PKCE verifier (TikTok v2 and YouTube both require PKCE)
-        pkce_verifier = secrets.token_urlsafe(64) if platform in ("tiktok", "youtube") else None
+        pkce_verifier = (
+            secrets.token_urlsafe(64) if platform in ("tiktok", "youtube") else None
+        )
 
         # Store state in DB (expires in 10 minutes)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
@@ -78,7 +77,14 @@ class SocialMediaOAuthManager:
                     (state_token, platform, streamer_login, redirect_uri, pkce_verifier, expires_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (state, platform, streamer_login, redirect_uri, pkce_verifier, expires_at.isoformat())
+                (
+                    state,
+                    platform,
+                    streamer_login,
+                    redirect_uri,
+                    pkce_verifier,
+                    expires_at.isoformat(),
+                ),
             )
 
         # Generate platform-specific URL
@@ -101,9 +107,11 @@ class SocialMediaOAuthManager:
             )
 
         # PKCE challenge (S256)
-        challenge = urlsafe_b64encode(
-            hashlib.sha256(verifier.encode()).digest()
-        ).decode().rstrip("=")
+        challenge = (
+            urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+            .decode()
+            .rstrip("=")
+        )
 
         scopes = "user.info.basic,video.upload,video.publish"
 
@@ -129,9 +137,11 @@ class SocialMediaOAuthManager:
             )
 
         # PKCE challenge
-        challenge = urlsafe_b64encode(
-            hashlib.sha256(verifier.encode()).digest()
-        ).decode().rstrip('=')
+        challenge = (
+            urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+            .decode()
+            .rstrip("=")
+        )
 
         scopes = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
 
@@ -169,11 +179,7 @@ class SocialMediaOAuthManager:
 
         return f"https://api.instagram.com/oauth/authorize?{urlencode(params)}"
 
-    async def handle_callback(
-        self,
-        code: str,
-        state: str
-    ) -> Dict:
+    async def handle_callback(self, code: str, state: str) -> Dict:
         """
         Handle OAuth callback, exchange code for tokens.
 
@@ -196,7 +202,7 @@ class SocialMediaOAuthManager:
                 WHERE state_token = ?
                   AND expires_at > ?
                 """,
-                (state, datetime.now(timezone.utc).isoformat())
+                (state, datetime.now(timezone.utc).isoformat()),
             ).fetchone()
 
             if not state_row:
@@ -204,8 +210,7 @@ class SocialMediaOAuthManager:
 
             # Delete state (one-time use)
             conn.execute(
-                "DELETE FROM oauth_state_tokens WHERE state_token = ?",
-                (state,)
+                "DELETE FROM oauth_state_tokens WHERE state_token = ?", (state,)
             )
 
         platform = state_row["platform"]
@@ -217,7 +222,9 @@ class SocialMediaOAuthManager:
         if platform == "tiktok":
             tokens = await self._tiktok_exchange_code(code, redirect_uri, pkce_verifier)
         elif platform == "youtube":
-            tokens = await self._youtube_exchange_code(code, redirect_uri, pkce_verifier)
+            tokens = await self._youtube_exchange_code(
+                code, redirect_uri, pkce_verifier
+            )
         elif platform == "instagram":
             tokens = await self._instagram_exchange_code(code, redirect_uri)
         else:
@@ -231,7 +238,9 @@ class SocialMediaOAuthManager:
             "streamer_login": streamer_login,
         }
 
-    async def _tiktok_exchange_code(self, code: str, redirect_uri: str, verifier: str) -> Dict:
+    async def _tiktok_exchange_code(
+        self, code: str, redirect_uri: str, verifier: str
+    ) -> Dict:
         """Exchange TikTok authorization code for tokens (with PKCE code_verifier)."""
         client_key = os.environ.get("TIKTOK_CLIENT_KEY", "")
         client_secret = os.environ.get("TIKTOK_CLIENT_SECRET", "")
@@ -247,7 +256,7 @@ class SocialMediaOAuthManager:
                     "grant_type": "authorization_code",
                     "redirect_uri": redirect_uri,
                     "code_verifier": verifier,
-                }
+                },
             ) as resp:
                 data = await resp.json()
 
@@ -257,14 +266,17 @@ class SocialMediaOAuthManager:
                 return {
                     "access_token": data["data"]["access_token"],
                     "refresh_token": data["data"]["refresh_token"],
-                    "expires_at": datetime.now(timezone.utc) + timedelta(seconds=data["data"]["expires_in"]),
+                    "expires_at": datetime.now(timezone.utc)
+                    + timedelta(seconds=data["data"]["expires_in"]),
                     "scopes": data["data"]["scope"],
                     "user_id": data["data"].get("open_id"),
                     "client_id": client_key,
                     "client_secret": client_secret,
                 }
 
-    async def _youtube_exchange_code(self, code: str, redirect_uri: str, verifier: str) -> Dict:
+    async def _youtube_exchange_code(
+        self, code: str, redirect_uri: str, verifier: str
+    ) -> Dict:
         """Exchange YouTube authorization code for tokens (with PKCE)."""
         client_id = os.environ.get("YOUTUBE_CLIENT_ID", "")
         client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET", "")
@@ -279,7 +291,7 @@ class SocialMediaOAuthManager:
                     "code_verifier": verifier,
                     "grant_type": "authorization_code",
                     "redirect_uri": redirect_uri,
-                }
+                },
             ) as resp:
                 data = await resp.json()
 
@@ -289,7 +301,8 @@ class SocialMediaOAuthManager:
                 return {
                     "access_token": data["access_token"],
                     "refresh_token": data.get("refresh_token"),  # Only on first auth
-                    "expires_at": datetime.now(timezone.utc) + timedelta(seconds=data["expires_in"]),
+                    "expires_at": datetime.now(timezone.utc)
+                    + timedelta(seconds=data["expires_in"]),
                     "scopes": data["scope"],
                     "client_id": client_id,
                     "client_secret": client_secret,
@@ -309,7 +322,7 @@ class SocialMediaOAuthManager:
                     "grant_type": "authorization_code",
                     "redirect_uri": redirect_uri,
                     "code": code,
-                }
+                },
             ) as resp:
                 data = await resp.json()
 
@@ -319,16 +332,14 @@ class SocialMediaOAuthManager:
                 return {
                     "access_token": data["access_token"],
                     "user_id": data["user_id"],
-                    "expires_at": datetime.now(timezone.utc) + timedelta(days=60),  # Long-lived token
+                    "expires_at": datetime.now(timezone.utc)
+                    + timedelta(days=60),  # Long-lived token
                     "client_id": client_id,
                     "client_secret": client_secret,
                 }
 
     async def save_encrypted_tokens(
-        self,
-        platform: str,
-        streamer_login: Optional[str],
-        tokens: Dict
+        self, platform: str, streamer_login: Optional[str], tokens: Dict
     ):
         """
         Save tokens with encryption.
@@ -345,9 +356,7 @@ class SocialMediaOAuthManager:
             # Encrypt access token
             aad_access = f"social_media_platform_auth|access_token|{row_id}|1"
             access_enc = self.crypto.encrypt_field(
-                tokens["access_token"],
-                aad_access,
-                kid="v1"
+                tokens["access_token"], aad_access, kid="v1"
             )
 
             # Encrypt refresh token (if exists)
@@ -355,9 +364,7 @@ class SocialMediaOAuthManager:
             if tokens.get("refresh_token"):
                 aad_refresh = f"social_media_platform_auth|refresh_token|{row_id}|1"
                 refresh_enc = self.crypto.encrypt_field(
-                    tokens["refresh_token"],
-                    aad_refresh,
-                    kid="v1"
+                    tokens["refresh_token"], aad_refresh, kid="v1"
                 )
 
             # Encrypt client secret (if exists)
@@ -365,9 +372,7 @@ class SocialMediaOAuthManager:
             if tokens.get("client_secret"):
                 aad_secret = f"social_media_platform_auth|client_secret|{row_id}|1"
                 secret_enc = self.crypto.encrypt_field(
-                    tokens["client_secret"],
-                    aad_secret,
-                    kid="v1"
+                    tokens["client_secret"], aad_secret, kid="v1"
                 )
 
             # Save to database
@@ -395,26 +400,25 @@ class SocialMediaOAuthManager:
                     refresh_enc,
                     tokens.get("client_id"),
                     secret_enc,
-                    tokens["expires_at"].isoformat() if isinstance(tokens["expires_at"], datetime) else tokens["expires_at"],
+                    tokens["expires_at"].isoformat()
+                    if isinstance(tokens["expires_at"], datetime)
+                    else tokens["expires_at"],
                     tokens.get("scopes"),
                     tokens.get("user_id"),
                     tokens.get("username"),
-                )
+                ),
             )
 
             safe_platform = _sanitize_log_value(platform)
             safe_streamer = _sanitize_log_value(streamer_login)
             log.info(
                 "Saved encrypted auth data for platform=%s, streamer=%s",
-                safe_platform, safe_streamer
+                safe_platform,
+                safe_streamer,
             )
 
     async def refresh_token(
-        self,
-        platform: str,
-        refresh_token: str,
-        client_id: str,
-        client_secret: str
+        self, platform: str, refresh_token: str, client_id: str, client_secret: str
     ) -> Dict:
         """
         Refresh an access token.
@@ -429,13 +433,19 @@ class SocialMediaOAuthManager:
             New token data
         """
         if platform == "tiktok":
-            return await self._refresh_tiktok_token(refresh_token, client_id, client_secret)
+            return await self._refresh_tiktok_token(
+                refresh_token, client_id, client_secret
+            )
         elif platform == "youtube":
-            return await self._refresh_youtube_token(refresh_token, client_id, client_secret)
+            return await self._refresh_youtube_token(
+                refresh_token, client_id, client_secret
+            )
         else:
             raise ValueError(f"Token refresh not supported for platform: {platform}")
 
-    async def _refresh_tiktok_token(self, refresh_token: str, client_key: str, client_secret: str) -> Dict:
+    async def _refresh_tiktok_token(
+        self, refresh_token: str, client_key: str, client_secret: str
+    ) -> Dict:
         """Refresh TikTok access token."""
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -445,7 +455,7 @@ class SocialMediaOAuthManager:
                     "client_secret": client_secret,
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_token,
-                }
+                },
             ) as resp:
                 data = await resp.json()
 
@@ -455,10 +465,13 @@ class SocialMediaOAuthManager:
                 return {
                     "access_token": data["data"]["access_token"],
                     "refresh_token": data["data"]["refresh_token"],
-                    "expires_at": datetime.now(timezone.utc) + timedelta(seconds=data["data"]["expires_in"]),
+                    "expires_at": datetime.now(timezone.utc)
+                    + timedelta(seconds=data["data"]["expires_in"]),
                 }
 
-    async def _refresh_youtube_token(self, refresh_token: str, client_id: str, client_secret: str) -> Dict:
+    async def _refresh_youtube_token(
+        self, refresh_token: str, client_id: str, client_secret: str
+    ) -> Dict:
         """Refresh YouTube access token."""
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -468,7 +481,7 @@ class SocialMediaOAuthManager:
                     "client_secret": client_secret,
                     "refresh_token": refresh_token,
                     "grant_type": "refresh_token",
-                }
+                },
             ) as resp:
                 data = await resp.json()
 
@@ -477,5 +490,6 @@ class SocialMediaOAuthManager:
 
                 return {
                     "access_token": data["access_token"],
-                    "expires_at": datetime.now(timezone.utc) + timedelta(seconds=data["expires_in"]),
+                    "expires_at": datetime.now(timezone.utc)
+                    + timedelta(seconds=data["expires_in"]),
                 }

@@ -3,6 +3,7 @@ YouTube Shorts Uploader - YouTube Data API v3 Integration.
 
 Docs: https://developers.google.com/youtube/v3/docs/videos/insert
 """
+
 import asyncio
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -11,6 +12,7 @@ try:
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
+
     GOOGLE_API_AVAILABLE = True
 except ImportError:
     GOOGLE_API_AVAILABLE = False
@@ -104,7 +106,9 @@ class YouTubeUploader(PlatformUploader):
             # - 9:16 aspect ratio
             # - #Shorts in title or description
 
-            full_description = f"{description}\n\n{self.format_hashtags(hashtags)}\n\n#Shorts"
+            full_description = (
+                f"{description}\n\n{self.format_hashtags(hashtags)}\n\n#Shorts"
+            )
             full_description = full_description[:5000]  # Max 5000 chars
 
             body = {
@@ -151,7 +155,9 @@ class YouTubeUploader(PlatformUploader):
         while response is None:
             status, response = request.next_chunk()
             if status:
-                self.log.info("YouTube upload progress: %d%%", int(status.progress() * 100))
+                self.log.info(
+                    "YouTube upload progress: %d%%", int(status.progress() * 100)
+                )
 
         video_id = response["id"]
         return video_id
@@ -192,7 +198,9 @@ class YouTubeUploader(PlatformUploader):
             item = response["items"][0]
             return {
                 "status": item["status"]["uploadStatus"],
-                "processing_status": item.get("processingDetails", {}).get("processingStatus"),
+                "processing_status": item.get("processingDetails", {}).get(
+                    "processingStatus"
+                ),
             }
         return {}
 
@@ -220,5 +228,7 @@ class YouTubeUploader(PlatformUploader):
             raise ValueError(f"Video file not found: {video_path}")
 
         file_size_mb = path.stat().st_size / (1024 * 1024)
-        self.log.info("YouTube video validation passed: %s (%.1f MB)", video_path, file_size_mb)
+        self.log.info(
+            "YouTube video validation passed: %s (%.1f MB)", video_path, file_size_mb
+        )
         return True

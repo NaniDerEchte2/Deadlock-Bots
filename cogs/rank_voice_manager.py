@@ -78,8 +78,7 @@ class RolePermissionVoiceManager(commands.Cog):
 
         # Balancing-Regeln (Rang -> (minus, plus)); Standard: +/-1 (Ranked)
         self.balancing_rules = {
-            rank_name: (-1, 1)
-            for rank_name in self.deadlock_ranks.keys()
+            rank_name: (-1, 1) for rank_name in self.deadlock_ranks.keys()
         }
 
         # Cache
@@ -95,11 +94,15 @@ class RolePermissionVoiceManager(commands.Cog):
         self.channel_permissions_initialized: Set[int] = set()
 
         # Rename throttle
-        self._channel_rename_interval = max(60, settings.rank_vs_rename_cooldown_seconds)
+        self._channel_rename_interval = max(
+            60, settings.rank_vs_rename_cooldown_seconds
+        )
         self._last_channel_rename: Dict[int, float] = {}
         self._pending_channel_renames: Dict[int, str] = {}
         self._rename_tasks: Dict[int, asyncio.Task] = {}
-        self._rename_tasks_lock = asyncio.Lock()  # Schützt _rename_tasks vor Race Conditions
+        self._rename_tasks_lock = (
+            asyncio.Lock()
+        )  # Schützt _rename_tasks vor Race Conditions
         # Min delay between permission writes (PUT /permissions) and rename PATCH on same channel.
         self._post_permission_rename_delay_seconds = 5.0
         self._last_permission_write: Dict[int, float] = {}
@@ -111,10 +114,7 @@ class RolePermissionVoiceManager(commands.Cog):
             name = channel.name.lower()
         except Exception:
             return False
-        return (
-            channel.category_id in MINRANK_CATEGORY_IDS
-            and name.startswith("lane ")
-        )
+        return channel.category_id in MINRANK_CATEGORY_IDS and name.startswith("lane ")
 
     # -------------------- DB Layer --------------------
 
@@ -157,7 +157,9 @@ class RolePermissionVoiceManager(commands.Cog):
             (guild.id,),
         )
         for r in rows:
-            self.channel_settings[int(r["channel_id"])] = {"enabled": bool(r["enabled"])}
+            self.channel_settings[int(r["channel_id"])] = {
+                "enabled": bool(r["enabled"])
+            }
 
         # Anchors
         rows = await db.query_all_async(
@@ -234,7 +236,9 @@ class RolePermissionVoiceManager(commands.Cog):
                 await self._db_load_state_for_guild(guild)
 
             logger.info("RolePermissionVoiceManager Cog geladen")
-            monitored_list = ", ".join(str(cid) for cid in self.monitored_categories.keys())
+            monitored_list = ", ".join(
+                str(cid) for cid in self.monitored_categories.keys()
+            )
             logger.info(f"   Überwachte Kategorien: {monitored_list}")
             logger.info(f"   Überwachte Rollen: {len(self.discord_rank_roles)}")
             logger.info(f"   Ausgeschlossene Kanäle: {len(self.excluded_channel_ids)}")
@@ -260,7 +264,9 @@ class RolePermissionVoiceManager(commands.Cog):
             self._startup_reconciled = False
             logger.info("RolePermissionVoiceManager Cog entladen")
         except Exception as e:
-            logger.error(f"Fehler beim Entladen des RolePermissionVoiceManager Cogs: {e}")
+            logger.error(
+                f"Fehler beim Entladen des RolePermissionVoiceManager Cogs: {e}"
+            )
 
     # -------------------- Helpers --------------------
 
@@ -334,7 +340,9 @@ class RolePermissionVoiceManager(commands.Cog):
             if ow.connect is not False:
                 await channel.set_permissions(
                     everyone_role,
-                    overwrite=discord.PermissionOverwrite(connect=False, view_channel=True),
+                    overwrite=discord.PermissionOverwrite(
+                        connect=False, view_channel=True
+                    ),
                 )
                 self._mark_permission_write(channel.id)
             return True
@@ -375,7 +383,9 @@ class RolePermissionVoiceManager(commands.Cog):
         except Exception:
             return False
 
-    async def update_channel_permissions_via_roles(self, channel: discord.VoiceChannel, force: bool = False):
+    async def update_channel_permissions_via_roles(
+        self, channel: discord.VoiceChannel, force: bool = False
+    ):
         try:
             if not await self.channel_exists(channel):
                 return
@@ -399,7 +409,9 @@ class RolePermissionVoiceManager(commands.Cog):
             if not ok:
                 return
 
-            allowed_min, allowed_max = self.calculate_balancing_range_from_anchor(channel)
+            allowed_min, allowed_max = self.calculate_balancing_range_from_anchor(
+                channel
+            )
             allowed_role_ids = self.get_allowed_role_ids(allowed_min, allowed_max)
 
             guild_roles = self.get_guild_roles(channel.guild)
@@ -411,7 +423,11 @@ class RolePermissionVoiceManager(commands.Cog):
                     continue
                 ow = channel.overwrites_for(role)
                 # Nur updaten wenn wirklich nötig
-                if ow.connect is not True or ow.speak is not True or ow.view_channel is not True:
+                if (
+                    ow.connect is not True
+                    or ow.speak is not True
+                    or ow.view_channel is not True
+                ):
                     try:
                         await channel.set_permissions(
                             role,
@@ -420,14 +436,20 @@ class RolePermissionVoiceManager(commands.Cog):
                             ),
                         )
                         self._mark_permission_write(channel.id)
-                        await asyncio.sleep(0.5)  # Erhöht von 0.4s auf 0.5s für bessere Rate-Limit-Vermeidung
+                        await asyncio.sleep(
+                            0.5
+                        )  # Erhöht von 0.4s auf 0.5s für bessere Rate-Limit-Vermeidung
                     except discord.NotFound:
                         # Channel wurde gelöscht während der Operation
-                        logger.debug(f"Channel {channel.id} not found during permission update")
+                        logger.debug(
+                            f"Channel {channel.id} not found during permission update"
+                        )
                         return
                     except discord.HTTPException as e:
                         # Rate limit oder andere HTTP Fehler
-                        logger.warning(f"HTTP error updating permissions for {channel.id}: {e}")
+                        logger.warning(
+                            f"HTTP error updating permissions for {channel.id}: {e}"
+                        )
                         await asyncio.sleep(1.0)  # Extra delay bei Fehlern
 
             # remove von nicht erlaubten Rollen
@@ -468,7 +490,9 @@ class RolePermissionVoiceManager(commands.Cog):
         except Exception as e:
             logger.error(f"clear_role_permissions Fehler: {e}")
 
-    async def update_channel_name(self, channel: discord.VoiceChannel, *, force: bool = False):
+    async def update_channel_name(
+        self, channel: discord.VoiceChannel, *, force: bool = False
+    ):
         try:
             if not await self.channel_exists(channel):
                 return
@@ -489,11 +513,21 @@ class RolePermissionVoiceManager(commands.Cog):
             else:
                 anchor = self.get_channel_anchor(channel)
                 if anchor:
-                    _uid, anchor_rank_name, anchor_rank_value, allowed_min, allowed_max = anchor
+                    (
+                        _uid,
+                        anchor_rank_name,
+                        anchor_rank_value,
+                        allowed_min,
+                        allowed_max,
+                    ) = anchor
                     range_minus = max(0, anchor_rank_value - allowed_min)
                     range_plus = max(0, allowed_max - anchor_rank_value)
                     radius = max(range_minus, range_plus)
-                    new_name = f"{anchor_rank_name} +/-{radius}" if radius > 0 else f"{anchor_rank_name}"
+                    new_name = (
+                        f"{anchor_rank_name} +/-{radius}"
+                        if radius > 0
+                        else f"{anchor_rank_name}"
+                    )
                 else:
                     # Fallback: erster User
                     first_member = next(iter(members_ranks.keys()))
@@ -516,7 +550,9 @@ class RolePermissionVoiceManager(commands.Cog):
                 if last_rename is not None:
                     elapsed = now - last_rename
                     if elapsed < self._channel_rename_interval:
-                        required_delay = max(required_delay, self._channel_rename_interval - elapsed)
+                        required_delay = max(
+                            required_delay, self._channel_rename_interval - elapsed
+                        )
                         logger.debug(
                             "rename cooldown active for %s (%.1fs remaining)",
                             channel.name,
@@ -539,7 +575,9 @@ class RolePermissionVoiceManager(commands.Cog):
                 pending_task.cancel()
             self._pending_channel_renames.pop(channel.id, None)
 
-            await self.bot.queue_channel_rename(channel.id, new_name, reason="Rank Voice Manager Rename")
+            await self.bot.queue_channel_rename(
+                channel.id, new_name, reason="Rank Voice Manager Rename"
+            )
             self._last_channel_rename[channel.id] = now
         except discord.NotFound:
             return
@@ -575,14 +613,20 @@ class RolePermissionVoiceManager(commands.Cog):
                         return
                     if not await self.channel_exists(channel):
                         return
-                await self.bot.queue_channel_rename(channel.id, latest_name, reason="Rank Voice Manager Delayed Rename")
+                await self.bot.queue_channel_rename(
+                    channel.id, latest_name, reason="Rank Voice Manager Delayed Rename"
+                )
                 self._last_channel_rename[channel.id] = time.monotonic()
             except asyncio.CancelledError:
                 raise
             except discord.NotFound:
                 return
             except Exception as exc:
-                logger.error(f"Verzögerter Channel-Rename fehlgeschlagen (%s): %s", channel.id, exc)
+                logger.error(
+                    "Verzögerter Channel-Rename fehlgeschlagen (%s): %s",
+                    channel.id,
+                    exc,
+                )
             finally:
                 self._pending_channel_renames.pop(channel.id, None)
                 # Lock-geschütztes Remove (Race-Safe!)
@@ -607,7 +651,11 @@ class RolePermissionVoiceManager(commands.Cog):
         return "Obscurus"
 
     async def set_channel_anchor(
-        self, channel: discord.VoiceChannel, user: discord.Member, rank_name: str, rank_value: int
+        self,
+        channel: discord.VoiceChannel,
+        user: discord.Member,
+        rank_name: str,
+        rank_value: int,
     ):
         mode = self.get_channel_mode(channel)
         initiate_value = self.deadlock_ranks["Initiate"]
@@ -634,7 +682,9 @@ class RolePermissionVoiceManager(commands.Cog):
             allowed_min,
             allowed_max,
         )
-        await self._db_upsert_anchor(channel, user.id, rank_name, rank_value, allowed_min, allowed_max)
+        await self._db_upsert_anchor(
+            channel, user.id, rank_name, rank_value, allowed_min, allowed_max
+        )
         logger.info(
             f"🔗 Anker gesetzt für {channel.name}: {user.display_name} ({rank_name}) → {allowed_min}-{allowed_max}"
         )
@@ -681,12 +731,16 @@ class RolePermissionVoiceManager(commands.Cog):
     def is_channel_system_enabled(self, channel: discord.VoiceChannel) -> bool:
         return self.channel_settings.get(channel.id, {}).get("enabled", True)
 
-    async def set_channel_system_enabled(self, channel: discord.VoiceChannel, enabled: bool):
+    async def set_channel_system_enabled(
+        self, channel: discord.VoiceChannel, enabled: bool
+    ):
         self.channel_settings.setdefault(channel.id, {})["enabled"] = enabled
         if enabled:
             self.channel_permissions_initialized.discard(channel.id)
         await self._db_upsert_setting(channel, enabled)
-        logger.info(f"🔧 Rang-System für {channel.name} {'aktiviert' if enabled else 'deaktiviert'}")
+        logger.info(
+            f"🔧 Rang-System für {channel.name} {'aktiviert' if enabled else 'deaktiviert'}"
+        )
 
     # -------------------- Monitoring --------------------
 
@@ -715,7 +769,9 @@ class RolePermissionVoiceManager(commands.Cog):
             if not members_ranks and self.get_channel_anchor(channel) is None:
                 continue
             anchor_changed = await self._ensure_valid_anchor(channel, members_ranks)
-            await self.update_channel_permissions_via_roles(channel, force=anchor_changed)
+            await self.update_channel_permissions_via_roles(
+                channel, force=anchor_changed
+            )
             await self.update_channel_name(channel, force=anchor_changed)
 
     @commands.Cog.listener()
@@ -735,10 +791,17 @@ class RolePermissionVoiceManager(commands.Cog):
             try:
                 await self._reconcile_live_channels(guild)
             except Exception as e:
-                logger.warning("on_ready reconcile failed for guild %s: %s", guild.id, e)
+                logger.warning(
+                    "on_ready reconcile failed for guild %s: %s", guild.id, e
+                )
 
     @commands.Cog.listener()
-    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    async def on_voice_state_update(
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ):
         try:
             # Cache invalidieren
             cache_key = f"{member.id}:{member.guild.id}"
@@ -756,7 +819,9 @@ class RolePermissionVoiceManager(commands.Cog):
         except Exception as e:
             logger.error(f"voice_state_update Fehler: {e}")
 
-    async def handle_voice_join(self, member: discord.Member, channel: discord.VoiceChannel):
+    async def handle_voice_join(
+        self, member: discord.Member, channel: discord.VoiceChannel
+    ):
         try:
             if not self.is_channel_system_enabled(channel):
                 return
@@ -765,7 +830,9 @@ class RolePermissionVoiceManager(commands.Cog):
             if not members_ranks:
                 return
             anchor_changed = await self._ensure_valid_anchor(channel, members_ranks)
-            rank_name, rank_value = members_ranks.get(member, self.get_user_rank_from_roles(member))
+            rank_name, rank_value = members_ranks.get(
+                member, self.get_user_rank_from_roles(member)
+            )
             anchor = self.get_channel_anchor(channel)
 
             if anchor:
@@ -776,13 +843,17 @@ class RolePermissionVoiceManager(commands.Cog):
                         f"ℹ️ {member.display_name} ({rank_name}) passt nicht in {allowed_min}-{allowed_max}, bleibt aber."
                     )
 
-            await self.update_channel_permissions_via_roles(channel, force=anchor_changed)
+            await self.update_channel_permissions_via_roles(
+                channel, force=anchor_changed
+            )
             await self.update_channel_name(channel, force=anchor_changed)
 
         except Exception as e:
             logger.error(f"handle_voice_join Fehler: {e}")
 
-    async def handle_voice_leave(self, member: discord.Member, channel: discord.VoiceChannel):
+    async def handle_voice_leave(
+        self, member: discord.Member, channel: discord.VoiceChannel
+    ):
         try:
             await asyncio.sleep(1)  # etwas Luft für Discord-Events
 
@@ -792,7 +863,9 @@ class RolePermissionVoiceManager(commands.Cog):
             members_ranks = await self.get_channel_members_ranks(channel)
             anchor_changed = await self._ensure_valid_anchor(channel, members_ranks)
 
-            await self.update_channel_permissions_via_roles(channel, force=anchor_changed)
+            await self.update_channel_permissions_via_roles(
+                channel, force=anchor_changed
+            )
             await self.update_channel_name(channel, force=anchor_changed)
 
         except Exception as e:
@@ -832,7 +905,9 @@ class RolePermissionVoiceManager(commands.Cog):
             description="Rollen-Berechtigungen Voice Manager",
             color=discord.Color.green(),
         )
-        enabled_cnt = sum(1 for st in self.channel_settings.values() if st.get("enabled", True))
+        enabled_cnt = sum(
+            1 for st in self.channel_settings.values() if st.get("enabled", True)
+        )
         embed.add_field(
             name="🔧 Version",
             value="Sanftes Anker-System v4.0 (DB-persistiert)",
@@ -880,7 +955,13 @@ class RolePermissionVoiceManager(commands.Cog):
             return
 
         lines: List[str] = []
-        for ch_id, (user_id, rank_name, rank_value, amin, amax) in self.channel_anchors.items():
+        for ch_id, (
+            user_id,
+            rank_name,
+            rank_value,
+            amin,
+            amax,
+        ) in self.channel_anchors.items():
             ch = ctx.guild.get_channel(ch_id)
             user = ctx.guild.get_member(user_id)
             if not ch or not user:
@@ -913,7 +994,9 @@ class RolePermissionVoiceManager(commands.Cog):
 
         current = self.is_channel_system_enabled(channel)
         if action is None:
-            await ctx.send(f"🔧 Rang-System für **{channel.name}**: {'✅ Aktiviert' if current else '❌ Deaktiviert'}")
+            await ctx.send(
+                f"🔧 Rang-System für **{channel.name}**: {'✅ Aktiviert' if current else '❌ Deaktiviert'}"
+            )
             return
 
         action_l = action.lower()
@@ -943,18 +1026,28 @@ class RolePermissionVoiceManager(commands.Cog):
             return
         channel = ctx.author.voice.channel
 
-        embed = discord.Embed(title=f"🔊 Status: {channel.name}", color=discord.Color.blue())
+        embed = discord.Embed(
+            title=f"🔊 Status: {channel.name}", color=discord.Color.blue()
+        )
         embed.add_field(
             name="📊 Kanal-Info",
             value=f"ID: {channel.id}\nKategorie: {channel.category.name if channel.category else '–'}\nMitglieder: {len(channel.members)}",
             inline=True,
         )
         is_mon = self.is_monitored_channel(channel)
-        embed.add_field(name="👁️ Überwachung", value="✅ Überwacht" if is_mon else "❌ Nicht überwacht", inline=True)
+        embed.add_field(
+            name="👁️ Überwachung",
+            value="✅ Überwacht" if is_mon else "❌ Nicht überwacht",
+            inline=True,
+        )
 
         if is_mon:
             sys_en = self.is_channel_system_enabled(channel)
-            embed.add_field(name="🔧 Rang-System", value="✅ Aktiviert" if sys_en else "❌ Deaktiviert", inline=True)
+            embed.add_field(
+                name="🔧 Rang-System",
+                value="✅ Aktiviert" if sys_en else "❌ Deaktiviert",
+                inline=True,
+            )
             anchor = self.get_channel_anchor(channel)
             if anchor and sys_en:
                 uid, rn, _rv, amin, amax = anchor
@@ -967,7 +1060,11 @@ class RolePermissionVoiceManager(commands.Cog):
                     inline=False,
                 )
             else:
-                embed.add_field(name="🔗 Anker", value="Kein Anker gesetzt" if sys_en else "System deaktiviert", inline=False)
+                embed.add_field(
+                    name="🔗 Anker",
+                    value="Kein Anker gesetzt" if sys_en else "System deaktiviert",
+                    inline=False,
+                )
 
         await ctx.send(embed=embed)
 
@@ -984,15 +1081,31 @@ class RolePermissionVoiceManager(commands.Cog):
                     found.append(f"**{role.name}** (ID {role.id}) -> {rn} ({rv})")
             rn, rv = self.get_user_rank_from_roles(member)
 
-            embed = discord.Embed(title=f"🔍 Debug: {member.display_name}", color=discord.Color.orange())
-            embed.add_field(name="👤 User-Info", value=f"ID: {member.id}\nRollen: {len(member.roles)}", inline=True)
-            embed.add_field(name="🎯 Erkannter Rang", value=f"**{rn}** ({rv})", inline=True)
-            embed.add_field(name="🎭 Gefundene Rang-Rollen", value="\n".join(found) if found else "❌ Keine", inline=False)
+            embed = discord.Embed(
+                title=f"🔍 Debug: {member.display_name}", color=discord.Color.orange()
+            )
+            embed.add_field(
+                name="👤 User-Info",
+                value=f"ID: {member.id}\nRollen: {len(member.roles)}",
+                inline=True,
+            )
+            embed.add_field(
+                name="🎯 Erkannter Rang", value=f"**{rn}** ({rv})", inline=True
+            )
+            embed.add_field(
+                name="🎭 Gefundene Rang-Rollen",
+                value="\n".join(found) if found else "❌ Keine",
+                inline=False,
+            )
 
-            all_roles_text = "\n".join([f"{rid}: {name}" for rid, name in user_roles[:10]])
+            all_roles_text = "\n".join(
+                [f"{rid}: {name}" for rid, name in user_roles[:10]]
+            )
             if len(user_roles) > 10:
-                all_roles_text += f"\n… und {len(user_roles)-10} weitere"
-            embed.add_field(name="📋 Alle Rollen (erste 10)", value=all_roles_text, inline=False)
+                all_roles_text += f"\n… und {len(user_roles) - 10} weitere"
+            embed.add_field(
+                name="📋 Alle Rollen (erste 10)", value=all_roles_text, inline=False
+            )
 
             await ctx.send(embed=embed)
         except Exception as e:
@@ -1004,12 +1117,19 @@ class RolePermissionVoiceManager(commands.Cog):
         member = member or ctx.author
         try:
             rn, rv = self.get_user_rank_from_roles(member)
-            embed = discord.Embed(title=f"🎭 Rang-Information: {member.display_name}", color=discord.Color.blue())
+            embed = discord.Embed(
+                title=f"🎭 Rang-Information: {member.display_name}",
+                color=discord.Color.blue(),
+            )
             embed.add_field(name="Höchster Rang", value=rn, inline=True)
             embed.add_field(name="Rang-Wert", value=rv, inline=True)
             if rn in self.balancing_rules:
                 minus, plus = self.balancing_rules[rn]
-                embed.add_field(name="Balancing-Regel", value=f"{minus:+d} bis {plus:+d} Ränge", inline=True)
+                embed.add_field(
+                    name="Balancing-Regel",
+                    value=f"{minus:+d} bis {plus:+d} Ränge",
+                    inline=True,
+                )
             await ctx.send(embed=embed)
         except Exception as e:
             logger.error(f"rank_info Fehler: {e}")
@@ -1058,7 +1178,9 @@ class RolePermissionVoiceManager(commands.Cog):
         for role_id, (rn, rv) in self.discord_rank_roles.items():
             role = ctx.guild.get_role(role_id)
             if role:
-                lines.append(f"**{rn}** ({rv}): {role.mention} – {len(role.members)} Mitglieder")
+                lines.append(
+                    f"**{rn}** ({rv}): {role.mention} – {len(role.members)} Mitglieder"
+                )
             else:
                 lines.append(f"**{rn}** ({rv}): ❌ Rolle nicht gefunden (ID {role_id})")
         embed.description = "\n".join(lines)
@@ -1093,7 +1215,11 @@ class RolePermissionVoiceManager(commands.Cog):
             ch = ctx.guild.get_channel(cid)
             ex_lines.append(f"🔇 {ch.name}" if ch else f"❓ Unbekannt (ID {cid})")
         if ex_lines:
-            embed.add_field(name="🚫 Ausgeschlossene Kanäle", value="\n".join(ex_lines), inline=False)
+            embed.add_field(
+                name="🚫 Ausgeschlossene Kanäle",
+                value="\n".join(ex_lines),
+                inline=False,
+            )
         await ctx.send(embed=embed)
 
     async def cog_command_error(self, ctx, error):

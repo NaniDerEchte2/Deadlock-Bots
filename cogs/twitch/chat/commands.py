@@ -8,6 +8,7 @@ log = logging.getLogger("TwitchStreams.ChatBot")
 
 
 if TWITCHIO_AVAILABLE:
+
     class RaidCommandsMixin:
         def _load_last_autoban_from_log(self, channel_key: str):
             """Best-effort Fallback: letzten Auto-Ban aus Logdatei laden (überlebt Bot-Restarts)."""
@@ -26,7 +27,9 @@ if TWITCHIO_AVAILABLE:
                 if len(parts) < 5:
                     continue
                 status = (parts[1] or "").strip().upper()
-                logged_channel = self._normalize_channel_login(parts[2] if len(parts) > 2 else "")
+                logged_channel = self._normalize_channel_login(
+                    parts[2] if len(parts) > 2 else ""
+                )
                 chatter_login = (parts[3] if len(parts) > 3 else "").strip()
                 chatter_id = (parts[4] if len(parts) > 4 else "").strip()
                 if status != "[BANNED]" or logged_channel != channel_key:
@@ -43,8 +46,12 @@ if TWITCHIO_AVAILABLE:
         async def cmd_raid_enable(self, ctx: twitchio_commands.Context):
             """!raid_enable - Aktiviert den Auto-Raid-Bot."""
             # Nur Broadcaster oder Mods dürfen den Bot steuern
-            is_mod = getattr(ctx.author, "is_moderator", getattr(ctx.author, "moderator", False))
-            is_broadcaster = getattr(ctx.author, "is_broadcaster", getattr(ctx.author, "broadcaster", False))
+            is_mod = getattr(
+                ctx.author, "is_moderator", getattr(ctx.author, "moderator", False)
+            )
+            is_broadcaster = getattr(
+                ctx.author, "is_broadcaster", getattr(ctx.author, "broadcaster", False)
+            )
             if not (is_broadcaster or is_mod):
                 await ctx.send(
                     f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Twitch-Bot steuern."
@@ -118,8 +125,12 @@ if TWITCHIO_AVAILABLE:
         @twitchio_commands.command(name="raid_disable", aliases=["raidbot_off"])
         async def cmd_raid_disable(self, ctx: twitchio_commands.Context):
             """!raid_disable - Deaktiviert den Auto-Raid-Bot."""
-            is_mod = getattr(ctx.author, "is_moderator", getattr(ctx.author, "moderator", False))
-            is_broadcaster = getattr(ctx.author, "is_broadcaster", getattr(ctx.author, "broadcaster", False))
+            is_mod = getattr(
+                ctx.author, "is_moderator", getattr(ctx.author, "moderator", False)
+            )
+            is_broadcaster = getattr(
+                ctx.author, "is_broadcaster", getattr(ctx.author, "broadcaster", False)
+            )
             if not (is_broadcaster or is_mod):
                 await ctx.send(
                     f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Twitch-Bot steuern."
@@ -229,8 +240,12 @@ if TWITCHIO_AVAILABLE:
         @twitchio_commands.command(name="uban", aliases=["unban"])
         async def cmd_uban(self, ctx: twitchio_commands.Context):
             """!uban / !unban - hebt den letzten Auto-Ban im aktuellen Channel auf."""
-            is_mod = getattr(ctx.author, "is_moderator", getattr(ctx.author, "moderator", False))
-            is_broadcaster = getattr(ctx.author, "is_broadcaster", getattr(ctx.author, "broadcaster", False))
+            is_mod = getattr(
+                ctx.author, "is_moderator", getattr(ctx.author, "moderator", False)
+            )
+            is_broadcaster = getattr(
+                ctx.author, "is_broadcaster", getattr(ctx.author, "broadcaster", False)
+            )
             if not (is_broadcaster or is_mod):
                 await ctx.send(f"@{ctx.author.name} Nur der Broadcaster oder Mods.")
                 return
@@ -238,7 +253,9 @@ if TWITCHIO_AVAILABLE:
             channel_name = ctx.channel.name
             streamer_data = self._get_streamer_by_channel(channel_name)
             if not streamer_data:
-                await ctx.send(f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert.")
+                await ctx.send(
+                    f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert."
+                )
                 return
 
             twitch_login, twitch_user_id, _ = streamer_data
@@ -249,7 +266,9 @@ if TWITCHIO_AVAILABLE:
                 if last:
                     self._last_autoban[channel_key] = last
             if not last:
-                await ctx.send(f"@{ctx.author.name} Kein Auto-Ban-Eintrag zum Aufheben gefunden.")
+                await ctx.send(
+                    f"@{ctx.author.name} Kein Auto-Ban-Eintrag zum Aufheben gefunden."
+                )
                 return
 
             target_user_id = last.get("user_id", "")
@@ -265,9 +284,13 @@ if TWITCHIO_AVAILABLE:
                 login_hint=target_login,
             )
             if success:
-                await ctx.send(f"@{ctx.author.name} Unban ausgeführt für {target_login}.")
+                await ctx.send(
+                    f"@{ctx.author.name} Unban ausgeführt für {target_login}."
+                )
             else:
-                await ctx.send(f"@{ctx.author.name} Unban fehlgeschlagen für {target_login}.")
+                await ctx.send(
+                    f"@{ctx.author.name} Unban fehlgeschlagen für {target_login}."
+                )
 
         @twitchio_commands.command(name="raid_history", aliases=["raidbot_history"])
         async def cmd_raid_history(self, ctx: twitchio_commands.Context):
@@ -296,20 +319,26 @@ if TWITCHIO_AVAILABLE:
                 await ctx.send(f"@{ctx.author.name} Noch keine Raids durchgeführt.")
                 return
 
-            raids_text = " | ".join([
-                f"{'✅' if success else '❌'} {to_login} ({viewers}V, {executed_at[:10] if executed_at else '?'})"
-                for to_login, viewers, executed_at, success in raids
-            ])
+            raids_text = " | ".join(
+                [
+                    f"{'✅' if success else '❌'} {to_login} ({viewers}V, {executed_at[:10] if executed_at else '?'})"
+                    for to_login, viewers, executed_at, success in raids
+                ]
+            )
 
             await ctx.send(f"@{ctx.author.name} Letzte Raids: {raids_text}")
 
         @twitchio_commands.command(name="clip", aliases=["createclip"])
-        async def cmd_clip(self, ctx: twitchio_commands.Context, *, description: str = ""):
+        async def cmd_clip(
+            self, ctx: twitchio_commands.Context, *, description: str = ""
+        ):
             """!clip [beschreibung] - Erstellt einen Clip aus dem aktuellen Stream-Buffer und postet den Link."""
             channel_name = ctx.channel.name
             streamer_data = self._get_streamer_by_channel(channel_name)
             if not streamer_data:
-                await ctx.send(f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert.")
+                await ctx.send(
+                    f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert."
+                )
                 return
 
             twitch_login, twitch_user_id, _ = streamer_data
@@ -321,17 +350,25 @@ if TWITCHIO_AVAILABLE:
             auth_manager = self._raid_bot.auth_manager
             api_session = getattr(self._raid_bot, "session", None)
             if not api_session:
-                await ctx.send(f"@{ctx.author.name} Twitch-Bot nicht verfügbar (keine API-Session).")
+                await ctx.send(
+                    f"@{ctx.author.name} Twitch-Bot nicht verfügbar (keine API-Session)."
+                )
                 return
 
             # Broadcaster-Token bevorzugen (Clip wird dem Broadcaster zugeschrieben)
             access_token = None
             try:
-                tokens = await auth_manager.get_tokens_for_user(str(twitch_user_id), api_session)
+                tokens = await auth_manager.get_tokens_for_user(
+                    str(twitch_user_id), api_session
+                )
                 if tokens:
                     access_token = tokens[0]
             except Exception:
-                log.debug("Clip command: Broadcaster-Token nicht verfügbar für %s", twitch_login, exc_info=True)
+                log.debug(
+                    "Clip command: Broadcaster-Token nicht verfügbar für %s",
+                    twitch_login,
+                    exc_info=True,
+                )
 
             # Fallback: Bot-eigenen Token verwenden
             if not access_token:
@@ -340,9 +377,15 @@ if TWITCHIO_AVAILABLE:
                     try:
                         bot_token, _ = await token_mgr.get_valid_token()
                         access_token = bot_token
-                        log.debug("Clip command: verwende Bot-Token als Fallback für %s", twitch_login)
+                        log.debug(
+                            "Clip command: verwende Bot-Token als Fallback für %s",
+                            twitch_login,
+                        )
                     except Exception:
-                        log.debug("Clip command: Bot-Token-Fetch fehlgeschlagen", exc_info=True)
+                        log.debug(
+                            "Clip command: Bot-Token-Fetch fehlgeschlagen",
+                            exc_info=True,
+                        )
 
             if not access_token:
                 auth_url = auth_manager.generate_auth_url(twitch_login)
@@ -352,8 +395,15 @@ if TWITCHIO_AVAILABLE:
                 return
 
             try:
-                from ..api.twitch_api import TwitchAPI  # lokal importieren, um Zyklus zu vermeiden
-                api = TwitchAPI(auth_manager.client_id, auth_manager.client_secret, session=api_session)
+                from ..api.twitch_api import (
+                    TwitchAPI,
+                )  # lokal importieren, um Zyklus zu vermeiden
+
+                api = TwitchAPI(
+                    auth_manager.client_id,
+                    auth_manager.client_secret,
+                    session=api_session,
+                )
                 clip = await api.create_clip(
                     str(twitch_user_id),
                     user_token=str(access_token),
@@ -379,8 +429,10 @@ if TWITCHIO_AVAILABLE:
                 )
                 return
 
-            desc_part = f" – \"{description.strip()}\"" if description.strip() else ""
-            await ctx.send(f"@{ctx.author.name} 🎬 Clip erstellt{desc_part} (letzte ~Minute): {clip_url}")
+            desc_part = f' – "{description.strip()}"' if description.strip() else ""
+            await ctx.send(
+                f"@{ctx.author.name} 🎬 Clip erstellt{desc_part} (letzte ~Minute): {clip_url}"
+            )
             log.info(
                 "Clip command successful: %s in #%s (clip_id=%s)",
                 twitch_login,
@@ -392,6 +444,7 @@ if TWITCHIO_AVAILABLE:
         async def cmd_ping(self, ctx: twitchio_commands.Context):
             """!ping - Zeigt ob der Bot online ist."""
             import random
+
             responses = [
                 f"@{ctx.author.name} Eure Majestät! 👑 Der Bot steht zu Euren Diensten. Was kann ich für Euch tun?",
                 f"@{ctx.author.name} Bin da! Ausgeschlafen, aufgewärmt und bereit für Chaos. 🤖✅",
@@ -405,16 +458,24 @@ if TWITCHIO_AVAILABLE:
         @twitchio_commands.command(name="silentban")
         async def cmd_silentban(self, ctx: twitchio_commands.Context):
             """!silentban - Schaltet die Auto-Ban Chat-Benachrichtigung für diesen Channel ein/aus."""
-            is_mod = getattr(ctx.author, "is_moderator", getattr(ctx.author, "moderator", False))
-            is_broadcaster = getattr(ctx.author, "is_broadcaster", getattr(ctx.author, "broadcaster", False))
+            is_mod = getattr(
+                ctx.author, "is_moderator", getattr(ctx.author, "moderator", False)
+            )
+            is_broadcaster = getattr(
+                ctx.author, "is_broadcaster", getattr(ctx.author, "broadcaster", False)
+            )
             if not (is_broadcaster or is_mod):
-                await ctx.send(f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Bot steuern.")
+                await ctx.send(
+                    f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Bot steuern."
+                )
                 return
 
             channel_name = ctx.channel.name
             streamer_data = self._get_streamer_by_channel(channel_name)
             if not streamer_data:
-                await ctx.send(f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert.")
+                await ctx.send(
+                    f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert."
+                )
                 return
 
             twitch_login, twitch_user_id_sb, _ = streamer_data
@@ -447,24 +508,41 @@ if TWITCHIO_AVAILABLE:
                 conn.commit()
 
             if new_value:
-                await ctx.send(f"@{ctx.author.name} 🔇 Auto-Ban Benachrichtigungen deaktiviert. Bans werden weiterhin ausgeführt, aber keine Nachricht mehr im Chat.")
+                await ctx.send(
+                    f"@{ctx.author.name} 🔇 Auto-Ban Benachrichtigungen deaktiviert. Bans werden weiterhin ausgeführt, aber keine Nachricht mehr im Chat."
+                )
             else:
-                await ctx.send(f"@{ctx.author.name} 🔊 Auto-Ban Benachrichtigungen aktiviert.")
-            log.info("silentban toggled to %d for %s by %s", new_value, twitch_login, ctx.author.name)
+                await ctx.send(
+                    f"@{ctx.author.name} 🔊 Auto-Ban Benachrichtigungen aktiviert."
+                )
+            log.info(
+                "silentban toggled to %d for %s by %s",
+                new_value,
+                twitch_login,
+                ctx.author.name,
+            )
 
         @twitchio_commands.command(name="silentraid")
         async def cmd_silentraid(self, ctx: twitchio_commands.Context):
             """!silentraid - Schaltet die Raid-Benachrichtigung für diesen Channel ein/aus."""
-            is_mod = getattr(ctx.author, "is_moderator", getattr(ctx.author, "moderator", False))
-            is_broadcaster = getattr(ctx.author, "is_broadcaster", getattr(ctx.author, "broadcaster", False))
+            is_mod = getattr(
+                ctx.author, "is_moderator", getattr(ctx.author, "moderator", False)
+            )
+            is_broadcaster = getattr(
+                ctx.author, "is_broadcaster", getattr(ctx.author, "broadcaster", False)
+            )
             if not (is_broadcaster or is_mod):
-                await ctx.send(f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Bot steuern.")
+                await ctx.send(
+                    f"@{ctx.author.name} Nur der Broadcaster oder Mods können den Bot steuern."
+                )
                 return
 
             channel_name = ctx.channel.name
             streamer_data = self._get_streamer_by_channel(channel_name)
             if not streamer_data:
-                await ctx.send(f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert.")
+                await ctx.send(
+                    f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert."
+                )
                 return
 
             twitch_login, twitch_user_id_sr, _ = streamer_data
@@ -497,29 +575,48 @@ if TWITCHIO_AVAILABLE:
                 conn.commit()
 
             if new_value:
-                await ctx.send(f"@{ctx.author.name} 🔇 Raid-Benachrichtigungen deaktiviert. Raids werden weiterhin ausgeführt, aber keine Nachricht mehr im Chat.")
+                await ctx.send(
+                    f"@{ctx.author.name} 🔇 Raid-Benachrichtigungen deaktiviert. Raids werden weiterhin ausgeführt, aber keine Nachricht mehr im Chat."
+                )
             else:
-                await ctx.send(f"@{ctx.author.name} 🔊 Raid-Benachrichtigungen aktiviert.")
-            log.info("silentraid toggled to %d for %s by %s", new_value, twitch_login, ctx.author.name)
+                await ctx.send(
+                    f"@{ctx.author.name} 🔊 Raid-Benachrichtigungen aktiviert."
+                )
+            log.info(
+                "silentraid toggled to %d for %s by %s",
+                new_value,
+                twitch_login,
+                ctx.author.name,
+            )
 
         @twitchio_commands.command(name="raid", aliases=["traid"])
         async def cmd_raid(self, ctx: twitchio_commands.Context):
             """!raid / !traid - Startet sofort einen Raid auf den bestmöglichen Partner (wie Auto-Raid)."""
-            is_mod = getattr(ctx.author, "is_moderator", getattr(ctx.author, "moderator", False))
-            is_broadcaster = getattr(ctx.author, "is_broadcaster", getattr(ctx.author, "broadcaster", False))
+            is_mod = getattr(
+                ctx.author, "is_moderator", getattr(ctx.author, "moderator", False)
+            )
+            is_broadcaster = getattr(
+                ctx.author, "is_broadcaster", getattr(ctx.author, "broadcaster", False)
+            )
             if not (is_broadcaster or is_mod):
-                await ctx.send(f"@{ctx.author.name} Nur Broadcaster oder Mods können !raid benutzen.")
+                await ctx.send(
+                    f"@{ctx.author.name} Nur Broadcaster oder Mods können !raid benutzen."
+                )
                 return
 
             channel_name = ctx.channel.name
             streamer_data = self._get_streamer_by_channel(channel_name)
             if not streamer_data:
-                await ctx.send(f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert. Bitte erst mit !raid_enable verifizieren.")
+                await ctx.send(
+                    f"@{ctx.author.name} Dieser Kanal ist nicht als Partner registriert. Bitte erst mit !raid_enable verifizieren."
+                )
                 return
 
             twitch_login, twitch_user_id, _ = streamer_data
 
-            if not self._raid_bot or not self._raid_bot.auth_manager.has_enabled_auth(twitch_user_id):
+            if not self._raid_bot or not self._raid_bot.auth_manager.has_enabled_auth(
+                twitch_user_id
+            ):
                 await ctx.send(
                     f"@{ctx.author.name} OAuth fehlt – Anforderung: Twitch-Bot autorisieren mit !raid_enable."
                 )
@@ -567,19 +664,28 @@ if TWITCHIO_AVAILABLE:
             candidates = []
             api = None
             try:
-                from ..api.twitch_api import TwitchAPI  # lokal importieren, um Zyklus zu vermeiden
-                api = TwitchAPI(self._raid_bot.auth_manager.client_id, self._raid_bot.auth_manager.client_secret, session=api_session)
+                from ..api.twitch_api import (
+                    TwitchAPI,
+                )  # lokal importieren, um Zyklus zu vermeiden
+
+                api = TwitchAPI(
+                    self._raid_bot.auth_manager.client_id,
+                    self._raid_bot.auth_manager.client_secret,
+                    session=api_session,
+                )
                 streams = await api.get_streams_by_logins(partner_logins, language=None)
                 for stream in streams:
                     user_id = str(stream.get("user_id") or "")
                     user_login = (stream.get("user_login") or "").lower()
                     started_at = stream.get("started_at") or ""
-                    candidates.append({
-                        "user_id": user_id,
-                        "user_login": user_login,
-                        "started_at": started_at,
-                        "viewer_count": int(stream.get("viewer_count") or 0),
-                    })
+                    candidates.append(
+                        {
+                            "user_id": user_id,
+                            "user_login": user_login,
+                            "started_at": started_at,
+                            "viewer_count": int(stream.get("viewer_count") or 0),
+                        }
+                    )
             except Exception:
                 log.exception("Manual raid: konnte Streams nicht abrufen")
 
@@ -588,38 +694,64 @@ if TWITCHIO_AVAILABLE:
 
             if candidates:
                 # Auswahl nach niedrigsten Viewern wiederverwenden
-                target = await self._raid_bot._select_fairest_candidate(candidates, twitch_user_id)  # type: ignore[attr-defined]
+                target = await self._raid_bot._select_fairest_candidate(
+                    candidates, twitch_user_id
+                )  # type: ignore[attr-defined]
 
             if not target:
                 # Fallback auf DE Deadlock-Streamer
                 try:
                     if api is None:
-                        from ..api.twitch_api import TwitchAPI  # lokal importieren, um Zyklus zu vermeiden
-                        api = TwitchAPI(self._raid_bot.auth_manager.client_id, self._raid_bot.auth_manager.client_secret, session=api_session)
+                        from ..api.twitch_api import (
+                            TwitchAPI,
+                        )  # lokal importieren, um Zyklus zu vermeiden
+
+                        api = TwitchAPI(
+                            self._raid_bot.auth_manager.client_id,
+                            self._raid_bot.auth_manager.client_secret,
+                            session=api_session,
+                        )
                     from .constants import TWITCH_TARGET_GAME_NAME
+
                     category_id = await api.get_category_id(TWITCH_TARGET_GAME_NAME)
                     if category_id:
-                        de_streams = await api.get_streams_by_category(category_id, language="de", limit=50)
+                        de_streams = await api.get_streams_by_category(
+                            category_id, language="de", limit=50
+                        )
                         # Filter out self
-                        de_streams = [s for s in de_streams if str(s.get("user_id")) != str(twitch_user_id)]
+                        de_streams = [
+                            s
+                            for s in de_streams
+                            if str(s.get("user_id")) != str(twitch_user_id)
+                        ]
                         if de_streams:
                             is_partner_raid = False
-                            target = await self._raid_bot._select_fairest_candidate(de_streams, twitch_user_id)  # type: ignore[attr-defined]
+                            target = await self._raid_bot._select_fairest_candidate(
+                                de_streams, twitch_user_id
+                            )  # type: ignore[attr-defined]
                             if not target:
-                                await ctx.send(f"@{ctx.author.name} Kein geeigneter Fallback-Streamer gefunden.")
+                                await ctx.send(
+                                    f"@{ctx.author.name} Kein geeigneter Fallback-Streamer gefunden."
+                                )
                                 return
                             # Normalisieren für executor
                             if "user_login" not in target and "user_name" in target:
                                 target["user_login"] = target["user_name"].lower()
                         else:
-                            await ctx.send(f"@{ctx.author.name} Weder Partner noch andere deutsche Deadlock-Streamer live.")
+                            await ctx.send(
+                                f"@{ctx.author.name} Weder Partner noch andere deutsche Deadlock-Streamer live."
+                            )
                             return
                     else:
-                        await ctx.send(f"@{ctx.author.name} Kein Partner live (Kategorie-ID nicht gefunden).")
+                        await ctx.send(
+                            f"@{ctx.author.name} Kein Partner live (Kategorie-ID nicht gefunden)."
+                        )
                         return
                 except Exception:
                     log.exception("Manual raid fallback failed")
-                    await ctx.send(f"@{ctx.author.name} Kein Partner live und Fallback fehlgeschlagen.")
+                    await ctx.send(
+                        f"@{ctx.author.name} Kein Partner live und Fallback fehlgeschlagen."
+                    )
                     return
 
             target_id = target.get("user_id") or ""
@@ -631,10 +763,18 @@ if TWITCHIO_AVAILABLE:
             stream_duration_sec = 0
             try:
                 if target_started_at:
-                    started_dt = datetime.fromisoformat(target_started_at.replace("Z", "+00:00"))
-                    stream_duration_sec = int((datetime.now(timezone.utc) - started_dt).total_seconds())
+                    started_dt = datetime.fromisoformat(
+                        target_started_at.replace("Z", "+00:00")
+                    )
+                    stream_duration_sec = int(
+                        (datetime.now(timezone.utc) - started_dt).total_seconds()
+                    )
             except Exception as exc:
-                log.debug("Konnte Stream-Dauer nicht berechnen für %s", target_login, exc_info=exc)
+                log.debug(
+                    "Konnte Stream-Dauer nicht berechnen für %s",
+                    target_login,
+                    exc_info=exc,
+                )
 
             try:
                 success, error = await executor.start_raid(
@@ -650,7 +790,9 @@ if TWITCHIO_AVAILABLE:
                     session=api_session,
                 )
             except Exception as exc:
-                log.exception("Manual raid failed for %s -> %s", twitch_login, target_login)
+                log.exception(
+                    "Manual raid failed for %s -> %s", twitch_login, target_login
+                )
                 await ctx.send(f"@{ctx.author.name} Raid fehlgeschlagen: {exc}")
                 return
 
@@ -662,9 +804,15 @@ if TWITCHIO_AVAILABLE:
                             ttl_seconds=180.0,  # 3 Minuten: verhindert Auto-Raid nach manuellem Raid
                         )
                     except Exception:
-                        log.debug("Konnte Manual-Raid-Suppression nicht setzen für %s", twitch_login, exc_info=True)
+                        log.debug(
+                            "Konnte Manual-Raid-Suppression nicht setzen für %s",
+                            twitch_login,
+                            exc_info=True,
+                        )
 
-                await ctx.send(f"@{ctx.author.name} Raid auf {target_login} gestartet! (Twitch-Countdown ~90s)")
+                await ctx.send(
+                    f"@{ctx.author.name} Raid auf {target_login} gestartet! (Twitch-Countdown ~90s)"
+                )
 
                 # Pending Raid registrieren (Nachricht wird erst nach EventSub gesendet)
                 # Funktioniert für Partner-Raids UND Non-Partner-Raids
@@ -678,7 +826,10 @@ if TWITCHIO_AVAILABLE:
                         viewer_count=viewer_count,
                     )
             else:
-                await ctx.send(f"@{ctx.author.name} Raid fehlgeschlagen: {error or 'unbekannter Fehler'}")
+                await ctx.send(
+                    f"@{ctx.author.name} Raid fehlgeschlagen: {error or 'unbekannter Fehler'}"
+                )
 else:
+
     class RaidCommandsMixin:
         pass

@@ -5,7 +5,11 @@ from __future__ import annotations
 from .community.admin import TwitchAdminMixin
 from .base import TwitchBaseCog
 from .dashboard.mixin import TwitchDashboardMixin
-from .community.leaderboard import LeaderboardOptions, TwitchLeaderboardMixin, TwitchLeaderboardView
+from .community.leaderboard import (
+    LeaderboardOptions,
+    TwitchLeaderboardMixin,
+    TwitchLeaderboardView,
+)
 from .analytics.legacy_token import LegacyTokenAnalyticsMixin
 from .monitoring.monitoring import TwitchMonitoringMixin
 from .raid.mixin import TwitchRaidMixin

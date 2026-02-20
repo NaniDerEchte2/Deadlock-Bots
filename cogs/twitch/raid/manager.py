@@ -8,6 +8,7 @@ Verwaltet:
 - Partner-Auswahl (niedrigste Viewer, optional niedrigste Follower)
 - Raid-Metadaten und History
 """
+
 import logging
 import time
 import secrets
@@ -50,21 +51,23 @@ RAID_SCOPES = [
     "channel:read:redemptions",
 ]
 
-RAID_TARGET_COOLDOWN_DAYS = 7  # Avoid repeating the same raid target if alternatives exist
+RAID_TARGET_COOLDOWN_DAYS = (
+    7  # Avoid repeating the same raid target if alternatives exist
+)
 RECRUIT_DISCORD_INVITE = (
-    (os.getenv("RECRUIT_DISCORD_INVITE") or "").strip()
-    or "Discord: Server hinzufügen & Code eingeben: z5TfVHuQq2"
-)
+    os.getenv("RECRUIT_DISCORD_INVITE") or ""
+).strip() or "Discord: Server hinzufügen & Code eingeben: z5TfVHuQq2"
 RECRUIT_DISCORD_INVITE_DIRECT = (
-    (os.getenv("RECRUIT_DISCORD_INVITE_DIRECT") or "").strip()
-    or "https://discord.gg/z5TfVHuQq2"
-)
+    os.getenv("RECRUIT_DISCORD_INVITE_DIRECT") or ""
+).strip() or "https://discord.gg/z5TfVHuQq2"
 
 _recruit_direct_invite_threshold_raw = (
     os.getenv("RECRUIT_DIRECT_INVITE_MAX_FOLLOWERS") or "120"
 ).strip()
 try:
-    RECRUIT_DIRECT_INVITE_MAX_FOLLOWERS = max(0, int(_recruit_direct_invite_threshold_raw))
+    RECRUIT_DIRECT_INVITE_MAX_FOLLOWERS = max(
+        0, int(_recruit_direct_invite_threshold_raw)
+    )
 except ValueError:
     RECRUIT_DIRECT_INVITE_MAX_FOLLOWERS = 120
 
@@ -104,7 +107,9 @@ class RaidAuthManager:
         self.client_id = client_id
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
-        self._state_tokens: Dict[str, Tuple[str, float]] = {}  # state -> (twitch_login, timestamp)
+        self._state_tokens: Dict[
+            str, Tuple[str, float]
+        ] = {}  # state -> (twitch_login, timestamp)
         self._pending_auth_urls: Dict[str, str] = {}  # state -> full_twitch_auth_url
         self._lock = asyncio.Lock()
         self.token_error_handler = TokenErrorHandler()
@@ -122,6 +127,7 @@ class RaidAuthManager:
         """Gibt FieldCrypto zurück oder None wenn nicht verfügbar."""
         try:
             from service.field_crypto import get_crypto  # noqa: PLC0415
+
             return get_crypto()
         except Exception as exc:
             log.warning("field_crypto nicht verfügbar: %s", exc)
@@ -187,7 +193,12 @@ class RaidAuthManager:
         return None
 
     def _write_token_refresh(
-        self, conn, user_id: str, access_token: str, refresh_token: str, expires_at_iso: str
+        self,
+        conn,
+        user_id: str,
+        access_token: str,
+        refresh_token: str,
+        expires_at_iso: str,
     ) -> None:
         """
         Schreibt refreshte Tokens dual: Klartext + verschlüsselt.
@@ -218,7 +229,14 @@ class RaidAuthManager:
                    token_expires_at = ?, last_refreshed_at = CURRENT_TIMESTAMP
              WHERE twitch_user_id = ?
             """,
-            (access_token, refresh_token, access_enc, refresh_enc, expires_at_iso, user_id),
+            (
+                access_token,
+                refresh_token,
+                access_enc,
+                refresh_enc,
+                expires_at_iso,
+                user_id,
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -330,7 +348,11 @@ class RaidAuthManager:
             return await r.json()
 
     async def refresh_token(
-        self, refresh_token: str, session: aiohttp.ClientSession, twitch_user_id: str = None, twitch_login: str = None
+        self,
+        refresh_token: str,
+        session: aiohttp.ClientSession,
+        twitch_user_id: str = None,
+        twitch_login: str = None,
     ) -> Dict:
         """Erneuert einen abgelaufenen User Access Token."""
         data = {
@@ -362,7 +384,9 @@ class RaidAuthManager:
                         parsed_message = str(payload.get("message", "")).lower()
                         parsed_error = str(payload.get("error", "")).lower()
                 except Exception:
-                    log.debug("OAuth refresh error payload was not valid JSON", exc_info=True)
+                    log.debug(
+                        "OAuth refresh error payload was not valid JSON", exc_info=True
+                    )
 
                 is_invalid_refresh_grant = r.status == 400 and (
                     "invalid refresh token" in response_lc
@@ -387,7 +411,7 @@ class RaidAuthManager:
                     )
 
                     # Discord-Benachrichtigung senden (async, fire-and-forget)
-                    if hasattr(self, '_discord_bot') and self._discord_bot:
+                    if hasattr(self, "_discord_bot") and self._discord_bot:
                         asyncio.create_task(
                             self.token_error_handler.notify_token_error(
                                 twitch_user_id=twitch_user_id,
@@ -426,7 +450,7 @@ class RaidAuthManager:
             return 0
 
         now_ts = time.time()
-        
+
         # Parallelisierung möglich, aber hier sequenziell zur Sicherheit (Rate Limits)
         for row in rows:
             user_id = row["twitch_user_id"]
@@ -478,7 +502,7 @@ class RaidAuthManager:
                     with get_conn() as conn:
                         current = conn.execute(
                             "SELECT token_expires_at FROM twitch_raid_auth WHERE twitch_user_id = ?",
-                            (user_id,)
+                            (user_id,),
                         ).fetchone()
 
                     if current:
@@ -489,16 +513,24 @@ class RaidAuthManager:
                                 _mask_log_identifier(login),
                             )
                             continue
-                        curr_ts = datetime.fromisoformat(curr_iso.replace("Z", "+00:00")).timestamp()
+                        curr_ts = datetime.fromisoformat(
+                            curr_iso.replace("Z", "+00:00")
+                        ).timestamp()
                         # Bug Fix: time.time() statt veraltetes now_ts verwenden
                         if time.time() < curr_ts - 7200:
                             continue  # Wurde bereits refresht
                 except Exception as exc:
                     # Bug Fix: Bei Exception im Double-Check SKIP statt Fallthrough zum Refresh
-                    log.warning("Double-check failed for %s, skipping refresh to be safe: %s", login, exc)
+                    log.warning(
+                        "Double-check failed for %s, skipping refresh to be safe: %s",
+                        login,
+                        exc,
+                    )
                     continue
 
-                log.debug("Auto-refreshing OAuth grant for %s (background maintenance)", login)
+                log.debug(
+                    "Auto-refreshing OAuth grant for %s (background maintenance)", login
+                )
                 try:
                     token_data = await self.refresh_token(
                         refresh_tok, session, twitch_user_id=user_id, twitch_login=login
@@ -506,12 +538,16 @@ class RaidAuthManager:
                     new_access = token_data["access_token"]
                     new_refresh = token_data.get("refresh_token") or refresh_tok
                     expires_in = token_data.get("expires_in", 3600)
-                    
+
                     new_expires_at = datetime.now(timezone.utc).timestamp() + expires_in
-                    new_expires_iso = datetime.fromtimestamp(new_expires_at, timezone.utc).isoformat()
+                    new_expires_iso = datetime.fromtimestamp(
+                        new_expires_at, timezone.utc
+                    ).isoformat()
 
                     with get_conn() as conn:
-                        self._write_token_refresh(conn, user_id, new_access, new_refresh, new_expires_iso)
+                        self._write_token_refresh(
+                            conn, user_id, new_access, new_refresh, new_expires_iso
+                        )
                         conn.commit()
                     # Erfolgreicher Refresh → eventuelle Fehler-Counter zurücksetzen
                     self.token_error_handler.clear_failure_count(user_id)
@@ -520,17 +556,19 @@ class RaidAuthManager:
                     await asyncio.sleep(0.5)
 
                 except Exception as exc:
-                    if isinstance(exc, RuntimeError) and "Session is closed" in str(exc):
+                    if isinstance(exc, RuntimeError) and "Session is closed" in str(
+                        exc
+                    ):
                         log.warning(
                             "Background refresh aborted for %s: shared HTTP session is closed",
                             login,
                         )
                         raise
                     log.error("Background refresh failed for %s: %s", login, exc)
-                    
+
         if refreshed_count > 0:
             log.debug("Maintenance: Refreshed %d user tokens", refreshed_count)
-            
+
         return refreshed_count
 
     async def snapshot_and_flag_reauth(self) -> int:
@@ -547,7 +585,10 @@ class RaidAuthManager:
                 WHERE access_token IS NOT NULL
             """)
             count = conn.execute("SELECT changes()").fetchone()[0]
-        log.info("snapshot_and_flag_reauth: %d Tokens gesichert, needs_reauth=1 gesetzt", count)
+        log.info(
+            "snapshot_and_flag_reauth: %d Tokens gesichert, needs_reauth=1 gesetzt",
+            count,
+        )
         return count
 
     def clear_legacy_tokens_for_fully_authed(self) -> int:
@@ -727,11 +768,15 @@ class RaidAuthManager:
         _uid = str(twitch_user_id)
         access_token = self._resolve_token(
             row["access_token_enc"],
-            f"twitch_raid_auth|access_token|{_uid}|{_enc_v}", "access_token", _uid,
+            f"twitch_raid_auth|access_token|{_uid}|{_enc_v}",
+            "access_token",
+            _uid,
         )
         refresh_token = self._resolve_token(
             row["refresh_token_enc"],
-            f"twitch_raid_auth|refresh_token|{_uid}|{_enc_v}", "refresh_token", _uid,
+            f"twitch_raid_auth|refresh_token|{_uid}|{_enc_v}",
+            "refresh_token",
+            _uid,
         )
         if not access_token or not refresh_token:
             log.warning(
@@ -741,7 +786,9 @@ class RaidAuthManager:
             return None
         expires_at_iso = row["token_expires_at"]
         twitch_login = row["twitch_login"]
-        expires_at = datetime.fromisoformat(expires_at_iso.replace("Z", "+00:00")).timestamp()
+        expires_at = datetime.fromisoformat(
+            expires_at_iso.replace("Z", "+00:00")
+        ).timestamp()
 
         # Token noch gültig? (5 Minuten Puffer)
         if time.time() < expires_at - 300:
@@ -766,13 +813,19 @@ class RaidAuthManager:
                 curr_expires_iso = row_check["token_expires_at"]
                 curr_access = self._resolve_token(
                     row_check["access_token_enc"],
-                    f"twitch_raid_auth|access_token|{_dc_uid}|{_dc_v}", "access_token.dc", _dc_uid,
+                    f"twitch_raid_auth|access_token|{_dc_uid}|{_dc_v}",
+                    "access_token.dc",
+                    _dc_uid,
                 )
                 curr_refresh = self._resolve_token(
                     row_check["refresh_token_enc"],
-                    f"twitch_raid_auth|refresh_token|{_dc_uid}|{_dc_v}", "refresh_token.dc", _dc_uid,
+                    f"twitch_raid_auth|refresh_token|{_dc_uid}|{_dc_v}",
+                    "refresh_token.dc",
+                    _dc_uid,
                 )
-                curr_expires = datetime.fromisoformat(curr_expires_iso.replace("Z", "+00:00")).timestamp()
+                curr_expires = datetime.fromisoformat(
+                    curr_expires_iso.replace("Z", "+00:00")
+                ).timestamp()
                 if time.time() < curr_expires - 300 and curr_access and curr_refresh:
                     return curr_access, curr_refresh
 
@@ -798,7 +851,13 @@ class RaidAuthManager:
                 ).isoformat()
 
                 with get_conn() as conn:
-                    self._write_token_refresh(conn, twitch_user_id, new_access_token, new_refresh_token, new_expires_at_iso)
+                    self._write_token_refresh(
+                        conn,
+                        twitch_user_id,
+                        new_access_token,
+                        new_refresh_token,
+                        new_expires_at_iso,
+                    )
                     conn.commit()
 
                 self.token_error_handler.clear_failure_count(twitch_user_id)
@@ -852,11 +911,15 @@ class RaidAuthManager:
         _uid = str(twitch_user_id)
         access_token = self._resolve_token(
             row["access_token_enc"],
-            f"twitch_raid_auth|access_token|{_uid}|{_enc_v}", "access_token", _uid,
+            f"twitch_raid_auth|access_token|{_uid}|{_enc_v}",
+            "access_token",
+            _uid,
         )
         refresh_token = self._resolve_token(
             row["refresh_token_enc"],
-            f"twitch_raid_auth|refresh_token|{_uid}|{_enc_v}", "refresh_token", _uid,
+            f"twitch_raid_auth|refresh_token|{_uid}|{_enc_v}",
+            "refresh_token",
+            _uid,
         )
         if not access_token:
             log.warning(
@@ -866,7 +929,9 @@ class RaidAuthManager:
             return None
         expires_at_iso = row["token_expires_at"]
         twitch_login = row["twitch_login"]
-        expires_at = datetime.fromisoformat(expires_at_iso.replace("Z", "+00:00")).timestamp()
+        expires_at = datetime.fromisoformat(
+            expires_at_iso.replace("Z", "+00:00")
+        ).timestamp()
 
         # SCHRITT 3: Token noch gültig?
         if time.time() < expires_at - 300:  # 5 Minuten Puffer
@@ -889,9 +954,13 @@ class RaidAuthManager:
                 curr_expires_iso = row_check["token_expires_at"]
                 curr_access = self._resolve_token(
                     row_check["access_token_enc"],
-                    f"twitch_raid_auth|access_token|{_dc_uid}|{_dc_v}", "access_token.dc", _dc_uid,
+                    f"twitch_raid_auth|access_token|{_dc_uid}|{_dc_v}",
+                    "access_token.dc",
+                    _dc_uid,
                 )
-                curr_expires = datetime.fromisoformat(curr_expires_iso.replace("Z", "+00:00")).timestamp()
+                curr_expires = datetime.fromisoformat(
+                    curr_expires_iso.replace("Z", "+00:00")
+                ).timestamp()
                 if time.time() < curr_expires - 300 and curr_access:
                     return curr_access
 
@@ -922,7 +991,13 @@ class RaidAuthManager:
                 ).isoformat()
 
                 with get_conn() as conn:
-                    self._write_token_refresh(conn, twitch_user_id, new_access_token, new_refresh_token, new_expires_at_iso)
+                    self._write_token_refresh(
+                        conn,
+                        twitch_user_id,
+                        new_access_token,
+                        new_refresh_token,
+                        new_expires_at_iso,
+                    )
                     conn.commit()
 
                 self.token_error_handler.clear_failure_count(twitch_user_id)
@@ -963,7 +1038,11 @@ class RaidAuthManager:
                 (twitch_user_id,),
             ).fetchone()
             if auth_row:
-                login_hint = str(auth_row[0] if not hasattr(auth_row, "keys") else auth_row["twitch_login"] or "")
+                login_hint = str(
+                    auth_row[0]
+                    if not hasattr(auth_row, "keys")
+                    else auth_row["twitch_login"] or ""
+                )
 
             streamer_row = conn.execute(
                 """
@@ -977,7 +1056,9 @@ class RaidAuthManager:
             ).fetchone()
             if streamer_row:
                 discord_user_id = str(
-                    streamer_row[0] if not hasattr(streamer_row, "keys") else streamer_row["discord_user_id"] or ""
+                    streamer_row[0]
+                    if not hasattr(streamer_row, "keys")
+                    else streamer_row["discord_user_id"] or ""
                 ).strip()
 
             conn.execute(
@@ -999,7 +1080,9 @@ class RaidAuthManager:
             )
             conn.commit()
 
-        if discord_user_id and hasattr(self.token_error_handler, "schedule_streamer_role_sync"):
+        if discord_user_id and hasattr(
+            self.token_error_handler, "schedule_streamer_role_sync"
+        ):
             self.token_error_handler.schedule_streamer_role_sync(
                 discord_user_id,
                 should_have_role=False,
@@ -1155,7 +1238,9 @@ class RaidExecutor:
 
         except Exception as e:
             error_msg = f"Exception during raid: {e}"
-            log.exception("Raid exception: %s -> %s", from_broadcaster_login, to_broadcaster_login)
+            log.exception(
+                "Raid exception: %s -> %s", from_broadcaster_login, to_broadcaster_login
+            )
             self._save_raid_history(
                 from_broadcaster_id,
                 from_broadcaster_login,
@@ -1233,11 +1318,13 @@ class RaidBot:
         self.raid_executor = RaidExecutor(client_id, self.auth_manager)
         self._session = session
         self.chat_bot = None  # Wird später gesetzt
-        self._bot_id = None   # Wird bei set_chat_bot gesetzt als Fallback
+        self._bot_id = None  # Wird bei set_chat_bot gesetzt als Fallback
         self._cog = None  # Referenz zum TwitchStreamCog für EventSub subscriptions
 
         # Pending Raids: {to_broadcaster_id: (from_broadcaster_login, target_stream_data, timestamp, is_partner_raid, viewer_count)}
-        self._pending_raids: Dict[str, Tuple[str, Optional[Dict], float, bool, int]] = {}
+        self._pending_raids: Dict[
+            str, Tuple[str, Optional[Dict], float, bool, int]
+        ] = {}
         # Unterdrückt den nächsten Offline-Auto-Raid, wenn kurz zuvor ein manueller/externer Raid erkannt wurde.
         self._manual_raid_suppression: Dict[str, float] = {}
 
@@ -1257,11 +1344,16 @@ class RaidBot:
                 refreshed = api.get_http_session()
                 if refreshed is not None and not refreshed.closed:
                     if self._session is not refreshed:
-                        log.warning("RaidBot detected closed HTTP session; switched to fresh TwitchAPI session")
+                        log.warning(
+                            "RaidBot detected closed HTTP session; switched to fresh TwitchAPI session"
+                        )
                     self._session = refreshed
                     return refreshed
             except Exception:
-                log.debug("RaidBot could not refresh HTTP session from TwitchAPI", exc_info=True)
+                log.debug(
+                    "RaidBot could not refresh HTTP session from TwitchAPI",
+                    exc_info=True,
+                )
         return None
 
     @session.setter
@@ -1296,7 +1388,9 @@ class RaidBot:
         last_raid_cleanup = 0.0
         last_grace_period_check = 0.0
         while True:
-            await asyncio.sleep(60)  # Loop-Tick (Wartungs-Tasks laufen in eigenen Intervallen)
+            await asyncio.sleep(
+                60
+            )  # Loop-Tick (Wartungs-Tasks laufen in eigenen Intervallen)
             try:
                 now = time.time()
 
@@ -1309,7 +1403,9 @@ class RaidBot:
                 if now - last_token_refresh >= token_refresh_interval:
                     active_session = self.session
                     if active_session is None:
-                        log.warning("Skipping token maintenance: no active HTTP session available")
+                        log.warning(
+                            "Skipping token maintenance: no active HTTP session available"
+                        )
                     else:
                         try:
                             await self.auth_manager.refresh_all_tokens(active_session)
@@ -1349,7 +1445,9 @@ class RaidBot:
         self.chat_bot = chat_bot
         # Bot-ID speichern damit complete_setup auch ohne chat_bot funktioniert
         if chat_bot:
-            bot_id = getattr(chat_bot, "bot_id_safe", None) or getattr(chat_bot, "bot_id", None)
+            bot_id = getattr(chat_bot, "bot_id_safe", None) or getattr(
+                chat_bot, "bot_id", None
+            )
             if bot_id and str(bot_id).strip():
                 self._bot_id = str(bot_id).strip()
 
@@ -1374,7 +1472,9 @@ class RaidBot:
         self._cog = cog
         log.debug("Cog reference set for dynamic EventSub subscriptions")
 
-    def mark_manual_raid_started(self, broadcaster_id: str, ttl_seconds: float = 300.0) -> None:
+    def mark_manual_raid_started(
+        self, broadcaster_id: str, ttl_seconds: float = 300.0
+    ) -> None:
         """Unterdrückt den nächsten Offline-Auto-Raid für einen Streamer (z.B. nach !raid/!traid)."""
         broadcaster_key = str(broadcaster_id or "").strip()
         if not broadcaster_key:
@@ -1413,7 +1513,11 @@ class RaidBot:
             resolved_key = str(resolved or "").strip()
             return resolved_key or None
         except Exception:
-            log.debug("Konnte broadcaster_id nicht über Login auflösen: %s", login_key, exc_info=True)
+            log.debug(
+                "Konnte broadcaster_id nicht über Login auflösen: %s",
+                login_key,
+                exc_info=True,
+            )
             return None
 
     def _cleanup_expired_manual_raid_suppressions(self) -> None:
@@ -1436,7 +1540,9 @@ class RaidBot:
             return candidate
         return None
 
-    def _iter_role_guild_candidates(self, discord_bot: Optional[discord.Client]) -> List[discord.Guild]:
+    def _iter_role_guild_candidates(
+        self, discord_bot: Optional[discord.Client]
+    ) -> List[discord.Guild]:
         if discord_bot is None:
             return []
 
@@ -1453,7 +1559,9 @@ class RaidBot:
             candidates.extend(getattr(discord_bot, "guilds", []))
         return candidates
 
-    async def _resolve_discord_display_name(self, discord_user_id: Optional[str]) -> Optional[str]:
+    async def _resolve_discord_display_name(
+        self, discord_user_id: Optional[str]
+    ) -> Optional[str]:
         normalized_id = self._normalize_discord_user_id(discord_user_id)
         if not normalized_id:
             return None
@@ -1472,12 +1580,15 @@ class RaidBot:
 
         if user is None:
             return None
-        return str(
-            getattr(user, "global_name", None)
-            or getattr(user, "display_name", None)
-            or getattr(user, "name", None)
-            or ""
-        ).strip() or None
+        return (
+            str(
+                getattr(user, "global_name", None)
+                or getattr(user, "display_name", None)
+                or getattr(user, "name", None)
+                or ""
+            ).strip()
+            or None
+        )
 
     async def _apply_streamer_role(
         self,
@@ -1517,14 +1628,27 @@ class RaidBot:
                 has_role = role in member.roles
                 if should_have_role and not has_role:
                     await member.add_roles(role, reason=reason)
-                    log.info("Streamer role granted to %s in guild %s", normalized_id, guild.id)
+                    log.info(
+                        "Streamer role granted to %s in guild %s",
+                        normalized_id,
+                        guild.id,
+                    )
                 elif (not should_have_role) and has_role:
                     await member.remove_roles(role, reason=reason)
-                    log.info("Streamer role removed from %s in guild %s", normalized_id, guild.id)
+                    log.info(
+                        "Streamer role removed from %s in guild %s",
+                        normalized_id,
+                        guild.id,
+                    )
             except discord.Forbidden:
-                log.warning("Missing permission to sync streamer role in guild %s", guild.id)
+                log.warning(
+                    "Missing permission to sync streamer role in guild %s", guild.id
+                )
             except discord.HTTPException:
-                log.warning("Discord API error while syncing streamer role in guild %s", guild.id)
+                log.warning(
+                    "Discord API error while syncing streamer role in guild %s",
+                    guild.id,
+                )
 
     async def _sync_partner_state_after_auth(
         self,
@@ -1552,12 +1676,20 @@ class RaidBot:
                 existing_discord_id = self._normalize_discord_user_id(
                     row[0] if not hasattr(row, "keys") else row["discord_user_id"]
                 )
-                existing_display_name = str(
-                    row[1] if not hasattr(row, "keys") else row["discord_display_name"] or ""
-                ).strip() or None
+                existing_display_name = (
+                    str(
+                        row[1]
+                        if not hasattr(row, "keys")
+                        else row["discord_display_name"] or ""
+                    ).strip()
+                    or None
+                )
 
         final_discord_id = provided_discord_id or existing_discord_id
-        final_display_name = existing_display_name or await self._resolve_discord_display_name(final_discord_id)
+        final_display_name = (
+            existing_display_name
+            or await self._resolve_discord_display_name(final_discord_id)
+        )
 
         is_on_discord_value = 1 if final_discord_id else 0
         with get_conn() as conn:
@@ -1648,9 +1780,13 @@ class RaidBot:
             )
 
         # 1. Tokens holen
-        tokens = await self.auth_manager.get_tokens_for_user(twitch_user_id, self.session)
+        tokens = await self.auth_manager.get_tokens_for_user(
+            twitch_user_id, self.session
+        )
         if not tokens:
-            log.warning("Could not load OAuth grant for %s to complete setup", twitch_login)
+            log.warning(
+                "Could not load OAuth grant for %s to complete setup", twitch_login
+            )
             return
 
         access_token, _ = tokens
@@ -1660,17 +1796,26 @@ class RaidBot:
             bot_id = getattr(self.chat_bot, "bot_id_safe", None)
             if bot_id is None:
                 bot_id_raw = getattr(self.chat_bot, "bot_id", None)
-                bot_id = str(bot_id_raw).strip() if bot_id_raw and str(bot_id_raw).strip() else None
+                bot_id = (
+                    str(bot_id_raw).strip()
+                    if bot_id_raw and str(bot_id_raw).strip()
+                    else None
+                )
         if not bot_id:
             bot_id = getattr(self, "_bot_id", None)
         if not bot_id:
             # Letzte Chance: Bot-ID aus ENV
             import os
+
             bot_id = os.getenv("TWITCH_BOT_USER_ID", "").strip() or None
         if not bot_id:
-            log.warning("complete_setup: Keine Bot-ID verfügbar für %s (chat_bot=%s). Setze TWITCH_BOT_USER_ID ENV.", twitch_login, "None" if not self.chat_bot else "set")
+            log.warning(
+                "complete_setup: Keine Bot-ID verfügbar für %s (chat_bot=%s). Setze TWITCH_BOT_USER_ID ENV.",
+                twitch_login,
+                "None" if not self.chat_bot else "set",
+            )
             return
-        
+
         # 2. Bot als Moderator setzen
         if bot_id:
             try:
@@ -1685,9 +1830,18 @@ class RaidBot:
                 }
                 async with self.session.post(url, headers=headers, params=params) as r:
                     if r.status in {200, 204}:
-                        log.info("Bot (ID: %s) is now moderator in %s's channel (ID: %s)", bot_id, twitch_login, twitch_user_id)
+                        log.info(
+                            "Bot (ID: %s) is now moderator in %s's channel (ID: %s)",
+                            bot_id,
+                            twitch_login,
+                            twitch_user_id,
+                        )
                     elif r.status == 422:
-                        log.info("Bot (ID: %s) is already moderator in %s's channel", bot_id, twitch_login)
+                        log.info(
+                            "Bot (ID: %s) is already moderator in %s's channel",
+                            bot_id,
+                            twitch_login,
+                        )
                     else:
                         txt = await r.text()
                         if r.status == 400 and "already a mod" in txt.lower():
@@ -1710,8 +1864,10 @@ class RaidBot:
             try:
                 # Sicherstellen, dass der Bot im Channel ist
                 await self.chat_bot.join(twitch_login, channel_id=twitch_user_id)
-                await asyncio.sleep(2) # Etwas mehr Zeit geben, damit der Mod-Status im Chat "ankommt"
-                
+                await asyncio.sleep(
+                    2
+                )  # Etwas mehr Zeit geben, damit der Mod-Status im Chat "ankommt"
+
                 # Nachricht im Stil des Screenshots
                 message = "Deadlock Chatbot Guard verbunden! 🎮"
                 commands_public = (
@@ -1743,11 +1899,17 @@ class RaidBot:
                     await asyncio.sleep(1)
                     await self.chat_bot._send_chat_message(mock_ch, commands_mod)
                 elif hasattr(self.chat_bot, "send_message") and bot_id:
-                    await self.chat_bot.send_message(str(twitch_user_id), str(bot_id), message)
+                    await self.chat_bot.send_message(
+                        str(twitch_user_id), str(bot_id), message
+                    )
                     await asyncio.sleep(1)
-                    await self.chat_bot.send_message(str(twitch_user_id), str(bot_id), commands_public)
+                    await self.chat_bot.send_message(
+                        str(twitch_user_id), str(bot_id), commands_public
+                    )
                     await asyncio.sleep(1)
-                    await self.chat_bot.send_message(str(twitch_user_id), str(bot_id), commands_mod)
+                    await self.chat_bot.send_message(
+                        str(twitch_user_id), str(bot_id), commands_mod
+                    )
 
                 log.info("Sent auth success message to %s", twitch_login)
             except Exception:
@@ -1760,7 +1922,8 @@ class RaidBot:
         now = time.time()
         timeout = 300  # 5 Minuten
         stale = [
-            to_id for to_id, (_, _, timestamp, _, _) in self._pending_raids.items()
+            to_id
+            for to_id, (_, _, timestamp, _, _) in self._pending_raids.items()
             if now - timestamp > timeout
         ]
         for to_id in stale:
@@ -1770,7 +1933,7 @@ class RaidBot:
                 "Pending raid timed out after %.0fs: %s -> (ID: %s). EventSub event never arrived.",
                 age,
                 from_login,
-                to_id
+                to_id,
             )
 
     async def _register_pending_raid(
@@ -1807,35 +1970,34 @@ class RaidBot:
             "Pending raid registered: %s -> %s (ID: %s). Creating EventSub subscription...",
             from_broadcaster_login,
             to_broadcaster_login,
-            to_broadcaster_id
+            to_broadcaster_id,
         )
 
         # Dynamische EventSub subscription erstellen
         if self._cog and hasattr(self._cog, "subscribe_raid_target_dynamic"):
             try:
                 success = await self._cog.subscribe_raid_target_dynamic(
-                    to_broadcaster_id,
-                    to_broadcaster_login
+                    to_broadcaster_id, to_broadcaster_login
                 )
                 if success:
                     log.info(
                         "EventSub channel.raid subscription created for %s",
-                        to_broadcaster_login
+                        to_broadcaster_login,
                     )
                 else:
                     log.warning(
                         "Failed to create EventSub subscription for %s - raid message may not be sent",
-                        to_broadcaster_login
+                        to_broadcaster_login,
                     )
             except Exception:
                 log.exception(
                     "Error creating dynamic EventSub subscription for %s",
-                    to_broadcaster_login
+                    to_broadcaster_login,
                 )
         else:
             log.warning(
                 "Cog reference not set - cannot create dynamic EventSub subscription for %s",
-                to_broadcaster_login
+                to_broadcaster_login,
             )
 
     async def on_raid_arrival(
@@ -1857,7 +2019,9 @@ class RaidBot:
         if not pending:
             from_broadcaster_key = str(from_broadcaster_id or "").strip()
             if not from_broadcaster_key:
-                from_broadcaster_key = self._resolve_streamer_id_by_login(from_broadcaster_login) or ""
+                from_broadcaster_key = (
+                    self._resolve_streamer_id_by_login(from_broadcaster_login) or ""
+                )
             if from_broadcaster_key:
                 self.mark_manual_raid_started(from_broadcaster_key, ttl_seconds=180.0)
                 log.info(
@@ -1870,18 +2034,24 @@ class RaidBot:
             log.debug(
                 "Raid arrival ignored (not pending): %s -> %s",
                 from_broadcaster_login,
-                to_broadcaster_login
+                to_broadcaster_login,
             )
             return
 
-        expected_from, target_stream_data, _, is_partner_raid, registered_viewer_count = pending
+        (
+            expected_from,
+            target_stream_data,
+            _,
+            is_partner_raid,
+            registered_viewer_count,
+        ) = pending
 
         # Verify it's the same raid we started
         if expected_from.lower() != from_broadcaster_login.lower():
             log.warning(
                 "Raid arrival mismatch: expected from %s, got from %s",
                 expected_from,
-                from_broadcaster_login
+                from_broadcaster_login,
             )
             return
 
@@ -1955,7 +2125,9 @@ class RaidBot:
 
         try:
             # Erfolgreiche Netzwerk-Raids für dieses Ziel zählen (inkl. aktuellem Raid)
-            received_raid_count = self._get_received_network_raid_count(to_broadcaster_id)
+            received_raid_count = self._get_received_network_raid_count(
+                to_broadcaster_id
+            )
             if received_raid_count <= 0:
                 received_raid_count = 1
 
@@ -1976,6 +2148,7 @@ class RaidBot:
 
             # 4. Nachricht senden
             if hasattr(self.chat_bot, "_send_chat_message"):
+
                 class MockChannel:
                     def __init__(self, login, uid):
                         self.name = login
@@ -2060,7 +2233,9 @@ class RaidBot:
         target_id: Optional[str],
         target_stream_data: Optional[Dict],
     ) -> Optional[int]:
-        cached_total = self._parse_nonnegative_int((target_stream_data or {}).get("followers_total"))
+        cached_total = self._parse_nonnegative_int(
+            (target_stream_data or {}).get("followers_total")
+        )
         if cached_total is not None:
             return cached_total
 
@@ -2075,13 +2250,21 @@ class RaidBot:
 
         user_token: Optional[str] = None
         try:
-            user_token = await self.auth_manager.get_valid_token(resolved_target_id, self.session)
+            user_token = await self.auth_manager.get_valid_token(
+                resolved_target_id, self.session
+            )
         except Exception:
             user_token = None
 
         try:
-            api = TwitchAPI(self.auth_manager.client_id, self.auth_manager.client_secret, session=self.session)
-            followers_total = await api.get_followers_total(resolved_target_id, user_token=user_token)
+            api = TwitchAPI(
+                self.auth_manager.client_id,
+                self.auth_manager.client_secret,
+                session=self.session,
+            )
+            followers_total = await api.get_followers_total(
+                resolved_target_id, user_token=user_token
+            )
         except Exception:
             log.debug("Follower-Check fehlgeschlagen fuer %s", login, exc_info=True)
             return None
@@ -2122,7 +2305,10 @@ class RaidBot:
                     target_id = str(users[0].id)
 
             if not target_id:
-                log.warning("Could not resolve user ID for recruitment message to %s", to_broadcaster_login)
+                log.warning(
+                    "Could not resolve user ID for recruitment message to %s",
+                    to_broadcaster_login,
+                )
                 return
 
             await self.chat_bot.join(to_broadcaster_login, channel_id=target_id)
@@ -2134,7 +2320,10 @@ class RaidBot:
             await self.chat_bot.follow_channel(target_id)
 
         # 2. 15 Sekunden warten, damit der Streamer den Raid-Alert verarbeiten kann
-        log.info("Warte 15s vor Senden der Recruitment-Message an %s...", to_broadcaster_login)
+        log.info(
+            "Warte 15s vor Senden der Recruitment-Message an %s...",
+            to_broadcaster_login,
+        )
         await asyncio.sleep(15.0)
 
         try:
@@ -2151,11 +2340,12 @@ class RaidBot:
                     (target_id,),
                 ).fetchone()
                 recent_raids = raid_check[0] if raid_check else 0
-            
+
             if recent_raids > 1:
                 log.info(
-                    "Skipping recruitment message to %s (Anti-Spam: %d raids in last 24 hours)", 
-                    to_broadcaster_login, recent_raids
+                    "Skipping recruitment message to %s (Anti-Spam: %d raids in last 24 hours)",
+                    to_broadcaster_login,
+                    recent_raids,
                 )
                 return
 
@@ -2173,7 +2363,9 @@ class RaidBot:
                 and followers_total <= RECRUIT_DIRECT_INVITE_MAX_FOLLOWERS
             )
             discord_invite = (
-                RECRUIT_DISCORD_INVITE_DIRECT if use_direct_invite else RECRUIT_DISCORD_INVITE
+                RECRUIT_DISCORD_INVITE_DIRECT
+                if use_direct_invite
+                else RECRUIT_DISCORD_INVITE
             )
 
             stats_teaser = ""
@@ -2197,7 +2389,9 @@ class RaidBot:
                     if peak_viewers > 0:
                         stats_teaser = f"Übrigens: Du hattest im Schnitt {avg_viewers} Viewer bei Deadlock, dein Peak war {peak_viewers}. "
             except Exception:
-                log.debug("Could not fetch stats for %s", to_broadcaster_login, exc_info=True)
+                log.debug(
+                    "Could not fetch stats for %s", to_broadcaster_login, exc_info=True
+                )
 
             # Nachrichtenauswahl basierend auf Raid-Anzahl
             if total_raids <= 1:
@@ -2223,7 +2417,7 @@ class RaidBot:
                     f"Hast du schon über eine Partnerschaft nachgedacht? Gemeinsam wachsen wir viel schneller! "
                     f"Join uns: {discord_invite} 🎮"
                 )
-            else: # 4. Raid und mehr
+            else:  # 4. Raid und mehr
                 message = (
                     f"Hey @{to_broadcaster_login}! So langsam wird es Zeit für eine Partnerschaft, oder? 😉 "
                     f"Das ist schon der {total_raids}. Raid von uns (diesmal von @{from_broadcaster_login})! "
@@ -2241,13 +2435,13 @@ class RaidBot:
                         def __init__(self, login, uid):
                             self.name = login
                             self.id = uid
-                    
+
                     success = await self.chat_bot._send_chat_message(
                         MockChannel(to_broadcaster_login, target_id),
                         message,
                         source="recruitment",
                     )
-                    
+
                     if success:
                         log.info(
                             "Sent recruitment message in %s's chat (raided by %s)",
@@ -2296,7 +2490,11 @@ class RaidBot:
                 ).fetchall()
             return {str(row[0]) for row in rows if row and row[0]}
         except Exception:
-            log.debug("Failed to load recent raid targets for %s", from_broadcaster_id, exc_info=True)
+            log.debug(
+                "Failed to load recent raid targets for %s",
+                from_broadcaster_id,
+                exc_info=True,
+            )
             return set()
 
     async def _attach_followers_totals(self, candidates: List[Dict]) -> None:
@@ -2307,7 +2505,11 @@ class RaidBot:
         except Exception:
             return
 
-        api = TwitchAPI(self.auth_manager.client_id, self.auth_manager.client_secret, session=self.session)
+        api = TwitchAPI(
+            self.auth_manager.client_id,
+            self.auth_manager.client_secret,
+            session=self.session,
+        )
 
         for candidate in candidates:
             if candidate.get("followers_total") is not None:
@@ -2339,10 +2541,14 @@ class RaidBot:
         if not candidates:
             return None
 
-        recent_targets = self._get_recent_raid_targets(from_broadcaster_id, RAID_TARGET_COOLDOWN_DAYS)
+        recent_targets = self._get_recent_raid_targets(
+            from_broadcaster_id, RAID_TARGET_COOLDOWN_DAYS
+        )
         if recent_targets:
             filtered = [
-                c for c in candidates if str(c.get("user_id") or "") not in recent_targets
+                c
+                for c in candidates
+                if str(c.get("user_id") or "") not in recent_targets
             ]
         else:
             filtered = []
@@ -2456,7 +2662,7 @@ class RaidBot:
         if self.is_offline_auto_raid_suppressed(broadcaster_id):
             log.info(
                 "Auto-raid suppressed for %s (manual raid detected recently)",
-                broadcaster_login
+                broadcaster_login,
             )
             return None
 
@@ -2507,7 +2713,9 @@ class RaidBot:
             if partner_candidates:
                 # Partner vorhanden -> Auswahl nach niedrigsten Viewern
                 is_partner_raid = True
-                target = await self._select_fairest_candidate(partner_candidates, broadcaster_id)
+                target = await self._select_fairest_candidate(
+                    partner_candidates, broadcaster_id
+                )
                 candidates_count = len(partner_candidates)
 
             # 2. Fallback (Deadlock-DE), falls kein Partner gefunden
@@ -2522,7 +2730,9 @@ class RaidBot:
                             category_id, language="de", limit=50
                         )
                     except Exception:
-                        log.exception("Failed to get Deadlock-DE streams for fallback raid")
+                        log.exception(
+                            "Failed to get Deadlock-DE streams for fallback raid"
+                        )
                         cached_de_streams = []
 
                 # Fallback-Kandidaten filtern
@@ -2534,7 +2744,9 @@ class RaidBot:
                 ]
 
                 if fallback_candidates:
-                    target = await self._select_fairest_candidate(fallback_candidates, broadcaster_id)
+                    target = await self._select_fairest_candidate(
+                        fallback_candidates, broadcaster_id
+                    )
                     candidates_count = len(fallback_candidates)
 
             if not target:
@@ -2604,9 +2816,7 @@ class RaidBot:
                 continue  # Nächster Versuch
 
             # Bei anderen Fehlern (z.B. API Down, Auth Error) brechen wir ab
-            log.error(
-                "Raid failed with non-retriable error: %s. Aborting.", error
-            )
+            log.error("Raid failed with non-retriable error: %s. Aborting.", error)
             return None
 
         return None

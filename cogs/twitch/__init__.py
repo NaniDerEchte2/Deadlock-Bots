@@ -9,13 +9,14 @@ from typing import Optional
 from discord.ext import commands
 
 
-
 log = logging.getLogger("TwitchStreams")
 
 
 async def setup(bot: commands.Bot):
     """Add the Twitch stream cog to the master bot, and register the !twl proxy command exactly once."""
-    from .cog import TwitchStreamCog  # Local import to avoid self-import warnings during extension discovery
+    from .cog import (
+        TwitchStreamCog,
+    )  # Local import to avoid self-import warnings during extension discovery
 
     # 1) Stale/alte Command-Objekte vorab entfernen
     existing = bot.get_command("twl")
@@ -50,11 +51,17 @@ async def setup(bot: commands.Bot):
             await leaderboard_cb(ctx, filters=filters)
         except TypeError as e:
             # Fallbacks, falls ältere Signaturen aktiv sind
-            log.warning("Signature mismatch when calling twitch_leaderboard: %s", e, exc_info=True)
+            log.warning(
+                "Signature mismatch when calling twitch_leaderboard: %s",
+                e,
+                exc_info=True,
+            )
             try:
                 await leaderboard_cb(ctx)
             except TypeError:
-                await ctx.reply("Twitch-Statistiken konnten nicht geladen werden (Kompatibilitätsproblem).")
+                await ctx.reply(
+                    "Twitch-Statistiken konnten nicht geladen werden (Kompatibilitätsproblem)."
+                )
 
     prefix_command = commands.Command(
         _twl_proxy,

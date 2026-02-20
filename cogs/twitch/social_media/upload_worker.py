@@ -8,6 +8,7 @@ Workflow:
 4. Upload to platform
 5. Update queue status (completed/failed)
 """
+
 import asyncio
 import logging
 from datetime import datetime, timezone
@@ -69,7 +70,9 @@ class UploadWorker(commands.Cog):
             if creds and creds.get("client_id") and creds.get("access_token"):
                 from .uploaders import TikTokUploader
 
-                uploader = TikTokUploader(creds["client_id"], creds.get("client_secret", ""))
+                uploader = TikTokUploader(
+                    creds["client_id"], creds.get("client_secret", "")
+                )
                 uploader.access_token = creds["access_token"]
                 uploaders["tiktok"] = uploader
                 log.info("TikTok uploader initialized (encrypted credentials)")
@@ -82,15 +85,19 @@ class UploadWorker(commands.Cog):
             if creds and creds.get("client_id") and creds.get("access_token"):
                 from .uploaders import YouTubeUploader
 
-                uploader = YouTubeUploader(creds["client_id"], creds.get("client_secret", ""))
+                uploader = YouTubeUploader(
+                    creds["client_id"], creds.get("client_secret", "")
+                )
 
                 # Authenticate with encrypted tokens
                 if creds.get("refresh_token"):
                     asyncio.create_task(
-                        uploader.authenticate({
-                            "access_token": creds["access_token"],
-                            "refresh_token": creds["refresh_token"],
-                        })
+                        uploader.authenticate(
+                            {
+                                "access_token": creds["access_token"],
+                                "refresh_token": creds["refresh_token"],
+                            }
+                        )
                     )
                 else:
                     uploader.access_token = creds["access_token"]
@@ -107,8 +114,7 @@ class UploadWorker(commands.Cog):
                 from .uploaders import InstagramUploader
 
                 uploaders["instagram"] = InstagramUploader(
-                    creds["access_token"],
-                    creds["platform_user_id"]
+                    creds["access_token"], creds["platform_user_id"]
                 )
                 log.info("Instagram uploader initialized (encrypted credentials)")
         except Exception:
@@ -210,7 +216,10 @@ class UploadWorker(commands.Cog):
 
             if hashtags:
                 import json
-                hashtags = json.loads(hashtags) if isinstance(hashtags, str) else hashtags
+
+                hashtags = (
+                    json.loads(hashtags) if isinstance(hashtags, str) else hashtags
+                )
             else:
                 hashtags = []
 
@@ -228,7 +237,9 @@ class UploadWorker(commands.Cog):
                 external_video_id=external_id,
             )
 
-            log.info("Upload successful: Clip %s -> %s (%s)", clip_id, platform, external_id)
+            log.info(
+                "Upload successful: Clip %s -> %s (%s)", clip_id, platform, external_id
+            )
             return True
 
         except Exception as e:
@@ -267,8 +278,10 @@ class UploadWorker(commands.Cog):
 
         proc = await asyncio.create_subprocess_exec(
             "yt-dlp",
-            "-f", "best",
-            "-o", str(output_path),
+            "-f",
+            "best",
+            "-o",
+            str(output_path),
             clip_url,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

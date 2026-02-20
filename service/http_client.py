@@ -6,6 +6,7 @@ bot connects to Discord or external APIs (Twitch). Using a connector with
 explicit public DNS fallbacks and IPv4 preference improves the likelihood
 of successful resolution on flaky networks.
 """
+
 from __future__ import annotations
 
 import logging
@@ -46,7 +47,9 @@ def build_resilient_connector(
     - Caches DNS results for ``ttl_dns_cache`` seconds to avoid repeated lookups
     - Prefers IPv4 (common cause of timeouts on some consumer networks)
     """
-    nameservers = list(dns_servers or []) or _parse_env_dns() or list(_DEFAULT_DNS_SERVERS)
+    nameservers = (
+        list(dns_servers or []) or _parse_env_dns() or list(_DEFAULT_DNS_SERVERS)
+    )
     resolver = None
 
     # Prefer async resolver with explicit nameservers; gracefully fall back.
@@ -54,7 +57,11 @@ def build_resilient_connector(
         resolver = aiohttp_resolver.AsyncResolver(nameservers=nameservers, rotate=True)
     except Exception as exc:  # pragma: no cover - defensive fallback
         resolver = None
-        _log.warning("Falling back to default DNS resolver (nameservers=%s): %s", nameservers, exc)
+        _log.warning(
+            "Falling back to default DNS resolver (nameservers=%s): %s",
+            nameservers,
+            exc,
+        )
 
     try:
         return aiohttp.TCPConnector(

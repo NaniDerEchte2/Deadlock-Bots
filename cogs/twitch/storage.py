@@ -19,6 +19,7 @@ def get_conn():
         ensure_schema(conn)
         yield conn
 
+
 # --- Schema / Migration -----------------------------------------------------
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -36,10 +37,14 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     cur = conn.execute("SELECT name FROM pragma_table_info(?)", (table,))
     return {row[0] for row in cur.fetchall()}
 
+
 def _build_add_column_statement(table_ident: str, name_ident: str, spec: str) -> str:
     return "".join(["ALTER TABLE ", table_ident, " ADD COLUMN ", name_ident, " ", spec])
 
-def _add_column_if_missing(conn: sqlite3.Connection, table: str, name: str, spec: str) -> None:
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection, table: str, name: str, spec: str
+) -> None:
     table_ident = _quote_identifier(table)
     name_ident = _quote_identifier(name)
     if not _COLUMN_SPEC_RE.match(spec):
@@ -88,10 +93,19 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ("manual_verified_at", "TEXT"),
         ("manual_partner_opt_out", "INTEGER DEFAULT 0"),
         ("archived_at", "TEXT"),
-        ("raid_bot_enabled", "INTEGER DEFAULT 0"),  # Auto-Raid Opt-in/out (default: off)
+        (
+            "raid_bot_enabled",
+            "INTEGER DEFAULT 0",
+        ),  # Auto-Raid Opt-in/out (default: off)
         ("silent_ban", "INTEGER DEFAULT 0"),  # 1 = suppress auto-ban chat notifications
-        ("silent_raid", "INTEGER DEFAULT 0"),  # 1 = suppress raid arrival chat notifications
-        ("is_monitored_only", "INTEGER DEFAULT 0"),  # 1 = read-only market research (no bot/mod actions)
+        (
+            "silent_raid",
+            "INTEGER DEFAULT 0",
+        ),  # 1 = suppress raid arrival chat notifications
+        (
+            "is_monitored_only",
+            "INTEGER DEFAULT 0",
+        ),  # 1 = read-only market research (no bot/mod actions)
         ("created_at", "TEXT DEFAULT CURRENT_TIMESTAMP"),
     ]:
         _add_column_if_missing(conn, "twitch_streamers", col, spec)
@@ -157,10 +171,14 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     # Neue/zusätzliche Spalten für neuere Cog-Versionen:
     _add_column_if_missing(conn, "twitch_live_state", "last_seen_at", "TEXT")
     _add_column_if_missing(conn, "twitch_live_state", "last_game", "TEXT")
-    _add_column_if_missing(conn, "twitch_live_state", "last_viewer_count", "INTEGER DEFAULT 0")
+    _add_column_if_missing(
+        conn, "twitch_live_state", "last_viewer_count", "INTEGER DEFAULT 0"
+    )
     _add_column_if_missing(conn, "twitch_live_state", "last_tracking_token", "TEXT")
     _add_column_if_missing(conn, "twitch_live_state", "active_session_id", "INTEGER")
-    _add_column_if_missing(conn, "twitch_live_state", "had_deadlock_in_session", "INTEGER DEFAULT 0")
+    _add_column_if_missing(
+        conn, "twitch_live_state", "had_deadlock_in_session", "INTEGER DEFAULT 0"
+    )
     _add_column_if_missing(conn, "twitch_live_state", "last_deadlock_seen_at", "TEXT")
 
     # 3) Stats-Logs
@@ -184,11 +202,15 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    _add_column_if_missing(conn, "twitch_stats_tracked", "is_partner", "INTEGER DEFAULT 0")
+    _add_column_if_missing(
+        conn, "twitch_stats_tracked", "is_partner", "INTEGER DEFAULT 0"
+    )
     _add_column_if_missing(conn, "twitch_stats_tracked", "game_name", "TEXT")
     _add_column_if_missing(conn, "twitch_stats_tracked", "stream_title", "TEXT")
     _add_column_if_missing(conn, "twitch_stats_tracked", "tags", "TEXT")
-    _add_column_if_missing(conn, "twitch_stats_category", "is_partner", "INTEGER DEFAULT 0")
+    _add_column_if_missing(
+        conn, "twitch_stats_category", "is_partner", "INTEGER DEFAULT 0"
+    )
     _add_column_if_missing(conn, "twitch_stats_category", "game_name", "TEXT")
     _add_column_if_missing(conn, "twitch_stats_category", "stream_title", "TEXT")
     _add_column_if_missing(conn, "twitch_stats_category", "tags", "TEXT")
@@ -268,9 +290,13 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "twitch_stream_sessions", "stream_title", "TEXT")
     _add_column_if_missing(conn, "twitch_stream_sessions", "notification_text", "TEXT")
     _add_column_if_missing(conn, "twitch_stream_sessions", "language", "TEXT")
-    _add_column_if_missing(conn, "twitch_stream_sessions", "is_mature", "INTEGER DEFAULT 0")
+    _add_column_if_missing(
+        conn, "twitch_stream_sessions", "is_mature", "INTEGER DEFAULT 0"
+    )
     _add_column_if_missing(conn, "twitch_stream_sessions", "tags", "TEXT")
-    _add_column_if_missing(conn, "twitch_stream_sessions", "had_deadlock_in_session", "INTEGER DEFAULT 0")
+    _add_column_if_missing(
+        conn, "twitch_stream_sessions", "had_deadlock_in_session", "INTEGER DEFAULT 0"
+    )
     _add_column_if_missing(conn, "twitch_stream_sessions", "followers_start", "INTEGER")
     _add_column_if_missing(conn, "twitch_stream_sessions", "followers_end", "INTEGER")
     _add_column_if_missing(conn, "twitch_stream_sessions", "follower_delta", "INTEGER")
@@ -316,7 +342,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_twitch_session_chatters_login ON twitch_session_chatters(streamer_login, session_id)"
     )
     # Lurker-Tracking: Chatters die per API gefunden wurden aber nie geschrieben haben
-    _add_column_if_missing(conn, "twitch_session_chatters", "seen_via_chatters_api", "INTEGER DEFAULT 0")
+    _add_column_if_missing(
+        conn, "twitch_session_chatters", "seen_via_chatters_api", "INTEGER DEFAULT 0"
+    )
     _add_column_if_missing(conn, "twitch_session_chatters", "last_seen_at", "TEXT")
 
     conn.execute(
@@ -385,18 +413,20 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_twitch_raid_auth_login ON twitch_raid_auth(twitch_login)"
     )
-    _add_column_if_missing(conn, "twitch_raid_auth", "legacy_access_token",  "TEXT")
+    _add_column_if_missing(conn, "twitch_raid_auth", "legacy_access_token", "TEXT")
     _add_column_if_missing(conn, "twitch_raid_auth", "legacy_refresh_token", "TEXT")
-    _add_column_if_missing(conn, "twitch_raid_auth", "legacy_scopes",        "TEXT")
-    _add_column_if_missing(conn, "twitch_raid_auth", "legacy_saved_at",      "TEXT")
-    _add_column_if_missing(conn, "twitch_raid_auth", "needs_reauth",         "INTEGER DEFAULT 0")
-    _add_column_if_missing(conn, "twitch_raid_auth", "reauth_notified_at",   "TEXT")
+    _add_column_if_missing(conn, "twitch_raid_auth", "legacy_scopes", "TEXT")
+    _add_column_if_missing(conn, "twitch_raid_auth", "legacy_saved_at", "TEXT")
+    _add_column_if_missing(
+        conn, "twitch_raid_auth", "needs_reauth", "INTEGER DEFAULT 0"
+    )
+    _add_column_if_missing(conn, "twitch_raid_auth", "reauth_notified_at", "TEXT")
     # Encrypted token storage (Phase 0: Encryption Foundation)
-    _add_column_if_missing(conn, "twitch_raid_auth", "access_token_enc",     "BLOB")
-    _add_column_if_missing(conn, "twitch_raid_auth", "refresh_token_enc",    "BLOB")
-    _add_column_if_missing(conn, "twitch_raid_auth", "enc_version",          "INTEGER DEFAULT 1")
-    _add_column_if_missing(conn, "twitch_raid_auth", "enc_kid",              "TEXT DEFAULT 'v1'")
-    _add_column_if_missing(conn, "twitch_raid_auth", "enc_migrated_at",      "TEXT")
+    _add_column_if_missing(conn, "twitch_raid_auth", "access_token_enc", "BLOB")
+    _add_column_if_missing(conn, "twitch_raid_auth", "refresh_token_enc", "BLOB")
+    _add_column_if_missing(conn, "twitch_raid_auth", "enc_version", "INTEGER DEFAULT 1")
+    _add_column_if_missing(conn, "twitch_raid_auth", "enc_kid", "TEXT DEFAULT 'v1'")
+    _add_column_if_missing(conn, "twitch_raid_auth", "enc_migrated_at", "TEXT")
 
     # Safety: Disable auto-raid for streamer entries without an active OAuth grant.
     try:
@@ -691,7 +721,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    _add_column_if_missing(conn, "twitch_hype_train_events", "event_phase", "TEXT DEFAULT 'end'")
+    _add_column_if_missing(
+        conn, "twitch_hype_train_events", "event_phase", "TEXT DEFAULT 'end'"
+    )
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_twitch_hype_train_events_session
@@ -1060,35 +1092,35 @@ def _seed_default_templates(conn: sqlite3.Connection) -> None:
             "Epic {{game}} moment by {{streamer}}! 🎮",
             '["gaming","twitch","{{game}}"]',
             "Gaming",
-            "system"
+            "system",
         ),
         (
             "Funny Moment",
             "😂 {{title}} | {{streamer}}",
             '["funny","gaming","twitch"]',
             "Entertainment",
-            "system"
+            "system",
         ),
         (
             "Pro Play",
             "Insane {{game}} play by {{streamer}} 🔥",
             '["esports","progaming","{{game}}"]',
             "Competitive",
-            "system"
+            "system",
         ),
         (
             "Clutch Moment",
             "CLUTCH! {{title}} 💪",
             '["clutch","gaming","{{game}}"]',
             "Gaming",
-            "system"
+            "system",
         ),
         (
             "Fails & Funnies",
             "This didn't go as planned 😅 | {{streamer}}",
             '["fail","funny","gaming"]',
             "Entertainment",
-            "system"
+            "system",
         ),
     ]
 
@@ -1098,7 +1130,7 @@ def _seed_default_templates(conn: sqlite3.Connection) -> None:
         (template_name, description_template, hashtags, category, created_by)
         VALUES (?, ?, ?, ?, ?)
         """,
-        templates
+        templates,
     )
 
     log.info("Seeded %d default global templates", len(templates))
@@ -1156,11 +1188,14 @@ def delete_streamer(conn: sqlite3.Connection, login: str) -> int:
         (login,),
     )
     # Child tables (reference twitch_streamers.twitch_login)
-    conn.execute("DELETE FROM twitch_clips_social_media WHERE streamer_login = ?", (login,))
-    conn.execute("DELETE FROM clip_templates_streamer WHERE streamer_login = ?", (login,))
+    conn.execute(
+        "DELETE FROM twitch_clips_social_media WHERE streamer_login = ?", (login,)
+    )
+    conn.execute(
+        "DELETE FROM clip_templates_streamer WHERE streamer_login = ?", (login,)
+    )
     conn.execute("DELETE FROM clip_last_hashtags WHERE streamer_login = ?", (login,))
     conn.execute("DELETE FROM clip_fetch_history WHERE streamer_login = ?", (login,))
     # The streamer itself
     cur = conn.execute("DELETE FROM twitch_streamers WHERE twitch_login = ?", (login,))
     return cur.rowcount or 0
-

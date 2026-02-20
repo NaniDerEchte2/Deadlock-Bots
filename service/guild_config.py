@@ -2,6 +2,7 @@
 Zentrale Guild-spezifische Konfiguration.
 Verschiebt hardcoded IDs aus verschiedenen Cogs in eine Config.
 """
+
 from typing import Set
 from dataclasses import dataclass
 

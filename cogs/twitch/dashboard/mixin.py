@@ -27,7 +27,9 @@ def _parse_env_int(var_name: str, default: int = 0) -> int:
     try:
         return int(raw)
     except ValueError:
-        log.warning("Invalid integer for %s=%r – falling back to %s", var_name, raw, default)
+        log.warning(
+            "Invalid integer for %s=%r – falling back to %s", var_name, raw, default
+        )
         return default
 
 
@@ -56,7 +58,11 @@ class TwitchDashboardMixin:
         # kleine Retry-Logik gegen gelegentliche "database is locked" Antworten
         for attempt in range(3):
             try:
-                target_game = (os.getenv("TWITCH_TARGET_GAME_NAME") or TWITCH_TARGET_GAME_NAME or "").strip()
+                target_game = (
+                    os.getenv("TWITCH_TARGET_GAME_NAME")
+                    or TWITCH_TARGET_GAME_NAME
+                    or ""
+                ).strip()
                 with storage.get_conn() as c:
                     c.execute(
                         """
@@ -155,7 +161,9 @@ class TwitchDashboardMixin:
                         (cutoff, limit * 2),
                     ).fetchall()
                 for row in rows:
-                    login = str(row["streamer"] if hasattr(row, "keys") else row[0] or "").strip()
+                    login = str(
+                        row["streamer"] if hasattr(row, "keys") else row[0] or ""
+                    ).strip()
                     if not login:
                         continue
                     lower = login.lower()
@@ -164,15 +172,28 @@ class TwitchDashboardMixin:
                     extras.append(
                         {
                             "twitch_login": login,
-                            "avg_viewers": float(row["avg_viewers"] if hasattr(row, "keys") else row[3] or 0.0),
-                            "samples": int(row["samples"] if hasattr(row, "keys") else row[1] or 0),
-                            "last_seen": str(row["last_seen"] if hasattr(row, "keys") else row[2] or ""),
+                            "avg_viewers": float(
+                                row["avg_viewers"]
+                                if hasattr(row, "keys")
+                                else row[3] or 0.0
+                            ),
+                            "samples": int(
+                                row["samples"] if hasattr(row, "keys") else row[1] or 0
+                            ),
+                            "last_seen": str(
+                                row["last_seen"]
+                                if hasattr(row, "keys")
+                                else row[2] or ""
+                            ),
                         }
                     )
                     if len(extras) >= limit:
                         break
             except Exception:
-                log.debug("Konnte Non-Partner-Suggestions fuer Analytics nicht laden", exc_info=True)
+                log.debug(
+                    "Konnte Non-Partner-Suggestions fuer Analytics nicht laden",
+                    exc_info=True,
+                )
 
         return {"partners": partners, "extras": extras}
 
@@ -274,7 +295,7 @@ class TwitchDashboardMixin:
 
         # Versuche twitch_user_id zu ermitteln
         twitch_user_id: Optional[str] = None
-        
+
         # 1. Versuche aus raid_auth zu laden
         try:
             with storage.get_conn() as conn:
@@ -285,8 +306,12 @@ class TwitchDashboardMixin:
                 if raid_row:
                     twitch_user_id = raid_row[0]
         except Exception:
-            log.debug("Konnte user_id nicht aus raid_auth laden für %s", normalized, exc_info=True)
-        
+            log.debug(
+                "Konnte user_id nicht aus raid_auth laden für %s",
+                normalized,
+                exc_info=True,
+            )
+
         # 2. Falls nicht in raid_auth: API-Call
         if not twitch_user_id and self.api:
             try:
@@ -294,9 +319,17 @@ class TwitchDashboardMixin:
                 user = users.get(normalized)
                 if user:
                     twitch_user_id = user.get("id")
-                    log.info("Fetched twitch_user_id %s for %s from API", twitch_user_id, normalized)
+                    log.info(
+                        "Fetched twitch_user_id %s for %s from API",
+                        twitch_user_id,
+                        normalized,
+                    )
             except Exception:
-                log.warning("Konnte user_id nicht von API holen für %s", normalized, exc_info=True)
+                log.warning(
+                    "Konnte user_id nicht von API holen für %s",
+                    normalized,
+                    exc_info=True,
+                )
 
         try:
             with storage.get_conn() as conn:
@@ -364,7 +397,12 @@ class TwitchDashboardMixin:
             "avg_viewer_drop_pct": None,
             "worst_ads": [],
         }
-        hype_train: dict = {"total": 0, "avg_level": 0.0, "max_level": 0, "avg_duration_s": 0.0}
+        hype_train: dict = {
+            "total": 0,
+            "avg_level": 0.0,
+            "max_level": 0,
+            "avg_duration_s": 0.0,
+        }
         bits: dict = {"total": 0, "cheer_events": 0}
         subs: dict = {"total_events": 0, "gifted": 0}
 
@@ -407,7 +445,9 @@ class TwitchDashboardMixin:
 
             timeline_map: dict = {}
             if ad_rows:
-                session_ids = list({int(r["session_id"]) for r in ad_rows if r["session_id"]})
+                session_ids = list(
+                    {int(r["session_id"]) for r in ad_rows if r["session_id"]}
+                )
                 if session_ids:
                     session_ids_json = json.dumps(session_ids)
                     viewer_rows = c.execute(
@@ -424,7 +464,10 @@ class TwitchDashboardMixin:
                     for vr in viewer_rows:
                         sid = int(vr["session_id"])
                         timeline_map.setdefault(sid, []).append(
-                            (float(vr["minutes_from_start"] or 0), int(vr["viewer_count"] or 0))
+                            (
+                                float(vr["minutes_from_start"] or 0),
+                                int(vr["viewer_count"] or 0),
+                            )
                         )
 
             drop_pcts: List[float] = []
@@ -435,8 +478,12 @@ class TwitchDashboardMixin:
                 session_start = ad["session_start"]
                 duration_s = float(ad["duration_seconds"] or 30)
                 try:
-                    ad_dt = datetime.fromisoformat(str(ad_started).replace("Z", "+00:00"))
-                    sess_dt = datetime.fromisoformat(str(session_start).replace("Z", "+00:00"))
+                    ad_dt = datetime.fromisoformat(
+                        str(ad_started).replace("Z", "+00:00")
+                    )
+                    sess_dt = datetime.fromisoformat(
+                        str(session_start).replace("Z", "+00:00")
+                    )
                     minutes_into = (ad_dt - sess_dt).total_seconds() / 60.0
                 except Exception:
                     continue
@@ -444,9 +491,13 @@ class TwitchDashboardMixin:
                 if not timeline:
                     continue
                 duration_min = duration_s / 60.0
-                pre_vals = [v for m, v in timeline if (minutes_into - 5) <= m < minutes_into]
+                pre_vals = [
+                    v for m, v in timeline if (minutes_into - 5) <= m < minutes_into
+                ]
                 post_start = minutes_into + duration_min
-                post_vals = [v for m, v in timeline if post_start <= m < (post_start + 5)]
+                post_vals = [
+                    v for m, v in timeline if post_start <= m < (post_start + 5)
+                ]
                 if not pre_vals or not post_vals:
                     continue
                 pre_avg = sum(pre_vals) / len(pre_vals)
@@ -455,12 +506,14 @@ class TwitchDashboardMixin:
                 post_avg = sum(post_vals) / len(post_vals)
                 drop_pct = (post_avg - pre_avg) / pre_avg * 100.0
                 drop_pcts.append(drop_pct)
-                worst_ads.append({
-                    "started_at": str(ad_started or "")[:16],
-                    "duration_s": int(duration_s),
-                    "drop_pct": round(drop_pct, 1),
-                    "is_automatic": bool(ad["is_automatic"]),
-                })
+                worst_ads.append(
+                    {
+                        "started_at": str(ad_started or "")[:16],
+                        "duration_s": int(duration_s),
+                        "drop_pct": round(drop_pct, 1),
+                        "is_automatic": bool(ad["is_automatic"]),
+                    }
+                )
 
             if drop_pcts:
                 ads["avg_viewer_drop_pct"] = round(sum(drop_pcts) / len(drop_pcts), 1)
@@ -483,9 +536,13 @@ class TwitchDashboardMixin:
                 ).fetchone()
                 if ht_row:
                     hype_train["total"] = int(ht_row["total_trains"] or 0)
-                    hype_train["avg_level"] = round(float(ht_row["avg_level"] or 0.0), 1)
+                    hype_train["avg_level"] = round(
+                        float(ht_row["avg_level"] or 0.0), 1
+                    )
                     hype_train["max_level"] = int(ht_row["max_level"] or 0)
-                    hype_train["avg_duration_s"] = round(float(ht_row["avg_duration"] or 0.0), 0)
+                    hype_train["avg_duration_s"] = round(
+                        float(ht_row["avg_duration"] or 0.0), 0
+                    )
             except Exception:
                 log.debug("Hype Train query fehlgeschlagen", exc_info=True)
 
@@ -545,8 +602,10 @@ class TwitchDashboardMixin:
             samples = sum(int(d.get("samples") or 0) for d in items)
             uniq = len(items)
             avg_over_streamers = (
-                sum(float(d.get("avg_viewers") or 0.0) for d in items) / float(uniq)
-            ) if uniq else 0.0
+                (sum(float(d.get("avg_viewers") or 0.0) for d in items) / float(uniq))
+                if uniq
+                else 0.0
+            )
             return samples, uniq, avg_over_streamers
 
         cat_samples, cat_uniq, cat_avg = _agg(category_top)
@@ -573,7 +632,9 @@ class TwitchDashboardMixin:
 
         return stats
 
-    async def _dashboard_streamer_analytics_data_old(self, streamer_login: str, days: int = 30) -> dict:
+    async def _dashboard_streamer_analytics_data_old(
+        self, streamer_login: str, days: int = 30
+    ) -> dict:
         """
         Comprehensive Analytics Data Aggregation.
         Calculates Channel Health Score and benchmarks against Deadlock category.
@@ -582,20 +643,25 @@ class TwitchDashboardMixin:
         import math
 
         def _pct(val: Optional[float]) -> float:
-            if val is None: return 0.0
+            if val is None:
+                return 0.0
             # Heuristic: if <= 1.0 assume ratio, else percent
-            if 0 <= val <= 1: return float(val) * 100.0
+            if 0 <= val <= 1:
+                return float(val) * 100.0
             return float(val)
 
         def _percentile_rank(val: float, population: List[float]) -> float:
-            if not population: return 50.0
+            if not population:
+                return 50.0
             population.sort()
             import bisect
+
             idx = bisect.bisect_left(population, val)
             return (idx / len(population)) * 100.0
 
         def _norm(val: float, target: float) -> float:
-            if target <= 0: return 0.0
+            if target <= 0:
+                return 0.0
             return min(100.0, (val / target) * 100.0)
 
         login = self._normalize_login(streamer_login) if streamer_login else ""
@@ -606,12 +672,12 @@ class TwitchDashboardMixin:
         # --- Data Containers ---
         sessions_data: List[dict] = []
         drops: List[dict] = []
-        
+
         # --- Accumulators ---
         total_sessions = 0
         total_duration_h = 0.0
         total_watch_time_h = 0.0
-        
+
         sum_avg_viewers = 0.0
         sum_peak_viewers = 0.0
         sum_ret10 = 0.0
@@ -636,7 +702,8 @@ class TwitchDashboardMixin:
                  WHERE started_at >= ?
                    AND (streamer_login = ? OR ? = '')
                  ORDER BY started_at DESC
-                """, (cutoff_iso, login, login)
+                """,
+                (cutoff_iso, login, login),
             ).fetchall()
 
             # Chat Messages Map (Session ID -> Count)
@@ -662,23 +729,23 @@ class TwitchDashboardMixin:
             for s in session_rows:
                 dur_sec = s["duration_seconds"] or 0
                 dur_h = dur_sec / 3600.0
-                
+
                 avg_v = float(s["avg_viewers"] or 0)
                 peak_v = int(s["peak_viewers"] or 0)
                 ret10 = _pct(s["retention_10m"])
                 drop_pct = _pct(s["dropoff_pct"])
-                
+
                 u_chat = s["unique_chatters"] or 0
                 r_chat = s["returning_chatters"] or 0
                 f_chat = s["first_time_chatters"] or 0
-                
+
                 msgs = msg_counts.get(s["id"], 0)
                 # Fallback estimate if msg table empty but stats exist
                 if msgs == 0 and u_chat > 0:
-                    msgs = u_chat * 5 # Approximation
+                    msgs = u_chat * 5  # Approximation
 
                 f_delta = s["follower_delta"] or 0
-                
+
                 # Entry
                 sess = {
                     "id": s["id"],
@@ -693,23 +760,25 @@ class TwitchDashboardMixin:
                     "messages": msgs,
                     "followers": f_delta,
                     "title": s["stream_title"] or "",
-                    "rpm": round(msgs / (dur_sec/60), 1) if dur_sec > 0 else 0
+                    "rpm": round(msgs / (dur_sec / 60), 1) if dur_sec > 0 else 0,
                 }
                 sessions_data.append(sess)
-                
+
                 # Drops for Insights
                 if drop_pct > 15:
-                    drops.append({
-                        "date": sess["date"],
-                        "pct": drop_pct,
-                        "label": s["dropoff_label"] or "?"
-                    })
+                    drops.append(
+                        {
+                            "date": sess["date"],
+                            "pct": drop_pct,
+                            "label": s["dropoff_label"] or "?",
+                        }
+                    )
 
                 # Aggregates
                 total_sessions += 1
                 total_duration_h += dur_h
-                total_watch_time_h += (avg_v * dur_h)
-                
+                total_watch_time_h += avg_v * dur_h
+
                 sum_avg_viewers += avg_v
                 sum_peak_viewers += peak_v
                 sum_ret10 += ret10
@@ -724,13 +793,13 @@ class TwitchDashboardMixin:
             # -------------------------
             raids_sent_row = conn.execute(
                 "SELECT COUNT(*) as c, SUM(viewer_count) as v FROM twitch_raid_history WHERE from_broadcaster_login=? AND executed_at >= ?",
-                (login, cutoff_iso)
+                (login, cutoff_iso),
             ).fetchone()
             raids_recv_row = conn.execute(
                 "SELECT COUNT(*) as c, SUM(viewer_count) as v FROM twitch_raid_history WHERE to_broadcaster_login=? AND executed_at >= ?",
-                (login, cutoff_iso)
+                (login, cutoff_iso),
             ).fetchone()
-            
+
             raids_sent = raids_sent_row["c"] or 0
             raids_sent_viewers = raids_sent_row["v"] or 0
             raids_recv = raids_recv_row["c"] or 0
@@ -739,7 +808,7 @@ class TwitchDashboardMixin:
             # ----------------------
             sub_row = conn.execute(
                 "SELECT total, points FROM twitch_subscriptions_snapshot WHERE twitch_login=? ORDER BY snapshot_at DESC LIMIT 1",
-                (login,)
+                (login,),
             ).fetchone()
             curr_subs = sub_row["total"] or 0 if sub_row else 0
             curr_points = sub_row["points"] or 0 if sub_row else 0
@@ -748,18 +817,18 @@ class TwitchDashboardMixin:
             # ---------------------------
             clicks_row = conn.execute(
                 "SELECT COUNT(*) as c FROM twitch_link_clicks WHERE streamer_login=? AND clicked_at >= ?",
-                (login, cutoff_iso)
+                (login, cutoff_iso),
             ).fetchone()
             link_clicks = clicks_row["c"] or 0 if clicks_row else 0
 
             # 5. Benchmarking / Population Data
             # ---------------------------------
             # We need population distributions for percentiles
-            
+
             # Category Avg Viewers Distribution
             pop_cat_rows = conn.execute(
                 "SELECT AVG(viewer_count) as v FROM twitch_stats_category WHERE ts_utc >= ? GROUP BY streamer",
-                (cutoff_iso,)
+                (cutoff_iso,),
             ).fetchall()
             pop_avg_viewers = [r["v"] for r in pop_cat_rows if r["v"] is not None]
 
@@ -775,97 +844,114 @@ class TwitchDashboardMixin:
                   FROM twitch_stream_sessions 
                  WHERE started_at >= ? 
                  GROUP BY streamer_login
-                """, (cutoff_iso,)
+                """,
+                (cutoff_iso,),
             ).fetchall()
-            
+
             cohort_avg = [float(r["avg_v"] or 0) for r in cohort_rows]
             cohort_ret10 = [_pct(r["r10"]) for r in cohort_rows]
             cohort_growth = [int(r["growth"] or 0) for r in cohort_rows]
             cohort_chat = [int(r["chat"] or 0) for r in cohort_rows]
 
-
         # --- Metric Calculations ---
-        
+
         # Averages
         avg_v = sum_avg_viewers / max(total_sessions, 1)
-        peak_v = sum_peak_viewers / max(total_sessions, 1) # Avg Peak
+        peak_v = sum_peak_viewers / max(total_sessions, 1)  # Avg Peak
         avg_ret10 = sum_ret10 / max(total_sessions, 1)
         avg_drop = sum_dropoff / max(total_sessions, 1)
-        
+
         # Rates
-        chat_rate = (sum_unique_chatters / max(total_sessions, 1)) / max(avg_v, 1) * 100 # Chatters per 100 viewers
+        chat_rate = (
+            (sum_unique_chatters / max(total_sessions, 1)) / max(avg_v, 1) * 100
+        )  # Chatters per 100 viewers
         returning_rate = (sum_returning_chatters / max(sum_unique_chatters, 1)) * 100
-        conversion_rate = (sum_followers / max(sum_unique_chatters, 1)) * 100 # Follows per unique chatter (proxy for unique viewer)
-        
-        monetization_efficiency = curr_points / max(avg_v, 1) # Points per Viewer
-        
-        network_ratio = raids_sent / max(total_sessions, 1) # Raids sent per session
-        
+        conversion_rate = (
+            sum_followers / max(sum_unique_chatters, 1)
+        ) * 100  # Follows per unique chatter (proxy for unique viewer)
+
+        monetization_efficiency = curr_points / max(avg_v, 1)  # Points per Viewer
+
+        network_ratio = raids_sent / max(total_sessions, 1)  # Raids sent per session
+
         # --- SCORING ENGINE (Improved) ---
-        import math
-        
+
         # Logarithmic scale for Reach to be fair to small streamers
         def _score_log(val):
-            if val <= 1: return 0
-            return min(100, math.log10(val) * 33) # 10->33, 100->66, 1000->99
+            if val <= 1:
+                return 0
+            return min(100, math.log10(val) * 33)  # 10->33, 100->66, 1000->99
 
         # 1. Reach (25%)
         # Mix of Percentile (vs Peers) and Absolute Log Scale (Progress)
-        s_reach_avg = _percentile_rank(avg_v, cohort_avg if cohort_avg else pop_avg_viewers)
+        s_reach_avg = _percentile_rank(
+            avg_v, cohort_avg if cohort_avg else pop_avg_viewers
+        )
         s_reach_abs = _score_log(avg_v)
         score_reach = (s_reach_avg * 0.5) + (s_reach_abs * 0.5)
-        
+
         # 2. Retention (25%)
         # Benchmarks: 30% is low, 70% is high
-        s_ret_raw = _norm(avg_ret10 - 20, 50) # 20% -> 0, 70% -> 100
+        s_ret_raw = _norm(avg_ret10 - 20, 50)  # 20% -> 0, 70% -> 100
         s_ret_cohort = _percentile_rank(avg_ret10, cohort_ret10)
-        s_drop = _norm(50 - avg_drop, 40) # 50% drop -> 0, 10% drop -> 100
+        s_drop = _norm(50 - avg_drop, 40)  # 50% drop -> 0, 10% drop -> 100
         score_retention = (s_ret_raw * 0.4) + (s_ret_cohort * 0.3) + (s_drop * 0.3)
-        
+
         # 3. Engagement (20%)
         # Benchmarks: 5 chatters/100v is low, 25 is high
         s_chat_density = _norm(chat_rate, 25)
-        s_returning = _norm(returning_rate, 60) # 60% returning is very loyal
+        s_returning = _norm(returning_rate, 60)  # 60% returning is very loyal
         s_clicks = _norm(link_clicks / max(total_duration_h, 1), 0.5)
-        s_chat_cohort = _percentile_rank(sum_unique_chatters / max(total_sessions, 1), cohort_chat)
-        score_engagement = (s_chat_density * 0.4) + (s_returning * 0.2) + (s_clicks * 0.2) + (s_chat_cohort * 0.2)
-        
+        s_chat_cohort = _percentile_rank(
+            sum_unique_chatters / max(total_sessions, 1), cohort_chat
+        )
+        score_engagement = (
+            (s_chat_density * 0.4)
+            + (s_returning * 0.2)
+            + (s_clicks * 0.2)
+            + (s_chat_cohort * 0.2)
+        )
+
         # 4. Growth (15%)
         s_growth_cohort = _percentile_rank(sum_followers, cohort_growth)
-        s_conversion = _norm(conversion_rate, 5) # 5% conversion is good
+        s_conversion = _norm(conversion_rate, 5)  # 5% conversion is good
         score_growth = (s_growth_cohort * 0.6) + (s_conversion * 0.4)
-        
+
         # 5. Monetization (10%)
         # Target: 2 points per viewer
         score_money = _norm(monetization_efficiency, 2.5)
-        
+
         # 6. Network (5%)
         s_raid_sent = _norm(network_ratio, 0.5)
-        s_raid_recv = _norm(raids_recv, 5) # 5 incoming raids in period
+        s_raid_recv = _norm(raids_recv, 5)  # 5 incoming raids in period
         score_network = (s_raid_sent * 0.6) + (s_raid_recv * 0.4)
-        
+
         # Total
         total_score = (
-            score_reach * 0.25 +
-            score_retention * 0.25 +
-            score_engagement * 0.20 +
-            score_growth * 0.15 +
-            score_money * 0.10 +
-            score_network * 0.05
+            score_reach * 0.25
+            + score_retention * 0.25
+            + score_engagement * 0.20
+            + score_growth * 0.15
+            + score_money * 0.10
+            + score_network * 0.05
         )
-        
+
         # --- Deep Insights & Correlations ---
-        
+
         findings = []
         actions = []
-        
+
         # Correlation Helper
         def _correlate(list_a, list_b):
-            if len(list_a) != len(list_b) or len(list_a) < 3: return 0
+            if len(list_a) != len(list_b) or len(list_a) < 3:
+                return 0
             avg_a = sum(list_a) / len(list_a)
             avg_b = sum(list_b) / len(list_b)
             num = sum((a - avg_a) * (b - avg_b) for a, b in zip(list_a, list_b))
-            den = math.sqrt(sum((a - avg_a)**2 for a in list_a) * sum((b - avg_b)**2 for b in list_b))
+            den = math.sqrt(
+                sum((a - avg_a) ** 2 for a in list_a)
+                * sum((b - avg_b) ** 2 for b in list_b)
+            )
             return num / den if den != 0 else 0
 
         # Extract vectors for correlation
@@ -873,47 +959,126 @@ class TwitchDashboardMixin:
         vec_viewers = [s["avgViewers"] for s in sessions_data]
         vec_chat = [s["messages"] for s in sessions_data]
         vec_ret = [s["retention10m"] for s in sessions_data]
-        
+
         corr_dur_view = _correlate(vec_dur, vec_viewers)
         corr_chat_ret = _correlate(vec_chat, vec_ret)
-        
+
         # 1. Retention Analysis
         if avg_ret10 < 35:
-            findings.append({"type": "neg", "title": "Kritischer Viewer-Verlust", "text": f"Nur {avg_ret10:.1f}% deiner Zuschauer bleiben länger als 10 Minuten. Dies ist der Hauptgrund für stagnierendes Wachstum."})
-            actions.append({"tag": "Content", "text": "Strukturiere deine ersten 15 Minuten neu: Kein 'Warten auf Zuschauer', starte sofort mit Content/Gameplay."})
+            findings.append(
+                {
+                    "type": "neg",
+                    "title": "Kritischer Viewer-Verlust",
+                    "text": f"Nur {avg_ret10:.1f}% deiner Zuschauer bleiben länger als 10 Minuten. Dies ist der Hauptgrund für stagnierendes Wachstum.",
+                }
+            )
+            actions.append(
+                {
+                    "tag": "Content",
+                    "text": "Strukturiere deine ersten 15 Minuten neu: Kein 'Warten auf Zuschauer', starte sofort mit Content/Gameplay.",
+                }
+            )
         elif avg_ret10 > 60:
-            findings.append({"type": "pos", "title": "Starke Bindung", "text": "Deine Zuschauer bleiben überdurchschnittlich lange (Top-Tier Retention). Das Fundament für Wachstum steht."})
+            findings.append(
+                {
+                    "type": "pos",
+                    "title": "Starke Bindung",
+                    "text": "Deine Zuschauer bleiben überdurchschnittlich lange (Top-Tier Retention). Das Fundament für Wachstum steht.",
+                }
+            )
 
         # 2. Chat & Community
         if chat_rate < 5:
-            findings.append({"type": "neg", "title": "Stiller Chat", "text": "Weniger als 5% deiner Zuschauer chatten. Das schadet der Discovery und Bindung."})
-            actions.append({"tag": "Engagement", "text": "Nutze 'Call-to-Action': Stelle alle 15 Minuten eine offene Frage an den Chat oder nutze Predictions."})
+            findings.append(
+                {
+                    "type": "neg",
+                    "title": "Stiller Chat",
+                    "text": "Weniger als 5% deiner Zuschauer chatten. Das schadet der Discovery und Bindung.",
+                }
+            )
+            actions.append(
+                {
+                    "tag": "Engagement",
+                    "text": "Nutze 'Call-to-Action': Stelle alle 15 Minuten eine offene Frage an den Chat oder nutze Predictions.",
+                }
+            )
         elif corr_chat_ret > 0.4:
-            findings.append({"type": "pos", "title": "Chat treibt Retention", "text": "Daten zeigen: Wenn dein Chat aktiv ist, bleiben die Leute deutlich länger. Interaktion ist dein Schlüssel zum Erfolg."})
+            findings.append(
+                {
+                    "type": "pos",
+                    "title": "Chat treibt Retention",
+                    "text": "Daten zeigen: Wenn dein Chat aktiv ist, bleiben die Leute deutlich länger. Interaktion ist dein Schlüssel zum Erfolg.",
+                }
+            )
 
         # 3. Schedule & Duration
         if corr_dur_view < -0.3:
-            findings.append({"type": "warn", "title": "Zu lange Streams?", "text": "Deine Zuschauerzahlen sinken bei längeren Streams deutlich. Deine Audience ermüdet."})
-            actions.append({"tag": "Schedule", "text": "Versuche, deine Streams um 30-60 Minuten zu kürzen und die Energie zu komprimieren."})
-        
+            findings.append(
+                {
+                    "type": "warn",
+                    "title": "Zu lange Streams?",
+                    "text": "Deine Zuschauerzahlen sinken bei längeren Streams deutlich. Deine Audience ermüdet.",
+                }
+            )
+            actions.append(
+                {
+                    "tag": "Schedule",
+                    "text": "Versuche, deine Streams um 30-60 Minuten zu kürzen und die Energie zu komprimieren.",
+                }
+            )
+
         # 4. Networking
         if network_ratio < 0.1:
-            findings.append({"type": "neg", "title": "Isolierte Insel", "text": "Du raidest fast nie. Twitch ist ein Geben und Nehmen."})
-            actions.append({"tag": "Network", "text": "Suche dir 2-3 Deadlock-Partner ähnlicher Größe und raide sie konsequent nach jedem Stream."})
+            findings.append(
+                {
+                    "type": "neg",
+                    "title": "Isolierte Insel",
+                    "text": "Du raidest fast nie. Twitch ist ein Geben und Nehmen.",
+                }
+            )
+            actions.append(
+                {
+                    "tag": "Network",
+                    "text": "Suche dir 2-3 Deadlock-Partner ähnlicher Größe und raide sie konsequent nach jedem Stream.",
+                }
+            )
         elif raids_recv > 5:
-            findings.append({"type": "pos", "title": "Guter Netzwerk-Hub", "text": "Du wirst oft geraidet. Deine Networking-Strategie funktioniert."})
+            findings.append(
+                {
+                    "type": "pos",
+                    "title": "Guter Netzwerk-Hub",
+                    "text": "Du wirst oft geraidet. Deine Networking-Strategie funktioniert.",
+                }
+            )
 
         # 5. Growth
         if conversion_rate < 1.0 and avg_v > 10:
-             findings.append({"type": "neg", "title": "Niedrige Conversion", "text": "Zuschauer schauen zu, folgen aber nicht. Der 'Reason to Follow' fehlt."})
-             actions.append({"tag": "Growth", "text": "Erinnere an Follows in High-Hype-Momenten (nicht am Anfang). Definiere ein Follow-Goal im Overlay."})
+            findings.append(
+                {
+                    "type": "neg",
+                    "title": "Niedrige Conversion",
+                    "text": "Zuschauer schauen zu, folgen aber nicht. Der 'Reason to Follow' fehlt.",
+                }
+            )
+            actions.append(
+                {
+                    "tag": "Growth",
+                    "text": "Erinnere an Follows in High-Hype-Momenten (nicht am Anfang). Definiere ein Follow-Goal im Overlay.",
+                }
+            )
 
         # --- Benchmark Comparison ---
-        avg_pop_viewers = sum(pop_avg_viewers)/len(pop_avg_viewers) if pop_avg_viewers else 0
-        avg_pop_ret = sum(cohort_ret10)/len(cohort_ret10) if cohort_ret10 else 0
-        
+        avg_pop_viewers = (
+            sum(pop_avg_viewers) / len(pop_avg_viewers) if pop_avg_viewers else 0
+        )
+        avg_pop_ret = sum(cohort_ret10) / len(cohort_ret10) if cohort_ret10 else 0
+
         benchmarks = {
-            "avgViewers": {"you": round(avg_v, 1), "avg": round(avg_pop_viewers, 1), "top10": round(_percentile_rank(90, pop_avg_viewers), 1)},
+            "avgViewers": {
+                "you": round(avg_v, 1),
+                "avg": round(avg_pop_viewers, 1),
+                "top10": round(_percentile_rank(90, pop_avg_viewers), 1),
+            },
             "retention": {"you": round(avg_ret10, 1), "avg": round(avg_pop_ret, 1)},
         }
 
@@ -924,9 +1089,9 @@ class TwitchDashboardMixin:
             "engagement": round(score_engagement),
             "growth": round(score_growth),
             "monetization": round(score_money),
-            "network": round(score_network)
+            "network": round(score_network),
         }
-        
+
         summary = {
             "avgViewers": round(avg_v, 1),
             "peakViewers": peak_v,
@@ -938,7 +1103,7 @@ class TwitchDashboardMixin:
             "raidsSent": raids_sent,
             "raidsRecv": raids_recv,
             "linkClicks": link_clicks,
-            "uniqueChatters": sum_unique_chatters
+            "uniqueChatters": sum_unique_chatters,
         }
 
         return {
@@ -951,20 +1116,29 @@ class TwitchDashboardMixin:
             "actions": actions,
             "correlations": {
                 "durationVsViewers": round(corr_dur_view, 2),
-                "chatVsRetention": round(corr_chat_ret, 2)
+                "chatVsRetention": round(corr_chat_ret, 2),
             },
-            "retention": {"avg10m": round(avg_ret10, 1), "avgDrop": round(avg_drop, 1), "drops": drops},
-            "network": {"sent": raids_sent, "received": raids_recv, "sentViewers": raids_sent_viewers},
+            "retention": {
+                "avg10m": round(avg_ret10, 1),
+                "avgDrop": round(avg_drop, 1),
+                "drops": drops,
+            },
+            "network": {
+                "sent": raids_sent,
+                "received": raids_recv,
+                "sentViewers": raids_sent_viewers,
+            },
         }
 
-    async def _dashboard_streamer_analytics_data(self, streamer_login: str, days: int = 30) -> dict:
+    async def _dashboard_streamer_analytics_data(
+        self, streamer_login: str, days: int = 30
+    ) -> dict:
         """
         New comprehensive analytics using AnalyticsBackendExtended.
         Returns data structure compatible with the new React dashboard.
         """
         return await AnalyticsBackendExtended.get_comprehensive_analytics(
-            streamer_login=streamer_login,
-            days=days
+            streamer_login=streamer_login, days=days
         )
 
     async def _dashboard_streamer_overview(self, login: str) -> dict:
@@ -1107,14 +1281,19 @@ class TwitchDashboardMixin:
 
         user_id_raw = row_data.get("discord_user_id")
         if not user_id_raw:
-            log.info("Streamer verification: no Discord ID stored for %s", row_data.get("discord_display_name"))
+            log.info(
+                "Streamer verification: no Discord ID stored for %s",
+                row_data.get("discord_display_name"),
+            )
             return ""
 
         try:
             user_id = int(str(user_id_raw))
         except (TypeError, ValueError):
             log.warning("Streamer verification: invalid Discord ID %r", user_id_raw)
-            return "(Streamer-Rolle konnte nicht vergeben werden – ungültige Discord-ID)"
+            return (
+                "(Streamer-Rolle konnte nicht vergeben werden – ungültige Discord-ID)"
+            )
 
         guild_candidates: List[discord.Guild] = []
         seen: set[int] = set()
@@ -1141,7 +1320,11 @@ class TwitchDashboardMixin:
                 except discord.NotFound:
                     member = None
                 except discord.HTTPException as exc:
-                    log.warning("Streamer verification: fetch_member failed in guild %s: %s", guild.id, exc)
+                    log.warning(
+                        "Streamer verification: fetch_member failed in guild %s: %s",
+                        guild.id,
+                        exc,
+                    )
                     member = None
 
             if member is None:
@@ -1151,7 +1334,9 @@ class TwitchDashboardMixin:
                 return ""
 
             try:
-                await member.add_roles(role, reason="Streamer-Verifizierung über Dashboard bestätigt")
+                await member.add_roles(
+                    role, reason="Streamer-Verifizierung über Dashboard bestätigt"
+                )
                 log.info(
                     "Streamer verification: assigned role %s to %s in guild %s",
                     STREAMER_ROLE_ID,
@@ -1182,20 +1367,32 @@ class TwitchDashboardMixin:
         )
         return "(Streamer-Rolle konnte nicht vergeben werden – Mitglied/Rolle nicht gefunden)"
 
-    async def _notify_verification_success(self, login: str, row_data: Optional[dict]) -> str:
+    async def _notify_verification_success(
+        self, login: str, row_data: Optional[dict]
+    ) -> str:
         if not row_data:
-            log.info("Keine Discord-Daten für %s zum Versenden der Erfolgsnachricht gefunden", login)
+            log.info(
+                "Keine Discord-Daten für %s zum Versenden der Erfolgsnachricht gefunden",
+                login,
+            )
             return ""
 
         user_id_raw = row_data.get("discord_user_id")
         if not user_id_raw:
-            log.info("Keine Discord-ID für %s hinterlegt – überspringe Erfolgsnachricht", login)
+            log.info(
+                "Keine Discord-ID für %s hinterlegt – überspringe Erfolgsnachricht",
+                login,
+            )
             return ""
 
         try:
             user_id_int = int(str(user_id_raw))
         except (TypeError, ValueError):
-            log.warning("Ungültige Discord-ID %r für %s – keine Erfolgsnachricht", user_id_raw, login)
+            log.warning(
+                "Ungültige Discord-ID %r für %s – keine Erfolgsnachricht",
+                user_id_raw,
+                login,
+            )
             return "(Discord-DM konnte nicht zugestellt werden)"
 
         user = self.bot.get_user(user_id_int)
@@ -1209,19 +1406,24 @@ class TwitchDashboardMixin:
                 user = None
 
         if user is None:
-            log.warning("Discord-User %s (%s) konnte nicht gefunden werden", user_id_int, login)
+            log.warning(
+                "Discord-User %s (%s) konnte nicht gefunden werden", user_id_int, login
+            )
             return "(Discord-DM konnte nicht zugestellt werden)"
 
         try:
             await user.send(VERIFICATION_SUCCESS_DM_MESSAGE)
         except discord.Forbidden:
             log.warning(
-                "DM an %s (%s) wegen erfolgreicher Verifizierung blockiert", user_id_int, login
+                "DM an %s (%s) wegen erfolgreicher Verifizierung blockiert",
+                user_id_int,
+                login,
             )
             return "(Discord-DM konnte nicht zugestellt werden)"
         except discord.HTTPException:
             log.exception(
-                "Konnte Erfolgsnachricht nach Verifizierung nicht an %s senden", user_id_int
+                "Konnte Erfolgsnachricht nach Verifizierung nicht an %s senden",
+                user_id_int,
             )
             return "(Discord-DM konnte nicht zugestellt werden)"
 
@@ -1351,18 +1553,25 @@ class TwitchDashboardMixin:
             try:
                 await user.send(message)
             except discord.Forbidden:
-                log.warning("DM an %s (%s) wegen fehlgeschlagener Verifizierung blockiert", user_id_int, login)
-                return (
-                    f"Konnte {row_data.get('discord_display_name') or user.name} nicht per DM erreichen."
+                log.warning(
+                    "DM an %s (%s) wegen fehlgeschlagener Verifizierung blockiert",
+                    user_id_int,
+                    login,
                 )
+                return f"Konnte {row_data.get('discord_display_name') or user.name} nicht per DM erreichen."
             except discord.HTTPException:
-                log.exception("Konnte Verifizierungsfehler-Nachricht nicht senden an %s", user_id_int)
+                log.exception(
+                    "Konnte Verifizierungsfehler-Nachricht nicht senden an %s",
+                    user_id_int,
+                )
                 return "Nachricht konnte nicht gesendet werden"
 
-            log.info("Verifizierungsfehler-Benachrichtigung an %s (%s) gesendet", user_id_int, login)
-            return (
-                f"{login}: Discord-User wurde über die fehlgeschlagene Verifizierung informiert"
+            log.info(
+                "Verifizierungsfehler-Benachrichtigung an %s (%s) gesendet",
+                user_id_int,
+                login,
             )
+            return f"{login}: Discord-User wurde über die fehlgeschlagene Verifizierung informiert"
         return "Unbekannter Modus"
 
     async def _reload_twitch_cog(self) -> str:
@@ -1371,7 +1580,7 @@ class TwitchDashboardMixin:
         Verwendet explizites unload → load statt reload_extension(),
         damit bei einem fehlgeschlagenen vorherigen Reload der Cog
         nicht in einem inkonsistenten "already loaded" Zustand bleibt.
-        
+
         Wartet nach dem Unload explizit auf Port-Freigabe, damit
         der neue Cog sauber starten kann.
         """
@@ -1380,12 +1589,12 @@ class TwitchDashboardMixin:
             try:
                 await self.bot.unload_extension("cogs.twitch")
                 log.info("Twitch cog unloaded for reload")
-                
+
                 # Warte explizit darauf, dass alle Ressourcen freigegeben wurden
                 # (besonders wichtig: Ports 4343 und 8765)
                 log.info("Warte 3 Sekunden auf vollständige Ressourcen-Freigabe...")
                 await asyncio.sleep(3.0)
-                
+
             except Exception as unload_err:
                 log.warning("Twitch cog unload before reload: %s", unload_err)
                 # Auch bei Fehler kurz warten, damit teilweise Cleanups Zeit haben
@@ -1401,15 +1610,17 @@ class TwitchDashboardMixin:
 
     async def _start_dashboard(self):
         if not getattr(self, "_dashboard_embedded", True):
-            log.debug("Twitch dashboard embedded server disabled; skipping _start_dashboard")
+            log.debug(
+                "Twitch dashboard embedded server disabled; skipping _start_dashboard"
+            )
             return
-        
+
         # Retry logic for port availability during reloads
         max_retries = 5
         retry_delay = 0.5
         app = None
         runner = None
-        
+
         for attempt in range(max_retries):
             try:
                 app = build_v2_app(
@@ -1418,8 +1629,12 @@ class TwitchDashboardMixin:
                     partner_token=self._partner_dashboard_token,
                     oauth_client_id=self.client_id or None,
                     oauth_client_secret=self.client_secret or None,
-                    oauth_redirect_uri=getattr(self, "_dashboard_auth_redirect_uri", None),
-                    session_ttl_seconds=getattr(self, "_dashboard_session_ttl", 12 * 3600),
+                    oauth_redirect_uri=getattr(
+                        self, "_dashboard_auth_redirect_uri", None
+                    ),
+                    session_ttl_seconds=getattr(
+                        self, "_dashboard_session_ttl", 12 * 3600
+                    ),
                     legacy_stats_url=getattr(self, "_legacy_stats_url", None),
                     add_cb=self._dashboard_add,
                     remove_cb=self._dashboard_remove,
@@ -1432,31 +1647,47 @@ class TwitchDashboardMixin:
                     raid_history_cb=getattr(self, "_dashboard_raid_history", None),
                     raid_bot=getattr(self, "_raid_bot", None),
                     reload_cb=self._reload_twitch_cog,
-                    eventsub_webhook_handler=getattr(self, "_eventsub_webhook_handler", None),
+                    eventsub_webhook_handler=getattr(
+                        self, "_eventsub_webhook_handler", None
+                    ),
                 )
                 runner = web.AppRunner(app)
                 await runner.setup()
-                site = web.TCPSite(runner, host=self._dashboard_host, port=self._dashboard_port)
+                site = web.TCPSite(
+                    runner, host=self._dashboard_host, port=self._dashboard_port
+                )
                 await site.start()
                 self._web = runner
                 self._web_app = app
-                log.debug("Twitch dashboard running on http://%s:%s/twitch", self._dashboard_host, self._dashboard_port)
+                log.debug(
+                    "Twitch dashboard running on http://%s:%s/twitch",
+                    self._dashboard_host,
+                    self._dashboard_port,
+                )
                 return
             except OSError as e:
                 if runner:
                     await runner.cleanup()
-                
+
                 # Check for address in use (WinError 10048 on Windows, EADDRINUSE=98 on Linux)
                 import errno as _errno
+
                 is_addr_in_use = e.errno in (10048, getattr(_errno, "EADDRINUSE", 98))
-                
+
                 if is_addr_in_use and attempt < max_retries - 1:
-                    log.debug("Twitch dashboard port %s belegt, versuche es erneut in %ss... (Versuch %s/%s)", 
-                              self._dashboard_port, retry_delay, attempt + 1, max_retries)
+                    log.debug(
+                        "Twitch dashboard port %s belegt, versuche es erneut in %ss... (Versuch %s/%s)",
+                        self._dashboard_port,
+                        retry_delay,
+                        attempt + 1,
+                        max_retries,
+                    )
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2
                     continue
-                log.exception("Konnte Dashboard nicht starten (Port belegt oder anderer Fehler)")
+                log.exception(
+                    "Konnte Dashboard nicht starten (Port belegt oder anderer Fehler)"
+                )
                 break
             except Exception:
                 if runner:

@@ -30,7 +30,9 @@ except Exception as _dashboard_import_error:
 __all__ = ["MasterBot"]
 
 
-class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, commands.Bot):
+class MasterBot(
+    LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, commands.Bot
+):
     """
     Master Discord Bot mit:
      - Auto-Discovery + Blocklist
@@ -84,13 +86,17 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
 
         # Dashboard is now loaded as a Cog (cogs/dashboard_cog.py)
         self.dashboard: Optional[DashboardServer] = None  # Set by DashboardCog
-        self._dashboard_start_task: Optional[asyncio.Task[None]] = None  # Legacy, kept for compatibility
+        self._dashboard_start_task: Optional[asyncio.Task[None]] = (
+            None  # Legacy, kept for compatibility
+        )
 
         self.standalone_manager = None
         self.setup_standalone_manager()
 
         try:
-            self.per_cog_unload_timeout = float(os.getenv("PER_COG_UNLOAD_TIMEOUT", "3.0"))
+            self.per_cog_unload_timeout = float(
+                os.getenv("PER_COG_UNLOAD_TIMEOUT", "3.0")
+            )
         except ValueError:
             self.per_cog_unload_timeout = 3.0
 
@@ -99,7 +105,9 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         Delegate a full-process restart to the lifecycle supervisor if available.
         """
         if not self.lifecycle:
-            logging.warning("Restart requested (%s) aber kein Lifecycle vorhanden", reason)
+            logging.warning(
+                "Restart requested (%s) aber kein Lifecycle vorhanden", reason
+            )
             return False
         return await self.lifecycle.request_restart(reason=reason)
 
@@ -107,10 +115,22 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
         logging.info("Master Bot setup starting...")
 
         secret_mode = (os.getenv("SECRET_LOG_MODE") or "off").lower()
-        _log_secret_present("Steam API Key", ["STEAM_API_KEY", "STEAM_WEB_API_KEY"], mode=secret_mode)
-        _log_secret_present("Discord Token (Master)", ["DISCORD_TOKEN", "BOT_TOKEN"], mode="off")
-        _log_secret_present("Twitch Client Credentials", ["TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET"], mode=secret_mode)
-        _log_secret_present("Twitch Chat Token", ["TWITCH_BOT_TOKEN", "TWITCH_BOT_TOKEN_FILE"], mode=secret_mode)
+        _log_secret_present(
+            "Steam API Key", ["STEAM_API_KEY", "STEAM_WEB_API_KEY"], mode=secret_mode
+        )
+        _log_secret_present(
+            "Discord Token (Master)", ["DISCORD_TOKEN", "BOT_TOKEN"], mode="off"
+        )
+        _log_secret_present(
+            "Twitch Client Credentials",
+            ["TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET"],
+            mode=secret_mode,
+        )
+        _log_secret_present(
+            "Twitch Chat Token",
+            ["TWITCH_BOT_TOKEN", "TWITCH_BOT_TOKEN_FILE"],
+            mode=secret_mode,
+        )
 
         _init_db_if_available()
         await self.load_all_cogs()
@@ -138,9 +158,13 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
             except Exception as exc:
                 logging.error(f"Fehler beim Stoppen des Standalone-Managers: {exc}")
 
-        to_unload = [ext for ext in list(self.extensions.keys()) if ext.startswith("cogs.")]
+        to_unload = [
+            ext for ext in list(self.extensions.keys()) if ext.startswith("cogs.")
+        ]
         if to_unload:
-            logging.info(f"Unloading {len(to_unload)} cogs with timeout {self.per_cog_unload_timeout:.1f}s each ...")
+            logging.info(
+                f"Unloading {len(to_unload)} cogs with timeout {self.per_cog_unload_timeout:.1f}s each ..."
+            )
             _ = await self.unload_many(to_unload, timeout=self.per_cog_unload_timeout)
 
         try:
@@ -151,7 +175,9 @@ class MasterBot(LoggingMixin, CogLoaderMixin, PresenceMixin, StandaloneMixin, co
             await asyncio.wait_for(super().close(), timeout=timeout)
             logging.info("discord.Client.close() returned")
         except asyncio.TimeoutError:
-            logging.error(f"discord.Client.close() timed out after {timeout:.1f}s; continuing shutdown")
+            logging.error(
+                f"discord.Client.close() timed out after {timeout:.1f}s; continuing shutdown"
+            )
         except Exception as e:
             logging.error(f"Error in discord.Client.close(): {e}")
 

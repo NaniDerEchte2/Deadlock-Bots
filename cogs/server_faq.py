@@ -39,6 +39,7 @@ DEBUG_FAQ = os.getenv("DEADLOCK_FAQ_DEBUG", "0").strip() in {"1", "true", "TRUE"
 
 # --- ENV-Loader ---------------------------------------------------------------
 
+
 def _ensure_central_env_loaded() -> None:
     """Lädt den zentralen .env-Pfad, falls der API-Key noch fehlt."""
     if os.getenv("OPENAI_API_KEY") or os.getenv("DEADLOCK_OPENAI_KEY"):
@@ -171,6 +172,7 @@ Was ist dieses Kleiner Tipp für besseres Voice-Erlebnis vom Bot da warum bekomm
 
 # --- UI -----------------------------------------------------------------------
 
+
 class FAQModal(discord.ui.Modal):
     """Modal, um Fragen an das Server FAQ zu stellen."""
 
@@ -232,12 +234,12 @@ class FAQAskView(discord.ui.View):
 
 # --- Cog ----------------------------------------------------------------------
 
+
 class ServerFAQ(commands.Cog):
     """Deadlock-spezifischer FAQ-Bot, der auf GPT-Antworten zurückgreift."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-
 
     # ---- Antwort erzeugen ----------------------------------------------------
 
@@ -264,9 +266,13 @@ class ServerFAQ(commands.Cog):
         if patchnote_context:
             context_parts.append(f"Patchnotes:\n{patchnote_context}")
 
-        composed_user_prompt = "Kontext:\n" + "\n\n".join(context_parts) + f"\n\nFrage:\n{question.strip()}"
+        composed_user_prompt = (
+            "Kontext:\n"
+            + "\n\n".join(context_parts)
+            + f"\n\nFrage:\n{question.strip()}"
+        )
 
-        ai = getattr(self.bot, 'get_cog', lambda name: None)("AIConnector")
+        ai = getattr(self.bot, "get_cog", lambda name: None)("AIConnector")
         if not ai:
             fallback = (
                 "Der FAQ-Bot steht aktuell nicht zur Verfügung. "
@@ -286,9 +292,7 @@ class ServerFAQ(commands.Cog):
         metadata.update(meta_resp)
 
         if not answer_text:
-            fallback = (
-                "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
-            )
+            fallback = "Ich bin mir nicht sicher. Wende dich bitte mit dieser Frage an @earlysalty, den Server Owner."
             metadata.setdefault("error", "no_response")
             return fallback, metadata
 
@@ -431,4 +435,3 @@ async def setup(bot: commands.Bot) -> None:
             type=discord.AppCommandType.chat_input,
         )
         bot.tree.add_command(faq_cog.faq)
-

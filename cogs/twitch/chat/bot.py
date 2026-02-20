@@ -1,4 +1,3 @@
-
 # cogs/twitch/twitch_chat_bot.py
 """
 Twitch IRC Chat Bot für Twitch-Bot-Steuerung.
@@ -10,6 +9,7 @@ Streamer können den Twitch-Bot direkt über Twitch-Chat-Commands steuern:
 - !raid_history - Zeigt die letzten Raids
 - !clip - Erstellt einen Clip und postet den Link
 """
+
 import asyncio
 import copy
 import logging
@@ -57,7 +57,9 @@ def _setup_twitch_logging():
     # Prüfe ob Handler bereits existiert (um Duplikate bei Reloads zu vermeiden)
     exists = False
     for h in twitch_log.handlers:
-        if isinstance(h, logging.handlers.RotatingFileHandler) and str(h.baseFilename).endswith("twitch_bot.log"):
+        if isinstance(h, logging.handlers.RotatingFileHandler) and str(
+            h.baseFilename
+        ).endswith("twitch_bot.log"):
             h.setLevel(logging.INFO)
             exists = True
             break
@@ -67,9 +69,11 @@ def _setup_twitch_logging():
             file_path,
             maxBytes=5 * 1024 * 1024,  # 5MB
             backupCount=5,
-            encoding="utf-8"
+            encoding="utf-8",
         )
-        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
         handler.setFormatter(formatter)
         handler.setLevel(logging.INFO)
         twitch_log.addHandler(handler)
@@ -81,6 +85,7 @@ log = logging.getLogger("TwitchStreams.ChatBot")
 
 
 if TWITCHIO_AVAILABLE:
+
     class RaidChatBot(
         TokenPersistenceMixin,
         ModerationMixin,
@@ -126,7 +131,8 @@ if TWITCHIO_AVAILABLE:
             super().__init__(
                 client_id=client_id,
                 client_secret=client_secret,
-                bot_id=bot_id or "",  # Fallback auf leeren String falls None (für TwitchIO Kompatibilität)
+                bot_id=bot_id
+                or "",  # Fallback auf leeren String falls None (für TwitchIO Kompatibilität)
                 prefix=prefix,
                 case_insensitive=True,
                 **base_kwargs,
@@ -155,9 +161,11 @@ if TWITCHIO_AVAILABLE:
             self._chat_category_cache: Dict[str, Tuple[float, bool]] = {}
             self._chat_category_cache_ttl_sec = 15.0
             # Periodische Chat-Promos
-            self._channel_ids: Dict[str, str] = {}          # login -> broadcaster_id
-            self._last_promo_sent: Dict[str, float] = {}    # login -> monotonic timestamp
-            self._last_promo_attempt: Dict[str, float] = {} # login -> monotonic timestamp
+            self._channel_ids: Dict[str, str] = {}  # login -> broadcaster_id
+            self._last_promo_sent: Dict[str, float] = {}  # login -> monotonic timestamp
+            self._last_promo_attempt: Dict[
+                str, float
+            ] = {}  # login -> monotonic timestamp
             self._last_raw_chat_message_ts: Dict[str, float] = {}
             self._raw_msg_count_since_promo: Dict[str, int] = {}
             self._promo_activity: Dict[str, Deque[Tuple[float, str]]] = {}
@@ -171,7 +179,10 @@ if TWITCHIO_AVAILABLE:
             self._promo_invite_cache: Dict[str, str] = {}
             self._monitored_only_channels: Set[str] = set()
             self._register_inline_commands()
-            log.info("Twitch Chat Bot initialized with %d initial channels", len(self._initial_channels))
+            log.info(
+                "Twitch Chat Bot initialized with %d initial channels",
+                len(self._initial_channels),
+            )
 
         def set_monitored_channels(self, channels: list[str]) -> None:
             """Set the list of read-only monitored channels."""
@@ -203,7 +214,11 @@ if TWITCHIO_AVAILABLE:
                     try:
                         self.add_command(cmd)
                     except Exception:
-                        log.debug("Konnte Command nicht registrieren: %s", cmd.name, exc_info=True)
+                        log.debug(
+                            "Konnte Command nicht registrieren: %s",
+                            cmd.name,
+                            exc_info=True,
+                        )
 
         @property
         def bot_id_safe(self) -> Optional[str]:
@@ -212,7 +227,7 @@ if TWITCHIO_AVAILABLE:
             if self._bot_id_stored and str(self._bot_id_stored).strip():
                 return str(self._bot_id_stored)
             # Fallback auf die TwitchIO bot_id Property
-            bot_id = getattr(self, 'bot_id', None)
+            bot_id = getattr(self, "bot_id", None)
             if bot_id and str(bot_id).strip():
                 return str(bot_id)
             return None
@@ -271,7 +286,9 @@ if TWITCHIO_AVAILABLE:
                 if invite_code:
                     return f"https://discord.gg/{invite_code}"
             except Exception:
-                log.debug("Promo invite DB lookup failed for %s", login_norm, exc_info=True)
+                log.debug(
+                    "Promo invite DB lookup failed for %s", login_norm, exc_info=True
+                )
             return None
 
         def _store_streamer_invite(
@@ -332,7 +349,9 @@ if TWITCHIO_AVAILABLE:
                     )
                     conn.commit()
             except Exception:
-                log.debug("Could not store promo invite for %s", login_norm, exc_info=True)
+                log.debug(
+                    "Could not store promo invite for %s", login_norm, exc_info=True
+                )
 
         def _mark_streamer_invite_sent(self, login: str) -> None:
             login_norm = (login or "").strip().lower()
@@ -347,7 +366,11 @@ if TWITCHIO_AVAILABLE:
                     )
                     conn.commit()
             except Exception:
-                log.debug("Could not update promo invite last_sent_at for %s", login_norm, exc_info=True)
+                log.debug(
+                    "Could not update promo invite last_sent_at for %s",
+                    login_norm,
+                    exc_info=True,
+                )
 
         async def _candidate_invite_channels(self) -> list:
             bot = self._discord_bot
@@ -370,7 +393,9 @@ if TWITCHIO_AVAILABLE:
                 channel = bot.get_channel(self._discord_invite_channel_id)
                 if channel is None and hasattr(bot, "fetch_channel"):
                     try:
-                        channel = await bot.fetch_channel(self._discord_invite_channel_id)
+                        channel = await bot.fetch_channel(
+                            self._discord_invite_channel_id
+                        )
                     except Exception:
                         channel = None
                 _add_channel(channel)
@@ -449,7 +474,9 @@ if TWITCHIO_AVAILABLE:
 
             return None
 
-        async def _resolve_streamer_invite(self, login: str) -> tuple[Optional[str], bool]:
+        async def _resolve_streamer_invite(
+            self, login: str
+        ) -> tuple[Optional[str], bool]:
             login_norm = (login or "").strip().lower()
             if not login_norm:
                 return None, False
@@ -479,14 +506,19 @@ if TWITCHIO_AVAILABLE:
                     if access_token:
                         self._bot_token = access_token
                     # bot_id wird bereits im __init__ oder via add_token gehandelt
-                    self._bot_refresh_token = self._token_manager.refresh_token or self._bot_refresh_token
+                    self._bot_refresh_token = (
+                        self._token_manager.refresh_token or self._bot_refresh_token
+                    )
 
                 api_token = (self._bot_token or "").replace("oauth:", "").strip()
                 if api_token:
                     # Wir fügen den Token hinzu. Refresh-Token ist bei TMI-Tokens meist nicht vorhanden (None).
                     # ABER: Wenn wir einen haben (aus ENV/Tresor), übergeben wir ihn, damit TwitchIO refreshen kann.
                     await self.add_token(api_token, self._bot_refresh_token)
-                    log.info("Bot auth added (refresh available: %s).", "yes" if self._bot_refresh_token else "no")  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+                    log.info(
+                        "Bot auth added (refresh available: %s).",
+                        "yes" if self._bot_refresh_token else "no",
+                    )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                     await self._persist_bot_tokens(
                         access_token=self._bot_token,
                         refresh_token=self._bot_refresh_token,
@@ -528,9 +560,15 @@ if TWITCHIO_AVAILABLE:
                         if success:
                             await asyncio.sleep(0.2)  # Rate limiting
                     except Exception as e:
-                        log.debug("Konnte initialem Channel %s nicht beitreten: %s", channel, e)
+                        log.debug(
+                            "Konnte initialem Channel %s nicht beitreten: %s",
+                            channel,
+                            e,
+                        )
 
-            if PROMO_MESSAGES and (_PROMO_ACTIVITY_ENABLED or PROMO_VIEWER_SPIKE_ENABLED):
+            if PROMO_MESSAGES and (
+                _PROMO_ACTIVITY_ENABLED or PROMO_VIEWER_SPIKE_ENABLED
+            ):
                 if not self._promo_task or self._promo_task.done():
                     self._promo_task = asyncio.create_task(
                         self._periodic_promo_loop(),
@@ -551,7 +589,9 @@ if TWITCHIO_AVAILABLE:
                 except asyncio.CancelledError:
                     log.debug("Promo-Task wurde beim Shutdown abgebrochen")
                 except Exception:
-                    log.debug("Promo-Task konnte nicht sauber beendet werden", exc_info=True)
+                    log.debug(
+                        "Promo-Task konnte nicht sauber beendet werden", exc_info=True
+                    )
             await super().close()
 
         async def event_command_error(self, payload):
@@ -565,7 +605,11 @@ if TWITCHIO_AVAILABLE:
                 return
 
             # Andere Fehler loggen
-            log.exception("Error invoking command %s: %s", ctx.command.name if ctx.command else "Unknown", error)
+            log.exception(
+                "Error invoking command %s: %s",
+                ctx.command.name if ctx.command else "Unknown",
+                error,
+            )
 
         async def event_token_refreshed(self, payload):
             """Persistiert erneuerte Bot-Tokens, sobald TwitchIO sie refreshed."""
@@ -576,7 +620,11 @@ if TWITCHIO_AVAILABLE:
                     pass
                 if self.bot_id and str(payload.user_id) != str(self.bot_id):
                     return  # Nur den Bot-Token persistieren, nicht Streamer-Tokens
-                self._bot_token = f"oauth:{payload.token}" if not payload.token.startswith("oauth:") else payload.token
+                self._bot_token = (
+                    f"oauth:{payload.token}"
+                    if not payload.token.startswith("oauth:")
+                    else payload.token
+                )
                 self._bot_refresh_token = payload.refresh_token
             except Exception:
                 return
@@ -589,7 +637,9 @@ if TWITCHIO_AVAILABLE:
                     user_id=payload.user_id,
                 )
             except Exception:
-                log.debug("Konnte refreshed Bot-Token nicht persistieren", exc_info=True)
+                log.debug(
+                    "Konnte refreshed Bot-Token nicht persistieren", exc_info=True
+                )
 
         async def _on_token_manager_refresh(
             self,
@@ -606,7 +656,10 @@ if TWITCHIO_AVAILABLE:
             try:
                 await self.add_token(api_token, refresh_token)
             except Exception:
-                log.debug("Konnte refreshed Bot-Token nicht in TwitchIO registrieren", exc_info=True)
+                log.debug(
+                    "Konnte refreshed Bot-Token nicht in TwitchIO registrieren",
+                    exc_info=True,
+                )
 
         async def event_message(self, message):
             """Wird bei jeder Chat-Nachricht aufgerufen."""
@@ -617,26 +670,30 @@ if TWITCHIO_AVAILABLE:
 
             # Detect 3.x by presence of 'text' or 'chatter' (and absence of 'content')
             is_3x = hasattr(message, "chatter") and not hasattr(message, "content")
-            
+
             if is_3x:
                 # Aliases for 2.x compatibility
                 if not hasattr(message, "content"):
                     message.content = getattr(message, "text", "")
                 if not hasattr(message, "author"):
                     message.author = message.chatter
-                
+
                 # Ensure author has 2.x style flags if missing
                 author = message.author
                 if not hasattr(author, "moderator") and hasattr(author, "is_moderator"):
                     author.moderator = author.is_moderator
-                if not hasattr(author, "broadcaster") and hasattr(author, "is_broadcaster"):
+                if not hasattr(author, "broadcaster") and hasattr(
+                    author, "is_broadcaster"
+                ):
                     author.broadcaster = author.is_broadcaster
 
                 # In 3.x EventSub payloads there is no message.channel by default.
                 # Normalize to a 2.x-like shape expected by downstream code.
                 channel = getattr(message, "channel", None)
                 if channel is None:
-                    channel = getattr(message, "source_broadcaster", None) or getattr(message, "broadcaster", None)
+                    channel = getattr(message, "source_broadcaster", None) or getattr(
+                        message, "broadcaster", None
+                    )
                     if channel is not None:
                         try:
                             message.channel = channel
@@ -646,7 +703,11 @@ if TWITCHIO_AVAILABLE:
                                 exc_info=True,
                             )
 
-                if channel is not None and not hasattr(channel, "name") and hasattr(channel, "login"):
+                if (
+                    channel is not None
+                    and not hasattr(channel, "name")
+                    and hasattr(channel, "login")
+                ):
                     try:
                         channel.name = channel.login
                     except (AttributeError, TypeError):
@@ -658,7 +719,9 @@ if TWITCHIO_AVAILABLE:
             # Fallback for echo if still missing (unlikely in 3.x)
             if not hasattr(message, "echo"):
                 safe_bot_id = self.bot_id_safe or self.bot_id or ""
-                message.echo = str(getattr(message, "chatter", message).id) == str(safe_bot_id)
+                message.echo = str(getattr(message, "chatter", message).id) == str(
+                    safe_bot_id
+                )
 
             # Ignoriere Bot-Nachrichten
             if message.echo:
@@ -675,14 +738,18 @@ if TWITCHIO_AVAILABLE:
                 await self.process_commands(message)
                 return
 
-            channel_login = self._normalize_channel_login_safe(getattr(message, "channel", None))
+            channel_login = self._normalize_channel_login_safe(
+                getattr(message, "channel", None)
+            )
 
             # --- DATENSAMMLUNG FÜR ALLE, BOT-FUNKTIONEN NUR FÜR ECHTE PARTNER ---
             # WICHTIG: Monitored-Only Channels sind KEINE Partner!
             # _is_partner_channel_for_chat_tracking() ist in dieser Klasse überschrieben
             # und gibt True für monitored-only zurück (für Datensammlung), daher explizit
             # ausschließen, damit monitored-only Channels KEINE Bot-Funktionen bekommen.
-            is_monitored_only_ch = bool(channel_login and self._is_monitored_only(channel_login))
+            is_monitored_only_ch = bool(
+                channel_login and self._is_monitored_only(channel_login)
+            )
             is_partner = (
                 bool(channel_login)
                 and not is_monitored_only_ch
@@ -709,12 +776,16 @@ if TWITCHIO_AVAILABLE:
             # AB HIER: Nur noch Partner! (Volle Bot-Funktionen)
             if is_partner:
                 try:
-                    await self._maybe_warn_service_pitch(message, channel_login=channel_login)
+                    await self._maybe_warn_service_pitch(
+                        message, channel_login=channel_login
+                    )
                 except Exception:
                     log.debug("Service-Pitch-Warnung fehlgeschlagen", exc_info=True)
 
                 try:
-                    spam_score, spam_reasons = self._calculate_spam_score(message.content or "")
+                    spam_score, spam_reasons = self._calculate_spam_score(
+                        message.content or ""
+                    )
                     has_phrase_or_fragment_signal = any(
                         reason.startswith("Phrase(") or reason.startswith("Fragment(")
                         for reason in spam_reasons
@@ -739,14 +810,21 @@ if TWITCHIO_AVAILABLE:
                                 if users and users[0].created_at:
                                     created_at = users[0].created_at
                                     if created_at.tzinfo is None:
-                                        created_at = created_at.replace(tzinfo=timezone.utc)
+                                        created_at = created_at.replace(
+                                            tzinfo=timezone.utc
+                                        )
 
                                     age = datetime.now(timezone.utc) - created_at
                                     if age.days < 90:  # Jünger als 3 Monate
                                         spam_score += 1
-                                        spam_reasons.append(f"Account-Alter: {age.days} Tage")
+                                        spam_reasons.append(
+                                            f"Account-Alter: {age.days} Tage"
+                                        )
                         except Exception:
-                            log.debug("Konnte User-Alter für Spam-Check nicht laden", exc_info=True)
+                            log.debug(
+                                "Konnte User-Alter für Spam-Check nicht laden",
+                                exc_info=True,
+                            )
 
                     if spam_score >= SPAM_MIN_MATCHES:
                         enforced = await self._auto_ban_and_cleanup(message)
@@ -757,7 +835,12 @@ if TWITCHIO_AVAILABLE:
                                 or getattr(channel_obj, "login", "")
                                 or "unknown"
                             )
-                            log.warning("Spam erkannt in %s (Score: %d, Treffer: %s), aber Auto-Ban konnte nicht durchgesetzt werden.", channel_name, spam_score, ", ".join(spam_reasons))
+                            log.warning(
+                                "Spam erkannt in %s (Score: %d, Treffer: %s), aber Auto-Ban konnte nicht durchgesetzt werden.",
+                                channel_name,
+                                spam_score,
+                                ", ".join(spam_reasons),
+                            )
                         return
                     elif spam_score > 0:
                         channel_obj = getattr(message, "channel", None)
@@ -777,10 +860,17 @@ if TWITCHIO_AVAILABLE:
                             chatter_id=author_id,
                             content=message.content or "",
                             status=f"SUSPICIOUS({spam_score})",
-                            reason=reasons_str
+                            reason=reasons_str,
                         )
 
-                        log.info("Verdächtige Nachricht (Score %d, Treffer: %s) in %s von %s: %s", spam_score, reasons_str, channel_name, author_name, message.content)
+                        log.info(
+                            "Verdächtige Nachricht (Score %d, Treffer: %s) in %s von %s: %s",
+                            spam_score,
+                            reasons_str,
+                            channel_name,
+                            author_name,
+                            message.content,
+                        )
                 except Exception:
                     log.debug("Auto-Ban Prüfung fehlgeschlagen", exc_info=True)
 
@@ -790,11 +880,15 @@ if TWITCHIO_AVAILABLE:
                 log.debug("Konnte Chat-Health nicht loggen", exc_info=True)
 
             try:
-                login_for_raw = self._normalize_channel_login_safe(getattr(message, "channel", None))
+                login_for_raw = self._normalize_channel_login_safe(
+                    getattr(message, "channel", None)
+                )
                 if login_for_raw:
                     self._record_raw_chat_message(login_for_raw)
             except Exception:
-                log.debug("Raw-Chat-Activity konnte nicht erfasst werden", exc_info=True)
+                log.debug(
+                    "Raw-Chat-Activity konnte nicht erfasst werden", exc_info=True
+                )
 
             sent_invite = False
             try:
@@ -862,9 +956,12 @@ if TWITCHIO_AVAILABLE:
             self._session_cache[cache_key] = (session_id, now_ts)
             return session_id
 
+
 if not TWITCHIO_AVAILABLE:
+
     class RaidChatBot:  # type: ignore[redefined-outer-name]
         """Stub, damit Import-Caller nicht crashen, wenn twitchio fehlt."""
+
         pass
 
 
@@ -920,14 +1017,20 @@ async def create_twitch_chat_bot(
     token_mgr = token_manager
     token_mgr_created = False
     if token_mgr is None and client_id:
-        token_mgr = TwitchBotTokenManager(client_id, client_secret or "", keyring_service=_KEYRING_SERVICE)
+        token_mgr = TwitchBotTokenManager(
+            client_id, client_secret or "", keyring_service=_KEYRING_SERVICE
+        )
         token_mgr_created = True
 
     bot_id = None
     if token_mgr:
-        initialised = await token_mgr.initialize(access_token=token, refresh_token=refresh_token)
+        initialised = await token_mgr.initialize(
+            access_token=token, refresh_token=refresh_token
+        )
         if not initialised:
-            log.error("Twitch Bot Token Manager konnte nicht initialisiert werden (kein Refresh-Token?).")
+            log.error(
+                "Twitch Bot Token Manager konnte nicht initialisiert werden (kein Refresh-Token?)."
+            )
             if token_mgr_created:
                 await token_mgr.cleanup()
             return None
@@ -966,7 +1069,8 @@ async def create_twitch_chat_bot(
             continue
         scopes = [s.strip().lower() for s in (scopes_raw or "").split() if s.strip()]
         has_chat_scope = any(
-            s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"} for s in scopes
+            s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"}
+            for s in scopes
         )
         if not has_chat_scope:
             continue
@@ -982,19 +1086,27 @@ async def create_twitch_chat_bot(
             initial_channels.append(login)
             monitored_channels.append(login)
 
-    log.info("Creating Twitch Chat Bot for %d channels (%d monitored only)", len(initial_channels), len(monitored_channels))
+    log.info(
+        "Creating Twitch Chat Bot for %d channels (%d monitored only)",
+        len(initial_channels),
+        len(monitored_channels),
+    )
 
     # Bot-ID via API abrufen (TwitchIO braucht diese zwingend bei user:bot Scope)
     if bot_id is None:
         try:
             import aiohttp
+
             async with aiohttp.ClientSession() as session:
                 api_token = token.replace("oauth:", "")
 
                 # 1. Versuch: id.twitch.tv/oauth2/validate (oft am tolerantesten für User-IDs)
                 # Wir probieren beide Header-Varianten
                 for auth_header in [f"OAuth {api_token}", f"Bearer {api_token}"]:
-                    async with session.get("https://id.twitch.tv/oauth2/validate", headers={"Authorization": auth_header}) as r:
+                    async with session.get(
+                        "https://id.twitch.tv/oauth2/validate",
+                        headers={"Authorization": auth_header},
+                    ) as r:
                         if r.status == 200:
                             val_data = await r.json()
                             bot_id = val_data.get("user_id")
@@ -1006,16 +1118,20 @@ async def create_twitch_chat_bot(
                 if not bot_id:
                     headers = {
                         "Client-ID": client_id,
-                        "Authorization": f"Bearer {api_token}"
+                        "Authorization": f"Bearer {api_token}",
                     }
-                    async with session.get("https://api.twitch.tv/helix/users", headers=headers) as r:
+                    async with session.get(
+                        "https://api.twitch.tv/helix/users", headers=headers
+                    ) as r:
                         if r.status == 200:
                             data = await r.json()
                             if data.get("data"):
                                 bot_id = data["data"][0]["id"]
                                 log.info("Fetched Bot ID via Helix: %s", bot_id)
                         elif r.status == 401:
-                            log.warning("Twitch API 401 Unauthorized: Der TWITCH_BOT_TOKEN scheint ungültig zu sein.")
+                            log.warning(
+                                "Twitch API 401 Unauthorized: Der TWITCH_BOT_TOKEN scheint ungültig zu sein."
+                            )
                         else:
                             log.warning("Could not fetch Bot ID: HTTP %s", r.status)
         except Exception as e:
@@ -1042,10 +1158,16 @@ async def create_twitch_chat_bot(
     # UND der Port frei ist. TwitchIO 3.x erstellt intern einen Default-Adapter wenn
     # keiner übergeben wird – wir kontrollieren das hier explizit, um Port-Konflikte
     # bei Cog-Reloads zu vermeiden.
-    adapter_disabled = (os.getenv("TWITCH_CHAT_ADAPTER") or "").strip().lower() in {"0", "false", "off", "no"}
+    adapter_disabled = (os.getenv("TWITCH_CHAT_ADAPTER") or "").strip().lower() in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }
     web_adapter = None
     if not adapter_disabled:
         import socket as _socket
+
         try:
             # Versuch einer Verbindung, um zu prüfen, ob der Port belegt ist
             # Connect-Check ist passiv und verursacht kein TIME_WAIT wie Bind-Check
@@ -1054,7 +1176,8 @@ async def create_twitch_chat_bot(
                 log.debug(
                     "TwitchIO Web Adapter Port %s auf %s ist belegt (Verbindung erfolgreich) – starte ohne Adapter "
                     "(Webhooks/OAuth für Chat-Bot ausgeschaltet).",
-                    adapter_port, adapter_host,
+                    adapter_port,
+                    adapter_host,
                 )
                 web_adapter = None
         except OSError:
@@ -1064,7 +1187,11 @@ async def create_twitch_chat_bot(
                     host=adapter_host,
                     port=adapter_port,
                 )
-                log.info("TwitchIO Web Adapter wird auf %s:%s gestartet", adapter_host, adapter_port)
+                log.info(
+                    "TwitchIO Web Adapter wird auf %s:%s gestartet",
+                    adapter_host,
+                    adapter_port,
+                )
             except Exception as e:
                 log.error("Fehler beim Erstellen des Adapters trotz freiem Port: %s", e)
                 web_adapter = None

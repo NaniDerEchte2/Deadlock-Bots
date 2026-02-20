@@ -21,11 +21,11 @@ from ..storage import get_conn
 log = logging.getLogger("TwitchStreams.PartnerRecruit")
 
 # --- Konfiguration -----------------------------------------------------------
-RECRUIT_LOOKBACK_DAYS = 28            # Zeitraum für die Erkennung
-RECRUIT_MIN_DAYS = 4                 # Mindestanzahl Streaming-Tage im Zeitraum
+RECRUIT_LOOKBACK_DAYS = 28  # Zeitraum für die Erkennung
+RECRUIT_MIN_DAYS = 4  # Mindestanzahl Streaming-Tage im Zeitraum
 RECRUIT_MIN_AVG_SAMPLES_PER_DAY = 96  # ≈ 2h bei 75s-Sample-Intervall
-RECRUIT_COOLDOWN_DAYS = 30            # Pause zwischen Kontaktversuchen
-RECRUIT_CHECK_INTERVAL_SECONDS = 1800 # Prüfzyklus (30 min)
+RECRUIT_COOLDOWN_DAYS = 30  # Pause zwischen Kontaktversuchen
+RECRUIT_CHECK_INTERVAL_SECONDS = 1800  # Prüfzyklus (30 min)
 RECRUIT_DISCORD_INVITE = "discord.gg/z5TfVHuQq2"
 
 # Twitch-Chat-Limit: 500 Zeichen. Nachricht bleibt bei ~300 Zeichen.
@@ -80,7 +80,9 @@ class TwitchPartnerRecruitMixin:
                 log.debug("PartnerRecruit: Kein user_id für %s", login)
                 continue
 
-            await self._send_partner_outreach(login, str(user_id), candidate["distinct_days"])
+            await self._send_partner_outreach(
+                login, str(user_id), candidate["distinct_days"]
+            )
             # Nur eine Nachricht pro Zyklus (Twitch Rate-Limit-Schutz)
             break
 
@@ -123,8 +125,12 @@ class TwitchPartnerRecruitMixin:
 
             return [
                 {
-                    "streamer": str(row["streamer"] if hasattr(row, "keys") else row[0]).lower(),
-                    "distinct_days": int(row["distinct_days"] if hasattr(row, "keys") else row[1]),
+                    "streamer": str(
+                        row["streamer"] if hasattr(row, "keys") else row[0]
+                    ).lower(),
+                    "distinct_days": int(
+                        row["distinct_days"] if hasattr(row, "keys") else row[1]
+                    ),
                 }
                 for row in rows
             ]
@@ -135,7 +141,9 @@ class TwitchPartnerRecruitMixin:
     # ------------------------------------------------------------------
     # Outreach senden
     # ------------------------------------------------------------------
-    async def _send_partner_outreach(self, login: str, user_id: str, distinct_days: int) -> None:
+    async def _send_partner_outreach(
+        self, login: str, user_id: str, distinct_days: int
+    ) -> None:
         """Folgt dem Channel, sendet die Nachricht und logt den Versuch."""
         chat_bot = getattr(self, "_twitch_chat_bot", None)
         if not chat_bot:
@@ -183,7 +191,11 @@ class TwitchPartnerRecruitMixin:
         self._record_outreach(login, user_id, success)
 
         if success:
-            log.info("PartnerRecruit: Outreach gesendet an %s (%d Tage aktiv)", login, distinct_days)
+            log.info(
+                "PartnerRecruit: Outreach gesendet an %s (%d Tage aktiv)",
+                login,
+                distinct_days,
+            )
         else:
             log.warning("PartnerRecruit: Outreach an %s fehlgeschlagen", login)
 
@@ -193,7 +205,9 @@ class TwitchPartnerRecruitMixin:
     def _record_outreach(self, login: str, user_id: str, success: bool) -> None:
         """Speichert den Outreach-Versuch mit 60-Tage-Cooldown."""
         now = datetime.now(timezone.utc)
-        cooldown_until = (now + timedelta(days=RECRUIT_COOLDOWN_DAYS)).isoformat(timespec="seconds")
+        cooldown_until = (now + timedelta(days=RECRUIT_COOLDOWN_DAYS)).isoformat(
+            timespec="seconds"
+        )
         status = "sent" if success else "failed"
 
         try:
@@ -215,4 +229,6 @@ class TwitchPartnerRecruitMixin:
                 )
                 conn.commit()
         except Exception:
-            log.debug("PartnerRecruit: Outreach nicht loggbar für %s", login, exc_info=True)
+            log.debug(
+                "PartnerRecruit: Outreach nicht loggbar für %s", login, exc_info=True
+            )

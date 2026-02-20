@@ -14,10 +14,10 @@ class DashboardTemplateMixin:
 
         return (
             '<nav class="tabs">'
-            f'{anchor("/twitch/admin", "Admin", "live")}'
-            f'{anchor("/twitch/stats", "Stats", "stats")}'
-            f'{anchor("/twitch/dashboard-v2", "Analytics v2", "v2")}'
-            f'{anchor("/social-media", "Social Media", "social")}'
+            f"{anchor('/twitch/admin', 'Admin', 'live')}"
+            f"{anchor('/twitch/stats', 'Stats', 'stats')}"
+            f"{anchor('/twitch/dashboard-v2', 'Analytics v2', 'v2')}"
+            f"{anchor('/social-media', 'Social Media', 'social')}"
             "</nav>"
         )
 
@@ -313,7 +313,6 @@ class DashboardTemplateMixin:
             .replace("{body}", body)
         )
 
-
     def _streamer_detail_view(self, data: dict, active: str) -> str:
         login = data["login"]
 
@@ -385,10 +384,11 @@ class DashboardTemplateMixin:
                         <td>{s["avg_viewers"]}</td>
                         <td>{s["peak_viewers"]}</td>
                         <td>{s["follower_delta"] or 0}</td>
-                        <td><a href="/twitch/session/{s['id']}" class="btn btn-small">Analysis</a></td>
+                        <td><a href="/twitch/session/{s["id"]}" class="btn btn-small">Analysis</a></td>
                     </tr>
             """
-        body += """
+        body += (
+            """
                 </tbody>
             </table>
         </div>
@@ -398,17 +398,23 @@ class DashboardTemplateMixin:
             new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: """ + str(chart_labels) + """,
+                    labels: """
+            + str(chart_labels)
+            + """,
                     datasets: [{
                         label: 'Avg Viewers',
-                        data: """ + str(chart_viewers) + """,
+                        data: """
+            + str(chart_viewers)
+            + """,
                         borderColor: '#6d4aff',
                         backgroundColor: 'rgba(109, 74, 255, 0.1)',
                         tension: 0.3,
                         fill: true
                     }, {
                         label: 'Peak Viewers',
-                        data: """ + str(chart_peaks) + """,
+                        data: """
+            + str(chart_peaks)
+            + """,
                         borderColor: '#9bb0ff',
                         borderDash: [5, 5],
                         tension: 0.3
@@ -435,6 +441,7 @@ class DashboardTemplateMixin:
             });
         </script>
         """
+        )
         return self._html(body, active)
 
     def _session_detail_view(self, data: dict, active: str) -> str:
@@ -448,33 +455,33 @@ class DashboardTemplateMixin:
         body = f"""
         <div class="card-header">
             <h1>Session Analysis</h1>
-            <a href="/twitch/streamer/{s['streamer_login']}" class="btn btn-secondary btn-small">← Back to Streamer</a>
+            <a href="/twitch/streamer/{s["streamer_login"]}" class="btn btn-secondary btn-small">← Back to Streamer</a>
         </div>
         <div class="card" style="margin-top: 1.4rem;">
              <div class="row">
                 <div class="discord-cell">
                     <span class="label" style="color:var(--muted)">Streamer</span>
-                    <strong>{s['streamer_login']}</strong>
+                    <strong>{s["streamer_login"]}</strong>
                 </div>
                 <div class="discord-cell">
                     <span class="label" style="color:var(--muted)">Date</span>
-                    <strong>{s['started_at']}</strong>
+                    <strong>{s["started_at"]}</strong>
                 </div>
                  <div class="discord-cell">
                     <span class="label" style="color:var(--muted)">Duration</span>
-                    <strong>{(s['duration_seconds'] or 0)//60} min</strong>
+                    <strong>{(s["duration_seconds"] or 0) // 60} min</strong>
                 </div>
                  <div class="discord-cell">
                     <span class="label" style="color:var(--muted)">Avg Viewers</span>
-                    <strong>{s['avg_viewers']}</strong>
+                    <strong>{s["avg_viewers"]}</strong>
                 </div>
                  <div class="discord-cell">
                     <span class="label" style="color:var(--muted)">Max Peak</span>
-                    <strong>{s['peak_viewers']}</strong>
+                    <strong>{s["peak_viewers"]}</strong>
                 </div>
             </div>
             <div style="margin-top: 1rem; color: var(--accent-2);">
-                {html.escape(s['stream_title'] or "")}
+                {html.escape(s["stream_title"] or "")}
             </div>
         </div>
 
@@ -487,12 +494,12 @@ class DashboardTemplateMixin:
             <div class="card" style="flex: 1;">
                 <h3>Engagement Metrics</h3>
                 <ul>
-                    <li><strong>Retention 5m:</strong> {s.get('retention_5m') or '-'}%</li>
-                    <li><strong>Retention 10m:</strong> {s.get('retention_10m') or '-'}%</li>
-                    <li><strong>Dropoff:</strong> {s.get('dropoff_pct') or '-'}% ({s.get('dropoff_label') or 'N/A'})</li>
-                    <li><strong>Unique Chatters:</strong> {s.get('unique_chatters')}</li>
-                    <li><strong>New Chatters:</strong> {s.get('first_time_chatters')}</li>
-                    <li><strong>Returning Chatters:</strong> {s.get('returning_chatters')}</li>
+                    <li><strong>Retention 5m:</strong> {s.get("retention_5m") or "-"}%</li>
+                    <li><strong>Retention 10m:</strong> {s.get("retention_10m") or "-"}%</li>
+                    <li><strong>Dropoff:</strong> {s.get("dropoff_pct") or "-"}% ({s.get("dropoff_label") or "N/A"})</li>
+                    <li><strong>Unique Chatters:</strong> {s.get("unique_chatters")}</li>
+                    <li><strong>New Chatters:</strong> {s.get("first_time_chatters")}</li>
+                    <li><strong>Returning Chatters:</strong> {s.get("returning_chatters")}</li>
                 </ul>
             </div>
             <div class="card" style="flex: 1;">
@@ -503,8 +510,9 @@ class DashboardTemplateMixin:
         """
         for c in top_chatters:
             body += f"<tr><td>{c['chatter_login']}</td><td>{c['messages']}</td></tr>"
-        
-        body += """
+
+        body += (
+            """
                     </tbody>
                 </table>
             </div>
@@ -515,10 +523,14 @@ class DashboardTemplateMixin:
             new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: """ + str(t_labels) + """,
+                    labels: """
+            + str(t_labels)
+            + """,
                     datasets: [{
                         label: 'Viewers',
-                        data: """ + str(t_values) + """,
+                        data: """
+            + str(t_values)
+            + """,
                         borderColor: '#6d4aff',
                         backgroundColor: 'rgba(109, 74, 255, 0.2)',
                         fill: true,
@@ -552,6 +564,7 @@ class DashboardTemplateMixin:
             });
         </script>
         """
+        )
         return self._html(body, active)
 
     def _comparison_view(self, data: dict, active: str) -> str:
@@ -597,7 +610,7 @@ class DashboardTemplateMixin:
                 </thead>
                 <tbody>
         """
-        
+
         chart_labels = []
         chart_data = []
 
@@ -607,13 +620,14 @@ class DashboardTemplateMixin:
             body += f"""
                     <tr>
                         <td>#{i}</td>
-                        <td>{s['streamer_login']}</td>
-                        <td>{int(s['val'])}</td>
-                        <td><a href="/twitch/streamer/{s['streamer_login']}" class="btn btn-small">Stats</a></td>
+                        <td>{s["streamer_login"]}</td>
+                        <td>{int(s["val"])}</td>
+                        <td><a href="/twitch/streamer/{s["streamer_login"]}" class="btn btn-small">Stats</a></td>
                     </tr>
             """
-        
-        body += """
+
+        body += (
+            """
                 </tbody>
             </table>
         </div>
@@ -623,10 +637,14 @@ class DashboardTemplateMixin:
             new Chart(ctx, {
                 type: 'bar',
                 data: {
-                    labels: """ + str(chart_labels) + """,
+                    labels: """
+            + str(chart_labels)
+            + """,
                     datasets: [{
                         label: 'Avg Viewers',
-                        data: """ + str(chart_data) + """,
+                        data: """
+            + str(chart_data)
+            + """,
                         backgroundColor: [
                             'rgba(109, 74, 255, 0.8)',
                             'rgba(109, 74, 255, 0.6)',
@@ -659,4 +677,5 @@ class DashboardTemplateMixin:
             });
         </script>
         """
+        )
         return self._html(body, active)

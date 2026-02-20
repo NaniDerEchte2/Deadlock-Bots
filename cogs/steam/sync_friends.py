@@ -32,7 +32,7 @@ def _save_steam_friend_to_db(steam_id64: str, discord_id: Optional[int] = None) 
         # Check if this steam_id already exists with a real Discord ID
         existing = conn.execute(
             "SELECT user_id FROM steam_links WHERE steam_id = ? AND user_id != 0 LIMIT 1",
-            (steam_id64,)
+            (steam_id64,),
         ).fetchone()
 
         if existing:
@@ -43,9 +43,13 @@ def _save_steam_friend_to_db(steam_id64: str, discord_id: Optional[int] = None) 
                 SET verified = 1, updated_at = CURRENT_TIMESTAMP
                 WHERE steam_id = ? AND user_id = ?
                 """,
-                (steam_id64, existing['user_id'])
+                (steam_id64, existing["user_id"]),
             )
-            log.info("Updated existing steam_link: steam=%s, discord=%s", steam_id64, existing['user_id'])
+            log.info(
+                "Updated existing steam_link: steam=%s, discord=%s",
+                steam_id64,
+                existing["user_id"],
+            )
         else:
             # New friend or unlinked friend
             conn.execute(
@@ -56,7 +60,7 @@ def _save_steam_friend_to_db(steam_id64: str, discord_id: Optional[int] = None) 
                   verified=1,
                   updated_at=CURRENT_TIMESTAMP
                 """,
-                (uid, steam_id64, '', 1)
+                (uid, steam_id64, "", 1),
             )
             log.info("Saved new steam_link: steam=%s, discord=%s", steam_id64, uid)
 
@@ -143,14 +147,11 @@ class SteamFriendsSync(commands.Cog):
         if result["success"]:
             await ctx.reply(
                 f"✅ Synced {result['count']} Steam friends to database.",
-                mention_author=False
+                mention_author=False,
             )
         else:
             error = result.get("error", "Unknown error")
-            await ctx.reply(
-                f"❌ Failed to sync friends: {error}",
-                mention_author=False
-            )
+            await ctx.reply(f"❌ Failed to sync friends: {error}", mention_author=False)
 
 
 async def setup(bot: commands.Bot) -> None:

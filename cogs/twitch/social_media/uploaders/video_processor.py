@@ -3,6 +3,7 @@ Video Processor - FFmpeg Wrapper für Video-Konvertierung.
 
 Konvertiert Videos zu platform-spezifischen Formaten (9:16 für Shorts/Reels).
 """
+
 import asyncio
 import json
 import logging
@@ -37,10 +38,14 @@ class VideoProcessor:
         try:
             cmd = [
                 self.ffprobe,
-                "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=width,height,duration,r_frame_rate",
-                "-of", "json",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,duration,r_frame_rate",
+                "-of",
+                "json",
                 video_path,
             ]
 
@@ -125,14 +130,22 @@ class VideoProcessor:
 
             cmd = [
                 self.ffmpeg,
-                "-i", input_path,
-                "-vf", crop_filter,
-                "-c:v", "libx264",
-                "-preset", "medium",
-                "-crf", "23",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-movflags", "+faststart",
+                "-i",
+                input_path,
+                "-vf",
+                crop_filter,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "23",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                "-movflags",
+                "+faststart",
                 "-y",  # Overwrite output
                 output_path,
             ]
@@ -239,15 +252,19 @@ class VideoProcessor:
             if info["duration"] <= max_duration:
                 # No trimming needed - just copy
                 import shutil
+
                 shutil.copy2(input_path, output_path)
                 log.debug("Video already under %s seconds - copied", max_duration)
                 return True
 
             cmd = [
                 self.ffmpeg,
-                "-i", input_path,
-                "-t", str(max_duration),
-                "-c", "copy",
+                "-i",
+                input_path,
+                "-t",
+                str(max_duration),
+                "-c",
+                "copy",
                 "-y",
                 output_path,
             ]
