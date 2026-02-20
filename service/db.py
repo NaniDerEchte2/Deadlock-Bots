@@ -288,10 +288,11 @@ def connect() -> sqlite3.Connection:
             PRAGMA temp_store=MEMORY;
             """
         )
-        # sqlite3 connect(timeout=...) configures the lock-wait timeout per connection.
-        # Optional tunable:
-        # _CONN.execute("PRAGMA cache_size=-20000;")             # ~20MB
-        # _CONN.execute('PRAGMA mmap_size=268435456;')           # 256MB (falls Filesystem erlaubt)
+        # Performance PRAGMAs (2026-02-20)
+        _CONN.execute("PRAGMA cache_size=-20000")       # 20 MB page cache
+        _CONN.execute("PRAGMA mmap_size=268435456")     # 256 MB memory-mapped I/O
+        _CONN.execute("PRAGMA optimize")                # selektives ANALYZE für Query Planner
+        _CONN.execute("PRAGMA wal_checkpoint(PASSIVE)") # WAL-Größe reduzieren (VS Code Öffnen)
 
         init_schema(_CONN)
 
@@ -943,10 +944,34 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_privacy_opted ON user_privacy(opted_out)"
             )
+            # Performance Indexes (2026-02-20)
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_steam_links_verified ON steam_links(verified, user_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_voice_log_started_user ON voice_session_log(started_at, user_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_voice_feedback_req_pending ON voice_feedback_requests(status, sent_at_ts) WHERE status = 'pending'"
+            )
         except sqlite3.Error as e:
             logger.debug(
                 "Optionale Index-Erstellung übersprungen: %s", e, exc_info=True
             )
+        # hero_build_clones index (table created by build_mirror cog, may not exist yet)
+        try:
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hero_build_clones_status_hero ON hero_build_clones(status, hero_id, created_at)"
+            )
+            c.commit()
+        except Exception:
+            pass
+        # Update query planner statistics after index creation
+        try:
+            c.execute("ANALYZE")
+            c.commit()
+        except sqlite3.Error as e:
+            logger.debug("ANALYZE übersprungen: %s", e, exc_info=True)
 
 
 # ---------- Low-Level Helpers (sicher, mit Bind-Parametern) ----------
