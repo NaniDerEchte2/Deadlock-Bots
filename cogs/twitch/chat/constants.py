@@ -87,6 +87,12 @@ SPAM_FRAGMENTS = (
     "topsmm3 .ru",
     "topsmm3 ru",
     "topsmm3",
+    "promnow.ru",
+    "promnow ru",
+    "promnow",
+    "viewers",
+    "top viewers",
+    "Top Viewers",
 )
 SPAM_MIN_MATCHES = 3
 

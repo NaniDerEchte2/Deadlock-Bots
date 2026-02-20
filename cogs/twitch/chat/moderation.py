@@ -295,8 +295,8 @@ class ModerationMixin:
                     hits += 1
                     reasons.append("Fragment(Fallback): streamboocom (kompakt)")
 
-        # Muster: "viewer [name]": +1 Punkt
-        if re.search(r"\bviewer\s+\w+", lowered):
+        # Muster: "viewer(s) [name]": +1 Punkt
+        if re.search(r"\bviewers?\s+\w+", lowered):
             hits += 1
             reasons.append("Muster: viewer + name")
 
