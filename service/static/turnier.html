@@ -101,6 +101,7 @@ tr:hover td { background: rgba(255,255,255,.02); }
 .form-group label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .form-group input, .form-group select { width: 100%; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 9px 12px; font-size: 14px; outline: none; transition: border-color .15s; }
 .form-group input:focus, .form-group select:focus { border-color: var(--accent); }
+.form-group input[type="datetime-local"] { color-scheme: dark; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
 .alert { padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 14px; }
 .alert-error { background: rgba(231,76,60,.12); border: 1px solid rgba(231,76,60,.3); color: #ff7675; }
@@ -140,8 +141,8 @@ tr:hover td { background: rgba(255,255,255,.02); }
     <div class="modal-title">📅 Anmeldezeitraum erstellen</div>
     <div id="periodAlert" class="alert alert-error hidden"></div>
     <div class="form-group"><label>Name des Zeitraums</label><input id="pName" placeholder="z. B. Deadlock Cup #1 März 2026"></div>
-    <div class="form-group"><label>Anmeldebeginn (DD.MM.YYYY HH:MM)</label><input id="pStart" placeholder="01.03.2026 12:00"></div>
-    <div class="form-group"><label>Anmeldeschluss (DD.MM.YYYY HH:MM)</label><input id="pEnd" placeholder="28.03.2026 23:59"></div>
+    <div class="form-group"><label>Anmeldebeginn</label><input id="pStart" type="datetime-local"></div>
+    <div class="form-group"><label>Anmeldeschluss</label><input id="pEnd" type="datetime-local"></div>
     <div class="form-group"><label>Max. Teamgröße (Spieler pro Team)</label><input id="pTeamSize" type="number" min="2" max="20" value="6"></div>
     <div class="modal-actions">
       <button class="btn btn-muted" onclick="closeModal('modalPeriod')">Abbrechen</button>
@@ -345,20 +346,16 @@ function renderPeriod(period, summary) {
 async function createPeriod() {
   const alertEl = document.getElementById('periodAlert');
   const name = document.getElementById('pName').value.trim();
-  const start = document.getElementById('pStart').value.trim();
-  const end = document.getElementById('pEnd').value.trim();
+  const start = document.getElementById('pStart').value;
+  const end = document.getElementById('pEnd').value;
   const teamSize = parseInt(document.getElementById('pTeamSize').value) || 6;
   if (!name || !start || !end) { showAlert(alertEl, 'Alle Felder ausfüllen.'); return; }
-  const fmt = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/;
-  if (!fmt.test(start) || !fmt.test(end)) { showAlert(alertEl, 'Format: DD.MM.YYYY HH:MM'); return; }
-  function parseDE(s) {
-    const [d,m,y,h,mi] = [s.slice(0,2),s.slice(3,5),s.slice(6,10),s.slice(11,13),s.slice(14,16)];
-    return new Date(`${y}-${m}-${d}T${h}:${mi}:00`).toISOString().slice(0,19);
-  }
+  if (new Date(start) >= new Date(end)) { showAlert(alertEl, 'Anmeldebeginn muss vor Anmeldeschluss liegen.'); return; }
   try {
     await apiPost('/api/turnier/period', {
       guild_id: currentGuildId, name, team_size: teamSize,
-      registration_start: parseDE(start), registration_end: parseDE(end),
+      registration_start: start + ':00',
+      registration_end: end + ':00',
     });
     closeModal('modalPeriod');
     await loadData();
@@ -540,10 +537,33 @@ function openConfirm(title, text, cb) {
 }
 
 // ── Modal helpers ─────────────────────────────────────
-function openModal(id) { document.getElementById(id).classList.remove('hidden'); }
+function openModal(id) {
+  document.getElementById(id).classList.remove('hidden');
+  if (id === 'modalPeriod') {
+    // Pre-fill start with "now rounded up to next hour", end with "+7 days 23:59"
+    const now = new Date();
+    now.setMinutes(0, 0, 0);
+    now.setHours(now.getHours() + 1);
+    const end = new Date(now);
+    end.setDate(end.getDate() + 7);
+    end.setHours(23, 59, 0, 0);
+    function toLocal(d) {
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+    const startEl = document.getElementById('pStart');
+    const endEl = document.getElementById('pEnd');
+    if (!startEl.value) startEl.value = toLocal(now);
+    if (!endEl.value) endEl.value = toLocal(end);
+  }
+}
 function closeModal(id) {
   document.getElementById(id).classList.add('hidden');
   document.querySelectorAll(`#${id} .alert`).forEach(a => a.classList.add('hidden'));
+  if (id === 'modalPeriod') {
+    document.getElementById('pStart').value = '';
+    document.getElementById('pEnd').value = '';
+  }
 }
 function showAlert(el, msg) { el.textContent = msg; el.classList.remove('hidden'); }
 
