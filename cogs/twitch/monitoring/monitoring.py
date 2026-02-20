@@ -2057,13 +2057,14 @@ class TwitchMonitoringMixin:
 
             if last_dt < cutoff:
                 try:
-                    await self._dashboard_archive(login, "archive")
-                    log.info(
-                        "Auto-archiviert %s (letzter Stream %s, cutoff %s)",
-                        login,
-                        last_dt.date().isoformat(),
-                        cutoff.date().isoformat(),
-                    )
+                    result = await self._dashboard_archive(login, "archive")
+                    if "bereits archiviert" not in result:
+                        log.info(
+                            "Auto-archiviert %s (letzter Stream %s, cutoff %s)",
+                            login,
+                            last_dt.date().isoformat(),
+                            cutoff.date().isoformat(),
+                        )
                 except Exception:
                     log.debug("Auto-Archivierung fehlgeschlagen für %s", login, exc_info=True)
 
