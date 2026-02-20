@@ -787,7 +787,28 @@ class DeadlockFriendRank(commands.Cog):
                     await interaction.response.send_message(content)
                 return
             except discord.HTTPException:
+                # Interaction token kann ablaufen (z. B. 404 Unknown interaction).
+                # Dann direkt in den Channel senden statt erneut über interaction-basiertes ctx.reply.
                 pass
+
+            channel = getattr(ctx, "channel", None)
+            if channel is not None:
+                try:
+                    await channel.send(content)
+                    return
+                except discord.HTTPException:
+                    pass
+
+            author = getattr(ctx, "author", None)
+            if author is not None:
+                try:
+                    await author.send(content)
+                    return
+                except discord.HTTPException:
+                    pass
+
+            return
+
         await ctx.reply(content, mention_author=False)
 
     @staticmethod
