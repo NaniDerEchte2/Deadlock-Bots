@@ -314,22 +314,6 @@ if TWITCHIO_AVAILABLE:
 
             twitch_login, twitch_user_id, _ = streamer_data
 
-            # needs_reauth=1 → neuen Auth-Link anfordern
-            if hasattr(self, "_is_fully_authed"):
-                try:
-                    if not await self._is_fully_authed(twitch_user_id):
-                        await ctx.send(
-                            f"@{ctx.author.name} Neu-Autorisierung erforderlich. "
-                            "Bitte prüfe deine Discord-DMs oder nutze /traid für den neuen Auth-Link."
-                        )
-                        return
-                except Exception:
-                    log.debug(
-                        "Clip command auth precheck failed for %s",
-                        twitch_login,
-                        exc_info=True,
-                    )
-
             if not self._raid_bot or not hasattr(self._raid_bot, "auth_manager"):
                 await ctx.send(f"@{ctx.author.name} Twitch-Bot nicht verfügbar.")
                 return
@@ -340,31 +324,32 @@ if TWITCHIO_AVAILABLE:
                 await ctx.send(f"@{ctx.author.name} Twitch-Bot nicht verfügbar (keine API-Session).")
                 return
 
-            required_scope = "clips:edit"
-            scopes = set(auth_manager.get_scopes(str(twitch_user_id)))
-            if required_scope not in scopes:
-                auth_url = auth_manager.generate_auth_url(twitch_login)
-                await ctx.send(
-                    f"@{ctx.author.name} Für !clip fehlt OAuth-Scope clips:edit. "
-                    f"Bitte einmal neu autorisieren: {auth_url}"
-                )
-                return
-
+            # Broadcaster-Token bevorzugen (Clip wird dem Broadcaster zugeschrieben)
+            access_token = None
             try:
                 tokens = await auth_manager.get_tokens_for_user(str(twitch_user_id), api_session)
+                if tokens:
+                    access_token = tokens[0]
             except Exception:
-                log.exception("Clip command: token fetch failed")
-                tokens = None
+                log.debug("Clip command: Broadcaster-Token nicht verfügbar für %s", twitch_login, exc_info=True)
 
-            if not tokens:
+            # Fallback: Bot-eigenen Token verwenden
+            if not access_token:
+                token_mgr = getattr(self, "_token_manager", None)
+                if token_mgr:
+                    try:
+                        bot_token, _ = await token_mgr.get_valid_token()
+                        access_token = bot_token
+                        log.debug("Clip command: verwende Bot-Token als Fallback für %s", twitch_login)
+                    except Exception:
+                        log.debug("Clip command: Bot-Token-Fetch fehlgeschlagen", exc_info=True)
+
+            if not access_token:
                 auth_url = auth_manager.generate_auth_url(twitch_login)
                 await ctx.send(
-                    f"@{ctx.author.name} OAuth fehlt oder ist abgelaufen. "
-                    f"Bitte neu autorisieren: {auth_url}"
+                    f"@{ctx.author.name} OAuth fehlt. Bitte einmal per !raid_enable autorisieren: {auth_url}"
                 )
                 return
-
-            access_token, _ = tokens
 
             try:
                 from ..api.twitch_api import TwitchAPI  # lokal importieren, um Zyklus zu vermeiden
