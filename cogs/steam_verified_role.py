@@ -32,9 +32,17 @@ class SteamVerifiedRole(commands.Cog):
         )
         self._member_fetch_lock = asyncio.Lock()
         self._last_member_fetch_started_at = 0.0
+        self._missing_member_retry_seconds = max(
+            60.0, float(os.getenv("VERIFIED_MEMBER_MISSING_RETRY_SECONDS", "21600"))
+        )
+        self._transient_member_retry_seconds = max(
+            5.0, float(os.getenv("VERIFIED_MEMBER_TRANSIENT_RETRY_SECONDS", "300"))
+        )
+        self._missing_member_retry_until: dict[int, float] = {}
+        self._transient_member_retry_until: dict[int, float] = {}
         self._task = None
         log.info(
-            "SteamVerifiedRole init: guild=%s role=%s db=%s every=%ss dry_run=%s log_ch=%s fetch_delay=%ss",
+            "SteamVerifiedRole init: guild=%s role=%s db=%s every=%ss dry_run=%s log_ch=%s fetch_delay=%ss missing_retry=%ss transient_retry=%ss",
             self.guild_id,
             self.verified_role_id,
             self.db_path,
@@ -42,6 +50,8 @@ class SteamVerifiedRole(commands.Cog):
             self.dry_run,
             self.log_channel_id,
             self._member_fetch_min_interval,
+            self._missing_member_retry_seconds,
+            self._transient_member_retry_seconds,
         )
 
     # ---------- DB ----------
@@ -83,6 +93,50 @@ class SteamVerifiedRole(commands.Cog):
             return False
         text = str(exc)
         return "Session is closed" in text or "ClientSession is closed" in text
+
+    @staticmethod
+    def _monotonic_now() -> float:
+        return asyncio.get_running_loop().time()
+
+    def _can_attempt_member_fetch(self, user_id: int) -> bool:
+        now = self._monotonic_now()
+        missing_until = self._missing_member_retry_until.get(user_id, 0.0)
+        if missing_until > now:
+            return False
+        transient_until = self._transient_member_retry_until.get(user_id, 0.0)
+        if transient_until > now:
+            return False
+        return True
+
+    def _mark_member_missing(self, user_id: int) -> None:
+        self._missing_member_retry_until[user_id] = (
+            self._monotonic_now() + self._missing_member_retry_seconds
+        )
+        self._transient_member_retry_until.pop(user_id, None)
+
+    def _mark_member_transient_error(self, user_id: int) -> None:
+        self._transient_member_retry_until[user_id] = (
+            self._monotonic_now() + self._transient_member_retry_seconds
+        )
+
+    def _clear_member_retry_state(self, user_id: int) -> None:
+        self._missing_member_retry_until.pop(user_id, None)
+        self._transient_member_retry_until.pop(user_id, None)
+
+    def _prune_retry_caches(self) -> None:
+        now = self._monotonic_now()
+        if self._missing_member_retry_until:
+            self._missing_member_retry_until = {
+                uid: ts
+                for uid, ts in self._missing_member_retry_until.items()
+                if ts > now
+            }
+        if self._transient_member_retry_until:
+            self._transient_member_retry_until = {
+                uid: ts
+                for uid, ts in self._transient_member_retry_until.items()
+                if ts > now
+            }
 
     async def _fetch_member_rate_limited(
         self, guild: discord.Guild, user_id: int
@@ -167,8 +221,24 @@ class SteamVerifiedRole(commands.Cog):
             try:
                 member = await self._fetch_member_rate_limited(guild, user_id)
             except discord.NotFound:
+                self._mark_member_missing(user_id)
+                return False
+            except asyncio.TimeoutError:
+                self._mark_member_transient_error(user_id)
+                log.warning(
+                    "Timeout beim Abrufen von Member %s für Sofort-Zuweisung.", user_id
+                )
+                return False
+            except discord.HTTPException as exc:
+                self._mark_member_transient_error(user_id)
+                log.warning(
+                    "HTTP-Fehler beim Abrufen von Member %s für Sofort-Zuweisung: %s",
+                    user_id,
+                    exc,
+                )
                 return False
             except Exception:
+                self._mark_member_transient_error(user_id)
                 return False
 
         if role in member.roles:
@@ -178,6 +248,7 @@ class SteamVerifiedRole(commands.Cog):
             await member.add_roles(
                 role, reason="Manuelle Verifizierung / Sofort-Zuweisung"
             )
+            self._clear_member_retry_state(user_id)
             await self._announce_assignments(
                 guild,
                 [
@@ -185,7 +256,22 @@ class SteamVerifiedRole(commands.Cog):
                 ],
             )
             return True
+        except asyncio.TimeoutError:
+            self._mark_member_transient_error(user_id)
+            log.warning(
+                "Timeout beim Rollen-Assign (Sofort-Zuweisung) für Member %s.", user_id
+            )
+            return False
+        except discord.HTTPException as exc:
+            self._mark_member_transient_error(user_id)
+            log.warning(
+                "HTTP-Fehler beim Rollen-Assign (Sofort-Zuweisung) für %s: %s",
+                user_id,
+                exc,
+            )
+            return False
         except Exception as e:
+            self._mark_member_transient_error(user_id)
             log.error(
                 "Fehler bei Sofort-Zuweisung der Verified-Rolle an %s: %s", user_id, e
             )
@@ -238,18 +324,30 @@ class SteamVerifiedRole(commands.Cog):
         if not verified_ids:
             return 0
 
+        self._prune_retry_caches()
         changes, lines = 0, []
         not_found = 0
+        skipped_cached_retry = 0
         for uid in verified_ids:
             if self.bot.is_closed() or self._http_session_closed():
                 log.info("HTTP-Session oder Bot geschlossen waehrend Lauf -> Abbruch.")
                 break
             member = guild.get_member(uid)
             if member is None:
+                if not self._can_attempt_member_fetch(uid):
+                    skipped_cached_retry += 1
+                    continue
                 try:
                     member = await self._fetch_member_rate_limited(guild, uid)
                 except discord.NotFound:
+                    self._mark_member_missing(uid)
                     not_found += 1
+                    continue
+                except asyncio.TimeoutError:
+                    self._mark_member_transient_error(uid)
+                    log.warning(
+                        "Timeout beim fetch_member im Verified-Lauf (uid=%s).", uid
+                    )
                     continue
                 except RuntimeError as exc:
                     if self._is_session_closed_error(exc):
@@ -259,8 +357,16 @@ class SteamVerifiedRole(commands.Cog):
                         )
                         break
                     raise
-                except discord.HTTPException:
+                except discord.HTTPException as exc:
+                    self._mark_member_transient_error(uid)
+                    if exc.status == 429:
+                        log.warning(
+                            "Rate-Limit beim fetch_member (uid=%s). Nächster Versuch später.",
+                            uid,
+                        )
                     continue
+            else:
+                self._clear_member_retry_state(uid)
             if role in member.roles:
                 continue
             if self.dry_run:
@@ -271,6 +377,7 @@ class SteamVerifiedRole(commands.Cog):
                 continue
             try:
                 await member.add_roles(role, reason="Steam verified = 1 (automatisch)")
+                self._clear_member_retry_state(uid)
                 changes += 1
                 lines.append(
                     f"✅ <@{uid}> ({member.display_name}) ist jetzt **Verified** - Rolle zugewiesen."
@@ -288,15 +395,22 @@ class SteamVerifiedRole(commands.Cog):
                     uid,
                     getattr(member, "display_name", "?"),
                 )
+            except asyncio.TimeoutError:
+                self._mark_member_transient_error(uid)
+                log.warning(
+                    "Timeout beim Rollen-Assign im Verified-Lauf (uid=%s).", uid
+                )
             except discord.HTTPException as e:
+                self._mark_member_transient_error(uid)
                 log.warning("HTTP-Fehler bei %s: %s", uid, e)
 
         if lines and not self._http_session_closed():
             await self._announce_assignments(guild, lines)
         log.info(
-            "Verified-Check: %s Rollen vergeben, %s IDs nicht auf Server.",
+            "Verified-Check: %s Rollen vergeben, %s IDs nicht auf Server, %s IDs per Retry-Cache übersprungen.",
             changes,
             not_found,
+            skipped_cached_retry,
         )
         return changes
 
@@ -316,6 +430,10 @@ class SteamVerifiedRole(commands.Cog):
                         await self._run_once()
                     except asyncio.CancelledError:
                         raise
+                    except asyncio.TimeoutError:
+                        log.warning(
+                            "Verified-Rollenlauf: Timeout bei Discord-API. Neuer Versuch im nächsten Intervall."
+                        )
                     except RuntimeError as exc:
                         if self._is_session_closed_error(exc):
                             log.info("HTTP-Session geschlossen -> Loop endet sauber.")
