@@ -4,183 +4,737 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Turnier – EarlySalty</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0f1117;
-  --surface: #1a1d2e;
-  --surface2: #232640;
-  --border: #2e3250;
+  --bg: #080c14;
+  --surface: #0f1320;
+  --surface2: #161b2e;
+  --surface3: #1d2340;
+  --border: #222843;
+  --border2: #2c3358;
   --accent: #6c63ff;
-  --accent2: #ff6b6b;
-  --green: #43e97b;
-  --gold: #ffd700;
-  --text: #e8eaf0;
-  --muted: #8b90a7;
-  --danger: #e74c3c;
-  --success: #27ae60;
+  --accent-dim: rgba(108,99,255,.12);
+  --accent-glow: rgba(108,99,255,.28);
+  --green: #3dd68c;
+  --green-dim: rgba(61,214,140,.1);
+  --gold: #f5c542;
+  --gold-dim: rgba(245,197,66,.1);
+  --text: #e4e7f0;
+  --text2: #9ba3bf;
+  --muted: #5c6380;
+  --danger: #e05252;
+  --danger-dim: rgba(224,82,82,.1);
+  --r: 12px;
+  --r-sm: 8px;
+  --r-xs: 6px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 70% 45% at 15% 5%, rgba(108,99,255,.055) 0%, transparent 55%),
+    radial-gradient(ellipse 55% 40% at 85% 95%, rgba(61,214,140,.035) 0%, transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
 
-/* Layout */
-.topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
-.topbar-title { font-size: 18px; font-weight: 700; color: var(--gold); display: flex; align-items: center; gap: 8px; }
-.topbar-user { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 12px; }
-.topbar-user a { color: var(--accent); text-decoration: none; cursor: pointer; }
-.container { max-width: 1200px; margin: 0 auto; padding: 20px; display: grid; gap: 20px; }
+/* ── Nav ── */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  background: rgba(8,12,20,.82);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border-bottom: 1px solid var(--border);
+}
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  text-decoration: none;
+  letter-spacing: -.2px;
+}
+.nav-brand-logo {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), #a78bfa);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+.nav-right { display: flex; align-items: center; gap: 10px; }
+.nav-user { font-size: 12px; color: var(--text2); }
 
-/* Cards */
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
-.card-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+/* ── Layout ── */
+.main {
+  position: relative;
+  z-index: 1;
+  max-width: 1260px;
+  margin: 0 auto;
+  padding: 28px 24px 72px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
 
-/* Buttons */
-.btn { padding: 7px 14px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; transition: opacity .15s; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
-.btn:hover { opacity: .85; }
-.btn:disabled { opacity: .4; cursor: not-allowed; }
-.btn-primary { background: var(--accent); color: #fff; }
-.btn-danger { background: var(--danger); color: #fff; }
-.btn-success { background: var(--success); color: #fff; }
-.btn-muted { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
-.btn-sm { padding: 4px 9px; font-size: 12px; }
-
-/* Badges */
-.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
-.badge-green { background: rgba(67,233,123,.15); color: var(--green); border: 1px solid rgba(67,233,123,.3); }
-.badge-red { background: rgba(231,76,60,.15); color: var(--danger); border: 1px solid rgba(231,76,60,.3); }
-.badge-gold { background: rgba(255,215,0,.12); color: var(--gold); border: 1px solid rgba(255,215,0,.3); }
-.badge-blue { background: rgba(108,99,255,.15); color: #8b8fff; border: 1px solid rgba(108,99,255,.3); }
-.badge-muted { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
-
-/* Alert */
-.alert { padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 12px; }
-.alert-error { background: rgba(231,76,60,.12); border: 1px solid rgba(231,76,60,.3); color: #ff7675; }
-.alert-success { background: rgba(39,174,96,.12); border: 1px solid rgba(39,174,96,.3); color: var(--green); }
-.alert-info { background: rgba(108,99,255,.12); border: 1px solid rgba(108,99,255,.3); color: #8b8fff; }
+/* ── Toast ── */
+.toast {
+  position: fixed;
+  top: 68px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-4px);
+  z-index: 600;
+  padding: 11px 20px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  font-weight: 500;
+  max-width: 440px;
+  width: calc(100% - 40px);
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .2s, transform .2s;
+  box-shadow: 0 8px 28px rgba(0,0,0,.45);
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.error  { background: #221416; border: 1px solid rgba(224,82,82,.35); color: #ff9090; }
+.toast.success{ background: #0d201a; border: 1px solid rgba(61,214,140,.3); color: var(--green); }
+.toast.info   { background: #111628; border: 1px solid rgba(108,99,255,.3); color: #a78bfa; }
 .hidden { display: none !important; }
 
-/* Period Banner */
-.period-banner { border-radius: 8px; padding: 16px 20px; margin-bottom: 4px; }
-.period-banner.open { background: rgba(67,233,123,.08); border: 1px solid rgba(67,233,123,.25); }
-.period-banner.closed { background: rgba(231,76,60,.08); border: 1px solid rgba(231,76,60,.25); }
-.period-banner.pending { background: rgba(255,215,0,.08); border: 1px solid rgba(255,215,0,.25); }
-.period-banner.none { background: var(--surface2); border: 1px solid var(--border); }
-.period-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.period-meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+/* ── Buttons ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  border-radius: var(--r-sm);
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: transform .12s, box-shadow .15s, background .15s, opacity .15s;
+}
+.btn:hover { transform: translateY(-1px); }
+.btn:active { transform: translateY(0); }
+.btn:disabled { opacity: .38; cursor: not-allowed; transform: none; }
 
-/* My Status */
-.status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-bottom: 12px; }
-.status-stat { background: var(--surface2); border-radius: 8px; padding: 10px 14px; }
-.status-stat-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
-.status-stat-value { font-size: 14px; font-weight: 700; margin-top: 4px; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #7c74ff; box-shadow: 0 4px 16px var(--accent-glow); }
+.btn-success { background: linear-gradient(135deg, #27a060, var(--green)); color: #0a1a0f; font-weight: 700; }
+.btn-success:hover { box-shadow: 0 4px 16px rgba(61,214,140,.28); }
+.btn-danger  { background: var(--danger); color: #fff; }
+.btn-danger:hover { background: #c94545; }
+.btn-ghost {
+  background: transparent;
+  color: var(--text2);
+  border: 1px solid var(--border2);
+}
+.btn-ghost:hover { background: var(--surface2); color: var(--text); border-color: #3a4265; }
+.btn-sm  { padding: 5px 12px; font-size: 12px; border-radius: var(--r-xs); }
+.btn-xs  { padding: 3px 8px; font-size: 11px; border-radius: 5px; }
 
-/* Teams Grid */
-.teams-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
-.team-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
-.team-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; gap: 8px; }
-.team-card-name { font-weight: 700; font-size: 14px; flex: 1; }
-.team-card-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
-.team-member-list { list-style: none; }
-.team-member { font-size: 12px; color: var(--muted); padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,.04); display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.team-member:last-child { border-bottom: none; }
-.team-member-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.team-actions { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
-.rename-input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 6px 10px; font-size: 12px; outline: none; margin-top: 6px; }
+/* ── Badges ── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .1px;
+}
+.badge-green  { background: var(--green-dim); color: var(--green); border: 1px solid rgba(61,214,140,.25); }
+.badge-red    { background: var(--danger-dim); color: #ff9090; border: 1px solid rgba(224,82,82,.25); }
+.badge-gold   { background: var(--gold-dim); color: var(--gold); border: 1px solid rgba(245,197,66,.25); }
+.badge-blue   { background: var(--accent-dim); color: #a78bfa; border: 1px solid rgba(108,99,255,.25); }
+.badge-muted  { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+
+/* ── Cards ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 22px;
+  position: relative;
+  overflow: hidden;
+}
+.card-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  gap: 12px;
+}
+.card-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  color: var(--text2);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* ── Period Hero ── */
+.period-hero {
+  border-radius: var(--r);
+  padding: 26px 28px 22px;
+  position: relative;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.period-hero::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  border-radius: var(--r) var(--r) 0 0;
+  opacity: 0;
+  transition: opacity .3s;
+}
+.period-hero.open   { border-color: rgba(61,214,140,.18); }
+.period-hero.open::before   { opacity: 1; background: linear-gradient(90deg, transparent 0%, var(--green) 40%, #a8f0cb 60%, transparent 100%); }
+.period-hero.pending{ border-color: rgba(245,197,66,.18); }
+.period-hero.pending::before{ opacity: 1; background: linear-gradient(90deg, transparent 0%, var(--gold) 40%, #fde68a 60%, transparent 100%); }
+.period-hero.closed { border-color: rgba(224,82,82,.18); }
+.period-hero.closed::before { opacity: .7; background: linear-gradient(90deg, transparent 0%, var(--danger) 40%, #ffa0a0 60%, transparent 100%); }
+
+.period-hero-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.period-name { font-size: 21px; font-weight: 800; color: var(--text); line-height: 1.2; margin-top: 8px; letter-spacing: -.3px; }
+.period-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 13px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.period-pill.open    { background: var(--green-dim); color: var(--green); border: 1px solid rgba(61,214,140,.3); }
+.period-pill.pending { background: var(--gold-dim);  color: var(--gold);  border: 1px solid rgba(245,197,66,.3); }
+.period-pill.closed  { background: var(--danger-dim);color: #ff9090;       border: 1px solid rgba(224,82,82,.3); }
+.period-pill.none    { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+
+.status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.open    .status-dot { background: var(--green); animation: pulse-dot 2s ease infinite; }
+.pending .status-dot { background: var(--gold); }
+.closed  .status-dot { background: #ff9090; }
+.none    .status-dot { background: var(--muted); }
+@keyframes pulse-dot {
+  0%,100%{ opacity:1; transform:scale(1); }
+  50%    { opacity:.5; transform:scale(1.4); }
+}
+
+.period-meta {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  color: var(--text2);
+  font-size: 12px;
+  margin-top: 12px;
+}
+.period-meta-item { display: flex; align-items: center; gap: 5px; }
+.period-actions   { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+
+/* ── My Status ── */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.stat-box {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 12px 14px;
+}
+.stat-lbl { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin-bottom: 5px; }
+.stat-val { font-size: 15px; font-weight: 700; color: var(--text); }
+
+/* ── Teams ── */
+.teams-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(255px, 1fr));
+  gap: 14px;
+}
+.team-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  transition: border-color .2s, box-shadow .2s;
+}
+.team-card:hover { border-color: var(--border2); box-shadow: 0 6px 24px rgba(0,0,0,.28); }
+.team-card-top  { padding: 14px 14px 12px; }
+.team-card-hd   { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.team-card-name { font-size: 14px; font-weight: 700; color: var(--text); word-break: break-word; }
+.team-cap {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+  background: var(--surface3);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.team-cap.full { color: var(--green); border-color: rgba(61,214,140,.3); background: var(--green-dim); }
+.team-bar { height: 3px; background: var(--border); border-radius: 999px; margin-bottom: 12px; overflow: hidden; }
+.team-bar-fill { height: 100%; border-radius: 999px; transition: width .5s ease; background: linear-gradient(90deg, var(--accent), #a78bfa); }
+.team-bar-fill.full { background: linear-gradient(90deg, #27a060, var(--green)); }
+
+.member-list { list-style: none; }
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255,255,255,.04);
+}
+.member-row:last-child { border-bottom: none; }
+.member-av {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--surface3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.member-name { flex: 1; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-rank { font-size: 10px; font-weight: 600; color: var(--muted); white-space: nowrap; background: var(--surface3); padding: 1px 6px; border-radius: 4px; }
+.team-foot {
+  padding: 9px 14px;
+  border-top: 1px solid rgba(255,255,255,.04);
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.rename-form { padding: 10px 14px; border-top: 1px solid rgba(255,255,255,.04); background: var(--surface); }
+.rename-input {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color .15s;
+  margin-bottom: 8px;
+}
 .rename-input:focus { border-color: var(--accent); }
 
-/* Solo list */
-.solo-list { list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
-.solo-item { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
-.solo-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ── Solo section ── */
+.solo-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  color: var(--text2);
+  padding: 0;
+}
+.toggle-chevron { font-size: 9px; color: var(--muted); transition: transform .2s; }
+.solo-toggle.open .toggle-chevron { transform: rotate(90deg); }
+.solo-body { margin-top: 16px; }
+.solo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(195px, 1fr));
+  gap: 8px;
+}
+.solo-chip {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 7px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: border-color .15s;
+}
+.solo-chip:hover { border-color: var(--border2); }
+.solo-av {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--surface3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.solo-name { flex: 1; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.solo-rank { font-size: 10px; color: var(--muted); white-space: nowrap; }
 
-/* Collapsible */
-details summary { cursor: pointer; list-style: none; user-select: none; }
-details summary::before { content: "▶ "; font-size: 11px; color: var(--muted); }
-details[open] summary::before { content: "▼ "; }
+/* ── Bracket ── */
+.bracket-wrap { overflow-x: auto; padding-bottom: 4px; }
+.bracket { display: flex; min-width: max-content; }
+.b-round { display: flex; flex-direction: column; justify-content: space-around; min-width: 186px; }
+.b-round-lbl { text-align: center; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); margin-bottom: 14px; }
+.b-match { display: flex; flex-direction: column; gap: 2px; margin: 6px 10px; flex: 1; justify-content: center; }
+.b-entry {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 11px;
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: border-color .15s;
+}
+.b-entry:hover { border-color: var(--border2); }
+.b-entry.tbd { opacity: .35; font-style: italic; }
+.b-entry.bye { opacity: .3; font-style: italic; }
+.b-entry.winner { border-color: rgba(245,197,66,.4); background: rgba(245,197,66,.05); }
+.b-divider { height: 1px; background: var(--border); margin: 2px 10px; }
+.b-score { font-size: 10px; font-weight: 600; color: var(--muted); }
 
-/* Bracket */
-.bracket { display: flex; gap: 0; overflow-x: auto; padding: 10px 0; }
-.bracket-round { display: flex; flex-direction: column; justify-content: space-around; min-width: 180px; position: relative; }
-.bracket-round-label { text-align: center; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 12px; font-weight: 700; }
-.bracket-match { display: flex; flex-direction: column; gap: 2px; margin: 8px; flex: 1; justify-content: center; }
-.bracket-entry { background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 7px 10px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; cursor: default; transition: border-color .15s; }
-.bracket-entry:hover { border-color: var(--accent); }
-.bracket-entry.tbd { opacity: .4; font-style: italic; }
-.bracket-entry.bye { opacity: .35; font-style: italic; }
-.bracket-score { font-size: 10px; color: var(--muted); }
-.bracket-divider { height: 1px; background: var(--border); margin: 2px 8px; }
+/* ── Modal ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.72);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadein .15s ease;
+}
+.modal-overlay.hidden { display: none; }
+@keyframes fadein { from { opacity:0 } to { opacity:1 } }
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: var(--r);
+  padding: 26px;
+  width: 100%;
+  max-width: 430px;
+  animation: scalein .18s ease;
+  box-shadow: 0 28px 64px rgba(0,0,0,.55);
+}
+@keyframes scalein { from { opacity:0; transform:scale(.95) } to { opacity:1; transform:scale(1) } }
+.modal-title { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+.modal-sub   { font-size: 13px; color: var(--text2); margin-bottom: 18px; line-height: 1.5; }
+.modal-foot  { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+.modal-err   {
+  background: var(--danger-dim);
+  border: 1px solid rgba(224,82,82,.3);
+  color: #ff9090;
+  border-radius: var(--r-xs);
+  padding: 8px 12px;
+  font-size: 12px;
+  margin-bottom: 14px;
+}
+.field-lbl {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.field-inp {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  padding: 10px 13px;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color .15s;
+}
+.field-inp:focus { border-color: var(--accent); }
 
-/* Loading */
-.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.loading-wrap { display: flex; align-items: center; gap: 10px; color: var(--muted); padding: 20px; }
-.empty-hint { color: var(--muted); text-align: center; padding: 24px; font-style: italic; }
+/* Mode cards */
+.mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 4px; }
+.mode-card {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 16px 12px 14px;
+  cursor: pointer;
+  transition: all .15s;
+  background: var(--surface2);
+  text-align: center;
+  user-select: none;
+}
+.mode-card:hover { border-color: var(--border2); background: var(--surface3); }
+.mode-card.selected { border-color: var(--accent); background: var(--accent-dim); box-shadow: 0 0 0 1px var(--accent); }
+.mode-icon { font-size: 22px; margin-bottom: 6px; }
+.mode-lbl  { font-size: 13px; font-weight: 700; }
+.mode-desc { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+/* Team option list */
+.team-option-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; padding-right: 2px; margin-bottom: 6px; }
+.team-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: all .15s;
+  background: var(--surface2);
+  user-select: none;
+}
+.team-option:hover { border-color: var(--border2); background: var(--surface3); }
+.team-option.selected { border-color: var(--accent); background: var(--accent-dim); }
+.t-opt-name { font-size: 13px; font-weight: 600; }
+.t-opt-cnt  { font-size: 11px; color: var(--muted); background: var(--surface3); padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border); }
+.new-team-sep { display: flex; align-items: center; gap: 10px; margin: 12px 0 10px; color: var(--muted); font-size: 11px; }
+.new-team-sep::before, .new-team-sep::after { content:''; flex:1; height:1px; background:var(--border); }
+
+/* Loading / empty */
+.spinner { display: inline-block; width: 17px; height: 17px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; flex-shrink: 0; }
+@keyframes spin { to { transform:rotate(360deg) } }
+.loading-wrap { display: flex; align-items: center; gap: 10px; color: var(--muted); padding: 22px; }
+.empty-hint { color: var(--muted); text-align: center; padding: 28px 16px; font-size: 13px; line-height: 1.7; }
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+  .nav { padding: 0 16px; }
+  .main { padding: 16px 14px 56px; }
+  .period-hero { padding: 18px 18px 16px; }
+  .period-name { font-size: 17px; }
+  .mode-grid { grid-template-columns: 1fr; }
+  .modal { padding: 18px; }
+}
 </style>
 </head>
 <body>
 
-<div class="topbar">
-  <div class="topbar-title">🏆 Turnier</div>
-  <div class="topbar-user" id="topbarUser">
-    <span id="userLabel"></span>
-    <a id="authLink" href="/auth/login">Anmelden</a>
+<!-- Nav -->
+<nav class="nav">
+  <a class="nav-brand" href="/">
+    <div class="nav-brand-logo">🏆</div>
+    Turnier
+  </a>
+  <div class="nav-right">
+    <span class="nav-user" id="userLabel"></span>
+    <a id="authLink" class="btn btn-primary btn-sm" href="/auth/login">Mit Discord anmelden</a>
   </div>
-</div>
+</nav>
 
-<div class="container">
-  <!-- Global alert -->
-  <div id="globalAlert" class="alert hidden"></div>
+<!-- Toast -->
+<div id="toast" class="toast"></div>
 
-  <!-- Period Banner -->
-  <div id="periodBanner" class="period-banner none">
+<main class="main">
+
+  <!-- Period Hero -->
+  <div id="periodHero" class="period-hero none">
     <div class="loading-wrap"><span class="spinner"></span> Lade...</div>
   </div>
 
-  <!-- My Status (only when logged in) -->
+  <!-- My Status -->
   <div id="myStatusCard" class="card hidden">
-    <div class="card-title">📊 Mein Status</div>
+    <div class="card-hd">
+      <div class="card-label"><span>📊</span> Mein Status</div>
+    </div>
     <div id="myStatusContent"></div>
   </div>
 
   <!-- Teams -->
   <div class="card">
-    <div class="card-title">🛡️ Teams</div>
-    <div id="teamsContainer"><div class="loading-wrap"><span class="spinner"></span> Lade Teams...</div></div>
+    <div class="card-hd">
+      <div class="card-label"><span>🛡️</span> Teams</div>
+      <span id="teamCountBadge" class="badge badge-muted" style="display:none"></span>
+    </div>
+    <div id="teamsContainer">
+      <div class="loading-wrap"><span class="spinner"></span> Lade Teams...</div>
+    </div>
   </div>
 
-  <!-- Solo Teilnehmer -->
-  <div class="card">
-    <details>
-      <summary class="card-title" style="padding-bottom:0">👤 Solo-Teilnehmer</summary>
-      <div id="soloContainer" style="margin-top:12px"><div class="loading-wrap"><span class="spinner"></span></div></div>
-    </details>
+  <!-- Solo -->
+  <div class="card" id="soloCard">
+    <div class="card-hd" style="margin-bottom:0">
+      <button class="solo-toggle" id="soloToggle" onclick="toggleSolo()">
+        <span>👤</span> Solo-Teilnehmer
+        <span id="soloCountBadge" class="badge badge-muted" style="display:none;font-size:10px"></span>
+        <span class="toggle-chevron">▶</span>
+      </button>
+    </div>
+    <div id="soloBody" class="solo-body hidden"></div>
   </div>
 
   <!-- Bracket -->
   <div class="card">
-    <div class="card-title">⚔️ Bracket</div>
-    <div id="bracketContainer"><div class="loading-wrap"><span class="spinner"></span> Lade Bracket...</div></div>
+    <div class="card-hd">
+      <div class="card-label"><span>⚔️</span> Turnierbaum</div>
+    </div>
+    <div id="bracketContainer">
+      <div class="loading-wrap"><span class="spinner"></span> Lade...</div>
+    </div>
+  </div>
+
+</main>
+
+<!-- ── Modals ── -->
+
+<!-- Signup mode -->
+<div id="modalSignup" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-title">🎮 Anmelden</div>
+    <div class="modal-sub">Wähle deinen Anmeldemodus:</div>
+    <div class="mode-grid">
+      <div class="mode-card selected" id="modeSolo" onclick="selectMode('solo')">
+        <div class="mode-icon">🧑</div>
+        <div class="mode-lbl">Solo</div>
+        <div class="mode-desc">Werde automatisch zugeteilt</div>
+      </div>
+      <div class="mode-card" id="modeTeam" onclick="selectMode('team')">
+        <div class="mode-icon">🛡️</div>
+        <div class="mode-lbl">Team</div>
+        <div class="mode-desc">Tritt einem Team bei oder erstelle eines</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modalSignup')">Abbrechen</button>
+      <button class="btn btn-success btn-sm" onclick="confirmSignupMode()">Weiter →</button>
+    </div>
+  </div>
+</div>
+
+<!-- Team select -->
+<div id="modalTeamSel" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-title">🛡️ Team wählen</div>
+    <div class="modal-sub">Tritt einem offenen Team bei oder erstelle ein neues.</div>
+    <div id="teamOptList" class="team-option-list"></div>
+    <div id="newTeamSep" class="new-team-sep hidden">oder</div>
+    <div id="newTeamBlock" class="hidden">
+      <label class="field-lbl">Neuer Teamname</label>
+      <input class="field-inp" id="newTeamNameInp" placeholder="z. B. Team Alpha" maxlength="32" style="margin-bottom:0">
+    </div>
+    <div class="modal-foot" style="margin-top:14px">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modalTeamSel')">Abbrechen</button>
+      <button class="btn btn-ghost btn-sm" id="btnShowNewTeam" onclick="showNewTeamBlock()">+ Neues Team</button>
+      <button class="btn btn-success btn-sm hidden" id="btnJoinTeam"   onclick="doJoinTeam()">Beitreten →</button>
+      <button class="btn btn-primary btn-sm hidden" id="btnCreateTeam" onclick="doCreateAndJoin()">Team erstellen</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm -->
+<div id="modalConfirm" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-title" id="confirmTitle"></div>
+    <div class="modal-sub"  id="confirmSub"></div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modalConfirm')">Abbrechen</button>
+      <button class="btn btn-danger btn-sm" id="confirmOkBtn">Bestätigen</button>
+    </div>
+  </div>
+</div>
+
+<!-- Team create (standalone) -->
+<div id="modalTeamCreate" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-title">🛡️ Team erstellen</div>
+    <div class="modal-sub">Gib einen Namen für dein neues Team ein.</div>
+    <label class="field-lbl">Teamname</label>
+    <input class="field-inp" id="teamCreateInp" placeholder="z. B. Team Alpha" maxlength="32">
+    <div class="modal-foot">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modalTeamCreate')">Abbrechen</button>
+      <button class="btn btn-primary btn-sm" onclick="submitTeamCreate()">Erstellen</button>
+    </div>
   </div>
 </div>
 
 <script>
 'use strict';
 
-let _state = {
-  me: null,          // /api/me response
-  overview: null,    // /api/overview response
-};
+let _state = { me: null, overview: null };
+let _signupMode = 'solo';
+let _selectedTeamId = null;
+let _soloOpen = false;
+let _toastTimer = null;
 
-// ── utils ─────────────────────────────────────────────────────────────────
+// ── Utils ──────────────────────────────────────────────────────────────────
 
 function el(id) { return document.getElementById(id); }
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function capitalize(s) { return s ? s[0].toUpperCase() + s.slice(1) : ''; }
+function avatarLetter(name) { return (String(name || '?').trim()[0] || '?').toUpperCase(); }
+function fmtDate(s) {
+  if (!s) return '—';
+  try { return new Date(s).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}); }
+  catch { return s; }
+}
 
 function showAlert(msg, type='error') {
-  const d = el('globalAlert');
-  d.className = `alert alert-${type}`;
-  d.textContent = msg;
-  d.classList.remove('hidden');
-  setTimeout(() => d.classList.add('hidden'), 6000);
+  const t = el('toast');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => t.classList.remove('show'), 5000);
 }
 
 async function apiFetch(url, opts={}) {
@@ -192,75 +746,92 @@ async function apiFetch(url, opts={}) {
   return { ok: r.ok, status: r.status, data };
 }
 
-// ── Auth header ───────────────────────────────────────────────────────────
+// ── Modals ─────────────────────────────────────────────────────────────────
+
+function openModal(id) { el(id).classList.remove('hidden'); }
+function closeModal(id) { el(id).classList.add('hidden'); }
+document.querySelectorAll('.modal-overlay').forEach(o =>
+  o.addEventListener('click', e => { if (e.target === o) closeModal(o.id); })
+);
+
+let _confirmCb = null;
+function openConfirm(title, sub, cb) {
+  _confirmCb = cb;
+  el('confirmTitle').textContent = title;
+  el('confirmSub').textContent   = sub;
+  el('confirmOkBtn').onclick = async () => { closeModal('modalConfirm'); if (_confirmCb) await _confirmCb(); };
+  openModal('modalConfirm');
+}
+
+// ── Topbar ─────────────────────────────────────────────────────────────────
 
 function renderTopbar() {
   const me = _state.me;
+  const link = el('authLink');
   if (me?.logged_in) {
     el('userLabel').textContent = me.user.display_name;
-    const link = el('authLink');
     link.textContent = 'Abmelden';
     link.href = '/auth/logout';
+    link.className = 'btn btn-ghost btn-sm';
   } else {
     el('userLabel').textContent = '';
-    const link = el('authLink');
     link.textContent = 'Mit Discord anmelden';
     link.href = '/auth/login';
+    link.className = 'btn btn-primary btn-sm';
   }
 }
 
-// ── Period Banner ─────────────────────────────────────────────────────────
+// ── Period Hero ────────────────────────────────────────────────────────────
 
-function renderPeriodBanner() {
+function renderPeriodHero() {
   const ov = _state.overview;
   const me = _state.me;
-  const banner = el('periodBanner');
+  const hero = el('periodHero');
   const period = ov?.active_period;
 
   if (!period) {
-    banner.className = 'period-banner none';
-    banner.innerHTML = '<div class="period-title"><span class="badge badge-muted">Kein aktiver Anmeldezeitraum</span></div>';
+    hero.className = 'period-hero none';
+    hero.innerHTML = `
+      <div><span class="period-pill none"><span class="status-dot"></span>Kein aktives Turnier</span></div>
+      <p style="color:var(--muted);font-size:13px;margin-top:10px">Aktuell gibt es keinen aktiven Anmeldezeitraum. Schau später wieder vorbei!</p>`;
     return;
   }
 
   const now = new Date();
   const start = new Date(period.registration_start);
-  const end = new Date(period.registration_end);
+  const end   = new Date(period.registration_end);
   const isOpen = start <= now && now <= end;
   const isPending = now < start;
+  const cls = isOpen ? 'open' : (isPending ? 'pending' : 'closed');
+  const statusText = isOpen ? 'Registrierung offen' : (isPending ? 'Startet bald' : 'Abgelaufen');
 
-  let cls = isOpen ? 'open' : (isPending ? 'pending' : 'closed');
-  let badgeClass = isOpen ? 'badge-green' : (isPending ? 'badge-gold' : 'badge-red');
-  let statusLabel = isOpen ? '🟢 Offen' : (isPending ? '⏳ Startet bald' : '🔴 Abgelaufen');
+  hero.className = `period-hero ${cls}`;
+  hero.innerHTML = `
+    <div class="period-hero-top">
+      <div>
+        <span class="period-pill ${cls}"><span class="status-dot"></span>${statusText}</span>
+        <div class="period-name">${esc(period.name)}</div>
+      </div>
+    </div>
+    <div class="period-meta">
+      <div class="period-meta-item">📅 ${fmtDate(period.registration_start)} – ${fmtDate(period.registration_end)}</div>
+      <div class="period-meta-item">👥 Teamgröße: <strong style="color:var(--text)">${period.team_size || 6}</strong></div>
+    </div>
+    <div class="period-actions" id="periodActions"></div>`;
 
-  let html = `<div class="period-title"><span>${esc(period.name)}</span><span class="badge ${badgeClass}">${statusLabel}</span></div>`;
-  html += `<div class="period-meta">📅 ${fmtDate(period.registration_start)} – ${fmtDate(period.registration_end)} &nbsp;|&nbsp; Teamgröße: <b>${period.team_size || 6}</b></div>`;
-
-  // Signup button
+  const acts = el('periodActions');
   if (me?.logged_in && isOpen) {
-    const signup = me.signup;
-    if (signup) {
-      html += `<div style="margin-top:10px"><span class="badge badge-green">✅ Angemeldet</span></div>`;
+    if (me.signup) {
+      acts.innerHTML = `<span class="badge badge-green" style="font-size:12px;padding:6px 14px">✅ Du bist angemeldet</span>`;
     } else {
-      html += `<div style="margin-top:10px"><button class="btn btn-success btn-sm" onclick="openSignupFlow()">Jetzt anmelden</button></div>`;
+      acts.innerHTML = `<button class="btn btn-success" onclick="openSignupFlow()">🎮 Jetzt anmelden</button>`;
     }
   } else if (!me?.logged_in && isOpen) {
-    html += `<div style="margin-top:10px"><a class="btn btn-primary btn-sm" href="/auth/login">Anmelden um mitzumachen</a></div>`;
+    acts.innerHTML = `<a class="btn btn-primary" href="/auth/login">Mit Discord anmelden</a>`;
   }
-
-  banner.className = `period-banner ${cls}`;
-  banner.innerHTML = html;
 }
 
-function fmtDate(s) {
-  if (!s) return '—';
-  try {
-    const d = new Date(s);
-    return d.toLocaleString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
-  } catch { return s; }
-}
-
-// ── My Status ─────────────────────────────────────────────────────────────
+// ── My Status ──────────────────────────────────────────────────────────────
 
 function renderMyStatus() {
   const me = _state.me;
@@ -271,97 +842,109 @@ function renderMyStatus() {
   const signup = me.signup;
   const content = el('myStatusContent');
   if (!signup) {
-    content.innerHTML = '<p style="color:var(--muted)">Du bist noch nicht angemeldet.</p>';
+    content.innerHTML = '<p style="color:var(--muted);font-size:13px">Du bist noch nicht für das aktuelle Turnier angemeldet.</p>';
     return;
   }
 
   const rankLabel = signup.rank_subvalue > 0
     ? `${capitalize(signup.rank || 'Unbekannt')} ${signup.rank_subvalue}`
     : capitalize(signup.rank || 'Unbekannt');
-
   const mode = signup.registration_mode === 'team' ? 'Team' : 'Solo';
   const team = signup.team_name || '—';
 
-  let html = `<div class="status-grid">
-    <div class="status-stat"><div class="status-stat-label">Rang</div><div class="status-stat-value">${esc(rankLabel)}</div></div>
-    <div class="status-stat"><div class="status-stat-label">Modus</div><div class="status-stat-value">${esc(mode)}</div></div>
-    <div class="status-stat"><div class="status-stat-label">Team</div><div class="status-stat-value">${esc(team)}</div></div>
-  </div>`;
-
-  html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
-    <button class="btn btn-danger btn-sm" onclick="doWithdraw()">Abmelden</button>`;
-  if (!signup.team_id) {
-    html += `<button class="btn btn-muted btn-sm" onclick="openTeamCreateFlow()">Team erstellen</button>`;
-  }
-  html += `</div>`;
-
-  content.innerHTML = html;
+  content.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat-box"><div class="stat-lbl">Rang</div><div class="stat-val">${esc(rankLabel)}</div></div>
+      <div class="stat-box"><div class="stat-lbl">Modus</div><div class="stat-val">${esc(mode)}</div></div>
+      <div class="stat-box"><div class="stat-lbl">Team</div><div class="stat-val">${esc(team)}</div></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-danger btn-sm" onclick="doWithdraw()">Abmelden</button>
+      ${!signup.team_id ? `<button class="btn btn-ghost btn-sm" onclick="openTeamCreateFlow()">🛡️ Team erstellen</button>` : ''}
+    </div>`;
 }
 
-// ── Teams Grid ────────────────────────────────────────────────────────────
+// ── Teams ──────────────────────────────────────────────────────────────────
 
 function renderTeams() {
   const ov = _state.overview;
   const me = _state.me;
   const container = el('teamsContainer');
-  if (!ov) { container.innerHTML = '<div class="empty-hint">Lade...</div>'; return; }
+  const countBadge = el('teamCountBadge');
+
+  if (!ov) { container.innerHTML = '<div class="loading-wrap"><span class="spinner"></span> Lade...</div>'; return; }
 
   const teams = ov.teams || [];
-  if (!teams.length) {
-    container.innerHTML = '<div class="empty-hint">Noch keine Teams. Melde dich an und erstelle ein Team!</div>';
-    return;
-  }
-
-  const myUserId = me?.logged_in ? me.user.id : null;
   const period = ov.active_period;
   const teamSize = period?.team_size || 6;
 
+  if (teams.length) {
+    countBadge.textContent = `${teams.length} Teams`;
+    countBadge.style.display = '';
+  } else {
+    countBadge.style.display = 'none';
+  }
+
+  if (!teams.length) {
+    container.innerHTML = '<div class="empty-hint">Noch keine Teams.<br>Melde dich an und erstelle das erste Team!</div>';
+    return;
+  }
+
+  const myId = me?.logged_in ? me.user.id : null;
   let html = '<div class="teams-grid">';
+
   for (const t of teams) {
-    const isCreator = myUserId && t.created_by == myUserId;
+    const isCreator = myId && t.created_by == myId;
     const members = t.members || [];
     const count = members.length;
     const full = count >= teamSize;
+    const pct = Math.min(100, Math.round((count / teamSize) * 100));
 
     html += `<div class="team-card" data-team-id="${t.id}">
-      <div class="team-card-header">
-        <div class="team-card-name">${esc(t.name)}</div>
-        <div class="team-card-count">${count}/${teamSize}</div>
-      </div>`;
+      <div class="team-card-top">
+        <div class="team-card-hd">
+          <div class="team-card-name">${esc(t.name)}</div>
+          <span class="team-cap${full ? ' full' : ''}">${count}/${teamSize}${full ? ' ✓' : ''}</span>
+        </div>
+        <div class="team-bar"><div class="team-bar-fill${full ? ' full' : ''}" style="width:${pct}%"></div></div>`;
 
     if (members.length) {
-      html += '<ul class="team-member-list">';
+      html += '<ul class="member-list">';
       for (const m of members) {
         const rankStr = m.rank_subvalue > 0
           ? `${capitalize(m.rank || '')} ${m.rank_subvalue}`
           : capitalize(m.rank || '');
-        html += `<li class="team-member">
-          <span class="team-member-name">${esc(m.display_name)}</span>
-          <span class="badge badge-muted" style="font-size:10px">${esc(rankStr)}</span>`;
-        if (isCreator && m.user_id != myUserId) {
-          html += `<button class="btn btn-danger btn-sm" onclick="doKick(${t.id}, ${m.user_id})" title="Entfernen">✕</button>`;
+        html += `<li class="member-row">
+          <div class="member-av">${esc(avatarLetter(m.display_name))}</div>
+          <span class="member-name">${esc(m.display_name)}</span>
+          <span class="member-rank">${esc(rankStr)}</span>`;
+        if (isCreator && m.user_id != myId) {
+          html += `<button class="btn btn-danger btn-xs" onclick="doKick(${t.id},${m.user_id})" title="Entfernen">✕</button>`;
         }
         html += '</li>';
       }
       html += '</ul>';
     } else {
-      html += '<div class="empty-hint" style="padding:10px 0 0">Keine Mitglieder.</div>';
+      html += '<div style="color:var(--muted);font-size:12px;padding:6px 0;font-style:italic">Keine Mitglieder</div>';
     }
 
+    html += '</div>'; // team-card-top
+
     if (isCreator) {
-      html += `<div class="team-actions">
-        <button class="btn btn-muted btn-sm" onclick="toggleRename(${t.id})">Umbenennen</button>
+      html += `<div class="team-foot">
+        <button class="btn btn-ghost btn-xs" onclick="toggleRename(${t.id})">✏️ Umbenennen</button>
       </div>
-      <div id="renameBox-${t.id}" class="hidden">
+      <div id="renameBox-${t.id}" class="rename-form hidden">
+        <label class="field-lbl" style="font-size:10px">Neuer Teamname</label>
         <input class="rename-input" id="renameInput-${t.id}" placeholder="${esc(t.name)}" maxlength="32">
-        <div style="display:flex;gap:6px;margin-top:6px">
-          <button class="btn btn-primary btn-sm" onclick="doRename(${t.id})">Speichern</button>
-          <button class="btn btn-muted btn-sm" onclick="toggleRename(${t.id})">Abbrechen</button>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-primary btn-xs" onclick="doRename(${t.id})">Speichern</button>
+          <button class="btn btn-ghost btn-xs"   onclick="toggleRename(${t.id})">Abbrechen</button>
         </div>
       </div>`;
     }
 
-    html += '</div>';
+    html += '</div>'; // team-card
   }
   html += '</div>';
   container.innerHTML = html;
@@ -370,219 +953,246 @@ function renderTeams() {
 function toggleRename(teamId) {
   const box = el(`renameBox-${teamId}`);
   box.classList.toggle('hidden');
-  if (!box.classList.contains('hidden')) {
-    el(`renameInput-${teamId}`)?.focus();
-  }
+  if (!box.classList.contains('hidden')) el(`renameInput-${teamId}`)?.focus();
 }
 
-// ── Solo list ─────────────────────────────────────────────────────────────
+// ── Solo ───────────────────────────────────────────────────────────────────
+
+function toggleSolo() {
+  _soloOpen = !_soloOpen;
+  const toggle = el('soloToggle');
+  const body   = el('soloBody');
+  toggle.classList.toggle('open', _soloOpen);
+  if (_soloOpen) { body.classList.remove('hidden'); renderSoloContent(); }
+  else            body.classList.add('hidden');
+}
 
 function renderSolo() {
+  const solos = _state.overview?.solo_signups || [];
+  const badge = el('soloCountBadge');
+  if (solos.length) { badge.textContent = solos.length; badge.style.display = ''; }
+  else                badge.style.display = 'none';
+  if (_soloOpen) renderSoloContent();
+}
+
+function renderSoloContent() {
   const ov = _state.overview;
-  const container = el('soloContainer');
-  if (!ov) { container.innerHTML = ''; return; }
-
+  const body = el('soloBody');
+  if (!ov) { body.innerHTML = ''; return; }
   const solos = ov.solo_signups || [];
-  if (!solos.length) {
-    container.innerHTML = '<div class="empty-hint">Keine Solo-Teilnehmer.</div>';
-    return;
-  }
+  if (!solos.length) { body.innerHTML = '<div class="empty-hint">Keine Solo-Teilnehmer.</div>'; return; }
 
-  let html = '<ul class="solo-list">';
+  let html = '<div class="solo-grid">';
   for (const s of solos) {
     const rankStr = s.rank_subvalue > 0
       ? `${capitalize(s.rank || '')} ${s.rank_subvalue}`
       : capitalize(s.rank || '');
-    html += `<li class="solo-item">
-      <span class="solo-item-name">${esc(s.display_name)}</span>
-      <span class="badge badge-muted" style="font-size:10px">${esc(rankStr)}</span>
-    </li>`;
+    html += `<div class="solo-chip">
+      <div class="solo-av">${esc(avatarLetter(s.display_name))}</div>
+      <span class="solo-name">${esc(s.display_name)}</span>
+      <span class="solo-rank">${esc(rankStr)}</span>
+    </div>`;
   }
-  html += '</ul>';
-  container.innerHTML = html;
+  html += '</div>';
+  body.innerHTML = html;
 }
 
-// ── Bracket ───────────────────────────────────────────────────────────────
+// ── Bracket ────────────────────────────────────────────────────────────────
 
 function renderBracket() {
   const ov = _state.overview;
   const container = el('bracketContainer');
-  if (!ov) { container.innerHTML = '<div class="empty-hint">Lade...</div>'; return; }
+  if (!ov) { container.innerHTML = '<div class="loading-wrap"><span class="spinner"></span> Lade...</div>'; return; }
 
   const bracket = ov.bracket;
   if (!bracket || bracket.error || !bracket.rounds?.length) {
-    container.innerHTML = `<div class="empty-hint">${esc(bracket?.error || 'Noch keine Bracket-Daten verfügbar.')}</div>`;
+    container.innerHTML = `<div class="empty-hint">${esc(bracket?.error || 'Noch keine Bracket-Daten.')}<br><span style="font-size:12px">Der Turnierbaum wird generiert sobald genug Teams vollständig sind.</span></div>`;
     return;
   }
 
-  let html = '<div class="bracket">';
+  let html = `<div style="font-size:12px;color:var(--muted);margin-bottom:14px">${bracket.num_entries} Teams · ${bracket.num_rounds} Runden · ${bracket.slots} Slots</div>`;
+  html += '<div class="bracket-wrap"><div class="bracket">';
   for (const round of bracket.rounds) {
-    html += `<div class="bracket-round">
-      <div class="bracket-round-label">${esc(round.label)}</div>`;
+    html += `<div class="b-round"><div class="b-round-lbl">${esc(round.label)}</div>`;
     for (const match of round.matches) {
-      html += '<div class="bracket-match">';
-      html += renderBracketEntry(match.entry_a, match.is_bye && !match.entry_b);
-      html += '<div class="bracket-divider"></div>';
-      html += renderBracketEntry(match.entry_b, match.is_bye && !match.entry_a);
-      html += '</div>';
+      html += `<div class="b-match">
+        ${renderBracketEntry(match.entry_a, match.is_bye && !match.entry_b)}
+        <div class="b-divider"></div>
+        ${renderBracketEntry(match.entry_b, match.is_bye && !match.entry_a)}
+      </div>`;
     }
     html += '</div>';
   }
-  html += '</div>';
+  html += '</div></div>';
   container.innerHTML = html;
 }
 
 function renderBracketEntry(entry, isBye) {
-  if (!entry) {
-    return `<div class="bracket-entry tbd">TBD</div>`;
-  }
+  if (!entry) return `<div class="b-entry tbd">TBD</div>`;
   const cls = isBye ? 'bye' : '';
-  return `<div class="bracket-entry ${cls}">
+  return `<div class="b-entry ${cls}">
     <span>${esc(entry.name)}</span>
-    <span class="bracket-score">${entry.score ?? ''}</span>
+    ${entry.score ? `<span class="b-score">Ø ${entry.score}</span>` : ''}
   </div>`;
 }
 
-// ── Signup flow ───────────────────────────────────────────────────────────
+// ── Signup flow ────────────────────────────────────────────────────────────
+
+function selectMode(mode) {
+  _signupMode = mode;
+  el('modeSolo').classList.toggle('selected', mode === 'solo');
+  el('modeTeam').classList.toggle('selected', mode === 'team');
+}
 
 async function openSignupFlow() {
-  const mode = confirm('Solo anmelden?\n\nOK = Solo\nAbbrechen = Team-Anmeldung') ? 'solo' : 'team';
-  if (mode === 'team') {
-    openTeamSignupFlow();
-    return;
-  }
-  const { ok, data } = await apiFetch('/api/signup', {
-    method: 'POST',
-    body: JSON.stringify({ mode: 'solo' }),
-  });
-  if (ok) {
-    showAlert('Erfolgreich angemeldet!', 'success');
-    await refresh();
+  _signupMode = 'solo';
+  selectMode('solo');
+  openModal('modalSignup');
+}
+
+async function confirmSignupMode() {
+  closeModal('modalSignup');
+  if (_signupMode === 'solo') {
+    const { ok, data } = await apiFetch('/api/signup', { method: 'POST', body: JSON.stringify({ mode: 'solo' }) });
+    if (ok) { showAlert('Erfolgreich angemeldet!', 'success'); await refresh(); }
+    else     showAlert(data.error || 'Fehler bei der Anmeldung.');
   } else {
-    showAlert(data.error || 'Fehler bei der Anmeldung.');
+    openTeamSignupFlow();
   }
 }
 
-async function openTeamSignupFlow() {
-  const teams = _state.overview?.teams || [];
-  const period = _state.overview?.active_period;
+function openTeamSignupFlow() {
+  const teams    = _state.overview?.teams || [];
+  const period   = _state.overview?.active_period;
   const teamSize = period?.team_size || 6;
+  const nonFull  = teams.filter(t => (t.members?.length || 0) < teamSize);
 
-  // Build options
-  const nonFull = teams.filter(t => (t.members?.length || 0) < teamSize);
-  let msg = 'Team auswählen oder neu erstellen.\n\n';
+  _selectedTeamId = null;
+  el('btnShowNewTeam').classList.remove('hidden');
+  el('btnJoinTeam').classList.add('hidden');
+  el('btnCreateTeam').classList.add('hidden');
+  el('newTeamBlock').classList.add('hidden');
+  el('newTeamSep').classList.add('hidden');
+  el('newTeamNameInp').value = '';
+
+  let html = '';
   if (nonFull.length) {
-    msg += 'Existierende Teams (Nummer eingeben):\n';
-    nonFull.forEach((t, i) => {
-      msg += `${i+1}. ${t.name} (${t.members?.length || 0}/${teamSize})\n`;
-    });
-    msg += `\nOder "N" für neues Team eingeben:`;
+    html = nonFull.map(t => `
+      <div class="team-option" data-tid="${t.id}" onclick="selectTeamOpt(${t.id}, this)">
+        <span class="t-opt-name">${esc(t.name)}</span>
+        <span class="t-opt-cnt">${t.members?.length || 0}/${teamSize}</span>
+      </div>`).join('');
   } else {
-    msg += 'Kein Team verfügbar. Gib einen Teamnamen ein:';
+    html = '<div style="color:var(--muted);font-size:13px;margin-bottom:4px">Keine offenen Teams verfügbar.</div>';
+    setTimeout(showNewTeamBlock, 10);
   }
 
-  const input = prompt(msg);
-  if (!input) return;
+  el('teamOptList').innerHTML = html;
+  openModal('modalTeamSel');
+}
 
-  let payload;
-  if (nonFull.length && /^\d+$/.test(input.trim())) {
-    const idx = parseInt(input.trim()) - 1;
-    if (idx < 0 || idx >= nonFull.length) { showAlert('Ungültige Auswahl.'); return; }
-    payload = { mode: 'team', team_id: nonFull[idx].id };
-  } else if (input.trim().toUpperCase() === 'N' || !nonFull.length) {
-    const name = prompt('Teamname eingeben:');
-    if (!name?.trim()) return;
-    payload = { mode: 'team', team_name: name.trim() };
-  } else {
-    payload = { mode: 'team', team_name: input.trim() };
-  }
+function selectTeamOpt(teamId, elem) {
+  _selectedTeamId = teamId;
+  document.querySelectorAll('.team-option').forEach(o => o.classList.remove('selected'));
+  elem.classList.add('selected');
+  el('newTeamBlock').classList.add('hidden');
+  el('newTeamSep').classList.add('hidden');
+  el('btnShowNewTeam').classList.remove('hidden');
+  el('btnJoinTeam').classList.remove('hidden');
+  el('btnCreateTeam').classList.add('hidden');
+}
 
+function showNewTeamBlock() {
+  _selectedTeamId = null;
+  document.querySelectorAll('.team-option').forEach(o => o.classList.remove('selected'));
+  el('newTeamBlock').classList.remove('hidden');
+  el('newTeamSep').classList.remove('hidden');
+  el('btnShowNewTeam').classList.add('hidden');
+  el('btnJoinTeam').classList.add('hidden');
+  el('btnCreateTeam').classList.remove('hidden');
+  el('newTeamNameInp').focus();
+}
+
+async function doJoinTeam() {
+  if (!_selectedTeamId) return;
   const { ok, data } = await apiFetch('/api/signup', {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ mode: 'team', team_id: _selectedTeamId }),
   });
-  if (ok) {
-    showAlert('Team-Anmeldung erfolgreich!', 'success');
-    await refresh();
-  } else {
-    showAlert(data.error || 'Fehler bei der Team-Anmeldung.');
-  }
+  closeModal('modalTeamSel');
+  if (ok) { showAlert('Team-Anmeldung erfolgreich!', 'success'); await refresh(); }
+  else     showAlert(data.error || 'Fehler.');
+}
+
+async function doCreateAndJoin() {
+  const name = el('newTeamNameInp').value.trim();
+  if (!name) { el('newTeamNameInp').focus(); return; }
+  const { ok, data } = await apiFetch('/api/signup', {
+    method: 'POST',
+    body: JSON.stringify({ mode: 'team', team_name: name }),
+  });
+  closeModal('modalTeamSel');
+  if (ok) { showAlert('Team erstellt und angemeldet!', 'success'); await refresh(); }
+  else     showAlert(data.error || 'Fehler.');
 }
 
 async function doWithdraw() {
-  if (!confirm('Wirklich abmelden?')) return;
-  const { ok, data } = await apiFetch('/api/withdraw', { method: 'POST', body: '{}' });
-  if (ok) {
-    showAlert('Erfolgreich abgemeldet.', 'success');
-    await refresh();
-  } else {
-    showAlert(data.error || 'Fehler.');
-  }
+  openConfirm('Abmelden', 'Möchtest du dich wirklich vom Turnier abmelden?', async () => {
+    const { ok, data } = await apiFetch('/api/withdraw', { method: 'POST', body: '{}' });
+    if (ok) { showAlert('Erfolgreich abgemeldet.', 'success'); await refresh(); }
+    else     showAlert(data.error || 'Fehler.');
+  });
 }
 
 async function openTeamCreateFlow() {
-  const name = prompt('Teamname:');
-  if (!name?.trim()) return;
+  el('teamCreateInp').value = '';
+  openModal('modalTeamCreate');
+}
+
+async function submitTeamCreate() {
+  const name = el('teamCreateInp').value.trim();
+  if (!name) { el('teamCreateInp').focus(); return; }
   const { ok, data } = await apiFetch('/api/team/create', {
     method: 'POST',
-    body: JSON.stringify({ name: name.trim() }),
+    body: JSON.stringify({ name }),
   });
-  if (ok) {
-    showAlert('Team erstellt!', 'success');
-    await refresh();
-  } else {
-    showAlert(data.error || 'Fehler.');
-  }
+  closeModal('modalTeamCreate');
+  if (ok) { showAlert('Team erstellt!', 'success'); await refresh(); }
+  else     showAlert(data.error || 'Fehler.');
 }
 
 async function doRename(teamId) {
-  const input = el(`renameInput-${teamId}`);
-  const name = input?.value?.trim();
+  const name = el(`renameInput-${teamId}`)?.value?.trim();
   if (!name) return;
   const { ok, data } = await apiFetch('/api/team/rename', {
     method: 'POST',
     body: JSON.stringify({ team_id: teamId, name }),
   });
-  if (ok) {
-    showAlert('Team umbenannt.', 'success');
-    await refresh();
-  } else {
-    showAlert(data.error || 'Fehler.');
-  }
+  if (ok) { showAlert('Team umbenannt.', 'success'); await refresh(); }
+  else     showAlert(data.error || 'Fehler.');
 }
 
 async function doKick(teamId, userId) {
-  if (!confirm('Mitglied entfernen?')) return;
-  const { ok, data } = await apiFetch('/api/team/kick', {
-    method: 'POST',
-    body: JSON.stringify({ team_id: teamId, user_id: userId }),
+  openConfirm('Mitglied entfernen', 'Dieses Mitglied aus dem Team entfernen?', async () => {
+    const { ok, data } = await apiFetch('/api/team/kick', {
+      method: 'POST',
+      body: JSON.stringify({ team_id: teamId, user_id: userId }),
+    });
+    if (ok) { showAlert('Mitglied entfernt.', 'success'); await refresh(); }
+    else     showAlert(data.error || 'Fehler.');
   });
-  if (ok) {
-    showAlert('Mitglied entfernt.', 'success');
-    await refresh();
-  } else {
-    showAlert(data.error || 'Fehler.');
-  }
 }
 
-// ── data loading ─────────────────────────────────────────────────────────
+// ── Data ───────────────────────────────────────────────────────────────────
 
 async function loadMe() {
-  try {
-    const r = await fetch('/api/me');
-    _state.me = await r.json();
-  } catch {
-    _state.me = { logged_in: false };
-  }
+  try { _state.me = await (await fetch('/api/me')).json(); }
+  catch { _state.me = { logged_in: false }; }
 }
 
 async function loadOverview() {
-  try {
-    const r = await fetch('/api/overview');
-    _state.overview = await r.json();
-  } catch {
-    _state.overview = null;
-  }
+  try { _state.overview = await (await fetch('/api/overview')).json(); }
+  catch { _state.overview = null; }
 }
 
 async function refresh() {
@@ -592,23 +1202,15 @@ async function refresh() {
 
 function renderAll() {
   renderTopbar();
-  renderPeriodBanner();
+  renderPeriodHero();
   renderMyStatus();
   renderTeams();
   renderSolo();
   renderBracket();
 }
 
-function capitalize(s) {
-  if (!s) return '';
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-// ── Init ──────────────────────────────────────────────────────────────────
-
 (async () => {
   await refresh();
-  // Auto-refresh every 30 seconds
   setInterval(refresh, 30000);
 })();
 </script>
