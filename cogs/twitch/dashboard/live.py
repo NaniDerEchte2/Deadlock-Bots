@@ -779,7 +779,7 @@ class DashboardLiveMixin:
                     (
                         f"<td class='scope-check {'yes' if scope in _token_scopes else 'no'}' "
                         f"title='{html.escape(scope, quote=True)}'>"
-                        f"{'☑' if scope in _token_scopes else '☐'}"
+                        f"{'☑' if scope in _token_scopes else 'X'}"
                         "</td>"
                     )
                     for scope in _REQUIRED_SCOPES
