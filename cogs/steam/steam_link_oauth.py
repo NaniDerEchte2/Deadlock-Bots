@@ -321,9 +321,9 @@ class SteamLink(commands.Cog):
             self._runner = None
 
     # --------------- Helpers --------------------------------------------------
-    def _mk_state(self, uid: int) -> str:
+    def _mk_state(self, uid: int, context: str = "steam_link") -> str:
         s = uuid.uuid4().hex
-        self._states[s] = {"uid": int(uid), "ts": time.time()}
+        self._states[s] = {"uid": int(uid), "ts": time.time(), "context": context}
         return s
 
     def _pop_state(self, s: str) -> Optional[int]:
@@ -333,6 +333,15 @@ class SteamLink(commands.Cog):
         if time.time() - data["ts"] > STATE_TTL_SEC:
             return None
         return int(data["uid"])
+
+    def _pop_state_data(self, s: str) -> Optional[dict]:
+        """Returns full state dict including context, or None if missing/expired."""
+        data = self._states.pop(s, None)
+        if not data:
+            return None
+        if time.time() - data["ts"] > STATE_TTL_SEC:
+            return None
+        return data
 
     async def _discord_at_name(self, uid: int) -> str:
         try:
@@ -413,7 +422,7 @@ class SteamLink(commands.Cog):
         except Exception as e:
             log.info("Konnte User-DM nicht senden (id=%s): %s", user_id, e)
 
-    def _build_discord_auth_url(self, uid: int) -> str:
+    def _build_discord_auth_url(self, uid: int, context: str = "steam_link") -> str:
         client_id = _env_client_id(self.bot)
         redirect_uri = _env_redirect()
         if not client_id:
@@ -425,13 +434,15 @@ class SteamLink(commands.Cog):
                 "DISCORD_OAUTH_REDIRECT/PUBLIC_BASE_URL/HTTP_HOST fehlen"
             )
 
+        # Turnier context only needs identify scope; steam_link needs connections too
+        scope = "identify" if context == "turnier" else "identify connections"
         params = {
             "client_id": client_id,
             "response_type": "code",
             "redirect_uri": redirect_uri,
-            "scope": "identify connections",
+            "scope": scope,
             "prompt": "consent",
-            "state": self._mk_state(uid),
+            "state": self._mk_state(uid, context=context),
         }
         return f"{DISCORD_API}/oauth2/authorize?{urlencode(params)}"
 
@@ -484,6 +495,16 @@ class SteamLink(commands.Cog):
             ) as r:
                 if r.status != 200:
                     log.warning("Discord OAuth exchange failed (HTTP %s).", r.status)
+                    return None
+                return await r.json()
+
+    async def _discord_fetch_user(self, access_token: str) -> Optional[dict]:
+        """Fetch the authenticated Discord user's basic info (/users/@me)."""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"{DISCORD_API}/users/@me", headers=headers) as r:
+                if r.status != 200:
+                    log.warning("Discord @me API failed (HTTP %s).", r.status)
                     return None
                 return await r.json()
 
@@ -652,12 +673,16 @@ class SteamLink(commands.Cog):
         )
 
     async def handle_discord_login(self, request: web.Request) -> web.Response:
-        uid_q = request.query.get("uid")
-        if not uid_q or not uid_q.isdigit():
-            return web.Response(text="missing uid", status=400)
-        uid = int(uid_q)
+        context = request.query.get("context", "steam_link")
+        if context == "turnier":
+            uid = 0  # Will be determined after Discord OAuth; not needed for turnier flow
+        else:
+            uid_q = request.query.get("uid")
+            if not uid_q or not uid_q.isdigit():
+                return web.Response(text="missing uid", status=400)
+            uid = int(uid_q)
         try:
-            url = self._build_discord_auth_url(uid)  # erzeugt state JETZT (beim Klick)
+            url = self._build_discord_auth_url(uid, context=context)
             raise web.HTTPFound(location=url)
         except web.HTTPFound:
             raise
@@ -667,13 +692,16 @@ class SteamLink(commands.Cog):
 
     async def handle_discord_callback(self, request: web.Request) -> web.Response:
         code = request.query.get("code")
-        state = request.query.get("state")
-        if not code or not state:
+        state_key = request.query.get("state")
+        if not code or not state_key:
             return web.Response(text="missing code/state", status=400)
 
-        uid = self._pop_state(state)
-        if not uid:
+        state_data = self._pop_state_data(state_key)
+        if not state_data:
             return web.Response(text="invalid/expired state", status=400)
+
+        uid = int(state_data["uid"])
+        context = str(state_data.get("context", "steam_link"))
 
         token = await self._discord_token_exchange(code)
         if not token:
@@ -683,6 +711,38 @@ class SteamLink(commands.Cog):
         if not at:
             return web.Response(text="no access_token", status=400)
 
+        # ── Turnier context: issue one-time token, redirect to turnier site ──
+        if context == "turnier":
+            try:
+                user_info = await self._discord_fetch_user(at)
+                if not user_info:
+                    return web.Response(text="user fetch failed", status=400)
+                actual_uid = int(user_info["id"])
+                display_name = str(
+                    user_info.get("global_name")
+                    or user_info.get("username")
+                    or str(actual_uid)
+                ).strip()
+                from cogs.customgames.tournament_store import create_auth_token_async
+                auth_token = await create_auth_token_async(actual_uid, display_name)
+                turnier_url = f"https://turnier.earlysalty.com/auth/complete?token={auth_token}"
+                raise web.HTTPFound(location=turnier_url)
+            except web.HTTPFound:
+                raise
+            except Exception:
+                log.exception("Turnier OAuth callback fehlgeschlagen")
+                return web.Response(
+                    text=(
+                        "<html><body style='font-family: system-ui, sans-serif'>"
+                        "<h3>❌ Anmeldung fehlgeschlagen</h3>"
+                        "<p>Bitte versuche es erneut.</p>"
+                        "</body></html>"
+                    ),
+                    content_type="text/html",
+                    status=500,
+                )
+
+        # ── Default steam_link context ──
         conns = await self._discord_fetch_connections(at)
         if conns is None:
             return web.Response(text="connections fetch failed", status=400)
