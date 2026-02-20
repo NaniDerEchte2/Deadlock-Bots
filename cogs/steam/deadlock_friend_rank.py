@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 from cogs.steam.steam_master import SteamTaskClient, SteamTaskOutcome
@@ -392,6 +393,27 @@ class DeadlockFriendRank(commands.Cog):
             return f"{tier_label} · Subrank {subrank_num} (Badge {badge})"
         return f"{tier_label} (Badge {badge})"
 
+    @classmethod
+    def _snapshot_from_profile_card(
+        cls,
+        steam_id: str,
+        card: Dict[str, Any],
+        data: Optional[Dict[str, Any]] = None,
+    ) -> RankSnapshot:
+        rank_value, subrank, badge_level, rank_name = cls._extract_rank_fields(card)
+        account_id = cls._safe_int(card.get("account_id"))
+        if account_id is None and isinstance(data, dict):
+            account_id = cls._safe_int(data.get("account_id"))
+
+        return RankSnapshot(
+            steam_id=steam_id,
+            account_id=account_id,
+            rank_value=rank_value,
+            rank_name=rank_name,
+            subrank=subrank,
+            badge_level=badge_level,
+        )
+
     async def _fetch_profile_card(
         self,
         payload: Dict[str, Any],
@@ -530,19 +552,7 @@ class DeadlockFriendRank(commands.Cog):
                 log.warning("Profile card missing in GC response", extra={"steam_id": steam_id})
                 continue
 
-            rank_value, subrank, badge_level, rank_name = self._extract_rank_fields(card)
-            account_id = self._safe_int(card.get("account_id"))
-            if account_id is None and isinstance(data, dict):
-                account_id = self._safe_int(data.get("account_id"))
-
-            snapshots[steam_id] = RankSnapshot(
-                steam_id=steam_id,
-                account_id=account_id,
-                rank_value=rank_value,
-                rank_name=rank_name,
-                subrank=subrank,
-                badge_level=badge_level,
-            )
+            snapshots[steam_id] = self._snapshot_from_profile_card(steam_id, card, data)
             stats.rank_success += 1
 
         return snapshots
@@ -766,25 +776,30 @@ class DeadlockFriendRank(commands.Cog):
             return stats
 
     @staticmethod
-    async def _defer_if_interaction(ctx: commands.Context) -> None:
+    async def _defer_if_interaction(ctx: commands.Context, *, ephemeral: bool = False) -> None:
         interaction = getattr(ctx, "interaction", None)
         if interaction is None:
             return
         try:
             if not interaction.response.is_done():
-                await interaction.response.defer()
+                await interaction.response.defer(ephemeral=ephemeral)
         except discord.HTTPException:
             pass
 
     @staticmethod
-    async def _send_ctx_response(ctx: commands.Context, content: str) -> None:
+    async def _send_ctx_response(
+        ctx: commands.Context,
+        content: str,
+        *,
+        ephemeral: bool = False,
+    ) -> None:
         interaction = getattr(ctx, "interaction", None)
         if interaction is not None:
             try:
                 if interaction.response.is_done():
-                    await interaction.followup.send(content)
+                    await interaction.followup.send(content, ephemeral=ephemeral)
                 else:
-                    await interaction.response.send_message(content)
+                    await interaction.response.send_message(content, ephemeral=ephemeral)
                 return
             except discord.HTTPException:
                 # Interaction token kann ablaufen (z. B. 404 Unknown interaction).
@@ -830,20 +845,24 @@ class DeadlockFriendRank(commands.Cog):
         )
 
     async def _run_manual_sync_command(self, ctx: commands.Context, *, trigger_label: str) -> None:
-        await self._defer_if_interaction(ctx)
+        await self._defer_if_interaction(ctx, ephemeral=True)
+        if getattr(ctx, "interaction", None) is not None:
+            await self._send_ctx_response(ctx, "⏳ Steam-Rank-Sync gestartet …", ephemeral=True)
+
         async with ctx.typing():
             try:
                 stats = await self._run_friend_rank_sync(trigger=f"{trigger_label}:{ctx.author.id}")
             except Exception as exc:
                 log.exception("Manual steam rank sync failed")
-                await self._send_ctx_response(ctx, f"❌ Steam-Rank-Sync fehlgeschlagen: {exc}")
+                await self._send_ctx_response(ctx, f"❌ Steam-Rank-Sync fehlgeschlagen: {exc}", ephemeral=True)
                 return
-        await self._send_ctx_response(ctx, self._render_sync_stats(stats))
+        await self._send_ctx_response(ctx, self._render_sync_stats(stats), ephemeral=True)
 
     @commands.hybrid_command(
         name="steam_rank_sync",
         description="Synchronisiert Friend-Ranks in steam_links und weist Rank-Rollen automatisch zu.",
     )
+    @app_commands.default_permissions(administrator=True)
     @commands.has_permissions(administrator=True)
     async def cmd_steam_rank_sync(self, ctx: commands.Context) -> None:
         """Manual one-shot sync for bot-friend ranks + roles."""
@@ -853,6 +872,7 @@ class DeadlockFriendRank(commands.Cog):
         name="subrank_sync",
         description="Startet sofort den Deadlock Subrank-Auto-Sync inkl. Rollenvergabe.",
     )
+    @app_commands.default_permissions(administrator=True)
     @commands.has_permissions(administrator=True)
     async def cmd_subrank_sync(self, ctx: commands.Context) -> None:
         """Manual one-shot sync command focused on subrank role updates."""
@@ -932,65 +952,126 @@ class DeadlockFriendRank(commands.Cog):
     ) -> None:
         """Rank lookup by Discord user mention (defaults to caller)."""
 
-        await self._defer_if_interaction(ctx)
+        private_response = getattr(ctx, "interaction", None) is not None
+        await self._defer_if_interaction(ctx, ephemeral=private_response)
         target = user or ctx.author
         steam_ids = self._linked_steam_ids_for_discord_user(int(target.id))
         if not steam_ids:
             await self._send_ctx_response(
                 ctx,
                 f"❌ Für {getattr(target, 'mention', f'`{target}`')} ist kein Steam-Link gespeichert.",
+                ephemeral=private_response,
             )
             return
 
         mention = getattr(target, "mention", f"`{target}`")
-        if len(steam_ids) == 1:
-            steam_id = steam_ids[0]
-            lookup = RankLookupTarget(
-                payload={"steam_id": steam_id},
-                label=f"{mention} (`{steam_id}`)",
-            )
-            await self._reply_rank_for_lookup(ctx, lookup)
-            return
-
         max_accounts = 5
         lines = [
             f"🎯 **Deadlock Rank** für {mention}",
             f"- Gefundene Steam-Links: `{len(steam_ids)}`",
         ]
+        snapshots: dict[str, RankSnapshot] = {}
+        rank_failures = 0
 
-        for index, steam_id in enumerate(steam_ids[:max_accounts], start=1):
+        for index, steam_id in enumerate(steam_ids, start=1):
             card, data, outcome = await self._fetch_profile_card({"steam_id": steam_id}, timeout=45.0)
 
             if outcome.timed_out:
-                lines.append(f"- {index}. `{steam_id}`: ⏳ Timeout (Task #{outcome.task_id})")
+                rank_failures += 1
+                if index <= max_accounts:
+                    lines.append(f"- {index}. `{steam_id}`: ⏳ Timeout (Task #{outcome.task_id})")
                 continue
 
             if not outcome.ok:
-                lines.append(
-                    f"- {index}. `{steam_id}`: ❌ {outcome.error or 'Unbekannter Fehler'}"
-                )
+                rank_failures += 1
+                if index <= max_accounts:
+                    lines.append(
+                        f"- {index}. `{steam_id}`: ❌ {outcome.error or 'Unbekannter Fehler'}"
+                    )
                 continue
 
             if not isinstance(card, dict):
-                lines.append(f"- {index}. `{steam_id}`: ❌ Keine PlayerCard im Ergebnis")
+                rank_failures += 1
+                if index <= max_accounts:
+                    lines.append(f"- {index}. `{steam_id}`: ❌ Keine PlayerCard im Ergebnis")
                 continue
 
+            snapshots[steam_id] = self._snapshot_from_profile_card(steam_id, card, data)
             account_id = card.get("account_id")
             if account_id is None and isinstance(data, dict):
                 account_id = data.get("account_id")
 
-            rank_line = self._format_rank_line(card)
-            if account_id is not None:
-                lines.append(f"- {index}. `{steam_id}`: {rank_line} · Account `{account_id}`")
-            else:
-                lines.append(f"- {index}. `{steam_id}`: {rank_line}")
+            if index <= max_accounts:
+                rank_line = self._format_rank_line(card)
+                if account_id is not None:
+                    lines.append(f"- {index}. `{steam_id}`: {rank_line} · Account `{account_id}`")
+                else:
+                    lines.append(f"- {index}. `{steam_id}`: {rank_line}")
+
+        sync_stats = SyncStats(
+            rank_requests=len(steam_ids),
+            rank_success=len(snapshots),
+            rank_failed=rank_failures,
+        )
+        if snapshots:
+            sync_stats.rank_rows_written = await self._persist_rank_snapshots(snapshots)
+            await self._sync_rank_roles({int(target.id): list(snapshots.keys())}, snapshots, sync_stats)
+            lines.append(
+                f"- Sync: DB-Updates `{sync_stats.rank_rows_written}`, "
+                f"Rollen +`{sync_stats.roles_added}` / -`{sync_stats.roles_removed}`"
+            )
+        else:
+            lines.append("- Sync: Keine Daten gespeichert (keine erfolgreiche Rank-Abfrage).")
 
         remaining = len(steam_ids) - max_accounts
         if remaining > 0:
             lines.append(f"- … plus `{remaining}` weitere verknüpfte Accounts")
 
         lines.append("- Tipp: Nutze `/steam_rank <steamid64>` für eine gezielte Einzelabfrage.")
-        await self._send_ctx_response(ctx, "\n".join(lines))
+        await self._send_ctx_response(ctx, "\n".join(lines), ephemeral=private_response)
+
+    async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
+        if isinstance(error, commands.MissingPermissions):
+            await self._send_ctx_response(
+                ctx,
+                "❌ Du brauchst Administrator-Rechte für diesen Befehl.",
+                ephemeral=True,
+            )
+            return
+        if isinstance(error, commands.CheckFailure):
+            await self._send_ctx_response(
+                ctx,
+                "❌ Du hast keine Berechtigung für diesen Befehl.",
+                ephemeral=True,
+            )
+            return
+        log.error("Unhandled command error in deadlock_friend_rank", exc_info=error)
+
+    async def cog_app_command_error(
+        self,
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ) -> None:
+        original = getattr(error, "original", error)
+        message: Optional[str] = None
+        if isinstance(error, app_commands.MissingPermissions) or isinstance(
+            original, commands.MissingPermissions
+        ):
+            message = "❌ Du brauchst Administrator-Rechte für diesen Befehl."
+        elif isinstance(error, app_commands.CheckFailure):
+            message = "❌ Du hast keine Berechtigung für diesen Befehl."
+
+        if message is None:
+            log.error("Unhandled app command error in deadlock_friend_rank", exc_info=error)
+            return
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 async def setup(bot: commands.Bot) -> None:
