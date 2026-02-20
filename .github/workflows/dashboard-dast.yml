@@ -41,6 +41,7 @@ jobs:
       - name: Start Dashboard Test Server
         env:
           DEADLOCK_DB_PATH: ${{ github.workspace }}/.dast/deadlock.sqlite3
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           mkdir -p .github/tmp .dast
           cat > .github/tmp/run_dashboard_dast_server.py <<'PY'

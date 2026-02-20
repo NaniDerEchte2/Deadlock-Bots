@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import sqlite3
 from typing import Any, Dict, List, Optional
 
@@ -27,21 +26,6 @@ TEAM_NAME_MAX = 32
 
 TEAMS_TABLE = "customgames_tournament_teams"
 SIGNUPS_TABLE = "customgames_tournament_signups"
-
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-def _sql_identifier(value: str) -> str:
-    """Return a validated SQL identifier wrapped in double quotes."""
-    if not _IDENTIFIER_RE.fullmatch(value or ""):
-        raise ValueError(f"Invalid SQL identifier: {value!r}")
-    return f'"{value}"'
-
-
-TEAMS_TABLE_SQL = _sql_identifier(TEAMS_TABLE)
-SIGNUPS_TABLE_SQL = _sql_identifier(SIGNUPS_TABLE)
-TEAMS_GUILD_INDEX_SQL = _sql_identifier(f"idx_{TEAMS_TABLE}_guild")
-SIGNUPS_GUILD_INDEX_SQL = _sql_identifier(f"idx_{SIGNUPS_TABLE}_guild")
 
 
 def normalize_rank(raw: str) -> str:
@@ -99,8 +83,8 @@ def _row_to_dict(row: Any) -> Dict[str, Any]:
 def ensure_schema() -> None:
     with db.get_conn() as conn:
         conn.executescript(
-            f"""
-            CREATE TABLE IF NOT EXISTS {TEAMS_TABLE_SQL}(
+            """
+            CREATE TABLE IF NOT EXISTS customgames_tournament_teams(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               guild_id INTEGER NOT NULL,
               name TEXT NOT NULL,
@@ -110,7 +94,7 @@ def ensure_schema() -> None:
               UNIQUE(guild_id, name_key)
             );
 
-            CREATE TABLE IF NOT EXISTS {SIGNUPS_TABLE_SQL}(
+            CREATE TABLE IF NOT EXISTS customgames_tournament_signups(
               guild_id INTEGER NOT NULL,
               user_id INTEGER NOT NULL,
               registration_mode TEXT NOT NULL CHECK (registration_mode IN ('solo', 'team')),
@@ -121,14 +105,14 @@ def ensure_schema() -> None:
               created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
               PRIMARY KEY(guild_id, user_id),
-              FOREIGN KEY(team_id) REFERENCES {TEAMS_TABLE_SQL}(id) ON DELETE SET NULL
+              FOREIGN KEY(team_id) REFERENCES customgames_tournament_teams(id) ON DELETE SET NULL
             );
 
-            CREATE INDEX IF NOT EXISTS {TEAMS_GUILD_INDEX_SQL}
-              ON {TEAMS_TABLE_SQL}(guild_id, name_key);
+            CREATE INDEX IF NOT EXISTS idx_customgames_tournament_teams_guild
+              ON customgames_tournament_teams(guild_id, name_key);
 
-            CREATE INDEX IF NOT EXISTS {SIGNUPS_GUILD_INDEX_SQL}
-              ON {SIGNUPS_TABLE_SQL}(guild_id, team_id);
+            CREATE INDEX IF NOT EXISTS idx_customgames_tournament_signups_guild
+              ON customgames_tournament_signups(guild_id, team_id);
             """
         )
 
@@ -139,7 +123,7 @@ async def ensure_schema_async() -> None:
 
 async def team_exists_async(guild_id: int, team_id: int) -> bool:
     row = await db.query_one_async(
-        f"SELECT 1 FROM {TEAMS_TABLE} WHERE guild_id = ? AND id = ?",
+        "SELECT 1 FROM customgames_tournament_teams WHERE guild_id = ? AND id = ?",
         (int(guild_id), int(team_id)),
     )
     return bool(row)
@@ -157,9 +141,9 @@ async def get_or_create_team_async(
     creator = int(created_by) if created_by is not None else None
 
     existing = await db.query_one_async(
-        f"""
+        """
         SELECT id, guild_id, name, created_by, created_at
-        FROM {TEAMS_TABLE}
+        FROM customgames_tournament_teams
         WHERE guild_id = ? AND name_key = ?
         """,
         (guild, key),
@@ -172,8 +156,8 @@ async def get_or_create_team_async(
     created = False
     try:
         await db.execute_async(
-            f"""
-            INSERT INTO {TEAMS_TABLE}(guild_id, name, name_key, created_by)
+            """
+            INSERT INTO customgames_tournament_teams(guild_id, name, name_key, created_by)
             VALUES(?, ?, ?, ?)
             """,
             (guild, clean_name, key, creator),
@@ -186,9 +170,9 @@ async def get_or_create_team_async(
             raise
 
     row = await db.query_one_async(
-        f"""
+        """
         SELECT id, guild_id, name, created_by, created_at
-        FROM {TEAMS_TABLE}
+        FROM customgames_tournament_teams
         WHERE guild_id = ? AND name_key = ?
         """,
         (guild, key),
@@ -202,7 +186,7 @@ async def get_or_create_team_async(
 
 async def list_teams_async(guild_id: int) -> List[Dict[str, Any]]:
     rows = await db.query_all_async(
-        f"""
+        """
         SELECT
             t.id,
             t.guild_id,
@@ -210,8 +194,8 @@ async def list_teams_async(guild_id: int) -> List[Dict[str, Any]]:
             t.created_by,
             t.created_at,
             COALESCE(COUNT(s.user_id), 0) AS member_count
-        FROM {TEAMS_TABLE} t
-        LEFT JOIN {SIGNUPS_TABLE} s
+        FROM customgames_tournament_teams t
+        LEFT JOIN customgames_tournament_signups s
           ON s.guild_id = t.guild_id
          AND s.team_id = t.id
         WHERE t.guild_id = ?
@@ -225,7 +209,7 @@ async def list_teams_async(guild_id: int) -> List[Dict[str, Any]]:
 
 async def list_signups_async(guild_id: int) -> List[Dict[str, Any]]:
     rows = await db.query_all_async(
-        f"""
+        """
         SELECT
             s.guild_id,
             s.user_id,
@@ -237,8 +221,8 @@ async def list_signups_async(guild_id: int) -> List[Dict[str, Any]]:
             s.created_at,
             s.updated_at,
             t.name AS team_name
-        FROM {SIGNUPS_TABLE} s
-        LEFT JOIN {TEAMS_TABLE} t
+        FROM customgames_tournament_signups s
+        LEFT JOIN customgames_tournament_teams t
           ON t.guild_id = s.guild_id
          AND t.id = s.team_id
         WHERE s.guild_id = ?
@@ -251,7 +235,7 @@ async def list_signups_async(guild_id: int) -> List[Dict[str, Any]]:
 
 async def get_signup_async(guild_id: int, user_id: int) -> Dict[str, Any]:
     row = await db.query_one_async(
-        f"""
+        """
         SELECT
             s.guild_id,
             s.user_id,
@@ -263,8 +247,8 @@ async def get_signup_async(guild_id: int, user_id: int) -> Dict[str, Any]:
             s.created_at,
             s.updated_at,
             t.name AS team_name
-        FROM {SIGNUPS_TABLE} s
-        LEFT JOIN {TEAMS_TABLE} t
+        FROM customgames_tournament_signups s
+        LEFT JOIN customgames_tournament_teams t
           ON t.guild_id = s.guild_id
          AND t.id = s.team_id
         WHERE s.guild_id = ? AND s.user_id = ?
@@ -298,9 +282,9 @@ async def upsert_signup_async(
 
     assigned_flag = 1 if assigned_by_admin else 0
     existing = await db.query_one_async(
-        f"""
+        """
         SELECT registration_mode, rank, rank_value, team_id, assigned_by_admin
-        FROM {SIGNUPS_TABLE}
+        FROM customgames_tournament_signups
         WHERE guild_id = ? AND user_id = ?
         """,
         (guild, user),
@@ -323,8 +307,8 @@ async def upsert_signup_async(
             status = "unchanged"
         else:
             await db.execute_async(
-                f"""
-                UPDATE {SIGNUPS_TABLE}
+                """
+                UPDATE customgames_tournament_signups
                 SET registration_mode = ?,
                     rank = ?,
                     rank_value = ?,
@@ -338,8 +322,8 @@ async def upsert_signup_async(
             status = "updated"
     else:
         await db.execute_async(
-            f"""
-            INSERT INTO {SIGNUPS_TABLE}(
+            """
+            INSERT INTO customgames_tournament_signups(
                 guild_id,
                 user_id,
                 registration_mode,
@@ -369,7 +353,7 @@ async def assign_signup_team_async(
     team_ref: Optional[int] = int(team_id) if team_id is not None else None
 
     exists = await db.query_one_async(
-        f"SELECT 1 FROM {SIGNUPS_TABLE} WHERE guild_id = ? AND user_id = ?",
+        "SELECT 1 FROM customgames_tournament_signups WHERE guild_id = ? AND user_id = ?",
         (guild, user),
     )
     if not exists:
@@ -380,8 +364,8 @@ async def assign_signup_team_async(
 
     assigned_by_admin = 1 if team_ref is not None else 0
     await db.execute_async(
-        f"""
-        UPDATE {SIGNUPS_TABLE}
+        """
+        UPDATE customgames_tournament_signups
         SET team_id = ?,
             assigned_by_admin = ?,
             updated_at = CURRENT_TIMESTAMP
@@ -396,13 +380,13 @@ async def remove_signup_async(guild_id: int, user_id: int) -> bool:
     guild = int(guild_id)
     user = int(user_id)
     exists = await db.query_one_async(
-        f"SELECT 1 FROM {SIGNUPS_TABLE} WHERE guild_id = ? AND user_id = ?",
+        "SELECT 1 FROM customgames_tournament_signups WHERE guild_id = ? AND user_id = ?",
         (guild, user),
     )
     if not exists:
         return False
     await db.execute_async(
-        f"DELETE FROM {SIGNUPS_TABLE} WHERE guild_id = ? AND user_id = ?",
+        "DELETE FROM customgames_tournament_signups WHERE guild_id = ? AND user_id = ?",
         (guild, user),
     )
     return True
@@ -410,19 +394,19 @@ async def remove_signup_async(guild_id: int, user_id: int) -> bool:
 
 async def summary_async(guild_id: int) -> Dict[str, int]:
     row = await db.query_one_async(
-        f"""
+        """
         SELECT
             COUNT(*) AS signups_total,
             COALESCE(SUM(CASE WHEN registration_mode = 'solo' THEN 1 ELSE 0 END), 0) AS solo_count,
             COALESCE(SUM(CASE WHEN registration_mode = 'team' THEN 1 ELSE 0 END), 0) AS team_count,
             COALESCE(SUM(CASE WHEN registration_mode = 'solo' AND team_id IS NULL THEN 1 ELSE 0 END), 0) AS unassigned_solo
-        FROM {SIGNUPS_TABLE}
+        FROM customgames_tournament_signups
         WHERE guild_id = ?
         """,
         (int(guild_id),),
     )
     teams_row = await db.query_one_async(
-        f"SELECT COUNT(*) AS teams_count FROM {TEAMS_TABLE} WHERE guild_id = ?",
+        "SELECT COUNT(*) AS teams_count FROM customgames_tournament_teams WHERE guild_id = ?",
         (int(guild_id),),
     )
     summary = _row_to_dict(row)
@@ -438,9 +422,9 @@ async def summary_async(guild_id: int) -> Dict[str, int]:
 
 async def guild_signup_counts_async() -> Dict[int, int]:
     rows = await db.query_all_async(
-        f"""
+        """
         SELECT guild_id, COUNT(*) AS signups
-        FROM {SIGNUPS_TABLE}
+        FROM customgames_tournament_signups
         GROUP BY guild_id
         """
     )
@@ -448,3 +432,5 @@ async def guild_signup_counts_async() -> Dict[int, int]:
     for row in rows or []:
         counts[int(row["guild_id"])] = int(row["signups"])
     return counts
+
+

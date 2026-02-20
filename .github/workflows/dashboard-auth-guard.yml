@@ -30,6 +30,7 @@ jobs:
       - name: Start Dashboard Guard Test Server
         env:
           DEADLOCK_DB_PATH: ${{ github.workspace }}/.auth-guard/deadlock.sqlite3
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           mkdir -p .github/tmp .auth-guard
           cat > .github/tmp/run_dashboard_auth_guard.py <<'PY'

@@ -223,22 +223,26 @@ class TwitchMonitoringMixin:
         if not unique_ids:
             return {}
 
-        placeholders = ",".join("?" for _ in unique_ids)
-        query = (
-            "SELECT twitch_user_id, twitch_login "
-            "FROM twitch_streamers "
-            f"WHERE twitch_user_id IN ({placeholders}) "
-            "AND twitch_login IS NOT NULL"
-        )
+        wanted_ids = set(unique_ids)
         try:
             with storage.get_conn() as c:
-                rows = c.execute(query, tuple(unique_ids)).fetchall()
+                rows = c.execute(
+                    """
+                    SELECT twitch_user_id, twitch_login
+                    FROM twitch_streamers
+                    WHERE twitch_login IS NOT NULL
+                    """
+                ).fetchall()
             out: Dict[str, str] = {}
             for row in rows:
                 uid = str(row["twitch_user_id"] if hasattr(row, "keys") else row[0]).strip()
+                if uid not in wanted_ids:
+                    continue
                 login = str(row["twitch_login"] if hasattr(row, "keys") else row[1]).strip().lower()
                 if uid and login:
                     out[uid] = login
+                    if len(out) >= len(wanted_ids):
+                        break
             return out
         except Exception:
             log.debug("EventSub: konnte twitch_login Mapping nicht laden", exc_info=True)

@@ -30,6 +30,7 @@ jobs:
       - name: Start Master Dashboard Guard Server
         env:
           DEADLOCK_DB_PATH: ${{ github.workspace }}/.master-auth-guard/deadlock.sqlite3
+          PYTHONPATH: ${{ github.workspace }}
           MASTER_NSSM_RESTART_ENABLED: "0"
           MASTER_DASHBOARD_ALLOW_QUERY_TOKEN: "0"
           MASTER_GUARD_HOST: "127.0.0.1"

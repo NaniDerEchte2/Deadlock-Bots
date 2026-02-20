@@ -170,8 +170,8 @@ class DeadlockFriendRank(commands.Cog):
 
     async def _ensure_subrank_role_table(self) -> None:
         await db.execute_async(
-            f"""
-            CREATE TABLE IF NOT EXISTS {SUBRANK_ROLE_MAP_TABLE}(
+            """
+            CREATE TABLE IF NOT EXISTS deadlock_subrank_roles(
               guild_id INTEGER NOT NULL,
               rank_value INTEGER NOT NULL,
               subrank INTEGER NOT NULL,
@@ -184,9 +184,9 @@ class DeadlockFriendRank(commands.Cog):
             """
         )
         await db.execute_async(
-            f"""
-            CREATE INDEX IF NOT EXISTS idx_{SUBRANK_ROLE_MAP_TABLE}_guild
-            ON {SUBRANK_ROLE_MAP_TABLE}(guild_id)
+            """
+            CREATE INDEX IF NOT EXISTS idx_deadlock_subrank_roles_guild
+            ON deadlock_subrank_roles(guild_id)
             """
         )
 
@@ -300,9 +300,9 @@ class DeadlockFriendRank(commands.Cog):
 
     async def _load_subrank_role_map_for_guild(self, guild_id: int) -> dict[tuple[int, int], int]:
         rows = await db.query_all_async(
-            f"""
+            """
             SELECT rank_value, subrank, role_id
-            FROM {SUBRANK_ROLE_MAP_TABLE}
+            FROM deadlock_subrank_roles
             WHERE guild_id = ?
             """,
             (int(guild_id),),
