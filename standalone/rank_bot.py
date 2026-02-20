@@ -1443,8 +1443,7 @@ async def auto_restore_rank_channel_view() -> None:
         logger.info(f"[AUTO RESTORE] Found {len(bot_messages)} bot messages in rank channel")
 
         if not bot_messages:
-            logger.info("[AUTO RESTORE] No bot messages found - creating new rank selection message")
-            await create_rank_selection_message(channel, guild)
+            logger.info("[AUTO RESTORE] No bot messages found - skipping auto-create (disabled)")
             return
 
         latest_message = bot_messages[0]
@@ -1452,7 +1451,9 @@ async def auto_restore_rank_channel_view() -> None:
 
         if latest_message.embeds:
             embed = latest_message.embeds[0]
-            if "Rang-Auswahl" in embed.title or "Deadlock-Rang" in str(embed.description):
+            embed_title = str(embed.title or "")
+            embed_description = str(embed.description or "")
+            if "Rang-Auswahl" in embed_title or "Deadlock-Rang" in embed_description:
                 logger.info(f"[AUTO RESTORE] Found rank selection message - attaching view")
                 view = ServerRankSelectView(guild)
                 try:
@@ -1462,17 +1463,13 @@ async def auto_restore_rank_channel_view() -> None:
                 except asyncio.CancelledError:
                     raise
                 except discord.NotFound:
-                    logger.warning(f"[AUTO RESTORE] Message {latest_message.id} not found - creating new one")
-                    await create_rank_selection_message(channel, guild)
+                    logger.warning(f"[AUTO RESTORE] Message {latest_message.id} not found - skipping auto-create (disabled)")
                 except Exception as e:
                     logger.error(f"[AUTO RESTORE] Error attaching view: {e}")
-                    await create_rank_selection_message(channel, guild)
             else:
-                logger.info("[AUTO RESTORE] Latest message is not a rank selection - creating new one")
-                await create_rank_selection_message(channel, guild)
+                logger.info("[AUTO RESTORE] Latest message is not a rank selection - skipping auto-create (disabled)")
         else:
-            logger.info("[AUTO RESTORE] Latest message has no embeds - creating new rank selection")
-            await create_rank_selection_message(channel, guild)
+            logger.info("[AUTO RESTORE] Latest message has no embeds - skipping auto-create (disabled)")
 
     except asyncio.CancelledError:
         raise
