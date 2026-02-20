@@ -478,7 +478,7 @@ class DeadlockFriendRank(commands.Cog):
             placeholder_rows,
         )
 
-    async def _select_linked_friend_accounts(self, friend_ids: set[str]) -> dict[int, str]:
+    async def _select_linked_friend_accounts(self, friend_ids: set[str]) -> dict[int, list[str]]:
         if not friend_ids:
             return {}
 
@@ -492,7 +492,7 @@ class DeadlockFriendRank(commands.Cog):
             (MIN_DISCORD_SNOWFLAKE,),
         )
 
-        out: dict[int, str] = {}
+        out: dict[int, list[str]] = {}
         for row in rows or []:
             sid = str(row["steam_id"] or "").strip()
             if sid not in friend_ids:
@@ -500,8 +500,9 @@ class DeadlockFriendRank(commands.Cog):
             uid = self._safe_int(row["user_id"])
             if uid is None or uid <= 0:
                 continue
-            if uid not in out:
-                out[uid] = sid
+            user_steam_ids = out.setdefault(uid, [])
+            if sid not in user_steam_ids:
+                user_steam_ids.append(sid)
         return out
 
     async def _fetch_rank_snapshots(
@@ -601,8 +602,7 @@ class DeadlockFriendRank(commands.Cog):
         self,
         guild: discord.Guild,
         member: discord.Member,
-        target_rank_value: Optional[int],
-        target_subrank_value: Optional[int],
+        target_snapshots: list[RankSnapshot],
         subrank_role_map: dict[tuple[int, int], int],
         stats: SyncStats,
     ) -> None:
@@ -612,32 +612,41 @@ class DeadlockFriendRank(commands.Cog):
         if not me.guild_permissions.manage_roles:
             return
 
-        target_role: Optional[discord.Role] = None
-        target_role_id = RANK_ROLE_IDS.get(int(target_rank_value or 0))
-        if target_role_id:
-            role = guild.get_role(target_role_id)
-            if role and role.position < me.top_role.position:
-                target_role = role
+        target_rank_roles_by_id: dict[int, discord.Role] = {}
+        target_subrank_roles_by_id: dict[int, discord.Role] = {}
 
-        target_subrank_role: Optional[discord.Role] = None
-        target_rank_num = self._safe_int(target_rank_value)
-        target_subrank_num = self._safe_int(target_subrank_value)
-        if target_rank_num is not None and target_subrank_num is not None:
+        for snapshot in target_snapshots:
+            target_rank_num = self._safe_int(snapshot.rank_value)
+            if target_rank_num is not None:
+                target_role_id = RANK_ROLE_IDS.get(target_rank_num)
+                if target_role_id:
+                    role = guild.get_role(target_role_id)
+                    if role and role.position < me.top_role.position:
+                        target_rank_roles_by_id[role.id] = role
+
+            target_subrank_num = self._safe_int(snapshot.subrank)
+            if target_rank_num is None or target_subrank_num is None:
+                continue
+
+            target_subrank_role: Optional[discord.Role] = None
             mapped_role_id = subrank_role_map.get((target_rank_num, target_subrank_num))
             if mapped_role_id:
                 role = guild.get_role(mapped_role_id)
                 if role and role.position < me.top_role.position:
                     target_subrank_role = role
 
-        if target_subrank_role is None:
-            target_subrank_role_name = self._expected_subrank_role_name(
-                target_rank_value,
-                target_subrank_value,
-            )
-            if target_subrank_role_name:
-                role = self._find_role_by_name_casefold(guild, target_subrank_role_name)
-                if role and role.position < me.top_role.position:
-                    target_subrank_role = role
+            if target_subrank_role is None:
+                target_subrank_role_name = self._expected_subrank_role_name(
+                    target_rank_num,
+                    target_subrank_num,
+                )
+                if target_subrank_role_name:
+                    role = self._find_role_by_name_casefold(guild, target_subrank_role_name)
+                    if role and role.position < me.top_role.position:
+                        target_subrank_role = role
+
+            if target_subrank_role is not None:
+                target_subrank_roles_by_id[target_subrank_role.id] = target_subrank_role
 
         mapped_subrank_role_ids = {
             role_id
@@ -645,11 +654,10 @@ class DeadlockFriendRank(commands.Cog):
             if role_id > 0
         }
         subrank_role_id_set = mapped_subrank_role_ids | self._collect_subrank_role_ids(guild)
-        target_role_ids = {
-            role.id
-            for role in (target_role, target_subrank_role)
-            if role is not None
-        }
+        target_roles_by_id: dict[int, discord.Role] = dict(target_rank_roles_by_id)
+        target_roles_by_id.update(target_subrank_roles_by_id)
+        target_roles = list(target_roles_by_id.values())
+        target_role_ids = set(target_roles_by_id.keys())
 
         removable_roles = [
             role
@@ -678,10 +686,9 @@ class DeadlockFriendRank(commands.Cog):
             return
 
         roles_to_add: list[discord.Role] = []
-        if target_role is not None and target_role not in member.roles:
-            roles_to_add.append(target_role)
-        if target_subrank_role is not None and target_subrank_role not in member.roles:
-            roles_to_add.append(target_subrank_role)
+        for target_role in target_roles:
+            if target_role not in member.roles:
+                roles_to_add.append(target_role)
 
         if not roles_to_add:
             return
@@ -699,7 +706,7 @@ class DeadlockFriendRank(commands.Cog):
 
     async def _sync_rank_roles(
         self,
-        user_to_steam: dict[int, str],
+        user_to_steam: dict[int, list[str]],
         snapshots: dict[str, RankSnapshot],
         stats: SyncStats,
     ) -> None:
@@ -712,9 +719,13 @@ class DeadlockFriendRank(commands.Cog):
         for guild in target_guilds:
             subrank_role_maps[guild.id] = await self._load_subrank_role_map_for_guild(guild.id)
 
-        for user_id, steam_id in user_to_steam.items():
-            snapshot = snapshots.get(steam_id)
-            if not snapshot:
+        for user_id, steam_ids in user_to_steam.items():
+            user_snapshots = [
+                snapshot
+                for steam_id in steam_ids
+                if (snapshot := snapshots.get(steam_id)) is not None
+            ]
+            if not user_snapshots or len(user_snapshots) != len(steam_ids):
                 continue
 
             for guild in target_guilds:
@@ -725,8 +736,7 @@ class DeadlockFriendRank(commands.Cog):
                 await self._apply_rank_role_for_member(
                     guild,
                     member,
-                    snapshot.rank_value,
-                    snapshot.subrank,
+                    user_snapshots,
                     subrank_role_maps.get(guild.id, {}),
                     stats,
                 )
@@ -739,15 +749,19 @@ class DeadlockFriendRank(commands.Cog):
             stats.friends_total = len(friend_ids)
 
             await self._refresh_friend_rows(friend_ids)
-            user_to_steam = await self._select_linked_friend_accounts(friend_ids)
-            stats.linked_users = len(user_to_steam)
+            user_to_steam_ids = await self._select_linked_friend_accounts(friend_ids)
+            stats.linked_users = len(user_to_steam_ids)
 
-            steam_ids = set(user_to_steam.values())
+            steam_ids = {
+                steam_id
+                for linked_steam_ids in user_to_steam_ids.values()
+                for steam_id in linked_steam_ids
+            }
             stats.rank_requests = len(steam_ids)
             snapshots = await self._fetch_rank_snapshots(steam_ids, stats)
             stats.rank_rows_written = await self._persist_rank_snapshots(snapshots)
 
-            await self._sync_rank_roles(user_to_steam, snapshots, stats)
+            await self._sync_rank_roles(user_to_steam_ids, snapshots, stats)
             self._last_stats = stats
             return stats
 
