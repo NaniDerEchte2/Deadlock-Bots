@@ -90,7 +90,6 @@ SPAM_FRAGMENTS = (
     "promnow.ru",
     "promnow ru",
     "promnow",
-    "viewers",
     "top viewers",
     "Top Viewers",
 )
