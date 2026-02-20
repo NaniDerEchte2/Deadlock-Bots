@@ -65,7 +65,10 @@ class PrivacyConfirmView(discord.ui.View):
                     ephemeral=True,
                 )
             except Exception as inner_exc:
-                log.debug("Followup für fehlgeschlagenen Export scheiterte", exc_info=inner_exc)
+                log.debug(
+                    "Followup für fehlgeschlagenen Export scheiterte",
+                    exc_info=inner_exc,
+                )
 
     @discord.ui.button(
         label="Schritt 1/2: Bestätigen",
@@ -138,7 +141,9 @@ class PrivacyControls(commands.Cog):
             if vat and hasattr(vat, "_drop_runtime_state"):
                 vat._drop_runtime_state(user_id)
         except Exception:
-            log.debug("Konnte VoiceActivityTracker state nicht bereinigen", exc_info=True)
+            log.debug(
+                "Konnte VoiceActivityTracker state nicht bereinigen", exc_info=True
+            )
 
         try:
             nudge = self.bot.get_cog("SteamLinkVoiceNudge")
@@ -176,10 +181,9 @@ class PrivacyControls(commands.Cog):
             + self._summary_value(summary, "coaching_sessions.user_id")
             + self._summary_value(summary, "voice_channel_anchors.user_id")
         )
-        twitch_rows = (
-            self._summary_value(summary, "twitch_streamers.discord_user_id")
-            + self._summary_value(summary, "twitch_link_clicks.discord_user_id")
-        )
+        twitch_rows = self._summary_value(
+            summary, "twitch_streamers.discord_user_id"
+        ) + self._summary_value(summary, "twitch_link_clicks.discord_user_id")
         rankbot_rows = (
             self._summary_value(summary, "user_data.user_id")
             + self._summary_value(summary, "notification_log.user_id")

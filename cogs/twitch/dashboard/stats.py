@@ -10,7 +10,9 @@ from aiohttp import web
 
 
 class DashboardStatsMixin:
-    async def _render_stats_page(self, request: web.Request, *, partner_view: bool) -> web.Response:
+    async def _render_stats_page(
+        self, request: web.Request, *, partner_view: bool
+    ) -> web.Response:
         view_mode = (request.query.get("view") or "top").lower()
         show_all = view_mode == "all"
         display_mode = (request.query.get("display") or "charts").lower()
@@ -120,7 +122,9 @@ class DashboardStatsMixin:
         def _build_url(**updates) -> str:
             params = {**preserved_params, **updates}
             merged = {k: v for k, v in params.items() if v not in {None, ""}}
-            query = "&".join(f"{k}={html.escape(str(v), quote=True)}" for k, v in merged.items())
+            query = "&".join(
+                f"{k}={html.escape(str(v), quote=True)}" for k, v in merged.items()
+            )
             if query:
                 return f"{base_path}?{query}"
             return base_path
@@ -174,7 +178,9 @@ class DashboardStatsMixin:
                 discord_value = "1" if discord_member else "0"
                 discord_text = "Ja" if discord_member else "Nein"
                 discord_user_id = str(item.get("discord_user_id") or "").strip()
-                discord_display_name = str(item.get("discord_display_name") or "").strip()
+                discord_display_name = str(
+                    item.get("discord_display_name") or ""
+                ).strip()
                 if not show_discord_private:
                     discord_user_id = ""
                     discord_display_name = ""
@@ -207,10 +213,10 @@ class DashboardStatsMixin:
                 row_parts = [
                     "<tr>",
                     f"<td>{streamer}</td>",
-                    f"<td data-value=\"{samples}\">{samples}</td>",
-                    f"<td data-value=\"{avg_viewers:.4f}\">{avg_viewers:.1f}</td>",
-                    f"<td data-value=\"{max_viewers}\">{max_viewers}</td>",
-                    f"<td data-value=\"{partner_value}\">{partner_text}</td>",
+                    f'<td data-value="{samples}">{samples}</td>',
+                    f'<td data-value="{avg_viewers:.4f}">{avg_viewers:.1f}</td>',
+                    f'<td data-value="{max_viewers}">{max_viewers}</td>',
+                    f'<td data-value="{partner_value}">{partner_text}</td>',
                 ]
                 if show_discord_private:
                     discord_main = (
@@ -225,10 +231,13 @@ class DashboardStatsMixin:
                         f"  {discord_meta_html}"
                         "</div>"
                     )
-                    row_parts.append(f"<td data-value=\"{discord_value}\">{discord_cell}</td>")
+                    row_parts.append(
+                        f'<td data-value="{discord_value}">{discord_cell}</td>'
+                    )
                 row_parts.append("</tr>")
                 rows.append("".join(row_parts))
             return "".join(rows)
+
         tracked_hourly = tracked.get("hourly", []) or []
         category_hourly = category.get("hourly", []) or []
         tracked_weekday = tracked.get("weekday", []) or []
@@ -264,10 +273,10 @@ class DashboardStatsMixin:
                 max_viewers = int(item.get("max_viewers") or 0)
                 rows.append(
                     "<tr>"
-                    f"<td data-value=\"{hour}\">{hour:02d}:00</td>"
-                    f"<td data-value=\"{samples}\">{samples}</td>"
-                    f"<td data-value=\"{avg_viewers:.4f}\">{_format_float(avg_viewers)}</td>"
-                    f"<td data-value=\"{max_viewers}\">{max_viewers}</td>"
+                    f'<td data-value="{hour}">{hour:02d}:00</td>'
+                    f'<td data-value="{samples}">{samples}</td>'
+                    f'<td data-value="{avg_viewers:.4f}">{_format_float(avg_viewers)}</td>'
+                    f'<td data-value="{max_viewers}">{max_viewers}</td>'
                     "</tr>"
                 )
             return "".join(rows)
@@ -298,10 +307,10 @@ class DashboardStatsMixin:
                 label = weekday_labels.get(idx, str(idx))
                 rows.append(
                     "<tr>"
-                    f"<td data-value=\"{idx}\">{html.escape(label)}</td>"
-                    f"<td data-value=\"{samples}\">{samples}</td>"
-                    f"<td data-value=\"{avg_viewers:.4f}\">{_format_float(avg_viewers)}</td>"
-                    f"<td data-value=\"{max_viewers}\">{max_viewers}</td>"
+                    f'<td data-value="{idx}">{html.escape(label)}</td>'
+                    f'<td data-value="{samples}">{samples}</td>'
+                    f'<td data-value="{avg_viewers:.4f}">{_format_float(avg_viewers)}</td>'
+                    f'<td data-value="{max_viewers}">{max_viewers}</td>'
                     "</tr>"
                 )
             if not rows:
@@ -314,10 +323,14 @@ class DashboardStatsMixin:
         tracked_weekday_rows = render_weekday_table(tracked_weekday)
 
         category_hour_map = {
-            int(item.get("hour") or 0): item for item in category_hourly if isinstance(item, dict)
+            int(item.get("hour") or 0): item
+            for item in category_hourly
+            if isinstance(item, dict)
         }
         tracked_hour_map = {
-            int(item.get("hour") or 0): item for item in tracked_hourly if isinstance(item, dict)
+            int(item.get("hour") or 0): item
+            for item in tracked_hourly
+            if isinstance(item, dict)
         }
 
         def _build_dataset(
@@ -352,16 +365,20 @@ class DashboardStatsMixin:
 
         hour_labels = [f"{hour:02d}:00" for hour in range(24)]
         category_hour_avg = [
-            _float_or_none((category_hour_map.get(hour) or {}).get("avg_viewers")) for hour in range(24)
+            _float_or_none((category_hour_map.get(hour) or {}).get("avg_viewers"))
+            for hour in range(24)
         ]
         tracked_hour_avg = [
-            _float_or_none((tracked_hour_map.get(hour) or {}).get("avg_viewers")) for hour in range(24)
+            _float_or_none((tracked_hour_map.get(hour) or {}).get("avg_viewers"))
+            for hour in range(24)
         ]
         category_hour_peak = [
-            _int_or_none((category_hour_map.get(hour) or {}).get("max_viewers")) for hour in range(24)
+            _int_or_none((category_hour_map.get(hour) or {}).get("max_viewers"))
+            for hour in range(24)
         ]
         tracked_hour_peak = [
-            _int_or_none((tracked_hour_map.get(hour) or {}).get("max_viewers")) for hour in range(24)
+            _int_or_none((tracked_hour_map.get(hour) or {}).get("max_viewers"))
+            for hour in range(24)
         ]
 
         hour_datasets = [
@@ -404,13 +421,19 @@ class DashboardStatsMixin:
         ]
 
         category_weekday_map = {
-            int(item.get("weekday") or 0): item for item in category_weekday if isinstance(item, dict)
+            int(item.get("weekday") or 0): item
+            for item in category_weekday
+            if isinstance(item, dict)
         }
         tracked_weekday_map = {
-            int(item.get("weekday") or 0): item for item in tracked_weekday if isinstance(item, dict)
+            int(item.get("weekday") or 0): item
+            for item in tracked_weekday
+            if isinstance(item, dict)
         }
 
-        weekday_labels_list = [weekday_labels.get(idx, str(idx)) for idx in weekday_order]
+        weekday_labels_list = [
+            weekday_labels.get(idx, str(idx)) for idx in weekday_order
+        ]
         category_weekday_avg = [
             _float_or_none((category_weekday_map.get(idx) or {}).get("avg_viewers"))
             for idx in weekday_order
@@ -469,41 +492,41 @@ class DashboardStatsMixin:
 
         hour_chart_block = (
             '<div class="chart-panel">'
-            '  <h3>Ø Viewer nach Stunde</h3>'
+            "  <h3>Ø Viewer nach Stunde</h3>"
             '  <canvas id="hourly-viewers-chart"></canvas>'
             '  <div class="chart-note">Zeiten in UTC. Datenpunkte ohne Werte werden ausgeblendet.</div>'
-            '</div>'
+            "</div>"
         )
 
         weekday_chart_block = (
             '<div class="chart-panel">'
-            '  <h3>Ø Viewer nach Wochentag</h3>'
+            "  <h3>Ø Viewer nach Wochentag</h3>"
             '  <canvas id="weekday-viewers-chart"></canvas>'
             '  <div class="chart-note">Zeiten in UTC. Datenpunkte ohne Werte werden ausgeblendet.</div>'
-            '</div>'
+            "</div>"
         )
 
         hour_tables_block = "".join(
             [
                 '<div class="row" style="gap:1.4rem; flex-wrap:wrap;">',
                 '  <div style="flex:1 1 260px;">',
-                '    <h3>Deadlock Kategorie — nach Stunde</h3>',
+                "    <h3>Deadlock Kategorie — nach Stunde</h3>",
                 '    <table class="sortable-table" data-table="category-hour">',
-                '      <thead>',
-                '        <tr>',
+                "      <thead>",
+                "        <tr>",
                 '          <th data-sort-type="number">Stunde</th>',
                 '          <th data-sort-type="number">Stichproben</th>',
                 '          <th data-sort-type="number">Ø Viewer</th>',
                 '          <th data-sort-type="number">Peak Viewer</th>',
-                '        </tr>',
-                '      </thead>',
-                '      <tbody>',
+                "        </tr>",
+                "      </thead>",
+                "      <tbody>",
                 category_hour_rows,
                 "</tbody>",
                 "    </table>",
                 "  </div>",
                 '  <div style="flex:1 1 260px;">',
-                '    <h3>Tracked Streamer — nach Stunde</h3>',
+                "    <h3>Tracked Streamer — nach Stunde</h3>",
                 '    <table class="sortable-table" data-table="tracked-hour">',
                 "      <thead>",
                 "        <tr>",
@@ -526,7 +549,7 @@ class DashboardStatsMixin:
             [
                 '<div class="row" style="gap:1.4rem; flex-wrap:wrap;">',
                 '  <div style="flex:1 1 260px;">',
-                '    <h3>Deadlock Kategorie — nach Wochentag</h3>',
+                "    <h3>Deadlock Kategorie — nach Wochentag</h3>",
                 '    <table class="sortable-table" data-table="category-weekday">',
                 "      <thead>",
                 "        <tr>",
@@ -542,7 +565,7 @@ class DashboardStatsMixin:
                 "    </table>",
                 "  </div>",
                 '  <div style="flex:1 1 260px;">',
-                '    <h3>Tracked Streamer — nach Wochentag</h3>',
+                "    <h3>Tracked Streamer — nach Wochentag</h3>",
                 '    <table class="sortable-table" data-table="tracked-weekday">',
                 "      <thead>",
                 "        <tr>",
@@ -568,14 +591,12 @@ class DashboardStatsMixin:
         if not isinstance(streamer_summary, dict):
             streamer_summary = {}
         streamer_has_data = bool(streamer_stats.get("had_results"))
-        selected_streamer_login = (
-            str(
-                streamer_stats.get("display_login")
-                or streamer_stats.get("login")
-                or (normalized_streamer or streamer_query.strip())
-                or ""
-            ).strip()
-        )
+        selected_streamer_login = str(
+            streamer_stats.get("display_login")
+            or streamer_stats.get("login")
+            or (normalized_streamer or streamer_query.strip())
+            or ""
+        ).strip()
         user_hour_data = streamer_stats.get("hourly")
         if not isinstance(user_hour_data, list):
             user_hour_data = []
@@ -584,17 +605,23 @@ class DashboardStatsMixin:
             user_weekday_data = []
 
         user_hour_map = {
-            int(item.get("hour") or 0): item for item in user_hour_data if isinstance(item, dict)
+            int(item.get("hour") or 0): item
+            for item in user_hour_data
+            if isinstance(item, dict)
         }
         user_weekday_map = {
-            int(item.get("weekday") or 0): item for item in user_weekday_data if isinstance(item, dict)
+            int(item.get("weekday") or 0): item
+            for item in user_weekday_data
+            if isinstance(item, dict)
         }
 
         user_hour_avg = [
-            _float_or_none((user_hour_map.get(hour) or {}).get("avg_viewers")) for hour in range(24)
+            _float_or_none((user_hour_map.get(hour) or {}).get("avg_viewers"))
+            for hour in range(24)
         ]
         user_hour_peak = [
-            _int_or_none((user_hour_map.get(hour) or {}).get("max_viewers")) for hour in range(24)
+            _int_or_none((user_hour_map.get(hour) or {}).get("max_viewers"))
+            for hour in range(24)
         ]
         user_hour_datasets = []
         if streamer_has_data:
@@ -672,7 +699,9 @@ class DashboardStatsMixin:
 
         streamer_is_tracked = bool(streamer_stats.get("is_tracked"))
         streamer_is_on_discord = bool(streamer_stats.get("is_on_discord"))
-        streamer_discord_name = str(streamer_stats.get("discord_display_name") or "").strip()
+        streamer_discord_name = str(
+            streamer_stats.get("discord_display_name") or ""
+        ).strip()
         streamer_discord_id = str(streamer_stats.get("discord_user_id") or "").strip()
         if not show_discord_private:
             streamer_discord_name = ""
@@ -690,11 +719,13 @@ class DashboardStatsMixin:
             '<div class="toggle-group">'
             f'  <a class="btn btn-small{" btn-active" if display_mode == "charts" else " btn-secondary"}" href="{_build_url(display="charts")}">Charts</a>'
             f'  <a class="btn btn-small{" btn-active" if display_mode == "raw" else " btn-secondary"}" href="{_build_url(display="raw")}">Tabelle</a>'
-            '</div>'
+            "</div>"
         )
         analysis_controls_html = ""
         if focus_mode in {"time", "weekday"}:
-            analysis_controls_html = f"<div class='analysis-controls'>{display_toggle_html}</div>"
+            analysis_controls_html = (
+                f"<div class='analysis-controls'>{display_toggle_html}</div>"
+            )
 
         hidden_inputs = []
         for key, value in request.query.items():
@@ -733,7 +764,8 @@ class DashboardStatsMixin:
 
         sorted_suggestions = [suggestions_map[key] for key in sorted(suggestions_map)]
         streamer_options = "".join(
-            f"<option value='{html.escape(value, quote=True)}'></option>" for value in sorted_suggestions
+            f"<option value='{html.escape(value, quote=True)}'></option>"
+            for value in sorted_suggestions
         )
         datalist_html = f"<datalist id='twitch-streamers'>{streamer_options}</datalist>"
 
@@ -762,7 +794,9 @@ class DashboardStatsMixin:
 
         user_notice_html = ""
         if streamer_warning:
-            user_notice_html = f"<div class='user-warning'>{html.escape(streamer_warning)}</div>"
+            user_notice_html = (
+                f"<div class='user-warning'>{html.escape(streamer_warning)}</div>"
+            )
 
         user_summary_html = ""
         if streamer_has_data:
@@ -802,13 +836,22 @@ class DashboardStatsMixin:
                 )
                 shared_html = f"<div class='status-meta' style='margin-top:0.8rem;'><strong>Shared Audience (Top 5):</strong><ul style='margin:0.2rem 0 0 1.2rem; padding:0;'>{shared_rows}</ul></div>"
 
-            user_summary_html = f"<div class='user-summary'>{summary_cells}</div>{shared_html}"
+            user_summary_html = (
+                f"<div class='user-summary'>{summary_cells}</div>{shared_html}"
+            )
 
         user_meta_html = ""
-        if streamer_has_data or streamer_is_tracked or streamer_discord_name or streamer_discord_id:
+        if (
+            streamer_has_data
+            or streamer_is_tracked
+            or streamer_discord_name
+            or streamer_discord_id
+        ):
             meta_parts = []
             if streamer_source:
-                source_label = "Tracked" if streamer_source == "tracked" else "Kategorie"
+                source_label = (
+                    "Tracked" if streamer_source == "tracked" else "Kategorie"
+                )
                 meta_parts.append(
                     f"<strong>Datenbasis:</strong> {html.escape(source_label)}"
                 )
@@ -824,28 +867,30 @@ class DashboardStatsMixin:
                     "<strong>Discord:</strong> " + " • ".join(discord_bits)
                 )
             if meta_parts:
-                user_meta_html = "<div class='user-meta'>" + "<br>".join(meta_parts) + "</div>"
+                user_meta_html = (
+                    "<div class='user-meta'>" + "<br>".join(meta_parts) + "</div>"
+                )
 
         user_charts_html = ""
         if streamer_has_data:
             user_hour_chart_block = (
                 '<div class="chart-panel user-chart-panel">'
-                '  <h3>Ø Viewer nach Stunde</h3>'
+                "  <h3>Ø Viewer nach Stunde</h3>"
                 '  <canvas id="user-hourly-chart"></canvas>'
                 '  <div class="chart-note">Zeiten in UTC. Datenpunkte ohne Werte werden ausgeblendet.</div>'
-                '</div>'
+                "</div>"
             )
             user_weekday_chart_block = (
                 '<div class="chart-panel user-chart-panel">'
-                '  <h3>Ø Viewer nach Wochentag</h3>'
+                "  <h3>Ø Viewer nach Wochentag</h3>"
                 '  <canvas id="user-weekday-chart"></canvas>'
                 '  <div class="chart-note">Zeiten in UTC. Datenpunkte ohne Werte werden ausgeblendet.</div>'
-                '</div>'
+                "</div>"
             )
             user_charts_html = (
                 '<div class="user-chart-grid">'
                 f"{user_hour_chart_block}{user_weekday_chart_block}"
-                '</div>'
+                "</div>"
             )
 
         user_empty_html = ""
@@ -1107,7 +1152,9 @@ class DashboardStatsMixin:
                 filter_descriptions.append(f"Stunde {start:02d} UTC")
             else:
                 wrap_hint = " (über Mitternacht)" if start > end else ""
-                filter_descriptions.append(f"Stunden {start:02d}–{end:02d} UTC{wrap_hint}")
+                filter_descriptions.append(
+                    f"Stunden {start:02d}–{end:02d} UTC{wrap_hint}"
+                )
         if not filter_descriptions:
             filter_descriptions.append("Keine Filter aktiv")
 
@@ -1122,7 +1169,7 @@ class DashboardStatsMixin:
             f'  <a class="btn btn-small{" btn-active" if focus_mode == "time" else " btn-secondary"}" href="{_focus_href("time")}">Zeit</a>'
             f'  <a class="btn btn-small{" btn-active" if focus_mode == "weekday" else " btn-secondary"}" href="{_focus_href("weekday")}">Tag</a>'
             f'  <a class="btn btn-small{" btn-active" if focus_mode == "user" else " btn-secondary"}" href="{_focus_href("user")}">User</a>'
-            '</div>'
+            "</div>"
         )
 
         current_view_label = "Alle Streamer" if show_all else "Top 10"
@@ -1166,7 +1213,11 @@ class DashboardStatsMixin:
         else:
             analysis_content = user_section
 
-        discord_header_html = '<th data-sort-type="number">Auf Discord?</th>' if show_discord_private else ""
+        discord_header_html = (
+            '<th data-sort-type="number">Auf Discord?</th>'
+            if show_discord_private
+            else ""
+        )
 
         insights_html = ""
 
@@ -1178,22 +1229,22 @@ class DashboardStatsMixin:
     <div>
       <label class="filter-label">
         Min. Stichproben
-        <input type="number" name="min_samples" min="0" value="{html.escape(str(min_samples) if min_samples is not None else '', quote=True)}">
+        <input type="number" name="min_samples" min="0" value="{html.escape(str(min_samples) if min_samples is not None else "", quote=True)}">
       </label>
     </div>
     <div>
       <label class="filter-label">
         Min. Ø Viewer
-        <input type="number" step="0.1" name="min_avg" min="0" value="{html.escape(str(min_avg) if min_avg is not None else '', quote=True)}">
+        <input type="number" step="0.1" name="min_avg" min="0" value="{html.escape(str(min_avg) if min_avg is not None else "", quote=True)}">
       </label>
     </div>
     <div>
       <label class="filter-label">
         Partner Filter
         <select name="partner">
-          <option value="any"{' selected' if partner_filter == 'any' else ''}>Alle</option>
-          <option value="only"{' selected' if partner_filter == 'only' else ''}>Nur Partner</option>
-          <option value="exclude"{' selected' if partner_filter == 'exclude' else ''}>Ohne Partner</option>
+          <option value="any"{" selected" if partner_filter == "any" else ""}>Alle</option>
+          <option value="only"{" selected" if partner_filter == "only" else ""}>Nur Partner</option>
+          <option value="exclude"{" selected" if partner_filter == "exclude" else ""}>Ohne Partner</option>
         </select>
       </label>
     </div>
@@ -1201,15 +1252,15 @@ class DashboardStatsMixin:
     <div>
       <label class="filter-label">
         Einzelne Stunde (UTC)
-        <input type="number" name="hour" min="0" max="23" value="{html.escape(str(stats_hour) if stats_hour is not None else '', quote=True)}">
+        <input type="number" name="hour" min="0" max="23" value="{html.escape(str(stats_hour) if stats_hour is not None else "", quote=True)}">
       </label>
     </div>
     <div>
       <label class="filter-label">
         Stundenbereich (UTC)
         <div class="row" style="gap:.6rem;">
-          <input type="number" name="hour_from" min="0" max="23" placeholder="von" value="{html.escape(str(hour_from) if hour_from is not None else '', quote=True)}">
-          <input type="number" name="hour_to" min="0" max="23" placeholder="bis" value="{html.escape(str(hour_to) if hour_to is not None else '', quote=True)}">
+          <input type="number" name="hour_from" min="0" max="23" placeholder="von" value="{html.escape(str(hour_from) if hour_from is not None else "", quote=True)}">
+          <input type="number" name="hour_to" min="0" max="23" placeholder="bis" value="{html.escape(str(hour_to) if hour_to is not None else "", quote=True)}">
         </div>
       </label>
     </div>
@@ -1219,7 +1270,7 @@ class DashboardStatsMixin:
     </div>
   </form>
   <div class="status-meta" style="margin-top:.4rem;">Hinweis: Stundenangaben beziehen sich auf UTC.</div>
-  <div class="status-meta" style="margin-top:.8rem;">Aktive Filter: {' • '.join(filter_descriptions)}</div>
+  <div class="status-meta" style="margin-top:.8rem;">Aktive Filter: {" • ".join(filter_descriptions)}</div>
 </div>
 
 {insights_html}
@@ -1283,7 +1334,10 @@ class DashboardStatsMixin:
         if partner_view:
             nav_html = '<nav class="tabs"><span class="tab active">Stats</span></nav>'
 
-        return web.Response(text=self._html(body, active="stats", nav=nav_html), content_type="text/html")
+        return web.Response(
+            text=self._html(body, active="stats", nav=nav_html),
+            content_type="text/html",
+        )
 
     async def stats(self, request: web.Request):
         self._require_token(request)

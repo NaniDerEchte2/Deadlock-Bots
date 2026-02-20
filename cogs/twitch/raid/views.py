@@ -22,15 +22,13 @@ def build_raid_requirements_embed(twitch_login: str) -> discord.Embed:
         "Bitte stell sicher, dass du sie erfüllst, damit alle Features für dich aktiv sind :).\n\n"
         "Eine Pflicht-Anforderung erfüllst du momentan noch nicht: \n"
         "Twitch-Bot-Autorisierung - bitte stelle sicher das du die neue Anforderung erfüllst :).\n\n"
-
         "**Twitch Bot-Update: Das ist im Hintergrund passiert**\n"
         "1) **Auto-Raid Manager**\n"
         "- Sobald dein Stream offline geht, raidet der Bot einen live-Partner.\n"
         "2) **Chat Guard - Schutz vor Müll im Chat**\n"
-        "- Filtert Viewer-Bot/Spam-Muster (Phrasen/Fragmente wie \"Best viewers\", \"streamboo.com\").\n"
+        '- Filtert Viewer-Bot/Spam-Muster (Phrasen/Fragmente wie "Best viewers", "streamboo.com").\n'
         "3) **Analytics Dashboard (Geplant für 03-05/26)**\n"
         "- Retention (5/10/20 Min), Unique Chatters, Kategorie-Vergleich (DE).\n\n"
-
     )
     return discord.Embed(
         title="🔐 Twitch-Bot Autorisierung",

@@ -22,11 +22,11 @@ from cogs.welcome_dm.step_steam_link import steam_link_detailed_description
 log = logging.getLogger("SteamVoiceNudge")
 
 # ---------- Einstellungen ----------
-MIN_VOICE_MINUTES = 30          # Mindest-Verweildauer im Voice (einmalig)
-POLL_INTERVAL = 15              # Sekunden – Voice-Alive-Check
+MIN_VOICE_MINUTES = 30  # Mindest-Verweildauer im Voice (einmalig)
+POLL_INTERVAL = 15  # Sekunden – Voice-Alive-Check
 DEFAULT_TEST_TARGET_ID = int(os.getenv("NUDGE_TEST_DEFAULT_ID", "0"))
 LOG_CHANNEL_ID = 1374364800817303632  # Meldungen in diesen Kanal posten
-NUDGE_VIEW_VERSION = 2          # Version der persistierten DM-View
+NUDGE_VIEW_VERSION = 2  # Version der persistierten DM-View
 VOICE_NUDGE_FIRST_SEEN_NS = "voice_nudge_first_seen"
 VOICE_NUDGE_DONE_NS = "voice_nudge_done"
 
@@ -34,14 +34,23 @@ VOICE_NUDGE_DONE_NS = "voice_nudge_done"
 # Standard enthält die gewünschte English-only Rolle: 1309741866098491479
 _EXEMPT_DEFAULT = "1309741866098491479"
 EXEMPT_ROLE_IDS = {
-    int(x) for x in os.getenv("NUDGE_EXEMPT_ROLE_IDS", _EXEMPT_DEFAULT).split(",")
+    int(x)
+    for x in os.getenv("NUDGE_EXEMPT_ROLE_IDS", _EXEMPT_DEFAULT).split(",")
     if x.strip().isdigit()
 }
 
 # Deep-Link Toggle für Discord OAuth
-_DEEPLINK_EN = str(os.getenv("DISCORD_OAUTH_DEEPLINK", "0")).strip().lower() not in ("", "0", "false", "no")
+_DEEPLINK_EN = str(os.getenv("DISCORD_OAUTH_DEEPLINK", "0")).strip().lower() not in (
+    "",
+    "0",
+    "false",
+    "no",
+)
 
-def _prefer_discord_deeplink(browser_url: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+
+def _prefer_discord_deeplink(
+    browser_url: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
     """
     (primary_url, browser_fallback).
     Aktiviert 'discord://-/oauth2/authorize?...' als primary, wenn möglich.
@@ -59,7 +68,9 @@ def _prefer_discord_deeplink(browser_url: Optional[str]) -> Tuple[Optional[str],
             and (hostname == "discord.com" or hostname.endswith(".discord.com"))
             and (path == "/oauth2/authorize" or path.startswith("/oauth2/authorize/"))
         ):
-            deeplink = urlunparse(("discord", "-/oauth2/authorize", "", "", u.query, ""))
+            deeplink = urlunparse(
+                ("discord", "-/oauth2/authorize", "", "", u.query, "")
+            )
             return deeplink, browser_url
     except Exception as exc:
         log.debug("[nudge] Deeplink-Erkennung schlug fehl für %r: %s", browser_url, exc)
@@ -97,8 +108,11 @@ def _is_nudge_done(user_id: int) -> bool:
     except Exception:
         return False
 
+
 # ---------- DB ----------
-def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: int = 0) -> None:
+def _save_steam_link_row(
+    user_id: int, steam_id: str, name: str = "", verified: int = 0
+) -> None:
     _ensure_schema()
     db.execute(
         """
@@ -118,6 +132,7 @@ def _save_steam_link_row(user_id: int, steam_id: str, name: str = "", verified: 
             "[nudge] Konnte Steam-Freundschaftsanfrage nicht einreihen",
             extra=safe_log_extra({"steam_id": steam_id}),
         )
+
 
 def _ensure_schema():
     db.execute("""
@@ -140,7 +155,9 @@ def _ensure_schema():
         except sqlite3.OperationalError as exc:
             # Nur loggen, wenn es NICHT "duplicate column" ist (das ist erwartet)
             if "duplicate column" not in str(exc).lower():
-                log.debug("[nudge] Konnte Schema-Änderung nicht anwenden (%s): %s", sql, exc)
+                log.debug(
+                    "[nudge] Konnte Schema-Änderung nicht anwenden (%s): %s", sql, exc
+                )
     db.execute("""
         CREATE TABLE IF NOT EXISTS steam_links(
           user_id         INTEGER NOT NULL,
@@ -154,10 +171,14 @@ def _ensure_schema():
         )
     """)
 
+
 def _has_any_steam_link(user_id: int) -> bool:
     # _ensure_schema() -> moved to cog_load
-    row = db.query_one("SELECT 1 FROM steam_links WHERE user_id=? LIMIT 1", (int(user_id),))
+    row = db.query_one(
+        "SELECT 1 FROM steam_links WHERE user_id=? LIMIT 1", (int(user_id),)
+    )
     return bool(row)
+
 
 def _load_nudge_state(user_id: int) -> Optional[sqlite3.Row]:
     # _ensure_schema() -> moved to cog_load
@@ -203,12 +224,15 @@ def _clear_nudge_state(user_id: int) -> None:
         (int(user_id),),
     )
 
+
 def _member_has_exempt_role(member: discord.Member) -> bool:
     return any((r.id in EXEMPT_ROLE_IDS) for r in getattr(member, "roles", []) or [])
+
 
 def _log_chan(bot: commands.Bot) -> Optional[discord.TextChannel]:
     ch = bot.get_channel(LOG_CHANNEL_ID)
     return ch if isinstance(ch, discord.TextChannel) else None
+
 
 # ---------- Voice-Monitor ----------
 async def _count_voice_minutes(member: discord.Member, minutes: int) -> bool:
@@ -232,6 +256,7 @@ async def _count_voice_minutes(member: discord.Member, minutes: int) -> bool:
         log.exception("voice wait failed for member=%s", getattr(member, "id", "?"))
         return False
 
+
 # ---------- OAuth/OpenID Hilfen ----------
 def _find_steamlink_cog(bot: commands.Bot):
     # 1) explizit
@@ -246,7 +271,10 @@ def _find_steamlink_cog(bot: commands.Bot):
             return cog
     return None
 
-async def _fetch_oauth_urls(bot: commands.Bot, user: Union[discord.User, discord.Member]) -> Tuple[Optional[str], Optional[str]]:
+
+async def _fetch_oauth_urls(
+    bot: commands.Bot, user: Union[discord.User, discord.Member]
+) -> Tuple[Optional[str], Optional[str]]:
     """
     Holt gültige (server-registrierte) Start-URLs vom SteamLink-OAuth-Cog.
     Bevorzugt Lazy-Start (state wird erst beim Klick erzeugt).
@@ -274,11 +302,17 @@ async def _fetch_oauth_urls(bot: commands.Bot, user: Union[discord.User, discord
         return d or None, s or None
     return None, None
 
+
 # ---------- View/Modal ----------
 class _CloseButton(discord.ui.Button):
     def __init__(self, row: int = 1):
-        super().__init__(label="Schließen", style=discord.ButtonStyle.secondary,
-                         emoji="❌", custom_id="nudge_close", row=row)
+        super().__init__(
+            label="Schließen",
+            style=discord.ButtonStyle.secondary,
+            emoji="❌",
+            custom_id="nudge_close",
+            row=row,
+        )
 
     async def callback(self, interaction: discord.Interaction):
         try:
@@ -294,6 +328,7 @@ class _CloseButton(discord.ui.Button):
             raise
         except Exception as e:
             log.debug("close-button delete failed: %r", e)
+
 
 class _OptionsView(discord.ui.View):
     """Nicht-persistente Instanz mit den aktuellen Verknüpfungsoptionen."""
@@ -345,13 +380,18 @@ class _OptionsView(discord.ui.View):
 
         self.add_item(_CloseButton(row=1))
 
+
 # Persistente Registry-View (falls weitere Buttons mit custom_id notwendig)
 class _PersistentRegistryView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Schließen", style=discord.ButtonStyle.secondary,
-                       emoji="❌", custom_id="nudge_close")
+    @discord.ui.button(
+        label="Schließen",
+        style=discord.ButtonStyle.secondary,
+        emoji="❌",
+        custom_id="nudge_close",
+    )
     async def _close(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             if not interaction.response.is_done():
@@ -364,6 +404,7 @@ class _PersistentRegistryView(discord.ui.View):
             await interaction.message.delete()
         except Exception as exc:
             log.debug("[nudge] Konnte Interaktionsnachricht nicht löschen: %s", exc)
+
 
 # ---------- Cog ----------
 class SteamLinkVoiceNudge(commands.Cog):
@@ -386,7 +427,9 @@ class SteamLinkVoiceNudge(commands.Cog):
 
         self.bot.add_view(_PersistentRegistryView())
         try:
-            self._restore_task = asyncio.create_task(self._restore_persistent_messages())
+            self._restore_task = asyncio.create_task(
+                self._restore_persistent_messages()
+            )
         except Exception:
             log.exception("[nudge] Konnte Persistenz-Wiederherstellung nicht starten")
 
@@ -419,11 +462,15 @@ class SteamLinkVoiceNudge(commands.Cog):
             except Exception:
                 continue
 
-            message_id = row.get("message_id") if isinstance(row, dict) else row["message_id"]
+            message_id = (
+                row.get("message_id") if isinstance(row, dict) else row["message_id"]
+            )
             if not message_id:
                 continue
 
-            user: Optional[Union[discord.Member, discord.User]] = self.bot.get_user(user_id)
+            user: Optional[Union[discord.Member, discord.User]] = self.bot.get_user(
+                user_id
+            )
             if not user:
                 try:
                     user = await self.bot.fetch_user(user_id)
@@ -474,7 +521,9 @@ class SteamLinkVoiceNudge(commands.Cog):
             description=desc,
             color=discord.Color.blurple(),
         )
-        embed.set_footer(text="Kurzbefehle: /account_verknüpfen · /steam unlink · /steam setprimary")
+        embed.set_footer(
+            text="Kurzbefehle: /account_verknüpfen · /steam unlink · /steam setprimary"
+        )
 
         view = _OptionsView(discord_url=primary_discord, steam_url=steam_url)
         return embed, view
@@ -525,7 +574,9 @@ class SteamLinkVoiceNudge(commands.Cog):
 
         try:
             message_id = state["message_id"] if "message_id" in state.keys() else None  # type: ignore[index]
-            notified_at = state["notified_at"] if "notified_at" in state.keys() else None  # type: ignore[index]
+            notified_at = (
+                state["notified_at"] if "notified_at" in state.keys() else None
+            )  # type: ignore[index]
         except Exception:
             message_id = None
             notified_at = None
@@ -538,7 +589,11 @@ class SteamLinkVoiceNudge(commands.Cog):
             return bool(notified_at)
 
         try:
-            stored_version = int(state.get("view_version", 0)) if hasattr(state, "get") else int(state["view_version"] or 0)
+            stored_version = (
+                int(state.get("view_version", 0))
+                if hasattr(state, "get")
+                else int(state["view_version"] or 0)
+            )
         except Exception:
             stored_version = 0
 
@@ -555,12 +610,20 @@ class SteamLinkVoiceNudge(commands.Cog):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.debug("[nudge] Aktualisierung der vorhandenen Nudge-DM fehlgeschlagen: %r", exc)
+                log.debug(
+                    "[nudge] Aktualisierung der vorhandenen Nudge-DM fehlgeschlagen: %r",
+                    exc,
+                )
 
         return True
 
     @commands.Cog.listener()
-    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    async def on_voice_state_update(
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ):
         try:
             if (before.channel is None) and (after.channel is not None):
                 if privacy.is_opted_out(member.id):
@@ -592,12 +655,20 @@ class SteamLinkVoiceNudge(commands.Cog):
                     try:
                         self._tasks[member.id].cancel()
                     except Exception as exc:
-                        log.debug("[nudge] Bestehenden Task für %s konnte nicht abgebrochen werden: %s", member.id, exc)
-                self._tasks[member.id] = asyncio.create_task(self._wait_and_notify(member))
+                        log.debug(
+                            "[nudge] Bestehenden Task für %s konnte nicht abgebrochen werden: %s",
+                            member.id,
+                            exc,
+                        )
+                self._tasks[member.id] = asyncio.create_task(
+                    self._wait_and_notify(member)
+                )
         except Exception:
             log.exception("on_voice_state_update error")
 
-    async def _send_dm_nudge(self, user: Union[discord.User, discord.Member], *, force: bool = False) -> bool:
+    async def _send_dm_nudge(
+        self, user: Union[discord.User, discord.Member], *, force: bool = False
+    ) -> bool:
         uid = int(user.id)
         if privacy.is_opted_out(uid):
             return False
@@ -614,7 +685,11 @@ class SteamLinkVoiceNudge(commands.Cog):
                 message = await self._fetch_nudge_message(user, state)
                 if message:
                     try:
-                        stored_version = int(state.get("view_version", 0)) if hasattr(state, "get") else int(state["view_version"] or 0)
+                        stored_version = (
+                            int(state.get("view_version", 0))
+                            if hasattr(state, "get")
+                            else int(state["view_version"] or 0)
+                        )
                     except Exception:
                         stored_version = 0
 
@@ -631,7 +706,10 @@ class SteamLinkVoiceNudge(commands.Cog):
                         except asyncio.CancelledError:
                             raise
                         except Exception as exc:
-                            log.debug("[nudge] Aktualisierung bestehender Nudge-DM fehlgeschlagen: %r", exc)
+                            log.debug(
+                                "[nudge] Aktualisierung bestehender Nudge-DM fehlgeschlagen: %r",
+                                exc,
+                            )
                     return False
                 else:
                     _clear_nudge_state(uid)
@@ -658,13 +736,17 @@ class SteamLinkVoiceNudge(commands.Cog):
         except discord.Forbidden:
             ch = _log_chan(self.bot)
             if ch:
-                await ch.send(f"⚠️ Nudge-DM an **{user}** ({uid}) fehlgeschlagen: DMs deaktiviert.")
+                await ch.send(
+                    f"⚠️ Nudge-DM an **{user}** ({uid}) fehlgeschlagen: DMs deaktiviert."
+                )
             return False
         except Exception as e:
             log.exception("[nudge] Fehler beim Senden der DM")
             ch = _log_chan(self.bot)
             if ch:
-                await ch.send(f"❌ Nudge-DM an **{user}** ({uid}) fehlgeschlagen: `{e}`")
+                await ch.send(
+                    f"❌ Nudge-DM an **{user}** ({uid}) fehlgeschlagen: `{e}`"
+                )
             return False
 
     async def _wait_and_notify(self, member: discord.Member):
@@ -672,7 +754,9 @@ class SteamLinkVoiceNudge(commands.Cog):
             if _member_has_exempt_role(member):
                 ch = _log_chan(self.bot)
                 if ch:
-                    await ch.send(f"ℹ️ Übersprungen (Exempt): **{member}** ({member.id})")
+                    await ch.send(
+                        f"ℹ️ Übersprungen (Exempt): **{member}** ({member.id})"
+                    )
                 return
             if privacy.is_opted_out(member.id):
                 return
@@ -706,22 +790,36 @@ class SteamLinkVoiceNudge(commands.Cog):
     ):
         target = await self._resolve_test_target(ctx, target)
         if not target:
-            await ctx.reply("Bitte Ziel angeben: `!nudgesend @user`", mention_author=False)
+            await ctx.reply(
+                "Bitte Ziel angeben: `!nudgesend @user`", mention_author=False
+            )
             return
 
         if privacy.is_opted_out(target.id):
-            await ctx.reply("⚠️ Nutzer hat ein Opt-out aktiviert; keine Nudge-DM gesendet.", mention_author=False)
+            await ctx.reply(
+                "⚠️ Nutzer hat ein Opt-out aktiviert; keine Nudge-DM gesendet.",
+                mention_author=False,
+            )
             return
 
         if isinstance(target, discord.Member) and _member_has_exempt_role(target):
-            await ctx.reply("ℹ️ Test abgebrochen: Ziel hat eine ausgenommene Rolle.", mention_author=False)
+            await ctx.reply(
+                "ℹ️ Test abgebrochen: Ziel hat eine ausgenommene Rolle.",
+                mention_author=False,
+            )
             return
 
         ok = await self._send_dm_nudge(target, force=True)
         if ok:
-            await ctx.reply(f"📨 Test-DM an {getattr(target, 'mention', target.id)} gesendet.", mention_author=False)
+            await ctx.reply(
+                f"📨 Test-DM an {getattr(target, 'mention', target.id)} gesendet.",
+                mention_author=False,
+            )
         else:
-            await ctx.reply("⚠️ Test-DM konnte nicht gesendet werden (DMs aus? oder bereits benachrichtigt).", mention_author=False)
+            await ctx.reply(
+                "⚠️ Test-DM konnte nicht gesendet werden (DMs aus? oder bereits benachrichtigt).",
+                mention_author=False,
+            )
 
     async def _resolve_test_target(
         self,

@@ -23,7 +23,9 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 
-def _ts_from_monotonic(monotonic_value: Optional[float], fallback: Optional[float]) -> Optional[float]:
+def _ts_from_monotonic(
+    monotonic_value: Optional[float], fallback: Optional[float]
+) -> Optional[float]:
     if monotonic_value is None:
         return fallback
     offset = time.time() - time.monotonic()
@@ -118,7 +120,9 @@ class StandaloneBotManager:
         if config.key in self._configs:
             raise ValueError(f"Standalone bot '{config.key}' already registered")
         if not config.script.exists():
-            raise FileNotFoundError(f"Standalone script does not exist: {config.script}")
+            raise FileNotFoundError(
+                f"Standalone script does not exist: {config.script}"
+            )
         self._configs[config.key] = config
         self._states[config.key] = _RuntimeState(config=config)
         log.debug("Registered standalone bot %s -> %s", config.key, config.script)
@@ -162,8 +166,12 @@ class StandaloneBotManager:
             state.restart_attempts = 0
             state.log_buffer.clear()
 
-            stdout_task = asyncio.create_task(self._pump_stream(key, process.stdout, "stdout"))
-            stderr_task = asyncio.create_task(self._pump_stream(key, process.stderr, "stderr"))
+            stdout_task = asyncio.create_task(
+                self._pump_stream(key, process.stdout, "stdout")
+            )
+            stderr_task = asyncio.create_task(
+                self._pump_stream(key, process.stderr, "stderr")
+            )
             waiter_task = asyncio.create_task(self._wait_for_exit(key, process))
             state.reader_tasks = [stdout_task, stderr_task, waiter_task]
 
@@ -186,7 +194,11 @@ class StandaloneBotManager:
         try:
             await asyncio.wait_for(process.wait(), timeout=kill_after)
         except asyncio.TimeoutError:
-            log.warning("Standalone bot %s did not terminate within %.1fs -> kill()", key, kill_after)
+            log.warning(
+                "Standalone bot %s did not terminate within %.1fs -> kill()",
+                key,
+                kill_after,
+            )
             process.kill()
             await process.wait()
         finally:
@@ -226,7 +238,9 @@ class StandaloneBotManager:
             except StandaloneManagerError as exc:
                 log.error("Failed to autostart %s: %s", config.key, exc)
 
-    async def _maybe_restart_on_daily_schedule(self, config: StandaloneBotConfig) -> None:
+    async def _maybe_restart_on_daily_schedule(
+        self, config: StandaloneBotConfig
+    ) -> None:
         schedule = config.daily_restart_at
         if not schedule:
             return
@@ -255,7 +269,9 @@ class StandaloneBotManager:
         if not should_restart:
             return
 
-        log.info("Scheduled daily restart for %s at %s -> restart now", config.key, schedule)
+        log.info(
+            "Scheduled daily restart for %s at %s -> restart now", config.key, schedule
+        )
         try:
             await self.restart(config.key)
         except StandaloneManagerError as exc:
@@ -278,7 +294,9 @@ class StandaloneBotManager:
         async with self._lock:
             state = self._states.get(config.key)
             if state and state.running:
-                started_wall = state.started_wall or _ts_from_monotonic(state.started_at_monotonic, None)
+                started_wall = state.started_wall or _ts_from_monotonic(
+                    state.started_at_monotonic, None
+                )
                 if started_wall is not None:
                     uptime = time.time() - started_wall
                     restart_needed = uptime >= max_uptime
@@ -372,7 +390,9 @@ class StandaloneBotManager:
                 log.debug("Reader task for %s raised during cleanup: %s", key, exc)
         state.reader_tasks.clear()
 
-    async def _pump_stream(self, key: str, stream: Optional[asyncio.StreamReader], label: str) -> None:
+    async def _pump_stream(
+        self, key: str, stream: Optional[asyncio.StreamReader], label: str
+    ) -> None:
         if stream is None:
             return
         while True:
@@ -388,10 +408,14 @@ class StandaloneBotManager:
                 state = self._states.get(key)
                 if not state:
                     continue
-                state.log_buffer.append({"ts": timestamp, "stream": label, "line": text})
+                state.log_buffer.append(
+                    {"ts": timestamp, "stream": label, "line": text}
+                )
             # log.debug("[%s][%s] %s", key, label, text)  <-- SPAM VERHINDERN
 
-    async def _wait_for_exit(self, key: str, process: asyncio.subprocess.Process) -> None:
+    async def _wait_for_exit(
+        self, key: str, process: asyncio.subprocess.Process
+    ) -> None:
         returncode = await process.wait()
         wall = time.time()
         async with self._lock:
@@ -427,7 +451,12 @@ class StandaloneBotManager:
             state.restart_attempts += 1
             attempt = state.restart_attempts
         delay = min(60.0, 5.0 * attempt)
-        log.warning("Standalone bot %s crashed (attempt %s) -> restart in %.1fs", key, attempt, delay)
+        log.warning(
+            "Standalone bot %s crashed (attempt %s) -> restart in %.1fs",
+            key,
+            attempt,
+            delay,
+        )
         await asyncio.sleep(delay)
         try:
             await self.start(key)

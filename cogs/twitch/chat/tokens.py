@@ -27,7 +27,9 @@ def _read_keyring_secret(key: str) -> Optional[str]:
     return None
 
 
-async def _save_bot_tokens_to_keyring(*, access_token: str, refresh_token: Optional[str]) -> None:
+async def _save_bot_tokens_to_keyring(
+    *, access_token: str, refresh_token: Optional[str]
+) -> None:
     """Persist access/refresh tokens to Windows Credential Manager."""
     try:
         import keyring  # type: ignore
@@ -44,15 +46,23 @@ async def _save_bot_tokens_to_keyring(*, access_token: str, refresh_token: Optio
         tasks.append(_save_one(_KEYRING_SERVICE, "TWITCH_BOT_TOKEN", access_token))
         saved_types.append("ACCESS_TOKEN")
     if refresh_token:
-        tasks.append(_save_one(_KEYRING_SERVICE, "TWITCH_BOT_REFRESH_TOKEN", refresh_token))
+        tasks.append(
+            _save_one(_KEYRING_SERVICE, "TWITCH_BOT_REFRESH_TOKEN", refresh_token)
+        )
         saved_types.append("REFRESH_TOKEN")
 
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
-        log.info("Bot auth saved in Windows vault (types: %s, service: %s).", "+".join(saved_types), _KEYRING_SERVICE)
+        log.info(
+            "Bot auth saved in Windows vault (types: %s, service: %s).",
+            "+".join(saved_types),
+            _KEYRING_SERVICE,
+        )
 
 
-def load_bot_tokens(*, log_missing: bool = True) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+def load_bot_tokens(
+    *, log_missing: bool = True
+) -> Tuple[Optional[str], Optional[str], Optional[int]]:
     """
     Load the Twitch bot OAuth token and refresh token from env/file/Windows keyring.
 
@@ -75,7 +85,9 @@ def load_bot_tokens(*, log_missing: bool = True) -> Tuple[Optional[str], Optiona
             if candidate:
                 return candidate, refresh, expiry_ts
             if log_missing:
-                log.warning("Konfigurierte Bot-Auth-Datei ist leer.")  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+                log.warning(
+                    "Konfigurierte Bot-Auth-Datei ist leer."
+                )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         except Exception as exc:  # pragma: no cover - defensive logging
             if log_missing:
                 log.warning(
@@ -122,7 +134,9 @@ class TokenPersistenceMixin:
             if user_id:
                 self._token_manager.bot_id = str(user_id)
             if expires_in:
-                self._token_manager.expires_at = datetime.now() + timedelta(seconds=int(expires_in))
+                self._token_manager.expires_at = datetime.now() + timedelta(
+                    seconds=int(expires_in)
+                )
             await self._token_manager._save_tokens()
             return
 

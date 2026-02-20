@@ -113,7 +113,7 @@ class SmartLFGAgent(commands.Cog):
                 r_name, r_val = DISCORD_RANK_ROLES[role.id]
                 if r_val > highest[1]:
                     highest = (r_name, r_val)
-        
+
         # Fallback: Wenn User 'Unbekannt' Rolle explizit hat oder gar keine Rank Rolle
         if highest[1] == 0:
             return (UNKNOWN_RANK_NAME, 0)
@@ -129,7 +129,10 @@ class SmartLFGAgent(commands.Cog):
             return True
 
         if ("suche" in text or "suchen" in text or "gesucht" in text) and (
-            "mitspieler" in text or "team" in text or "gruppe" in text or "party" in text
+            "mitspieler" in text
+            or "team" in text
+            or "gruppe" in text
+            or "party" in text
         ):
             return True
 
@@ -164,7 +167,7 @@ class SmartLFGAgent(commands.Cog):
             "(LFG/LFM, 'suche Leute', 'wer bock', 'jemand Lust zu zocken', duo/trio/stack). "
             "Sage 'nein' bei Smalltalk, Diskussionen, Memes, News/Leaks, Meinungen oder allem, "
             "was keine klare Spielersuche ist. Im Zweifel immer 'nein'.\n\n"
-            f"Nachricht: \"{message_content}\""
+            f'Nachricht: "{message_content}"'
         )
         try:
             answer_text, _meta = await ai.generate_text(
@@ -213,7 +216,9 @@ class SmartLFGAgent(commands.Cog):
 
         return mapping
 
-    async def _get_online_steam_users(self, steam_ids: Set[str]) -> Dict[str, Tuple[str, Optional[int]]]:
+    async def _get_online_steam_users(
+        self, steam_ids: Set[str]
+    ) -> Dict[str, Tuple[str, Optional[int]]]:
         """
         Filtert Steam-IDs nach Online-Status (in Deadlock).
         Returns: {steam_id: (stage, minutes)}
@@ -271,7 +276,9 @@ class SmartLFGAgent(commands.Cog):
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, list):
-                return [int(x) for x in parsed if str(x).isdigit() or isinstance(x, int)]
+                return [
+                    int(x) for x in parsed if str(x).isdigit() or isinstance(x, int)
+                ]
         except Exception:
             return []
         return []
@@ -285,7 +292,9 @@ class SmartLFGAgent(commands.Cog):
             return 0.4
         return 0.0
 
-    def _time_match_score(self, typical_hours: List[int], typical_days: List[int], now: datetime) -> float:
+    def _time_match_score(
+        self, typical_hours: List[int], typical_days: List[int], now: datetime
+    ) -> float:
         if not typical_hours and not typical_days:
             return 0.0
 
@@ -439,7 +448,9 @@ class SmartLFGAgent(commands.Cog):
         target_rank = author_rank_value
         rank_strict = True
         if target_rank == 0:
-            inferred = self._infer_target_rank_from_coplayers(guild, list(co_player_stats.keys()))
+            inferred = self._infer_target_rank_from_coplayers(
+                guild, list(co_player_stats.keys())
+            )
             if inferred:
                 target_rank = inferred
             else:
@@ -449,9 +460,15 @@ class SmartLFGAgent(commands.Cog):
         patterns = await self._fetch_activity_patterns(candidate_ids)
 
         content_lower = (message_content or "").lower()
-        lane_channel_ids = self._get_target_lane_channel_ids(guild, content_lower, author_rank_value)
-        cutoff_str = (datetime.utcnow() - timedelta(days=ACTIVITY_LOOKBACK_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
-        lane_active_users = await self._fetch_lane_activity_users(candidate_ids, lane_channel_ids, cutoff_str)
+        lane_channel_ids = self._get_target_lane_channel_ids(
+            guild, content_lower, author_rank_value
+        )
+        cutoff_str = (
+            datetime.utcnow() - timedelta(days=ACTIVITY_LOOKBACK_DAYS)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        lane_active_users = await self._fetch_lane_activity_users(
+            candidate_ids, lane_channel_ids, cutoff_str
+        )
 
         all_steam_ids = {sid for sids in steam_links.values() for sid in sids}
         online_users = await self._get_online_steam_users(all_steam_ids)
@@ -495,7 +512,9 @@ class SmartLFGAgent(commands.Cog):
             activity_sessions = pattern[2] if pattern else 0
 
             time_score = self._time_match_score(typical_hours, typical_days, now)
-            activity_score = min(1.0, activity_sessions / 10.0) if activity_sessions > 0 else 0.0
+            activity_score = (
+                min(1.0, activity_sessions / 10.0) if activity_sessions > 0 else 0.0
+            )
 
             lane_score = 1.0 if discord_id in lane_active_users else 0.0
 
@@ -516,7 +535,10 @@ class SmartLFGAgent(commands.Cog):
                     presence_score = 0.7
 
             if stage is None:
-                if activity_sessions < MIN_ACTIVITY_SCORE_SESSIONS and time_score < MIN_TIME_MATCH_SCORE:
+                if (
+                    activity_sessions < MIN_ACTIVITY_SCORE_SESSIONS
+                    and time_score < MIN_TIME_MATCH_SCORE
+                ):
                     continue
 
             score = (
@@ -528,16 +550,18 @@ class SmartLFGAgent(commands.Cog):
                 + activity_score * WEIGHT_ACTIVITY
             )
 
-            candidates.append({
-                "user_id": discord_id,
-                "rank_name": rank_name,
-                "rank_value": rank_value,
-                "stage": stage,
-                "minutes": minutes,
-                "score": score,
-                "time_score": time_score,
-                "activity_sessions": activity_sessions,
-            })
+            candidates.append(
+                {
+                    "user_id": discord_id,
+                    "rank_name": rank_name,
+                    "rank_value": rank_value,
+                    "stage": stage,
+                    "minutes": minutes,
+                    "score": score,
+                    "time_score": time_score,
+                    "activity_sessions": activity_sessions,
+                }
+            )
 
         candidates.sort(key=lambda c: float(c.get("score", 0.0)), reverse=True)
 
@@ -636,9 +660,12 @@ class SmartLFGAgent(commands.Cog):
                 avg_val = sum(ranks) / len(ranks)
                 # Mapping back roughly to name
                 # 1-5 Low, 6-7 Mid, 8+ High
-                if avg_val < 5.5: avg_rank_str = f"Low (~{avg_val:.1f})"
-                elif avg_val < 7.5: avg_rank_str = f"Mid (~{avg_val:.1f})"
-                else: avg_rank_str = f"High (~{avg_val:.1f})"
+                if avg_val < 5.5:
+                    avg_rank_str = f"Low (~{avg_val:.1f})"
+                elif avg_val < 7.5:
+                    avg_rank_str = f"Mid (~{avg_val:.1f})"
+                else:
+                    avg_rank_str = f"High (~{avg_val:.1f})"
 
             link = f"https://discord.com/channels/{guild.id}/{channel.id}"
             return f"- {label}: {channel.name} - {link} (User: {count}, Skill: {avg_rank_str}, ID: {channel.id})"
@@ -659,7 +686,8 @@ class SmartLFGAgent(commands.Cog):
             # Zeige nur Channels mit Usern ODER die ersten 2 leeren
             empty_shown = 0
             for vc in cat_casual.voice_channels:
-                if vc.id in [NEW_PLAYER_LANE_ID, STREET_BRAWL_LANE_ID]: continue # Skip duplicates
+                if vc.id in [NEW_PLAYER_LANE_ID, STREET_BRAWL_LANE_ID]:
+                    continue  # Skip duplicates
                 if len(vc.members) > 0:
                     lines.append(analyze_channel(vc, "Casual Lane"))
                 elif empty_shown < 2:
@@ -673,7 +701,7 @@ class SmartLFGAgent(commands.Cog):
             for vc in cat_ranked.voice_channels:
                 if len(vc.members) > 0:
                     lines.append(analyze_channel(vc, "Ranked/Grind Lane"))
-                elif empty_shown < 1: # Zeige nur 1 leeren Ranked Channel
+                elif empty_shown < 1:  # Zeige nur 1 leeren Ranked Channel
                     lines.append(analyze_channel(vc, "Ranked/Grind Lane (Leer)"))
                     empty_shown += 1
 
@@ -684,7 +712,9 @@ class SmartLFGAgent(commands.Cog):
         Verarbeitet die Anfrage via OpenAI (ChatGPT).
         """
         output_channel = message.guild.get_channel(OUTPUT_CHANNEL_ID)
-        if not output_channel or not isinstance(output_channel, discord.abc.Messageable):
+        if not output_channel or not isinstance(
+            output_channel, discord.abc.Messageable
+        ):
             log.warning(
                 "Output-Channel %s nicht gefunden oder nicht messageable. Fallback auf LFG-Channel.",
                 OUTPUT_CHANNEL_ID,
@@ -712,7 +742,7 @@ class SmartLFGAgent(commands.Cog):
                 )
         except Exception as exc:
             log.warning("Spielersuche fehlgeschlagen (%s)", exc)
-        
+
         # 2. Voice Context holen
         voice_context = self._get_voice_state_context(message.guild)
 
@@ -720,7 +750,6 @@ class SmartLFGAgent(commands.Cog):
         system_prompt = (
             "Du hilfst Spielern den richtigen Voice-Channel zu finden. "
             "Schreib entspannt und natürlich, wie ein Community-Member der anderen hilft.\n\n"
-
             "**DEIN STIL (basierend auf echten Community-Nachrichten):**\n"
             "- Freundlich und ehrlich, kein Bullshit\n"
             "- `:)` am Satzende ist völlig ok, aber nicht übertreiben\n"
@@ -728,27 +757,23 @@ class SmartLFGAgent(commands.Cog):
             "- Bei schlechten Zeiten: sei ehrlich ('die Uhrzeit ist ganz böse')\n"
             "- Mach konkrete Angebote ('mach dir ne lane auf ich komm dazu')\n"
             "- Keine Floskeln, komm direkt zum Punkt\n\n"
-
             "**ECHTE BEISPIELE AUS DER COMMUNITY (orientier dich daran):**\n"
-            "- \"Schau mal hier ist zwar gerade keiner da aber wenn du joinst kommen bestimmt paar dazu :) https://discord.com/channels/...\"\n"
-            "- \"Das ist der sinn dahinter :) ansonsten kannst du hier https://discord.com/channels/... dazu stoßen ist halt so Archon Oracle\"\n"
-            "- \"Uhh die Uhrzeit ist ganz böse eigentlich ist zu so einer Uhrzeit fast niemand online :( https://discord.com/channels/... Vielleicht kommt jemand dazu\"\n"
-            "- \"Mach dir ne lane auf ich komm und coache dich :)\"\n"
-            "- \"Mach dir sonst einfach einen Kanal auf und schau ob wer dazu kommt\"\n"
-            "- \"Schnupper einfach wo rein ;)\"\n\n"
-
+            '- "Schau mal hier ist zwar gerade keiner da aber wenn du joinst kommen bestimmt paar dazu :) https://discord.com/channels/..."\n'
+            '- "Das ist der sinn dahinter :) ansonsten kannst du hier https://discord.com/channels/... dazu stoßen ist halt so Archon Oracle"\n'
+            '- "Uhh die Uhrzeit ist ganz böse eigentlich ist zu so einer Uhrzeit fast niemand online :( https://discord.com/channels/... Vielleicht kommt jemand dazu"\n'
+            '- "Mach dir ne lane auf ich komm und coache dich :)"\n'
+            '- "Mach dir sonst einfach einen Kanal auf und schau ob wer dazu kommt"\n'
+            '- "Schnupper einfach wo rein ;)"\n\n'
             "**CHANNEL AUSWAHL:**\n"
             "1. Street Brawl erwähnt? -> Street Brawl Lane\n"
             "2. User ist Rank 0-5 UND will nicht Ranked? -> New Player Lane (erwähne dass es für Einsteiger ist)\n"
             "3. User will Ranked/Grind? -> Ranked Category Channel (ähnlicher Rank +/- 2)\n"
             "4. Sonst -> Casual Lanes (erwähne ungefähren Rank wenn relevant)\n\n"
-
             "**WICHTIG:**\n"
             "- Schreib die Discord URL direkt hin, KEIN Markdown [Text](URL)\n"
             "- 1-3 Sätze reichen meistens\n"
             "- Sei ehrlich über Uhrzeit/Aktivität wenn relevant\n"
             "- Wenn verfügbare Spieler gezeigt werden, bezieh dich kurz darauf\n\n"
-
             f"Wenn es KEIN LFG ist, antworte mit `{NO_LFG_TOKEN}` (ohne Zusatz)."
         )
 
@@ -756,18 +781,19 @@ class SmartLFGAgent(commands.Cog):
             f"User: {message.author.display_name}\n"
             f"Rang: {rank_name} (Wert: {rank_val})\n"
             f"Ist New Player: {'Ja' if is_new_player else 'Nein'}\n"
-            f"Nachricht: \"{message.content}\"\n\n"
+            f'Nachricht: "{message.content}"\n\n'
             f"VERFÜGBARE VOICE CHANNELS (Status):\n{voice_context}\n\n"
             f"Empfiehl den besten Channel und antworte im Persona-Style. "
             f"Wenn es KEIN LFG ist oder eine Diskussion, antworte exakt mit {NO_LFG_TOKEN}."
-            
         )
 
         # 4. AI Request
         ai = getattr(self.bot, "get_cog", lambda name: None)("AIConnector")
         if not ai:
             log.error("AIConnector nicht gefunden!")
-            await output_channel.send(f"{prefix}⚠️ AI Modul nicht geladen. Kann gerade nicht helfen.")
+            await output_channel.send(
+                f"{prefix}⚠️ AI Modul nicht geladen. Kann gerade nicht helfen."
+            )
             return
 
         async with output_channel.typing():
@@ -777,20 +803,26 @@ class SmartLFGAgent(commands.Cog):
                 system_prompt=system_prompt,
                 model=OPENAI_MODEL,
                 max_output_tokens=250,
-                temperature=0.7
+                temperature=0.7,
             )
 
         clean_text: Optional[str] = None
         if response_text:
             # Clean up potential markdown code blocks provided by AI
-            cleaned = response_text.replace("```markdown", "").replace("```", "").strip()
+            cleaned = (
+                response_text.replace("```markdown", "").replace("```", "").strip()
+            )
             if cleaned.upper() != NO_LFG_TOKEN:
                 clean_text = cleaned
 
         response_parts: List[str] = []
 
         if player_lines:
-            header = "sucht Mitspieler!" if prefix else f"{message.author.mention} sucht Mitspieler!"
+            header = (
+                "sucht Mitspieler!"
+                if prefix
+                else f"{message.author.mention} sucht Mitspieler!"
+            )
             response_parts.append(header + "\n" + "\n".join(player_lines))
 
         if clean_text:
@@ -803,13 +835,15 @@ class SmartLFGAgent(commands.Cog):
             await output_channel.send(final_text)
             return
 
-        await output_channel.send(f"{prefix}🤔 Puh, gerade hakt's bei mir. Versuch's gleich nochmal.")
+        await output_channel.send(
+            f"{prefix}🤔 Puh, gerade hakt's bei mir. Versuch's gleich nochmal."
+        )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
             return
-        
+
         # Nur im LFG-Channel lauschen
         if message.channel.id != LFG_CHANNEL_ID:
             return
@@ -823,9 +857,9 @@ class SmartLFGAgent(commands.Cog):
         if now - self.lfg_cooldowns.get(message.author.id, 0) < self.cooldown_seconds:
             # Silent ignore bei Spam oder kurze Reaction
             return
-        
+
         self.lfg_cooldowns[message.author.id] = now
-        
+
         # Nur echte LFG-Anfragen werden weiterverarbeitet
         await self._handle_lfg_request(message)
 

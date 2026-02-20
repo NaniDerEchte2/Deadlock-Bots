@@ -42,9 +42,7 @@ MASTER_DASHBOARD_DISCORD_REDIRECT_URI = (
     or f"{MASTER_DASHBOARD_PUBLIC_URL.rstrip('/')}/auth/discord/callback"
 ).strip()
 MASTER_DASHBOARD_STEAM_PUBLIC_URL = (
-    os.getenv("MASTER_DASHBOARD_STEAM_PUBLIC_URL")
-    or os.getenv("PUBLIC_BASE_URL")
-    or ""
+    os.getenv("MASTER_DASHBOARD_STEAM_PUBLIC_URL") or os.getenv("PUBLIC_BASE_URL") or ""
 ).strip()
 MASTER_DASHBOARD_STEAM_RETURN_URL = (
     os.getenv("MASTER_DASHBOARD_STEAM_RETURN_URL") or ""
@@ -67,9 +65,7 @@ NSSM_PATH_CANDIDATES = (
 POWERSHELL_PATH_CANDIDATES = (
     r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
 )
-SC_PATH_CANDIDATES = (
-    r"C:\Windows\System32\sc.exe",
-)
+SC_PATH_CANDIDATES = (r"C:\Windows\System32\sc.exe",)
 
 try:
     from service.standalone_manager import (
@@ -79,7 +75,9 @@ try:
         StandaloneNotRunning,
     )
 except Exception:
-    StandaloneAlreadyRunning = StandaloneConfigNotFound = StandaloneManagerError = StandaloneNotRunning = None  # type: ignore
+    StandaloneAlreadyRunning = StandaloneConfigNotFound = StandaloneManagerError = (
+        StandaloneNotRunning
+    ) = None  # type: ignore
 
 
 _DASHBOARD_HTML_PATH = Path(__file__).resolve().parent / "static" / "dashboard.html"
@@ -128,8 +126,15 @@ class DashboardServer:
         ).strip()
         self._nssm_executable = (os.getenv("MASTER_NSSM_EXE") or "").strip()
         self._powershell_executable = (os.getenv("MASTER_POWERSHELL_EXE") or "").strip()
-        nssm_enabled_raw = (os.getenv("MASTER_NSSM_RESTART_ENABLED") or "1").strip().lower()
-        self._nssm_service_restart_enabled = nssm_enabled_raw not in {"0", "false", "no", "off"}
+        nssm_enabled_raw = (
+            (os.getenv("MASTER_NSSM_RESTART_ENABLED") or "1").strip().lower()
+        )
+        self._nssm_service_restart_enabled = nssm_enabled_raw not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
         self._nssm_restart_delay_seconds = self._parse_positive_float(
             os.getenv(
                 "MASTER_NSSM_RESTART_DELAY_SECONDS",
@@ -151,7 +156,9 @@ class DashboardServer:
         keyring_client_id = self._read_keyring_secret("DISCORD_OAUTH_CLIENT_ID")
         app_client_id = str(getattr(bot, "application_id", "") or "").strip()
         self._discord_client_id = (keyring_client_id or app_client_id).strip()
-        self._discord_client_secret = self._read_keyring_secret("DISCORD_OAUTH_CLIENT_SECRET").strip()
+        self._discord_client_secret = self._read_keyring_secret(
+            "DISCORD_OAUTH_CLIENT_SECRET"
+        ).strip()
         self._discord_redirect_uri = MASTER_DASHBOARD_DISCORD_REDIRECT_URI
         self._discord_auth_enabled = True
         self._discord_owner_user_id = DEFAULT_DASHBOARD_OWNER_USER_ID
@@ -162,10 +169,14 @@ class DashboardServer:
         self._discord_oauth_states: Dict[str, Dict[str, Any]] = {}
         self._discord_oauth_state_ttl = 600
         self._discord_session_ttl = 12 * 3600
-        self._discord_auth_required = self._discord_auth_enabled and self._is_discord_oauth_configured()
+        self._discord_auth_required = (
+            self._discord_auth_enabled and self._is_discord_oauth_configured()
+        )
         self._auth_misconfigured = False
         self._scheme = MASTER_DASHBOARD_DEFAULT_SCHEME
-        self._listen_base_url = self._format_base_url(self.host, self.port, self._scheme)
+        self._listen_base_url = self._format_base_url(
+            self.host, self.port, self._scheme
+        )
         try:
             self._public_base_url = self._normalize_public_url(
                 MASTER_DASHBOARD_PUBLIC_URL,
@@ -207,9 +218,7 @@ class DashboardServer:
             self._discord_auth_required = False
             self._auth_misconfigured = True
         if not self._discord_auth_required and not self._auth_misconfigured:
-            logging.warning(
-                "Dashboard läuft ohne Auth (Discord OAuth deaktiviert)."
-            )
+            logging.warning("Dashboard läuft ohne Auth (Discord OAuth deaktiviert).")
 
     @staticmethod
     def _sanitize(value: Any) -> Any:
@@ -249,12 +258,16 @@ class DashboardServer:
                 return
 
             @web.middleware
-            async def _security_headers(request: web.Request, handler: Any) -> web.StreamResponse:
+            async def _security_headers(
+                request: web.Request, handler: Any
+            ) -> web.StreamResponse:
                 response = await handler(request)
                 response.headers.setdefault("X-Frame-Options", "DENY")
                 response.headers.setdefault("X-Content-Type-Options", "nosniff")
                 response.headers.setdefault("X-XSS-Protection", "1; mode=block")
-                response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+                response.headers.setdefault(
+                    "Referrer-Policy", "strict-origin-when-cross-origin"
+                )
                 response.headers.setdefault(
                     "Permissions-Policy",
                     "geolocation=(), microphone=(), camera=(), payment=()",
@@ -281,7 +294,9 @@ class DashboardServer:
                     web.post("/api/cogs/load", self._handle_load),
                     web.post("/api/cogs/unload", self._handle_unload),
                     web.post("/api/cogs/reload-all", self._handle_reload_all),
-                    web.post("/api/cogs/reload-namespace", self._handle_reload_namespace),
+                    web.post(
+                        "/api/cogs/reload-namespace", self._handle_reload_namespace
+                    ),
                     web.post("/api/cogs/block", self._handle_block),
                     web.post("/api/cogs/unblock", self._handle_unblock),
                     web.get("/api/voice-stats", self._handle_voice_stats),
@@ -292,8 +307,12 @@ class DashboardServer:
                     web.get("/api/co-player-network", self._handle_co_player_network),
                     web.get("/api/co-player-network/", self._handle_co_player_network),
                     web.get("/api/server-stats", self._handle_server_stats),
-                    web.get("/api/tournament/overview", self._handle_tournament_overview),
-                    web.post("/api/tournament/team", self._handle_tournament_team_create),
+                    web.get(
+                        "/api/tournament/overview", self._handle_tournament_overview
+                    ),
+                    web.post(
+                        "/api/tournament/team", self._handle_tournament_team_create
+                    ),
                     web.post("/api/tournament/assign", self._handle_tournament_assign),
                     web.post("/api/tournament/remove", self._handle_tournament_remove),
                     web.post("/api/cogs/discover", self._handle_discover),
@@ -301,11 +320,22 @@ class DashboardServer:
                     web.get("/api/logs/{name}", self._handle_log_read),
                     web.get("/api/standalone", self._handle_standalone_list),
                     web.get("/api/standalone/{key}/logs", self._handle_standalone_logs),
-                    web.post("/api/standalone/{key}/start", self._handle_standalone_start),
-                    web.post("/api/standalone/{key}/stop", self._handle_standalone_stop),
-                    web.post("/api/standalone/{key}/restart", self._handle_standalone_restart),
-                    web.post("/api/standalone/{key}/autostart", self._handle_standalone_autostart),
-                    web.post("/api/standalone/{key}/command", self._handle_standalone_command),
+                    web.post(
+                        "/api/standalone/{key}/start", self._handle_standalone_start
+                    ),
+                    web.post(
+                        "/api/standalone/{key}/stop", self._handle_standalone_stop
+                    ),
+                    web.post(
+                        "/api/standalone/{key}/restart", self._handle_standalone_restart
+                    ),
+                    web.post(
+                        "/api/standalone/{key}/autostart",
+                        self._handle_standalone_autostart,
+                    ),
+                    web.post(
+                        "/api/standalone/{key}/command", self._handle_standalone_command
+                    ),
                 ]
             )
 
@@ -388,7 +418,9 @@ class DashboardServer:
                 admin_path = base_no_slash + "/admin"
             logging.info("Master dashboard listening on %s", self._listen_base_url)
             if self._public_base_url != self._listen_base_url:
-                logging.info("Master dashboard public URL set to %s", self._public_base_url)
+                logging.info(
+                    "Master dashboard public URL set to %s", self._public_base_url
+                )
             logging.info("Master dashboard admin UI: %s", admin_path)
 
     async def stop(self) -> None:
@@ -437,7 +469,9 @@ class DashboardServer:
         try:
             result = task.result()
             if isinstance(result, dict) and not result.get("ok", True):
-                logging.warning("Dashboard restart finished with errors: %s", result.get("error"))
+                logging.warning(
+                    "Dashboard restart finished with errors: %s", result.get("error")
+                )
             else:
                 logging.info("Dashboard restart completed")
         except Exception:  # pragma: no cover - defensive restart path
@@ -460,13 +494,19 @@ class DashboardServer:
         try:
             value = keyring.get_password(KEYRING_SERVICE_NAME, secret_key)
             if not value:
-                value = keyring.get_password(f"{secret_key}@{KEYRING_SERVICE_NAME}", secret_key)
+                value = keyring.get_password(
+                    f"{secret_key}@{KEYRING_SERVICE_NAME}", secret_key
+                )
         except Exception:
             return ""
         return str(value or "").strip()
 
     def _is_discord_oauth_configured(self) -> bool:
-        return bool(self._discord_client_id and self._discord_client_secret and self._discord_redirect_uri)
+        return bool(
+            self._discord_client_id
+            and self._discord_client_secret
+            and self._discord_redirect_uri
+        )
 
     def _is_auth_enforced(self) -> bool:
         return bool(self._discord_auth_required or self._auth_misconfigured)
@@ -518,7 +558,12 @@ class DashboardServer:
     def _is_secure_request(self, request: web.Request) -> bool:
         peer = self._peer_host(request)
         if self._is_loopback_host(peer):
-            forwarded_proto = (request.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+            forwarded_proto = (
+                (request.headers.get("X-Forwarded-Proto") or "")
+                .split(",")[0]
+                .strip()
+                .lower()
+            )
             if forwarded_proto:
                 return forwarded_proto == "https"
         return bool(request.secure)
@@ -542,7 +587,9 @@ class DashboardServer:
         return fallback
 
     @staticmethod
-    def _safe_internal_redirect(location: Optional[str], *, fallback: str = "/admin") -> str:
+    def _safe_internal_redirect(
+        location: Optional[str], *, fallback: str = "/admin"
+    ) -> str:
         candidate = (location or "").strip()
         if not candidate:
             return fallback
@@ -559,11 +606,13 @@ class DashboardServer:
         return candidate
 
     @staticmethod
-    def _safe_template_href(location: Optional[str], *, fallback: str = "/admin") -> str:
+    def _safe_template_href(
+        location: Optional[str], *, fallback: str = "/admin"
+    ) -> str:
         candidate = (location or "").strip()
         if not candidate:
             return fallback
-        if any(ch in candidate for ch in {"\r", "\n", "<", ">", "\"", "'"}):
+        if any(ch in candidate for ch in {"\r", "\n", "<", ">", '"', "'"}):
             return fallback
         try:
             parsed = urlparse(candidate)
@@ -580,7 +629,9 @@ class DashboardServer:
             return fallback
         return candidate
 
-    def _build_discord_login_url(self, request: web.Request, *, next_path: Optional[str] = None) -> str:
+    def _build_discord_login_url(
+        self, request: web.Request, *, next_path: Optional[str] = None
+    ) -> str:
         if not self._discord_auth_required:
             return "/admin"
         normalized = self._normalize_auth_next_path(
@@ -692,10 +743,14 @@ class DashboardServer:
                 self._discord_sessions.items(),
                 key=lambda item: float(item[1].get("created_at", 0.0)),
             )
-            for session_key, _ in oldest_sessions[: len(self._discord_sessions) - max_sessions]:
+            for session_key, _ in oldest_sessions[
+                : len(self._discord_sessions) - max_sessions
+            ]:
                 self._discord_sessions.pop(session_key, None)
 
-    def _set_discord_session_cookie(self, response: web.StreamResponse, request: web.Request, session_id: str) -> None:
+    def _set_discord_session_cookie(
+        self, response: web.StreamResponse, request: web.Request, session_id: str
+    ) -> None:
         response.set_cookie(
             self._discord_session_cookie,
             session_id,
@@ -709,7 +764,9 @@ class DashboardServer:
     def _clear_discord_session_cookie(self, response: web.StreamResponse) -> None:
         response.del_cookie(self._discord_session_cookie, path="/")
 
-    def _get_discord_auth_session(self, request: web.Request) -> Optional[Dict[str, Any]]:
+    def _get_discord_auth_session(
+        self, request: web.Request
+    ) -> Optional[Dict[str, Any]]:
         if not self._discord_auth_required:
             return None
         self._cleanup_discord_auth_state()
@@ -728,10 +785,14 @@ class DashboardServer:
         self._ensure_session_csrf_token(session)
         return session
 
-    def _auth_session_for_request(self, request: web.Request) -> Optional[Dict[str, Any]]:
+    def _auth_session_for_request(
+        self, request: web.Request
+    ) -> Optional[Dict[str, Any]]:
         return self._get_discord_auth_session(request)
 
-    async def _check_discord_member_access(self, discord_user_id: int) -> Tuple[bool, str]:
+    async def _check_discord_member_access(
+        self, discord_user_id: int
+    ) -> Tuple[bool, str]:
         if discord_user_id == self._discord_owner_user_id:
             return True, "owner_override"
 
@@ -766,14 +827,20 @@ class DashboardServer:
                     exc_info=True,
                 )
             try:
-                role_ids = {int(r.id) for r in getattr(member, "roles", []) if getattr(r, "id", None)}
+                role_ids = {
+                    int(r.id)
+                    for r in getattr(member, "roles", [])
+                    if getattr(r, "id", None)
+                }
             except Exception:
                 role_ids = set()
             if self._discord_moderator_role_id in role_ids:
                 return True, f"moderator_role:{guild.id}"
         return False, "missing_admin_or_moderator_role"
 
-    async def _exchange_discord_code(self, code: str, redirect_uri: str) -> Optional[Dict[str, Any]]:
+    async def _exchange_discord_code(
+        self, code: str, redirect_uri: str
+    ) -> Optional[Dict[str, Any]]:
         payload = {
             "client_id": self._discord_client_id,
             "client_secret": self._discord_client_secret,
@@ -806,7 +873,9 @@ class DashboardServer:
         timeout = ClientTimeout(total=20)
         headers = {"Authorization": f"Bearer {access_token}"}
         async with ClientSession(timeout=timeout) as session:
-            async with session.get(f"{DISCORD_API_BASE_URL}/users/@me", headers=headers) as response:
+            async with session.get(
+                f"{DISCORD_API_BASE_URL}/users/@me", headers=headers
+            ) as response:
                 if response.status != 200:
                     body = await response.text()
                     logger.warning(
@@ -819,7 +888,9 @@ class DashboardServer:
         return data if isinstance(data, dict) else None
 
     def _has_valid_auth(self, request: web.Request) -> bool:
-        return bool(self._discord_auth_required and self._get_discord_auth_session(request))
+        return bool(
+            self._discord_auth_required and self._get_discord_auth_session(request)
+        )
 
     def _check_auth(self, request: web.Request, *, required: bool = False) -> None:
         enforce = required or self._is_auth_enforced()
@@ -832,7 +903,11 @@ class DashboardServer:
                     "Discord OAuth Client-ID/Secret fehlen im Windows-Tresor (DeadlockBot)."
                 )
             )
-        session = self._get_discord_auth_session(request) if self._discord_auth_required else None
+        session = (
+            self._get_discord_auth_session(request)
+            if self._discord_auth_required
+            else None
+        )
         if session:
             if self._requires_csrf_check(request):
                 if not self._is_allowed_request_origin(request):
@@ -907,7 +982,9 @@ class DashboardServer:
         with path.open("rb") as handle:
             handle.seek(0, os.SEEK_END)
             position = handle.tell()
-            while position > 0 and len(lines) <= limit and len(data) < LOG_TAIL_MAX_BYTES:
+            while (
+                position > 0 and len(lines) <= limit and len(data) < LOG_TAIL_MAX_BYTES
+            ):
                 read_size = min(block_size, position)
                 position -= read_size
                 handle.seek(position)
@@ -925,14 +1002,18 @@ class DashboardServer:
                 normalized.append(resolved)
                 continue
             if matches:
-                raise web.HTTPBadRequest(text=f"Identifier '{raw}' is ambiguous: {', '.join(matches)}")
+                raise web.HTTPBadRequest(
+                    text=f"Identifier '{raw}' is ambiguous: {', '.join(matches)}"
+                )
             raise web.HTTPBadRequest(text=f"Cog '{raw}' not found")
         return normalized
 
     @staticmethod
     def _format_netloc(host: str, port: Optional[int], scheme: str) -> str:
         safe_host = host.strip() or "127.0.0.1"
-        if ":" in safe_host and not (safe_host.startswith("[") and safe_host.endswith("]")):
+        if ":" in safe_host and not (
+            safe_host.startswith("[") and safe_host.endswith("]")
+        ):
             safe_host = f"[{safe_host}]"
         default_ports = {"http": 80, "https": 443}
         default_port = default_ports.get(scheme, None)
@@ -962,7 +1043,16 @@ class DashboardServer:
                 parsed.scheme,
             )
             path = parsed.path.rstrip("/")
-            return urlunparse((parsed.scheme, netloc, path, parsed.params, parsed.query, parsed.fragment))
+            return urlunparse(
+                (
+                    parsed.scheme,
+                    netloc,
+                    path,
+                    parsed.params,
+                    parsed.query,
+                    parsed.fragment,
+                )
+            )
 
         if parsed.netloc and not parsed.scheme:
             scheme = default_scheme
@@ -970,9 +1060,13 @@ class DashboardServer:
                 parsed_port = parsed.port
             except ValueError:
                 parsed_port = None
-            netloc = DashboardServer._format_netloc(parsed.hostname or parsed.netloc, parsed_port, scheme)
+            netloc = DashboardServer._format_netloc(
+                parsed.hostname or parsed.netloc, parsed_port, scheme
+            )
             path = parsed.path.rstrip("/")
-            return urlunparse((scheme, netloc, path, parsed.params, parsed.query, parsed.fragment))
+            return urlunparse(
+                (scheme, netloc, path, parsed.params, parsed.query, parsed.fragment)
+            )
 
         fallback = urlparse(f"{default_scheme}://{raw}")
         try:
@@ -986,7 +1080,14 @@ class DashboardServer:
         )
         path = fallback.path.rstrip("/")
         return urlunparse(
-            (fallback.scheme, netloc, path, fallback.params, fallback.query, fallback.fragment)
+            (
+                fallback.scheme,
+                netloc,
+                path,
+                fallback.params,
+                fallback.query,
+                fallback.fragment,
+            )
         )
 
     def _resolve_nssm_executable_path(self) -> Optional[str]:
@@ -1053,7 +1154,9 @@ class DashboardServer:
 
         if process.returncode != 0:
             detail_lines = (process.stderr or process.stdout or "").strip().splitlines()
-            detail = detail_lines[0] if detail_lines else f"exit code {process.returncode}"
+            detail = (
+                detail_lines[0] if detail_lines else f"exit code {process.returncode}"
+            )
             logger.debug(
                 "SC queryex returned non-zero for service '%s': %s",
                 self._safe_log_value(normalized_name),
@@ -1104,7 +1207,10 @@ class DashboardServer:
                     "NSSM executable not found or not absolute file path: "
                     f"{self._nssm_executable}"
                 )
-            return False, "nssm.exe not found in hardened path list (set MASTER_NSSM_EXE)"
+            return (
+                False,
+                "nssm.exe not found in hardened path list (set MASTER_NSSM_EXE)",
+            )
 
         powershell_exe = self._resolve_powershell_executable_path()
         if not powershell_exe:
@@ -1143,7 +1249,11 @@ class DashboardServer:
                 cwd=str(Path(__file__).resolve().parent.parent),
             )
         except Exception as exc:
-            logger.exception("Failed to launch NSSM restart for service '%s': %s", self._nssm_service_name, exc)
+            logger.exception(
+                "Failed to launch NSSM restart for service '%s': %s",
+                self._nssm_service_name,
+                exc,
+            )
             return False, f"Failed to launch NSSM restart: {exc}"
 
         try:
@@ -1161,7 +1271,11 @@ class DashboardServer:
         else:
             if process.returncode != 0:
                 detail_lines = (stderr or stdout or "").strip().splitlines()
-                detail = detail_lines[0] if detail_lines else f"exit code {process.returncode}"
+                detail = (
+                    detail_lines[0]
+                    if detail_lines
+                    else f"exit code {process.returncode}"
+                )
                 safe_detail = self._safe_log_value(detail)
                 logger.warning(
                     "NSSM restart command failed for service '%s' (exit=%s, detail=%s)",
@@ -1186,7 +1300,9 @@ class DashboardServer:
         return True, f"Service restart requested ({self._nssm_service_name})"
 
     @staticmethod
-    def _parse_positive_float(raw: Optional[str], *, default: float, env_name: str) -> float:
+    def _parse_positive_float(
+        raw: Optional[str], *, default: float, env_name: str
+    ) -> float:
         if raw is None:
             return default
         value = raw.strip()
@@ -1195,10 +1311,14 @@ class DashboardServer:
         try:
             parsed = float(value)
         except ValueError:
-            logging.warning("%s '%s' invalid – using default %.1fs", env_name, raw, default)
+            logging.warning(
+                "%s '%s' invalid – using default %.1fs", env_name, raw, default
+            )
             return default
         if parsed <= 0:
-            logging.warning("%s '%s' must be > 0 – using default %.1fs", env_name, raw, default)
+            logging.warning(
+                "%s '%s' must be > 0 – using default %.1fs", env_name, raw, default
+            )
             return default
         return parsed
 
@@ -1249,7 +1369,9 @@ class DashboardServer:
         public_base = (self._public_base_url or "").rstrip("/")
         if public_base.lower().endswith("/admin"):
             public_base = public_base[:-6]
-        if public_base and not self._is_loopback_host(urlparse(public_base).hostname or ""):
+        if public_base and not self._is_loopback_host(
+            urlparse(public_base).hostname or ""
+        ):
             return f"{public_base}/twitch/admin"
 
         base = self._format_base_url("127.0.0.1", 8765, self._scheme)
@@ -1270,9 +1392,10 @@ class DashboardServer:
                 )
 
         base = (
-            MASTER_DASHBOARD_STEAM_PUBLIC_URL
-            or (self._public_base_url or "")
-        ).strip().rstrip("/")
+            (MASTER_DASHBOARD_STEAM_PUBLIC_URL or (self._public_base_url or ""))
+            .strip()
+            .rstrip("/")
+        )
         if not base:
             return None
         path = "/" + MASTER_DASHBOARD_STEAM_RETURN_PATH.lstrip("/")
@@ -1308,9 +1431,13 @@ class DashboardServer:
                 return
             if safe_url.startswith("http://") or safe_url.startswith("https://"):
                 try:
-                    safe_url = self._normalize_public_url(safe_url, default_scheme=self._scheme)
+                    safe_url = self._normalize_public_url(
+                        safe_url, default_scheme=self._scheme
+                    )
                 except Exception as exc:
-                    logging.warning("Healthcheck URL '%s' invalid (%s) – skipping entry", url, exc)
+                    logging.warning(
+                        "Healthcheck URL '%s' invalid (%s) – skipping entry", url, exc
+                    )
                     return
             safe_label = (label or safe_url).strip() or safe_url
             safe_method = (method or "GET").strip().upper() or "GET"
@@ -1331,19 +1458,37 @@ class DashboardServer:
             targets.append(entry)
 
         if self._twitch_dashboard_href:
-            _add_target("Twitch Dashboard", self._twitch_dashboard_href, key="twitch-dashboard")
+            _add_target(
+                "Twitch Dashboard", self._twitch_dashboard_href, key="twitch-dashboard"
+            )
         if self._steam_return_url:
-            steam_health_url = _append_query_param(self._steam_return_url, "healthcheck", "1")
-            _add_target("Steam OAuth Callback", steam_health_url, key="steam-oauth-callback")
+            steam_health_url = _append_query_param(
+                self._steam_return_url, "healthcheck", "1"
+            )
+            _add_target(
+                "Steam OAuth Callback", steam_health_url, key="steam-oauth-callback"
+            )
         if self._raid_health_url:
-            _add_target("Raid Callback Host", self._raid_health_url, key="raid-callback-host")
+            _add_target(
+                "Raid Callback Host", self._raid_health_url, key="raid-callback-host"
+            )
 
         # Explicit Health Checks for Core Domains
         _add_target("Main Site", "https://earlysalty.de/health", key="main-site")
-        _add_target("Steam Link Service", "https://link.earlysalty.com/health", key="steam-link-service")
-        _add_target("Raid Service", "https://raid.earlysalty.com/health", key="raid-service")
+        _add_target(
+            "Steam Link Service",
+            "https://link.earlysalty.com/health",
+            key="steam-link-service",
+        )
+        _add_target(
+            "Raid Service", "https://raid.earlysalty.com/health", key="raid-service"
+        )
         # /twitch/stats requires auth; use a public endpoint to avoid false 401 alarms.
-        _add_target("Twitch Stats", "https://twitch.earlysalty.com/twitch/api/v2/auth-status", key="twitch-stats")
+        _add_target(
+            "Twitch Stats",
+            "https://twitch.earlysalty.com/twitch/api/v2/auth-status",
+            key="twitch-stats",
+        )
 
         return targets
 
@@ -1421,7 +1566,9 @@ class DashboardServer:
         )
         raise web.HTTPFound(f"{DISCORD_API_BASE_URL}/oauth2/authorize?{query}")
 
-    async def _handle_discord_callback(self, request: web.Request) -> web.StreamResponse:
+    async def _handle_discord_callback(
+        self, request: web.Request
+    ) -> web.StreamResponse:
         if not self._discord_auth_required:
             raise web.HTTPFound("/admin")
 
@@ -1437,16 +1584,22 @@ class DashboardServer:
         self._cleanup_discord_auth_state()
         state_data = self._discord_oauth_states.pop(state, None)
         if not state_data:
-            return web.Response(text="OAuth state ungültig oder abgelaufen.", status=400)
+            return web.Response(
+                text="OAuth state ungültig oder abgelaufen.", status=400
+            )
 
-        token_data = await self._exchange_discord_code(code, str(state_data.get("redirect_uri") or ""))
+        token_data = await self._exchange_discord_code(
+            code, str(state_data.get("redirect_uri") or "")
+        )
         access_token = str((token_data or {}).get("access_token") or "").strip()
         if not access_token:
             return web.Response(text="OAuth Austausch fehlgeschlagen.", status=401)
 
         user = await self._fetch_discord_user(access_token)
         if not user:
-            return web.Response(text="Discord-User konnte nicht geladen werden.", status=401)
+            return web.Response(
+                text="Discord-User konnte nicht geladen werden.", status=401
+            )
 
         user_id = self._coerce_int(user.get("id"), None)
         if not user_id:
@@ -1509,7 +1662,9 @@ class DashboardServer:
         session_id = (request.cookies.get(self._discord_session_cookie) or "").strip()
         if session_id:
             self._discord_sessions.pop(session_id, None)
-        login_url = MASTER_DISCORD_ADMIN_LOGIN_URL if self._discord_auth_required else "/admin"
+        login_url = (
+            MASTER_DISCORD_ADMIN_LOGIN_URL if self._discord_auth_required else "/admin"
+        )
         response = web.HTTPFound(login_url)
         self._clear_discord_session_cookie(response)
         raise response
@@ -1561,7 +1716,9 @@ class DashboardServer:
         session = self._get_discord_auth_session(request)
         display_name = str((session or {}).get("display_name") or "Nicht angemeldet")
         safe_twitch_url = html.escape(
-            self._safe_template_href(self._twitch_dashboard_href or "", fallback="/twitch/admin"),
+            self._safe_template_href(
+                self._twitch_dashboard_href or "", fallback="/twitch/admin"
+            ),
             quote=True,
         )
         safe_discord_login_url = html.escape(
@@ -1595,7 +1752,8 @@ class DashboardServer:
                 return cog
         except Exception:
             logging.getLogger(__name__).debug(
-                "VoiceActivityTrackerCog lookup failed via direct get_cog", exc_info=True
+                "VoiceActivityTrackerCog lookup failed via direct get_cog",
+                exc_info=True,
             )
         for cog in self.bot.cogs.values():
             if cog.__class__.__name__ == "VoiceActivityTrackerCog":
@@ -1612,12 +1770,16 @@ class DashboardServer:
                 except Exception:
                     member = None
                 if member:
-                    display_name = getattr(member, "display_name", None) or getattr(member, "name", None)
+                    display_name = getattr(member, "display_name", None) or getattr(
+                        member, "name", None
+                    )
                     break
             if not display_name:
                 user = self.bot.get_user(uid)
                 if user:
-                    display_name = getattr(user, "display_name", None) or getattr(user, "name", None)
+                    display_name = getattr(user, "display_name", None) or getattr(
+                        user, "name", None
+                    )
             names[uid] = display_name or f"User {uid}"
         return names
 
@@ -1630,7 +1792,9 @@ class DashboardServer:
             if resolved:
                 return resolved
         except Exception:  # pragma: no cover - defensive
-            logger.debug("Could not resolve retention exclusion roles from cog", exc_info=True)
+            logger.debug(
+                "Could not resolve retention exclusion roles from cog", exc_info=True
+            )
         return set(DEFAULT_RETENTION_EXCLUDED_ROLE_IDS)
 
     def _has_retention_excluded_role(
@@ -1713,6 +1877,7 @@ class DashboardServer:
             )
         sessions.sort(key=lambda s: s.get("duration_seconds", 0), reverse=True)
         return sessions
+
     async def _handle_twitch_reload(self, request: web.Request) -> web.Response:
         self._check_auth(request)
         if hasattr(self.bot, "reload_cog"):
@@ -1725,10 +1890,14 @@ class DashboardServer:
         else:
             try:
                 await self.bot.reload_extension("cogs.twitch")
-                return web.json_response({"ok": True, "message": "Twitch module reloaded (no purge)"})
+                return web.json_response(
+                    {"ok": True, "message": "Twitch module reloaded (no purge)"}
+                )
             except Exception:
                 logger.exception("Failed to reload Twitch module via dashboard")
-                return web.json_response({"ok": False, "error": "Internal server error"}, status=500)
+                return web.json_response(
+                    {"ok": False, "error": "Internal server error"}, status=500
+                )
 
     async def _handle_twitch_metrics(self, request: web.Request) -> web.Response:
         self._check_auth(request)
@@ -1904,9 +2073,13 @@ class DashboardServer:
             )
         except Exception as exc:
             logging.exception("Failed to load twitch metrics: %s", exc)
-            raise web.HTTPInternalServerError(text="Twitch metrics unavailable") from exc
+            raise web.HTTPInternalServerError(
+                text="Twitch metrics unavailable"
+            ) from exc
 
-        now_utc = _dt.datetime.now(tz=_dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
+        now_utc = _dt.datetime.now(tz=_dt.timezone.utc).replace(
+            minute=0, second=0, microsecond=0
+        )
         start_utc = now_utc - _dt.timedelta(hours=max(0, hours - 1))
         bucket_keys: List[str] = []
         labels: List[str] = []
@@ -1921,8 +2094,12 @@ class DashboardServer:
             if not key:
                 continue
             raids_map[key] = {
-                "raid_count": float(row["raid_count"] if hasattr(row, "keys") else row[1] or 0),
-                "raid_viewers": float(row["raid_viewers"] if hasattr(row, "keys") else row[2] or 0),
+                "raid_count": float(
+                    row["raid_count"] if hasattr(row, "keys") else row[1] or 0
+                ),
+                "raid_viewers": float(
+                    row["raid_viewers"] if hasattr(row, "keys") else row[2] or 0
+                ),
             }
 
         active_map: Dict[str, float] = {}
@@ -1930,7 +2107,9 @@ class DashboardServer:
             key = str(row["bucket_hour"] if hasattr(row, "keys") else row[0] or "")
             if not key:
                 continue
-            active_map[key] = float(row["active_streamers"] if hasattr(row, "keys") else row[1] or 0)
+            active_map[key] = float(
+                row["active_streamers"] if hasattr(row, "keys") else row[1] or 0
+            )
 
         eventsub_map: Dict[str, Dict[str, float]] = {}
         for row in eventsub_hourly_rows:
@@ -1938,12 +2117,28 @@ class DashboardServer:
             if not key:
                 continue
             eventsub_map[key] = {
-                "avg_utilization_pct": float(row["avg_utilization_pct"] if hasattr(row, "keys") else row[1] or 0.0),
-                "peak_utilization_pct": float(row["peak_utilization_pct"] if hasattr(row, "keys") else row[2] or 0.0),
-                "avg_used_slots": float(row["avg_used_slots"] if hasattr(row, "keys") else row[3] or 0.0),
-                "peak_used_slots": float(row["peak_used_slots"] if hasattr(row, "keys") else row[4] or 0.0),
-                "avg_listener_count": float(row["avg_listener_count"] if hasattr(row, "keys") else row[5] or 0.0),
-                "samples": float(row["samples"] if hasattr(row, "keys") else row[6] or 0),
+                "avg_utilization_pct": float(
+                    row["avg_utilization_pct"]
+                    if hasattr(row, "keys")
+                    else row[1] or 0.0
+                ),
+                "peak_utilization_pct": float(
+                    row["peak_utilization_pct"]
+                    if hasattr(row, "keys")
+                    else row[2] or 0.0
+                ),
+                "avg_used_slots": float(
+                    row["avg_used_slots"] if hasattr(row, "keys") else row[3] or 0.0
+                ),
+                "peak_used_slots": float(
+                    row["peak_used_slots"] if hasattr(row, "keys") else row[4] or 0.0
+                ),
+                "avg_listener_count": float(
+                    row["avg_listener_count"] if hasattr(row, "keys") else row[5] or 0.0
+                ),
+                "samples": float(
+                    row["samples"] if hasattr(row, "keys") else row[6] or 0
+                ),
             }
 
         raids_series: List[int] = []
@@ -1960,14 +2155,24 @@ class DashboardServer:
             event_row = eventsub_map.get(key)
 
             raids_series.append(int(round(float(raid_row.get("raid_count", 0.0)))))
-            raid_viewers_series.append(int(round(float(raid_row.get("raid_viewers", 0.0)))))
+            raid_viewers_series.append(
+                int(round(float(raid_row.get("raid_viewers", 0.0))))
+            )
             active_streamers_series.append(int(round(float(active_row or 0.0))))
 
             if event_row:
-                eventsub_avg_util_series.append(round(float(event_row.get("avg_utilization_pct", 0.0)), 2))
-                eventsub_peak_util_series.append(round(float(event_row.get("peak_utilization_pct", 0.0)), 2))
-                eventsub_used_slots_series.append(round(float(event_row.get("avg_used_slots", 0.0)), 2))
-                eventsub_listener_series.append(round(float(event_row.get("avg_listener_count", 0.0)), 2))
+                eventsub_avg_util_series.append(
+                    round(float(event_row.get("avg_utilization_pct", 0.0)), 2)
+                )
+                eventsub_peak_util_series.append(
+                    round(float(event_row.get("peak_utilization_pct", 0.0)), 2)
+                )
+                eventsub_used_slots_series.append(
+                    round(float(event_row.get("avg_used_slots", 0.0)), 2)
+                )
+                eventsub_listener_series.append(
+                    round(float(event_row.get("avg_listener_count", 0.0)), 2)
+                )
             else:
                 eventsub_avg_util_series.append(None)
                 eventsub_peak_util_series.append(None)
@@ -1981,38 +2186,62 @@ class DashboardServer:
 
         active_now = _as_int(active_now_row, "active_now", 0)
         active_peak = max(active_streamers_series) if active_streamers_series else 0
-        active_avg = (sum(active_streamers_series) / len(active_streamers_series)) if active_streamers_series else 0.0
+        active_avg = (
+            (sum(active_streamers_series) / len(active_streamers_series))
+            if active_streamers_series
+            else 0.0
+        )
 
         eventsub_avg = _as_float(eventsub_summary_row, "avg_utilization_pct", 0.0)
         eventsub_peak = _as_float(eventsub_summary_row, "peak_utilization_pct", 0.0)
         eventsub_avg_slots = _as_float(eventsub_summary_row, "avg_used_slots", 0.0)
         eventsub_peak_slots = _as_float(eventsub_summary_row, "peak_used_slots", 0.0)
-        eventsub_avg_listeners = _as_float(eventsub_summary_row, "avg_listener_count", 0.0)
+        eventsub_avg_listeners = _as_float(
+            eventsub_summary_row, "avg_listener_count", 0.0
+        )
         eventsub_max_listeners = _as_int(eventsub_summary_row, "max_listener_count", 0)
         eventsub_samples = _as_int(eventsub_summary_row, "samples", 0)
 
         eventsub_latest = {
-            "ts_utc": (eventsub_latest_row["ts_utc"] if eventsub_latest_row and hasattr(eventsub_latest_row, "keys") else None),
+            "ts_utc": (
+                eventsub_latest_row["ts_utc"]
+                if eventsub_latest_row and hasattr(eventsub_latest_row, "keys")
+                else None
+            ),
             "utilization_pct": _as_float(eventsub_latest_row, "utilization_pct", 0.0),
             "used_slots": _as_int(eventsub_latest_row, "used_slots", 0),
             "total_slots": _as_int(eventsub_latest_row, "total_slots", 0),
             "listener_count": _as_int(eventsub_latest_row, "listener_count", 0),
-            "reason": (eventsub_latest_row["trigger_reason"] if eventsub_latest_row and hasattr(eventsub_latest_row, "keys") else None),
+            "reason": (
+                eventsub_latest_row["trigger_reason"]
+                if eventsub_latest_row and hasattr(eventsub_latest_row, "keys")
+                else None
+            ),
         }
 
         reason_top = []
         for row in eventsub_reason_rows:
             reason_top.append(
                 {
-                    "reason": str(row["trigger_reason"] if hasattr(row, "keys") else row[0] or ""),
-                    "samples": int(row["samples"] if hasattr(row, "keys") else row[1] or 0),
-                    "peak_utilization_pct": float(row["peak_utilization_pct"] if hasattr(row, "keys") else row[2] or 0.0),
+                    "reason": str(
+                        row["trigger_reason"] if hasattr(row, "keys") else row[0] or ""
+                    ),
+                    "samples": int(
+                        row["samples"] if hasattr(row, "keys") else row[1] or 0
+                    ),
+                    "peak_utilization_pct": float(
+                        row["peak_utilization_pct"]
+                        if hasattr(row, "keys")
+                        else row[2] or 0.0
+                    ),
                 }
             )
 
         payload = {
             "window_hours": hours,
-            "generated_at": _dt.datetime.now(tz=_dt.timezone.utc).isoformat(timespec="seconds"),
+            "generated_at": _dt.datetime.now(tz=_dt.timezone.utc).isoformat(
+                timespec="seconds"
+            ),
             "summary": {
                 "raids_total": raids_total,
                 "raid_viewers_total": raid_viewers_total,
@@ -2114,18 +2343,24 @@ class DashboardServer:
 
         summary = {
             "tracked_users": int(summary_row["user_count"] or 0) if summary_row else 0,
-            "total_seconds": int(summary_row["total_seconds"] or 0) if summary_row else 0,
+            "total_seconds": int(summary_row["total_seconds"] or 0)
+            if summary_row
+            else 0,
             "total_points": int(summary_row["total_points"] or 0) if summary_row else 0,
             "last_update": summary_row["last_update"] if summary_row else None,
         }
         if summary["tracked_users"] > 0:
-            summary["avg_seconds_per_user"] = summary["total_seconds"] / summary["tracked_users"]
+            summary["avg_seconds_per_user"] = (
+                summary["total_seconds"] / summary["tracked_users"]
+            )
         else:
             summary["avg_seconds_per_user"] = 0
 
         live_summary = {
             "active_sessions": len(live_sessions),
-            "total_seconds": sum(sess.get("duration_seconds", 0) for sess in live_sessions),
+            "total_seconds": sum(
+                sess.get("duration_seconds", 0) for sess in live_sessions
+            ),
         }
         for sess in live_sessions:
             uid = sess.get("user_id")
@@ -2155,7 +2390,9 @@ class DashboardServer:
                 raise ValueError
             days = min(days, 90)
         except ValueError:
-            raise web.HTTPBadRequest(text="range must be a positive integer (days, max 90)")
+            raise web.HTTPBadRequest(
+                text="range must be a positive integer (days, max 90)"
+            )
         try:
             top_limit = int(top_raw) if top_raw else 10
             if top_limit <= 0:
@@ -2292,23 +2529,38 @@ class DashboardServer:
                 buckets.append(
                     existing.get(
                         key,
-                        {"label": key, "total_seconds": 0, "sessions": 0, "avg_peak": 0},
+                        {
+                            "label": key,
+                            "total_seconds": 0,
+                            "sessions": 0,
+                            "avg_peak": 0,
+                        },
                     )
                 )
 
         if mode == "day":
             existing = {b["label"]: b for b in buckets}
             buckets = []
-            weekdays = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"]
+            weekdays = [
+                "Sonntag",
+                "Montag",
+                "Dienstag",
+                "Mittwoch",
+                "Donnerstag",
+                "Freitag",
+                "Samstag",
+            ]
             for day in range(7):
                 key = str(day)
                 data = existing.get(key, {})
-                buckets.append({
-                    "label": weekdays[day],
-                    "total_seconds": data.get("total_seconds", 0),
-                    "sessions": data.get("sessions", 0),
-                    "avg_peak": data.get("avg_peak", 0),
-                })
+                buckets.append(
+                    {
+                        "label": weekdays[day],
+                        "total_seconds": data.get("total_seconds", 0),
+                        "sessions": data.get("sessions", 0),
+                        "avg_peak": data.get("avg_peak", 0),
+                    }
+                )
 
         user_summary: Optional[Dict[str, Any]] = None
         if user_id is not None:
@@ -2345,22 +2597,36 @@ class DashboardServer:
                 )
             except Exception as exc:  # noqa: BLE001
                 logging.exception("Failed to build user voice summary: %s", exc)
-                raise web.HTTPInternalServerError(text="Voice history unavailable") from exc
+                raise web.HTTPInternalServerError(
+                    text="Voice history unavailable"
+                ) from exc
 
             range_seconds = int(range_stats["total_seconds"] or 0) if range_stats else 0
             range_points = int(range_stats["total_points"] or 0) if range_stats else 0
             range_sessions = int(range_stats["sessions"] or 0) if range_stats else 0
-            range_avg_session = (range_seconds / range_sessions) if range_sessions else 0
+            range_avg_session = (
+                (range_seconds / range_sessions) if range_sessions else 0
+            )
             range_avg_peak = (
-                (int(range_stats["sum_peak"] or 0) / range_sessions) if range_sessions else 0
+                (int(range_stats["sum_peak"] or 0) / range_sessions)
+                if range_sessions
+                else 0
             )
             range_days = int(range_stats["active_days"] or 0) if range_stats else 0
 
-            lifetime_seconds = int(lifetime_stats["total_seconds"] or 0) if lifetime_stats else 0
-            lifetime_points = int(lifetime_stats["total_points"] or 0) if lifetime_stats else 0
-            lifetime_last_update = lifetime_stats["last_update"] if lifetime_stats else None
+            lifetime_seconds = (
+                int(lifetime_stats["total_seconds"] or 0) if lifetime_stats else 0
+            )
+            lifetime_points = (
+                int(lifetime_stats["total_points"] or 0) if lifetime_stats else 0
+            )
+            lifetime_last_update = (
+                lifetime_stats["last_update"] if lifetime_stats else None
+            )
             lifetime_sessions = (
-                int(lifetime_sessions_row["sessions"] or 0) if lifetime_sessions_row else 0
+                int(lifetime_sessions_row["sessions"] or 0)
+                if lifetime_sessions_row
+                else 0
             )
             last_session = None
             if range_stats:
@@ -2388,7 +2654,10 @@ class DashboardServer:
             "range_days": days,
             "mode": mode,
             "user": (
-                {"user_id": user_id, "display_name": name_map.get(user_id, f"User {user_id}")}
+                {
+                    "user_id": user_id,
+                    "display_name": name_map.get(user_id, f"User {user_id}"),
+                }
                 if user_id
                 else None
             ),
@@ -2458,8 +2727,14 @@ class DashboardServer:
                 inactivity_threshold_days,
             ]
 
-            has_last_sent = "last_miss_you_sent_at" in retention_columns or "last_miss_you_at" in retention_columns
-            has_miss_count = "miss_you_count" in retention_columns or "miss_you_sent" in retention_columns
+            has_last_sent = (
+                "last_miss_you_sent_at" in retention_columns
+                or "last_miss_you_at" in retention_columns
+            )
+            has_miss_count = (
+                "miss_you_count" in retention_columns
+                or "miss_you_sent" in retention_columns
+            )
 
             if has_last_sent:
                 candidate_where.append(
@@ -2550,7 +2825,9 @@ class DashboardServer:
             inactive_candidates = len(filtered_rows)
             candidate_rows = filtered_rows[:50]
 
-            user_ids = [row["user_id"] for row in candidate_rows if row and row["user_id"]]
+            user_ids = [
+                row["user_id"] for row in candidate_rows if row and row["user_id"]
+            ]
             name_map = self._resolve_display_names(user_ids)
 
             payload = {
@@ -2690,17 +2967,19 @@ class DashboardServer:
 
             events_list = []
             for row in events:
-                events_list.append({
-                    "id": row[0],
-                    "user_id": row[1],
-                    "guild_id": row[2],
-                    "event_type": row[3],
-                    "timestamp": row[4],
-                    "display_name": row[5],
-                    "account_created_at": row[6],
-                    "join_position": row[7],
-                    "metadata": row[8],
-                })
+                events_list.append(
+                    {
+                        "id": row[0],
+                        "user_id": row[1],
+                        "guild_id": row[2],
+                        "event_type": row[3],
+                        "timestamp": row[4],
+                        "display_name": row[5],
+                        "account_created_at": row[6],
+                        "join_position": row[7],
+                        "metadata": row[8],
+                    }
+                )
 
             counts = {row[0]: row[1] for row in event_counts}
 
@@ -2777,29 +3056,35 @@ class DashboardServer:
             users_list = []
             for row in top_users:
                 user_id = row[0]
-                users_list.append({
-                    "user_id": user_id,
-                    "display_name": name_map.get(user_id, f"User {user_id}"),
-                    "guild_id": row[1],
-                    "channel_id": row[2],
-                    "message_count": row[3],
-                    "last_message_at": row[4],
-                    "first_message_at": row[5],
-                })
+                users_list.append(
+                    {
+                        "user_id": user_id,
+                        "display_name": name_map.get(user_id, f"User {user_id}"),
+                        "guild_id": row[1],
+                        "channel_id": row[2],
+                        "message_count": row[3],
+                        "last_message_at": row[4],
+                        "first_message_at": row[5],
+                    }
+                )
 
             payload = {
                 "top_users": users_list,
                 "summary": {
                     "total_users": summary[0] if summary else 0,
                     "total_messages": summary[1] if summary else 0,
-                    "avg_per_user": round(summary[2], 1) if summary and summary[2] else 0,
+                    "avg_per_user": round(summary[2], 1)
+                    if summary and summary[2]
+                    else 0,
                 },
             }
             return self._json(payload)
 
         except Exception as exc:
             logging.exception("Failed to load message activity: %s", exc)
-            raise web.HTTPInternalServerError(text="Message activity unavailable") from exc
+            raise web.HTTPInternalServerError(
+                text="Message activity unavailable"
+            ) from exc
 
     async def _handle_co_player_network(self, request: web.Request) -> web.Response:
         """Aggregiertes Co-Player-Netzwerk mit persistierten Anzeigenamen."""
@@ -2838,7 +3123,9 @@ class DashboardServer:
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to load co-player network: %s", exc)
-            raise web.HTTPInternalServerError(text="Co-player network unavailable") from exc
+            raise web.HTTPInternalServerError(
+                text="Co-player network unavailable"
+            ) from exc
 
         def _ts(value: Any) -> float:
             if value is None:
@@ -2930,7 +3217,9 @@ class DashboardServer:
             except Exception:
                 logger.debug("Could not persist co-player display names", exc_info=True)
 
-        edge_values = sorted(edges.values(), key=lambda e: (e["sessions"], e["minutes"]), reverse=True)
+        edge_values = sorted(
+            edges.values(), key=lambda e: (e["sessions"], e["minutes"]), reverse=True
+        )
         trimmed_edges = edge_values[:limit]
 
         nodes: Dict[int, Dict[str, Any]] = {}
@@ -2980,7 +3269,9 @@ class DashboardServer:
         }
         return self._json(payload)
 
-    def _collect_public_vanity_links(self, guild_filter: Optional[int]) -> List[Dict[str, Any]]:
+    def _collect_public_vanity_links(
+        self, guild_filter: Optional[int]
+    ) -> List[Dict[str, Any]]:
         links: List[Dict[str, Any]] = []
         for guild in self.bot.guilds:
             if guild_filter is not None and int(guild.id) != int(guild_filter):
@@ -3041,7 +3332,11 @@ class DashboardServer:
                 created_at = row[3]
                 last_sent_at = row[4]
 
-                if invite_code and streamer_login and invite_code.lower() not in twitch_invite_lookup:
+                if (
+                    invite_code
+                    and streamer_login
+                    and invite_code.lower() not in twitch_invite_lookup
+                ):
                     twitch_invite_lookup[invite_code.lower()] = streamer_login
 
                 if streamer_login or invite_code or invite_url:
@@ -3049,7 +3344,12 @@ class DashboardServer:
                         {
                             "streamer_login": streamer_login or None,
                             "invite_code": invite_code or None,
-                            "invite_url": invite_url or (f"https://discord.gg/{invite_code}" if invite_code else None),
+                            "invite_url": invite_url
+                            or (
+                                f"https://discord.gg/{invite_code}"
+                                if invite_code
+                                else None
+                            ),
                             "created_at": created_at,
                             "last_sent_at": last_sent_at,
                         }
@@ -3067,7 +3367,11 @@ class DashboardServer:
             "unknown": 0,
         }
         public_groups: Dict[str, Dict[str, Any]] = {
-            "server_discovery": {"kind": "server_discovery", "label": "Server entdecken", "count": 0},
+            "server_discovery": {
+                "kind": "server_discovery",
+                "label": "Server entdecken",
+                "count": 0,
+            },
             "vanity": {"kind": "vanity", "label": "Vanity-Link", "count": 0},
             "other": {"kind": "other", "label": "Public (Sonstige)", "count": 0},
         }
@@ -3085,7 +3389,15 @@ class DashboardServer:
             metadata_changed = False
 
             bucket_raw = str(metadata.get("join_source_bucket") or "").strip().lower()
-            kind_raw = str(metadata.get("join_source_kind") or metadata.get("join_source_type") or "").strip().lower()
+            kind_raw = (
+                str(
+                    metadata.get("join_source_kind")
+                    or metadata.get("join_source_type")
+                    or ""
+                )
+                .strip()
+                .lower()
+            )
             label_raw = str(metadata.get("join_source_label") or "").strip()
             invite_code = str(metadata.get("invite_code") or "").strip()
             invite_url = str(metadata.get("invite_url") or "").strip()
@@ -3093,7 +3405,9 @@ class DashboardServer:
                 invite_url = f"https://discord.gg/{invite_code}"
                 metadata["invite_url"] = invite_url
                 metadata_changed = True
-            twitch_login = str(metadata.get("twitch_streamer_login") or "").strip().lower()
+            twitch_login = (
+                str(metadata.get("twitch_streamer_login") or "").strip().lower()
+            )
             if not twitch_login and invite_code:
                 twitch_login = twitch_invite_lookup.get(invite_code.lower(), "")
                 if twitch_login:
@@ -3104,9 +3418,19 @@ class DashboardServer:
             if bucket not in bucket_counts:
                 if twitch_login:
                     bucket = "twitch"
-                elif kind_raw in {"server_discovery", "discovery", "public_discovery", "vanity", "vanity_url"}:
+                elif kind_raw in {
+                    "server_discovery",
+                    "discovery",
+                    "public_discovery",
+                    "vanity",
+                    "vanity_url",
+                }:
                     bucket = "public"
-                elif invite_code or kind_raw in {"invite_link", "personal", "personal_invite"}:
+                elif invite_code or kind_raw in {
+                    "invite_link",
+                    "personal",
+                    "personal_invite",
+                }:
                     bucket = "personal"
                 else:
                     bucket = "unknown"
@@ -3145,7 +3469,9 @@ class DashboardServer:
 
             if bucket == "twitch":
                 key = twitch_login or invite_code.lower() or "unknown"
-                label = twitch_login or (f"Invite {invite_code}" if invite_code else "Unbekannt")
+                label = twitch_login or (
+                    f"Invite {invite_code}" if invite_code else "Unbekannt"
+                )
                 entry = twitch_groups.get(key)
                 if entry is None:
                     entry = {
@@ -3204,7 +3530,9 @@ class DashboardServer:
                     else:
                         source_label = "Public"
                 elif bucket == "twitch":
-                    source_label = f"Twitch: {twitch_login}" if twitch_login else "Twitch"
+                    source_label = (
+                        f"Twitch: {twitch_login}" if twitch_login else "Twitch"
+                    )
                 elif bucket == "personal":
                     source_label = f"Persoenlich: {personal_label or 'Invite-Link'}"
                 else:
@@ -3218,17 +3546,25 @@ class DashboardServer:
                 confidence = "high"
                 if bucket == "unknown":
                     confidence = "low"
-                elif bucket == "public" and kind_raw in {"server_discovery", "discovery", "public_discovery"}:
+                elif bucket == "public" and kind_raw in {
+                    "server_discovery",
+                    "discovery",
+                    "public_discovery",
+                }:
                     confidence = "medium"
                 metadata["join_source_confidence"] = confidence
                 metadata_changed = True
 
             if not str(metadata.get("join_source_detected_at") or "").strip():
-                metadata["join_source_detected_at"] = timestamp or _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                metadata["join_source_detected_at"] = (
+                    timestamp or _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                )
                 metadata_changed = True
 
             if metadata_changed and event_id is not None:
-                backfill_updates.append((json.dumps(metadata, separators=(",", ":")), int(event_id)))
+                backfill_updates.append(
+                    (json.dumps(metadata, separators=(",", ":")), int(event_id))
+                )
 
             recent.append(
                 {
@@ -3249,18 +3585,31 @@ class DashboardServer:
                     "UPDATE member_events SET metadata = ? WHERE id = ?",
                     backfill_updates,
                 )
-                logger.info("Member-source metadata backfilled for %d join event(s)", len(backfill_updates))
+                logger.info(
+                    "Member-source metadata backfilled for %d join event(s)",
+                    len(backfill_updates),
+                )
             except Exception:
-                logger.debug("Failed to persist member-source metadata backfill", exc_info=True)
+                logger.debug(
+                    "Failed to persist member-source metadata backfill", exc_info=True
+                )
 
-        public_breakdown = [entry for entry in public_groups.values() if int(entry.get("count", 0)) > 0]
+        public_breakdown = [
+            entry for entry in public_groups.values() if int(entry.get("count", 0)) > 0
+        ]
         twitch_breakdown = sorted(
             twitch_groups.values(),
-            key=lambda item: (-int(item.get("count", 0)), str(item.get("label") or "").lower()),
+            key=lambda item: (
+                -int(item.get("count", 0)),
+                str(item.get("label") or "").lower(),
+            ),
         )
         personal_breakdown = sorted(
             personal_groups.values(),
-            key=lambda item: (-int(item.get("count", 0)), str(item.get("label") or "").lower()),
+            key=lambda item: (
+                -int(item.get("count", 0)),
+                str(item.get("label") or "").lower(),
+            ),
         )
         twitch_assigned_links = sorted(
             twitch_assigned_links,
@@ -3270,7 +3619,11 @@ class DashboardServer:
             ),
         )
 
-        known_joins = bucket_counts["public"] + bucket_counts["twitch"] + bucket_counts["personal"]
+        known_joins = (
+            bucket_counts["public"]
+            + bucket_counts["twitch"]
+            + bucket_counts["personal"]
+        )
         unknown_joins = bucket_counts["unknown"]
 
         return {
@@ -3364,12 +3717,18 @@ class DashboardServer:
                 (guild_filter, guild_filter),
             )
 
-            member_sources_30d = self._build_member_source_analytics(guild_filter, days=30)
+            member_sources_30d = self._build_member_source_analytics(
+                guild_filter, days=30
+            )
 
             payload = {
                 "member_events": {row[0]: row[1] for row in member_events_summary},
-                "total_messages": message_summary[0] if message_summary and message_summary[0] else 0,
-                "total_voice_hours": (voice_summary[0] // 3600) if voice_summary and voice_summary[0] else 0,
+                "total_messages": message_summary[0]
+                if message_summary and message_summary[0]
+                else 0,
+                "total_voice_hours": (voice_summary[0] // 3600)
+                if voice_summary and voice_summary[0]
+                else 0,
                 "active_users_7d": active_users_7d[0] if active_users_7d else 0,
                 "growth_30d": {
                     "joins": growth[0] if growth else 0,
@@ -3458,7 +3817,9 @@ class DashboardServer:
         }
         return self._json(payload)
 
-    async def _handle_tournament_team_create(self, request: web.Request) -> web.Response:
+    async def _handle_tournament_team_create(
+        self, request: web.Request
+    ) -> web.Response:
         self._check_auth(request)
         from cogs.customgames import tournament_store as tstore
 
@@ -3477,7 +3838,9 @@ class DashboardServer:
         created_by = self._coerce_int(payload.get("created_by"), None)
 
         try:
-            team = await tstore.get_or_create_team_async(guild_id, name, created_by=created_by)
+            team = await tstore.get_or_create_team_async(
+                guild_id, name, created_by=created_by
+            )
         except ValueError as exc:
             logger.warning(
                 "Tournament team creation rejected: %s",
@@ -3536,7 +3899,9 @@ class DashboardServer:
             raise web.HTTPNotFound(text="Signup not found")
 
         signup = await tstore.get_signup_async(guild_id, int(user_id))
-        decorated = self._decorate_tournament_signups(guild_id, [signup]) if signup else []
+        decorated = (
+            self._decorate_tournament_signups(guild_id, [signup]) if signup else []
+        )
         return self._json({"ok": True, "signup": decorated[0] if decorated else signup})
 
     async def _handle_tournament_remove(self, request: web.Request) -> web.Response:
@@ -3599,12 +3964,16 @@ class DashboardServer:
             try:
                 lifecycle_state = lifecycle.snapshot()
             except Exception as exc:
-                logging.getLogger(__name__).warning("Lifecycle snapshot fehlgeschlagen: %s", exc)
+                logging.getLogger(__name__).warning(
+                    "Lifecycle snapshot fehlgeschlagen: %s", exc
+                )
                 lifecycle_state = {"enabled": True, "error": str(exc)}
 
         restart_in_progress = bool(self._restart_task and not self._restart_task.done())
         last_restart = self._last_restart if any(self._last_restart.values()) else None
-        csrf_token = self._ensure_session_csrf_token(auth_session) if auth_session else None
+        csrf_token = (
+            self._ensure_session_csrf_token(auth_session) if auth_session else None
+        )
 
         payload = {
             "bot": {
@@ -3643,11 +4012,7 @@ class DashboardServer:
             },
             "auth": {
                 "enforced": self._is_auth_enforced(),
-                "mode": (
-                    "discord"
-                    if self._discord_auth_required
-                    else "none"
-                ),
+                "mode": ("discord" if self._discord_auth_required else "none"),
                 "discord_enabled": self._discord_auth_required,
                 "login_url": self._build_discord_login_url(request, next_path="/admin"),
                 "logout_url": "/auth/logout",
@@ -3670,7 +4035,9 @@ class DashboardServer:
     async def _handle_bot_restart(self, request: web.Request) -> web.Response:
         self._check_auth(request)
         safe_remote = self._safe_log_value(request.remote)
-        logger.warning("AUDIT master-dashboard bot_restart requested from %s", safe_remote)
+        logger.warning(
+            "AUDIT master-dashboard bot_restart requested from %s", safe_remote
+        )
         async with self._bot_restart_lock:
             now = time.monotonic()
             since_last = now - self._last_bot_restart_request_monotonic
@@ -3678,7 +4045,9 @@ class DashboardServer:
                 self._last_bot_restart_request_monotonic > 0
                 and since_last < self._bot_restart_min_interval_seconds
             ):
-                retry_after = max(0.0, self._bot_restart_min_interval_seconds - since_last)
+                retry_after = max(
+                    0.0, self._bot_restart_min_interval_seconds - since_last
+                )
                 return self._json(
                     {
                         "ok": False,
@@ -3692,7 +4061,11 @@ class DashboardServer:
             current_pid = os.getpid()
             parent_pid = os.getppid()
 
-            if lifecycle and service_pid is not None and service_pid not in {current_pid, parent_pid}:
+            if (
+                lifecycle
+                and service_pid is not None
+                and service_pid not in {current_pid, parent_pid}
+            ):
                 logger.warning(
                     "Skipping NSSM restart for service '%s' (service PID=%s, current PID=%s, "
                     "parent PID=%s); using lifecycle restart instead.",
@@ -3701,7 +4074,9 @@ class DashboardServer:
                     current_pid,
                     parent_pid,
                 )
-                scheduled = await lifecycle.request_restart(reason="dashboard_lifecycle_pid_mismatch")
+                scheduled = await lifecycle.request_restart(
+                    reason="dashboard_lifecycle_pid_mismatch"
+                )
                 if scheduled:
                     self._last_bot_restart_request_monotonic = now
                     return self._json(
@@ -3734,7 +4109,10 @@ class DashboardServer:
                     }
                 )
 
-            logger.warning("NSSM service restart unavailable: %s", self._safe_log_value(service_message))
+            logger.warning(
+                "NSSM service restart unavailable: %s",
+                self._safe_log_value(service_message),
+            )
             if not lifecycle:
                 return self._json(
                     {
@@ -3746,7 +4124,9 @@ class DashboardServer:
                     }
                 )
 
-            scheduled = await lifecycle.request_restart(reason="dashboard_lifecycle_fallback")
+            scheduled = await lifecycle.request_restart(
+                reason="dashboard_lifecycle_fallback"
+            )
             if scheduled:
                 self._last_bot_restart_request_monotonic = now
                 return self._json(
@@ -3770,7 +4150,9 @@ class DashboardServer:
     async def _handle_dashboard_restart(self, request: web.Request) -> web.Response:
         self._check_auth(request)
         if self._restart_task and not self._restart_task.done():
-            return self._json({"ok": True, "message": "Dashboard restart already running"})
+            return self._json(
+                {"ok": True, "message": "Dashboard restart already running"}
+            )
 
         self._restart_task = asyncio.create_task(self._restart_dashboard())
         self._restart_task.add_done_callback(self._on_restart_finished)
@@ -3793,7 +4175,10 @@ class DashboardServer:
     async def _refresh_health_checks(self) -> List[Dict[str, Any]]:
         timeout = ClientTimeout(total=self._health_timeout)
         async with ClientSession(timeout=timeout) as session:
-            tasks = [self._probe_health_target(session, target) for target in self._health_targets]
+            tasks = [
+                self._probe_health_target(session, target)
+                for target in self._health_targets
+            ]
             return await asyncio.gather(*tasks)
 
     async def _probe_health_target(
@@ -3898,7 +4283,6 @@ class DashboardServer:
             result["body_excerpt"] = body_excerpt
         return result
 
-
     async def _collect_standalone_snapshot(self) -> List[Dict[str, Any]]:
         manager = getattr(self.bot, "standalone_manager", None)
         if not manager:
@@ -3929,8 +4313,7 @@ class DashboardServer:
             ns = self._namespace_for(mod)
             counter[ns] = counter.get(ns, 0) + 1
         return [
-            {"namespace": ns, "count": counter[ns]}
-            for ns in sorted(counter.keys())
+            {"namespace": ns, "count": counter[ns]} for ns in sorted(counter.keys())
         ]
 
     def _build_tree(self) -> Dict[str, Any]:
@@ -3979,7 +4362,9 @@ class DashboardServer:
 
             children: List[Dict[str, Any]] = []
             try:
-                entries = sorted(directory.iterdir(), key=lambda p: (p.is_file(), p.name))
+                entries = sorted(
+                    directory.iterdir(), key=lambda p: (p.is_file(), p.name)
+                )
             except FileNotFoundError:
                 entries = []
 
@@ -3999,11 +4384,15 @@ class DashboardServer:
                     mod_path = "cogs." + ".".join(parts + [entry.stem])
                 else:
                     mod_path = f"cogs.{entry.stem}"
-                blocked_child = bot.is_namespace_blocked(mod_path, assume_normalized=True)
+                blocked_child = bot.is_namespace_blocked(
+                    mod_path, assume_normalized=True
+                )
                 loaded_child = mod_path in active
                 discovered_child = mod_path in discovered
                 manageable_child = is_manageable(mod_path)
-                status_child = node_status(mod_path, blocked=blocked_child) or "not_discovered"
+                status_child = (
+                    node_status(mod_path, blocked=blocked_child) or "not_discovered"
+                )
                 child = {
                     "type": "module",
                     "name": entry.stem,
@@ -4065,7 +4454,11 @@ class DashboardServer:
         normalized = self._normalize_names(names)
         safe_names = self._safe_log_value(normalized)
         safe_remote = self._safe_log_value(request.remote)
-        logger.info("AUDIT master-dashboard cog_reload: names=%s from %s", safe_names, safe_remote)
+        logger.info(
+            "AUDIT master-dashboard cog_reload: names=%s from %s",
+            safe_names,
+            safe_remote,
+        )
 
         results: Dict[str, Dict[str, Any]] = {}
         async with self._lock:
@@ -4117,7 +4510,11 @@ class DashboardServer:
         normalized = self._normalize_names(names)
         safe_names = self._safe_log_value(normalized)
         safe_remote = self._safe_log_value(request.remote)
-        logger.warning("AUDIT master-dashboard cog_unload: names=%s from %s", safe_names, safe_remote)
+        logger.warning(
+            "AUDIT master-dashboard cog_unload: names=%s from %s",
+            safe_names,
+            safe_remote,
+        )
 
         results: Dict[str, Dict[str, Any]] = {}
         async with self._lock:
@@ -4127,7 +4524,10 @@ class DashboardServer:
                 if status == "unloaded":
                     results[name] = {"ok": True, "message": f"✅ Unloaded {name}"}
                 elif status == "timeout":
-                    results[name] = {"ok": False, "message": f"⏱️ Timeout unloading {name}"}
+                    results[name] = {
+                        "ok": False,
+                        "message": f"⏱️ Timeout unloading {name}",
+                    }
                 elif status.startswith("error"):
                     results[name] = {"ok": False, "message": status}
                 else:
@@ -4188,7 +4588,9 @@ class DashboardServer:
             raise web.HTTPBadRequest(text="'path' is required")
         safe_path = self._safe_log_value(path)
         safe_remote = self._safe_log_value(request.remote)
-        logger.warning("AUDIT master-dashboard cog_block: path=%s from %s", safe_path, safe_remote)
+        logger.warning(
+            "AUDIT master-dashboard cog_block: path=%s from %s", safe_path, safe_remote
+        )
         async with self._lock:
             try:
                 result = await self.bot.block_namespace(path)
@@ -4198,7 +4600,9 @@ class DashboardServer:
         changed = result.get("changed", False)
         unloaded = result.get("unloaded", {})
         message = (
-            f"🚫 {namespace} blockiert" if changed else f"{namespace} war bereits blockiert"
+            f"🚫 {namespace} blockiert"
+            if changed
+            else f"{namespace} war bereits blockiert"
         )
         return self._json(
             {
@@ -4218,7 +4622,11 @@ class DashboardServer:
             raise web.HTTPBadRequest(text="'path' is required")
         safe_path = self._safe_log_value(path)
         safe_remote = self._safe_log_value(request.remote)
-        logger.info("AUDIT master-dashboard cog_unblock: path=%s from %s", safe_path, safe_remote)
+        logger.info(
+            "AUDIT master-dashboard cog_unblock: path=%s from %s",
+            safe_path,
+            safe_remote,
+        )
         async with self._lock:
             try:
                 result = await self.bot.unblock_namespace(path)
@@ -4227,7 +4635,9 @@ class DashboardServer:
         namespace = result.get("namespace", path)
         changed = result.get("changed", False)
         message = (
-            f"✅ {namespace} freigegeben" if changed else f"{namespace} war nicht blockiert"
+            f"✅ {namespace} freigegeben"
+            if changed
+            else f"{namespace} war nicht blockiert"
         )
         return self._json(
             {
@@ -4278,7 +4688,6 @@ class DashboardServer:
             }
         )
 
-
     async def _handle_standalone_list(self, request: web.Request) -> web.Response:
         self._check_auth(request)
         data = await self._collect_standalone_snapshot()
@@ -4320,12 +4729,16 @@ class DashboardServer:
                 logging.getLogger(__name__).exception(
                     "Error when starting standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
+                raise web.HTTPInternalServerError(
+                    text="An internal error has occurred."
+                ) from exc
             else:
                 logging.getLogger(__name__).exception(
                     "Unexpected error when starting standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
+                raise web.HTTPInternalServerError(
+                    text="An internal error has occurred."
+                ) from exc
         return self._json({"standalone": status})
 
     async def _handle_standalone_stop(self, request: web.Request) -> web.Response:
@@ -4344,12 +4757,16 @@ class DashboardServer:
                 logging.getLogger(__name__).exception(
                     "Error when stopping standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
+                raise web.HTTPInternalServerError(
+                    text="An internal error has occurred."
+                ) from exc
             else:
                 logging.getLogger(__name__).exception(
                     "Unexpected error when stopping standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
+                raise web.HTTPInternalServerError(
+                    text="An internal error has occurred."
+                ) from exc
         return self._json({"standalone": status})
 
     async def _handle_standalone_restart(self, request: web.Request) -> web.Response:
@@ -4366,11 +4783,15 @@ class DashboardServer:
                 logging.getLogger(__name__).exception(
                     "Error when restarting standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
+                raise web.HTTPInternalServerError(
+                    text="An internal error has occurred."
+                ) from exc
             logging.getLogger(__name__).exception(
                 "Unexpected error when restarting standalone bot (key=%s)", safe_key
             )
-            raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
+            raise web.HTTPInternalServerError(
+                text="An internal error has occurred."
+            ) from exc
         return self._json({"standalone": status})
 
     async def _handle_standalone_autostart(self, request: web.Request) -> web.Response:
@@ -4441,7 +4862,11 @@ class DashboardServer:
             raise web.HTTPBadRequest(text="'command' is required")
         command_payload = payload.get("payload")
         try:
-            payload_json = json.dumps(command_payload, ensure_ascii=False) if command_payload is not None else None
+            payload_json = (
+                json.dumps(command_payload, ensure_ascii=False)
+                if command_payload is not None
+                else None
+            )
         except (TypeError, ValueError):
             raise web.HTTPBadRequest(text="payload must be JSON-serializable")
 
@@ -4470,6 +4895,7 @@ class DashboardServer:
             },
             status=201,
         )
+
 
 if TYPE_CHECKING:  # pragma: no cover - avoid runtime dependency cycle
     from main_bot import MasterBot

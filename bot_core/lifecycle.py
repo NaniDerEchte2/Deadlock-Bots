@@ -16,7 +16,9 @@ class BotLifecycle:
     Kleiner Supervisor, der den Bot-Prozess im selben Interpreter neustarten kann.
     """
 
-    def __init__(self, token: str | None = None, token_loader: Callable[[], str] | None = None):
+    def __init__(
+        self, token: str | None = None, token_loader: Callable[[], str] | None = None
+    ):
         if token_loader is None and not token:
             raise ValueError("BotLifecycle benötigt entweder token oder token_loader")
         self.token = token
@@ -86,18 +88,21 @@ class BotLifecycle:
         """
         try:
             import service.config as service_config
+
             importlib.reload(service_config)
         except Exception as exc:  # pragma: no cover - defensive reload
             logger.warning("Module reload skipped for service.config: %s", exc)
 
         try:
             import service.db as service_db
+
             importlib.reload(service_db)
         except Exception as exc:  # pragma: no cover - defensive reload
             logger.warning("Module reload skipped for service.db: %s", exc)
 
         try:
             import service.dashboard as service_dashboard
+
             importlib.reload(service_dashboard)
         except Exception as exc:  # pragma: no cover - defensive reload
             logger.warning("Module reload skipped for service.dashboard: %s", exc)

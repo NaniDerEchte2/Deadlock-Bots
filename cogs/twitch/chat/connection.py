@@ -47,7 +47,11 @@ class ConnectionMixin:
                 )
                 return
         except Exception:
-            log.debug("Partner-Check in _ensure_bot_is_mod fehlgeschlagen fuer %s", login, exc_info=True)
+            log.debug(
+                "Partner-Check in _ensure_bot_is_mod fehlgeschlagen fuer %s",
+                login,
+                exc_info=True,
+            )
 
         target_id = str(broadcaster_id or "").strip() or None
         snippet = (text or "").replace("\n", " ").strip()[:180]
@@ -72,11 +76,17 @@ class ConnectionMixin:
                     )
                     conn.commit()
             except Exception:
-                log.debug("Konnte Bot-Ban Blacklist nicht schreiben fuer %s", login, exc_info=True)
+                log.debug(
+                    "Konnte Bot-Ban Blacklist nicht schreiben fuer %s",
+                    login,
+                    exc_info=True,
+                )
 
         log.warning("Bot-Ban erkannt: %s auf Raid-Blacklist gesetzt.", login)
 
-    async def _ensure_bot_is_mod(self, broadcaster_id: str, broadcaster_login: str) -> bool:
+    async def _ensure_bot_is_mod(
+        self, broadcaster_id: str, broadcaster_login: str
+    ) -> bool:
         """
         Setzt den Bot als Moderator im Ziel-Channel über den Streamer-Token.
         Wird aufgerufen wenn ein join() mit 403 fehlschlägt.
@@ -84,7 +94,10 @@ class ConnectionMixin:
         """
         raid_bot = getattr(self, "_raid_bot", None)
         if not raid_bot or not hasattr(raid_bot, "auth_manager"):
-            log.debug("_ensure_bot_is_mod: Kein RaidManager verfügbar für %s", broadcaster_login)
+            log.debug(
+                "_ensure_bot_is_mod: Kein RaidManager verfügbar für %s",
+                broadcaster_login,
+            )
             return False
 
         safe_bot_id = self.bot_id_safe or self.bot_id or ""
@@ -98,7 +111,9 @@ class ConnectionMixin:
             log.debug("_ensure_bot_is_mod: Keine HTTP-Session im RaidManager")
             return False
 
-        tokens = await raid_bot.auth_manager.get_tokens_for_user(broadcaster_id, session)
+        tokens = await raid_bot.auth_manager.get_tokens_for_user(
+            broadcaster_id, session
+        )
         if not tokens:
             log.warning(
                 "_ensure_bot_is_mod: Keine gültige Autorisierung für %s verfügbar.",
@@ -110,6 +125,7 @@ class ConnectionMixin:
 
         try:
             import aiohttp
+
             url = "https://api.twitch.tv/helix/moderation/moderators"
             params = {
                 "broadcaster_id": str(broadcaster_id),
@@ -125,11 +141,19 @@ class ConnectionMixin:
             async with aiohttp.ClientSession() as mod_session:
                 async with mod_session.post(url, headers=headers, params=params) as r:
                     if r.status in {200, 204}:
-                        log.info("_ensure_bot_is_mod: Bot (ID: %s) ist jetzt Mod in %s (ID: %s)", safe_bot_id, broadcaster_login, broadcaster_id)
+                        log.info(
+                            "_ensure_bot_is_mod: Bot (ID: %s) ist jetzt Mod in %s (ID: %s)",
+                            safe_bot_id,
+                            broadcaster_login,
+                            broadcaster_id,
+                        )
                         return True
                     if r.status == 422:
                         # 422 = Bot ist bereits Mod → sollte nicht vorkommen wenn 403 vorher kam
-                        log.info("_ensure_bot_is_mod: Bot ist bereits Mod in %s (422)", broadcaster_login)
+                        log.info(
+                            "_ensure_bot_is_mod: Bot ist bereits Mod in %s (422)",
+                            broadcaster_login,
+                        )
                         return True
                     txt = await r.text()
                     if self._looks_like_bot_banned_error(r.status, txt):
@@ -165,7 +189,9 @@ class ConnectionMixin:
         try:
             await self.add_token(api_token, self._bot_refresh_token)
         except Exception:
-            log.debug("_ensure_bot_token_registered: add_token fehlgeschlagen", exc_info=True)
+            log.debug(
+                "_ensure_bot_token_registered: add_token fehlgeschlagen", exc_info=True
+            )
 
     async def join(self, channel_login: str, channel_id: Optional[str] = None):
         """Joint einen Channel via EventSub (TwitchIO 3.x)."""
@@ -174,7 +200,9 @@ class ConnectionMixin:
 
             # Prüfe ZUERST, ob wir bereits subscribed sind
             if normalized_login in self._monitored_streamers:
-                log.debug("Channel %s already monitored, skipping subscribe", channel_login)
+                log.debug(
+                    "Channel %s already monitored, skipping subscribe", channel_login
+                )
                 return True
 
             if not channel_id:
@@ -195,8 +223,7 @@ class ConnectionMixin:
             await self._ensure_bot_token_registered()
 
             payload = eventsub.ChatMessageSubscription(
-                broadcaster_user_id=str(channel_id),
-                user_id=str(safe_bot_id)
+                broadcaster_user_id=str(channel_id), user_id=str(safe_bot_id)
             )
 
             # Wir abonnieren über den Standard-WebSocket des Bots
@@ -220,16 +247,22 @@ class ConnectionMixin:
                 await self._ensure_bot_token_registered()
                 try:
                     payload = eventsub.ChatMessageSubscription(
-                        broadcaster_user_id=str(channel_id),
-                        user_id=str(safe_bot_id)
+                        broadcaster_user_id=str(channel_id), user_id=str(safe_bot_id)
                     )
                     await self.subscribe_websocket(payload=payload)
                     self._monitored_streamers.add(normalized_login)
                     self._channel_ids[normalized_login] = str(channel_id)
-                    log.info("join(): Retry erfolgreich für %s nach Token-Registrierung", channel_login)
+                    log.info(
+                        "join(): Retry erfolgreich für %s nach Token-Registrierung",
+                        channel_login,
+                    )
                     return True
                 except Exception as retry_err:
-                    log.error("join(): Retry für %s fehlgeschlagen: %s", channel_login, retry_err)
+                    log.error(
+                        "join(): Retry für %s fehlgeschlagen: %s",
+                        channel_login,
+                        retry_err,
+                    )
                 return False
             if "403" in msg and "subscription missing proper authorization" in msg:
                 # Monitored-Only Channels: kein Mod-Versuch, einfach überspringen.
@@ -247,13 +280,17 @@ class ConnectionMixin:
                 cd_key = normalized_login
                 cd_until = self._mod_retry_cooldown.get(cd_key)
                 if cd_until and datetime.now(timezone.utc) < cd_until:
-                    log.debug("join(): Mod-Retry für %s auf Cooldown bis %s – überspringe", channel_login, cd_until.isoformat())
+                    log.debug(
+                        "join(): Mod-Retry für %s auf Cooldown bis %s – überspringe",
+                        channel_login,
+                        cd_until.isoformat(),
+                    )
                     return False
 
                 # Automatischer Retry: Bot als Mod setzen und nochmal versuchen
                 log.info(
                     "join(): 403 für %s – versuche Bot automatisch als Mod zu setzen...",
-                    channel_login
+                    channel_login,
                 )
                 mod_set = await self._ensure_bot_is_mod(str(channel_id), channel_login)
                 if mod_set:
@@ -262,37 +299,48 @@ class ConnectionMixin:
                     try:
                         payload = eventsub.ChatMessageSubscription(
                             broadcaster_user_id=str(channel_id),
-                            user_id=str(safe_bot_id)
+                            user_id=str(safe_bot_id),
                         )
                         await self.subscribe_websocket(payload=payload)
                         self._monitored_streamers.add(normalized_login)
                         self._channel_ids[normalized_login] = str(channel_id)
-                        log.info("join(): Retry erfolgreich für %s nach Mod-Autorisierung", channel_login)
+                        log.info(
+                            "join(): Retry erfolgreich für %s nach Mod-Autorisierung",
+                            channel_login,
+                        )
                         return True
                     except Exception as retry_err:
-                        log.warning("join(): Retry für %s fehlgeschlagen nach Mod-Autorisierung: %s", channel_login, retry_err)
+                        log.warning(
+                            "join(): Retry für %s fehlgeschlagen nach Mod-Autorisierung: %s",
+                            channel_login,
+                            retry_err,
+                        )
                 else:
                     # Cooldown setzen: Nächster Retry erst nach 10 Minuten
-                    self._mod_retry_cooldown[cd_key] = datetime.now(timezone.utc) + timedelta(minutes=10)
+                    self._mod_retry_cooldown[cd_key] = datetime.now(
+                        timezone.utc
+                    ) + timedelta(minutes=10)
                     log.warning(
                         "join(): Konnte Bot nicht als Mod in %s setzen. "
                         "Falls der Bot im Channel gebannt ist, muss er dort zuerst "
                         "entbannt werden (/unban deutschedeadlockcommunity), "
                         "danach /mod deutschedeadlockcommunity ausführen. "
                         "Nächster Retry in 10 min.",
-                        channel_login
+                        channel_login,
                     )
             elif "429" in msg or "transport limit exceeded" in msg.lower():
                 log.error(
                     "Cannot join chat for %s: WebSocket Transport Limit (429) reached. "
                     "Ensure the bot uses only one WebSocket connection.",
-                    channel_login
+                    channel_login,
                 )
             else:
                 log.error("Failed to join channel %s: %s", channel_login, e)
             return False
 
-    async def join_channels(self, channels: list[str], rate_limit_delay: float = 0.2) -> int:
+    async def join_channels(
+        self, channels: list[str], rate_limit_delay: float = 0.2
+    ) -> int:
         """Kompatibilitäts-Helper für Bulk-Joins (z.B. Scout-Task)."""
         if not channels:
             return 0
@@ -307,7 +355,10 @@ class ConnectionMixin:
             if callable(set_monitored):
                 set_monitored(normalized)
         except Exception:
-            log.debug("join_channels: konnte monitored-only Liste nicht aktualisieren", exc_info=True)
+            log.debug(
+                "join_channels: konnte monitored-only Liste nicht aktualisieren",
+                exc_info=True,
+            )
 
         joined = 0
         for login in normalized:
@@ -335,6 +386,7 @@ class ConnectionMixin:
             return False
 
         import aiohttp
+
         for attempt in range(2):
             try:
                 tokens = await self._token_manager.get_valid_token()
@@ -358,24 +410,39 @@ class ConnectionMixin:
                     ) as r:
                         if r.status == 200:
                             data = await r.json(content_type=None)
-                            follows = data.get("data", []) if isinstance(data, dict) else []
+                            follows = (
+                                data.get("data", []) if isinstance(data, dict) else []
+                            )
                             if follows:
-                                log.info("follow_channel: Bot folgt bereits %s", broadcaster_id)
+                                log.info(
+                                    "follow_channel: Bot folgt bereits %s",
+                                    broadcaster_id,
+                                )
                                 return True
 
-                            if not getattr(self, "_follow_api_create_removed_logged", False):
+                            if not getattr(
+                                self, "_follow_api_create_removed_logged", False
+                            ):
                                 log.info(
                                     "follow_channel: Twitch-API kann keine Follows mehr erstellen "
                                     "(abgeschaltet am 28.07.2021). Manual Follow erforderlich."
                                 )
                                 self._follow_api_create_removed_logged = True
-                            log.debug("follow_channel: Bot folgt %s derzeit nicht", broadcaster_id)
+                            log.debug(
+                                "follow_channel: Bot folgt %s derzeit nicht",
+                                broadcaster_id,
+                            )
                             return False
                         txt = await r.text()
                         if r.status == 401:
                             txt_l = txt.lower()
-                            if "user:read:follows" in txt_l or "missing required scope" in txt_l:
-                                if not getattr(self, "_follow_scope_missing_logged", False):
+                            if (
+                                "user:read:follows" in txt_l
+                                or "missing required scope" in txt_l
+                            ):
+                                if not getattr(
+                                    self, "_follow_scope_missing_logged", False
+                                ):
                                     log.warning(
                                         "follow_channel: Bot-Token ohne Scope user:read:follows; "
                                         "Follow-Status kann nicht geprüft werden."
@@ -383,10 +450,19 @@ class ConnectionMixin:
                                     self._follow_scope_missing_logged = True
                                 return False
                             if attempt == 0:
-                                log.debug("follow_channel: 401 für %s, triggere Token-Refresh", broadcaster_id)
-                                await self._token_manager.get_valid_token(force_refresh=True)
+                                log.debug(
+                                    "follow_channel: 401 für %s, triggere Token-Refresh",
+                                    broadcaster_id,
+                                )
+                                await self._token_manager.get_valid_token(
+                                    force_refresh=True
+                                )
                                 continue
-                        log.debug("follow_channel: Follow-Check HTTP %s – %s", r.status, txt[:200])
+                        log.debug(
+                            "follow_channel: Follow-Check HTTP %s – %s",
+                            r.status,
+                            txt[:200],
+                        )
                         return False
             except Exception:
                 log.debug("follow_channel: Exception", exc_info=True)
@@ -419,9 +495,12 @@ class ConnectionMixin:
             login_norm = (login or "").strip()
             if not login_norm:
                 continue
-            scopes = [s.strip().lower() for s in (scopes_raw or "").split() if s.strip()]
+            scopes = [
+                s.strip().lower() for s in (scopes_raw or "").split() if s.strip()
+            ]
             has_chat_scope = any(
-                s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"} for s in scopes
+                s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"}
+                for s in scopes
             )
             if not has_chat_scope:
                 continue

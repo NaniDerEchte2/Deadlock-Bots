@@ -11,7 +11,9 @@ from typing import Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-KEYRING_SERVICE = (os.getenv("STEAM_TOKEN_KEYRING_SERVICE") or "DeadlockBot").strip() or "DeadlockBot"
+KEYRING_SERVICE = (
+    os.getenv("STEAM_TOKEN_KEYRING_SERVICE") or "DeadlockBot"
+).strip() or "DeadlockBot"
 
 TOKEN_REFRESH_KEY = "STEAM_REFRESH_TOKEN"
 TOKEN_MACHINE_KEY = "STEAM_MACHINE_AUTH_TOKEN"
@@ -46,6 +48,7 @@ def _get_keyring():
 
     try:
         import keyring  # type: ignore
+
         return keyring
     except Exception:
         log.debug(

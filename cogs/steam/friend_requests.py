@@ -85,4 +85,3 @@ def queue_friend_request(steam_id: str) -> None:
 
 
 __all__ = ["queue_friend_request", "queue_friend_requests"]
-

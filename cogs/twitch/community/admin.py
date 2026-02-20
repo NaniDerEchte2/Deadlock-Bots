@@ -29,7 +29,9 @@ class TwitchAdminMixin:
             return "Konnte Kanal nicht speichern."
         return f"Live-Posts gehen jetzt in {channel.mention}"
 
-    async def _cmd_add_wrapper(self, login: str, require_discord_link: Optional[bool] = False) -> str:
+    async def _cmd_add_wrapper(
+        self, login: str, require_discord_link: Optional[bool] = False
+    ) -> str:
         """Wrapper kept for backwards compatibility with removed Discord command."""
         try:
             return await self._cmd_add(login, bool(require_discord_link))
@@ -62,8 +64,12 @@ class TwitchAdminMixin:
         def _fmt(row: dict) -> str:
             until = row.get("manual_verified_until")
             perm = bool(row.get("manual_verified_permanent"))
-            tail = " (permanent verifiziert)" if perm else (f" (verifiziert bis {until})" if until else "")
-            return f"- {row.get('twitch_login','?')}{tail}"
+            tail = (
+                " (permanent verifiziert)"
+                if perm
+                else (f" (verifiziert bis {until})" if until else "")
+            )
+            return f"- {row.get('twitch_login', '?')}{tail}"
 
         try:
             formatted = [_fmt(dict(r)) for r in rows]
@@ -110,40 +116,51 @@ class TwitchAdminMixin:
         """Get valid invite codes from DB cache (falls back to API if needed)."""
         # Wenn keine Guild-ID angegeben, nehme die erste verfügbare
         if guild_id is None:
-            guilds = getattr(self.bot, 'guilds', [])
+            guilds = getattr(self.bot, "guilds", [])
             if not guilds:
                 return set()
             guild_id = guilds[0].id
-        
+
         # Zuerst: Versuche aus DB zu laden (schnell, kein API-Call)
         try:
             with storage.get_conn() as conn:
                 rows = conn.execute(
                     "SELECT invite_code FROM discord_invite_codes WHERE guild_id = ?",
-                    (guild_id,)
+                    (guild_id,),
                 ).fetchall()
                 if rows:
                     codes = {row[0] for row in rows}
-                    log.debug("Invite-Codes aus DB geladen für Guild %s: %s Codes", guild_id, len(codes))
+                    log.debug(
+                        "Invite-Codes aus DB geladen für Guild %s: %s Codes",
+                        guild_id,
+                        len(codes),
+                    )
                     # Cache auch im RAM für schnelleren Zugriff
                     self._invite_codes[guild_id] = codes
                     return codes
         except Exception:
-            log.debug("Konnte Invite-Codes nicht aus DB laden für Guild %s", guild_id, exc_info=True)
-        
+            log.debug(
+                "Konnte Invite-Codes nicht aus DB laden für Guild %s",
+                guild_id,
+                exc_info=True,
+            )
+
         # Fallback: RAM-Cache
         cached = self._invite_codes.get(guild_id)
         if cached:
             log.debug("Invite-Codes aus RAM-Cache für Guild %s", guild_id)
             return cached
-        
+
         # Letzter Fallback: Frisch von Discord API abrufen (nur wenn wirklich nötig)
         guild = self.bot.get_guild(guild_id)
         if not guild:
             log.warning("Guild %s nicht gefunden für Invite-Abruf", guild_id)
             return set()
-        
-        log.info("Invite-Codes nicht gecached - rufe frisch von Discord API ab für Guild %s", guild_id)
+
+        log.info(
+            "Invite-Codes nicht gecached - rufe frisch von Discord API ab für Guild %s",
+            guild_id,
+        )
         try:
             await self._refresh_guild_invites(guild)
             return self._invite_codes.get(guild_id, set())
@@ -229,7 +246,10 @@ class TwitchAdminMixin:
         try:
             with storage.get_conn() as c:
                 deleted = storage.delete_streamer(c, normalized)
-                c.execute("DELETE FROM twitch_live_state WHERE streamer_login=?", (normalized,))
+                c.execute(
+                    "DELETE FROM twitch_live_state WHERE streamer_login=?",
+                    (normalized,),
+                )
         except Exception:
             log.exception("DB-Fehler beim Entfernen von %s", normalized)
             return "Datenbankfehler beim Entfernen."

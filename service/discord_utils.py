@@ -1,6 +1,7 @@
 """
 Shared Discord/Database utilities - eliminiert Duplicate Code über Cogs hinweg.
 """
+
 import asyncio
 import logging
 import re
@@ -17,10 +18,9 @@ _SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # ========= Discord Member/Role Resolution =========
 
+
 async def resolve_guild_and_role(
-    bot: discord.Client,
-    guild_id: int,
-    role_id: int
+    bot: discord.Client, guild_id: int, role_id: int
 ) -> tuple[Optional[discord.Guild], Optional[discord.Role]]:
     """
     Shared utility für Guild + Role Resolution.
@@ -45,8 +45,7 @@ async def resolve_guild_and_role(
 
 
 async def resolve_member(
-    guild: discord.Guild,
-    user_id: int
+    guild: discord.Guild, user_id: int
 ) -> Optional[discord.Member]:
     """
     Resolve Member mit Fetch-Fallback.
@@ -67,6 +66,7 @@ async def resolve_member(
 
 
 # ========= Database Connection Helpers =========
+
 
 class _BufferedAsyncCursor:
     """Buffered async cursor compatibility layer for legacy utilities."""
@@ -119,7 +119,9 @@ class _CentralAsyncDBAdapter:
         rows, rowcount, lastrowid = await asyncio.to_thread(_run)
         return _BufferedAsyncCursor(rows, rowcount, lastrowid)
 
-    async def executemany(self, sql: str, seq_of_params: Iterable[Iterable]) -> _BufferedAsyncCursor:
+    async def executemany(
+        self, sql: str, seq_of_params: Iterable[Iterable]
+    ) -> _BufferedAsyncCursor:
         def _run():
             with central_db.get_conn() as conn:
                 cur = conn.executemany(sql, seq_of_params)
@@ -155,7 +157,11 @@ async def connect_db(db_path: Path | str) -> _CentralAsyncDBAdapter:
     requested = str(Path(db_path))
     active = str(Path(central_db.db_path()))
     if requested != active:
-        logger.warning("connect_db ignored requested path %s (active central DB is %s)", requested, active)
+        logger.warning(
+            "connect_db ignored requested path %s (active central DB is %s)",
+            requested,
+            active,
+        )
     await asyncio.to_thread(central_db.connect)
     return _CentralAsyncDBAdapter()
 
@@ -174,7 +180,9 @@ async def ensure_table_exists(
     if schema is not None:
         if not _SQL_IDENTIFIER_RE.fullmatch(create_table_sql_or_name):
             raise ValueError(f"Unsafe SQL table name: {create_table_sql_or_name!r}")
-        create_table_sql = "CREATE TABLE IF NOT EXISTS " + create_table_sql_or_name + " " + schema
+        create_table_sql = (
+            "CREATE TABLE IF NOT EXISTS " + create_table_sql_or_name + " " + schema
+        )
     else:
         create_table_sql = create_table_sql_or_name
 
@@ -185,9 +193,11 @@ async def ensure_table_exists(
 
     normalized = " ".join(stripped.rstrip(";").split())
     if not normalized.upper().startswith("CREATE TABLE IF NOT EXISTS "):
-        raise ValueError("ensure_table_exists expects a CREATE TABLE IF NOT EXISTS statement")
+        raise ValueError(
+            "ensure_table_exists expects a CREATE TABLE IF NOT EXISTS statement"
+        )
 
-    remainder = normalized[len("CREATE TABLE IF NOT EXISTS "):]
+    remainder = normalized[len("CREATE TABLE IF NOT EXISTS ") :]
     name_match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\s|\()", remainder)
     if not name_match:
         raise ValueError("ensure_table_exists could not parse a safe table name")
@@ -197,6 +207,7 @@ async def ensure_table_exists(
 
 
 # ========= Voice Channel Helpers =========
+
 
 def is_tempvoice_lane(channel: discord.VoiceChannel, category_ids: set[int]) -> bool:
     """
@@ -208,16 +219,11 @@ def is_tempvoice_lane(channel: discord.VoiceChannel, category_ids: set[int]) -> 
     except Exception:
         return False
 
-    return (
-        channel.category_id in category_ids
-        and name.startswith("lane ")
-    )
+    return channel.category_id in category_ids and name.startswith("lane ")
 
 
 async def get_voice_channel_members(
-    channel: discord.VoiceChannel,
-    *,
-    exclude_bots: bool = True
+    channel: discord.VoiceChannel, *, exclude_bots: bool = True
 ) -> List[discord.Member]:
     """
     Iteriere über Channel-Members mit optionalem Bot-Filter.
@@ -233,9 +239,11 @@ async def get_voice_channel_members(
 
 # ========= Environment/Config Helpers =========
 
+
 def get_env_int(key: str, default: int) -> int:
     """Safe int parsing from environment variable."""
     import os
+
     raw = os.getenv(key)
     if not raw:
         return default
@@ -249,6 +257,7 @@ def get_env_int(key: str, default: int) -> int:
 def get_env_bool(key: str, default: bool) -> bool:
     """Safe bool parsing from environment variable."""
     import os
+
     raw = os.getenv(key, "").lower()
     if not raw:
         return default

@@ -8,6 +8,7 @@ from .core import FIXED_LANE_IDS, MINRANK_CATEGORY_IDS, RANK_ORDER
 
 logger = logging.getLogger("cogs.tempvoice.interface")
 
+
 async def setup(bot: commands.Bot):
     """
     Lokales Setup nur für den Fall, dass diese Extension
@@ -19,10 +20,14 @@ async def setup(bot: commands.Bot):
     if core is None:
         try:
             from .core import TempVoiceCore
+
             core = TempVoiceCore(bot)
             await bot.add_cog(core)
         except Exception as e:
-            logger.exception("TempVoiceInterface.setup: Konnte TempVoiceCore nicht initialisieren: %r", e)
+            logger.exception(
+                "TempVoiceInterface.setup: Konnte TempVoiceCore nicht initialisieren: %r",
+                e,
+            )
             return
 
     # 2) Util ermitteln oder anlegen
@@ -30,10 +35,14 @@ async def setup(bot: commands.Bot):
     if util is None:
         try:
             from .util import TempVoiceUtil
+
             util = TempVoiceUtil(core)
             # util ist ein Hilfsobjekt, kein Cog – muss i. d. R. nicht registriert werden
         except Exception as e:
-            logger.exception("TempVoiceInterface.setup: Konnte TempVoiceUtil nicht initialisieren: %r", e)
+            logger.exception(
+                "TempVoiceInterface.setup: Konnte TempVoiceUtil nicht initialisieren: %r",
+                e,
+            )
             return
 
     # 3) Interface-Cog hinzufügen (nur einmal)
@@ -46,13 +55,14 @@ def _find_rank_emoji(guild: Optional[discord.Guild], rank: str):
         return None
     return discord.utils.get(guild.emojis, name=rank)
 
+
 class TempVoiceInterface(commands.Cog):
     """UI/Buttons – persistente View & Interface-Message-Handling"""
 
     def __init__(self, bot: commands.Bot, core, util):
         self.bot = bot
-        self.core = core          # TempVoiceCore
-        self.util = util          # TempVoiceUtil
+        self.core = core  # TempVoiceCore
+        self.util = util  # TempVoiceUtil
 
     async def cog_load(self):
         self.bot.add_view(MainView(self.core, self.util))  # persistente View
@@ -63,13 +73,17 @@ class TempVoiceInterface(commands.Cog):
         await self.ensure_interface_message()
         await self.refresh_all_interfaces()
 
-    async def ensure_interface_message(self, channel_hint: Optional[discord.TextChannel] = None):
+    async def ensure_interface_message(
+        self, channel_hint: Optional[discord.TextChannel] = None
+    ):
         """
         Stellt sicher, dass die Interface-Nachricht existiert – exakt in dem Textkanal,
         in dem der Command ausgeführt wurde (channel_hint).
         Fällt nicht auf andere Channels zurück.
         """
-        ch: Optional[discord.TextChannel] = channel_hint if isinstance(channel_hint, discord.TextChannel) else None
+        ch: Optional[discord.TextChannel] = (
+            channel_hint if isinstance(channel_hint, discord.TextChannel) else None
+        )
         guild = ch.guild if ch else None
 
         if ch is None or guild is None:
@@ -91,22 +105,34 @@ class TempVoiceInterface(commands.Cog):
                 "• **Limit & Sprache:** Setze Teilnehmerlimit (0–99) und Deutsch/Offen-Filter.\n"
                 "• **Owner Claim & Mindest-Rang:** Übernimm die Lane und lege optional einen Mindest-Rang fest."
             ),
-            color=0x2ecc71
+            color=0x2ECC71,
         )
         embed.set_footer(text="Deutsche Deadlock Community • TempVoice")
 
         # Immer in diesem Channel senden (kein Fallback/Fetch anderer Messages)
         try:
             msg = await ch.send(embed=embed, view=MainView(self.core, self.util))
-            await self._record_interface_message(int(guild.id), int(ch.id), int(msg.id), None, None)
+            await self._record_interface_message(
+                int(guild.id), int(ch.id), int(msg.id), None, None
+            )
         except discord.Forbidden:
-            logger.warning("ensure_interface_message: Keine Berechtigung zum Senden in %s (%s)", ch, ch.id)
+            logger.warning(
+                "ensure_interface_message: Keine Berechtigung zum Senden in %s (%s)",
+                ch,
+                ch.id,
+            )
             return None
         except discord.HTTPException as e:
-            logger.warning("ensure_interface_message: HTTP-Fehler beim Senden/Speichern der Interface-Nachricht: %r", e)
+            logger.warning(
+                "ensure_interface_message: HTTP-Fehler beim Senden/Speichern der Interface-Nachricht: %r",
+                e,
+            )
             return None
         except Exception as e:
-            logger.debug("ensure_interface_message: Fehler beim Senden/Speichern der Interface-Nachricht: %r", e)
+            logger.debug(
+                "ensure_interface_message: Fehler beim Senden/Speichern der Interface-Nachricht: %r",
+                e,
+            )
             return None
         return ch
 
@@ -120,26 +146,49 @@ class TempVoiceInterface(commands.Cog):
         try:
             async with ctx.typing():
                 ch = await self.ensure_interface_message(
-                    ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None
+                    ctx.channel
+                    if isinstance(ctx.channel, discord.TextChannel)
+                    else None
                 )
         except discord.Forbidden:
-            await ctx.reply("❌ Keine Berechtigung, um das Interface zu erstellen.", mention_author=False)
+            await ctx.reply(
+                "❌ Keine Berechtigung, um das Interface zu erstellen.",
+                mention_author=False,
+            )
             return
         except Exception as e:
             logger.exception("tvpanel command failed: %r", e)
-            await ctx.reply("❌ Konnte das Interface nicht erstellen (Fehler im Log).", mention_author=False)
+            await ctx.reply(
+                "❌ Konnte das Interface nicht erstellen (Fehler im Log).",
+                mention_author=False,
+            )
             return
         try:
             if isinstance(ch, discord.TextChannel):
-                await ctx.reply(f"✅ TempVoice Interface erstellt/aktualisiert in {ch.mention}.", mention_author=False)
+                await ctx.reply(
+                    f"✅ TempVoice Interface erstellt/aktualisiert in {ch.mention}.",
+                    mention_author=False,
+                )
             else:
-                await ctx.reply("⚠️ Konnte das Interface nicht erstellen (kein Textkanal oder keine Rechte).", mention_author=False)
+                await ctx.reply(
+                    "⚠️ Konnte das Interface nicht erstellen (kein Textkanal oder keine Rechte).",
+                    mention_author=False,
+                )
         except Exception as e:
             logger.exception("tvpanel command failed: %r", e)
-            await ctx.reply("❌ Konnte das Interface nicht erstellen (Fehler im Log).", mention_author=False)
+            await ctx.reply(
+                "❌ Konnte das Interface nicht erstellen (Fehler im Log).",
+                mention_author=False,
+            )
 
-    async def _record_interface_message(self, guild_id: int, channel_id: int, message_id: int,
-                                        category_id: Optional[int], lane_id: Optional[int]):
+    async def _record_interface_message(
+        self,
+        guild_id: int,
+        channel_id: int,
+        message_id: int,
+        category_id: Optional[int],
+        lane_id: Optional[int],
+    ):
         try:
             if lane_id is not None:
                 await self.core.db.execute_async(
@@ -152,7 +201,7 @@ class TempVoiceInterface(commands.Cog):
                         category_id=excluded.category_id,
                         updated_at=CURRENT_TIMESTAMP
                     """,
-                    (guild_id, channel_id, message_id, category_id, lane_id)
+                    (guild_id, channel_id, message_id, category_id, lane_id),
                 )
             else:
                 await self.core.db.execute_async(
@@ -164,13 +213,19 @@ class TempVoiceInterface(commands.Cog):
                         category_id=excluded.category_id,
                         updated_at=CURRENT_TIMESTAMP
                     """,
-                    (guild_id, channel_id, message_id, category_id)
+                    (guild_id, channel_id, message_id, category_id),
                 )
         except Exception as e:
-            logger.debug("_record_interface_message: Persistenz fehlgeschlagen (guild=%s lane=%s): %r",
-                         guild_id, lane_id, e)
+            logger.debug(
+                "_record_interface_message: Persistenz fehlgeschlagen (guild=%s lane=%s): %r",
+                guild_id,
+                lane_id,
+                e,
+            )
 
-    def _lane_embed(self, lane: discord.VoiceChannel, owner_id: Optional[int]) -> discord.Embed:
+    def _lane_embed(
+        self, lane: discord.VoiceChannel, owner_id: Optional[int]
+    ) -> discord.Embed:
         owner_display = "Unbekannt"
         if owner_id:
             owner = lane.guild.get_member(int(owner_id))
@@ -185,12 +240,14 @@ class TempVoiceInterface(commands.Cog):
                 "• Buttons funktionieren nur, wenn du in dieser Lane bist.\n"
                 "• Kick/Ban/Unban, Duo/Trio/Normale Lane, Lurker, Limit, Sprachfilter, Owner Claim und Mindest-Rang direkt hier steuern."
             ),
-            color=0x2ecc71,
+            color=0x2ECC71,
         )
         embed.set_footer(text="Deutsche Deadlock Community • TempVoice")
         return embed
 
-    async def ensure_lane_interface(self, lane: discord.VoiceChannel, owner_id: Optional[int] = None):
+    async def ensure_lane_interface(
+        self, lane: discord.VoiceChannel, owner_id: Optional[int] = None
+    ):
         owner_id = owner_id or self.core.lane_owner.get(lane.id)
         embed = self._lane_embed(lane, owner_id)
 
@@ -198,10 +255,14 @@ class TempVoiceInterface(commands.Cog):
         try:
             row = await self.core.db.query_one_async(
                 "SELECT channel_id, message_id FROM tempvoice_interface WHERE lane_id=?",
-                (int(lane.id),)
+                (int(lane.id),),
             )
         except Exception as e:
-            logger.debug("ensure_lane_interface: DB-Select fehlgeschlagen für Lane %s: %r", lane.id, e)
+            logger.debug(
+                "ensure_lane_interface: DB-Select fehlgeschlagen für Lane %s: %r",
+                lane.id,
+                e,
+            )
 
         if row:
             target = self.bot.get_channel(int(row["channel_id"])) or lane
@@ -213,28 +274,47 @@ class TempVoiceInterface(commands.Cog):
                     int(target.id),
                     int(msg.id),
                     int(lane.category_id) if lane.category_id else None,
-                    int(lane.id)
+                    int(lane.id),
                 )
                 return
             except (discord.NotFound, discord.Forbidden):
                 await self._remove_lane_interface_record(int(lane.id))
             except discord.HTTPException as e:
-                logger.debug("ensure_lane_interface: HTTP-Fehler beim Editieren (Lane %s): %r", lane.id, e)
+                logger.debug(
+                    "ensure_lane_interface: HTTP-Fehler beim Editieren (Lane %s): %r",
+                    lane.id,
+                    e,
+                )
                 return
             except Exception as e:
-                logger.debug("ensure_lane_interface: Fehler beim Editieren (Lane %s): %r", lane.id, e)
+                logger.debug(
+                    "ensure_lane_interface: Fehler beim Editieren (Lane %s): %r",
+                    lane.id,
+                    e,
+                )
                 return
 
         try:
             msg = await lane.send(embed=embed, view=MainView(self.core, self.util))
         except discord.Forbidden:
-            logger.warning("TempVoice Lane Interface: Keine Berechtigung zum Senden in VoiceChannel %s.", lane.id)
+            logger.warning(
+                "TempVoice Lane Interface: Keine Berechtigung zum Senden in VoiceChannel %s.",
+                lane.id,
+            )
             return
         except discord.HTTPException as e:
-            logger.warning("TempVoice Lane Interface: HTTP-Fehler beim Senden in %s: %r", lane.id, e)
+            logger.warning(
+                "TempVoice Lane Interface: HTTP-Fehler beim Senden in %s: %r",
+                lane.id,
+                e,
+            )
             return
         except Exception as e:
-            logger.debug("TempVoice Lane Interface: Unerwarteter Fehler beim Senden in %s: %r", lane.id, e)
+            logger.debug(
+                "TempVoice Lane Interface: Unerwarteter Fehler beim Senden in %s: %r",
+                lane.id,
+                e,
+            )
             return
 
         await self._record_interface_message(
@@ -242,7 +322,7 @@ class TempVoiceInterface(commands.Cog):
             int(lane.id),
             int(msg.id),
             int(lane.category_id) if lane.category_id else None,
-            int(lane.id)
+            int(lane.id),
         )
 
     async def rehydrate_lane_interfaces(self):
@@ -269,26 +349,45 @@ class TempVoiceInterface(commands.Cog):
                 await self.ensure_lane_interface(lane)
                 continue
             except discord.HTTPException as e:
-                logger.debug("rehydrate_lane_interfaces: HTTP-Fehler beim Laden (Lane %s): %r", lane_id, e)
+                logger.debug(
+                    "rehydrate_lane_interfaces: HTTP-Fehler beim Laden (Lane %s): %r",
+                    lane_id,
+                    e,
+                )
                 continue
             except Exception as e:
-                logger.debug("rehydrate_lane_interfaces: Fehler beim Laden (Lane %s): %r", lane_id, e)
+                logger.debug(
+                    "rehydrate_lane_interfaces: Fehler beim Laden (Lane %s): %r",
+                    lane_id,
+                    e,
+                )
                 continue
 
             owner_id = self.core.lane_owner.get(lane_id)
             try:
-                await msg.edit(embed=self._lane_embed(lane, owner_id), view=MainView(self.core, self.util))
+                await msg.edit(
+                    embed=self._lane_embed(lane, owner_id),
+                    view=MainView(self.core, self.util),
+                )
                 await self._record_interface_message(
                     int(lane.guild.id),
                     int(target.id),
                     int(msg.id),
                     int(lane.category_id) if lane.category_id else None,
-                    lane_id
+                    lane_id,
                 )
             except discord.HTTPException as e:
-                logger.debug("rehydrate_lane_interfaces: HTTP-Fehler beim Editieren (Lane %s): %r", lane_id, e)
+                logger.debug(
+                    "rehydrate_lane_interfaces: HTTP-Fehler beim Editieren (Lane %s): %r",
+                    lane_id,
+                    e,
+                )
             except Exception as e:
-                logger.debug("rehydrate_lane_interfaces: Fehler beim Editieren (Lane %s): %r", lane_id, e)
+                logger.debug(
+                    "rehydrate_lane_interfaces: Fehler beim Editieren (Lane %s): %r",
+                    lane_id,
+                    e,
+                )
 
     async def _refresh_global_interface_messages(self):
         """
@@ -312,10 +411,18 @@ class TempVoiceInterface(commands.Cog):
             except (discord.NotFound, discord.Forbidden):
                 continue
             except discord.HTTPException as e:
-                logger.debug("refresh_global_interfaces: fetch fehlgeschlagen f�r Message %s: %r", row["message_id"], e)
+                logger.debug(
+                    "refresh_global_interfaces: fetch fehlgeschlagen f�r Message %s: %r",
+                    row["message_id"],
+                    e,
+                )
                 continue
             except Exception as e:
-                logger.debug("refresh_global_interfaces: unerwarteter Fehler f�r Message %s: %r", row["message_id"], e)
+                logger.debug(
+                    "refresh_global_interfaces: unerwarteter Fehler f�r Message %s: %r",
+                    row["message_id"],
+                    e,
+                )
                 continue
 
             try:
@@ -328,9 +435,17 @@ class TempVoiceInterface(commands.Cog):
                     None,
                 )
             except discord.HTTPException as e:
-                logger.debug("refresh_global_interfaces: edit fehlgeschlagen f�r Message %s: %r", msg.id, e)
+                logger.debug(
+                    "refresh_global_interfaces: edit fehlgeschlagen f�r Message %s: %r",
+                    msg.id,
+                    e,
+                )
             except Exception as e:
-                logger.debug("refresh_global_interfaces: unerwarteter Fehler beim Editieren f�r Message %s: %r", msg.id, e)
+                logger.debug(
+                    "refresh_global_interfaces: unerwarteter Fehler beim Editieren f�r Message %s: %r",
+                    msg.id,
+                    e,
+                )
 
     async def refresh_all_interfaces(self):
         await self._refresh_global_interface_messages()
@@ -339,18 +454,25 @@ class TempVoiceInterface(commands.Cog):
     async def _remove_lane_interface_record(self, lane_id: int):
         try:
             await self.core.db.execute_async(
-                "DELETE FROM tempvoice_interface WHERE lane_id=?",
-                (int(lane_id),)
+                "DELETE FROM tempvoice_interface WHERE lane_id=?", (int(lane_id),)
             )
         except Exception as e:
-            logger.debug("remove_lane_interface_record: DB-Delete fehlgeschlagen für Lane %s: %r", lane_id, e)
+            logger.debug(
+                "remove_lane_interface_record: DB-Delete fehlgeschlagen für Lane %s: %r",
+                lane_id,
+                e,
+            )
 
     @commands.Cog.listener()
-    async def on_tempvoice_lane_created(self, lane: discord.VoiceChannel, owner: discord.Member):
+    async def on_tempvoice_lane_created(
+        self, lane: discord.VoiceChannel, owner: discord.Member
+    ):
         await self.ensure_lane_interface(lane, owner_id=owner.id)
 
     @commands.Cog.listener()
-    async def on_tempvoice_lane_owner_changed(self, lane: discord.VoiceChannel, owner_id: int):
+    async def on_tempvoice_lane_owner_changed(
+        self, lane: discord.VoiceChannel, owner_id: int
+    ):
         await self.ensure_lane_interface(lane, owner_id=owner_id)
 
     @commands.Cog.listener()
@@ -359,6 +481,7 @@ class TempVoiceInterface(commands.Cog):
 
 
 # -------------------- UI Komponenten --------------------
+
 
 class MainView(discord.ui.View):
     def __init__(self, core, util):
@@ -385,7 +508,11 @@ class MainView(discord.ui.View):
     @staticmethod
     def lane_of(itx: discord.Interaction) -> Optional[discord.VoiceChannel]:
         m: discord.Member = itx.user  # type: ignore
-        lane = m.voice.channel if (m.voice and isinstance(m.voice.channel, discord.VoiceChannel)) else None
+        lane = (
+            m.voice.channel
+            if (m.voice and isinstance(m.voice.channel, discord.VoiceChannel))
+            else None
+        )
         if lane is None:
             return None
         if lane.id in FIXED_LANE_IDS:
@@ -395,18 +522,28 @@ class MainView(discord.ui.View):
 
 class RegionDEButton(discord.ui.Button):
     def __init__(self, core):
-        super().__init__(label="🇩🇪 DE", style=discord.ButtonStyle.primary, row=0, custom_id="tv_region_de")
+        super().__init__(
+            label="🇩🇪 DE",
+            style=discord.ButtonStyle.primary,
+            row=0,
+            custom_id="tv_region_de",
+        )
         self.core = core
+
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
-            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
+            await itx.response.send_message(
+                "Tritt zuerst deiner Lane bei.", ephemeral=True
+            )
             return
         owner_id = self.core.lane_owner.get(lane.id, m.id)
         perms = lane.permissions_for(m)
         if not (owner_id == m.id or perms.manage_channels or perms.administrator):
-            await itx.response.send_message("Nur Owner/Mods dürfen den Sprachfilter ändern.", ephemeral=True)
+            await itx.response.send_message(
+                "Nur Owner/Mods dürfen den Sprachfilter ändern.", ephemeral=True
+            )
             return
         # Interaction sofort bestätigen, damit das Token nicht abläuft
         await itx.response.defer(ephemeral=True)
@@ -414,20 +551,31 @@ class RegionDEButton(discord.ui.Button):
         await self.core.apply_owner_region_to_lane(lane, owner_id)
         await itx.followup.send("Deutsch-Only aktiv.", ephemeral=True)
 
+
 class RegionEUButton(discord.ui.Button):
     def __init__(self, core):
-        super().__init__(label="🇪🇺 EU", style=discord.ButtonStyle.secondary, row=0, custom_id="tv_region_e")
+        super().__init__(
+            label="🇪🇺 EU",
+            style=discord.ButtonStyle.secondary,
+            row=0,
+            custom_id="tv_region_e",
+        )
         self.core = core
+
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
-            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
+            await itx.response.send_message(
+                "Tritt zuerst deiner Lane bei.", ephemeral=True
+            )
             return
         owner_id = self.core.lane_owner.get(lane.id, m.id)
         perms = lane.permissions_for(m)
         if not (owner_id == m.id or perms.manage_channels or perms.administrator):
-            await itx.response.send_message("Nur Owner/Mods dürfen den Sprachfilter ändern.", ephemeral=True)
+            await itx.response.send_message(
+                "Nur Owner/Mods dürfen den Sprachfilter ändern.", ephemeral=True
+            )
             return
         # Interaction sofort bestätigen, damit das Token nicht abläuft
         await itx.response.defer(ephemeral=True)
@@ -435,48 +583,77 @@ class RegionEUButton(discord.ui.Button):
         await self.core.apply_owner_region_to_lane(lane, owner_id)
         await itx.followup.send("Sprachfilter aufgehoben (EU).", ephemeral=True)
 
+
 class OwnerClaimButton(discord.ui.Button):
     def __init__(self, core):
-        super().__init__(label="👑 Owner Claim", style=discord.ButtonStyle.success, row=0, custom_id="tv_owner_claim")
+        super().__init__(
+            label="👑 Owner Claim",
+            style=discord.ButtonStyle.success,
+            row=0,
+            custom_id="tv_owner_claim",
+        )
         self.core = core
+
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
-            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
+            await itx.response.send_message(
+                "Tritt zuerst deiner Lane bei.", ephemeral=True
+            )
             return
         await self.core.transfer_owner(lane, m.id)
-        await itx.response.send_message("Du bist jetzt Owner dieser Lane.", ephemeral=True)
+        await itx.response.send_message(
+            "Du bist jetzt Owner dieser Lane.", ephemeral=True
+        )
+
 
 class LimitButton(discord.ui.Button):
     def __init__(self, core):
-        super().__init__(label="🎚️ Limit setzen", style=discord.ButtonStyle.secondary, row=0, custom_id="tv_limit_btn")
+        super().__init__(
+            label="🎚️ Limit setzen",
+            style=discord.ButtonStyle.secondary,
+            row=0,
+            custom_id="tv_limit_btn",
+        )
         self.core = core
+
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
-            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
+            await itx.response.send_message(
+                "Tritt zuerst deiner Lane bei.", ephemeral=True
+            )
             return
         owner_id = self.core.lane_owner.get(lane.id, m.id)
         perms = lane.permissions_for(m)
         if not (owner_id == m.id or perms.manage_channels or perms.administrator):
-            await itx.response.send_message("Nur Owner/Mods dürfen das Limit setzen.", ephemeral=True)
+            await itx.response.send_message(
+                "Nur Owner/Mods dürfen das Limit setzen.", ephemeral=True
+            )
             return
         await itx.response.send_modal(LimitModal(self.core, lane))
 
+
 class LimitModal(discord.ui.Modal, title="Limit setzen"):
-    value = discord.ui.TextInput(label="Limit (0-99)", placeholder="z.B. 6", required=True, max_length=2)
+    value = discord.ui.TextInput(
+        label="Limit (0-99)", placeholder="z.B. 6", required=True, max_length=2
+    )
+
     def __init__(self, core, lane: discord.VoiceChannel):
         super().__init__(timeout=120)
         self.core = core
         self.lane = lane
+
     async def on_submit(self, itx: discord.Interaction):
         txt = str(self.value.value).strip()
         try:
             val = int(txt)
         except ValueError:
-            await itx.response.send_message("Bitte Zahl (0-99) eingeben.", ephemeral=True)
+            await itx.response.send_message(
+                "Bitte Zahl (0-99) eingeben.", ephemeral=True
+            )
             return
         if val < 0 or val > 99:
             await itx.response.send_message("Limit muss 0-99 sein.", ephemeral=True)
@@ -491,7 +668,9 @@ class LimitModal(discord.ui.Modal, title="Limit setzen"):
             logger.debug("LimitModal: defer fehlgeschlagen: %r", e)
         except Exception as e:
             logger.debug("LimitModal: unerwarteter defer-Fehler: %r", e)
-        await self.core.safe_edit_channel(self.lane, desired_limit=enforced_val, reason="TempVoice: Limit gesetzt")
+        await self.core.safe_edit_channel(
+            self.lane, desired_limit=enforced_val, reason="TempVoice: Limit gesetzt"
+        )
         await self.core.refresh_name(self.lane)
         msg = f"Limit auf {enforced_val} gesetzt."
         if enforced_val != val:
@@ -503,9 +682,14 @@ class LimitModal(discord.ui.Modal, title="Limit setzen"):
         except Exception as e:
             logger.debug("LimitModal: unerwarteter followup-Fehler: %r", e)
 
+
 class QuickTemplateButton(discord.ui.Button):
-    def __init__(self, core, *, label: str, template_name: str, limit: int, custom_id: str):
-        super().__init__(label=label, style=discord.ButtonStyle.primary, row=3, custom_id=custom_id)
+    def __init__(
+        self, core, *, label: str, template_name: str, limit: int, custom_id: str
+    ):
+        super().__init__(
+            label=label, style=discord.ButtonStyle.primary, row=3, custom_id=custom_id
+        )
         self.core = core
         self.template_name = template_name
         self.limit = limit
@@ -514,48 +698,79 @@ class QuickTemplateButton(discord.ui.Button):
         m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
-            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
+            await itx.response.send_message(
+                "Tritt zuerst deiner Lane bei.", ephemeral=True
+            )
             return
         owner_id = self.core.lane_owner.get(lane.id, m.id)
         perms = lane.permissions_for(m)
         if not (owner_id == m.id or perms.manage_channels or perms.administrator):
-            await itx.response.send_message("Nur Owner/Mods d�rfen Templates benutzen.", ephemeral=True)
+            await itx.response.send_message(
+                "Nur Owner/Mods d�rfen Templates benutzen.", ephemeral=True
+            )
             return
-        await self.core.set_lane_template(lane, base_name=self.template_name, limit=self.limit)
+        await self.core.set_lane_template(
+            lane, base_name=self.template_name, limit=self.limit
+        )
         await itx.response.send_message(
             f"Lane auf {self.template_name} gestellt (Limit {self.limit}).",
             ephemeral=True,
         )
 
+
 class DuoCallButton(QuickTemplateButton):
     def __init__(self, core):
-        super().__init__(core, label="Duo Call (2)", template_name="Duo Call", limit=2, custom_id="tv_tpl_duo")
+        super().__init__(
+            core,
+            label="Duo Call (2)",
+            template_name="Duo Call",
+            limit=2,
+            custom_id="tv_tpl_duo",
+        )
+
 
 class TrioCallButton(QuickTemplateButton):
     def __init__(self, core):
-        super().__init__(core, label="Trio Call (3)", template_name="Trio Call", limit=3, custom_id="tv_tpl_trio")
+        super().__init__(
+            core,
+            label="Trio Call (3)",
+            template_name="Trio Call",
+            limit=3,
+            custom_id="tv_tpl_trio",
+        )
+
 
 class ResetLaneButton(discord.ui.Button):
     def __init__(self, core):
-        super().__init__(label="Normale Lane", style=discord.ButtonStyle.secondary, row=3, custom_id="tv_tpl_reset")
+        super().__init__(
+            label="Normale Lane",
+            style=discord.ButtonStyle.secondary,
+            row=3,
+            custom_id="tv_tpl_reset",
+        )
         self.core = core
 
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
-            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
+            await itx.response.send_message(
+                "Tritt zuerst deiner Lane bei.", ephemeral=True
+            )
             return
         owner_id = self.core.lane_owner.get(lane.id, m.id)
         perms = lane.permissions_for(m)
         if not (owner_id == m.id or perms.manage_channels or perms.administrator):
-            await itx.response.send_message("Nur Owner/Mods d�rfen Templates benutzen.", ephemeral=True)
+            await itx.response.send_message(
+                "Nur Owner/Mods d�rfen Templates benutzen.", ephemeral=True
+            )
             return
         base, limit = await self.core.reset_lane_template(lane)
         await itx.response.send_message(
             f"Lane auf {base} zur�ckgesetzt (Limit {limit}).",
             ephemeral=True,
         )
+
 
 class MinRankSelect(discord.ui.Select):
     def __init__(self, core):
@@ -564,25 +779,65 @@ class MinRankSelect(discord.ui.Select):
         ref_guild = self.core.first_guild()
         if ref_guild:
             guild = ref_guild
-        options = [discord.SelectOption(label="Kein Limit (Jeder)", value="unknown", emoji=_find_rank_emoji(guild,"unknown") or "✅")]
+        options = [
+            discord.SelectOption(
+                label="Kein Limit (Jeder)",
+                value="unknown",
+                emoji=_find_rank_emoji(guild, "unknown") or "✅",
+            )
+        ]
         for r in RANK_ORDER[1:]:
-            options.append(discord.SelectOption(label=r.capitalize(), value=r, emoji=_find_rank_emoji(guild,r)))
-        super().__init__(placeholder="Mindest-Rang (Lane, falls aktiviert)", min_values=1, max_values=1, options=options, row=2, custom_id="tv_minrank")
+            options.append(
+                discord.SelectOption(
+                    label=r.capitalize(), value=r, emoji=_find_rank_emoji(guild, r)
+                )
+            )
+        super().__init__(
+            placeholder="Mindest-Rang (Lane, falls aktiviert)",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=2,
+            custom_id="tv_minrank",
+        )
+
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
-            await itx.response.send_message("Tritt zuerst deiner Lane bei.", ephemeral=True)
+            await itx.response.send_message(
+                "Tritt zuerst deiner Lane bei.", ephemeral=True
+            )
             return
-        if getattr(self.core, "is_min_rank_blocked", None) and self.core.is_min_rank_blocked(lane):  # type: ignore[attr-defined]
-            await itx.response.send_message("Mindest-Rang ist hier deaktiviert.", ephemeral=True)
+        if getattr(
+            self.core, "is_min_rank_blocked", None
+        ) and self.core.is_min_rank_blocked(lane):  # type: ignore[attr-defined]
+            await itx.response.send_message(
+                "Mindest-Rang ist hier deaktiviert.", ephemeral=True
+            )
             return
         if lane.category_id not in MINRANK_CATEGORY_IDS:
-            await itx.response.send_message("Mindest-Rang ist hier deaktiviert.", ephemeral=True)
+            await itx.response.send_message(
+                "Mindest-Rang ist hier deaktiviert.", ephemeral=True
+            )
             return
         choice = self.values[0]
+
         def _idx(name: str) -> int:
-            order = ["unknown","initiate","seeker","alchemist","arcanist","ritualist","emissary","archon","oracle","phantom","ascendant","eternus"]
+            order = [
+                "unknown",
+                "initiate",
+                "seeker",
+                "alchemist",
+                "arcanist",
+                "ritualist",
+                "emissary",
+                "archon",
+                "oracle",
+                "phantom",
+                "ascendant",
+                "eternus",
+            ]
             try:
                 return order.index(name)
             except ValueError:
@@ -593,7 +848,11 @@ class MinRankSelect(discord.ui.Select):
             member_rank_idx = max(member_rank_idx, _idx(role.name.lower()))
         choice_idx = _idx(choice)
         if choice_idx > member_rank_idx:
-            user_rank_label = RANK_ORDER[member_rank_idx].capitalize() if member_rank_idx < len(RANK_ORDER) else "Unknown"
+            user_rank_label = (
+                RANK_ORDER[member_rank_idx].capitalize()
+                if member_rank_idx < len(RANK_ORDER)
+                else "Unknown"
+            )
             await itx.response.send_message(
                 f"Du kannst keinen Mindest-Rang über deinem eigenen setzen. Dein Rang: {user_rank_label}.",
                 ephemeral=True,
@@ -613,38 +872,64 @@ class MinRankSelect(discord.ui.Select):
 
         label = "Kein Limit" if choice == "unknown" else choice.capitalize()
         try:
-            await itx.followup.send(f"Mindest-Rang gesetzt auf: {label}.", ephemeral=True)
+            await itx.followup.send(
+                f"Mindest-Rang gesetzt auf: {label}.", ephemeral=True
+            )
         except Exception as e:
             logger.debug("MinRankSelect followup fehlgeschlagen: %r", e)
 
+
 class KickButton(discord.ui.Button):
     def __init__(self, util):
-        super().__init__(label="👢 Kick", style=discord.ButtonStyle.secondary, row=1, custom_id="tv_kick")
+        super().__init__(
+            label="👢 Kick",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+            custom_id="tv_kick",
+        )
         self.util = util
+
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
-            await itx.response.send_message("Du musst in einer Lane sein.", ephemeral=True)
+            await itx.response.send_message(
+                "Du musst in einer Lane sein.", ephemeral=True
+            )
             return
         owner_id = itx.client.get_cog("TempVoiceCore").lane_owner.get(lane.id, m.id)  # type: ignore
         perms = lane.permissions_for(m)
         if not (owner_id == m.id or perms.manage_channels or perms.administrator):
-            await itx.response.send_message("Nur Owner/Mods dürfen kicken.", ephemeral=True)
+            await itx.response.send_message(
+                "Nur Owner/Mods dürfen kicken.", ephemeral=True
+            )
             return
-        options = [discord.SelectOption(label=u.display_name, value=str(u.id)) for u in lane.members if u.id != m.id]
+        options = [
+            discord.SelectOption(label=u.display_name, value=str(u.id))
+            for u in lane.members
+            if u.id != m.id
+        ]
         if not options:
-            await itx.response.send_message("Niemand zum Kicken vorhanden.", ephemeral=True)
+            await itx.response.send_message(
+                "Niemand zum Kicken vorhanden.", ephemeral=True
+            )
             return
         view = KickSelectView(self.util, lane, options)
-        await itx.response.send_message("Wen möchtest du kicken?", view=view, ephemeral=True)
+        await itx.response.send_message(
+            "Wen möchtest du kicken?", view=view, ephemeral=True
+        )
+
 
 class KickSelect(discord.ui.Select):
     def __init__(self, options, placeholder="Mitglied wählen …"):
-        super().__init__(min_values=1, max_values=1, options=options, placeholder=placeholder)
+        super().__init__(
+            min_values=1, max_values=1, options=options, placeholder=placeholder
+        )
+
     async def callback(self, itx: discord.Interaction):
         view: "KickSelectView" = self.view  # type: ignore
         await view.handle_kick(itx, int(self.values[0]))
+
 
 class KickSelectView(discord.ui.View):
     def __init__(self, util, lane: discord.VoiceChannel, options):
@@ -652,66 +937,104 @@ class KickSelectView(discord.ui.View):
         self.util = util
         self.lane = lane
         self.add_item(KickSelect(options))
+
     async def handle_kick(self, itx: discord.Interaction, target_id: int):
-        ok, msg = await self.util.kick(self.lane, target_id, reason=f"Kick durch {itx.user}")
+        ok, msg = await self.util.kick(
+            self.lane, target_id, reason=f"Kick durch {itx.user}"
+        )
         await itx.response.send_message(msg, ephemeral=True)
+
 
 class BanButton(discord.ui.Button):
     def __init__(self, util):
-        super().__init__(label="🚫 Ban", style=discord.ButtonStyle.danger, row=1, custom_id="tv_ban")
+        super().__init__(
+            label="🚫 Ban", style=discord.ButtonStyle.danger, row=1, custom_id="tv_ban"
+        )
         self.util = util
+
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
-            await itx.response.send_message("Du musst in einer Lane sein.", ephemeral=True)
+            await itx.response.send_message(
+                "Du musst in einer Lane sein.", ephemeral=True
+            )
             return
         owner_id = itx.client.get_cog("TempVoiceCore").lane_owner.get(lane.id)  # type: ignore
         if owner_id is None:
-            await itx.response.send_message("Aktuell ist kein Owner gesetzt.", ephemeral=True)
+            await itx.response.send_message(
+                "Aktuell ist kein Owner gesetzt.", ephemeral=True
+            )
             return
         perms = lane.permissions_for(m)
         if owner_id != m.id and not perms.administrator:
-            await itx.response.send_message("Nur der Owner darf bannen.", ephemeral=True)
+            await itx.response.send_message(
+                "Nur der Owner darf bannen.", ephemeral=True
+            )
             return
         await itx.response.send_modal(BanModal(self.util, lane, action="ban"))
 
+
 class UnbanButton(discord.ui.Button):
     def __init__(self, util):
-        super().__init__(label="♻️ Unban", style=discord.ButtonStyle.primary, row=1, custom_id="tv_unban")
+        super().__init__(
+            label="♻️ Unban",
+            style=discord.ButtonStyle.primary,
+            row=1,
+            custom_id="tv_unban",
+        )
         self.util = util
+
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
-            await itx.response.send_message("Du musst in einer Lane sein.", ephemeral=True)
+            await itx.response.send_message(
+                "Du musst in einer Lane sein.", ephemeral=True
+            )
             return
         owner_id = itx.client.get_cog("TempVoiceCore").lane_owner.get(lane.id)  # type: ignore
         if owner_id is None:
-            await itx.response.send_message("Aktuell ist kein Owner gesetzt.", ephemeral=True)
+            await itx.response.send_message(
+                "Aktuell ist kein Owner gesetzt.", ephemeral=True
+            )
             return
         perms = lane.permissions_for(m)
         if owner_id != m.id and not perms.administrator:
-            await itx.response.send_message("Nur der Owner darf entbannen.", ephemeral=True)
+            await itx.response.send_message(
+                "Nur der Owner darf entbannen.", ephemeral=True
+            )
             return
         await itx.response.send_modal(BanModal(self.util, lane, action="unban"))
 
+
 class BanModal(discord.ui.Modal, title="User (Un)Ban"):
-    target = discord.ui.TextInput(label="User (@Mention/Name/ID)", placeholder="@Name oder 123456789012345678", required=True, max_length=64)
+    target = discord.ui.TextInput(
+        label="User (@Mention/Name/ID)",
+        placeholder="@Name oder 123456789012345678",
+        required=True,
+        max_length=64,
+    )
+
     def __init__(self, util, lane: discord.VoiceChannel, action: str):
         super().__init__(timeout=120)
         self.util = util
         self.lane = lane
         self.action = action
+
     async def on_submit(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         owner_id = itx.client.get_cog("TempVoiceCore").lane_owner.get(self.lane.id)  # type: ignore
         if owner_id is None:
-            await itx.response.send_message("Aktuell ist kein Owner gesetzt.", ephemeral=True)
+            await itx.response.send_message(
+                "Aktuell ist kein Owner gesetzt.", ephemeral=True
+            )
             return
         perms = self.lane.permissions_for(m)
         if owner_id != m.id and not perms.administrator:
-            await itx.response.send_message("Nur der Owner darf (un)bannen.", ephemeral=True)
+            await itx.response.send_message(
+                "Nur der Owner darf (un)bannen.", ephemeral=True
+            )
             return
         raw = str(self.target.value).strip()
         try:
@@ -732,20 +1055,26 @@ class BanModal(discord.ui.Modal, title="User (Un)Ban"):
         except Exception as e:
             logger.debug("BanModal: unerwarteter followup-Fehler: %r", e)
 
+
 class LurkerButton(discord.ui.Button):
     def __init__(self, util):
-        super().__init__(label="👻 Lurker", style=discord.ButtonStyle.secondary, row=3, custom_id="tv_lurker")
+        super().__init__(
+            label="👻 Lurker",
+            style=discord.ButtonStyle.secondary,
+            row=3,
+            custom_id="tv_lurker",
+        )
         self.util = util
 
     async def callback(self, itx: discord.Interaction):
         m: discord.Member = itx.user  # type: ignore
         lane = MainView.lane_of(itx)
         if not lane:
-            await itx.response.send_message("Du musst in einer Lane sein.", ephemeral=True)
+            await itx.response.send_message(
+                "Du musst in einer Lane sein.", ephemeral=True
+            )
             return
 
         await itx.response.defer(ephemeral=True, thinking=False)
         ok, msg = await self.util.toggle_lurker(lane, m)
         await itx.followup.send(msg, ephemeral=True)
-
-

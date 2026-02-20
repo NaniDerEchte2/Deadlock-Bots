@@ -32,7 +32,9 @@ class RenameManagerCog(commands.Cog):
         await self._ensure_db_schema()
         await self._recover_stuck_requests()
         if settings.use_db_rename_worker:
-            logger.info("RenameManagerCog loaded in enqueue-only mode (USE_DB_RENAME_WORKER=1).")
+            logger.info(
+                "RenameManagerCog loaded in enqueue-only mode (USE_DB_RENAME_WORKER=1)."
+            )
             return
         logger.info("RenameManagerCog loaded. Starting rename queue processor.")
         self._start_rename_processor()
@@ -53,7 +55,10 @@ class RenameManagerCog(commands.Cog):
             if self.bot.user and self.bot.user.id:
                 return int(self.bot.user.id)
         except Exception:
-            logger.debug("RenameManagerCog: failed to resolve worker id from bot user", exc_info=True)
+            logger.debug(
+                "RenameManagerCog: failed to resolve worker id from bot user",
+                exc_info=True,
+            )
         return 1
 
     async def _ensure_db_schema(self) -> None:
@@ -104,7 +109,9 @@ class RenameManagerCog(commands.Cog):
             """
         )
 
-    async def _enqueue_request(self, channel_id: int, new_name: str, reason: str) -> None:
+    async def _enqueue_request(
+        self, channel_id: int, new_name: str, reason: str
+    ) -> None:
         channel_id = int(channel_id)
         new_name = str(new_name).strip()
         reason = str(reason or "Automated Rename").strip()
@@ -162,7 +169,9 @@ class RenameManagerCog(commands.Cog):
                 "retry_count": int(row["retry_count"] or 0),
             }
 
-    async def _set_request_pending(self, request_id: int, *, last_error: Optional[str], increment_retry: bool) -> None:
+    async def _set_request_pending(
+        self, request_id: int, *, last_error: Optional[str], increment_retry: bool
+    ) -> None:
         if increment_retry:
             await db.execute_async(
                 """
@@ -245,18 +254,31 @@ class RenameManagerCog(commands.Cog):
 
                 channel = self.bot.get_channel(channel_id)
                 if not isinstance(channel, discord.VoiceChannel):
-                    logger.warning("Rename Queue (DB): Channel %s not found or not a voice channel. Marking FAILED.", channel_id)
-                    await self._set_request_failed(req_id, last_error="Channel not found or not voice")
+                    logger.warning(
+                        "Rename Queue (DB): Channel %s not found or not a voice channel. Marking FAILED.",
+                        channel_id,
+                    )
+                    await self._set_request_failed(
+                        req_id, last_error="Channel not found or not voice"
+                    )
                     continue
 
                 if channel.name == new_name:
-                    logger.debug("Rename Queue (DB): Channel %s already has desired name. Marking DONE.", channel.name)
+                    logger.debug(
+                        "Rename Queue (DB): Channel %s already has desired name. Marking DONE.",
+                        channel.name,
+                    )
                     await self._set_request_done(req_id)
                     continue
 
                 try:
                     await channel.edit(name=new_name, reason=reason)
-                    logger.debug("Channel renamed (DB queue): %s -> %s (Reason: %s)", channel.name, new_name, reason)
+                    logger.debug(
+                        "Channel renamed (DB queue): %s -> %s (Reason: %s)",
+                        channel.name,
+                        new_name,
+                        reason,
+                    )
                     self._last_rename_attempt_by_channel[channel_id] = time.monotonic()
                     await self._set_request_done(req_id)
                 except discord.HTTPException as e:
@@ -267,7 +289,9 @@ class RenameManagerCog(commands.Cog):
                             channel.name,
                             retry_after,
                         )
-                        self._last_rename_attempt_by_channel[channel_id] = time.monotonic()
+                        self._last_rename_attempt_by_channel[channel_id] = (
+                            time.monotonic()
+                        )
                         await self._set_request_pending(
                             req_id,
                             last_error=f"HTTP 429 (retry_after={retry_after})",
@@ -276,7 +300,9 @@ class RenameManagerCog(commands.Cog):
                         await asyncio.sleep(retry_after)
                     else:
                         if retry_count + 1 >= MAX_RETRIES:
-                            await self._set_request_failed(req_id, last_error=f"HTTP {e.status}: {e}")
+                            await self._set_request_failed(
+                                req_id, last_error=f"HTTP {e.status}: {e}"
+                            )
                         else:
                             await self._set_request_pending(
                                 req_id,
@@ -285,7 +311,9 @@ class RenameManagerCog(commands.Cog):
                             )
                 except Exception as e:
                     if retry_count + 1 >= MAX_RETRIES:
-                        await self._set_request_failed(req_id, last_error=f"Unexpected error: {e}")
+                        await self._set_request_failed(
+                            req_id, last_error=f"Unexpected error: {e}"
+                        )
                     else:
                         await self._set_request_pending(
                             req_id,
@@ -296,12 +324,16 @@ class RenameManagerCog(commands.Cog):
                 logger.info("Rename queue processor (DB) cancelled.")
                 break
             except Exception as e:
-                logger.error("Rename queue processor (DB) crashed: %s", e, exc_info=True)
+                logger.error(
+                    "Rename queue processor (DB) crashed: %s", e, exc_info=True
+                )
                 await asyncio.sleep(ERROR_BACKOFF_SECONDS)
 
         logger.info("Rename queue processor (DB) stopped.")
 
-    def queue_local_rename_request(self, channel_id: int, new_name: str, reason: str = "Automated Rename"):
+    def queue_local_rename_request(
+        self, channel_id: int, new_name: str, reason: str = "Automated Rename"
+    ):
         self.bot.loop.create_task(self._enqueue_request(channel_id, new_name, reason))
 
 

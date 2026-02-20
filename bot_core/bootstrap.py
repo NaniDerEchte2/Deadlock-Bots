@@ -30,38 +30,60 @@ def _load_secrets_from_keyring() -> None:
     try:
         import keyring
     except ImportError:
-        logging.getLogger().debug("keyring nicht installiert, überspringe Tresor-Check.")
+        logging.getLogger().debug(
+            "keyring nicht installiert, überspringe Tresor-Check."
+        )
         return
 
     service_name = "DeadlockBot"
     # Liste der Schlüssel, die wir im Tresor erwarten
     keys_to_check = [
-        "DISCORD_TOKEN", "DISCORD_TOKEN_WORKER", "DISCORD_TOKEN_RANKED", "DISCORD_TOKEN_PATCHNOTES",
-        "DISCORD_OAUTH_CLIENT_ID", "DISCORD_OAUTH_CLIENT_SECRET",
-        "STEAM_API_KEY", "STEAM_BOT_PASSWORD", "STEAM_BOT_USERNAME",
-        "STEAM_GUARD_EMAIL", "STEAM_EMAIL_ACCOUNT_PASSWORD",
-        "TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET", "TWITCH_BOT_CLIENT_ID", "TWITCH_BOT_CLIENT_SECRET", "TWITCH_BOT_TOKEN", "TWITCH_BOT_REFRESH_TOKEN",
-        "TWITCH_RAID_REDIRECT_URI", "TWITCH_WEBHOOK_SECRET",
-        "OPENAI_API_KEY", "GEMINI_API_KEY", "PERPLEXITY_API_KEY", "GITHUB_TOKEN", "PPLX_API_KEY",
-        "aws_access_key_id", "aws_secret_access_key", "DEADLOCK_API_KEY", "BOT_TOKEN"
+        "DISCORD_TOKEN",
+        "DISCORD_TOKEN_WORKER",
+        "DISCORD_TOKEN_RANKED",
+        "DISCORD_TOKEN_PATCHNOTES",
+        "DISCORD_OAUTH_CLIENT_ID",
+        "DISCORD_OAUTH_CLIENT_SECRET",
+        "STEAM_API_KEY",
+        "STEAM_BOT_PASSWORD",
+        "STEAM_BOT_USERNAME",
+        "STEAM_GUARD_EMAIL",
+        "STEAM_EMAIL_ACCOUNT_PASSWORD",
+        "TWITCH_CLIENT_ID",
+        "TWITCH_CLIENT_SECRET",
+        "TWITCH_BOT_CLIENT_ID",
+        "TWITCH_BOT_CLIENT_SECRET",
+        "TWITCH_BOT_TOKEN",
+        "TWITCH_BOT_REFRESH_TOKEN",
+        "TWITCH_RAID_REDIRECT_URI",
+        "TWITCH_WEBHOOK_SECRET",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "GITHUB_TOKEN",
+        "PPLX_API_KEY",
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "DEADLOCK_API_KEY",
+        "BOT_TOKEN",
     ]
-    
+
     loaded_keys = []
     for key in keys_to_check:
         try:
             # Variante 1: Adresse=DeadlockBot, Benutzer=KEY
             val = keyring.get_password(service_name, key)
-            
+
             # Variante 2: Adresse=KEY@DeadlockBot, Benutzer=KEY (deine übersichtliche Variante)
             if not val:
                 val = keyring.get_password(f"{key}@{service_name}", key)
-            
+
             if val:
                 os.environ[key] = val
                 loaded_keys.append(key)
         except Exception:
             pass  # Ignorieren, wenn Key nicht im Tresor
-            
+
     if loaded_keys:
         logging.getLogger().info(
             "🔐 %d Einträge aus Windows Tresor (%s) geladen.",
@@ -69,7 +91,8 @@ def _load_secrets_from_keyring() -> None:
             service_name,
         )
 
-  # nosemgrep
+
+# nosemgrep
 def _load_env_robust() -> str | None:
     try:
         from dotenv import load_dotenv
@@ -97,7 +120,7 @@ def _load_env_robust() -> str | None:
                 return str(path)
         except Exception as exc:
             logging.getLogger().debug("Konnte .env nicht laden (%s): %r", path, exc)
-    
+
     # NACH dem Laden der Datei: Tresor checken und ggf. überschreiben
     _load_secrets_from_keyring()
     return None
@@ -127,7 +150,8 @@ def _log_secret_present(name: str, env_keys: List[str], mode: str = "off") -> No
     except Exception:
         logging.getLogger().debug("Env-Check fehlgeschlagen (%s)", name)
 
-  # nosemgrep
+
+# nosemgrep
 class _RedactSecretsFilter(logging.Filter):
     def __init__(self, keys: List[str]):
         super().__init__()
@@ -141,7 +165,7 @@ class _RedactSecretsFilter(logging.Filter):
             for secret in self.secrets:
                 if secret and secret in redacted:
                     redacted = redacted.replace(secret, "***REDACTED***")
-            
+
             # Da wir die Nachricht jetzt fertig formatiert haben (getMessage),
             # müssen wir record.args leeren. Sonst versucht der Formatter später
             # erneut, args in den String einzufügen, was zum TypeError führt.
@@ -157,7 +181,9 @@ def _configure_root_logging() -> None:
     root = logging.getLogger()
     if root.handlers:
         return
-    logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout)])
+    logging.basicConfig(
+        level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout)]
+    )
 
 
 def _install_workerproxy_shim() -> None:
@@ -205,13 +231,17 @@ def _init_db_if_available() -> None:
     try:
         from service import db as _db  # Deadlock-Bots/service/db.py
     except Exception as exc:
-        logging.critical("Zentrale DB-Modul 'service.db' konnte nicht importiert werden: %s", exc)
+        logging.critical(
+            "Zentrale DB-Modul 'service.db' konnte nicht importiert werden: %s", exc
+        )
         return
     try:
         _db.connect()
         logging.info("Zentrale DB initialisiert (quiet) via service.db.")
     except Exception as exc:
-        logging.critical("Zentrale DB (service.db) konnte nicht initialisiert werden: %s", exc)
+        logging.critical(
+            "Zentrale DB (service.db) konnte nicht initialisiert werden: %s", exc
+        )
 
 
 def _log_runtime_info() -> None:

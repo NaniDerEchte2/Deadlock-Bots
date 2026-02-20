@@ -13,7 +13,9 @@ class PresenceMixin:
 
     def active_cogs(self) -> List[str]:
         """Aktuell geladene Extensions (runtime), nur 'cogs.'-Namespace."""
-        return sorted([ext for ext in self.extensions.keys() if ext.startswith("cogs.")])
+        return sorted(
+            [ext for ext in self.extensions.keys() if ext.startswith("cogs.")]
+        )
 
     async def update_presence(self):
         """Presence immer anhand der echten Runtime-Anzahl setzen."""
@@ -38,11 +40,18 @@ class PresenceMixin:
             await self.dashboard.start()
             logging.info("Dashboard HTTP server startup completed.")
         except RuntimeError as e:
-            logging.error(f"Dashboard konnte nicht gestartet werden: {e}. Laeuft bereits ein anderer Prozess?")
+            logging.error(
+                f"Dashboard konnte nicht gestartet werden: {e}. Laeuft bereits ein anderer Prozess?"
+            )
         except Exception as e:
             logging.error(f"Dashboard konnte nicht gestartet werden: {e}")
 
-    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    async def on_voice_state_update(
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ):
         """
         Voice Event Router - verteilt Voice State Updates parallel an alle Handler-Cogs.
         Verhindert sequenzielle Abarbeitung (40% schneller!).
@@ -59,13 +68,20 @@ class PresenceMixin:
             return
 
         # Führe alle Handler PARALLEL aus (nicht sequenziell wie discord.py Default!)
-        tasks = [(cog_name, handler(member, before, after)) for cog_name, handler in handler_info]
-        results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
+        tasks = [
+            (cog_name, handler(member, before, after))
+            for cog_name, handler in handler_info
+        ]
+        results = await asyncio.gather(
+            *[task for _, task in tasks], return_exceptions=True
+        )
 
         # Log Fehler mit korrektem Cog-Namen (Race-Safe!)
         for (cog_name, _), result in zip(tasks, results):
             if isinstance(result, Exception):
-                logging.error(f"Voice handler error in {cog_name}: {result}", exc_info=result)
+                logging.error(
+                    f"Voice handler error in {cog_name}: {result}", exc_info=result
+                )
 
     async def on_ready(self):
         logging.info(f"Bot logged in as {self.user} (ID: {self.user.id})")
@@ -87,18 +103,26 @@ class PresenceMixin:
             if tv_if:
                 logging.info("TempVoiceInterface bereit • Interface-View registriert")
         except Exception as e:
-            logging.getLogger().debug("TempVoice Ready-Log fehlgeschlagen (ignoriert): %r", e)
+            logging.getLogger().debug(
+                "TempVoice Ready-Log fehlgeschlagen (ignoriert): %r", e
+            )
 
         # Performance-Info loggen
-        voice_handlers = sum(1 for cog in self.cogs.values() if hasattr(cog, "on_voice_state_update"))
+        voice_handlers = sum(
+            1 for cog in self.cogs.values() if hasattr(cog, "on_voice_state_update")
+        )
         if voice_handlers > 0:
-            logging.info(f"Voice Event Router aktiv: {voice_handlers} Handler (parallel)")
+            logging.info(
+                f"Voice Event Router aktiv: {voice_handlers} Handler (parallel)"
+            )
 
         asyncio.create_task(self.hourly_health_check())
         if self.standalone_manager:
             asyncio.create_task(self._bootstrap_standalone_autostart())
 
-    async def queue_channel_rename(self, channel_id: int, new_name: str, reason: str = "Automated Rename"):
+    async def queue_channel_rename(
+        self, channel_id: int, new_name: str, reason: str = "Automated Rename"
+    ):
         rename_cog = self.get_cog("RenameManagerCog")
         if rename_cog:
             rename_cog.queue_local_rename_request(channel_id, new_name, reason)
@@ -122,7 +146,10 @@ class PresenceMixin:
                     try:
                         await self.standalone_manager.ensure_autostart()
                     except Exception as exc:
-                        logging.warning("Standalone Manager Autostart-Pruefung fehlgeschlagen: %s", exc)
+                        logging.warning(
+                            "Standalone Manager Autostart-Pruefung fehlgeschlagen: %s",
+                            exc,
+                        )
 
                 if current - last_critical_check >= critical_check_interval:
                     issues = []
@@ -135,7 +162,9 @@ class PresenceMixin:
                         issues.append("SteamLinkOAuth (module) not loaded")
 
                     if issues:
-                        logging.warning(f"Critical Health Check: Issues found: {issues}")
+                        logging.warning(
+                            f"Critical Health Check: Issues found: {issues}"
+                        )
                     else:
                         logging.debug("Critical Health Check: Core cogs operational")
 

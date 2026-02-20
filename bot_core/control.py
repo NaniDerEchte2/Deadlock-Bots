@@ -14,9 +14,11 @@ if TYPE_CHECKING:
 
 __all__ = ["MasterControlCog", "is_bot_owner"]
 
+
 def is_bot_owner():
     async def predicate(ctx):
         return ctx.author.id == ctx.bot.owner_id
+
     return commands.check(predicate)
 
 
@@ -83,17 +85,33 @@ class MasterControlCog(commands.Cog):
 
         if active:
             short = [f"✅ {a.split('.')[-1]}" for a in active]
-            embed.add_field(name=f"📦 Loaded Cogs ({len(active)})", value="\n".join(short), inline=True)
+            embed.add_field(
+                name=f"📦 Loaded Cogs ({len(active)})",
+                value="\n".join(short),
+                inline=True,
+            )
 
         if inactive:
             short_inactive = [f"• {a.split('.')[-1]}" for a in inactive]
-            embed.add_field(name=f"🗂️ Inaktiv/Entdeckt ({len(inactive)})", value="\n".join(short_inactive), inline=True)
+            embed.add_field(
+                name=f"🗂️ Inaktiv/Entdeckt ({len(inactive)})",
+                value="\n".join(short_inactive),
+                inline=True,
+            )
 
         # Optional: zeig fehlerhafte Ladeversuche aus letzter Runde
-        errs = [k for k, v in self.bot.cog_status.items() if isinstance(v, str) and v.startswith("error:")]
+        errs = [
+            k
+            for k, v in self.bot.cog_status.items()
+            if isinstance(v, str) and v.startswith("error:")
+        ]
         if errs:
             err_short = [f"❌ {e.split('.')[-1]}" for e in errs]
-            embed.add_field(name="⚠️ Fehlerhafte Cogs (letzter Versuch)", value="\n".join(err_short), inline=False)
+            embed.add_field(
+                name="⚠️ Fehlerhafte Cogs (letzter Versuch)",
+                value="\n".join(err_short),
+                inline=False,
+            )
 
         await ctx.send(embed=embed)
 
@@ -101,7 +119,8 @@ class MasterControlCog(commands.Cog):
     async def master_reload(self, ctx, cog_name: str = None):
         if not cog_name:
             await ctx.send(
-                "❌ Bitte Cog-Namen angeben! Verfügbar:\n" + "\n".join([c.split(".")[-1] for c in self.bot.cogs_list])
+                "❌ Bitte Cog-Namen angeben! Verfügbar:\n"
+                + "\n".join([c.split(".")[-1] for c in self.bot.cogs_list])
             )
             return
 
@@ -120,7 +139,9 @@ class MasterControlCog(commands.Cog):
             return
 
         ok, msg = await self.bot.reload_cog(target)
-        embed = discord.Embed(title="🔄 Cog Reload", description=msg, color=0x00FF00 if ok else 0xFF0000)
+        embed = discord.Embed(
+            title="🔄 Cog Reload", description=msg, color=0x00FF00 if ok else 0xFF0000
+        )
         await ctx.send(embed=embed)
 
     @master_control.command(name="reloadall", aliases=["rla"])
@@ -140,10 +161,16 @@ class MasterControlCog(commands.Cog):
             final = discord.Embed(
                 title="🔄 Auto-Reload Abgeschlossen",
                 description=f"**{summary['loaded']}/{summary['discovered']}** Cogs erfolgreich geladen",
-                color=0x00FF00 if summary["loaded"] == summary["discovered"] else 0xFFAA00,
+                color=0x00FF00
+                if summary["loaded"] == summary["discovered"]
+                else 0xFFAA00,
             )
             if summary["new_cogs"] > 0:
-                final.add_field(name="🆕 Neue Cogs", value=f"{summary['new_cogs']} neue Cogs automatisch entdeckt!", inline=False)
+                final.add_field(
+                    name="🆕 Neue Cogs",
+                    value=f"{summary['new_cogs']} neue Cogs automatisch entdeckt!",
+                    inline=False,
+                )
             final.add_field(
                 name="📊 Summary",
                 value=(
@@ -156,9 +183,17 @@ class MasterControlCog(commands.Cog):
             )
             loaded_cogs = [n.split(".")[-1] for n in self.bot.active_cogs()]
             if loaded_cogs:
-                final.add_field(name="✅ Aktive Cogs", value="\n".join([f"• {c}" for c in loaded_cogs]), inline=True)
+                final.add_field(
+                    name="✅ Aktive Cogs",
+                    value="\n".join([f"• {c}" for c in loaded_cogs]),
+                    inline=True,
+                )
         else:
-            final = discord.Embed(title="❌ Auto-Reload Fehlgeschlagen", description=str(result), color=0xFF0000)
+            final = discord.Embed(
+                title="❌ Auto-Reload Fehlgeschlagen",
+                description=str(result),
+                color=0xFF0000,
+            )
 
         await msg.edit(embed=final)
 
@@ -178,9 +213,17 @@ class MasterControlCog(commands.Cog):
             color=0x00FF00 if not err else 0xFFAA00,
         )
         if ok:
-            embed.add_field(name="✅ Erfolgreich", value="\n".join(f"• {k.split('.')[-1]} ({results[k]})" for k in ok), inline=False)
+            embed.add_field(
+                name="✅ Erfolgreich",
+                value="\n".join(f"• {k.split('.')[-1]} ({results[k]})" for k in ok),
+                inline=False,
+            )
         if err:
-            embed.add_field(name="⚠️ Fehler", value="\n".join(f"• {k.split('.')[-1]}: {v}" for k, v in err.items()), inline=False)
+            embed.add_field(
+                name="⚠️ Fehler",
+                value="\n".join(f"• {k.split('.')[-1]}: {v}" for k, v in err.items()),
+                inline=False,
+            )
 
         await ctx.send(embed=embed)
 
@@ -199,10 +242,16 @@ class MasterControlCog(commands.Cog):
             inline=True,
         )
         if new:
-            embed.add_field(name="🆕 Neue Cogs gefunden", value="\n".join([f"• {c.split('.')[-1]}" for c in new]), inline=True)
+            embed.add_field(
+                name="🆕 Neue Cogs gefunden",
+                value="\n".join([f"• {c.split('.')[-1]}" for c in new]),
+                inline=True,
+            )
             embed.color = 0x00FF00
         else:
-            embed.add_field(name="ℹ️ Status", value="Keine neuen Cogs gefunden", inline=True)
+            embed.add_field(
+                name="ℹ️ Status", value="Keine neuen Cogs gefunden", inline=True
+            )
 
         embed.add_field(
             name="📋 Alle entdeckten Cogs",
@@ -232,14 +281,28 @@ class MasterControlCog(commands.Cog):
 
         embed = discord.Embed(
             title=f"🧹 Unload Resultate ({pattern})",
-            color=0x00FF00 if ok and not timeouts and not errs else 0xFFAA00 if ok else 0xFF0000,
+            color=0x00FF00
+            if ok and not timeouts and not errs
+            else 0xFFAA00
+            if ok
+            else 0xFF0000,
         )
         if ok:
-            embed.add_field(name="✅ Entladen", value="\n".join(f"• {x}" for x in ok), inline=False)
+            embed.add_field(
+                name="✅ Entladen", value="\n".join(f"• {x}" for x in ok), inline=False
+            )
         if timeouts:
-            embed.add_field(name="⏱️ Timeouts", value="\n".join(f"• {x}" for x in timeouts), inline=False)
+            embed.add_field(
+                name="⏱️ Timeouts",
+                value="\n".join(f"• {x}" for x in timeouts),
+                inline=False,
+            )
         if errs:
-            embed.add_field(name="⚠️ Fehler", value="\n".join(f"• {k}: {v}" for k, v in errs.items()), inline=False)
+            embed.add_field(
+                name="⚠️ Fehler",
+                value="\n".join(f"• {k}: {v}" for k, v in errs.items()),
+                inline=False,
+            )
         await ctx.send(embed=embed)
 
     @master_control.command(name="unloadtree", aliases=["ult"])
@@ -266,14 +329,28 @@ class MasterControlCog(commands.Cog):
 
         embed = discord.Embed(
             title=f"🌲 Unload-Tree Resultate ({pref})",
-            color=0x00FF00 if ok and not timeouts and not errs else 0xFFAA00 if ok else 0xFF0000,
+            color=0x00FF00
+            if ok and not timeouts and not errs
+            else 0xFFAA00
+            if ok
+            else 0xFF0000,
         )
         if ok:
-            embed.add_field(name="✅ Entladen", value="\n".join(f"• {x}" for x in ok), inline=False)
+            embed.add_field(
+                name="✅ Entladen", value="\n".join(f"• {x}" for x in ok), inline=False
+            )
         if timeouts:
-            embed.add_field(name="⏱️ Timeouts", value="\n".join(f"• {x}" for x in timeouts), inline=False)
+            embed.add_field(
+                name="⏱️ Timeouts",
+                value="\n".join(f"• {x}" for x in timeouts),
+                inline=False,
+            )
         if errs:
-            embed.add_field(name="⚠️ Fehler", value="\n".join(f"• {k}: {v}" for k, v in errs.items()), inline=False)
+            embed.add_field(
+                name="⚠️ Fehler",
+                value="\n".join(f"• {k}: {v}" for k, v in errs.items()),
+                inline=False,
+            )
         await ctx.send(embed=embed)
 
     @master_control.command(name="restart", aliases=["reboot"])
@@ -298,13 +375,19 @@ class MasterControlCog(commands.Cog):
             embed.description = "Restart angefordert. Der Bot trennt gleich die Verbindung und startet neu."
             embed.color = 0x00FF00
         else:
-            embed.description = "Restart konnte nicht geplant werden (evtl. läuft bereits einer)."
+            embed.description = (
+                "Restart konnte nicht geplant werden (evtl. läuft bereits einer)."
+            )
             embed.color = 0xFF0000
         await msg.edit(embed=embed)
 
     @master_control.command(name="shutdown", aliases=["stop", "quit"])
     async def master_shutdown(self, ctx):
-        embed = discord.Embed(title="🛑 Master Bot wird beendet", description="Bot fährt herunter...", color=0xFF0000)
+        embed = discord.Embed(
+            title="🛑 Master Bot wird beendet",
+            description="Bot fährt herunter...",
+            color=0xFF0000,
+        )
         await ctx.send(embed=embed)
         logging.info(f"Shutdown initiated by {ctx.author}")
         await self.bot.close()

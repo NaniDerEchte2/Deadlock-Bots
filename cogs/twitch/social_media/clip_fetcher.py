@@ -4,6 +4,7 @@ Background Clip Fetcher - Auto-Fetch Clips alle 6 Stunden.
 Fetcht automatisch neueste Clips für verifizierte Partner und speichert
 Fetch-History in der Datenbank.
 """
+
 import asyncio
 import logging
 import time
@@ -36,8 +37,12 @@ class ClipFetcher(commands.Cog):
         self.clip_limit = 20  # Max clips per streamer
 
         self._task = bot.loop.create_task(self._fetch_loop())
-        log.info("ClipFetcher started (interval=%ss, days=%s, limit=%s)",
-                 self.interval_seconds, self.fetch_days, self.clip_limit)
+        log.info(
+            "ClipFetcher started (interval=%ss, days=%s, limit=%s)",
+            self.interval_seconds,
+            self.fetch_days,
+            self.clip_limit,
+        )
 
     def cog_unload(self):
         """Cleanup on cog unload."""
@@ -122,7 +127,12 @@ class ClipFetcher(commands.Cog):
                     stats["clips_total"] += len(clips)
                     stats["clips_new"] += clips_new
 
-                    log.debug("Fetched clips for %s: %s found, %s new", streamer, len(clips), clips_new)
+                    log.debug(
+                        "Fetched clips for %s: %s found, %s new",
+                        streamer,
+                        len(clips),
+                        clips_new,
+                    )
 
                     # Rate limit: Wait 1 second between fetches
                     await asyncio.sleep(1)
@@ -197,7 +207,12 @@ class ClipFetcher(commands.Cog):
                     (streamer_login, len(clips), clips_new, duration_ms),
                 )
 
-            log.info("Manual fetch for %s: %s found, %s new", streamer_login, len(clips), clips_new)
+            log.info(
+                "Manual fetch for %s: %s found, %s new",
+                streamer_login,
+                len(clips),
+                clips_new,
+            )
 
             return {
                 "streamer": streamer_login,

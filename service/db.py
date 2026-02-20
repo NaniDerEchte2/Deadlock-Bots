@@ -29,11 +29,14 @@ log = logging.getLogger(__name__)
 # ---- Timeouts (per-connection) ---------------------------------------------
 # Default: wait up to 15s on busy locks; override with ENV if needed.
 DB_BUSY_TIMEOUT_MS = int(os.environ.get("DEADLOCK_DB_BUSY_TIMEOUT_MS", "15000"))
-DB_CONNECT_TIMEOUT = float(os.environ.get("DEADLOCK_DB_TIMEOUT", str(DB_BUSY_TIMEOUT_MS / 1000)))
+DB_CONNECT_TIMEOUT = float(
+    os.environ.get("DEADLOCK_DB_TIMEOUT", str(DB_BUSY_TIMEOUT_MS / 1000))
+)
 
 # ---- Env-Keys (nur diese beiden werden unterstützt) ----
-ENV_DB_PATH = "DEADLOCK_DB_PATH"   # kompletter Pfad zur DB-Datei (höchste Prio)
-ENV_DB_DIR  = "DEADLOCK_DB_DIR"    # nur Verzeichnis; Datei = deadlock.sqlite3
+ENV_DB_PATH = "DEADLOCK_DB_PATH"  # kompletter Pfad zur DB-Datei (höchste Prio)
+ENV_DB_DIR = "DEADLOCK_DB_DIR"  # nur Verzeichnis; Datei = deadlock.sqlite3
+
 
 # ---- Default-Dateiname/Ort (plattform-sicher) ----
 def _default_dir() -> str:
@@ -44,8 +47,9 @@ def _default_dir() -> str:
     # Linux/Mac/Container: ~/Documents/Deadlock/service
     return str(Path.home() / "Documents" / "Deadlock" / "service")
 
+
 DEFAULT_DIR = _default_dir()
-DB_NAME     = "deadlock.sqlite3"
+DB_NAME = "deadlock.sqlite3"
 # Maximal zugelassene Zeilen in der steam_tasks-Tabelle (älteste werden gekappt)
 STEAM_TASKS_MAX_ROWS = int(os.environ.get("STEAM_TASKS_MAX_ROWS", "1000"))
 STEAM_TASKS_KV_NS = "steam_tasks"
@@ -60,7 +64,9 @@ logger = logging.getLogger(__name__)
 Row = sqlite3.Row  # Typalias für Konsumenten
 
 # ContextVar, um festzustellen ob wir uns in einem (verschachtelten) Transaction-Block befinden
-_TX_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("deadlock_db_tx_depth", default=0)
+_TX_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "deadlock_db_tx_depth", default=0
+)
 
 
 class DBCursorProxy:
@@ -68,7 +74,9 @@ class DBCursorProxy:
 
     __slots__ = ("_cursor", "_lock")
 
-    def __init__(self, cursor: sqlite3.Cursor, lock: Optional[threading.RLock] = None) -> None:
+    def __init__(
+        self, cursor: sqlite3.Cursor, lock: Optional[threading.RLock] = None
+    ) -> None:
         self._cursor = cursor
         self._lock = lock
 
@@ -82,7 +90,9 @@ class DBCursorProxy:
         self._run(self._cursor.execute, sql, params)
         return self
 
-    def executemany(self, sql: str, seq_of_params: Iterable[Iterable[Any]]) -> "DBCursorProxy":
+    def executemany(
+        self, sql: str, seq_of_params: Iterable[Iterable[Any]]
+    ) -> "DBCursorProxy":
         self._run(self._cursor.executemany, sql, seq_of_params)
         return self
 
@@ -127,7 +137,9 @@ class DBConnectionProxy:
 
     __slots__ = ("_conn", "_lock_per_call")
 
-    def __init__(self, conn: sqlite3.Connection, *, lock_per_call: bool = False) -> None:
+    def __init__(
+        self, conn: sqlite3.Connection, *, lock_per_call: bool = False
+    ) -> None:
         self._conn = conn
         self._lock_per_call = lock_per_call
 
@@ -141,7 +153,9 @@ class DBConnectionProxy:
         cur = self._run(self._conn.execute, sql, params)
         return DBCursorProxy(cur, lock=_LOCK if self._lock_per_call else None)
 
-    def executemany(self, sql: str, seq_of_params: Iterable[Iterable[Any]]) -> DBCursorProxy:
+    def executemany(
+        self, sql: str, seq_of_params: Iterable[Iterable[Any]]
+    ) -> DBCursorProxy:
         cur = self._run(self._conn.executemany, sql, seq_of_params)
         return DBCursorProxy(cur, lock=_LOCK if self._lock_per_call else None)
 
@@ -177,6 +191,7 @@ class DBConnectionProxy:
 
 
 # ---------- Pfad-Auflösung ----------
+
 
 def _resolve_db_path() -> str:
     """
@@ -217,6 +232,7 @@ log.debug("DB_PATH alias initialisiert: %s", DB_PATH)
 
 # ---------- Verbindung / PRAGMA / Schema ----------
 
+
 def _is_connection_alive(conn: sqlite3.Connection) -> bool:
     """
     Prüft, ob die Verbindung noch funktionsfähig ist.
@@ -255,7 +271,7 @@ def connect() -> sqlite3.Connection:
     _CONN = sqlite3.connect(
         path,
         check_same_thread=False,
-        isolation_level=None,   # Autocommit
+        isolation_level=None,  # Autocommit
         timeout=DB_CONNECT_TIMEOUT,
     )
     _CONN.row_factory = sqlite3.Row
@@ -368,7 +384,9 @@ def _ensure_steam_tasks_cap_trigger(conn: sqlite3.Connection, max_rows: int) -> 
     )
 
 
-def prune_steam_tasks(limit: Optional[int] = None, *, conn: Optional[sqlite3.Connection] = None) -> int:
+def prune_steam_tasks(
+    limit: Optional[int] = None, *, conn: Optional[sqlite3.Connection] = None
+) -> int:
     """
     Trims the steam_tasks table to the newest ``limit`` rows (defaults to STEAM_TASKS_MAX_ROWS).
     Prefers deleting finished tasks; pending/running are kept whenever possible.
@@ -756,16 +774,12 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             if "duplicate column name" not in str(exc).lower():
                 raise
         try:
-            c.execute(
-                "ALTER TABLE voice_session_log ADD COLUMN display_name TEXT"
-            )
+            c.execute("ALTER TABLE voice_session_log ADD COLUMN display_name TEXT")
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
         try:
-            c.execute(
-                "ALTER TABLE voice_session_log ADD COLUMN co_player_ids TEXT"
-            )
+            c.execute("ALTER TABLE voice_session_log ADD COLUMN co_player_ids TEXT")
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
@@ -807,9 +821,7 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
                     raise
         # Ko-fi pending payments: token Spalte hinzufügen
         try:
-            c.execute(
-                "ALTER TABLE beta_invite_pending_payments ADD COLUMN token TEXT"
-            )
+            c.execute("ALTER TABLE beta_invite_pending_payments ADD COLUMN token TEXT")
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
@@ -823,8 +835,12 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             )
         # Indizes ergänzen (idempotent)
         try:
-            c.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_user  ON steam_links(user_id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_steam_links_user  ON steam_links(user_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_steam_links_steam ON steam_links(steam_id)"
+            )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_quick_invites_status ON steam_quick_invites(status, expires_at)"
             )
@@ -837,47 +853,104 @@ def init_schema(conn: Optional[sqlite3.Connection] = None) -> None:
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_beta_invites_account ON steam_beta_invites(account_id)"
             )
-            c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_status ON steam_tasks(status, id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_steam_tasks_updated ON steam_tasks(updated_at)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_standalone_commands_status ON standalone_commands(bot, status, id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_standalone_commands_created ON standalone_commands(created_at)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_standalone_state_updated ON standalone_bot_state(updated_at)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_log_started ON voice_session_log(started_at)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_log_user ON voice_session_log(user_id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_log_guild ON voice_session_log(guild_id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_log_display_name ON voice_session_log(display_name)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_fb_req_user ON voice_feedback_requests(user_id, sent_at_ts)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_fb_req_status ON voice_feedback_requests(status, sent_at_ts)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_fb_req_type ON voice_feedback_requests(request_type, sent_at_ts)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_fb_resp_req ON voice_feedback_responses(request_id)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_steam_tasks_status ON steam_tasks(status, id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_steam_tasks_updated ON steam_tasks(updated_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_standalone_commands_status ON standalone_commands(bot, status, id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_standalone_commands_created ON standalone_commands(created_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_standalone_state_updated ON standalone_bot_state(updated_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_voice_log_started ON voice_session_log(started_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_voice_log_user ON voice_session_log(user_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_voice_log_guild ON voice_session_log(guild_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_voice_log_display_name ON voice_session_log(display_name)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_voice_fb_req_user ON voice_feedback_requests(user_id, sent_at_ts)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_voice_fb_req_status ON voice_feedback_requests(status, sent_at_ts)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_voice_fb_req_type ON voice_feedback_requests(request_type, sent_at_ts)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_voice_fb_resp_req ON voice_feedback_responses(request_id)"
+            )
 
             # Performance-Indizes für häufige Queries
             # Leaderboard-Query: ORDER BY total_points DESC, total_seconds DESC
-            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_stats_leaderboard ON voice_stats(total_points DESC, total_seconds DESC)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_voice_stats_leaderboard ON voice_stats(total_points DESC, total_seconds DESC)"
+            )
             # User Stats Lookup mit allen Feldern (covering index)
-            c.execute("CREATE INDEX IF NOT EXISTS idx_voice_stats_user_lookup ON voice_stats(user_id, total_seconds, total_points)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_voice_stats_user_lookup ON voice_stats(user_id, total_seconds, total_points)"
+            )
             # TempVoice Rehydration: WHERE guild_id=? (composite index)
-            c.execute("CREATE INDEX IF NOT EXISTS idx_tempvoice_lanes_guild ON tempvoice_lanes(guild_id, channel_id)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tempvoice_lanes_guild ON tempvoice_lanes(guild_id, channel_id)"
+            )
             # Activity Patterns: Schnelle Lookups für Smart Pinging
-            c.execute("CREATE INDEX IF NOT EXISTS idx_activity_patterns_score ON user_activity_patterns(activity_score_2w DESC)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_activity_patterns_last_active ON user_activity_patterns(last_active_at)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_activity_patterns_last_pinged ON user_activity_patterns(last_pinged_at)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_activity_patterns_score ON user_activity_patterns(activity_score_2w DESC)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_activity_patterns_last_active ON user_activity_patterns(last_active_at)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_activity_patterns_last_pinged ON user_activity_patterns(last_pinged_at)"
+            )
             # Co-Players: Bi-direktionale Lookups
-            c.execute("CREATE INDEX IF NOT EXISTS idx_co_players_user ON user_co_players(user_id, sessions_together DESC)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_co_players_co_player ON user_co_players(co_player_id)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_co_players_user ON user_co_players(user_id, sessions_together DESC)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_co_players_co_player ON user_co_players(co_player_id)"
+            )
             # Member Events: Schnelle User-Lookups & Event-Type Filtering
-            c.execute("CREATE INDEX IF NOT EXISTS idx_member_events_user ON member_events(user_id, timestamp DESC)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_member_events_guild ON member_events(guild_id, event_type, timestamp DESC)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_member_events_type ON member_events(event_type, timestamp DESC)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_member_events_user ON member_events(user_id, timestamp DESC)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_member_events_guild ON member_events(guild_id, event_type, timestamp DESC)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_member_events_type ON member_events(event_type, timestamp DESC)"
+            )
             # Message Activity: User & Guild Lookups
-            c.execute("CREATE INDEX IF NOT EXISTS idx_message_activity_user ON message_activity(user_id, message_count DESC)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_message_activity_guild ON message_activity(guild_id, message_count DESC)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_user_privacy_opted ON user_privacy(opted_out)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_activity_user ON message_activity(user_id, message_count DESC)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_activity_guild ON message_activity(guild_id, message_count DESC)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_privacy_opted ON user_privacy(opted_out)"
+            )
         except sqlite3.Error as e:
-            logger.debug("Optionale Index-Erstellung übersprungen: %s", e, exc_info=True)
+            logger.debug(
+                "Optionale Index-Erstellung übersprungen: %s", e, exc_info=True
+            )
 
 
 # ---------- Low-Level Helpers (sicher, mit Bind-Parametern) ----------
+
 
 def _in_transaction_context() -> bool:
     """Prüft, ob der aktuelle Task in einem db.transaction()-Block läuft."""
@@ -885,6 +958,7 @@ def _in_transaction_context() -> bool:
         return _TX_DEPTH.get() > 0
     except LookupError:
         return False
+
 
 def execute(sql: str, params: Iterable[Any] = ()) -> None:
     with _LOCK:
@@ -912,6 +986,7 @@ def query_all(sql: str, params: Iterable[Any] = ()):  # -> list[sqlite3.Row]
             return cur.fetchall()
         finally:
             cur.close()
+
 
 async def execute_async(sql: str, params: Iterable[Any] = ()) -> None:
     """
@@ -949,6 +1024,7 @@ async def query_all_async(sql: str, params: Iterable[Any] = ()):
 
 # ---------- KV (namespaced) ----------
 
+
 def set_kv(ns: str, k: str, v: str) -> None:
     execute(
         """
@@ -965,6 +1041,7 @@ def get_kv(ns: str, k: str) -> Optional[str]:
 
 
 # ---------- Transactions (async) ----------
+
 
 @asynccontextmanager
 async def transaction() -> AsyncIterator[DBConnectionProxy]:
@@ -1004,6 +1081,7 @@ async def transaction() -> AsyncIterator[DBConnectionProxy]:
 
 # ---------- Pflege ----------
 
+
 @atexit.register
 def _vacuum_on_shutdown() -> None:
     try:
@@ -1013,4 +1091,6 @@ def _vacuum_on_shutdown() -> None:
                 _CONN.execute("PRAGMA busy_timeout=1000;")
                 _CONN.execute("VACUUM;")
     except sqlite3.Error as e:
-        logger.debug("VACUUM beim Shutdown übersprungen/fehlgeschlagen: %s", e, exc_info=True)
+        logger.debug(
+            "VACUUM beim Shutdown übersprungen/fehlgeschlagen: %s", e, exc_info=True
+        )

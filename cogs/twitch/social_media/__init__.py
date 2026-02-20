@@ -6,6 +6,7 @@ Komponenten:
 - Dashboard: Web-Interface
 - Uploader: Platform-spezifische Upload-Worker (TODO)
 """
+
 from .clip_manager import ClipManager
 from .dashboard import create_social_media_app
 

@@ -15,23 +15,29 @@ from discord.ext import commands
 from discord import app_commands
 
 # ========== Konfiguration ==========
-MAIN_GUILD_ID    = 1289721245281292288
+MAIN_GUILD_ID = 1289721245281292288
 RULES_CHANNEL_ID = 1315684135175716975
 
 log = logging.getLogger("RulesPanel")
 
 
 # ------------------------------ Helpers ------------------------------ #
-async def _create_user_thread(interaction: discord.Interaction) -> Optional[discord.Thread]:
+async def _create_user_thread(
+    interaction: discord.Interaction,
+) -> Optional[discord.Thread]:
     """Erstellt einen (bevorzugt) privaten Thread im Regelkanal und fügt den Nutzer hinzu."""
     guild = interaction.guild
     if not guild:
-        await interaction.response.send_message("❌ Dieser Button funktioniert nur in der Guild.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Dieser Button funktioniert nur in der Guild.", ephemeral=True
+        )
         return None
 
     channel = guild.get_channel(RULES_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
-        await interaction.response.send_message("❌ Regelkanal nicht gefunden/kein Textkanal.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Regelkanal nicht gefunden/kein Textkanal.", ephemeral=True
+        )
         return None
 
     name = f"onboarding-{interaction.user.name}".replace(" ", "-")[:90]
@@ -59,7 +65,9 @@ async def _create_user_thread(interaction: discord.Interaction) -> Optional[disc
         return thread
     except Exception as e:
         log.error("Thread creation failed: %r", e)
-        await interaction.response.send_message("❌ Konnte keinen Thread erstellen.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Konnte keinen Thread erstellen.", ephemeral=True
+        )
         return None
 
 
@@ -69,7 +77,9 @@ class RulesPanelView(discord.ui.View):
         super().__init__(timeout=None)  # PERSISTENT
         self.cog = cog
 
-    @discord.ui.button(label="Weiter ➜", style=discord.ButtonStyle.primary, custom_id="rp:panel:start")
+    @discord.ui.button(
+        label="Weiter ➜", style=discord.ButtonStyle.primary, custom_id="rp:panel:start"
+    )
     async def start(self, interaction: discord.Interaction, _button: discord.ui.Button):
         await self.cog.start_in_thread(interaction)
 
@@ -86,16 +96,24 @@ class RulesPanel(commands.Cog):
         self.bot.add_view(RulesPanelView(self))
         log.info("✅ Rules Panel geladen (Panel-View aktiv)")
 
-    @app_commands.command(name="publish_rules_panel", description="(Admin) Regelwerk-Panel posten")
+    @app_commands.command(
+        name="publish_rules_panel", description="(Admin) Regelwerk-Panel posten"
+    )
     @app_commands.checks.has_permissions(administrator=True)
     async def publish_rules_panel(self, interaction: discord.Interaction):
         guild = self.bot.get_guild(MAIN_GUILD_ID)
         if not guild:
-            await interaction.response.send_message("❌ MAIN_GUILD_ID ungültig oder Bot nicht auf dieser Guild.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ MAIN_GUILD_ID ungültig oder Bot nicht auf dieser Guild.",
+                ephemeral=True,
+            )
             return
         ch = guild.get_channel(RULES_CHANNEL_ID)
         if not isinstance(ch, (discord.TextChannel, discord.Thread)):
-            await interaction.response.send_message("❌ RULES_CHANNEL_ID zeigt nicht auf einen Text-/Thread-Kanal.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ RULES_CHANNEL_ID zeigt nicht auf einen Text-/Thread-Kanal.",
+                ephemeral=True,
+            )
             return
 
         emb = discord.Embed(
@@ -115,9 +133,13 @@ class RulesPanel(commands.Cog):
         # Nutzer informieren
         try:
             if not interaction.response.is_done():
-                await interaction.response.send_message(f"🚀 Onboarding in {thread.mention} gestartet.", ephemeral=True)
+                await interaction.response.send_message(
+                    f"🚀 Onboarding in {thread.mention} gestartet.", ephemeral=True
+                )
             else:
-                await interaction.followup.send(f"🚀 Onboarding in {thread.mention} gestartet.", ephemeral=True)
+                await interaction.followup.send(
+                    f"🚀 Onboarding in {thread.mention} gestartet.", ephemeral=True
+                )
         except Exception as exc:
             log.debug("Konnte Start-Hinweis nicht senden: %s", exc)
 

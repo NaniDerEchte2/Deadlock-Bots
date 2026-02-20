@@ -1,7 +1,9 @@
 # cogs/steam_verified_role.py
 # Kurzfassung: identisch zur letzten Version, plus Diagnose & bessere Zusammenfassungen.
 
-import os, logging, asyncio
+import os
+import logging
+import asyncio
 from typing import Set, List, Tuple
 import discord
 from discord.ext import commands, tasks
@@ -10,17 +12,24 @@ from service import db as central_db
 
 log = logging.getLogger(__name__)
 
+
 class SteamVerifiedRole(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.guild_id = int(os.getenv("GUILD_ID", "1289721245281292288"))
-        self.verified_role_id = int(os.getenv("VERIFIED_ROLE_ID", "1419608095533043774"))
-        self.log_channel_id = int(os.getenv("VERIFIED_LOG_CHANNEL_ID", "1374364800817303632"))
+        self.verified_role_id = int(
+            os.getenv("VERIFIED_ROLE_ID", "1419608095533043774")
+        )
+        self.log_channel_id = int(
+            os.getenv("VERIFIED_LOG_CHANNEL_ID", "1374364800817303632")
+        )
         self.db_path = central_db.db_path()
         self.dry_run = os.getenv("DRY_RUN", "0") == "1"
         interval_min = int(os.getenv("POLL_INTERVAL_MINUTES", "15"))
         self._interval_seconds = max(60, interval_min * 60)
-        self._member_fetch_min_interval = max(0.0, float(os.getenv("VERIFIED_MEMBER_FETCH_DELAY_SECONDS", "1.0")))
+        self._member_fetch_min_interval = max(
+            0.0, float(os.getenv("VERIFIED_MEMBER_FETCH_DELAY_SECONDS", "1.0"))
+        )
         self._member_fetch_lock = asyncio.Lock()
         self._last_member_fetch_started_at = 0.0
         self._task = None
@@ -39,7 +48,9 @@ class SteamVerifiedRole(commands.Cog):
     def _fetch_verified_discord_ids(self) -> Set[int]:
         try:
             with central_db.get_conn() as con:
-                cur = con.execute("""SELECT user_id FROM steam_links WHERE verified=1 GROUP BY user_id""")
+                cur = con.execute(
+                    """SELECT user_id FROM steam_links WHERE verified=1 GROUP BY user_id"""
+                )
                 rows = cur.fetchall()
         except Exception as e:
             log.exception("DB-Fehler beim Lesen verifizierter IDs: %s", e)
@@ -55,7 +66,9 @@ class SteamVerifiedRole(commands.Cog):
                 if val >= 10_000_000_000_000_000:  # 1e16 ~ 17 Stellen
                     ids.add(val)
             except (TypeError, ValueError) as exc:
-                log.debug("Kann user_id nicht in int wandeln: %r (%s)", r.get("user_id"), exc)
+                log.debug(
+                    "Kann user_id nicht in int wandeln: %r (%s)", r.get("user_id"), exc
+                )
                 continue
         return ids
 
@@ -71,12 +84,16 @@ class SteamVerifiedRole(commands.Cog):
         text = str(exc)
         return "Session is closed" in text or "ClientSession is closed" in text
 
-    async def _fetch_member_rate_limited(self, guild: discord.Guild, user_id: int) -> discord.Member:
+    async def _fetch_member_rate_limited(
+        self, guild: discord.Guild, user_id: int
+    ) -> discord.Member:
         async with self._member_fetch_lock:
             if self._member_fetch_min_interval > 0:
                 loop = asyncio.get_running_loop()
                 now = loop.time()
-                remaining = self._member_fetch_min_interval - (now - self._last_member_fetch_started_at)
+                remaining = self._member_fetch_min_interval - (
+                    now - self._last_member_fetch_started_at
+                )
                 if remaining > 0:
                     await asyncio.sleep(remaining)
                 self._last_member_fetch_started_at = loop.time()
@@ -97,7 +114,9 @@ class SteamVerifiedRole(commands.Cog):
             return None, None
         role = guild.get_role(self.verified_role_id)
         if role is None:
-            log.error("Rolle %s in Guild %s nicht gefunden.", self.verified_role_id, guild.id)
+            log.error(
+                "Rolle %s in Guild %s nicht gefunden.", self.verified_role_id, guild.id
+            )
             return None, None
         return guild, role
 
@@ -110,7 +129,9 @@ class SteamVerifiedRole(commands.Cog):
             if isinstance(ch, discord.TextChannel):
                 return ch
         except discord.HTTPException as exc:
-            log.debug("Konnte Log-Channel nicht abrufen (%s): %s", self.log_channel_id, exc)
+            log.debug(
+                "Konnte Log-Channel nicht abrufen (%s): %s", self.log_channel_id, exc
+            )
         return None
 
     async def _announce_assignments(self, guild: discord.Guild, lines: List[str]):
@@ -123,13 +144,17 @@ class SteamVerifiedRole(commands.Cog):
         chunk = ""
         for line in lines:
             if len(chunk) + len(line) + 1 > 1900:
-                try: await ch.send(chunk)
-                except discord.HTTPException as e: log.warning("Konnte Log nicht senden: %s", e)
+                try:
+                    await ch.send(chunk)
+                except discord.HTTPException as e:
+                    log.warning("Konnte Log nicht senden: %s", e)
                 chunk = ""
             chunk += line + "\n"
         if chunk:
-            try: await ch.send(chunk)
-            except discord.HTTPException as e: log.warning("Konnte Log nicht senden: %s", e)
+            try:
+                await ch.send(chunk)
+            except discord.HTTPException as e:
+                log.warning("Konnte Log nicht senden: %s", e)
 
     async def assign_verified_role(self, user_id: int) -> bool:
         """Versucht, einem Nutzer sofort die Verified-Rolle zuzuweisen."""
@@ -150,11 +175,20 @@ class SteamVerifiedRole(commands.Cog):
             return True
 
         try:
-            await member.add_roles(role, reason="Manuelle Verifizierung / Sofort-Zuweisung")
-            await self._announce_assignments(guild, [f"✅ <@{user_id}> ({member.display_name}) hat sich verifiziert - Rolle sofort zugewiesen."])
+            await member.add_roles(
+                role, reason="Manuelle Verifizierung / Sofort-Zuweisung"
+            )
+            await self._announce_assignments(
+                guild,
+                [
+                    f"✅ <@{user_id}> ({member.display_name}) hat sich verifiziert - Rolle sofort zugewiesen."
+                ],
+            )
             return True
         except Exception as e:
-            log.error("Fehler bei Sofort-Zuweisung der Verified-Rolle an %s: %s", user_id, e)
+            log.error(
+                "Fehler bei Sofort-Zuweisung der Verified-Rolle an %s: %s", user_id, e
+            )
             return False
 
     # ---------- Core ----------
@@ -164,7 +198,8 @@ class SteamVerifiedRole(commands.Cog):
             return 0
 
         guild, role = await self._resolve_guild_and_role()
-        if not guild or not role: return 0
+        if not guild or not role:
+            return 0
 
         # Rechte/Höhe vorab prüfen
         me = guild.me
@@ -177,7 +212,11 @@ class SteamVerifiedRole(commands.Cog):
                     return 0
                 raise
             except discord.HTTPException as exc:
-                log.warning("Konnte Bot-Member nicht abrufen (%s): %s", self.bot.user.id if self.bot.user else "?", exc)
+                log.warning(
+                    "Konnte Bot-Member nicht abrufen (%s): %s",
+                    self.bot.user.id if self.bot.user else "?",
+                    exc,
+                )
         if not me:
             log.error("Konnte Bot-Member in Guild nicht bestimmen.")
             return 0
@@ -188,12 +227,16 @@ class SteamVerifiedRole(commands.Cog):
         # Rolle über der Verified-Rolle?
         top_pos = max((r.position for r in me.roles), default=0)
         if top_pos <= role.position:
-            log.error("Rollen-Hierarchie: Bot-Top(%s) <= Verified(%s) – kann nicht zuweisen.",
-                      top_pos, role.position)
+            log.error(
+                "Rollen-Hierarchie: Bot-Top(%s) <= Verified(%s) – kann nicht zuweisen.",
+                top_pos,
+                role.position,
+            )
             return 0
 
         verified_ids = self._fetch_verified_discord_ids()
-        if not verified_ids: return 0
+        if not verified_ids:
+            return 0
 
         changes, lines = 0, []
         not_found = 0
@@ -210,7 +253,10 @@ class SteamVerifiedRole(commands.Cog):
                     continue
                 except RuntimeError as exc:
                     if self._is_session_closed_error(exc):
-                        log.info("HTTP-Session geschlossen beim fetch_member (%s) -> Abbruch Lauf.", uid)
+                        log.info(
+                            "HTTP-Session geschlossen beim fetch_member (%s) -> Abbruch Lauf.",
+                            uid,
+                        )
                         break
                     raise
                 except discord.HTTPException:
@@ -218,13 +264,17 @@ class SteamVerifiedRole(commands.Cog):
             if role in member.roles:
                 continue
             if self.dry_run:
-                log.info("[DRY] Würde Rolle vergeben an %s (%s)", uid, member.display_name)
+                log.info(
+                    "[DRY] Würde Rolle vergeben an %s (%s)", uid, member.display_name
+                )
                 changes += 1
                 continue
             try:
                 await member.add_roles(role, reason="Steam verified = 1 (automatisch)")
                 changes += 1
-                lines.append(f"✅ <@{uid}> ({member.display_name}) ist jetzt **Verified** - Rolle zugewiesen.")
+                lines.append(
+                    f"✅ <@{uid}> ({member.display_name}) ist jetzt **Verified** - Rolle zugewiesen."
+                )
                 await asyncio.sleep(0.25)
             except RuntimeError as exc:
                 if self._is_session_closed_error(exc):
@@ -232,14 +282,22 @@ class SteamVerifiedRole(commands.Cog):
                     break
                 raise
             except discord.Forbidden:
-                log.error("Forbidden: Rolle %s an %s (%s) - Hierarchie/Berechtigung?",
-                          role.id, uid, getattr(member, 'display_name', '?'))
+                log.error(
+                    "Forbidden: Rolle %s an %s (%s) - Hierarchie/Berechtigung?",
+                    role.id,
+                    uid,
+                    getattr(member, "display_name", "?"),
+                )
             except discord.HTTPException as e:
                 log.warning("HTTP-Fehler bei %s: %s", uid, e)
 
         if lines and not self._http_session_closed():
             await self._announce_assignments(guild, lines)
-        log.info("Verified-Check: %s Rollen vergeben, %s IDs nicht auf Server.", changes, not_found)
+        log.info(
+            "Verified-Check: %s Rollen vergeben, %s IDs nicht auf Server.",
+            changes,
+            not_found,
+        )
         return changes
 
     # ---------- Loop ----------
@@ -247,6 +305,7 @@ class SteamVerifiedRole(commands.Cog):
     async def _start_loop_once_ready(self):
         while not self.bot.is_ready():
             await asyncio.sleep(1)
+
         async def loop_body():
             try:
                 while True:
@@ -273,9 +332,13 @@ class SteamVerifiedRole(commands.Cog):
                 raise
             finally:
                 self._task = None
+
         if self._task is None:
             self._task = self.bot.loop.create_task(loop_body())
-            log.info("Periodischer Verified-Checker gestartet (alle %ss).", self._interval_seconds)
+            log.info(
+                "Periodischer Verified-Checker gestartet (alle %ss).",
+                self._interval_seconds,
+            )
 
     async def cog_load(self):
         # Bei Reloads startet on_ready nicht erneut; daher hier sicherstellen, dass die Loop loslaeuft.
@@ -288,13 +351,20 @@ class SteamVerifiedRole(commands.Cog):
             self._start_loop_once_ready.start()
 
     # ---------- Commands ----------
-    @commands.command(name="verifyrole_run", help="Manueller Lauf (loggt nur Zuweisungen).")
+    @commands.command(
+        name="verifyrole_run", help="Manueller Lauf (loggt nur Zuweisungen)."
+    )
     @commands.has_permissions(administrator=True)
     async def verifyrole_run(self, ctx: commands.Context):
         changes = await self._run_once()
-        await ctx.reply(f"Fertig. {changes} Nutzer(n) die Verified-Rolle vergeben.", mention_author=False)
+        await ctx.reply(
+            f"Fertig. {changes} Nutzer(n) die Verified-Rolle vergeben.",
+            mention_author=False,
+        )
 
-    @commands.command(name="verifyrole_diag", help="Diagnose: prüft IDs, Rechte, DB & Hierarchie.")
+    @commands.command(
+        name="verifyrole_diag", help="Diagnose: prüft IDs, Rechte, DB & Hierarchie."
+    )
     @commands.has_permissions(administrator=True)
     async def verifyrole_diag(self, ctx: commands.Context):
         guild, role = await self._resolve_guild_and_role()
@@ -305,17 +375,27 @@ class SteamVerifiedRole(commands.Cog):
         top_pos = max((r.position for r in guild.me.roles), default=0) if guild else -1
         role_pos = role.position if role else -1
         members_present = sum(1 for i in ids if guild and guild.get_member(i))
-        embed = discord.Embed(title="Verified-Role Diagnose", color=0x2ecc71)
+        embed = discord.Embed(title="Verified-Role Diagnose", color=0x2ECC71)
         embed.add_field(name="Guild ID", value=str(self.guild_id), inline=True)
         embed.add_field(name="Role ID", value=str(self.verified_role_id), inline=True)
         embed.add_field(name="DB Pfad", value=self.db_path, inline=False)
         embed.add_field(name="DB vorhanden", value=str(db_exists), inline=True)
         embed.add_field(name="Verifizierte IDs (DB)", value=str(len(ids)), inline=True)
-        embed.add_field(name="Davon aktuell im Cache (get_member)", value=str(members_present), inline=True)
+        embed.add_field(
+            name="Davon aktuell im Cache (get_member)",
+            value=str(members_present),
+            inline=True,
+        )
         embed.add_field(name="Bot Manage Roles", value=str(manage_roles), inline=True)
-        embed.add_field(name="Bot TopPos vs Role Pos", value=f"{top_pos} vs {role_pos}", inline=True)
+        embed.add_field(
+            name="Bot TopPos vs Role Pos", value=f"{top_pos} vs {role_pos}", inline=True
+        )
         if ids_sample:
-            embed.add_field(name="Beispiel-IDs", value="\n".join(str(x) for x in ids_sample), inline=False)
+            embed.add_field(
+                name="Beispiel-IDs",
+                value="\n".join(str(x) for x in ids_sample),
+                inline=False,
+            )
         await ctx.reply(embed=embed, mention_author=False)
 
     def cog_unload(self):
@@ -326,6 +406,7 @@ class SteamVerifiedRole(commands.Cog):
             self._start_loop_once_ready.cancel()
         except Exception as exc:
             log.debug("Konnte start_loop_once_ready nicht abbrechen: %s", exc)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SteamVerifiedRole(bot))

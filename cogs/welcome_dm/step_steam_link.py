@@ -13,8 +13,8 @@ from .base import MIN_NEXT_SECONDS
 
 __all__ = [
     "SteamLinkStepView",
-    "SteamLinkView",          # Alias (Backcompat)
-    "SteamLinkNudgeView",     # Alias (für rules_channel)
+    "SteamLinkView",  # Alias (Backcompat)
+    "SteamLinkNudgeView",  # Alias (für rules_channel)
     "build_steam_intro_embed",
     "steam_link_dm_description",
     "steam_link_detailed_description",
@@ -37,9 +37,17 @@ if _oauth is not None and not hasattr(_oauth, "start_urls_for"):
 _LINKS_ENABLED: bool = _oauth is not None
 
 # --- ENV: Discord OAuth Deep-Link (in-App Dialog) ---
-_DEEPLINK_EN = str(os.getenv("DISCORD_OAUTH_DEEPLINK", "0")).strip().lower() not in ("", "0", "false", "no")
+_DEEPLINK_EN = str(os.getenv("DISCORD_OAUTH_DEEPLINK", "0")).strip().lower() not in (
+    "",
+    "0",
+    "false",
+    "no",
+)
 
-def _prefer_discord_deeplink(browser_url: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+
+def _prefer_discord_deeplink(
+    browser_url: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
     """
     Liefert (primary_url, browser_fallback). Wenn Deep-Link aktiv und erkennbar,
     wird 'discord://-/oauth2/authorize?...' als primary geliefert, sonst (url, None).
@@ -58,11 +66,14 @@ def _prefer_discord_deeplink(browser_url: Optional[str]) -> Tuple[Optional[str],
             and (path == "/oauth2/authorize" or path.startswith("/oauth2/authorize/"))
         ):
             if _DEEPLINK_EN:
-                deeplink = urlunparse(("discord", "-/oauth2/authorize", "", "", u.query, ""))
+                deeplink = urlunparse(
+                    ("discord", "-/oauth2/authorize", "", "", u.query, "")
+                )
                 return deeplink, browser_url
     except Exception as exc:
         _LOGGER.debug("Konnte Deep-Link URL nicht parsen (%s): %s", browser_url, exc)
     return browser_url, None
+
 
 _STEAM_LINK_DM_DESC = dedent(
     """
@@ -139,11 +150,12 @@ class SteamLinkStepView(discord.ui.View):
              Die tatsächlichen URLs werden erst beim Klick als ephemere Link-View gesendet.
     Dadurch keine ablaufenden/alten OAuth-Links in persistenter View.
     """
+
     def __init__(
         self,
         *,
-        on_next=None,                 # async def (interaction) -> None
-        timeout: float | None = None, # persistent-fähig
+        on_next=None,  # async def (interaction) -> None
+        timeout: float | None = None,  # persistent-fähig
         show_next: bool = True,
         allowed_user_id: Optional[int] = None,
         created_at: Optional[datetime] = None,
@@ -158,7 +170,10 @@ class SteamLinkStepView(discord.ui.View):
 
         if not _LINKS_ENABLED:
             for child in self.children:
-                if isinstance(child, discord.ui.Button) and child.custom_id == "steam:discord":
+                if (
+                    isinstance(child, discord.ui.Button)
+                    and child.custom_id == "steam:discord"
+                ):
                     child.disabled = True
                     child.label = "Verknüpfung deaktiviert"
 
@@ -171,7 +186,9 @@ class SteamLinkStepView(discord.ui.View):
         row=0,
         emoji="🔗",
     )
-    async def _start_discord(self, interaction: discord.Interaction, _button: discord.ui.Button):
+    async def _start_discord(
+        self, interaction: discord.Interaction, _button: discord.ui.Button
+    ):
         await self._present_link_sheet(interaction)
 
     async def _present_link_sheet(self, interaction: discord.Interaction) -> None:
@@ -214,7 +231,9 @@ class SteamLinkStepView(discord.ui.View):
 
         msg = "🔐 Wähle den Link:"
         if browser_fallback and discord_link.startswith("discord://"):
-            msg += f" _(Falls sich nichts öffnet: [Browser-Variante]({browser_fallback}))_"
+            msg += (
+                f" _(Falls sich nichts öffnet: [Browser-Variante]({browser_fallback}))_"
+            )
 
         if interaction.response.is_done():
             await interaction.followup.send(msg, view=sheet, ephemeral=True)
@@ -228,7 +247,9 @@ class SteamLinkStepView(discord.ui.View):
         row=0,
         emoji="🎮",
     )
-    async def _start_openid(self, interaction: discord.Interaction, _button: discord.ui.Button):
+    async def _start_openid(
+        self, interaction: discord.Interaction, _button: discord.ui.Button
+    ):
         await self._present_link_sheet(interaction)
 
     @discord.ui.button(
@@ -249,13 +270,18 @@ class SteamLinkStepView(discord.ui.View):
                 await self.on_next(interaction)
                 return
             except Exception as exc:
-                _LOGGER.debug("SteamLinkStepView on_next handler failed: %s", exc, exc_info=True)
+                _LOGGER.debug(
+                    "SteamLinkStepView on_next handler failed: %s", exc, exc_info=True
+                )
 
     def bind_persistence(self, manager: Any, message_id: int) -> None:
         self._persistence_info = {"manager": manager, "message_id": message_id}
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if self.allowed_user_id is not None and interaction.user.id != self.allowed_user_id:
+        if (
+            self.allowed_user_id is not None
+            and interaction.user.id != self.allowed_user_id
+        ):
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(

@@ -5,6 +5,7 @@ KI-gestützter DM-Assistent für die Deutsche Deadlock Community.
 Reagiert auf DMs mit freier KI-Antwort (Gemini/OpenAI) inkl. passendem
 Discord-View basierend auf dem erkannten Intent.
 """
+
 from __future__ import annotations
 
 import json
@@ -62,7 +63,9 @@ def _check_cooldown(user_id: int) -> Optional[str]:
 
     if timestamps and (now - timestamps[-1]) < MIN_INTERVAL_SECONDS:
         wait = int(MIN_INTERVAL_SECONDS - (now - timestamps[-1])) + 1
-        return f"Bitte warte noch **{wait} Sekunden**, bevor du mir erneut schreibst. 😊"
+        return (
+            f"Bitte warte noch **{wait} Sekunden**, bevor du mir erneut schreibst. 😊"
+        )
 
     if len(timestamps) >= MAX_CALLS_PER_WINDOW:
         return (
@@ -95,6 +98,7 @@ def _parse_ai_response(text: str) -> dict:
 
 # ---------- Fallback-View ----------
 
+
 class FallbackView(discord.ui.View):
     """Kompaktes Button-Menü wenn KI nicht verfügbar."""
 
@@ -107,7 +111,9 @@ class FallbackView(discord.ui.View):
         style=discord.ButtonStyle.primary,
         custom_id="dma:fallback:streamer",
     )
-    async def btn_streamer(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def btn_streamer(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
         await interaction.response.send_message(
             "Nutze **/streamer** im Server, um den Streamer-Partner-Prozess zu starten!\n"
             "Als Partner bekommst du: Auto-Raid, Chat Guard, Analytics und mehr.",
@@ -119,7 +125,9 @@ class FallbackView(discord.ui.View):
         style=discord.ButtonStyle.secondary,
         custom_id="dma:fallback:beta",
     )
-    async def btn_beta(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def btn_beta(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
         await interaction.response.send_message(
             "Für einen Deadlock Beta-Invite nutze **/betainvite** im Server.\n"
             "Alternativ schau im <#1428745737323155679> Channel vorbei.",
@@ -131,10 +139,12 @@ class FallbackView(discord.ui.View):
         style=discord.ButtonStyle.secondary,
         custom_id="dma:fallback:steam",
     )
-    async def btn_steam(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def btn_steam(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
         await interaction.response.send_message(
             "Verknüpfe deinen Steam-Account mit **/steamlink** im Server.\n"
-            "So erhältst du die Rolle **\"Steam Verifiziert\"**.",
+            'So erhältst du die Rolle **"Steam Verifiziert"**.',
             ephemeral=True,
         )
 
@@ -143,7 +153,9 @@ class FallbackView(discord.ui.View):
         style=discord.ButtonStyle.secondary,
         custom_id="dma:fallback:faq",
     )
-    async def btn_faq(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def btn_faq(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
         await interaction.response.send_message(
             "Nutze **/faq** oder **/serverfaq <frage>** im Server für häufig gestellte Fragen.\n"
             "Du kannst mir hier auch direkt deine Frage stellen!",
@@ -152,6 +164,7 @@ class FallbackView(discord.ui.View):
 
 
 # ---------- Hauptcog ----------
+
 
 class BotDMAssistant(commands.Cog):
     """KI-gestützter DM-Assistent: reagiert auf freie DM-Nachrichten mit AI + passender View."""
@@ -217,7 +230,10 @@ class BotDMAssistant(commands.Cog):
                     )
 
                 if not text:
-                    log.warning("BotDMAssistant: Beide AI-Provider fehlgeschlagen (user=%s).", message.author.id)
+                    log.warning(
+                        "BotDMAssistant: Beide AI-Provider fehlgeschlagen (user=%s).",
+                        message.author.id,
+                    )
                     await self._send_fallback(message.channel)
                     return
 
@@ -233,7 +249,10 @@ class BotDMAssistant(commands.Cog):
                 await self._handle_intent(message, intent, ai_message, action)
 
             except Exception:
-                log.exception("BotDMAssistant: Unerwarteter Fehler für user=%s.", message.author.id)
+                log.exception(
+                    "BotDMAssistant: Unerwarteter Fehler für user=%s.",
+                    message.author.id,
+                )
                 await self._send_fallback(message.channel)
 
     async def _handle_intent(
@@ -247,6 +266,7 @@ class BotDMAssistant(commands.Cog):
 
         if intent == "streamer" and action:
             from .step_streamer import StreamerIntroView
+
             embed = StreamerIntroView.build_embed(message.author)
             view = StreamerIntroView()
             await channel.send(ai_message)
@@ -273,7 +293,7 @@ class BotDMAssistant(commands.Cog):
                     "**1.** Betritt unseren Discord-Server\n"
                     "**2.** Nutze den Befehl `/steamlink`\n"
                     "**3.** Folge den Anweisungen\n\n"
-                    "Nach der Verknüpfung erhältst du die Rolle **\"Steam Verifiziert\"**."
+                    'Nach der Verknüpfung erhältst du die Rolle **"Steam Verifiziert"**.'
                 ),
                 color=discord.Color.green(),
             )

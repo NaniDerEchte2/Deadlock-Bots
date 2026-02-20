@@ -1,4 +1,5 @@
 """Helper zum Speichern von Server-FAQ-Dialogen."""
+
 from __future__ import annotations
 
 import json

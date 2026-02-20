@@ -3,6 +3,7 @@ Abstract Base Class für Platform-Uploader.
 
 Definiert die gemeinsame Schnittstelle für alle Platform-spezifischen Uploader.
 """
+
 import asyncio
 import logging
 from abc import ABC, abstractmethod
@@ -117,8 +118,10 @@ class PlatformUploader(ABC):
             # Use yt-dlp subprocess to download
             proc = await asyncio.create_subprocess_exec(
                 "yt-dlp",
-                "-f", "best",
-                "-o", output_path,
+                "-f",
+                "best",
+                "-o",
+                output_path,
                 clip_url,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -157,9 +160,12 @@ class PlatformUploader(ABC):
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ffprobe",
-                "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
                 video_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -193,10 +199,14 @@ class PlatformUploader(ABC):
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ffprobe",
-                "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=width,height",
-                "-of", "csv=s=x:p=0",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=s=x:p=0",
                 video_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

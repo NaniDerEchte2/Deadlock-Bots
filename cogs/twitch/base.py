@@ -74,10 +74,12 @@ class TwitchBaseCog(commands.Cog):
         # TWITCH_CLIENT_ID/SECRET sind für die Haupt-App (Raids, Dashboard)
         self.client_id = os.getenv("TWITCH_CLIENT_ID") or ""
         self.client_secret = os.getenv("TWITCH_CLIENT_SECRET")
-        
+
         # TWITCH_BOT_CLIENT_ID ist speziell für den Chat-Bot (Fallback auf Haupt-App)
-        self._twitch_bot_client_id: str = os.getenv("TWITCH_BOT_CLIENT_ID", "").strip() or self.client_id
-        
+        self._twitch_bot_client_id: str = (
+            os.getenv("TWITCH_BOT_CLIENT_ID", "").strip() or self.client_id
+        )
+
         # Bot-Secret laden: 1. Spezieller Key, 2. Fallback auf Haupt-Secret (wenn ID identisch)
         bot_secret_env = os.getenv("TWITCH_BOT_CLIENT_SECRET", "").strip()
         if bot_secret_env:
@@ -106,32 +108,45 @@ class TwitchBaseCog(commands.Cog):
         self._target_game_lower = self._target_game_name.lower()
 
         # Dashboard/Auth (aus Config-Header)
-        self._dashboard_token = (os.getenv("TWITCH_DASHBOARD_TOKEN") or "").strip() or None
+        self._dashboard_token = (
+            os.getenv("TWITCH_DASHBOARD_TOKEN") or ""
+        ).strip() or None
         self._dashboard_noauth = _parse_env_bool(
             "TWITCH_DASHBOARD_NOAUTH",
             bool(TWITCH_DASHBOARD_NOAUTH),
         )
         env_dashboard_host = (os.getenv("TWITCH_DASHBOARD_HOST") or "").strip()
-        self._dashboard_host = env_dashboard_host or TWITCH_DASHBOARD_HOST or (
-            "127.0.0.1" if self._dashboard_noauth else "0.0.0.0"  # nosec B104
+        self._dashboard_host = (
+            env_dashboard_host
+            or TWITCH_DASHBOARD_HOST
+            or (
+                "127.0.0.1" if self._dashboard_noauth else "0.0.0.0"  # nosec B104
+            )
         )
-        self._dashboard_port = _parse_env_int("TWITCH_DASHBOARD_PORT", int(TWITCH_DASHBOARD_PORT))
-        embedded_env = (os.getenv("TWITCH_DASHBOARD_EMBEDDED", "") or "").strip().lower()
+        self._dashboard_port = _parse_env_int(
+            "TWITCH_DASHBOARD_PORT", int(TWITCH_DASHBOARD_PORT)
+        )
+        embedded_env = (
+            (os.getenv("TWITCH_DASHBOARD_EMBEDDED", "") or "").strip().lower()
+        )
         self._dashboard_embedded = embedded_env not in {"0", "false", "no", "off"}
         if not self._dashboard_embedded:
             log.info(
                 "TWITCH_DASHBOARD_EMBEDDED disabled - assuming external reverse proxy serves the dashboard"
             )
-        self._partner_dashboard_token = (os.getenv("TWITCH_PARTNER_TOKEN") or "").strip() or None
+        self._partner_dashboard_token = (
+            os.getenv("TWITCH_PARTNER_TOKEN") or ""
+        ).strip() or None
         self._dashboard_auth_redirect_uri = (
-            (os.getenv("TWITCH_DASHBOARD_AUTH_REDIRECT_URI") or "").strip()
-            or "https://twitch.earlysalty.com/twitch/auth/callback"
-        )
+            os.getenv("TWITCH_DASHBOARD_AUTH_REDIRECT_URI") or ""
+        ).strip() or "https://twitch.earlysalty.com/twitch/auth/callback"
         self._dashboard_session_ttl = max(
             1800,
             _parse_env_int("TWITCH_DASHBOARD_SESSION_TTL_SEC", 12 * 3600),
         )
-        self._legacy_stats_url = (os.getenv("TWITCH_LEGACY_STATS_URL") or "").strip() or None
+        self._legacy_stats_url = (
+            os.getenv("TWITCH_LEGACY_STATS_URL") or ""
+        ).strip() or None
         self._required_marker_default = TWITCH_REQUIRED_DISCORD_MARKER or None
 
         # EventSub Webhook Handler – früh initialisieren damit er sowohl im Dashboard
@@ -140,6 +155,7 @@ class TwitchBaseCog(commands.Cog):
         if _webhook_secret:
             try:
                 from .monitoring.eventsub_webhook import EventSubWebhookHandler
+
                 self._eventsub_webhook_handler = EventSubWebhookHandler(
                     secret=_webhook_secret,
                     logger=log,
@@ -148,7 +164,8 @@ class TwitchBaseCog(commands.Cog):
                 _parsed_redirect = urlparse(self._dashboard_auth_redirect_uri)
                 self._webhook_base_url: Optional[str] = (
                     f"{_parsed_redirect.scheme}://{_parsed_redirect.netloc}"
-                    if _parsed_redirect.netloc else None
+                    if _parsed_redirect.netloc
+                    else None
                 )
                 self._webhook_secret: Optional[str] = _webhook_secret
                 log.info(
@@ -156,7 +173,9 @@ class TwitchBaseCog(commands.Cog):
                     self._webhook_base_url,
                 )
             except Exception:
-                log.exception("EventSub Webhook Handler konnte nicht initialisiert werden")
+                log.exception(
+                    "EventSub Webhook Handler konnte nicht initialisiert werden"
+                )
                 self._eventsub_webhook_handler = None
                 self._webhook_base_url = None
                 self._webhook_secret = None
@@ -170,12 +189,16 @@ class TwitchBaseCog(commands.Cog):
             self._webhook_secret = None
 
         if not self.client_id:
-            log.error("TWITCH_CLIENT_ID not configured; Twitch features will be limited or disabled.")
+            log.error(
+                "TWITCH_CLIENT_ID not configured; Twitch features will be limited or disabled."
+            )
             self.api = None
             # Wir machen hier nicht 'return', damit der Chat-Bot (der seine eigene ID hat) evtl. trotzdem starten kann.
         else:
             if not self.client_secret:
-                log.warning("TWITCH_CLIENT_SECRET missing. API calls and Raids will fail, but Chat Bot might work.")
+                log.warning(
+                    "TWITCH_CLIENT_SECRET missing. API calls and Raids will fail, but Chat Bot might work."
+                )
                 self.api = None
             else:
                 self.api = TwitchAPI(self.client_id, self.client_secret)
@@ -185,7 +208,9 @@ class TwitchBaseCog(commands.Cog):
             try:
                 self._rehydrate_active_sessions()
             except Exception:
-                log.debug("Konnte aktive Twitch-Sessions nicht rehydrieren", exc_info=True)
+                log.debug(
+                    "Konnte aktive Twitch-Sessions nicht rehydrieren", exc_info=True
+                )
 
         # Raid-Bot initialisieren
         self._raid_bot: Optional[RaidBot] = None
@@ -194,7 +219,9 @@ class TwitchBaseCog(commands.Cog):
         self._twitch_bot_token: Optional[str] = bot_token
         self._twitch_bot_refresh_token: Optional[str] = bot_refresh_token
         env_bot_client_id = os.getenv("TWITCH_BOT_CLIENT_ID", "").strip()
-        self._twitch_bot_client_id = env_bot_client_id or self._twitch_bot_client_id or self.client_id
+        self._twitch_bot_client_id = (
+            env_bot_client_id or self._twitch_bot_client_id or self.client_id
+        )
         if not self._twitch_bot_secret:
             env_bot_secret = os.getenv("TWITCH_BOT_CLIENT_SECRET", "").strip()
             if env_bot_secret:
@@ -209,9 +236,12 @@ class TwitchBaseCog(commands.Cog):
                 self._twitch_bot_client_id,
                 (self._twitch_bot_secret or self.client_secret or ""),
             )
-        
+
         # Redirect-URL: Priorität 1: ENV/Tresor, Priorität 2: Constant
-        redirect_uri = os.getenv("TWITCH_RAID_REDIRECT_URI", "").strip() or TWITCH_RAID_REDIRECT_URI
+        redirect_uri = (
+            os.getenv("TWITCH_RAID_REDIRECT_URI", "").strip()
+            or TWITCH_RAID_REDIRECT_URI
+        )
         self._raid_redirect_uri = redirect_uri
 
         if self.api:
@@ -242,7 +272,9 @@ class TwitchBaseCog(commands.Cog):
                 log.exception("Fehler beim Initialisieren des Raid-Bots")
                 self._raid_bot = None
         else:
-            log.warning("Raid-Bot und Chat-Bot deaktiviert, da TWITCH_CLIENT_ID/SECRET fehlen.")
+            log.warning(
+                "Raid-Bot und Chat-Bot deaktiviert, da TWITCH_CLIENT_ID/SECRET fehlen."
+            )
 
         # Background tasks
         self.poll_streams.start()
@@ -259,7 +291,9 @@ class TwitchBaseCog(commands.Cog):
         # Beim Start fehlende user_ids in twitch_streamers nachfüllen
         if self.api:
             self._spawn_bg_task(self._sync_missing_user_ids(), "twitch.sync_user_ids")
-            self._spawn_bg_task(self._scout_deadlock_channels(), "twitch.scout_deadlock")
+            self._spawn_bg_task(
+                self._scout_deadlock_channels(), "twitch.scout_deadlock"
+            )
 
         # Social Media Clip Management
         self.clip_manager = None
@@ -273,17 +307,19 @@ class TwitchBaseCog(commands.Cog):
             self.clip_manager = ClipManager(twitch_api=self.api)
             self.clip_fetcher = ClipFetcher(bot, self.api, self.clip_manager)
             self.upload_worker = UploadWorker(bot, self.clip_manager)
-            log.info("Social Media Clip Management initialized (ClipManager + ClipFetcher + UploadWorker)")
+            log.info(
+                "Social Media Clip Management initialized (ClipManager + ClipFetcher + UploadWorker)"
+            )
 
     async def _scout_deadlock_channels(self):
         """Periodically scout for live German Deadlock streams and join them.
         Also cleans up monitored channels that are no longer playing Deadlock.
         """
         await self.bot.wait_until_ready()
-        
+
         # Initial delay to let other things startup
         await asyncio.sleep(60)
-        
+
         while True:
             try:
                 if not self.api:
@@ -294,9 +330,11 @@ class TwitchBaseCog(commands.Cog):
                 # Ensure we have the Game ID
                 if not self._category_id:
                     self._category_id = await self._ensure_category_id()
-                
+
                 if not self._category_id:
-                    log.warning("Scout: Could not resolve Game ID for Deadlock, skipping.")
+                    log.warning(
+                        "Scout: Could not resolve Game ID for Deadlock, skipping."
+                    )
                     await asyncio.sleep(300)
                     continue
 
@@ -306,17 +344,22 @@ class TwitchBaseCog(commands.Cog):
                     game_id=self._category_id,
                     game_name=self._target_game_name,
                     language="de",
-                    limit=100
+                    limit=100,
                 )
-                
-                current_deadlock_logins = {s.get("user_login", "").lower() for s in streams if s.get("user_login")}
+
+                current_deadlock_logins = {
+                    s.get("user_login", "").lower()
+                    for s in streams
+                    if s.get("user_login")
+                }
                 new_logins = []
                 now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
                 with storage.get_conn() as conn:
                     # Get currently monitored
                     existing_monitored = {
-                        row[0].lower() for row in conn.execute(
+                        row[0].lower()
+                        for row in conn.execute(
                             "SELECT twitch_login FROM twitch_streamers WHERE is_monitored_only = 1"
                         ).fetchall()
                     }
@@ -325,29 +368,29 @@ class TwitchBaseCog(commands.Cog):
                         login = s.get("user_login", "").lower()
                         if not login:
                             continue
-                        
+
                         # Only add if not already tracked (as partner or monitor)
                         exists = conn.execute(
                             "SELECT 1 FROM twitch_streamers WHERE twitch_login = ?",
-                            (login,)
+                            (login,),
                         ).fetchone()
-                        
+
                         if not exists:
                             conn.execute(
                                 """
                                 INSERT INTO twitch_streamers (twitch_login, twitch_user_id, is_monitored_only, created_at)
                                 VALUES (?, ?, 1, ?)
                                 """,
-                                (login, s.get("user_id"), now)
+                                (login, s.get("user_id"), now),
                             )
                             new_logins.append(login)
-                        
+
                         # Check/Create Session
                         session = conn.execute(
                             "SELECT id FROM twitch_stream_sessions WHERE streamer_login = ? AND ended_at IS NULL",
-                            (login,)
+                            (login,),
                         ).fetchone()
-                        
+
                         if not session:
                             conn.execute(
                                 """
@@ -359,13 +402,15 @@ class TwitchBaseCog(commands.Cog):
                                 (
                                     login,
                                     s.get("id"),
-                                    s.get("started_at", now), # Use stream start time if available
+                                    s.get(
+                                        "started_at", now
+                                    ),  # Use stream start time if available
                                     s.get("title", ""),
                                     s.get("viewer_count", 0),
                                     s.get("viewer_count", 0),
                                     s.get("language", "de"),
-                                    s.get("game_name", self._target_game_name)
-                                )
+                                    s.get("game_name", self._target_game_name),
+                                ),
                             )
 
                     if new_logins:
@@ -387,7 +432,11 @@ class TwitchBaseCog(commands.Cog):
                         for login in to_remove:
                             storage.delete_streamer(conn, login)
                         conn.commit()
-                    log.info("Scout: Removing %d monitored channels (no longer Deadlock/DE/Live): %s", len(to_remove), ", ".join(to_remove[:10]))
+                    log.info(
+                        "Scout: Removing %d monitored channels (no longer Deadlock/DE/Live): %s",
+                        len(to_remove),
+                        ", ".join(to_remove[:10]),
+                    )
 
                 # --- 3. Sync Chat Bot ---
                 chat_bot = getattr(self, "_twitch_chat_bot", None)
@@ -395,12 +444,17 @@ class TwitchBaseCog(commands.Cog):
                     # Join new
                     if new_logins:
                         log.info("Scout: Joining %d new channels", len(new_logins))
-                        set_monitored_channels = getattr(chat_bot, "set_monitored_channels", None)
+                        set_monitored_channels = getattr(
+                            chat_bot, "set_monitored_channels", None
+                        )
                         if callable(set_monitored_channels):
                             try:
                                 set_monitored_channels(new_logins)
                             except Exception:
-                                log.debug("Scout: set_monitored_channels failed", exc_info=True)
+                                log.debug(
+                                    "Scout: set_monitored_channels failed",
+                                    exc_info=True,
+                                )
 
                         join_channels = getattr(chat_bot, "join_channels", None)
                         if callable(join_channels):
@@ -414,7 +468,11 @@ class TwitchBaseCog(commands.Cog):
                                         if await join_single(login):
                                             joined += 1
                                     except Exception:
-                                        log.debug("Scout: fallback join failed for %s", login, exc_info=True)
+                                        log.debug(
+                                            "Scout: fallback join failed for %s",
+                                            login,
+                                            exc_info=True,
+                                        )
                                 log.warning(
                                     "Scout: chat bot has no join_channels; fallback join used (%d/%d).",
                                     joined,
@@ -425,7 +483,7 @@ class TwitchBaseCog(commands.Cog):
                                     "Scout: chat bot has neither join_channels nor join; cannot join %d channels.",
                                     len(new_logins),
                                 )
-                    
+
                     # Leave old
                     if to_remove:
                         part_channels = getattr(chat_bot, "part_channels", None)
@@ -448,7 +506,7 @@ class TwitchBaseCog(commands.Cog):
 
             except Exception:
                 log.exception("Scout: Error during Deadlock channel scouting")
-            
+
             # Run every 5 minutes
             await asyncio.sleep(300)
 
@@ -456,6 +514,7 @@ class TwitchBaseCog(commands.Cog):
         """Registriert persistente RaidAuthGenerateViews für alle Streamer in der DB.
         Muss bei Bot-Start aufgerufen werden damit Buttons nach Neustart funktionieren."""
         from .raid.views import RaidAuthGenerateView
+
         try:
             with storage.get_conn() as conn:
                 rows = conn.execute(
@@ -463,7 +522,11 @@ class TwitchBaseCog(commands.Cog):
                 ).fetchall()
             count = 0
             for row in rows:
-                login = str(row[0] if not hasattr(row, "keys") else row["twitch_login"]).strip().lower()
+                login = (
+                    str(row[0] if not hasattr(row, "keys") else row["twitch_login"])
+                    .strip()
+                    .lower()
+                )
                 if login:
                     self.bot.add_view(RaidAuthGenerateView(twitch_login=login))
                     count += 1
@@ -476,7 +539,7 @@ class TwitchBaseCog(commands.Cog):
     # -------------------------------------------------------
     async def cog_unload(self):
         """Ensure background resources are torn down when the cog is removed.
-        
+
         Shutdown-Reihenfolge (wichtig!):
         1. Tasks/Loops canceln
         2. EventSub WebSocket Listeners stoppen
@@ -488,7 +551,7 @@ class TwitchBaseCog(commands.Cog):
         8. Commands deregistrieren
         """
         log.info("Twitch Cog Unload gestartet – fahre alle Ressourcen herunter...")
-        
+
         # 1. Background Loops canceln
         loops = (self.poll_streams, self.invites_refresh)
         for lp in loops:
@@ -528,32 +591,47 @@ class TwitchBaseCog(commands.Cog):
                 if hasattr(self._twitch_chat_bot, "close"):
                     await self._twitch_chat_bot.close()
                     log.debug("Chat Bot close() abgeschlossen")
-                
+
                 # Warte explizit auf Port-Freigabe (4343)
                 adapter = getattr(self._twitch_chat_bot, "adapter", None)
                 if adapter:
                     adapter_host = getattr(adapter, "_host", "127.0.0.1")
                     adapter_port = int(getattr(adapter, "_port", 4343))
-                    
+
                     # Gebe dem Adapter Zeit zum Herunterfahren
                     await asyncio.sleep(2.0)
-                    
+
                     # Prüfe ob der Port frei ist
                     for retry in range(10):  # Max 10 Sekunden warten
-                        can_bind, _ = await self._can_bind_port_async(adapter_host, adapter_port)
+                        can_bind, _ = await self._can_bind_port_async(
+                            adapter_host, adapter_port
+                        )
                         if can_bind:
-                            log.info("Chat Bot Adapter Port %s:%s erfolgreich freigegeben", adapter_host, adapter_port)
+                            log.info(
+                                "Chat Bot Adapter Port %s:%s erfolgreich freigegeben",
+                                adapter_host,
+                                adapter_port,
+                            )
                             break
                         if retry < 9:
-                            log.debug("Warte auf Port-Freigabe %s:%s... (%d/10)", adapter_host, adapter_port, retry + 1)
+                            log.debug(
+                                "Warte auf Port-Freigabe %s:%s... (%d/10)",
+                                adapter_host,
+                                adapter_port,
+                                retry + 1,
+                            )
                             await asyncio.sleep(1.0)
                         else:
-                            log.warning("Port %s:%s nach 10s noch belegt – fahre trotzdem fort", adapter_host, adapter_port)
-                
+                            log.warning(
+                                "Port %s:%s nach 10s noch belegt – fahre trotzdem fort",
+                                adapter_host,
+                                adapter_port,
+                            )
+
                 log.info("Twitch Chat Bot beendet")
             except Exception:
                 log.exception("Twitch Chat Bot shutdown fehlgeschlagen")
-        
+
         # 4. Token Manager cleanup
         if self._bot_token_manager:
             try:
@@ -567,26 +645,41 @@ class TwitchBaseCog(commands.Cog):
             log.info("Stoppe Twitch Dashboard...")
             try:
                 await self._stop_dashboard()
-                
+
                 # Warte explizit auf Port-Freigabe (8765)
                 dashboard_port = self._dashboard_port
                 dashboard_host = self._dashboard_host
-                
+
                 # Gebe dem Dashboard Zeit zum Herunterfahren
                 await asyncio.sleep(2.0)
-                
+
                 # Prüfe ob der Port frei ist
                 for retry in range(10):  # Max 10 Sekunden warten
-                    can_bind, _ = await self._can_bind_port_async(dashboard_host, dashboard_port)
+                    can_bind, _ = await self._can_bind_port_async(
+                        dashboard_host, dashboard_port
+                    )
                     if can_bind:
-                        log.info("Dashboard Port %s:%s erfolgreich freigegeben", dashboard_host, dashboard_port)
+                        log.info(
+                            "Dashboard Port %s:%s erfolgreich freigegeben",
+                            dashboard_host,
+                            dashboard_port,
+                        )
                         break
                     if retry < 9:
-                        log.debug("Warte auf Port-Freigabe %s:%s... (%d/10)", dashboard_host, dashboard_port, retry + 1)
+                        log.debug(
+                            "Warte auf Port-Freigabe %s:%s... (%d/10)",
+                            dashboard_host,
+                            dashboard_port,
+                            retry + 1,
+                        )
                         await asyncio.sleep(1.0)
                     else:
-                        log.warning("Port %s:%s nach 10s noch belegt – fahre trotzdem fort", dashboard_host, dashboard_port)
-                
+                        log.warning(
+                            "Port %s:%s nach 10s noch belegt – fahre trotzdem fort",
+                            dashboard_host,
+                            dashboard_port,
+                        )
+
                 log.info("Twitch Dashboard gestoppt")
             except Exception:
                 log.exception("Dashboard shutdown fehlgeschlagen")
@@ -624,7 +717,7 @@ class TwitchBaseCog(commands.Cog):
             log.exception("Konnte !twl-Command nicht deregistrieren")
         finally:
             self._twl_command = None
-        
+
         # Finale Pause damit alle async Tasks sauber beendet werden können
         await asyncio.sleep(0.5)
         log.info("Twitch Cog Unload abgeschlossen")
@@ -638,7 +731,9 @@ class TwitchBaseCog(commands.Cog):
         try:
             asyncio.create_task(coro, name=name)
         except RuntimeError as exc:
-            log.error("Cannot start background task %s (no running loop yet): %s", name, exc)
+            log.error(
+                "Cannot start background task %s (no running loop yet): %s", name, exc
+            )
         except Exception:
             log.exception("Failed to start background task %s", name)
 
@@ -667,8 +762,10 @@ class TwitchBaseCog(commands.Cog):
             return
 
         # Delay zwischen Guilds einbauen um Rate Limits zu vermeiden
-        delay_between_guilds = max(2.0, 30.0 / len(guilds))  # Minimum 2s, verteilt über 30s
-        
+        delay_between_guilds = max(
+            2.0, 30.0 / len(guilds)
+        )  # Minimum 2s, verteilt über 30s
+
         for i, guild in enumerate(guilds):
             try:
                 await self._refresh_guild_invites(guild)
@@ -685,32 +782,35 @@ class TwitchBaseCog(commands.Cog):
         except Exception:
             log.exception("wait_until_ready fehlgeschlagen")
             return
-        
+
         try:
             with storage.get_conn() as conn:
                 rows = conn.execute(
                     "SELECT guild_id, invite_code FROM discord_invite_codes"
                 ).fetchall()
-            
+
             if not rows:
-                log.info("Keine Invite-Codes in DB gefunden - werden beim ersten Gebrauch abgerufen")
+                log.info(
+                    "Keine Invite-Codes in DB gefunden - werden beim ersten Gebrauch abgerufen"
+                )
                 return
-            
+
             # Gruppiere nach Guild
             by_guild: Dict[int, Set[str]] = {}
             for guild_id, code in rows:
                 if guild_id not in by_guild:
                     by_guild[guild_id] = set()
                 by_guild[guild_id].add(code)
-            
+
             # Lade in RAM-Cache
             for guild_id, codes in by_guild.items():
                 self._invite_codes[guild_id] = codes
-            
+
             total_codes = sum(len(codes) for codes in by_guild.values())
             log.debug(
                 "Invite-Codes aus DB geladen: %s Guilds, %s Codes gesamt",
-                len(by_guild), total_codes
+                len(by_guild),
+                total_codes,
             )
         except Exception:
             log.exception("Konnte Invite-Codes nicht aus DB laden")
@@ -747,11 +847,12 @@ class TwitchBaseCog(commands.Cog):
                             AND tra.twitch_user_id IS NOT NULL
                       )
                 """)
-                synced = conn.execute(
-                    "SELECT changes()"
-                ).fetchone()[0]
+                synced = conn.execute("SELECT changes()").fetchone()[0]
             if synced:
-                log.info("_sync_missing_user_ids: %d user_ids aus raid_auth übernommen", synced)
+                log.info(
+                    "_sync_missing_user_ids: %d user_ids aus raid_auth übernommen",
+                    synced,
+                )
         except Exception:
             log.exception("_sync_missing_user_ids: Phase 1 (raid_auth) fehlgeschlagen")
 
@@ -770,7 +871,10 @@ class TwitchBaseCog(commands.Cog):
             log.debug("_sync_missing_user_ids: alle user_ids vorhanden, nichts zu tun")
             return
 
-        log.info("_sync_missing_user_ids: %d Logins ohne user_id, frage Twitch API ab", len(missing))
+        log.info(
+            "_sync_missing_user_ids: %d Logins ohne user_id, frage Twitch API ab",
+            len(missing),
+        )
 
         try:
             # get_users gibt ein Dict {login: {id, login, ...}} zurück
@@ -796,9 +900,13 @@ class TwitchBaseCog(commands.Cog):
                             "WHERE LOWER(twitch_login) = LOWER(?) AND twitch_user_id IS NULL",
                             (uid, login),
                         )
-            log.info("_sync_missing_user_ids: %d user_ids per API aktualisiert", len(users))
+            log.info(
+                "_sync_missing_user_ids: %d user_ids per API aktualisiert", len(users)
+            )
         except Exception:
-            log.exception("_sync_missing_user_ids: DB-Update nach API-Aufruf fehlgeschlagen")
+            log.exception(
+                "_sync_missing_user_ids: DB-Update nach API-Aufruf fehlgeschlagen"
+            )
 
         # --- Abschliessender Bericht ---
         try:
@@ -815,13 +923,16 @@ class TwitchBaseCog(commands.Cog):
             else:
                 log.info("_sync_missing_user_ids: alle user_ids erfolgreich gesetzt")
         except Exception:
-            log.debug("_sync_missing_user_ids: Abschliessender Check fehlgeschlagen", exc_info=True)
+            log.debug(
+                "_sync_missing_user_ids: Abschliessender Check fehlgeschlagen",
+                exc_info=True,
+            )
 
     async def _refresh_guild_invites(self, guild: Guild):
         codes: Set[str] = set()
         max_retries = 3
         retry_delay = 5.0  # Initial 5 Sekunden
-        
+
         for attempt in range(max_retries):
             try:
                 invites = await guild.invites()
@@ -830,14 +941,19 @@ class TwitchBaseCog(commands.Cog):
                         codes.add(inv.code)
                 break  # Erfolg, Schleife verlassen
             except Forbidden:
-                log.warning("Fehlende Berechtigung, um Invites von Guild %s zu lesen", guild.id)
+                log.warning(
+                    "Fehlende Berechtigung, um Invites von Guild %s zu lesen", guild.id
+                )
                 break  # Keine Retries bei Permission-Fehler
             except HTTPException as e:
                 if attempt < max_retries - 1 and "429" in str(e):  # Rate Limit
-                    wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                    wait_time = retry_delay * (2**attempt)  # Exponential backoff
                     log.warning(
                         "Rate Limit bei Invite-Refresh für Guild %s - warte %s Sekunden (Versuch %s/%s)",
-                        guild.id, wait_time, attempt + 1, max_retries
+                        guild.id,
+                        wait_time,
+                        attempt + 1,
+                        max_retries,
                     )
                     await asyncio.sleep(wait_time)
                 else:
@@ -845,27 +961,34 @@ class TwitchBaseCog(commands.Cog):
                     if "429" in str(e):
                         log.error(
                             "HTTP-Fehler beim Abruf der Invites für Guild %s nach %s Versuchen - überspringe",
-                            guild.id, max_retries
+                            guild.id,
+                            max_retries,
                         )
                     else:
-                        log.exception("HTTP-Fehler beim Abruf der Invites für Guild %s", guild.id)
+                        log.exception(
+                            "HTTP-Fehler beim Abruf der Invites für Guild %s", guild.id
+                        )
                     break
 
         # Cache im RAM
         self._invite_codes[guild.id] = codes
-        
+
         # Persistiere in DB für spätere Verwendung
         if codes:
             try:
                 from datetime import datetime, timezone
+
                 now = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 with storage.get_conn() as conn:
                     # Lösche alte Codes die nicht mehr existieren
-                    existing = {row[0] for row in conn.execute(
-                        "SELECT invite_code FROM discord_invite_codes WHERE guild_id = ?",
-                        (guild.id,)
-                    ).fetchall()}
-                    
+                    existing = {
+                        row[0]
+                        for row in conn.execute(
+                            "SELECT invite_code FROM discord_invite_codes WHERE guild_id = ?",
+                            (guild.id,),
+                        ).fetchall()
+                    }
+
                     to_remove = existing - codes
                     if to_remove:
                         for invite_code in to_remove:
@@ -873,7 +996,7 @@ class TwitchBaseCog(commands.Cog):
                                 "DELETE FROM discord_invite_codes WHERE guild_id = ? AND invite_code = ?",
                                 (guild.id, invite_code),
                             )
-                    
+
                     # Füge neue hinzu oder update last_seen_at
                     for code in codes:
                         conn.execute(
@@ -881,12 +1004,18 @@ class TwitchBaseCog(commands.Cog):
                                VALUES (?, ?, ?, ?)
                                ON CONFLICT(guild_id, invite_code) 
                                DO UPDATE SET last_seen_at = ?""",
-                            (guild.id, code, now, now, now)
+                            (guild.id, code, now, now, now),
                         )
                     conn.commit()
-                    log.debug("Invite-Codes für Guild %s in DB gespeichert: %s", guild.id, len(codes))
+                    log.debug(
+                        "Invite-Codes für Guild %s in DB gespeichert: %s",
+                        guild.id,
+                        len(codes),
+                    )
             except Exception:
-                log.exception("Konnte Invite-Codes nicht in DB speichern für Guild %s", guild.id)
+                log.exception(
+                    "Konnte Invite-Codes nicht in DB speichern für Guild %s", guild.id
+                )
 
     async def _init_twitch_chat_bot(self):
         """Initialisiert den Twitch Chat Bot für Raid-Commands."""
@@ -896,7 +1025,9 @@ class TwitchBaseCog(commands.Cog):
                 log.info("Raid-Bot nicht verfügbar, überspringe Twitch Chat Bot")
                 return
             if not TWITCHIO_AVAILABLE:
-                log.info("twitchio nicht installiert; Twitch Chat Bot wird übersprungen.")
+                log.info(
+                    "twitchio nicht installiert; Twitch Chat Bot wird übersprungen."
+                )
                 return
 
             token = self._twitch_bot_token
@@ -909,7 +1040,7 @@ class TwitchBaseCog(commands.Cog):
             refresh_env = os.getenv("TWITCH_BOT_REFRESH_TOKEN", "").strip() or None
             if refresh_env:
                 refresh_token = refresh_env
-            
+
             if not token:
                 log.info(
                     "Twitch Chat Bot nicht verfuegbar (kein Token gesetzt). "
@@ -926,7 +1057,8 @@ class TwitchBaseCog(commands.Cog):
 
             self._twitch_chat_bot = await create_twitch_chat_bot(
                 client_id=self._twitch_bot_client_id,
-                client_secret=self._twitch_bot_secret or "",  # TwitchIO mag None manchmal nicht, Empty String ist sicherer
+                client_secret=self._twitch_bot_secret
+                or "",  # TwitchIO mag None manchmal nicht, Empty String ist sicherer
                 redirect_uri=self._raid_redirect_uri,
                 raid_bot=self._raid_bot,
                 bot_token=token,
@@ -937,8 +1069,13 @@ class TwitchBaseCog(commands.Cog):
 
             if self._twitch_chat_bot:
                 if self._bot_token_manager:
-                    self._twitch_bot_token = self._bot_token_manager.access_token or self._twitch_bot_token
-                    self._twitch_bot_refresh_token = self._bot_token_manager.refresh_token or self._twitch_bot_refresh_token
+                    self._twitch_bot_token = (
+                        self._bot_token_manager.access_token or self._twitch_bot_token
+                    )
+                    self._twitch_bot_refresh_token = (
+                        self._bot_token_manager.refresh_token
+                        or self._twitch_bot_refresh_token
+                    )
                 try:
                     if hasattr(self._twitch_chat_bot, "set_discord_bot"):
                         invite_channel_id = self._notify_channel_id or None
@@ -947,7 +1084,9 @@ class TwitchBaseCog(commands.Cog):
                             invite_channel_id=invite_channel_id,
                         )
                 except Exception:
-                    log.debug("Konnte Discord-Bot nicht an Chat-Bot binden", exc_info=True)
+                    log.debug(
+                        "Konnte Discord-Bot nicht an Chat-Bot binden", exc_info=True
+                    )
                 # Bot im Hintergrund laufen lassen
                 start_with_adapter = await self._should_start_chat_adapter()
                 asyncio.create_task(
@@ -969,7 +1108,9 @@ class TwitchBaseCog(commands.Cog):
                     log.info("Chat-Bot mit Raid-Bot verknüpft für Recruitment-Messages")
 
                 # Periodisch neue Partner-Channels joinen
-                asyncio.create_task(self._periodic_channel_join(), name="twitch.chat_bot.join_channels")
+                asyncio.create_task(
+                    self._periodic_channel_join(), name="twitch.chat_bot.join_channels"
+                )
 
         except Exception:
             log.exception("Fehler beim Initialisieren des Twitch Chat Bots")
@@ -998,7 +1139,9 @@ class TwitchBaseCog(commands.Cog):
         if not chat_bot:
             return
 
-        monitored = {login.lower() for login in getattr(chat_bot, "_monitored_streamers", set())}
+        monitored = {
+            login.lower() for login in getattr(chat_bot, "_monitored_streamers", set())
+        }
         if not monitored:
             return
 
@@ -1022,9 +1165,15 @@ class TwitchBaseCog(commands.Cog):
                         rows.append(row)
 
             for row in rows:
-                login = str(row["twitch_login"] if hasattr(row, "keys") else row[0]).strip().lower()
+                login = (
+                    str(row["twitch_login"] if hasattr(row, "keys") else row[0])
+                    .strip()
+                    .lower()
+                )
                 is_live = row["is_live"] if hasattr(row, "keys") else row[1]
-                user_id = str(row["twitch_user_id"] if hasattr(row, "keys") else row[2]).strip()
+                user_id = str(
+                    row["twitch_user_id"] if hasattr(row, "keys") else row[2]
+                ).strip()
                 if not login:
                     continue
                 if bool(is_live):
@@ -1095,7 +1244,9 @@ class TwitchBaseCog(commands.Cog):
 
             for sub in subs_list:
                 try:
-                    sub_type = getattr(sub, "type", "") or getattr(sub, "subscription_type", "")
+                    sub_type = getattr(sub, "type", "") or getattr(
+                        sub, "subscription_type", ""
+                    )
                     if sub_type != "channel.chat.message":
                         continue
                     condition = getattr(sub, "condition", None)
@@ -1126,11 +1277,20 @@ class TwitchBaseCog(commands.Cog):
                             await chat_bot.delete_eventsub_subscription(sub_id)
                             unsubscribed += 1
                         except Exception:
-                            log.debug("Cleanup: konnte EventSub-Subscription %s nicht löschen", sub_id, exc_info=True)
+                            log.debug(
+                                "Cleanup: konnte EventSub-Subscription %s nicht löschen",
+                                sub_id,
+                                exc_info=True,
+                            )
                 except Exception:
-                    log.debug("Cleanup: Fehler beim Prüfen von EventSub-Subscriptions", exc_info=True)
+                    log.debug(
+                        "Cleanup: Fehler beim Prüfen von EventSub-Subscriptions",
+                        exc_info=True,
+                    )
         except Exception:
-            log.debug("Cleanup: konnte EventSub-Subscriptions nicht abrufen", exc_info=True)
+            log.debug(
+                "Cleanup: konnte EventSub-Subscriptions nicht abrufen", exc_info=True
+            )
 
         for login in offline_logins:
             chat_bot._monitored_streamers.discard(login)
@@ -1179,7 +1339,10 @@ class TwitchBaseCog(commands.Cog):
 
         for attempt in range(max_retries):
             try:
-                families = [info[0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
+                families = [
+                    info[0]
+                    for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                ]
             except Exception as exc:
                 families = [socket.AF_INET]
                 last_error = str(exc)
@@ -1199,13 +1362,19 @@ class TwitchBaseCog(commands.Cog):
                 except OSError as exc:
                     last_error = str(exc)
                     continue
-            
+
             if success:
                 return True, None
-            
+
             if attempt < max_retries - 1:
-                log.debug("Port %s:%s belegt, versuche es erneut in %ss... (Versuch %s/%s)", 
-                          host, port, retry_delay, attempt + 1, max_retries)
+                log.debug(
+                    "Port %s:%s belegt, versuche es erneut in %ss... (Versuch %s/%s)",
+                    host,
+                    port,
+                    retry_delay,
+                    attempt + 1,
+                    max_retries,
+                )
                 await asyncio.sleep(retry_delay)
                 retry_delay *= 2
             else:
@@ -1218,7 +1387,10 @@ class TwitchBaseCog(commands.Cog):
         """Synchronous version for compatibility (if needed), but prefers async version."""
         # For compatibility we keep the sync one but the async one should be used where possible
         try:
-            families = [info[0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
+            families = [
+                info[0]
+                for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            ]
         except Exception as exc:
             families = [socket.AF_INET]
             last_error = str(exc)
@@ -1243,7 +1415,11 @@ class TwitchBaseCog(commands.Cog):
         channel_id = int(getattr(self, "_alert_channel_id", 0) or 0)
         if not channel_id:
             return
-        content = f"{self._alert_mention} {message}".strip() if self._alert_mention else message
+        content = (
+            f"{self._alert_mention} {message}".strip()
+            if self._alert_mention
+            else message
+        )
         try:
             channel = self.bot.get_channel(channel_id)
             if channel is None:
@@ -1252,7 +1428,9 @@ class TwitchBaseCog(commands.Cog):
                 return
             await channel.send(content=content)
         except (Forbidden, HTTPException):
-            log.debug("Konnte Alert nicht senden (Discord-Zugriff verweigert).", exc_info=True)
+            log.debug(
+                "Konnte Alert nicht senden (Discord-Zugriff verweigert).", exc_info=True
+            )
         except Exception:
             log.debug("Konnte Alert nicht senden.", exc_info=True)
 
@@ -1288,7 +1466,9 @@ class TwitchBaseCog(commands.Cog):
         value = (raw or "").strip()
         if not value:
             return None
-        tokens = [tok.strip().lower() for tok in re.split(r"[,\s;|]+", value) if tok.strip()]
+        tokens = [
+            tok.strip().lower() for tok in re.split(r"[,\s;|]+", value) if tok.strip()
+        ]
         if not tokens:
             return None
         if any(tok in {"*", "any", "all"} for tok in tokens):

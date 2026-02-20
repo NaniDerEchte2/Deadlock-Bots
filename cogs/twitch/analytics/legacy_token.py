@@ -6,6 +6,7 @@ Streamer mit needs_reauth=1 haben noch die neuen Scopes (bits:read, channel:read
 channel:read:subscriptions, channel:read:ads) nicht autorisiert. Für diese werden
 legacy_access_token Felder für Analytics-EventSubs verwendet, bis sie re-authen.
 """
+
 from __future__ import annotations
 
 from typing import Optional
@@ -110,6 +111,7 @@ class LegacyTokenAnalyticsMixin:
         - needs_reauth=0 → neuer access_token (volle Scopes), bevorzugt via get_valid_token (mit Refresh)
         - needs_reauth=1 → kein Token (Klartext-Legacy wird nicht mehr geladen)
         """
+
         def _sanitize_token(raw_value: object) -> Optional[str]:
             token = str(raw_value or "").strip()
             if not token:
@@ -124,7 +126,9 @@ class LegacyTokenAnalyticsMixin:
             session = getattr(raid_bot, "session", None) if raid_bot else None
             if auth_manager and session and not getattr(session, "closed", False):
                 try:
-                    refreshed_token = await auth_manager.get_valid_token(str(twitch_user_id), session)
+                    refreshed_token = await auth_manager.get_valid_token(
+                        str(twitch_user_id), session
+                    )
                     clean = _sanitize_token(refreshed_token)
                     if clean:
                         return clean
@@ -146,7 +150,9 @@ class LegacyTokenAnalyticsMixin:
             if not row:
                 return None
             needs_reauth = row["needs_reauth"] if hasattr(row, "keys") else row[0]
-            legacy_present = bool(row["legacy_present"] if hasattr(row, "keys") else row[1])
+            legacy_present = bool(
+                row["legacy_present"] if hasattr(row, "keys") else row[1]
+            )
             if needs_reauth == 0:
                 if legacy_present:
                     self._clear_legacy_snapshot_for_user(
@@ -170,9 +176,7 @@ class LegacyTokenAnalyticsMixin:
             )
             return None
         except Exception:
-            log.debug(
-                "LegacyToken: Konnte Token nicht laden", exc_info=True
-            )
+            log.debug("LegacyToken: Konnte Token nicht laden", exc_info=True)
             return None
 
     async def _is_fully_authed(self, twitch_user_id: str) -> bool:
@@ -205,5 +209,7 @@ class LegacyTokenAnalyticsMixin:
                     "SELECT COUNT(*) FROM twitch_raid_auth WHERE needs_reauth=1"
                 ).fetchone()[0]
         except Exception:
-            log.debug("LegacyToken: Konnte pending reauth count nicht lesen", exc_info=True)
+            log.debug(
+                "LegacyToken: Konnte pending reauth count nicht lesen", exc_info=True
+            )
             return 0

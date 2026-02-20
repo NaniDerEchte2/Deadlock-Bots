@@ -216,7 +216,9 @@ class AIConnector(commands.Cog):
             if output_text:
                 text = str(output_text).strip()
             else:
-                out = getattr(response, "output", None) or getattr(response, "outputs", None)
+                out = getattr(response, "output", None) or getattr(
+                    response, "outputs", None
+                )
                 if out is None and isinstance(response, dict):
                     out = response.get("output") or response.get("outputs")
                 fragments = []
@@ -282,7 +284,9 @@ class AIConnector(commands.Cog):
                 mention_author=False,
             )
         else:
-            await ctx.reply("Konnte den AI-Onboarding Test nicht starten.", mention_author=False)
+            await ctx.reply(
+                "Konnte den AI-Onboarding Test nicht starten.", mention_author=False
+            )
 
 
 async def setup(bot: commands.Bot):

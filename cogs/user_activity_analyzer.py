@@ -82,10 +82,16 @@ class UserActivityAnalyzer(commands.Cog):
             if task.is_running():
                 task.cancel()
 
-        await asyncio.gather(*[
-            task.wait_for_cancel() if hasattr(task, 'wait_for_cancel') else asyncio.sleep(0)
-            for task in tasks_to_cancel if task.is_running()
-        ], return_exceptions=True)
+        await asyncio.gather(
+            *[
+                task.wait_for_cancel()
+                if hasattr(task, "wait_for_cancel")
+                else asyncio.sleep(0)
+                for task in tasks_to_cancel
+                if task.is_running()
+            ],
+            return_exceptions=True,
+        )
 
         logger.info("User Activity Analyzer unloaded")
 
@@ -112,7 +118,7 @@ class UserActivityAnalyzer(commands.Cog):
                 WHERE started_at >= ?
                 ORDER BY user_id, started_at
                 """,
-                (cutoff_str,)
+                (cutoff_str,),
             )
 
             if not sessions:
@@ -122,13 +128,19 @@ class UserActivityAnalyzer(commands.Cog):
             # Gruppiere Sessions nach User
             user_sessions = defaultdict(list)
             for row in sessions:
-                user_sessions[row[0]].append({
-                    'user_id': row[0],
-                    'started_at': datetime.strptime(row[1], "%Y-%m-%d %H:%M:%S") if row[1] else None,
-                    'ended_at': datetime.strptime(row[2], "%Y-%m-%d %H:%M:%S") if row[2] else None,
-                    'duration_seconds': row[3] or 0,
-                    'channel_id': row[4],
-                })
+                user_sessions[row[0]].append(
+                    {
+                        "user_id": row[0],
+                        "started_at": datetime.strptime(row[1], "%Y-%m-%d %H:%M:%S")
+                        if row[1]
+                        else None,
+                        "ended_at": datetime.strptime(row[2], "%Y-%m-%d %H:%M:%S")
+                        if row[2]
+                        else None,
+                        "duration_seconds": row[3] or 0,
+                        "channel_id": row[4],
+                    }
+                )
 
             # Analysiere jeden User
             analyzed_count = 0
@@ -175,7 +187,9 @@ class UserActivityAnalyzer(commands.Cog):
             if row and row[0]:
                 return str(row[0])
         except Exception as exc:
-            logger.debug("Display name lookup failed for %s: %s", user_id, exc, exc_info=True)
+            logger.debug(
+                "Display name lookup failed for %s: %s", user_id, exc, exc_info=True
+            )
         return None
 
     async def _display_name_for(self, user_id: int) -> str:
@@ -190,12 +204,16 @@ class UserActivityAnalyzer(commands.Cog):
         if not name:
             user_obj = self.bot.get_user(user_id)
             if user_obj:
-                name = getattr(user_obj, "display_name", None) or getattr(user_obj, "name", None)
+                name = getattr(user_obj, "display_name", None) or getattr(
+                    user_obj, "name", None
+                )
 
         if not name:
             try:
                 user_obj = await self.bot.fetch_user(user_id)
-                name = getattr(user_obj, "display_name", None) or getattr(user_obj, "name", None)
+                name = getattr(user_obj, "display_name", None) or getattr(
+                    user_obj, "name", None
+                )
             except (discord.HTTPException, discord.NotFound, discord.Forbidden):
                 name = None
 
@@ -203,7 +221,9 @@ class UserActivityAnalyzer(commands.Cog):
         self._display_name_cache[user_id] = (resolved, now)
 
         if len(self._display_name_cache) > 512:
-            oldest = sorted(self._display_name_cache.items(), key=lambda item: item[1][1])[:128]
+            oldest = sorted(
+                self._display_name_cache.items(), key=lambda item: item[1][1]
+            )[:128]
             for uid, _ in oldest:
                 self._display_name_cache.pop(uid, None)
 
@@ -217,14 +237,14 @@ class UserActivityAnalyzer(commands.Cog):
 
             # === Zeitfenster-Analyse ===
             hour_counts = defaultdict(int)  # Stunde -> Anzahl Sessions
-            day_counts = defaultdict(int)   # Wochentag (0=Mo, 6=So) -> Anzahl Sessions
+            day_counts = defaultdict(int)  # Wochentag (0=Mo, 6=So) -> Anzahl Sessions
 
             total_minutes = 0
             last_active = None
 
             for session in sessions:
-                started_at = session.get('started_at')
-                duration_seconds = session.get('duration_seconds') or 0
+                started_at = session.get("started_at")
+                duration_seconds = session.get("duration_seconds") or 0
                 duration_minutes = duration_seconds // 60
 
                 if started_at:
@@ -248,7 +268,9 @@ class UserActivityAnalyzer(commands.Cog):
                 # TODO: Diese Daten werden erst nach dem nächsten Reload verfügbar sein
 
             # === Top 3 häufigste Stunden ===
-            top_hours = sorted(hour_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+            top_hours = sorted(hour_counts.items(), key=lambda x: x[1], reverse=True)[
+                :3
+            ]
             typical_hours = [h for h, _ in top_hours]
 
             # === Top 3 häufigste Wochentage ===
@@ -284,7 +306,7 @@ class UserActivityAnalyzer(commands.Cog):
                     len(sessions),
                     total_minutes,
                     last_active.strftime("%Y-%m-%d %H:%M:%S") if last_active else None,
-                )
+                ),
             )
 
             # === Co-Spieler aus Session-Logs analysieren (falls vorhanden) ===
@@ -309,14 +331,14 @@ class UserActivityAnalyzer(commands.Cog):
                 FROM voice_session_log
                 WHERE user_id = ? AND started_at >= ? AND co_player_ids IS NOT NULL
                 """,
-                (user_id, cutoff_str)
+                (user_id, cutoff_str),
             )
 
             if not rows:
                 return
 
             # Aggregiere Co-Spieler-Daten
-            co_player_stats = defaultdict(lambda: {'sessions': 0, 'minutes': 0})
+            co_player_stats = defaultdict(lambda: {"sessions": 0, "minutes": 0})
 
             for row in rows:
                 co_player_ids_json = row[0]
@@ -335,8 +357,8 @@ class UserActivityAnalyzer(commands.Cog):
                             continue
                         if co_int == user_id:
                             continue
-                        co_player_stats[co_int]['sessions'] += 1
-                        co_player_stats[co_int]['minutes'] += duration_minutes
+                        co_player_stats[co_int]["sessions"] += 1
+                        co_player_stats[co_int]["minutes"] += duration_minutes
                 except json.JSONDecodeError:
                     continue
 
@@ -360,11 +382,20 @@ class UserActivityAnalyzer(commands.Cog):
                         user_display_name = COALESCE(excluded.user_display_name, user_display_name),
                         co_player_display_name = COALESCE(excluded.co_player_display_name, co_player_display_name)
                     """,
-                    (user_id, co_id, stats['sessions'], stats['minutes'], base_display_name, co_display_name)
+                    (
+                        user_id,
+                        co_id,
+                        stats["sessions"],
+                        stats["minutes"],
+                        base_display_name,
+                        co_display_name,
+                    ),
                 )
 
         except Exception as e:
-            logger.error(f"Error analyzing co-players for {user_id}: {e}", exc_info=True)
+            logger.error(
+                f"Error analyzing co-players for {user_id}: {e}", exc_info=True
+            )
 
     # ========== CO-PLAYER TRACKING ==========
 
@@ -404,7 +435,7 @@ class UserActivityAnalyzer(commands.Cog):
 
                 # Alle Paarungen speichern
                 for i, member1 in enumerate(real_members):
-                    for member2 in real_members[i+1:]:
+                    for member2 in real_members[i + 1 :]:
                         await self._record_co_player_session(
                             member1.id,
                             member2.id,
@@ -414,7 +445,9 @@ class UserActivityAnalyzer(commands.Cog):
                         )
 
         except Exception as e:
-            logger.error(f"Error tracking co-players in guild {guild.id}: {e}", exc_info=True)
+            logger.error(
+                f"Error tracking co-players in guild {guild.id}: {e}", exc_info=True
+            )
 
     async def _record_co_player_session(
         self,
@@ -452,7 +485,7 @@ class UserActivityAnalyzer(commands.Cog):
                         user_display_name = COALESCE(excluded.user_display_name, user_display_name),
                         co_player_display_name = COALESCE(excluded.co_player_display_name, co_player_display_name)
                     """,
-                    (uid, co_uid, duration_minutes, uid_name, co_name)
+                    (uid, co_uid, duration_minutes, uid_name, co_name),
                 )
 
             # Invalidiere Cache
@@ -464,14 +497,19 @@ class UserActivityAnalyzer(commands.Cog):
         except Exception as e:
             logger.error(f"Error recording co-player session: {e}", exc_info=True)
 
-    async def get_top_co_players(self, user_id: int, limit: int = 5) -> List[Tuple[int, int]]:
+    async def get_top_co_players(
+        self, user_id: int, limit: int = 5
+    ) -> List[Tuple[int, int]]:
         """
         Gibt die Top Co-Spieler eines Users zurück.
         Returns: List of (co_player_id, sessions_together)
         """
         # Cache-Check
         now = datetime.utcnow()
-        if user_id in self._co_player_cache and (now - self._cache_timestamp).total_seconds() < 1800:
+        if (
+            user_id in self._co_player_cache
+            and (now - self._cache_timestamp).total_seconds() < 1800
+        ):
             return self._co_player_cache[user_id][:limit]
 
         try:
@@ -483,7 +521,7 @@ class UserActivityAnalyzer(commands.Cog):
                 ORDER BY sessions_together DESC, total_minutes_together DESC
                 LIMIT ?
                 """,
-                (user_id, limit)
+                (user_id, limit),
             )
 
             result = [(row[0], row[1]) for row in rows]
@@ -512,7 +550,7 @@ class UserActivityAnalyzer(commands.Cog):
                 SET ping_count_30d = 0
                 WHERE last_pinged_at < ? OR last_pinged_at IS NULL
                 """,
-                (cutoff_str,)
+                (cutoff_str,),
             )
 
             logger.info("Cleaned up old ping counts")
@@ -552,7 +590,9 @@ class UserActivityAnalyzer(commands.Cog):
             self._join_source_locks[guild_id] = lock
         return lock
 
-    async def _collect_join_invite_snapshot(self, guild: discord.Guild) -> Dict[str, Any]:
+    async def _collect_join_invite_snapshot(
+        self, guild: discord.Guild
+    ) -> Dict[str, Any]:
         invites: Dict[str, Dict[str, Any]] = {}
         invites_ok = False
 
@@ -565,21 +605,32 @@ class UserActivityAnalyzer(commands.Cog):
                     continue
                 inviter = getattr(invite, "inviter", None)
                 channel = getattr(invite, "channel", None)
-                invite_url = str(getattr(invite, "url", "") or "").strip() or f"https://discord.gg/{code}"
+                invite_url = (
+                    str(getattr(invite, "url", "") or "").strip()
+                    or f"https://discord.gg/{code}"
+                )
                 invites[code] = {
                     "uses": self._to_int(getattr(invite, "uses", 0), 0) or 0,
                     "url": invite_url,
                     "inviter_id": self._to_int(getattr(inviter, "id", None), None),
                     "inviter_name": str(inviter) if inviter else None,
                     "channel_id": self._to_int(getattr(channel, "id", None), None),
-                    "channel_name": str(getattr(channel, "name", "") or "").strip() or None,
+                    "channel_name": str(getattr(channel, "name", "") or "").strip()
+                    or None,
                 }
         except discord.Forbidden:
             logger.debug("Join source: guild.invites forbidden (guild=%s)", guild.id)
         except discord.HTTPException as exc:
-            logger.debug("Join source: guild.invites failed (guild=%s): %s", guild.id, exc)
+            logger.debug(
+                "Join source: guild.invites failed (guild=%s): %s", guild.id, exc
+            )
         except Exception as exc:
-            logger.debug("Join source: guild.invites unexpected (guild=%s): %s", guild.id, exc, exc_info=True)
+            logger.debug(
+                "Join source: guild.invites unexpected (guild=%s): %s",
+                guild.id,
+                exc,
+                exc_info=True,
+            )
 
         vanity_code_raw = getattr(guild, "vanity_url_code", None)
         vanity_code = str(vanity_code_raw).strip() if vanity_code_raw else None
@@ -594,11 +645,20 @@ class UserActivityAnalyzer(commands.Cog):
                     vanity_code = code_from_invite
                 vanity_uses = self._to_int(getattr(vanity_invite, "uses", None), None)
         except discord.Forbidden:
-            logger.debug("Join source: guild.vanity_invite forbidden (guild=%s)", guild.id)
+            logger.debug(
+                "Join source: guild.vanity_invite forbidden (guild=%s)", guild.id
+            )
         except discord.HTTPException as exc:
-            logger.debug("Join source: guild.vanity_invite failed (guild=%s): %s", guild.id, exc)
+            logger.debug(
+                "Join source: guild.vanity_invite failed (guild=%s): %s", guild.id, exc
+            )
         except Exception as exc:
-            logger.debug("Join source: guild.vanity_invite unexpected (guild=%s): %s", guild.id, exc, exc_info=True)
+            logger.debug(
+                "Join source: guild.vanity_invite unexpected (guild=%s): %s",
+                guild.id,
+                exc,
+                exc_info=True,
+            )
 
         return {
             "invites": invites,
@@ -619,7 +679,9 @@ class UserActivityAnalyzer(commands.Cog):
                 async with lock:
                     snapshot = await self._collect_join_invite_snapshot(guild)
                     if snapshot.get("invites_ok"):
-                        self._join_invite_snapshot[guild.id] = snapshot.get("invites", {})
+                        self._join_invite_snapshot[guild.id] = snapshot.get(
+                            "invites", {}
+                        )
                     else:
                         self._join_invite_snapshot.pop(guild.id, None)
                     self._join_vanity_snapshot[guild.id] = snapshot.get("vanity", {})
@@ -630,7 +692,9 @@ class UserActivityAnalyzer(commands.Cog):
         except Exception as exc:
             logger.debug("Join source cache prime failed: %s", exc, exc_info=True)
 
-    def _lookup_twitch_streamer_for_code(self, guild_id: int, invite_code: str) -> Optional[str]:
+    def _lookup_twitch_streamer_for_code(
+        self, guild_id: int, invite_code: str
+    ) -> Optional[str]:
         code = (invite_code or "").strip()
         if not code:
             return None
@@ -676,7 +740,9 @@ class UserActivityAnalyzer(commands.Cog):
         if before_invites is not None:
             for code, invite_info in after_invites.items():
                 after_uses = self._to_int(invite_info.get("uses"), 0) or 0
-                before_uses = self._to_int((before_invites.get(code) or {}).get("uses"), 0) or 0
+                before_uses = (
+                    self._to_int((before_invites.get(code) or {}).get("uses"), 0) or 0
+                )
                 delta = after_uses - before_uses
                 if delta > 0:
                     increased_codes.append((delta, code, invite_info))
@@ -689,7 +755,8 @@ class UserActivityAnalyzer(commands.Cog):
             payload.update(
                 {
                     "invite_code": code,
-                    "invite_url": invite_info.get("url") or f"https://discord.gg/{code}",
+                    "invite_url": invite_info.get("url")
+                    or f"https://discord.gg/{code}",
                     "inviter_id": invite_info.get("inviter_id"),
                     "inviter_name": invite_info.get("inviter_name"),
                     "invite_channel_id": invite_info.get("channel_id"),
@@ -732,7 +799,9 @@ class UserActivityAnalyzer(commands.Cog):
                     "join_source_label": "Public: Vanity-Link",
                     "join_source_confidence": "high",
                     "vanity_code": vanity_code,
-                    "vanity_url": f"https://discord.gg/{vanity_code}" if vanity_code else None,
+                    "vanity_url": f"https://discord.gg/{vanity_code}"
+                    if vanity_code
+                    else None,
                 }
             )
             return payload
@@ -749,7 +818,9 @@ class UserActivityAnalyzer(commands.Cog):
             )
             return payload
 
-        payload["join_source_reason"] = "baseline_missing" if not has_baseline else "invite_snapshot_unavailable"
+        payload["join_source_reason"] = (
+            "baseline_missing" if not has_baseline else "invite_snapshot_unavailable"
+        )
         return payload
 
     async def _detect_join_source(self, guild: discord.Guild) -> Dict[str, Any]:
@@ -759,7 +830,11 @@ class UserActivityAnalyzer(commands.Cog):
             baseline_invites = self._join_invite_snapshot.get(guild_id)
             baseline_vanity = self._join_vanity_snapshot.get(guild_id)
 
-            attempts = 2 if (baseline_invites is not None or baseline_vanity is not None) else 1
+            attempts = (
+                2
+                if (baseline_invites is not None or baseline_vanity is not None)
+                else 1
+            )
             latest_snapshot: Optional[Dict[str, Any]] = None
             detected: Optional[Dict[str, Any]] = None
 
@@ -781,7 +856,9 @@ class UserActivityAnalyzer(commands.Cog):
 
             if latest_snapshot:
                 if latest_snapshot.get("invites_ok"):
-                    self._join_invite_snapshot[guild_id] = latest_snapshot.get("invites", {})
+                    self._join_invite_snapshot[guild_id] = latest_snapshot.get(
+                        "invites", {}
+                    )
                 self._join_vanity_snapshot[guild_id] = latest_snapshot.get("vanity", {})
 
             return detected or {
@@ -789,7 +866,9 @@ class UserActivityAnalyzer(commands.Cog):
                 "join_source_kind": "unknown",
                 "join_source_label": "Unbekannt",
                 "join_source_confidence": "low",
-                "join_source_detected_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                "join_source_detected_at": datetime.utcnow().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
             }
 
     @commands.Cog.listener()
@@ -805,12 +884,18 @@ class UserActivityAnalyzer(commands.Cog):
             join_position = len(member.guild.members)
 
             # Account-Erstellungsdatum
-            account_created = member.created_at.strftime("%Y-%m-%d %H:%M:%S") if member.created_at else None
+            account_created = (
+                member.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                if member.created_at
+                else None
+            )
 
             # Metadata (zusätzliche Infos als JSON)
             metadata = {
-                'avatar_url': str(member.display_avatar.url) if member.display_avatar else None,
-                'is_pending': member.pending if hasattr(member, 'pending') else None,
+                "avatar_url": str(member.display_avatar.url)
+                if member.display_avatar
+                else None,
+                "is_pending": member.pending if hasattr(member, "pending") else None,
             }
             join_source = await self._detect_join_source(member.guild)
             metadata.update(join_source)
@@ -823,8 +908,14 @@ class UserActivityAnalyzer(commands.Cog):
                 )
                 VALUES (?, ?, 'join', ?, ?, ?, ?)
                 """,
-                (member.id, member.guild.id, member.display_name,
-                 account_created, join_position, json.dumps(metadata))
+                (
+                    member.id,
+                    member.guild.id,
+                    member.display_name,
+                    account_created,
+                    join_position,
+                    json.dumps(metadata),
+                ),
             )
 
             logger.info(
@@ -867,10 +958,12 @@ class UserActivityAnalyzer(commands.Cog):
                 )
                 VALUES (?, ?, 'leave', ?)
                 """,
-                (member.id, member.guild.id, member.display_name)
+                (member.id, member.guild.id, member.display_name),
             )
 
-            logger.info(f"Member leave tracked: {member.display_name} ({member.id}) -> {member.guild.name}")
+            logger.info(
+                f"Member leave tracked: {member.display_name} ({member.id}) -> {member.guild.name}"
+            )
 
             # AUTOMATISCHE ANALYSE beim Leave (Optional - kann aktiviert werden)
             # Uncomment die nächste Zeile wenn du automatische Analysen beim Leave willst:
@@ -896,10 +989,12 @@ class UserActivityAnalyzer(commands.Cog):
                 )
                 VALUES (?, ?, 'ban', ?)
                 """,
-                (user.id, guild.id, user.display_name)
+                (user.id, guild.id, user.display_name),
             )
 
-            logger.info(f"Member ban tracked: {user.display_name} ({user.id}) -> {guild.name}")
+            logger.info(
+                f"Member ban tracked: {user.display_name} ({user.id}) -> {guild.name}"
+            )
 
         except Exception as e:
             logger.error(f"Error tracking member ban: {e}", exc_info=True)
@@ -921,10 +1016,12 @@ class UserActivityAnalyzer(commands.Cog):
                 )
                 VALUES (?, ?, 'unban', ?)
                 """,
-                (user.id, guild.id, user.display_name)
+                (user.id, guild.id, user.display_name),
             )
 
-            logger.info(f"Member unban tracked: {user.display_name} ({user.id}) -> {guild.name}")
+            logger.info(
+                f"Member unban tracked: {user.display_name} ({user.id}) -> {guild.name}"
+            )
 
         except Exception as e:
             logger.error(f"Error tracking member unban: {e}", exc_info=True)
@@ -942,7 +1039,9 @@ class UserActivityAnalyzer(commands.Cog):
 
             user_id = getattr(payload, "user_id", None) or (user.id if user else None)
             if user_id is None:
-                logger.debug("Raw member remove ohne user_id erhalten; Event übersprungen.")
+                logger.debug(
+                    "Raw member remove ohne user_id erhalten; Event übersprungen."
+                )
                 return
             if privacy.is_opted_out(int(user_id)):
                 return
@@ -973,7 +1072,7 @@ class UserActivityAnalyzer(commands.Cog):
                 )
                 VALUES (?, ?, 'leave', ?)
                 """,
-                (user_id, payload.guild_id, display_name)
+                (user_id, payload.guild_id, display_name),
             )
 
             logger.info(
@@ -1009,7 +1108,7 @@ class UserActivityAnalyzer(commands.Cog):
                     last_message_at = CURRENT_TIMESTAMP,
                     channel_id = excluded.channel_id
                 """,
-                (message.author.id, message.guild.id, message.channel.id)
+                (message.author.id, message.guild.id, message.channel.id),
             )
 
             # Kein Log hier (zu viel Spam bei vielen Messages)
@@ -1027,7 +1126,7 @@ class UserActivityAnalyzer(commands.Cog):
             # Du kannst das anpassen auf deinen spezifischen Log-Channel
             log_channel = None
             for channel in member.guild.text_channels:
-                if 'log' in channel.name.lower() or 'audit' in channel.name.lower():
+                if "log" in channel.name.lower() or "audit" in channel.name.lower():
                     log_channel = channel
                     break
 
@@ -1037,16 +1136,20 @@ class UserActivityAnalyzer(commands.Cog):
             # Generiere Analyse-Embed
             embed = await self._generate_user_analysis_embed(member)
 
-            await log_channel.send(f"📊 **User-Leave-Analyse:** {member.mention}", embed=embed)
+            await log_channel.send(
+                f"📊 **User-Leave-Analyse:** {member.mention}", embed=embed
+            )
 
         except Exception as e:
             logger.error(f"Error sending leave analysis: {e}", exc_info=True)
 
-    async def _generate_user_analysis_embed(self, member: discord.Member) -> discord.Embed:
+    async def _generate_user_analysis_embed(
+        self, member: discord.Member
+    ) -> discord.Embed:
         """Generiert ein umfassendes Analyse-Embed für einen User."""
         embed = discord.Embed(
             title=f"📊 User-Aktivitäts-Analyse - {member.display_name}",
-            color=discord.Color.orange()
+            color=discord.Color.orange(),
         )
         embed.set_thumbnail(url=member.display_avatar.url)
 
@@ -1058,14 +1161,14 @@ class UserActivityAnalyzer(commands.Cog):
             WHERE user_id = ? AND guild_id = ?
             ORDER BY timestamp ASC
             """,
-            (member.id, member.guild.id)
+            (member.id, member.guild.id),
         )
 
         if join_leave_events:
             first_join = join_leave_events[0]
-            joins = [e for e in join_leave_events if e[0] == 'join']
-            leaves = [e for e in join_leave_events if e[0] == 'leave']
-            bans = [e for e in join_leave_events if e[0] == 'ban']
+            joins = [e for e in join_leave_events if e[0] == "join"]
+            leaves = [e for e in join_leave_events if e[0] == "leave"]
+            bans = [e for e in join_leave_events if e[0] == "ban"]
 
             history_text = f"**Erstes Join:** {first_join[1][:16] if first_join[1] else 'Unbekannt'}\n"
             history_text += f"**Joins:** {len(joins)} | **Leaves:** {len(leaves)}"
@@ -1086,7 +1189,7 @@ class UserActivityAnalyzer(commands.Cog):
             FROM voice_stats
             WHERE user_id = ?
             """,
-            (member.id,)
+            (member.id,),
         )
 
         if voice_stats and voice_stats[0]:
@@ -1104,16 +1207,20 @@ class UserActivityAnalyzer(commands.Cog):
                 ORDER BY ended_at DESC
                 LIMIT 1
                 """,
-                (member.id, member.guild.id)
+                (member.id, member.guild.id),
             )
 
-            voice_text = f"**Gesamtzeit:** {hours}h {minutes}m\n**Punkte:** {total_points}"
+            voice_text = (
+                f"**Gesamtzeit:** {hours}h {minutes}m\n**Punkte:** {total_points}"
+            )
             if last_session:
-                voice_text += f"\n**Letzter Voice:** {last_session[0]} ({last_session[2]//60}min)"
+                voice_text += f"\n**Letzter Voice:** {last_session[0]} ({last_session[2] // 60}min)"
 
             embed.add_field(name="🎙️ Voice-Aktivität", value=voice_text, inline=True)
         else:
-            embed.add_field(name="🎙️ Voice-Aktivität", value="Keine Voice-Aktivität", inline=True)
+            embed.add_field(
+                name="🎙️ Voice-Aktivität", value="Keine Voice-Aktivität", inline=True
+            )
 
         # === 3. Message Activity ===
         msg_stats = central_db.query_one(
@@ -1122,7 +1229,7 @@ class UserActivityAnalyzer(commands.Cog):
             FROM message_activity
             WHERE user_id = ? AND guild_id = ?
             """,
-            (member.id, member.guild.id)
+            (member.id, member.guild.id),
         )
 
         if msg_stats and msg_stats[0]:
@@ -1136,7 +1243,9 @@ class UserActivityAnalyzer(commands.Cog):
 
             embed.add_field(name="💬 Nachrichten", value=msg_text, inline=True)
         else:
-            embed.add_field(name="💬 Nachrichten", value="Keine Nachrichten", inline=True)
+            embed.add_field(
+                name="💬 Nachrichten", value="Keine Nachrichten", inline=True
+            )
 
         # === 4. Co-Spieler (Top 3) ===
         co_players = await self.get_top_co_players(member.id, limit=3)
@@ -1155,7 +1264,7 @@ class UserActivityAnalyzer(commands.Cog):
             FROM user_activity_patterns
             WHERE user_id = ?
             """,
-            (member.id,)
+            (member.id,),
         )
 
         if patterns and patterns[2]:  # activity_score_2w
@@ -1172,7 +1281,9 @@ class UserActivityAnalyzer(commands.Cog):
                 days_str = ", ".join([day_names[d] for d in typical_days[:3]])
                 pattern_text += f"**Typische Tage:** {days_str}"
 
-            embed.add_field(name="📈 Aktivitätsmuster", value=pattern_text, inline=False)
+            embed.add_field(
+                name="📈 Aktivitätsmuster", value=pattern_text, inline=False
+            )
 
         embed.set_footer(text=f"User ID: {member.id}")
         embed.timestamp = datetime.utcnow()
@@ -1181,7 +1292,9 @@ class UserActivityAnalyzer(commands.Cog):
 
     # ========== SMART PINGING ==========
 
-    async def should_ping_user(self, user_id: int, max_pings_30d: int = 3) -> Tuple[bool, str]:
+    async def should_ping_user(
+        self, user_id: int, max_pings_30d: int = 3
+    ) -> Tuple[bool, str]:
         """
         Prüft ob ein User gepingt werden sollte.
 
@@ -1197,7 +1310,7 @@ class UserActivityAnalyzer(commands.Cog):
                 FROM user_activity_patterns
                 WHERE user_id = ?
                 """,
-                (user_id,)
+                (user_id,),
             )
 
             if not row:
@@ -1211,7 +1324,10 @@ class UserActivityAnalyzer(commands.Cog):
 
             # Check 1: Rate-Limit (max 3 Pings in 30 Tagen)
             if ping_count >= max_pings_30d:
-                return False, f"Rate-Limit erreicht ({ping_count}/{max_pings_30d} in 30d)"
+                return (
+                    False,
+                    f"Rate-Limit erreicht ({ping_count}/{max_pings_30d} in 30d)",
+                )
 
             # Check 2: Mindestens 1 Tag seit letztem Ping
             if last_pinged_str:
@@ -1219,7 +1335,10 @@ class UserActivityAnalyzer(commands.Cog):
                 time_since_ping = (datetime.utcnow() - last_pinged).total_seconds()
                 if time_since_ping < 86400:  # 24h
                     hours_remaining = (86400 - time_since_ping) / 3600
-                    return False, f"Zu früh (noch {hours_remaining:.1f}h bis nächster Ping)"
+                    return (
+                        False,
+                        f"Zu früh (noch {hours_remaining:.1f}h bis nächster Ping)",
+                    )
 
             # Check 3: User sollte aktiv sein (min 5 Sessions in 2W)
             if activity_score < 5:
@@ -1236,66 +1355,77 @@ class UserActivityAnalyzer(commands.Cog):
             # Flexibles Zeitfenster: ±2 Stunden von typischen Zeiten
             hour_match = False
             for typ_hour in typical_hours:
-                if abs(current_hour - typ_hour) <= 2 or abs(current_hour - typ_hour) >= 22:  # wrap around
+                if (
+                    abs(current_hour - typ_hour) <= 2
+                    or abs(current_hour - typ_hour) >= 22
+                ):  # wrap around
                     hour_match = True
                     break
 
             if not hour_match:
-                return False, f"Außerhalb typischer Online-Zeiten (typisch: {typical_hours}h)"
+                return (
+                    False,
+                    f"Außerhalb typischer Online-Zeiten (typisch: {typical_hours}h)",
+                )
 
             # Wochentag ist optional (falls verfügbar, prüfen wir es)
             if typical_days and current_day not in typical_days:
                 day_names = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
-                return False, f"Unpassender Wochentag (typisch: {[day_names[d] for d in typical_days]})"
+                return (
+                    False,
+                    f"Unpassender Wochentag (typisch: {[day_names[d] for d in typical_days]})",
+                )
 
             return True, "OK - User kann gepingt werden"
 
         except Exception as e:
-            logger.error(f"Error checking ping eligibility for {user_id}: {e}", exc_info=True)
+            logger.error(
+                f"Error checking ping eligibility for {user_id}: {e}", exc_info=True
+            )
             return False, f"Fehler: {e}"
 
     async def generate_ping_message(
         self,
         user: discord.Member,
-        reason: str = 'join',
-        co_players: Optional[List[discord.Member]] = None
+        reason: str = "join",
+        co_players: Optional[List[discord.Member]] = None,
     ) -> str:
         """Generiert eine menschlich klingende Ping-Nachricht mit KI."""
         # Kontext fuer KI aufbauen
         context_parts = []
         if co_players:
-            names = ', '.join([m.display_name for m in co_players[:3]])
+            names = ", ".join([m.display_name for m in co_players[:3]])
             if len(co_players) > 3:
                 names += f" und {len(co_players) - 3} weitere"
             context_parts.append(f"Deine Mitspieler {names} sind gerade online")
 
         reason_texts = {
-            'join': 'zum Spielen einladen',
-            'game_ready': 'dass ein Game startet',
-            'friends_online': 'dass Freunde online sind',
-            'ranked_session': 'zu einer Ranked Session einladen',
+            "join": "zum Spielen einladen",
+            "game_ready": "dass ein Game startet",
+            "friends_online": "dass Freunde online sind",
+            "ranked_session": "zu einer Ranked Session einladen",
         }
-        reason_text = reason_texts.get(reason, 'zum Spielen einladen')
+        reason_text = reason_texts.get(reason, "zum Spielen einladen")
 
         system_prompt = 'Du bist ein freundlicher Discord-Bot der Spieler zum Gaming einlaedt.\n\nSchreibe eine kurze, lockere Nachricht auf Deutsch die:\n- Natuerlich und menschlich klingt (keine AI-Sprache!)\n- Freundlich und einladend ist\n- Nicht nach Bot klingt\n- Umgangssprache nutzt (z.B. "Bock auf ne Runde?", "Hey, Zeit fuer Deadlock?")\n- Maximal 1-2 Saetze lang ist\n- Keine Emojis enthaelt (ausser hoechstens 1-2 am Anfang)\n\nSchreibe NUR die Nachricht, nichts anderes.'
 
         user_prompt = f"""Schreib eine Ping-Nachricht, um {user.display_name} {reason_text}.
 
 Kontext:
-{chr(10).join(context_parts) if context_parts else 'Keine besonderen Infos'}
+{chr(10).join(context_parts) if context_parts else "Keine besonderen Infos"}
 
 Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie von einem Bot!"""
 
-        ai = getattr(self.bot, 'get_cog', lambda name: None)('AIConnector')
+        ai = getattr(self.bot, "get_cog", lambda name: None)("AIConnector")
         if not ai:
             return await self._generate_fallback_message(user, reason, co_players)
 
         try:
             text, _meta = await ai.generate_text(
-                provider='openai',
+                provider="openai",
                 prompt=user_prompt,
                 system_prompt=system_prompt,
-                model='gpt-4o-mini',
+                model="gpt-4o-mini",
                 max_output_tokens=100,
                 temperature=0.9,
             )
@@ -1306,12 +1436,11 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
             logger.error(f"Error generating AI message: {e}", exc_info=True)
             return await self._generate_fallback_message(user, reason, co_players)
 
-
     async def _generate_fallback_message(
         self,
         user: discord.Member,
         reason: str,
-        co_players: Optional[List[discord.Member]] = None
+        co_players: Optional[List[discord.Member]] = None,
     ) -> str:
         """Fallback-Nachrichten ohne KI."""
         templates = {
@@ -1331,6 +1460,7 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
         }
 
         import random
+
         options = templates.get(reason, templates["join"])
         base_msg = random.choice(options)
 
@@ -1351,7 +1481,7 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
                     ping_count_30d = ping_count_30d + 1
                 WHERE user_id = ?
                 """,
-                (user_id,)
+                (user_id,),
             )
         except Exception as e:
             logger.error(f"Error recording ping for {user_id}: {e}", exc_info=True)
@@ -1372,11 +1502,13 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
                 FROM user_activity_patterns
                 WHERE user_id = ?
                 """,
-                (target.id,)
+                (target.id,),
             )
 
             if not row:
-                await ctx.send(f"❌ Keine Aktivitätsdaten für {target.display_name} vorhanden.")
+                await ctx.send(
+                    f"❌ Keine Aktivitätsdaten für {target.display_name} vorhanden."
+                )
                 return
 
             typical_hours = json.loads(row[0]) if row[0] else []
@@ -1389,23 +1521,35 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
 
             embed = discord.Embed(
                 title=f"📊 Aktivitätsmuster - {target.display_name}",
-                color=discord.Color.blue()
+                color=discord.Color.blue(),
             )
 
             # Typische Online-Zeiten
             if typical_hours:
                 hours_str = ", ".join([f"{h}:00" for h in typical_hours])
-                embed.add_field(name="🕐 Typische Online-Zeiten", value=hours_str, inline=False)
+                embed.add_field(
+                    name="🕐 Typische Online-Zeiten", value=hours_str, inline=False
+                )
 
             # Typische Wochentage
             if typical_days:
                 day_names = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
                 days_str = ", ".join([day_names[d] for d in typical_days])
-                embed.add_field(name="📅 Typische Wochentage", value=days_str, inline=False)
+                embed.add_field(
+                    name="📅 Typische Wochentage", value=days_str, inline=False
+                )
 
             # Activity Score
-            embed.add_field(name="⭐ Activity Score (2W)", value=f"{activity_score} Sessions", inline=True)
-            embed.add_field(name="⏱️ Gesamtzeit (2W)", value=f"{total_minutes // 60}h {total_minutes % 60}m", inline=True)
+            embed.add_field(
+                name="⭐ Activity Score (2W)",
+                value=f"{activity_score} Sessions",
+                inline=True,
+            )
+            embed.add_field(
+                name="⏱️ Gesamtzeit (2W)",
+                value=f"{total_minutes // 60}h {total_minutes % 60}m",
+                inline=True,
+            )
 
             # Last Active
             if last_active_str:
@@ -1416,13 +1560,15 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
                 embed.add_field(
                     name="🔴 Zuletzt aktiv",
                     value=f"vor {days_ago}d {hours_ago}h",
-                    inline=True
+                    inline=True,
                 )
 
             # Ping Stats
             embed.add_field(name="📬 Pings (30d)", value=f"{ping_count}/3", inline=True)
             if last_pinged_str:
-                embed.add_field(name="📬 Zuletzt gepingt", value=last_pinged_str, inline=True)
+                embed.add_field(
+                    name="📬 Zuletzt gepingt", value=last_pinged_str, inline=True
+                )
 
             # Co-Spieler
             co_players = await self.get_top_co_players(target.id, limit=5)
@@ -1431,12 +1577,14 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
                 for co_id, sessions_together in co_players[:3]:
                     co_member = ctx.guild.get_member(co_id)
                     name = co_member.display_name if co_member else f"User {co_id}"
-                    co_player_lines.append(f"**{name}** ({sessions_together}x zusammen)")
+                    co_player_lines.append(
+                        f"**{name}** ({sessions_together}x zusammen)"
+                    )
 
                 embed.add_field(
                     name="👥 Top Mitspieler",
                     value="\n".join(co_player_lines),
-                    inline=False
+                    inline=False,
                 )
 
             embed.set_thumbnail(url=target.display_avatar.url)
@@ -1481,7 +1629,9 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
         # Record Ping
         await self.record_ping(user.id)
 
-        logger.info(f"Smart ping sent to {user.display_name} by {ctx.author.display_name}")
+        logger.info(
+            f"Smart ping sent to {user.display_name} by {ctx.author.display_name}"
+        )
 
     @commands.command(name="checkping")
     async def check_ping_command(self, ctx, user: Optional[discord.Member] = None):
@@ -1492,13 +1642,15 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
 
         embed = discord.Embed(
             title=f"🔔 Ping-Check - {target.display_name}",
-            color=discord.Color.green() if can_ping else discord.Color.red()
+            color=discord.Color.green() if can_ping else discord.Color.red(),
         )
 
         embed.add_field(
             name="Status",
-            value="✅ Kann gepingt werden" if can_ping else "❌ Kann nicht gepingt werden",
-            inline=False
+            value="✅ Kann gepingt werden"
+            if can_ping
+            else "❌ Kann nicht gepingt werden",
+            inline=False,
         )
 
         embed.add_field(name="Grund", value=reason, inline=False)
@@ -1526,7 +1678,9 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
             await ctx.send(f"❌ Fehler beim Erstellen der Analyse: {e}")
 
     @commands.command(name="memberevents", aliases=["mevents"])
-    async def member_events_command(self, ctx, user: Optional[discord.Member] = None, limit: int = 10):
+    async def member_events_command(
+        self, ctx, user: Optional[discord.Member] = None, limit: int = 10
+    ):
         """
         Zeigt die letzten Member-Events eines Users (Joins, Leaves, Bans).
 
@@ -1543,7 +1697,7 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
                 ORDER BY timestamp DESC
                 LIMIT ?
                 """,
-                (target.id, ctx.guild.id, min(limit, 50))
+                (target.id, ctx.guild.id, min(limit, 50)),
             )
 
             if not events:
@@ -1552,20 +1706,15 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
 
             embed = discord.Embed(
                 title=f"📋 Member-Events - {target.display_name}",
-                color=discord.Color.blue()
+                color=discord.Color.blue(),
             )
 
-            event_icons = {
-                'join': '➕',
-                'leave': '➖',
-                'ban': '🔨',
-                'unban': '✅'
-            }
+            event_icons = {"join": "➕", "leave": "➖", "ban": "🔨", "unban": "✅"}
 
             desc = ""
             for event_type, timestamp, display_name in events:
-                icon = event_icons.get(event_type, '•')
-                timestamp_str = timestamp[:16] if timestamp else 'Unbekannt'
+                icon = event_icons.get(event_type, "•")
+                timestamp_str = timestamp[:16] if timestamp else "Unbekannt"
                 desc += f"{icon} **{event_type.upper()}** - {timestamp_str}\n"
 
             embed.description = desc
@@ -1594,11 +1743,13 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
                 FROM message_activity
                 WHERE user_id = ? AND guild_id = ?
                 """,
-                (target.id, ctx.guild.id)
+                (target.id, ctx.guild.id),
             )
 
             if not stats or not stats[0]:
-                await ctx.send(f"❌ Keine Message-Aktivität für {target.display_name} gefunden.")
+                await ctx.send(
+                    f"❌ Keine Message-Aktivität für {target.display_name} gefunden."
+                )
                 return
 
             msg_count = stats[0]
@@ -1608,7 +1759,7 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
 
             embed = discord.Embed(
                 title=f"💬 Message-Statistiken - {target.display_name}",
-                color=discord.Color.green()
+                color=discord.Color.green(),
             )
 
             embed.add_field(name="📊 Nachrichten", value=f"{msg_count:,}", inline=True)
@@ -1618,7 +1769,9 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
             if channel_id:
                 channel = ctx.guild.get_channel(channel_id)
                 if channel:
-                    embed.add_field(name="📍 Letzter Channel", value=channel.mention, inline=True)
+                    embed.add_field(
+                        name="📍 Letzter Channel", value=channel.mention, inline=True
+                    )
 
             # Durchschnitt pro Tag
             if stats[1] and stats[2]:
@@ -1627,9 +1780,17 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
                     last = datetime.strptime(stats[1], "%Y-%m-%d %H:%M:%S")
                     days = max(1, (last - first).days)
                     avg_per_day = msg_count / days
-                    embed.add_field(name="📈 Durchschnitt/Tag", value=f"{avg_per_day:.1f}", inline=True)
+                    embed.add_field(
+                        name="📈 Durchschnitt/Tag",
+                        value=f"{avg_per_day:.1f}",
+                        inline=True,
+                    )
                 except Exception as exc:
-                    logger.debug("Konnte Durchschnitt/Tag nicht berechnen: %s", exc, exc_info=True)
+                    logger.debug(
+                        "Konnte Durchschnitt/Tag nicht berechnen: %s",
+                        exc,
+                        exc_info=True,
+                    )
 
             embed.set_thumbnail(url=target.display_avatar.url)
             await ctx.send(embed=embed)
@@ -1649,7 +1810,7 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
         try:
             embed = discord.Embed(
                 title=f"📊 Server-Statistiken - {ctx.guild.name}",
-                color=discord.Color.gold()
+                color=discord.Color.gold(),
             )
 
             # Member Events
@@ -1661,7 +1822,7 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
                 GROUP BY event_type
                 ORDER BY count DESC
                 """,
-                (ctx.guild.id,)
+                (ctx.guild.id,),
             )
 
             if event_counts:
@@ -1677,11 +1838,15 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
                 FROM message_activity
                 WHERE guild_id = ?
                 """,
-                (ctx.guild.id,)
+                (ctx.guild.id,),
             )
 
             if total_messages and total_messages[0]:
-                embed.add_field(name="💬 Nachrichten (gesamt)", value=f"{total_messages[0]:,}", inline=True)
+                embed.add_field(
+                    name="💬 Nachrichten (gesamt)",
+                    value=f"{total_messages[0]:,}",
+                    inline=True,
+                )
 
             # Voice Activity
             total_voice_time = central_db.query_one(
@@ -1690,12 +1855,14 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
                 FROM voice_session_log
                 WHERE guild_id = ?
                 """,
-                (ctx.guild.id,)
+                (ctx.guild.id,),
             )
 
             if total_voice_time and total_voice_time[0]:
                 hours = total_voice_time[0] // 3600
-                embed.add_field(name="🎙️ Voice-Zeit (gesamt)", value=f"{hours:,}h", inline=True)
+                embed.add_field(
+                    name="🎙️ Voice-Zeit (gesamt)", value=f"{hours:,}h", inline=True
+                )
 
             # Top Active Users (nach Messages)
             top_users = central_db.query_all(
@@ -1706,7 +1873,7 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
                 ORDER BY message_count DESC
                 LIMIT 5
                 """,
-                (ctx.guild.id,)
+                (ctx.guild.id,),
             )
 
             if top_users:
@@ -1715,7 +1882,9 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
                     member = ctx.guild.get_member(user_id)
                     name = member.display_name if member else f"User {user_id}"
                     top_text += f"{i}. **{name}** - {msg_count:,} Messages\n"
-                embed.add_field(name="🏆 Top 5 Aktivste User", value=top_text, inline=False)
+                embed.add_field(
+                    name="🏆 Top 5 Aktivste User", value=top_text, inline=False
+                )
 
             embed.set_footer(text=f"Server ID: {ctx.guild.id}")
             embed.timestamp = datetime.utcnow()

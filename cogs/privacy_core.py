@@ -118,7 +118,9 @@ async def set_opt_in(user_id: int) -> None:
         )
 
 
-def _delete_where(conn: sqlite3.Connection, table: str, column: str, value: object) -> int:
+def _delete_where(
+    conn: sqlite3.Connection, table: str, column: str, value: object
+) -> int:
     sql = _DELETE_SQL_BY_TARGET.get((table, column))
     if not sql or not _table_exists(conn, table):
         return 0
@@ -126,7 +128,9 @@ def _delete_where(conn: sqlite3.Connection, table: str, column: str, value: obje
     return max(cur.rowcount or 0, 0)
 
 
-def _delete_any_of(conn: sqlite3.Connection, table: str, columns: Iterable[str], value: object) -> int:
+def _delete_any_of(
+    conn: sqlite3.Connection, table: str, columns: Iterable[str], value: object
+) -> int:
     cols = list(columns)
     if not cols or not _table_exists(conn, table):
         return 0
@@ -141,7 +145,9 @@ def _delete_any_of(conn: sqlite3.Connection, table: str, columns: Iterable[str],
     return max(cur.rowcount or 0, 0)
 
 
-def _fetch_rows(conn: sqlite3.Connection, table: str, column: str, value: object) -> List[Dict[str, object]]:
+def _fetch_rows(
+    conn: sqlite3.Connection, table: str, column: str, value: object
+) -> List[Dict[str, object]]:
     sql = _SELECT_SQL_BY_TARGET.get((table, column))
     if not sql or not _table_exists(conn, table):
         return []
@@ -151,7 +157,9 @@ def _fetch_rows(conn: sqlite3.Connection, table: str, column: str, value: object
     return [{col: row[idx] for idx, col in enumerate(cols)} for row in rows]
 
 
-def _fetch_rows_any(conn: sqlite3.Connection, table: str, columns: Iterable[str], value: object) -> List[Dict[str, object]]:
+def _fetch_rows_any(
+    conn: sqlite3.Connection, table: str, columns: Iterable[str], value: object
+) -> List[Dict[str, object]]:
     cols = list(columns)
     if not cols or not _table_exists(conn, table):
         return []
@@ -168,7 +176,9 @@ def _fetch_rows_any(conn: sqlite3.Connection, table: str, columns: Iterable[str]
     return [{name: row[idx] for idx, name in enumerate(colnames)} for row in rows]
 
 
-def _redact_co_players(rows: List[Dict[str, object]], uid: int) -> List[Dict[str, object]]:
+def _redact_co_players(
+    rows: List[Dict[str, object]], uid: int
+) -> List[Dict[str, object]]:
     sanitized: List[Dict[str, object]] = []
     for row in rows:
         user_id = row.get("user_id")
@@ -191,7 +201,9 @@ def _redact_co_players(rows: List[Dict[str, object]], uid: int) -> List[Dict[str
     return sanitized
 
 
-def _redact_other_ids(rows: List[Dict[str, object]], uid: int, keep: str, redact_fields: Iterable[str]) -> List[Dict[str, object]]:
+def _redact_other_ids(
+    rows: List[Dict[str, object]], uid: int, keep: str, redact_fields: Iterable[str]
+) -> List[Dict[str, object]]:
     cleaned: List[Dict[str, object]] = []
     for row in rows:
         r = dict(row)
@@ -204,7 +216,9 @@ def _redact_other_ids(rows: List[Dict[str, object]], uid: int, keep: str, redact
     return cleaned
 
 
-def _purge_kv_entries(conn: sqlite3.Connection, user_id: int, summary: Dict[str, int]) -> None:
+def _purge_kv_entries(
+    conn: sqlite3.Connection, user_id: int, summary: Dict[str, int]
+) -> None:
     if not _table_exists(conn, "kv_store"):
         return
 
@@ -227,7 +241,10 @@ def _purge_kv_entries(conn: sqlite3.Connection, user_id: int, summary: Dict[str,
         if int(payload.get("user_id", 0) or 0) == int(user_id):
             conn.execute(
                 "DELETE FROM kv_store WHERE ns=? AND k=?",
-                (AI_ONBOARDING_VIEWS_NS, str(row["k"] if isinstance(row, sqlite3.Row) else row[0])),
+                (
+                    AI_ONBOARDING_VIEWS_NS,
+                    str(row["k"] if isinstance(row, sqlite3.Row) else row[0]),
+                ),
             )
             removed_views += 1
     summary["kv_ai_onboarding_views"] = removed_views
@@ -252,21 +269,39 @@ def _fetch_steam_ids(conn: sqlite3.Connection, user_id: int) -> List[str]:
     steam_ids: List[str] = []
     for row in rows:
         try:
-            steam_ids.append(str(row["steam_id"] if isinstance(row, sqlite3.Row) else row[0]))
+            steam_ids.append(
+                str(row["steam_id"] if isinstance(row, sqlite3.Row) else row[0])
+            )
         except Exception:
             continue
     return steam_ids
 
 
-def _purge_steam_side(conn: sqlite3.Connection, steam_ids: Iterable[str], summary: Dict[str, int]) -> None:
+def _purge_steam_side(
+    conn: sqlite3.Connection, steam_ids: Iterable[str], summary: Dict[str, int]
+) -> None:
     for sid in steam_ids:
-        summary[f"live_player_state:{sid}"] = _delete_where(conn, "live_player_state", "steam_id", sid)
-        summary[f"deadlock_voice_watch:{sid}"] = _delete_where(conn, "deadlock_voice_watch", "steam_id", sid)
-        summary[f"steam_rich_presence:{sid}"] = _delete_where(conn, "steam_rich_presence", "steam_id", sid)
-        summary[f"steam_presence_watchlist:{sid}"] = _delete_where(conn, "steam_presence_watchlist", "steam_id", sid)
-        summary[f"steam_friend_requests:{sid}"] = _delete_where(conn, "steam_friend_requests", "steam_id", sid)
-        summary[f"steam_beta_invites:{sid}"] = _delete_where(conn, "steam_beta_invites", "steam_id64", sid)
-        summary[f"beta_invite_audit:{sid}"] = _delete_where(conn, "beta_invite_audit", "steam_id64", sid)
+        summary[f"live_player_state:{sid}"] = _delete_where(
+            conn, "live_player_state", "steam_id", sid
+        )
+        summary[f"deadlock_voice_watch:{sid}"] = _delete_where(
+            conn, "deadlock_voice_watch", "steam_id", sid
+        )
+        summary[f"steam_rich_presence:{sid}"] = _delete_where(
+            conn, "steam_rich_presence", "steam_id", sid
+        )
+        summary[f"steam_presence_watchlist:{sid}"] = _delete_where(
+            conn, "steam_presence_watchlist", "steam_id", sid
+        )
+        summary[f"steam_friend_requests:{sid}"] = _delete_where(
+            conn, "steam_friend_requests", "steam_id", sid
+        )
+        summary[f"steam_beta_invites:{sid}"] = _delete_where(
+            conn, "steam_beta_invites", "steam_id64", sid
+        )
+        summary[f"beta_invite_audit:{sid}"] = _delete_where(
+            conn, "beta_invite_audit", "steam_id64", sid
+        )
 
 
 def export_user_data(user_id: int) -> Dict[str, object]:
@@ -287,19 +322,35 @@ def export_user_data(user_id: int) -> Dict[str, object]:
             key = f"{table}.{column}"
             tables[key] = _fetch_rows(conn, table, column, uid)
 
-        co_player_rows = _fetch_rows_any(conn, "user_co_players", ("user_id", "co_player_id"), uid)
+        co_player_rows = _fetch_rows_any(
+            conn, "user_co_players", ("user_id", "co_player_id"), uid
+        )
         tables["user_co_players"] = _redact_co_players(co_player_rows, uid)
 
         steam_ids = _fetch_steam_ids(conn, uid)
         snapshot["steam_ids"] = steam_ids
         for sid in steam_ids:
-            tables[f"live_player_state:{sid}"] = _fetch_rows(conn, "live_player_state", "steam_id", sid)
-            tables[f"deadlock_voice_watch:{sid}"] = _fetch_rows(conn, "deadlock_voice_watch", "steam_id", sid)
-            tables[f"steam_rich_presence:{sid}"] = _fetch_rows(conn, "steam_rich_presence", "steam_id", sid)
-            tables[f"steam_presence_watchlist:{sid}"] = _fetch_rows(conn, "steam_presence_watchlist", "steam_id", sid)
-            tables[f"steam_friend_requests:{sid}"] = _fetch_rows(conn, "steam_friend_requests", "steam_id", sid)
-            tables[f"steam_beta_invites:{sid}"] = _fetch_rows(conn, "steam_beta_invites", "steam_id64", sid)
-            tables[f"beta_invite_audit:{sid}"] = _fetch_rows(conn, "beta_invite_audit", "steam_id64", sid)
+            tables[f"live_player_state:{sid}"] = _fetch_rows(
+                conn, "live_player_state", "steam_id", sid
+            )
+            tables[f"deadlock_voice_watch:{sid}"] = _fetch_rows(
+                conn, "deadlock_voice_watch", "steam_id", sid
+            )
+            tables[f"steam_rich_presence:{sid}"] = _fetch_rows(
+                conn, "steam_rich_presence", "steam_id", sid
+            )
+            tables[f"steam_presence_watchlist:{sid}"] = _fetch_rows(
+                conn, "steam_presence_watchlist", "steam_id", sid
+            )
+            tables[f"steam_friend_requests:{sid}"] = _fetch_rows(
+                conn, "steam_friend_requests", "steam_id", sid
+            )
+            tables[f"steam_beta_invites:{sid}"] = _fetch_rows(
+                conn, "steam_beta_invites", "steam_id64", sid
+            )
+            tables[f"beta_invite_audit:{sid}"] = _fetch_rows(
+                conn, "beta_invite_audit", "steam_id64", sid
+            )
 
         snapshot["tables"] = tables
 
@@ -315,7 +366,9 @@ def export_user_data(user_id: int) -> Dict[str, object]:
             ).fetchall()
             for row in rows:
                 try:
-                    payload = json.loads(row["v"] if isinstance(row, sqlite3.Row) else row[1])
+                    payload = json.loads(
+                        row["v"] if isinstance(row, sqlite3.Row) else row[1]
+                    )
                 except Exception:
                     continue
                 target_uid = int(payload.get("user_id", 0) or 0)
@@ -340,25 +393,39 @@ def export_user_data(user_id: int) -> Dict[str, object]:
         # Redaction: avoid leaking foreign IDs in mixed tables
         if "tempvoice_bans.owner_id" in tables:
             tables["tempvoice_bans.owner_id"] = _redact_other_ids(
-                tables["tempvoice_bans.owner_id"], uid, keep="owner_id", redact_fields=("banned_id",)
+                tables["tempvoice_bans.owner_id"],
+                uid,
+                keep="owner_id",
+                redact_fields=("banned_id",),
             )
         if "tempvoice_bans.banned_id" in tables:
             tables["tempvoice_bans.banned_id"] = _redact_other_ids(
-                tables["tempvoice_bans.banned_id"], uid, keep="banned_id", redact_fields=("owner_id",)
+                tables["tempvoice_bans.banned_id"],
+                uid,
+                keep="banned_id",
+                redact_fields=("owner_id",),
             )
         if "claimed_threads.assigned_user_id" in tables:
             tables["claimed_threads.assigned_user_id"] = _redact_other_ids(
-                tables["claimed_threads.assigned_user_id"], uid, keep="assigned_user_id", redact_fields=("claimed_by_id",)
+                tables["claimed_threads.assigned_user_id"],
+                uid,
+                keep="assigned_user_id",
+                redact_fields=("claimed_by_id",),
             )
         if "claimed_threads.claimed_by_id" in tables:
             tables["claimed_threads.claimed_by_id"] = _redact_other_ids(
-                tables["claimed_threads.claimed_by_id"], uid, keep="claimed_by_id", redact_fields=("assigned_user_id",)
+                tables["claimed_threads.claimed_by_id"],
+                uid,
+                keep="claimed_by_id",
+                redact_fields=("assigned_user_id",),
             )
 
     return snapshot
 
 
-async def delete_user_data(user_id: int, *, reason: str = "user_request") -> Dict[str, int]:
+async def delete_user_data(
+    user_id: int, *, reason: str = "user_request"
+) -> Dict[str, int]:
     """
     Delete user-related data from all known tables and mark an opt-out.
     Returns a summary of deleted rows per table key.

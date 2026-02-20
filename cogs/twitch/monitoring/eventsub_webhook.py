@@ -1,4 +1,5 @@
 """Twitch EventSub Webhook handler – empfängt und verifiziert eingehende Notifications."""
+
 from __future__ import annotations
 
 import asyncio
@@ -45,7 +46,9 @@ class EventSubWebhookHandler:
         self._callbacks[sub_type] = callback
         self.log.debug("EventSub Webhook: Callback gesetzt für '%s'", sub_type)
 
-    def _verify_signature(self, message_id: str, timestamp: str, raw_body: bytes, signature: str) -> bool:
+    def _verify_signature(
+        self, message_id: str, timestamp: str, raw_body: bytes, signature: str
+    ) -> bool:
         """
         Verifiziert die HMAC-SHA256 Signatur einer Twitch EventSub Nachricht.
 
@@ -62,11 +65,14 @@ class EventSubWebhookHandler:
         """Prüft ob der Timestamp älter als _MAX_MESSAGE_AGE_SECONDS ist (Replay-Schutz)."""
         try:
             from datetime import datetime, timezone
+
             dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
             age = (datetime.now(timezone.utc) - dt).total_seconds()
             return age > _MAX_MESSAGE_AGE_SECONDS
         except Exception:
-            self.log.debug("EventSub Webhook: Konnte Timestamp nicht parsen: %r", timestamp)
+            self.log.debug(
+                "EventSub Webhook: Konnte Timestamp nicht parsen: %r", timestamp
+            )
             return True  # Bei Parse-Fehler: Nachricht ablehnen
 
     def _is_duplicate(self, message_id: str) -> bool:
@@ -128,6 +134,7 @@ class EventSubWebhookHandler:
         # --- 5. JSON parsen ---
         try:
             import json
+
             data = json.loads(raw_body)
         except Exception:
             self.log.warning("EventSub Webhook: Konnte Body nicht als JSON parsen")
@@ -137,7 +144,9 @@ class EventSubWebhookHandler:
         if message_type == MSG_TYPE_CHALLENGE:
             challenge = data.get("challenge", "")
             if not challenge:
-                self.log.error("EventSub Webhook: Challenge-Request ohne challenge-Feld")
+                self.log.error(
+                    "EventSub Webhook: Challenge-Request ohne challenge-Feld"
+                )
                 return web.Response(status=400)
             self.log.debug(
                 "EventSub Webhook: Challenge für '%s' beantwortet",
@@ -161,17 +170,25 @@ class EventSubWebhookHandler:
 
         if message_type != MSG_TYPE_NOTIFICATION:
             # Unbekannter Typ – trotzdem mit 200 antworten damit Twitch nicht retried
-            self.log.debug("EventSub Webhook: Unbekannter message_type=%r – ignoriert", message_type)
+            self.log.debug(
+                "EventSub Webhook: Unbekannter message_type=%r – ignoriert",
+                message_type,
+            )
             return web.Response(status=204)
 
         # --- 7. Duplikat-Schutz ---
         if self._is_duplicate(message_id):
-            self.log.debug("EventSub Webhook: Duplikat-Nachricht ignoriert (id=%r)", message_id)
+            self.log.debug(
+                "EventSub Webhook: Duplikat-Nachricht ignoriert (id=%r)", message_id
+            )
             return web.Response(status=204)
         self._track_message_id(message_id)
 
         # --- 8. Notification dispatchen ---
-        asyncio.create_task(self._dispatch_notification(data, sub_type), name="eventsub.webhook.dispatch")
+        asyncio.create_task(
+            self._dispatch_notification(data, sub_type),
+            name="eventsub.webhook.dispatch",
+        )
         return web.Response(status=204)
 
     async def _dispatch_notification(self, data: dict, sub_type: str) -> None:
@@ -179,7 +196,9 @@ class EventSubWebhookHandler:
         # Webhook notifications come as top-level {"subscription": ..., "event": ...}
         # while EventSub WebSocket messages use {"payload": {"subscription": ..., "event": ...}}.
         payload = data.get("payload")
-        if isinstance(payload, dict) and ("event" in payload or "subscription" in payload):
+        if isinstance(payload, dict) and (
+            "event" in payload or "subscription" in payload
+        ):
             envelope = payload
         else:
             envelope = data
@@ -189,7 +208,9 @@ class EventSubWebhookHandler:
 
         callback = self._callbacks.get(actual_sub_type)
         if not callback:
-            self.log.debug("EventSub Webhook: Kein Callback für type=%r", actual_sub_type)
+            self.log.debug(
+                "EventSub Webhook: Kein Callback für type=%r", actual_sub_type
+            )
             return
 
         event = envelope.get("event") or data.get("event") or {}
@@ -204,12 +225,16 @@ class EventSubWebhookHandler:
             or condition.get("to_broadcaster_user_id")
             or ""
         ).strip()
-        broadcaster_login = str(
-            event.get("broadcaster_user_login")
-            or event.get("to_broadcaster_user_login")
-            or event.get("user_login")
-            or ""
-        ).strip().lower()
+        broadcaster_login = (
+            str(
+                event.get("broadcaster_user_login")
+                or event.get("to_broadcaster_user_login")
+                or event.get("user_login")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
 
         if not broadcaster_id:
             self.log.debug(

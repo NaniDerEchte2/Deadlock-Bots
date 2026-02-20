@@ -294,7 +294,9 @@ async def upsert_signup_async(
         prev_mode = str(existing["registration_mode"])
         prev_rank = str(existing["rank"])
         prev_rank_value = int(existing["rank_value"])
-        prev_team_id = int(existing["team_id"]) if existing["team_id"] is not None else None
+        prev_team_id = (
+            int(existing["team_id"]) if existing["team_id"] is not None else None
+        )
         prev_assigned = int(existing["assigned_by_admin"] or 0)
         unchanged = (
             prev_mode == mode
@@ -432,5 +434,3 @@ async def guild_signup_counts_async() -> Dict[int, int]:
     for row in rows or []:
         counts[int(row["guild_id"])] = int(row["signups"])
     return counts
-
-

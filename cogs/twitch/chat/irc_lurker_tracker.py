@@ -8,6 +8,7 @@ Nutzt eine separate IRC-Connection (parallel zum EventSub WebSocket) um:
 
 Twitch IRC: irc.chat.twitch.tv:6667 (oder SSL auf :443)
 """
+
 import asyncio
 import logging
 import re
@@ -46,7 +47,9 @@ class IRCLurkerTracker:
         # Tracked Channels
         self.partner_channels: Set[str] = set()  # Partner: Volle Lurker-Tracking
         self.category_channels: Set[str] = set()  # Category: Nur Messages
-        self.channel_chatters: Dict[str, Set[str]] = {}  # channel -> set of nicks (nur Partner!)
+        self.channel_chatters: Dict[
+            str, Set[str]
+        ] = {}  # channel -> set of nicks (nur Partner!)
 
         # Tasks
         self.connect_task: Optional[asyncio.Task] = None
@@ -272,20 +275,23 @@ class IRCLurkerTracker:
                 # Get active session for this channel
                 session_row = conn.execute(
                     "SELECT active_session_id FROM twitch_live_state WHERE LOWER(streamer_login) = ? AND is_live = 1",
-                    (channel,)
+                    (channel,),
                 ).fetchone()
 
                 if not session_row or not session_row[0]:
-                    log.debug("IRC: No active session for #%s, skipping DB update", channel)
+                    log.debug(
+                        "IRC: No active session for #%s, skipping DB update", channel
+                    )
                     return
 
                 session_id = session_row[0]
 
                 # Batch update/insert chatters
                 existing = {
-                    r[0] for r in conn.execute(
+                    r[0]
+                    for r in conn.execute(
                         "SELECT chatter_login FROM twitch_session_chatters WHERE session_id = ?",
-                        (session_id,)
+                        (session_id,),
                     ).fetchall()
                 }
 
@@ -296,12 +302,14 @@ class IRCLurkerTracker:
                     if nick in existing:
                         to_update.append((now_iso, session_id, nick))
                     else:
-                        to_insert.append((session_id, channel, nick, None, now_iso, now_iso))
+                        to_insert.append(
+                            (session_id, channel, nick, None, now_iso, now_iso)
+                        )
 
                 if to_update:
                     conn.executemany(
                         "UPDATE twitch_session_chatters SET last_seen_at = ? WHERE session_id = ? AND chatter_login = ?",
-                        to_update
+                        to_update,
                     )
 
                 if to_insert:
@@ -313,10 +321,15 @@ class IRCLurkerTracker:
                              seen_via_chatters_api, last_seen_at)
                         VALUES (?, ?, ?, ?, ?, 0, 0, 1, ?)
                         """,
-                        to_insert
+                        to_insert,
                     )
 
-                log.info("IRC: DB updated for #%s: %d inserts, %d updates", channel, len(to_insert), len(to_update))
+                log.info(
+                    "IRC: DB updated for #%s: %d inserts, %d updates",
+                    channel,
+                    len(to_insert),
+                    len(to_update),
+                )
 
         except Exception:
             log.exception("IRC: Failed to update DB for #%s", channel)
@@ -329,7 +342,7 @@ class IRCLurkerTracker:
             with get_conn() as conn:
                 session_row = conn.execute(
                     "SELECT active_session_id FROM twitch_live_state WHERE LOWER(streamer_login) = ? AND is_live = 1",
-                    (channel,)
+                    (channel,),
                 ).fetchone()
 
                 if not session_row or not session_row[0]:
@@ -348,11 +361,13 @@ class IRCLurkerTracker:
                     ON CONFLICT(session_id, chatter_login) DO UPDATE SET
                         last_seen_at = excluded.last_seen_at
                     """,
-                    (session_id, channel, nick, None, now_iso, now_iso)
+                    (session_id, channel, nick, None, now_iso, now_iso),
                 )
 
         except Exception:
-            log.debug("IRC: Failed to update chatter %s in #%s", nick, channel, exc_info=True)
+            log.debug(
+                "IRC: Failed to update chatter %s in #%s", nick, channel, exc_info=True
+            )
 
     async def _join_channel(self, channel: str):
         """Join IRC channel."""

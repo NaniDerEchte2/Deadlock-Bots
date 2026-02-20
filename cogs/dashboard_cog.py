@@ -1,4 +1,5 @@
 """Dashboard Cog - Makes the dashboard reloadable like any other cog."""
+
 from __future__ import annotations
 
 import asyncio
@@ -28,8 +29,14 @@ class DashboardCog(commands.Cog):
         try:
             from service.dashboard import DashboardServer
 
-            self.dashboard = DashboardServer(self.bot, host=DASHBOARD_HOST, port=DASHBOARD_PORT)
-            log.info("Dashboard initialized in cog (Host %s, Port %s)", DASHBOARD_HOST, DASHBOARD_PORT)
+            self.dashboard = DashboardServer(
+                self.bot, host=DASHBOARD_HOST, port=DASHBOARD_PORT
+            )
+            log.info(
+                "Dashboard initialized in cog (Host %s, Port %s)",
+                DASHBOARD_HOST,
+                DASHBOARD_PORT,
+            )
 
         except Exception as e:
             log.error("Could not initialize dashboard in cog: %s", e)
@@ -63,7 +70,7 @@ class DashboardCog(commands.Cog):
                 log.error("Error stopping dashboard: %s", e)
 
         # Clear bot.dashboard reference
-        if hasattr(self.bot, 'dashboard'):
+        if hasattr(self.bot, "dashboard"):
             self.bot.dashboard = None
 
     async def _start_dashboard(self) -> None:

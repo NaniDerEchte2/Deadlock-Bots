@@ -49,7 +49,7 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
         log.info(
             "Auth refresh worker started (interval=%ss, threshold=%sh)",
             self.interval_seconds,
-            self.refresh_threshold_hours
+            self.refresh_threshold_hours,
         )
 
     def cog_unload(self):
@@ -73,7 +73,9 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
 
     async def _refresh_expiring_tokens(self):
         """Refresh tokens expiring within threshold."""
-        threshold = datetime.now(timezone.utc) + timedelta(hours=self.refresh_threshold_hours)
+        threshold = datetime.now(timezone.utc) + timedelta(
+            hours=self.refresh_threshold_hours
+        )
 
         # Find tokens expiring soon
         with get_conn() as conn:
@@ -89,14 +91,20 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
                   AND token_expires_at < ?
                 ORDER BY token_expires_at ASC
                 """,
-                (threshold.isoformat(),)
+                (threshold.isoformat(),),
             ).fetchall()
 
         if not expiring:
-            log.debug("No auth entries expiring within %sh", self.refresh_threshold_hours)
+            log.debug(
+                "No auth entries expiring within %sh", self.refresh_threshold_hours
+            )
             return
 
-        log.info("Found %s auth entries expiring within %sh", len(expiring), self.refresh_threshold_hours)
+        log.info(
+            "Found %s auth entries expiring within %sh",
+            len(expiring),
+            self.refresh_threshold_hours,
+        )
 
         # Refresh each token
         for row in expiring:
@@ -108,7 +116,7 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
                 log.exception(
                     "Failed to refresh OAuth auth data for platform=%s, streamer=%s",
                     safe_platform,
-                    safe_streamer
+                    safe_streamer,
                 )
 
     async def _refresh_platform_token(self, row: dict):
@@ -124,22 +132,24 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
         safe_streamer = _sanitize_log_value(streamer_login)
         row_id = f"{platform}|{streamer_login or 'global'}"
 
-        log.info("Refreshing OAuth auth data for platform=%s, streamer=%s", safe_platform, safe_streamer)
+        log.info(
+            "Refreshing OAuth auth data for platform=%s, streamer=%s",
+            safe_platform,
+            safe_streamer,
+        )
 
         # Decrypt refresh token
-        aad_refresh = f"social_media_platform_auth|refresh_token|{row_id}|{row['enc_version']}"
-        refresh_token = self.crypto.decrypt_field(
-            row["refresh_token_enc"],
-            aad_refresh
+        aad_refresh = (
+            f"social_media_platform_auth|refresh_token|{row_id}|{row['enc_version']}"
         )
+        refresh_token = self.crypto.decrypt_field(row["refresh_token_enc"], aad_refresh)
 
         # Decrypt client secret (if exists)
         client_secret = None
         if row["client_secret_enc"]:
             aad_secret = f"social_media_platform_auth|client_secret|{row_id}|{row['enc_version']}"
             client_secret = self.crypto.decrypt_field(
-                row["client_secret_enc"],
-                aad_secret
+                row["client_secret_enc"], aad_secret
             )
 
         # Refresh token via OAuth manager
@@ -148,13 +158,13 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
                 platform=platform,
                 refresh_token=refresh_token,
                 client_id=row["client_id"],
-                client_secret=client_secret or ""
+                client_secret=client_secret or "",
             )
         except Exception:
             log.error(
                 "OAuth auth refresh failed for platform=%s, streamer=%s",
                 safe_platform,
-                safe_streamer
+                safe_streamer,
             )
             # TODO: Send notification to user for re-auth
             return
@@ -164,29 +174,23 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
             platform=platform,
             streamer_login=streamer_login,
             row_id=row_id,
-            new_tokens=new_tokens
+            new_tokens=new_tokens,
         )
 
         log.info(
             "OAuth auth data refreshed successfully for platform=%s, streamer=%s",
             safe_platform,
-            safe_streamer
+            safe_streamer,
         )
 
     async def _save_refreshed_tokens(
-        self,
-        platform: str,
-        streamer_login: str,
-        row_id: str,
-        new_tokens: dict
+        self, platform: str, streamer_login: str, row_id: str, new_tokens: dict
     ):
         """Save refreshed tokens to database."""
         # Encrypt new access token
         aad_access = f"social_media_platform_auth|access_token|{row_id}|1"
         access_enc = self.crypto.encrypt_field(
-            new_tokens["access_token"],
-            aad_access,
-            kid="v1"
+            new_tokens["access_token"], aad_access, kid="v1"
         )
 
         # Encrypt new refresh token (if provided)
@@ -194,9 +198,7 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
         if new_tokens.get("refresh_token"):
             aad_refresh = f"social_media_platform_auth|refresh_token|{row_id}|1"
             refresh_enc = self.crypto.encrypt_field(
-                new_tokens["refresh_token"],
-                aad_refresh,
-                kid="v1"
+                new_tokens["refresh_token"], aad_refresh, kid="v1"
             )
 
         # Update database
@@ -215,11 +217,13 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
                     (
                         access_enc,
                         refresh_enc,
-                        new_tokens["expires_at"].isoformat() if isinstance(new_tokens["expires_at"], datetime) else new_tokens["expires_at"],
+                        new_tokens["expires_at"].isoformat()
+                        if isinstance(new_tokens["expires_at"], datetime)
+                        else new_tokens["expires_at"],
                         platform,
                         streamer_login,
-                        streamer_login
-                    )
+                        streamer_login,
+                    ),
                 )
             else:
                 # Update only access token (keep existing refresh token)
@@ -233,11 +237,13 @@ class SocialMediaTokenRefreshWorker(commands.Cog):
                     """,
                     (
                         access_enc,
-                        new_tokens["expires_at"].isoformat() if isinstance(new_tokens["expires_at"], datetime) else new_tokens["expires_at"],
+                        new_tokens["expires_at"].isoformat()
+                        if isinstance(new_tokens["expires_at"], datetime)
+                        else new_tokens["expires_at"],
                         platform,
                         streamer_login,
-                        streamer_login
-                    )
+                        streamer_login,
+                    ),
                 )
 
 

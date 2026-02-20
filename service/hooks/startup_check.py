@@ -16,4 +16,3 @@ def check_database_usage() -> None:
     Kept non-fatal to avoid blocking bot startup if the optional hook is absent.
     """
     logger.debug("Startup DB check stub executed (no-op).")
-

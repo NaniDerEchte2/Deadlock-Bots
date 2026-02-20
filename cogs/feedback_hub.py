@@ -100,7 +100,9 @@ class FeedbackHubModal(discord.ui.Modal):
                 ephemeral=True,
             )
         except discord.HTTPException:
-            log.warning("Antwort auf Feedback-Modal konnte nicht gesendet werden", exc_info=True)
+            log.warning(
+                "Antwort auf Feedback-Modal konnte nicht gesendet werden", exc_info=True
+            )
 
 
 class FeedbackHubView(discord.ui.View):
@@ -116,7 +118,9 @@ class FeedbackHubView(discord.ui.View):
     async def open_modal(  # type: ignore[override]
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        modal = FeedbackHubModal(self.cog, source_message_id=getattr(interaction.message, "id", None))
+        modal = FeedbackHubModal(
+            self.cog, source_message_id=getattr(interaction.message, "id", None)
+        )
         await interaction.response.send_modal(modal)
 
 
@@ -152,7 +156,9 @@ class FeedbackHub(commands.Cog):
         channel_reference = f"<#{channel_id}>"
         source_lines = [f"Kanal: {channel_reference}"]
         if guild_id and message_id:
-            interface_url = f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
+            interface_url = (
+                f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
+            )
             source_lines.append(f"[Interface öffnen]({interface_url})")
 
         embed.add_field(
@@ -193,7 +199,9 @@ class FeedbackHub(commands.Cog):
                     "Der Feedback-Kanal konnte nicht gefunden werden. Bitte prüfe die Konfiguration.",
                     mention_author=False,
                 )
-                log.error("Feedback-Kanal %s nicht erreichbar: %s", FEEDBACK_CHANNEL_ID, exc)
+                log.error(
+                    "Feedback-Kanal %s nicht erreichbar: %s", FEEDBACK_CHANNEL_ID, exc
+                )
                 return
 
         embed = discord.Embed(
@@ -249,17 +257,26 @@ class FeedbackHub(commands.Cog):
             try:
                 await ctx.message.delete()
             except discord.HTTPException as exc:
-                log.debug("Konnte Ursprungsnachricht nach Interface-Erstellung nicht löschen: %s", exc)
+                log.debug(
+                    "Konnte Ursprungsnachricht nach Interface-Erstellung nicht löschen: %s",
+                    exc,
+                )
 
     @create_feedback_interface.error
     async def on_create_feedback_error(
         self, ctx: commands.Context, error: commands.CommandError
     ) -> None:
         if isinstance(error, commands.MissingPermissions):
-            await ctx.reply("Du benötigst die Berechtigung 'Server verwalten', um diesen Befehl zu nutzen.")
+            await ctx.reply(
+                "Du benötigst die Berechtigung 'Server verwalten', um diesen Befehl zu nutzen."
+            )
             return
-        log.error("Fehler beim Erstellen des Feedback-Interfaces: %s", error, exc_info=True)
-        await ctx.reply("Beim Erstellen des Feedback-Interfaces ist ein Fehler aufgetreten.")
+        log.error(
+            "Fehler beim Erstellen des Feedback-Interfaces: %s", error, exc_info=True
+        )
+        await ctx.reply(
+            "Beim Erstellen des Feedback-Interfaces ist ein Fehler aufgetreten."
+        )
 
 
 async def setup(bot: commands.Bot) -> None:

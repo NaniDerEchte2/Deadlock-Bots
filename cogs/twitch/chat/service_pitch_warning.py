@@ -144,8 +144,12 @@ _SERVICE_PATTERNS = (
         (
             re.compile(r"\bwhat\s+got\s+you\s+into\s+streaming\b", re.IGNORECASE),
             re.compile(r"\bwhat\s+made\s+you\s+start\s+streaming\b", re.IGNORECASE),
-            re.compile(r"\bhow\s+long\s+have\s+you\s+been\s+streaming\b", re.IGNORECASE),
-            re.compile(r"\bwhat(?:'s|s)\s+your\s+stream(?:ing)?\s+schedule\b", re.IGNORECASE),
+            re.compile(
+                r"\bhow\s+long\s+have\s+you\s+been\s+streaming\b", re.IGNORECASE
+            ),
+            re.compile(
+                r"\bwhat(?:'s|s)\s+your\s+stream(?:ing)?\s+schedule\b", re.IGNORECASE
+            ),
             re.compile(r"\bdo\s+you\s+stream\s+on\s+(?:youtube|yt)\b", re.IGNORECASE),
             re.compile(r"\bwie\s+lange\s+streamst\s+du\s+schon\b", re.IGNORECASE),
             re.compile(r"\bwelcome\s+to\s+(?:the\s+)?twitch\b", re.IGNORECASE),
@@ -179,7 +183,10 @@ _SERVICE_PATTERNS = (
             re.compile(r"\bportfolio\b", re.IGNORECASE),
             re.compile(r"\bcommissions?\b", re.IGNORECASE),
             re.compile(r"\bbranding\b", re.IGNORECASE),
-            re.compile(r"\bbrauchst\s+du\s+(?:ein\s+)?(?:logo|emotes?|overlay)\b", re.IGNORECASE),
+            re.compile(
+                r"\bbrauchst\s+du\s+(?:ein\s+)?(?:logo|emotes?|overlay)\b",
+                re.IGNORECASE,
+            ),
         ),
     ),
     (
@@ -262,20 +269,30 @@ _HANDLE_RE = re.compile(r"(?:^|\s)@[A-Za-z0-9_.]{3,}\b")
 class ServicePitchWarningMixin:
     def _init_service_pitch_warning(self) -> None:
         self._service_warning_log = Path("logs") / "twitch_service_warnings.log"
-        self._service_warning_activity: Dict[Tuple[str, str], Deque[Tuple[float, int]]] = {}
-        self._service_warning_message_history: Dict[Tuple[str, str], Deque[Tuple[float, str, Set[str]]]] = {}
+        self._service_warning_activity: Dict[
+            Tuple[str, str], Deque[Tuple[float, int]]
+        ] = {}
+        self._service_warning_message_history: Dict[
+            Tuple[str, str], Deque[Tuple[float, str, Set[str]]]
+        ] = {}
         self._service_warning_first_seen: Dict[Tuple[str, str], float] = {}
         self._service_warning_channel_cd: Dict[str, float] = {}
         self._service_warning_user_cd: Dict[Tuple[str, str], float] = {}
         self._service_warning_hint_cd: Dict[Tuple[str, str], float] = {}
-        self._service_warning_account_age_cache: Dict[str, Tuple[float, Optional[int]]] = {}
-        self._service_warning_follower_cache: Dict[str, Tuple[float, Optional[int]]] = {}
+        self._service_warning_account_age_cache: Dict[
+            str, Tuple[float, Optional[int]]
+        ] = {}
+        self._service_warning_follower_cache: Dict[
+            str, Tuple[float, Optional[int]]
+        ] = {}
 
     @staticmethod
     def _normalize_text(content: str) -> str:
         return " ".join((content or "").strip().split())
 
-    def _score_service_pitch_message(self, content: str) -> tuple[int, list[str], Set[str]]:
+    def _score_service_pitch_message(
+        self, content: str
+    ) -> tuple[int, list[str], Set[str]]:
         raw = (content or "").strip()
         if not raw:
             return 0, [], set()
@@ -297,13 +314,17 @@ class ServicePitchWarningMixin:
         lowered = raw.casefold()
         if _GENERIC_PRAISE_RE.search(raw):
             tokens = [t for t in re.split(r"\s+", lowered) if t]
-            praise_score = 2 if (len(tokens) <= 5 and not _STREAM_CONTEXT_RE.search(raw)) else 1
+            praise_score = (
+                2 if (len(tokens) <= 5 and not _STREAM_CONTEXT_RE.search(raw)) else 1
+            )
             score += praise_score
             matched_features.add("generic_praise")
             reasons.append(f"feature:generic_praise({praise_score})")
 
         has_link = bool(_LINK_RE.search(raw))
-        has_platform_ref = bool(re.search(r"\b(?:discord|instagram|tiktok|youtube|yt|ig)\b", lowered))
+        has_platform_ref = bool(
+            re.search(r"\b(?:discord|instagram|tiktok|youtube|yt|ig)\b", lowered)
+        )
         has_handle = bool(_HANDLE_RE.search(raw))
         if has_link or (has_platform_ref and has_handle):
             score += 4
@@ -313,8 +334,12 @@ class ServicePitchWarningMixin:
         return score, reasons, matched_features
 
     @staticmethod
-    def _prune_service_activity_bucket(bucket: Deque[Tuple[float, int]], now: float) -> None:
-        while bucket and (now - float(bucket[0][0])) > float(_SERVICE_WARNING_WINDOW_SEC):
+    def _prune_service_activity_bucket(
+        bucket: Deque[Tuple[float, int]], now: float
+    ) -> None:
+        while bucket and (now - float(bucket[0][0])) > float(
+            _SERVICE_WARNING_WINDOW_SEC
+        ):
             bucket.popleft()
 
     @staticmethod
@@ -322,7 +347,9 @@ class ServicePitchWarningMixin:
         bucket: Deque[Tuple[float, str, Set[str]]],
         now: float,
     ) -> None:
-        while bucket and (now - float(bucket[0][0])) > float(_SERVICE_WARNING_SEQUENCE_WINDOW_SEC):
+        while bucket and (now - float(bucket[0][0])) > float(
+            _SERVICE_WARNING_SEQUENCE_WINDOW_SEC
+        ):
             bucket.popleft()
 
     @staticmethod
@@ -343,7 +370,8 @@ class ServicePitchWarningMixin:
         short_messages = sum(
             1
             for _, msg, _ in bucket
-            if len(msg) <= int(_SERVICE_WARNING_SHORT_MSG_MAX_CHARS) and self._token_count(msg) <= 7
+            if len(msg) <= int(_SERVICE_WARNING_SHORT_MSG_MAX_CHARS)
+            and self._token_count(msg) <= 7
         )
         if short_messages >= int(_SERVICE_WARNING_SEQUENCE_MIN_MSGS):
             score += 2
@@ -390,7 +418,9 @@ class ServicePitchWarningMixin:
 
         return score, reasons
 
-    def _early_window_score(self, channel_login: str, chatter_key: str, now: float) -> tuple[int, list[str]]:
+    def _early_window_score(
+        self, channel_login: str, chatter_key: str, now: float
+    ) -> tuple[int, list[str]]:
         key = (channel_login, chatter_key)
         first_seen = self._service_warning_first_seen.get(key)
         if first_seen is None:
@@ -401,7 +431,9 @@ class ServicePitchWarningMixin:
         return 0, []
 
     @staticmethod
-    def _prune_simple_monotonic_cache(cache: Dict, now: float, *, max_len: int, max_age_sec: float) -> None:
+    def _prune_simple_monotonic_cache(
+        cache: Dict, now: float, *, max_len: int, max_age_sec: float
+    ) -> None:
         if len(cache) <= max_len:
             return
         stale_before = now - float(max_age_sec)
@@ -419,7 +451,9 @@ class ServicePitchWarningMixin:
         for key in stale_keys:
             cache.pop(key, None)
 
-    async def _get_account_age_days(self, author_id: str, author_login: str) -> Optional[int]:
+    async def _get_account_age_days(
+        self, author_id: str, author_login: str
+    ) -> Optional[int]:
         cache_key = (author_id or author_login or "").strip().lower()
         if not cache_key:
             return None
@@ -428,7 +462,9 @@ class ServicePitchWarningMixin:
         cached = self._service_warning_account_age_cache.get(cache_key)
         if isinstance(cached, tuple) and len(cached) == 2:
             cached_ts, cached_age = cached
-            if (now - float(cached_ts)) <= float(_SERVICE_WARNING_ACCOUNT_CACHE_TTL_SEC):
+            if (now - float(cached_ts)) <= float(
+                _SERVICE_WARNING_ACCOUNT_CACHE_TTL_SEC
+            ):
                 return cached_age
 
         if not hasattr(self, "fetch_users"):
@@ -462,7 +498,9 @@ class ServicePitchWarningMixin:
             )
             return age_days
         except Exception:
-            log.debug("Konnte Account-Alter fuer %s nicht laden", cache_key, exc_info=True)
+            log.debug(
+                "Konnte Account-Alter fuer %s nicht laden", cache_key, exc_info=True
+            )
             self._service_warning_account_age_cache[cache_key] = (now, None)
             return None
 
@@ -475,7 +513,9 @@ class ServicePitchWarningMixin:
         cached = self._service_warning_follower_cache.get(login)
         if isinstance(cached, tuple) and len(cached) == 2:
             cached_ts, cached_count = cached
-            if (now - float(cached_ts)) <= float(_SERVICE_WARNING_FOLLOWER_CACHE_TTL_SEC):
+            if (now - float(cached_ts)) <= float(
+                _SERVICE_WARNING_FOLLOWER_CACHE_TTL_SEC
+            ):
                 return cached_count
 
         follower_count: Optional[int] = None
@@ -493,7 +533,9 @@ class ServicePitchWarningMixin:
                     (login,),
                 ).fetchone()
                 if row is not None:
-                    raw_value = row["follower_total"] if hasattr(row, "keys") else row[0]
+                    raw_value = (
+                        row["follower_total"] if hasattr(row, "keys") else row[0]
+                    )
                     if raw_value is not None:
                         follower_count = max(0, int(raw_value))
         except Exception:
@@ -567,7 +609,9 @@ class ServicePitchWarningMixin:
         author = getattr(message, "author", None)
         if author is None:
             return False
-        if bool(getattr(author, "moderator", False)) or bool(getattr(author, "broadcaster", False)):
+        if bool(getattr(author, "moderator", False)) or bool(
+            getattr(author, "broadcaster", False)
+        ):
             return False
 
         score, reasons, features = self._score_service_pitch_message(raw_content)
@@ -580,7 +624,9 @@ class ServicePitchWarningMixin:
         now = time.monotonic()
 
         account_age_days = await self._get_account_age_days(chatter_id, chatter_login)
-        if account_age_days is None or int(account_age_days) >= int(_SERVICE_WARNING_ACCOUNT_MAX_DAYS):
+        if account_age_days is None or int(account_age_days) >= int(
+            _SERVICE_WARNING_ACCOUNT_MAX_DAYS
+        ):
             return False
         score += 2
         reasons.append("account:newer_than_3_months")
@@ -602,13 +648,17 @@ class ServicePitchWarningMixin:
             score += combo_score
             reasons.extend(combo_reasons)
 
-        early_score, early_reasons = self._early_window_score(channel_login, chatter_key, now)
+        early_score, early_reasons = self._early_window_score(
+            channel_login, chatter_key, now
+        )
         if early_score > 0:
             score += early_score
             reasons.extend(early_reasons)
 
         bucket_key = (channel_login, chatter_key)
-        history_bucket = self._service_warning_message_history.setdefault(bucket_key, deque())
+        history_bucket = self._service_warning_message_history.setdefault(
+            bucket_key, deque()
+        )
         history_bucket.append((now, raw_content, set(features)))
         self._prune_service_message_history_bucket(history_bucket, now)
 
@@ -623,7 +673,9 @@ class ServicePitchWarningMixin:
 
         total_score = int(sum(int(item[1]) for item in bucket))
         msg_count = len(bucket)
-        if total_score < int(_SERVICE_WARNING_MIN_SCORE) or msg_count < int(_SERVICE_WARNING_MIN_MESSAGES):
+        if total_score < int(_SERVICE_WARNING_MIN_SCORE) or msg_count < int(
+            _SERVICE_WARNING_MIN_MESSAGES
+        ):
             return False
         if total_score < int(_SERVICE_WARNING_LIGHT_THRESHOLD):
             return False
@@ -632,7 +684,9 @@ class ServicePitchWarningMixin:
             self._service_warning_first_seen,
             now,
             max_len=8192,
-            max_age_sec=max(float(_SERVICE_WARNING_FIRST_CHAT_WINDOW_SEC) * 20.0, 3600.0),
+            max_age_sec=max(
+                float(_SERVICE_WARNING_FIRST_CHAT_WINDOW_SEC) * 20.0, 3600.0
+            ),
         )
 
         severity = "HINT"
@@ -646,13 +700,19 @@ class ServicePitchWarningMixin:
             if now < hint_cd_until:
                 return False
         else:
-            channel_cd_until = float(self._service_warning_channel_cd.get(channel_login, 0.0))
+            channel_cd_until = float(
+                self._service_warning_channel_cd.get(channel_login, 0.0)
+            )
             user_cd_until = float(self._service_warning_user_cd.get(bucket_key, 0.0))
             if now < channel_cd_until or now < user_cd_until:
                 return False
 
         if severity != "HINT":
-            channel = self._resolve_message_channel(message) if hasattr(self, "_resolve_message_channel") else None
+            channel = (
+                self._resolve_message_channel(message)
+                if hasattr(self, "_resolve_message_channel")
+                else None
+            )
             if channel is None:
                 channel = getattr(message, "channel", None)
             if channel is None:
@@ -661,17 +721,25 @@ class ServicePitchWarningMixin:
                 chatter_login=chatter_login,
                 strong=(severity == "WARNING_STRONG"),
             )
-            sent = await self._send_chat_message(channel, warning_text, source="service_warning")
+            sent = await self._send_chat_message(
+                channel, warning_text, source="service_warning"
+            )
             if not sent:
                 return False
 
         if severity != "HINT":
-            self._service_warning_channel_cd[channel_login] = now + float(_SERVICE_WARNING_CHANNEL_COOLDOWN_SEC)
-            self._service_warning_user_cd[bucket_key] = now + float(_SERVICE_WARNING_USER_COOLDOWN_SEC)
+            self._service_warning_channel_cd[channel_login] = now + float(
+                _SERVICE_WARNING_CHANNEL_COOLDOWN_SEC
+            )
+            self._service_warning_user_cd[bucket_key] = now + float(
+                _SERVICE_WARNING_USER_COOLDOWN_SEC
+            )
             bucket.clear()
             history_bucket.clear()
         else:
-            self._service_warning_hint_cd[bucket_key] = now + float(_SERVICE_WARNING_HINT_COOLDOWN_SEC)
+            self._service_warning_hint_cd[bucket_key] = now + float(
+                _SERVICE_WARNING_HINT_COOLDOWN_SEC
+            )
 
         self._record_service_warning(
             channel_login=channel_login,
