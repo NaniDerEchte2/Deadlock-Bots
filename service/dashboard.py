@@ -591,11 +591,19 @@ class DashboardServer:
             parsed = urlparse(candidate)
         except Exception:
             return fallback
+
+        # CodeQL: URL redirection from remote source.
+        # Strict validation of path-only redirects.
         if parsed.scheme or parsed.netloc:
             return fallback
         if not candidate.startswith("/"):
             return fallback
-        if candidate.startswith("/admin") or candidate.startswith("/api/"):
+        if candidate.startswith("//"):
+            return fallback
+
+        # Allowed destination prefixes
+        allowed = ("/admin", "/api/", "/turnier", "/auth/")
+        if any(candidate.startswith(p) for p in allowed):
             return candidate
         return fallback
 
@@ -612,9 +620,12 @@ class DashboardServer:
             parsed = urlparse(candidate)
         except Exception:
             return fallback
+        # CodeQL: URL redirection from remote source.
         if parsed.scheme or parsed.netloc:
             return fallback
         if not candidate.startswith("/"):
+            return fallback
+        if candidate.startswith("//"):
             return fallback
         return candidate
 
@@ -639,6 +650,8 @@ class DashboardServer:
                 return fallback
             return candidate
         if parsed.netloc or not candidate.startswith("/"):
+            return fallback
+        if candidate.startswith("//"):
             return fallback
         return candidate
 
@@ -4292,7 +4305,8 @@ class DashboardServer:
         try:
             team = await tstore.get_or_create_team_async(guild_id, name, created_by=created_by)
         except ValueError as exc:
-            raise web.HTTPBadRequest(text=str(exc)) from exc
+            # CodeQL: Information exposure through an exception. Using generic message.
+            raise web.HTTPBadRequest(text="Ungültiger Team-Name oder Daten.") from exc
 
         return self._json(
             self._stringify_ids(
@@ -4343,7 +4357,8 @@ class DashboardServer:
         try:
             updated = await tstore.assign_signup_team_async(guild_id, int(user_id), team_id=team_id)
         except ValueError as exc:
-            raise web.HTTPBadRequest(text=str(exc)) from exc
+            # CodeQL: Information exposure through an exception. Using generic message.
+            raise web.HTTPBadRequest(text="Ungültige Zuweisung oder Team existiert nicht.") from exc
 
         if not updated:
             raise web.HTTPNotFound(text="Signup not found")
