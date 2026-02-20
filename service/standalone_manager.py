@@ -115,6 +115,7 @@ class StandaloneBotManager:
         self._states: Dict[str, _RuntimeState] = {}
         self._lock = asyncio.Lock()
         self._shutting_down = False
+        self._manager_started_at: float = time.time()
 
     def register(self, config: StandaloneBotConfig) -> None:
         if config.key in self._configs:
@@ -265,6 +266,21 @@ class StandaloneBotManager:
             if state.last_scheduled_restart_day == today:
                 return
             should_restart = now >= target_today
+            # On fresh manager start: if we're already past today's scheduled time,
+            # mark it as done without restarting (avoids premature restart on bot reboot).
+            startup_grace = 30 * 60  # 30 minutes
+            if (
+                should_restart
+                and state.last_scheduled_restart_day is None
+                and (time.time() - self._manager_started_at) < startup_grace
+            ):
+                log.info(
+                    "Scheduled daily restart for %s at %s -> skipped (manager just started, marking today as done)",
+                    config.key,
+                    schedule,
+                )
+                state.last_scheduled_restart_day = today
+                return
 
         if not should_restart:
             return
