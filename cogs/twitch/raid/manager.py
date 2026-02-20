@@ -530,7 +530,7 @@ class RaidAuthManager:
                     log.error("Background refresh failed for %s: %s", login, exc)
                     
         if refreshed_count > 0:
-            log.info("Maintenance: Refreshed %d user tokens", refreshed_count)
+            log.debug("Maintenance: Refreshed %d user tokens", refreshed_count)
             
         return refreshed_count
 
