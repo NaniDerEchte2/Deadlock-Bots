@@ -28,7 +28,9 @@ def _mask_log_identifier(
 class LegacyTokenAnalyticsMixin:
     """
     Stellt Hilfsmethoden bereit, die bei Streamern mit needs_reauth=1 den
-    legacy_access_token statt des (ungültigen/unzureichenden) access_token verwenden.
+    Übergang in den Re-Auth-Flow steuern.
+
+    Hinweis: Klartext-Token-Fallbacks sind deaktiviert (ENC-only Read).
     """
 
     def _clear_legacy_snapshot_for_user(
@@ -106,7 +108,7 @@ class LegacyTokenAnalyticsMixin:
         Gibt den Token zurück, der für broadcaster-spezifische EventSub-Subscriptions
         genutzt werden soll:
         - needs_reauth=0 → neuer access_token (volle Scopes), bevorzugt via get_valid_token (mit Refresh)
-        - needs_reauth=1 → legacy_access_token (alte Scopes für Analytics-Übergang)
+        - needs_reauth=1 → kein Token (Klartext-Legacy wird nicht mehr geladen)
         """
         def _sanitize_token(raw_value: object) -> Optional[str]:
             token = str(raw_value or "").strip()
@@ -128,25 +130,25 @@ class LegacyTokenAnalyticsMixin:
                         return clean
                 except Exception:
                     log.debug(
-                        "LegacyToken: get_valid_token fehlgeschlagen, nutze DB-Fallback",
+                        "LegacyToken: get_valid_token fehlgeschlagen (ENC-only, kein DB-Klartext-Fallback)",
                         exc_info=True,
                     )
-            token_raw = row["access_token"] if hasattr(row, "keys") else row[0]
-            return _sanitize_token(token_raw)
+            return None
 
         try:
             with storage.get_conn() as conn:
                 row = conn.execute(
-                    "SELECT access_token, legacy_access_token, needs_reauth "
+                    "SELECT needs_reauth, "
+                    "CASE WHEN legacy_access_token IS NOT NULL AND TRIM(legacy_access_token) <> '' THEN 1 ELSE 0 END AS legacy_present "
                     "FROM twitch_raid_auth WHERE twitch_user_id=?",
                     (twitch_user_id,),
                 ).fetchone()
             if not row:
                 return None
-            needs_reauth = row["needs_reauth"] if hasattr(row, "keys") else row[2]
+            needs_reauth = row["needs_reauth"] if hasattr(row, "keys") else row[0]
+            legacy_present = bool(row["legacy_present"] if hasattr(row, "keys") else row[1])
             if needs_reauth == 0:
-                legacy_raw = row["legacy_access_token"] if hasattr(row, "keys") else row[1]
-                if _sanitize_token(legacy_raw):
+                if legacy_present:
                     self._clear_legacy_snapshot_for_user(
                         str(twitch_user_id),
                         only_when_reauth_pending=False,
@@ -154,12 +156,12 @@ class LegacyTokenAnalyticsMixin:
                     )
                 return await _resolve_current_access_token()
 
-            legacy_token = _sanitize_token(row["legacy_access_token"] if hasattr(row, "keys") else row[1])
-            if legacy_token:
-                log.debug(
-                    "LegacyToken: Nutze legacy_access_token (needs_reauth=1)",
+            if legacy_present:
+                log.info(
+                    "LegacyAuth: needs_reauth=1 for user_id=%s - legacy plaintext fallback disabled; re-auth required",
+                    _mask_log_identifier(twitch_user_id),
                 )
-                return legacy_token
+                return None
 
             log.info(
                 "LegacyAuth: needs_reauth=1 but no legacy access grant exists (user_id=%s) - "

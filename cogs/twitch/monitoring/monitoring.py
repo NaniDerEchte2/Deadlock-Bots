@@ -1349,19 +1349,20 @@ class TwitchMonitoringMixin:
 
     async def _resolve_eventsub_broadcaster_token(self, broadcaster_user_id: str) -> Optional[str]:
         """Gibt den Broadcaster-Token für eine bestimmte User-ID zurück (falls vorhanden).
-        Bei needs_reauth=1 wird der legacy_access_token genutzt (Übergangsmodus)."""
+        Klartext-Fallbacks sind deaktiviert (ENC-only Read)."""
         if hasattr(self, "_resolve_broadcaster_token_with_legacy"):
             return await self._resolve_broadcaster_token_with_legacy(broadcaster_user_id)
         # Fallback falls Mixin nicht eingebunden
         try:
-            with storage.get_conn() as c:
-                row = c.execute(
-                    "SELECT access_token FROM twitch_raid_auth WHERE twitch_user_id = ?",
-                    (broadcaster_user_id,),
-                ).fetchone()
-            if not row:
+            raid_bot = getattr(self, "_raid_bot", None)
+            auth_manager = getattr(raid_bot, "auth_manager", None) if raid_bot else None
+            session = getattr(raid_bot, "session", None) if raid_bot else None
+            if not auth_manager or not session or getattr(session, "closed", False):
                 return None
-            token = str(row[0] if not hasattr(row, "keys") else row["access_token"]).strip()
+            token = await auth_manager.get_valid_token(str(broadcaster_user_id), session)
+            token = str(token or "").strip()
+            if not token:
+                return None
             if token.lower().startswith("oauth:"):
                 token = token[6:]
             return token or None
