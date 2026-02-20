@@ -63,6 +63,21 @@ RANK_ROLE_IDS: dict[int, int] = {
 RANK_ROLE_ID_SET = frozenset(RANK_ROLE_IDS.values())
 SUBRANK_MIN = 1
 SUBRANK_MAX = 6
+SUBRANK_ROLE_MAP_TABLE = "deadlock_subrank_roles"
+RANK_NAME_TO_VALUE = {
+    str(name).casefold(): int(value)
+    for value, name in RANK_TIERS.items()
+}
+_SUBRANK_RANK_NAMES = tuple(
+    str(RANK_TIERS[value])
+    for value in sorted(RANK_ROLE_IDS.keys())
+    if value in RANK_TIERS
+)
+SUBRANK_ROLE_NAME_RE = re.compile(
+    r"^(%s)\s+([%d-%d])$"
+    % ("|".join(re.escape(name) for name in _SUBRANK_RANK_NAMES), SUBRANK_MIN, SUBRANK_MAX),
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -102,15 +117,22 @@ class DeadlockFriendRank(commands.Cog):
         self.bot = bot
         self.tasks = SteamTaskClient(poll_interval=0.5, default_timeout=30.0)
         self._sync_lock = asyncio.Lock()
+        self._startup_sync_task: Optional[asyncio.Task[None]] = None
         self._last_stats: Optional[SyncStats] = None
 
     async def cog_load(self) -> None:
+        await self._ensure_subrank_role_table()
         if not self.auto_sync_friend_ranks.is_running():
             self.auto_sync_friend_ranks.start()
+        if self._startup_sync_task is None or self._startup_sync_task.done():
+            self._startup_sync_task = asyncio.create_task(self._run_startup_sync())
 
     def cog_unload(self) -> None:
         if self.auto_sync_friend_ranks.is_running():
             self.auto_sync_friend_ranks.cancel()
+        if self._startup_sync_task and not self._startup_sync_task.done():
+            self._startup_sync_task.cancel()
+        self._startup_sync_task = None
 
     @tasks.loop(minutes=AUTO_SYNC_INTERVAL_MINUTES)
     async def auto_sync_friend_ranks(self) -> None:
@@ -135,6 +157,37 @@ class DeadlockFriendRank(commands.Cog):
     @auto_sync_friend_ranks.before_loop
     async def _before_auto_sync_friend_ranks(self) -> None:
         await self.bot.wait_until_ready()
+
+    async def _run_startup_sync(self) -> None:
+        await self.bot.wait_until_ready()
+        try:
+            await self._run_friend_rank_sync(trigger="startup")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Deadlock friend-rank startup sync failed")
+
+    async def _ensure_subrank_role_table(self) -> None:
+        await db.execute_async(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SUBRANK_ROLE_MAP_TABLE}(
+              guild_id INTEGER NOT NULL,
+              rank_value INTEGER NOT NULL,
+              subrank INTEGER NOT NULL,
+              role_id INTEGER NOT NULL,
+              role_name TEXT,
+              updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+              PRIMARY KEY(guild_id, rank_value, subrank),
+              UNIQUE(guild_id, role_id)
+            )
+            """
+        )
+        await db.execute_async(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_{SUBRANK_ROLE_MAP_TABLE}_guild
+            ON {SUBRANK_ROLE_MAP_TABLE}(guild_id)
+            """
+        )
 
     @staticmethod
     def _safe_int(value: Any) -> Optional[int]:
@@ -193,6 +246,79 @@ class DeadlockFriendRank(commands.Cog):
 
         rank_name = RANK_TIERS.get(rank_num) if rank_num is not None else None
         return rank_num, subrank, badge, rank_name
+
+    @staticmethod
+    def _expected_subrank_role_name(
+        rank_value: Optional[int],
+        subrank_value: Optional[int],
+    ) -> Optional[str]:
+        rank_num = DeadlockFriendRank._safe_int(rank_value)
+        subrank_num = DeadlockFriendRank._safe_int(subrank_value)
+        if rank_num is None or rank_num not in RANK_ROLE_IDS:
+            return None
+        if subrank_num is None or subrank_num < SUBRANK_MIN or subrank_num > SUBRANK_MAX:
+            return None
+        rank_name = RANK_TIERS.get(rank_num)
+        if not rank_name:
+            return None
+        return f"{rank_name} {subrank_num}"
+
+    @staticmethod
+    def _parse_subrank_role_name(role_name: str) -> Optional[tuple[int, int]]:
+        match = SUBRANK_ROLE_NAME_RE.fullmatch(str(role_name or "").strip())
+        if not match:
+            return None
+        rank_value = RANK_NAME_TO_VALUE.get(match.group(1).casefold())
+        if rank_value is None:
+            return None
+        try:
+            subrank = int(match.group(2))
+        except (TypeError, ValueError):
+            return None
+        if subrank < SUBRANK_MIN or subrank > SUBRANK_MAX:
+            return None
+        return rank_value, subrank
+
+    @staticmethod
+    def _collect_subrank_role_ids(guild: discord.Guild) -> set[int]:
+        out: set[int] = set()
+        for role in guild.roles:
+            if DeadlockFriendRank._parse_subrank_role_name(role.name):
+                out.add(role.id)
+        return out
+
+    @staticmethod
+    def _find_role_by_name_casefold(guild: discord.Guild, role_name: str) -> Optional[discord.Role]:
+        wanted = str(role_name or "").strip().casefold()
+        if not wanted:
+            return None
+        for role in guild.roles:
+            if role.name.casefold() == wanted:
+                return role
+        return None
+
+    async def _load_subrank_role_map_for_guild(self, guild_id: int) -> dict[tuple[int, int], int]:
+        rows = await db.query_all_async(
+            f"""
+            SELECT rank_value, subrank, role_id
+            FROM {SUBRANK_ROLE_MAP_TABLE}
+            WHERE guild_id = ?
+            """,
+            (int(guild_id),),
+        )
+        out: dict[tuple[int, int], int] = {}
+        for row in rows or []:
+            rank_value = self._safe_int(row["rank_value"])
+            subrank = self._safe_int(row["subrank"])
+            role_id = self._safe_int(row["role_id"])
+            if rank_value is None or rank_value not in RANK_ROLE_IDS:
+                continue
+            if subrank is None or subrank < SUBRANK_MIN or subrank > SUBRANK_MAX:
+                continue
+            if role_id is None or role_id <= 0:
+                continue
+            out[(rank_value, subrank)] = role_id
+        return out
 
     def _resolve_lookup_target(
         self,
@@ -476,6 +602,8 @@ class DeadlockFriendRank(commands.Cog):
         guild: discord.Guild,
         member: discord.Member,
         target_rank_value: Optional[int],
+        target_subrank_value: Optional[int],
+        subrank_role_map: dict[tuple[int, int], int],
         stats: SyncStats,
     ) -> None:
         me = guild.me
@@ -491,15 +619,48 @@ class DeadlockFriendRank(commands.Cog):
             if role and role.position < me.top_role.position:
                 target_role = role
 
+        target_subrank_role: Optional[discord.Role] = None
+        target_rank_num = self._safe_int(target_rank_value)
+        target_subrank_num = self._safe_int(target_subrank_value)
+        if target_rank_num is not None and target_subrank_num is not None:
+            mapped_role_id = subrank_role_map.get((target_rank_num, target_subrank_num))
+            if mapped_role_id:
+                role = guild.get_role(mapped_role_id)
+                if role and role.position < me.top_role.position:
+                    target_subrank_role = role
+
+        if target_subrank_role is None:
+            target_subrank_role_name = self._expected_subrank_role_name(
+                target_rank_value,
+                target_subrank_value,
+            )
+            if target_subrank_role_name:
+                role = self._find_role_by_name_casefold(guild, target_subrank_role_name)
+                if role and role.position < me.top_role.position:
+                    target_subrank_role = role
+
+        mapped_subrank_role_ids = {
+            role_id
+            for role_id in subrank_role_map.values()
+            if role_id > 0
+        }
+        subrank_role_id_set = mapped_subrank_role_ids | self._collect_subrank_role_ids(guild)
+        target_role_ids = {
+            role.id
+            for role in (target_role, target_subrank_role)
+            if role is not None
+        }
+
         removable_roles = [
             role
             for role in member.roles
-            if role.id in RANK_ROLE_ID_SET and role.position < me.top_role.position
+            if role.position < me.top_role.position
+            and (role.id in RANK_ROLE_ID_SET or role.id in subrank_role_id_set)
         ]
         roles_to_remove = [
             role
             for role in removable_roles
-            if target_role is None or role.id != target_role.id
+            if role.id not in target_role_ids
         ]
 
         try:
@@ -516,12 +677,18 @@ class DeadlockFriendRank(commands.Cog):
             )
             return
 
-        if target_role is None or target_role in member.roles:
+        roles_to_add: list[discord.Role] = []
+        if target_role is not None and target_role not in member.roles:
+            roles_to_add.append(target_role)
+        if target_subrank_role is not None and target_subrank_role not in member.roles:
+            roles_to_add.append(target_subrank_role)
+
+        if not roles_to_add:
             return
 
         try:
-            await member.add_roles(target_role, reason="Deadlock rank auto-sync")
-            stats.roles_added += 1
+            await member.add_roles(*roles_to_add, reason="Deadlock rank auto-sync")
+            stats.roles_added += len(roles_to_add)
         except discord.Forbidden:
             log.warning("Missing permissions to add rank role", extra={"guild_id": guild.id, "user_id": member.id})
         except discord.HTTPException as exc:
@@ -541,6 +708,10 @@ class DeadlockFriendRank(commands.Cog):
         if not target_guilds:
             return
 
+        subrank_role_maps: dict[int, dict[tuple[int, int], int]] = {}
+        for guild in target_guilds:
+            subrank_role_maps[guild.id] = await self._load_subrank_role_map_for_guild(guild.id)
+
         for user_id, steam_id in user_to_steam.items():
             snapshot = snapshots.get(steam_id)
             if not snapshot:
@@ -551,7 +722,14 @@ class DeadlockFriendRank(commands.Cog):
                 if member is None:
                     stats.members_not_found += 1
                     continue
-                await self._apply_rank_role_for_member(guild, member, snapshot.rank_value, stats)
+                await self._apply_rank_role_for_member(
+                    guild,
+                    member,
+                    snapshot.rank_value,
+                    snapshot.subrank,
+                    subrank_role_maps.get(guild.id, {}),
+                    stats,
+                )
 
     async def _run_friend_rank_sync(self, *, trigger: str) -> SyncStats:
         del trigger
@@ -574,6 +752,31 @@ class DeadlockFriendRank(commands.Cog):
             return stats
 
     @staticmethod
+    async def _defer_if_interaction(ctx: commands.Context) -> None:
+        interaction = getattr(ctx, "interaction", None)
+        if interaction is None:
+            return
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except discord.HTTPException:
+            pass
+
+    @staticmethod
+    async def _send_ctx_response(ctx: commands.Context, content: str) -> None:
+        interaction = getattr(ctx, "interaction", None)
+        if interaction is not None:
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(content)
+                else:
+                    await interaction.response.send_message(content)
+                return
+            except discord.HTTPException:
+                pass
+        await ctx.reply(content, mention_author=False)
+
+    @staticmethod
     def _render_sync_stats(stats: SyncStats) -> str:
         return "\n".join(
             [
@@ -591,6 +794,17 @@ class DeadlockFriendRank(commands.Cog):
             ]
         )
 
+    async def _run_manual_sync_command(self, ctx: commands.Context, *, trigger_label: str) -> None:
+        await self._defer_if_interaction(ctx)
+        async with ctx.typing():
+            try:
+                stats = await self._run_friend_rank_sync(trigger=f"{trigger_label}:{ctx.author.id}")
+            except Exception as exc:
+                log.exception("Manual steam rank sync failed")
+                await self._send_ctx_response(ctx, f"❌ Steam-Rank-Sync fehlgeschlagen: {exc}")
+                return
+        await self._send_ctx_response(ctx, self._render_sync_stats(stats))
+
     @commands.hybrid_command(
         name="steam_rank_sync",
         description="Synchronisiert Friend-Ranks in steam_links und weist Rank-Rollen automatisch zu.",
@@ -598,19 +812,16 @@ class DeadlockFriendRank(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def cmd_steam_rank_sync(self, ctx: commands.Context) -> None:
         """Manual one-shot sync for bot-friend ranks + roles."""
+        await self._run_manual_sync_command(ctx, trigger_label="manual")
 
-        async with ctx.typing():
-            try:
-                stats = await self._run_friend_rank_sync(trigger=f"manual:{ctx.author.id}")
-            except Exception as exc:
-                log.exception("Manual steam rank sync failed")
-                await ctx.reply(
-                    f"❌ Steam-Rank-Sync fehlgeschlagen: {exc}",
-                    mention_author=False,
-                )
-                return
-
-        await ctx.reply(self._render_sync_stats(stats), mention_author=False)
+    @commands.hybrid_command(
+        name="subrank_sync",
+        description="Startet sofort den Deadlock Subrank-Auto-Sync inkl. Rollenvergabe.",
+    )
+    @commands.has_permissions(administrator=True)
+    async def cmd_subrank_sync(self, ctx: commands.Context) -> None:
+        """Manual one-shot sync command focused on subrank role updates."""
+        await self._run_manual_sync_command(ctx, trigger_label="subrank_manual")
 
     @commands.hybrid_command(
         name="steam_rank",
@@ -619,46 +830,45 @@ class DeadlockFriendRank(commands.Cog):
     async def cmd_steam_rank(self, ctx: commands.Context, *, target: Optional[str] = None) -> None:
         """Lookup Deadlock rank for the caller (default) or a specific Steam/account target."""
 
+        await self._defer_if_interaction(ctx)
         try:
             lookup = self._resolve_lookup_target(
                 author_id=int(ctx.author.id),
                 raw_target=target,
             )
         except ValueError as exc:
-            await ctx.reply(f"❌ {exc}", mention_author=False)
+            await self._send_ctx_response(ctx, f"❌ {exc}")
             return
 
         await self._reply_rank_for_lookup(ctx, lookup)
 
     async def _reply_rank_for_lookup(self, ctx: commands.Context, lookup: RankLookupTarget) -> None:
+        await self._defer_if_interaction(ctx)
         async with ctx.typing():
             card, data, outcome = await self._fetch_profile_card(lookup.payload, timeout=45.0)
 
         if outcome.timed_out:
-            await ctx.reply(
+            await self._send_ctx_response(
+                ctx,
                 f"⏳ Rank-Abfrage für {lookup.label} läuft noch (Task #{outcome.task_id}).",
-                mention_author=False,
             )
             return
 
         if not outcome.ok:
-            await ctx.reply(
+            await self._send_ctx_response(
+                ctx,
                 f"❌ Rank-Abfrage fehlgeschlagen: {outcome.error or 'Unbekannter Fehler'}",
-                mention_author=False,
             )
             return
 
         if not isinstance(data, dict):
-            await ctx.reply(
-                "❌ Ungültiges Antwortformat vom Steam-Bridge-Task.",
-                mention_author=False,
-            )
+            await self._send_ctx_response(ctx, "❌ Ungültiges Antwortformat vom Steam-Bridge-Task.")
             return
 
         if not isinstance(card, dict):
-            await ctx.reply(
+            await self._send_ctx_response(
+                ctx,
                 "❌ PlayerCard konnte nicht gelesen werden (keine `card` im Ergebnis).",
-                mention_author=False,
             )
             return
 
@@ -674,7 +884,7 @@ class DeadlockFriendRank(commands.Cog):
         if steam_id:
             lines.append(f"- SteamID64: `{steam_id}`")
 
-        await ctx.reply("\n".join(lines), mention_author=False)
+        await self._send_ctx_response(ctx, "\n".join(lines))
 
     @commands.hybrid_command(
         name="checkrank",
@@ -687,12 +897,13 @@ class DeadlockFriendRank(commands.Cog):
     ) -> None:
         """Rank lookup by Discord user mention (defaults to caller)."""
 
+        await self._defer_if_interaction(ctx)
         target = user or ctx.author
         steam_ids = self._linked_steam_ids_for_discord_user(int(target.id))
         if not steam_ids:
-            await ctx.reply(
+            await self._send_ctx_response(
+                ctx,
                 f"❌ Für {getattr(target, 'mention', f'`{target}`')} ist kein Steam-Link gespeichert.",
-                mention_author=False,
             )
             return
 
@@ -744,7 +955,7 @@ class DeadlockFriendRank(commands.Cog):
             lines.append(f"- … plus `{remaining}` weitere verknüpfte Accounts")
 
         lines.append("- Tipp: Nutze `/steam_rank <steamid64>` für eine gezielte Einzelabfrage.")
-        await ctx.reply("\n".join(lines), mention_author=False)
+        await self._send_ctx_response(ctx, "\n".join(lines))
 
 
 async def setup(bot: commands.Bot) -> None:

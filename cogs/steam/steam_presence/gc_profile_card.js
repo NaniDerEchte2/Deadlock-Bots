@@ -18,7 +18,8 @@ const REQUEST_FIELD_ACCOUNT_ID = 1;
 const REQUEST_FIELD_DEV_ACCESS_HINT = 2;
 const REQUEST_FIELD_FRIEND_ACCESS_HINT = 3;
 const RESPONSE_FIELD_ACCOUNT_ID = 1;
-const RESPONSE_FIELD_RANKED_BADGE_LEVEL = 2;
+const RESPONSE_FIELD_RANKED_BADGE_LEVEL = 3;
+const RESPONSE_FIELD_RANKED_BADGE_LEVEL_LEGACY = 2;
 
 function sanitizeNumber(value, fallback) {
   const parsed = Number(value);
@@ -184,12 +185,22 @@ function decodeProfileCardPayload(buffer, requestedAccountId) {
     accountId = requestedAccountId;
   }
 
+  let badgeSource = 'field3';
   let badgeLevel = getFirstValue(varints, RESPONSE_FIELD_RANKED_BADGE_LEVEL);
   if (!Number.isFinite(badgeLevel) || badgeLevel < 0) {
+    const legacyBadge = getFirstValue(varints, RESPONSE_FIELD_RANKED_BADGE_LEVEL_LEGACY);
+    if (Number.isFinite(legacyBadge) && legacyBadge >= 0) {
+      badgeLevel = legacyBadge;
+      badgeSource = 'field2';
+    }
+  }
+  if (!Number.isFinite(badgeLevel) || badgeLevel < 0) {
+    badgeSource = 'heuristic';
     badgeLevel = inferBadgeLevel(varints, accountId);
   }
 
   if (!Number.isFinite(badgeLevel) || badgeLevel < 0) {
+    badgeSource = 'none';
     badgeLevel = null;
   }
 
@@ -201,6 +212,7 @@ function decodeProfileCardPayload(buffer, requestedAccountId) {
     ranked_badge_level: badgeLevel,
     ranked_rank: rankedRank,
     ranked_subrank: rankedSubrank,
+    ranked_badge_source: badgeSource,
   };
 }
 
