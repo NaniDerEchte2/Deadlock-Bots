@@ -58,6 +58,7 @@ STEAM_TASKS_KV_MAX_ROWS_KEY = "max_rows"
 # ---- Modulweiter Zustand ----
 _CONN: Optional[sqlite3.Connection] = None
 _LOCK = threading.RLock()
+_ASYNC_LOCK = asyncio.Lock()
 _DB_PATH_CACHED: Optional[str] = None
 
 logger = logging.getLogger(__name__)
@@ -1080,9 +1081,15 @@ async def transaction() -> AsyncIterator[DBConnectionProxy]:
     outermost = depth == 0
 
     if outermost:
+        await _ASYNC_LOCK.acquire()
         _LOCK.acquire()
-        conn = connect()
-        conn.execute("BEGIN;")
+        try:
+            conn = connect()
+            conn.execute("BEGIN;")
+        except Exception:
+            _LOCK.release()
+            _ASYNC_LOCK.release()
+            raise
 
     try:
         yield DBConnectionProxy(connect(), lock_per_call=False)
@@ -1096,10 +1103,12 @@ async def transaction() -> AsyncIterator[DBConnectionProxy]:
                 logger.error("DB rollback failed: %s", exc, exc_info=True)
             finally:
                 _LOCK.release()
+                _ASYNC_LOCK.release()
         raise
     else:
         if outermost:
             _LOCK.release()
+            _ASYNC_LOCK.release()
     finally:
         _TX_DEPTH.reset(token)
 

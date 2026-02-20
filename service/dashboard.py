@@ -3914,7 +3914,6 @@ class DashboardServer:
         self._check_auth(request)
         from cogs.customgames import tournament_store as tstore
 
-        await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(request.query.get("guild_id"))
         teams = await tstore.list_teams_async(guild_id)
         signups = await tstore.list_signups_async(guild_id)
@@ -3942,7 +3941,6 @@ class DashboardServer:
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be a JSON object")
 
-        await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
         name = str(payload.get("name") or "").strip()
         if not name:
@@ -3980,7 +3978,6 @@ class DashboardServer:
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be a JSON object")
 
-        await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
         user_id = self._coerce_int(payload.get("user_id"), None)
         if user_id is None:
@@ -4027,7 +4024,6 @@ class DashboardServer:
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be a JSON object")
 
-        await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
         user_id = self._coerce_int(payload.get("user_id"), None)
         if user_id is None:
@@ -4189,7 +4185,6 @@ class DashboardServer:
         self._check_turnier_auth(request)
         from cogs.customgames import tournament_store as tstore
 
-        await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(request.query.get("guild_id"))
         teams = await tstore.list_teams_async(guild_id)
         signups = await tstore.list_signups_async(guild_id)
@@ -4212,7 +4207,6 @@ class DashboardServer:
         self._check_turnier_auth(request)
         from cogs.customgames import tournament_store as tstore
 
-        await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(request.query.get("guild_id"))
         teams = await tstore.list_teams_async(guild_id)
         signups = self._decorate_tournament_signups(
@@ -4233,7 +4227,6 @@ class DashboardServer:
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
-        await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
         name = str(payload.get("name") or "").strip()
         if not name:
@@ -4267,7 +4260,6 @@ class DashboardServer:
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
-        await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
         period_id = self._coerce_int(payload.get("period_id"), None)
         if period_id is None:
@@ -4291,7 +4283,6 @@ class DashboardServer:
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
-        await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
         name = str(payload.get("name") or "").strip()
         if not name:
@@ -4321,7 +4312,6 @@ class DashboardServer:
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
-        await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
         team_id = self._coerce_int(payload.get("team_id"), None)
         if team_id is None:
@@ -4343,7 +4333,6 @@ class DashboardServer:
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
-        await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
         user_id = self._coerce_int(payload.get("user_id"), None)
         if user_id is None:
@@ -4375,7 +4364,6 @@ class DashboardServer:
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
-        await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
         user_id = self._coerce_int(payload.get("user_id"), None)
         if user_id is None:
@@ -4395,7 +4383,6 @@ class DashboardServer:
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="Payload must be JSON object")
 
-        await tstore.ensure_schema_async()
         guild_id = self._resolve_tournament_guild_id(payload.get("guild_id"))
         count = await tstore.clear_all_signups_async(guild_id)
         return self._json(self._stringify_ids({"ok": True, "cleared": count}))
