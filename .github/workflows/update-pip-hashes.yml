@@ -22,12 +22,9 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install pip-tools
-        run: pip install pip-tools==7.4.1
-
       - name: Generate hash-locked requirements
         run: |
-          pip-compile \
+          uv pip compile \
             .github/workflows/requirements-tools.txt \
             --generate-hashes \
             --no-header \
