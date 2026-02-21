@@ -5,7 +5,8 @@ on:
     - cron: "35 2 * * *"
   workflow_dispatch:
 
-permissions: read-all
+permissions:
+  contents: read
 
 concurrency:
   group: autofix-maintenance-${{ github.repository }}
