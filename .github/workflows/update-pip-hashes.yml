@@ -36,12 +36,12 @@ jobs:
 
       - name: Commit if changed
         run: |
-          if git diff --quiet .github/workflows/requirements-tools-locked.txt; then
+          git add .github/workflows/requirements-tools-locked.txt
+          if git diff --cached --quiet; then
             echo "No changes to requirements-tools-locked.txt"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/requirements-tools-locked.txt
           git commit -m "chore(deps): update hash-locked pip requirements"
           git push
