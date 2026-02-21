@@ -1,0 +1,47 @@
+name: "🔒 Update Pip Dependency Hashes"
+
+on:
+  push:
+    paths:
+      - '.github/workflows/requirements-tools.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-hashes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install pip-tools
+        run: pip install pip-tools==7.4.1
+
+      - name: Generate hash-locked requirements
+        run: |
+          pip-compile \
+            .github/workflows/requirements-tools.txt \
+            --generate-hashes \
+            --no-header \
+            --output-file .github/workflows/requirements-tools-locked.txt \
+            --quiet
+
+      - name: Commit if changed
+        run: |
+          if git diff --quiet .github/workflows/requirements-tools-locked.txt; then
+            echo "No changes to requirements-tools-locked.txt"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/requirements-tools-locked.txt
+          git commit -m "chore(deps): update hash-locked pip requirements"
+          git push
