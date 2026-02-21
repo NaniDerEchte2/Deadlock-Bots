@@ -85,6 +85,14 @@ RANK_SET = set(RANK_ORDER)
 SUFFIX_THRESHOLD_RANK = "emissary"
 MANAGED_PREFIXES = {"lane", "street brawl", CASUAL_RANK_FALLBACK.lower()}.union(RANK_SET)
 
+# Kurzname → Vollname für Sub-Rang Rollen (z.B. "Asc 3" → "ascendant")
+_RANK_SHORT_MAP: dict[str, str] = {
+    "ini": "initiate", "see": "seeker", "alc": "alchemist",
+    "arc": "arcanist", "rit": "ritualist", "emi": "emissary",
+    "arch": "archon", "ora": "oracle", "pha": "phantom",
+    "asc": "ascendant", "ete": "eternus",
+}
+
 # Export-Intent für andere Module (verhindert "unused global variable")
 __all__ = [
     "STAGING_CHANNEL_IDS",
@@ -167,16 +175,30 @@ def _rank_prefix_for(member: discord.Member) -> str | None:
 
 
 def _member_rank_index(member: discord.Member) -> int:
-    """Ermittelt den höchsten Rangindex eines Members (unknown=0)."""
+    """Ermittelt den höchsten Rangindex eines Members (unknown=0).
+    Erkennt sowohl klassische Rollen ("Ascendant") als auch Sub-Rang Rollen ("Ascendant 3", "Asc 3")."""
     best_idx = 0
     for role in getattr(member, "roles", []):
         try:
-            role_name = str(role.name).lower()
+            role_name = str(role.name).lower().strip()
         except Exception:
             continue
         idx = _rank_index(role_name)
         if idx > best_idx:
             best_idx = idx
+            continue
+        # Erkennt "RankName N" oder "ShortName N" (z.B. "Ascendant 3" oder "Asc 3")
+        if " " in role_name:
+            parts = role_name.rsplit(" ", 1)
+            if len(parts) == 2 and parts[1].isdigit() and 1 <= int(parts[1]) <= 6:
+                rank_part = parts[0]
+                idx2 = _rank_index(rank_part)
+                if idx2 == 0:
+                    full_name = _RANK_SHORT_MAP.get(rank_part)
+                    if full_name:
+                        idx2 = _rank_index(full_name)
+                if idx2 > best_idx:
+                    best_idx = idx2
     return best_idx
 
 
@@ -692,12 +714,19 @@ class TempVoiceCore(commands.Cog):
             source_id: int | None = None
             try:
                 if r["source_staging_id"]:
-                    rules = STAGING_RULES.get(int(r["source_staging_id"]), {})
+                    # source_staging_id bekannt → darauf verlassen, KEIN _rules_from_base Fallback.
+                    # Lanes aus normalen Ranked/Grind-Stagings haben {} Regeln (kein prefix_from_rank).
                     source_id = int(r["source_staging_id"])
+                    rules = STAGING_RULES.get(source_id, {})
+                else:
+                    # Nur wenn source_staging_id fehlt (alte Lanes ohne DB-Eintrag), Namen-Fallback nutzen.
+                    rules, source_id = self._rules_from_base(self.lane_base[lane.id])
+                    # Verhindert falsche prefix_from_rank-Regel für Ranked/Grind Lanes
+                    if rules.get("prefix_from_rank") and lane.category_id in MINRANK_CATEGORY_IDS:
+                        rules = {}
+                        source_id = None
             except Exception as e:
                 log.debug("rehydrate: staging lookup failed for lane %s: %r", lane.id, e)
-            if not rules:
-                rules, source_id = self._rules_from_base(self.lane_base[lane.id])
             if rules:
                 try:
                     await self._apply_lane_rules(lane, rules)
@@ -1563,7 +1592,8 @@ class TempVoiceCore(commands.Cog):
                 asyncio.create_task(self._apply_owner_settings_background(lane, member.id))
 
                 # Manueller Trigger für Rang-Permissions & Name im Manager
-                if mgr:
+                # NUR für Ranked/Grind Lanes – Chill/Casual Lanes bekommen KEINE Rank-Restrictions
+                if mgr and lane.category_id in MINRANK_CATEGORY_IDS:
                     async def _delayed_rank_setup(ch, m, mgr_ref):
                         try:
                             # 1s warten damit Discord den Member im Channel sieht
@@ -1753,6 +1783,10 @@ class TempVoiceCore(commands.Cog):
                     source_id: int | None = None
                     try:
                         rules, source_id = self._rules_from_base(base_name)
+                        # Verhindert falsche prefix_from_rank-Regel für Ranked/Grind Lanes
+                        if rules.get("prefix_from_rank") and ch.category_id in MINRANK_CATEGORY_IDS:
+                            rules = {}
+                            source_id = None
                         if rules:
                             await self._apply_lane_rules(ch, rules)
                     except Exception as e:
