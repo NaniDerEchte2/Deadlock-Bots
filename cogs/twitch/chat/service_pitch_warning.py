@@ -163,6 +163,8 @@ _SERVICE_PATTERNS = (
             re.compile(r"\bpromot(?:e|ion)\b", re.IGNORECASE),
             re.compile(r"\bmehr\s+viewer\b", re.IGNORECASE),
             re.compile(r"\bhelfen?\s+zu\s+wachsen\b", re.IGNORECASE),
+            re.compile(r"\btop\s+viewers?\b", re.IGNORECASE),
+            re.compile(r"\bbest\s+viewers?\b", re.IGNORECASE),
         ),
     ),
     (
@@ -173,9 +175,11 @@ _SERVICE_PATTERNS = (
             re.compile(r"\bneed\s+emotes?\b", re.IGNORECASE),
             re.compile(r"\boverlays?\b", re.IGNORECASE),
             re.compile(r"\bpanels?\b", re.IGNORECASE),
+            re.compile(r"\bcustomi[sz]ed\s+panels?\b", re.IGNORECASE),
             re.compile(r"\bbanner\b", re.IGNORECASE),
             re.compile(r"\bgraphic(?:s)?\s+designer\b", re.IGNORECASE),
             re.compile(r"\bportfolio\b", re.IGNORECASE),
+            re.compile(r"\bshow\s+(?:you\s+)?(?:some\s+of\s+)?my\s+work\b", re.IGNORECASE),
             re.compile(r"\bcommissions?\b", re.IGNORECASE),
             re.compile(r"\bbranding\b", re.IGNORECASE),
             re.compile(
@@ -190,6 +194,8 @@ _SERVICE_PATTERNS = (
         (
             re.compile(r"\bcan\s+i\s+dm\s+you\b", re.IGNORECASE),
             re.compile(r"\badd\s+me\s+on\s+(?:discord|instagram)\b", re.IGNORECASE),
+            re.compile(r"\badd\s+me\b", re.IGNORECASE),
+            re.compile(r"\baccept\s+my\s+request\b", re.IGNORECASE),
             re.compile(r"\bcheck\s+your\s+whispers?\b", re.IGNORECASE),
             re.compile(r"\bi\s+sent\s+you\s+a\s+message\b", re.IGNORECASE),
             re.compile(r"\bclick\s+the\s+link\b", re.IGNORECASE),
@@ -217,9 +223,11 @@ _SERVICE_PATTERNS = (
         (
             re.compile(r"\bwhat(?:'s| is)\s+your\s+real\s+name\b", re.IGNORECASE),
             re.compile(r"\bwhere\s+do\s+you\s+live\b", re.IGNORECASE),
+            re.compile(r"\bshar(?:e|ing)\s+(?:my|your)\s+address\b", re.IGNORECASE),
             re.compile(r"\bare\s+you\s+single\b", re.IGNORECASE),
             re.compile(r"\bface\s+reveal\b", re.IGNORECASE),
             re.compile(r"\bcan\s+you\s+turn\s+on\s+cam\b", re.IGNORECASE),
+            re.compile(r"\bwru\s+from\b", re.IGNORECASE),
         ),
     ),
     (
@@ -663,6 +671,61 @@ class ServicePitchWarningMixin:
             channel_cd_until = float(self._service_warning_channel_cd.get(channel_login, 0.0))
             user_cd_until = float(self._service_warning_user_cd.get(bucket_key, 0.0))
             if now < channel_cd_until or now < user_cd_until:
+                # Escalation Logic: If user is on cooldown (already warned) BUT triggers a STRONG warning again,
+                # we escalate to Timeout if possible.
+                if severity == "WARNING_STRONG" and now < user_cd_until:
+                    # Check if we can timeout
+                    channel = (
+                        self._resolve_message_channel(message)
+                        if hasattr(self, "_resolve_message_channel")
+                        else None
+                    )
+                    if channel is None:
+                        channel = getattr(message, "channel", None)
+
+                    if channel:
+                        # Escalation: Timeout + Final Warning
+                        try:
+                            # 10 Minuten Timeout als Denkzettel
+                            if hasattr(channel, "timeout"):
+                                await channel.timeout(
+                                    chatter_id, 600, "Service-Pitch / Spam Escalation"
+                                )
+                            elif hasattr(self, "timeout_user"):
+                                await self.timeout_user(
+                                    getattr(channel, "id", None) or channel_login,
+                                    chatter_id,
+                                    600,
+                                    "Service-Pitch / Spam Escalation",
+                                )
+
+                            escalation_text = (
+                                f"@{chatter_login} Timeout (10m): Bitte unterlasse die Service-Pitches/Spam. "
+                                "Dies ist die letzte Warnung."
+                            )
+                            await self._send_chat_message(
+                                channel, escalation_text, source="service_warning"
+                            )
+                            # Reset cooldown to avoid double-triggering immediately
+                            self._service_warning_user_cd[bucket_key] = now + float(
+                                _SERVICE_WARNING_USER_COOLDOWN_SEC
+                            )
+                            self._record_service_warning(
+                                channel_login=channel_login,
+                                chatter_login=chatter_login,
+                                chatter_id=chatter_id,
+                                account_age_days=int(account_age_days),
+                                follower_count=follower_count,
+                                score=total_score,
+                                message_count=msg_count,
+                                severity="ESCALATED_TIMEOUT",
+                                reasons=reasons + ["escalation:ignored_previous_warning"],
+                                content=raw_content,
+                            )
+                            return True
+                        except Exception:
+                            log.debug("Escalation Timeout failed", exc_info=True)
+
                 return False
 
         if severity != "HINT":

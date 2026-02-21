@@ -90,7 +90,8 @@ SPAM_FRAGMENTS = (
     "promnow ru",
     "promnow",
     "top viewers",
-    "Top Viewers",
+    "prmxy",
+    "prmup",
 )
 SPAM_MIN_MATCHES = 3
 
