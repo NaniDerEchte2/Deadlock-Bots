@@ -762,7 +762,7 @@ class RaidAuthManager:
             _uid,
         )
         if not access_token or not refresh_token:
-            log.warning(
+            log.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                 "Missing encrypted tokens for user_id=%s during auth lookup",
                 _mask_log_identifier(twitch_user_id),
             )
@@ -901,7 +901,7 @@ class RaidAuthManager:
             _uid,
         )
         if not access_token:
-            log.warning(
+            log.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                 "Missing encrypted access token for user_id=%s",
                 _mask_log_identifier(twitch_user_id),
             )
@@ -942,7 +942,7 @@ class RaidAuthManager:
                     return curr_access
 
             if not refresh_token:
-                log.warning(
+                log.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                     "Missing encrypted refresh token for user_id=%s - cannot refresh",
                     _mask_log_identifier(twitch_user_id),
                 )

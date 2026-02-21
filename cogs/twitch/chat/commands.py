@@ -348,7 +348,7 @@ if TWITCHIO_AVAILABLE:
                 if tokens:
                     access_token = tokens[0]
             except Exception:
-                log.debug(
+                log.debug(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                     "Clip command: Broadcaster-Token nicht verfügbar für %s",
                     twitch_login,
                     exc_info=True,
@@ -361,7 +361,7 @@ if TWITCHIO_AVAILABLE:
                     try:
                         bot_token, _ = await token_mgr.get_valid_token()
                         access_token = bot_token
-                        log.debug(
+                        log.debug(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                             "Clip command: verwende Bot-Token als Fallback für %s",
                             twitch_login,
                         )

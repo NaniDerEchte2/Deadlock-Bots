@@ -83,12 +83,15 @@ async def _run() -> None:
 
     bot = _DummyBot()
     dashboard = DashboardServer(bot, host=host, port=port)
+    dashboard._bot_restart_min_interval_seconds = 0.0
 
-    # Force a deterministic session-auth path for CSRF/Origin regression tests.
+    await dashboard.start()
+
+    # CI Hardening: Force auth to be 'configured' AFTER start() which may
+    # re-read the Windows keystore and reset these flags on Linux CI runners.
+    now = time.time()
     dashboard._discord_auth_required = True
     dashboard._auth_misconfigured = False
-    dashboard._bot_restart_min_interval_seconds = 0.0
-    now = time.time()
     dashboard._discord_sessions[session_id] = {
         "user_id": 1,
         "username": "ci-user",
@@ -99,12 +102,6 @@ async def _run() -> None:
         "last_seen_at": now,
         "expires_at": now + 3600,
     }
-
-    # CI Hardening: Force auth to be 'configured' for the test run
-    dashboard._auth_misconfigured = False
-    dashboard._discord_auth_required = True
-
-    await dashboard.start()
     print(f"MASTER_GUARD_URL=http://{host}:{port}", flush=True)
     print(f"MASTER_GUARD_SESSION_ID={session_id}", flush=True)
     print(f"MASTER_GUARD_CSRF_TOKEN={csrf_token}", flush=True)

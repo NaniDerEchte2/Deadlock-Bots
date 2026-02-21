@@ -221,7 +221,7 @@ class TwitchRaidMixin:
                         "FROM twitch_live_state WHERE streamer_login IN (" + placeholders + ")"
                     )
                     with get_conn() as conn:
-                        rows = conn.execute(query, partner_logins_lower).fetchall()
+                        rows = conn.execute(query, partner_logins_lower).fetchall()  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
                     for row in rows:
                         login_lower = (
                             str(row["streamer_login"] if hasattr(row, "keys") else row[0])

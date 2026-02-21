@@ -13,6 +13,7 @@ permissions: read-all
 
 jobs:
   fortify-ast-scan:
+    if: ${{ false }}  # Disabled: requires Fortify license; internal sub-action cannot be SHA-pinned
     runs-on: ubuntu-latest
 
     steps:

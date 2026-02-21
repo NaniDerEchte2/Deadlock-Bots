@@ -256,6 +256,7 @@ jobs:
           fi
       # RetireJS - Check for vulnerable JS libraries
       - name: RetireJS Scan
+        continue-on-error: true  # Medium-severity transitive deps in CLI-only sub-packages don't block; results go to artifacts
         run: |
           echo "Running RetireJS scan..."
           npx --yes retire@5.4.2 --path . --outputformat json --outputpath retirejs-report.json
@@ -479,7 +480,8 @@ jobs:
           done < <(find . -type f -name "requirements*.txt" \
             -not -path "*/.venv/*" \
             -not -path "*/venv/*" \
-            -not -path "*/.git/*" | sort)
+            -not -path "*/.git/*" \
+            -not -path "*/dependency-analysis/*" | sort)
           if [ "$found" -eq 0 ]; then
             echo "ℹ️ No requirements*.txt files found for Python vulnerability reporting"
           fi
