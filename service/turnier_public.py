@@ -342,9 +342,6 @@ class TurnierPublicServer:
             log.exception("overview DB error")
             return web.json_response({"error": "db error"}, status=500)
 
-        # Build signup map by user_id for quick lookup
-        signup_by_user = {int(s["user_id"]): s for s in signups_raw}
-
         # Build member lists per team
         members_by_team: dict[int, list[dict[str, Any]]] = {}
         solo_signups = []

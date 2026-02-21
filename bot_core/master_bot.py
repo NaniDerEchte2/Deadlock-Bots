@@ -4,11 +4,6 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from bot_core.lifecycle import BotLifecycle
-
 import datetime as _dt
 
 import discord

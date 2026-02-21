@@ -39,15 +39,13 @@ def make_link_embed(
     if show_why:
         lines += [
             "**Warum verknüpfen?**",
-            "Dein Rang wird automatisch auf dem Server angezeigt und der "
-            "Live-Status in den Voice Lanes funktioniert nur mit verknüpftem Account.",
+            "Dein Rang wird automatisch auf dem Server angezeigt und der Live-Status in den Voice Lanes funktioniert nur mit verknüpftem Account.",
             "",
         ]
 
     lines += [
         "**So geht's:**",
-        "Wähle eine der beiden Optionen unten. Nach dem Login schickt der Bot dir "
-        "eine **Freundschaftsanfrage auf Steam** – einfach annehmen, fertig.",
+        "Wähle eine der beiden Optionen unten. Nach dem Login schickt der Bot dir eine **Freundschaftsanfrage auf Steam** – einfach annehmen, fertig.",
     ]
 
     return discord.Embed(

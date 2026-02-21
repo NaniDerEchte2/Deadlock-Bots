@@ -5,11 +5,6 @@ import importlib
 import logging
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from bot_core.master_bot import MasterBot
-
 from bot_core.bootstrap import _load_env_robust
 
 logger = logging.getLogger(__name__)
