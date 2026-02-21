@@ -103,8 +103,9 @@ async def _run() -> None:
         "expires_at": now + 3600,
     }
 
-    # Avoid touching real services in CI.
-    dashboard._schedule_nssm_service_restart = lambda: (True, "guard-restart-scheduled")  # type: ignore[method-assign]
+    # CI Hardening: Force auth to be 'configured' for the test run
+    dashboard._auth_misconfigured = False
+    dashboard._discord_auth_required = True
 
     await dashboard.start()
     print(f"MASTER_GUARD_URL=http://{host}:{port}", flush=True)
