@@ -31,12 +31,12 @@ jobs:
             .github/workflows/requirements-tools.txt \
             --generate-hashes \
             --no-header \
-            --output-file .github/workflows/requirements-tools-locked.txt \
+            --output-file .github/requirements-tools-locked.txt \
             --quiet
 
       - name: Commit if changed
         run: |
-          git add .github/workflows/requirements-tools-locked.txt
+          git add .github/requirements-tools-locked.txt
           if git diff --cached --quiet; then
             echo "No changes to requirements-tools-locked.txt"
             exit 0
