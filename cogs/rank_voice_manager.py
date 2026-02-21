@@ -21,7 +21,6 @@ DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
 # Sub-Rang Score-System: score = tier * 6 + subrank (1-6)
 # Initiate 1 = 7, Eternus 6 = 72
 RANKED_SUBRANK_TOLERANCE = 9   # ±9 Sub-Rang-Punkte = ±1.5 Hauptränge
-GRIND_SUBRANK_TOLERANCE = 12   # ±12 Sub-Rang-Punkte = ±2 Hauptränge
 SCORE_MIN_ABSOLUTE = 7         # Initiate 1
 SCORE_MAX_ABSOLUTE = 72        # Eternus 6
 
