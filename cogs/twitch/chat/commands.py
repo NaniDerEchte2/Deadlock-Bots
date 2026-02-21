@@ -443,7 +443,7 @@ if TWITCHIO_AVAILABLE:
         @twitchio_commands.command(name="ping", aliases=["health", "status", "bot"])
         async def cmd_ping(self, ctx: twitchio_commands.Context):
             """!ping - Zeigt ob der Bot online ist."""
-            import random
+            import secrets
 
             responses = [
                 f"@{ctx.author.name} Eure Majestät! 👑 Der Bot steht zu Euren Diensten. Was kann ich für Euch tun?",
@@ -453,7 +453,7 @@ if TWITCHIO_AVAILABLE:
                 f"@{ctx.author.name} 🟢 Ich atme noch! Und ich hab sogar alle meine Kabel dran.",
                 f"@{ctx.author.name} Natürlich bin ich online – wer soll sonst die Clips machen? 😏🎬",
             ]
-            await ctx.send(random.choice(responses))
+            await ctx.send(secrets.choice(responses))
 
         @twitchio_commands.command(name="silentban")
         async def cmd_silentban(self, ctx: twitchio_commands.Context):

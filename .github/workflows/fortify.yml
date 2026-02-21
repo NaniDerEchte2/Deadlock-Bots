@@ -20,9 +20,9 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Run Fortify Scan
-        uses: fortify/github-action@714fe84b03a813fe8124e5ef4ce22da010ab1839 # v1.6.2
+        uses: fortify/github-action/fod-sast-scan@714fe84b03a813fe8124e5ef4ce22da010ab1839 # v2.2.0
         with:
-          sast-scan: true
+          # sast-scan input is not needed for the specific sub-action
           debricked-sca-scan: true
         env:
           # Fortify on Demand (FoD)

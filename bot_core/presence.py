@@ -170,7 +170,7 @@ class PresenceMixin:
                 if row["payload"]:
                     try:
                         payload = json.loads(row["payload"])
-                    except Exception:
+                    except Exception:  # noqa: S110
                         pass
                 return int(row["heartbeat"] or 0), payload
 

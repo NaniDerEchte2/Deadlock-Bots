@@ -1459,10 +1459,10 @@ Wichtig: Die Nachricht soll locker und wie von einem Freund klingen, nicht wie v
             ],
         }
 
-        import random
+        import secrets
 
         options = templates.get(reason, templates["join"])
-        base_msg = random.choice(options)
+        base_msg = secrets.choice(options)
 
         # Co-Spieler erwähnen
         if co_players:

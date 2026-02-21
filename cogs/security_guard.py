@@ -194,7 +194,7 @@ class SecurityGuard(commands.Cog):
             for item in raw_guilds:
                 try:
                     guild_ids.append(int(item))
-                except Exception:
+                except Exception:  # noqa: S112
                     continue
         self.allowed_guild_ids: Set[int] = set(guild_ids)
 

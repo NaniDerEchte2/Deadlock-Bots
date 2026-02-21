@@ -81,7 +81,7 @@ def _load_secrets_from_keyring() -> None:
             if val:
                 os.environ[key] = val
                 loaded_keys.append(key)
-        except Exception:
+        except Exception:  # noqa: S110
             pass  # Ignorieren, wenn Key nicht im Tresor
 
     if loaded_keys:
@@ -171,7 +171,7 @@ class _RedactSecretsFilter(logging.Filter):
             # erneut, args in den String einzufügen, was zum TypeError führt.
             record.msg = redacted
             record.args = ()
-        except Exception:
+        except Exception:  # noqa: S110
             # NIEMALS im Filter loggen -> Endlosschleife!
             pass
         return True

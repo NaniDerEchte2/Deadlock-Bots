@@ -2,7 +2,7 @@
 """Discord Commands für Twitch-Bot-Steuerung durch Streamer."""
 
 import logging
-import random
+import secrets
 
 import discord
 from discord.ext import commands
@@ -396,7 +396,7 @@ class RaidCommandsMixin:
             )
             return
 
-        msg = random.choice(PROMO_MESSAGES).format(invite=invite)
+        msg = secrets.choice(PROMO_MESSAGES).format(invite=invite)
 
         # Nachricht senden via Announcement (Fallback auf normale Message)
         ok = await chat_bot._send_announcement(

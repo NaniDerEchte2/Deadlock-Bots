@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import random
+import secrets
 import time
 from collections import deque
 from typing import Deque, List, Optional, Tuple
@@ -218,7 +218,7 @@ class PromoMixin:
         if not invite:
             return False
 
-        msg = random.choice(PROMO_MESSAGES).format(invite=invite)
+        msg = secrets.choice(PROMO_MESSAGES).format(invite=invite)
         ok = await self._send_announcement(
             self._make_promo_channel(login, channel_id),
             msg,
@@ -584,7 +584,7 @@ class PromoMixin:
             invite, is_specific = await self._get_promo_invite(login)
             if not invite:
                 continue
-            msg = random.choice(PROMO_MESSAGES).format(invite=invite)
+            msg = secrets.choice(PROMO_MESSAGES).format(invite=invite)
 
             class _Channel:
                 __slots__ = ("name", "id")

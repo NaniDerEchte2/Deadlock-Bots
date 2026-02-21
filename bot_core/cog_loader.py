@@ -49,7 +49,7 @@ class CogLoaderMixin:
             for item in data:
                 try:
                     loaded.add(self.normalize_namespace(str(item)))
-                except Exception:
+                except Exception:  # noqa: S112
                     continue
             self.blocked_namespaces = loaded
         except Exception as e:

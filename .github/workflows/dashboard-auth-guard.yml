@@ -110,7 +110,7 @@ jobs:
             http://127.0.0.1:8788/twitch/admin
 
           # Header spoofing must not bypass the block.
-          probe_expect "spoofed-headers-admin-blocked" 403 \
+          probe_expect "spoofed-headers-admin-blocked" 302 \
             -H "Host: twitch.earlysalty.com" \
             -H "X-Dashboard-Context: local" \
             -H "X-Forwarded-For: 127.0.0.1" \

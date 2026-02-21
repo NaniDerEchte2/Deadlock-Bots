@@ -236,7 +236,7 @@ def _purge_kv_entries(
     for row in rows:
         try:
             payload = json.loads(row["v"] if isinstance(row, sqlite3.Row) else row[1])
-        except Exception:
+        except Exception:  # noqa: S112
             continue
         if int(payload.get("user_id", 0) or 0) == int(user_id):
             conn.execute(
@@ -272,7 +272,7 @@ def _fetch_steam_ids(conn: sqlite3.Connection, user_id: int) -> List[str]:
             steam_ids.append(
                 str(row["steam_id"] if isinstance(row, sqlite3.Row) else row[0])
             )
-        except Exception:
+        except Exception:  # noqa: S112
             continue
     return steam_ids
 
@@ -369,7 +369,7 @@ def export_user_data(user_id: int) -> Dict[str, object]:
                     payload = json.loads(
                         row["v"] if isinstance(row, sqlite3.Row) else row[1]
                     )
-                except Exception:
+                except Exception:  # noqa: S112
                     continue
                 target_uid = int(payload.get("user_id", 0) or 0)
                 if target_uid == uid:
