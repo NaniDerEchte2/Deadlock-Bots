@@ -189,11 +189,13 @@ class DashboardStatsMixin:
                     discord_meta_parts.append(html.escape(discord_display_name))
                 if show_discord_private and discord_user_id:
                     discord_meta_parts.append(f"ID: {html.escape(discord_user_id)}")
-                discord_meta_html = (
-                    f"<div class='status-meta'>{' \a '.join(discord_meta_parts)}</div>"
-                    if discord_meta_parts
-                    else ""
-                )
+                
+                if discord_meta_parts:
+                    meta_text = " • ".join(discord_meta_parts)
+                    discord_meta_html = f"<div class='status-meta'>{meta_text}</div>"
+                else:
+                    discord_meta_html = ""
+
                 inline_link_html = ""
                 if show_discord_private and (not is_partner) and not discord_member:
                     inline_link_html = (

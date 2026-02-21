@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import aiohttp
 from service.http_client import build_resilient_connector
 
-TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
+TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"  # noqa: S105
 TWITCH_API_BASE = "https://api.twitch.tv/helix"
 
 

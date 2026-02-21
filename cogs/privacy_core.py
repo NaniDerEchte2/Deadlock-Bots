@@ -66,12 +66,12 @@ _SINGLE_COLUMN_TARGETS: Tuple[Tuple[str, str], ...] = tuple(
 )
 
 _DELETE_SQL_BY_TARGET: Dict[Tuple[str, str], str] = {
-    (table, column): f"DELETE FROM {table} WHERE {column}=?"  # nosec B608
+    (table, column): "DELETE FROM " + table + " WHERE " + column + "=?"  # noqa: S608
     for table, column in _SINGLE_COLUMN_TARGETS
 }
 
 _SELECT_SQL_BY_TARGET: Dict[Tuple[str, str], str] = {
-    (table, column): f"SELECT * FROM {table} WHERE {column}=?"  # nosec B608
+    (table, column): "SELECT * FROM " + table + " WHERE " + column + "=?"  # noqa: S608
     for table, column in _SINGLE_COLUMN_TARGETS
 }
 

@@ -120,7 +120,7 @@ class TwitchBaseCog(commands.Cog):
             env_dashboard_host
             or TWITCH_DASHBOARD_HOST
             or (
-                "127.0.0.1" if self._dashboard_noauth else "0.0.0.0"  # nosec B104
+                "127.0.0.1" if self._dashboard_noauth else "0.0.0.0"  # noqa: S104
             )
         )
         self._dashboard_port = _parse_env_int(

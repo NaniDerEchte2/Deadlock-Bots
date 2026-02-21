@@ -48,26 +48,26 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _read(token_name: str) -> str:
-    if token_name == "refresh":
+def _read(token_name: str) -> str:  # noqa: S105
+    if token_name == "refresh":  # noqa: S105
         return read_refresh_token()
     return read_machine_auth_token()
 
 
-def _write(token_name: str, value: str, saved_at: str | None) -> str:
-    if token_name == "refresh":
+def _write(token_name: str, value: str, saved_at: str | None) -> str:  # noqa: S105
+    if token_name == "refresh":  # noqa: S105
         return write_refresh_token(value, saved_at_iso=saved_at)
     return write_machine_auth_token(value, saved_at_iso=saved_at)
 
 
-def _delete(token_name: str) -> str:
-    if token_name == "refresh":
+def _delete(token_name: str) -> str:  # noqa: S105
+    if token_name == "refresh":  # noqa: S105
         return write_refresh_token("")
     return write_machine_auth_token("")
 
 
-def _exists(token_name: str) -> bool:
-    if token_name == "refresh":
+def _exists(token_name: str) -> bool:  # noqa: S105
+    if token_name == "refresh":  # noqa: S105
         return refresh_token_exists()
     return machine_auth_token_exists()
 

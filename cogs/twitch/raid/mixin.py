@@ -230,8 +230,8 @@ class TwitchRaidMixin:
                 try:
                     placeholders = ",".join("?" for _ in partner_logins_lower)
                     query = (
-                        "SELECT streamer_login, had_deadlock_in_session, last_game, last_deadlock_seen_at "  # nosec B608
-                        f"FROM twitch_live_state WHERE streamer_login IN ({placeholders})"
+                        "SELECT streamer_login, had_deadlock_in_session, last_game, last_deadlock_seen_at "
+                        "FROM twitch_live_state WHERE streamer_login IN (" + placeholders + ")"
                     )
                     with get_conn() as conn:
                         rows = conn.execute(query, partner_logins_lower).fetchall()

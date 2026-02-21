@@ -1281,7 +1281,7 @@ class DashboardServer:
             return None
 
         try:
-            process = subprocess.run(
+            process = subprocess.run(  # noqa: S603
                 [sc_executable, "queryex", normalized_name],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -1385,7 +1385,7 @@ class DashboardServer:
         ]
         probe_timeout = max(2.0, self._nssm_restart_delay_seconds + 1.5)
         try:
-            process = subprocess.Popen(
+            process = subprocess.Popen(  # noqa: S603
                 command,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,

@@ -25,7 +25,7 @@ import discord
 from ..storage import get_conn, backfill_tracked_stats_from_category
 from ..api.token_error_handler import TokenErrorHandler
 
-TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
+TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"  # noqa: S105
 TWITCH_AUTHORIZE_URL = "https://id.twitch.tv/oauth2/authorize"
 TWITCH_API_BASE = "https://api.twitch.tv/helix"
 

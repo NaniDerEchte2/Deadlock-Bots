@@ -38,7 +38,7 @@ STEAM_RETURN_URL = (
     else ""
 )
 
-HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")  # nosec B104
+HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")  # noqa: S104
 HTTP_PORT = int(os.getenv("STEAM_OAUTH_PORT", os.getenv("HTTP_PORT", "8888")))
 CLIENT_SECRET = (os.getenv("DISCORD_OAUTH_CLIENT_SECRET") or "").strip()
 

@@ -29,18 +29,18 @@ def _is_loopback_host(raw_value: str) -> bool:
     if not value:
         return False
 
-    token = value.split(",")[0].strip()
+    token = value.split(",")[0].strip()  # noqa: S105
     if token.startswith("["):
         end = token.find("]")
         if end != -1:
-            token = token[1:end]
+            token = token[1:end]  # noqa: S105
     elif token.count(":") == 1:
         host_part, port_part = token.rsplit(":", 1)
         if port_part.isdigit():
-            token = host_part
+            token = host_part  # noqa: S105
 
-    token = token.strip().lower()
-    if token == "localhost":
+    token = token.strip().lower()  # noqa: S105
+    if token == "localhost":  # noqa: S105
         return True
 
     try:

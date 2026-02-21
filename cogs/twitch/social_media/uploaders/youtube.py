@@ -56,7 +56,7 @@ class YouTubeUploader(PlatformUploader):
             self.credentials = Credentials(
                 token=credentials.get("access_token"),
                 refresh_token=credentials.get("refresh_token"),
-                token_uri="https://oauth2.googleapis.com/token",
+                token_uri="https://oauth2.googleapis.com/token",  # noqa: S106
                 client_id=self.client_id,
                 client_secret=self.client_secret,
             )

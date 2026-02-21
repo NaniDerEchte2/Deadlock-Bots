@@ -97,7 +97,7 @@ def _configure_git_hooks_path(git_root: Path) -> None:
 
         # Git config für hooks path setzen
         result = subprocess.run(
-            ["git", "config", "core.hooksPath", ".git/hooks"],
+            ["git", "config", "core.hooksPath", ".git/hooks"],  # noqa: S607
             cwd=str(git_root),
             capture_output=True,
             universal_newlines=True,

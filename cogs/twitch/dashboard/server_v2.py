@@ -25,7 +25,7 @@ from ..constants import log
 from ..raid.views import RaidAuthGenerateView, build_raid_requirements_embed
 
 TWITCH_OAUTH_AUTHORIZE_URL = "https://id.twitch.tv/oauth2/authorize"
-TWITCH_OAUTH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
+TWITCH_OAUTH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"  # noqa: S105
 TWITCH_HELIX_USERS_URL = "https://api.twitch.tv/helix/users"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
 TWITCH_DASHBOARDS_LOGIN_URL = "/twitch/auth/login?next=%2Ftwitch%2Fdashboards"
@@ -1689,16 +1689,19 @@ class DashboardV2Server(
 
         # Manual raids table
         if manual_list:
-            manual_rows_html = "".join(
-                f"<tr>"
-                f"<td><strong>{html.escape(m['from'])}</strong></td>"
-                f"<td><strong>{html.escape(m['to'])}</strong></td>"
-                f"<td>{'<span class=\"badge badge-ok\">Partner</span>' if m['is_partner'] else '<span class=\"badge badge-warn\">Extern</span>'}</td>"
-                f"<td>{m['viewers']}</td>"
-                f"<td>{html.escape(m['at'])}</td>"
-                f"</tr>"
-                for m in manual_list
-            )
+            manual_rows = []
+            for m in manual_list:
+                status_badge = '<span class="badge badge-ok">Partner</span>' if m['is_partner'] else '<span class="badge badge-warn">Extern</span>'
+                manual_rows.append(
+                    f"<tr>"
+                    f"<td><strong>{html.escape(m['from'])}</strong></td>"
+                    f"<td><strong>{html.escape(m['to'])}</strong></td>"
+                    f"<td>{status_badge}</td>"
+                    f"<td>{m['viewers']}</td>"
+                    f"<td>{html.escape(m['at'])}</td>"
+                    f"</tr>"
+                )
+            manual_rows_html = "".join(manual_rows)
         else:
             manual_rows_html = "<tr><td colspan='5'>Keine manuellen Raids</td></tr>"
 
