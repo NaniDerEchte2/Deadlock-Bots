@@ -12,6 +12,7 @@ from discord.ext import commands
 log = logging.getLogger(__name__)
 
 GUILD_ID = 1289721245281292288
+VERIFIED_ROLE_ID = 1419608095533043774  # Rolle die nach Steam-Verifizierung vergeben wird
 
 # Channel-IDs für klickbare Mentions in Embeds (<#ID>)
 CH_LFG             = 1376335502919335936  # #spieler-suche
@@ -215,97 +216,6 @@ _ACCOUNT_STEP_INDEX = 5
 # Views
 # ---------------------------------------------------------------------------
 
-class AccountLinkStepView(discord.ui.View):
-    """Schritt 6: Steam-Account verknüpfen + Weiter ➜ zum letzten Schritt."""
-
-    def __init__(self, cog: "StaticOnboarding", user_id: int):
-        super().__init__(timeout=3600)
-        self.cog = cog
-        self.user_id = user_id
-        # OAuth-Modul lazy laden – kann fehlen
-        self._oauth = None
-        try:
-            from cogs.steam import steam_link_oauth as _m  # type: ignore
-            if hasattr(_m, "start_urls_for"):
-                self._oauth = _m
-        except Exception:
-            pass
-
-    def _check_user(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id == self.user_id
-
-    @discord.ui.button(
-        label="Steam Account verknüpfen",
-        style=discord.ButtonStyle.success,
-        emoji="🔗",
-        row=0,
-    )
-    async def link_steam(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        if not self._check_user(interaction):
-            await interaction.response.send_message(
-                "Dieses Onboarding gehört jemand anderem.", ephemeral=True
-            )
-            return
-
-        if self._oauth is None:
-            await interaction.response.send_message(
-                "Die Verknüpfung ist gerade nicht verfügbar. "
-                "Tippe einfach `/account_verknüpfen` auf dem Server.",
-                ephemeral=True,
-            )
-            return
-
-        try:
-            urls = self._oauth.start_urls_for(interaction.user.id)
-        except Exception:
-            urls = {}
-
-        discord_url = urls.get("discord_start")
-        steam_url = urls.get("steam_openid_start")
-
-        if not discord_url or not steam_url:
-            await interaction.response.send_message(
-                "❌ Link konnte nicht generiert werden. Nutze `/account_verknüpfen` direkt.",
-                ephemeral=True,
-            )
-            return
-
-        sheet = discord.ui.View(timeout=120)
-        sheet.add_item(discord.ui.Button(
-            label="Via Discord bei Steam anmelden",
-            style=discord.ButtonStyle.link,
-            url=discord_url,
-            emoji="🔗",
-        ))
-        sheet.add_item(discord.ui.Button(
-            label="Direkt bei Steam anmelden",
-            style=discord.ButtonStyle.link,
-            url=steam_url,
-            emoji="🎮",
-        ))
-        await interaction.response.send_message(
-            "🔐 Wähle eine Option – nach dem Login schickt der Bot dir eine Steam-Freundschaftsanfrage:",
-            view=sheet,
-            ephemeral=True,
-        )
-
-    @discord.ui.button(
-        label="Weiter ➜",
-        style=discord.ButtonStyle.primary,
-        row=1,
-    )
-    async def next_step(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        if not self._check_user(interaction):
-            await interaction.response.send_message(
-                "Dieses Onboarding gehört jemand anderem.", ephemeral=True
-            )
-            return
-
-        embed = _build_embed(len(STEPS) - 1)  # letzter Schritt
-        await interaction.response.send_message(embed=embed, view=DoneView(self.user_id))
-        self.stop()
-
-
 class NextStepView(discord.ui.View):
     """Zeigt einen 'Weiter ➜' Button für alle Schritte außer dem letzten."""
 
@@ -326,9 +236,11 @@ class NextStepView(discord.ui.View):
         next_index = self.step_index + 1
         embed = _build_embed(next_index)
 
-        # Schritt 6 (Account verknüpfen) bekommt eigene View mit Steam-Button
         if next_index == _ACCOUNT_STEP_INDEX:
-            view = AccountLinkStepView(self.cog, self.user_id)
+            # Schritt 6: Link-Buttons aus dem zentralen Modul + Channel für Auto-Advance merken
+            from cogs.steam.account_link_ui import make_link_view
+            view = make_link_view(self.user_id)
+            self.cog._pending_verify[self.user_id] = interaction.channel
         elif next_index >= len(STEPS) - 1:
             view = DoneView(self.user_id)
         else:
@@ -385,9 +297,29 @@ class StaticOnboarding(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # user_id → channel: wartet auf Verified-Rolle um Schritt 7 automatisch zu senden
+        self._pending_verify: dict[int, discord.abc.Messageable] = {}
 
     async def cog_load(self):
         log.info("StaticOnboarding geladen (%d Schritte).", len(STEPS))
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """Sendet Schritt 7 automatisch sobald die Verified-Rolle vergeben wird."""
+        if after.guild.id != GUILD_ID:
+            return
+        had_role = any(r.id == VERIFIED_ROLE_ID for r in before.roles)
+        has_role = any(r.id == VERIFIED_ROLE_ID for r in after.roles)
+        if not had_role and has_role:
+            channel = self._pending_verify.pop(after.id, None)
+            if channel:
+                embed = _build_embed(len(STEPS) - 1)
+                try:
+                    await channel.send(embed=embed, view=DoneView(after.id))
+                except Exception:
+                    log.exception(
+                        "Konnte Schritt 7 nach Verifizierung nicht senden für User %s", after.id
+                    )
 
     # Öffentliche API – kompatibel mit rules_channel.py
     async def start_in_channel(

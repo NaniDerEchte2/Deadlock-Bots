@@ -151,6 +151,75 @@ class RulesPanel(commands.Cog):
             log.error("Panel-Edit fehlgeschlagen: %s", e)
             await interaction.response.send_message(f"❌ Fehler: {e}", ephemeral=True)
 
+    # ----- Auto-Start nach Discord Member Screening -----
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """Startet Onboarding automatisch wenn Discord-Mitglieder-Screening abgeschlossen wird."""
+        if after.guild.id != MAIN_GUILD_ID:
+            return
+        if before.pending and not after.pending:
+            await self._auto_start_onboarding(after)
+
+    async def _auto_start_onboarding(self, member: discord.Member):
+        """Erstellt Thread + startet Onboarding ohne Interaction (via member_update)."""
+        channel = member.guild.get_channel(RULES_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            log.warning(
+                "Regelkanal %s nicht gefunden beim Auto-Onboarding für %s",
+                RULES_CHANNEL_ID, member.id,
+            )
+            return
+
+        name = f"onboarding-{member.name}".replace(" ", "-")[:90]
+        thread = None
+        try:
+            thread = await channel.create_thread(
+                name=name,
+                type=discord.ChannelType.private_thread,
+                invitable=True,
+                auto_archive_duration=60,
+            )
+            await thread.add_user(member)
+        except discord.Forbidden:
+            log.debug("Privater Thread für Auto-Onboarding nicht möglich für %s", member.id)
+            try:
+                thread = await channel.create_thread(
+                    name=name,
+                    type=discord.ChannelType.public_thread,
+                    auto_archive_duration=60,
+                )
+            except Exception:
+                log.error("Thread-Erstellung fehlgeschlagen beim Auto-Onboarding für %s", member.id)
+                return
+        except Exception:
+            log.error("Thread-Erstellung fehlgeschlagen beim Auto-Onboarding für %s", member.id)
+            return
+
+        if not thread:
+            return
+
+        onboard_cog = self.bot.get_cog("StaticOnboarding")
+        if onboard_cog and hasattr(onboard_cog, "start_in_channel"):
+            try:
+                await onboard_cog.start_in_channel(thread, member)
+            except Exception:
+                log.exception(
+                    "StaticOnboarding.start_in_channel fehlgeschlagen beim Auto-Start für %s",
+                    member.id,
+                )
+        else:
+            fallback_embed = discord.Embed(
+                title="Willkommen!",
+                description=(
+                    "Das Onboarding ist gerade nicht verfügbar.\n"
+                    "Schau in #ankündigungen, finde Mitspieler in #spieler-suche "
+                    "und richte dir im Temp Voice Panel eine eigene Lane ein.\n"
+                    "Fragen? Nutze /faq oder ping das Team. 😊"
+                ),
+                color=0x5865F2,
+            )
+            await thread.send(embed=fallback_embed)
+
     # ----- Start-Flow im Thread -----
     async def start_in_thread(self, interaction: discord.Interaction):
         thread = await _create_user_thread(interaction)
