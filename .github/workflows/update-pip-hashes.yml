@@ -22,6 +22,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install uv
+        run: pip install uv==0.6.1
+
       - name: Generate hash-locked requirements
         run: |
           uv pip compile \
