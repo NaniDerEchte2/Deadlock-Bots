@@ -144,9 +144,8 @@ STEPS: list[dict] = [
             "ganz ohne manuelles Updaten. Außerdem funktioniert der Live-Status in den Voice Lanes "
             "nur mit verknüpften Accounts richtig.\n\n"
             "**So geht's:**\n"
-            "Tippe einfach `/account_verknüpfen` irgendwo auf dem Server. "
-            "Der Bot schickt dir dann eine **Freundschaftsanfrage** auf Steam → annehmen → fertig. "
-            "Alternativ geht auch Steam OAuth.\n"
+            "Nutze einfach die **Buttons unten**, um deinen Steam-Account zu verknüpfen.\n"
+            "Sobald der Bot dich verifiziert hat, geht dieses **Onboarding automatisch weiter** zum letzten Schritt.\n"
             "> Mehrere Accounts? Kein Problem – einfach mehrfach `/account_verknüpfen` ausführen.\n\n"
             "**Live-Status in Voice Lanes:**\n"
             "Sobald du im Voice bist siehst du über der Lane automatisch:\n"
@@ -215,21 +214,70 @@ class NextStepView(discord.ui.View):
             return
 
         next_index = self.step_index + 1
-        embed = _build_embed(next_index)
 
         if next_index == _ACCOUNT_STEP_INDEX:
-            # Schritt 6: Link-Buttons aus dem zentralen Modul + Channel für Auto-Advance merken
-            from cogs.steam.account_link_ui import make_link_view
+            # Schritt 6: Account verknüpfen
+            # Wenn der User SCHON verifiziert ist: Direkt zum letzten Schritt (7) springen
+            already_verified = any(r.id == VERIFIED_ROLE_ID for r in interaction.user.roles)
+            if already_verified:
+                next_index = len(STEPS) - 1
+            else:
+                # Spezial-View ohne "Weiter" Button – Onboarding geht automatisch weiter
+                view = OnboardingAccountLinkView(self.cog, next_index, self.user_id)
+                self.cog._pending_verify[self.user_id] = interaction.channel
+                embed = _build_embed(next_index)
+                await interaction.response.send_message(embed=embed, view=view)
+                self.stop()
+                return
 
-            view = make_link_view(self.user_id)
-            self.cog._pending_verify[self.user_id] = interaction.channel
-        elif next_index >= len(STEPS) - 1:
+        embed = _build_embed(next_index)
+        if next_index >= len(STEPS) - 1:
             view = DoneView(self.user_id)
         else:
             view = NextStepView(self.cog, next_index, self.user_id)
 
         await interaction.response.send_message(embed=embed, view=view)
         self.stop()
+
+
+class OnboardingAccountLinkView(discord.ui.View):
+    """
+    Spezialisierte View für Schritt 6:
+    Enthält NUR die Steam-Link-Buttons (URL-Buttons).
+    Das Onboarding geht automatisch weiter sobald der User verifiziert ist.
+    """
+
+    def __init__(self, cog: StaticOnboarding, step_index: int, user_id: int):
+        super().__init__(timeout=3600)
+        self.cog = cog
+        self.step_index = step_index
+        self.user_id = user_id
+
+        # URLs für Steam-Link holen
+        from cogs.steam.account_link_ui import _get_urls
+
+        discord_url, steam_url = _get_urls(user_id)
+
+        if discord_url:
+            self.add_item(
+                discord.ui.Button(
+                    label="Via Discord bei Steam anmelden",
+                    style=discord.ButtonStyle.link,
+                    url=discord_url,
+                    emoji="🔗",
+                    row=0,
+                )
+            )
+        if steam_url:
+            self.add_item(
+                discord.ui.Button(
+                    label="Direkt bei Steam anmelden",
+                    style=discord.ButtonStyle.link,
+                    url=steam_url,
+                    emoji="🎮",
+                    row=0,
+                )
+            )
 
 
 class DoneView(discord.ui.View):
