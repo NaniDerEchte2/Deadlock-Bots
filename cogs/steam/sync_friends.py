@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import logging
 
+import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 from cogs.steam.steam_master import SteamTaskClient
 from service import db
+from service.config import settings
 
 log = logging.getLogger(__name__)
 
@@ -89,18 +92,18 @@ async def sync_all_friends(tasks: SteamTaskClient | None = None) -> dict:
         if not outcome.ok:
             error_msg = outcome.error or "Failed to get friends list"
             log.error("Failed to get friends list: %s", error_msg)
-            return {"success": False, "count": 0, "error": error_msg}
+            return {"success": False, "count": 0, "cleared_count": 0, "error": error_msg}
 
         if not outcome.result or not isinstance(outcome.result, dict):
             log.error("Invalid result format from AUTH_GET_FRIENDS_LIST")
-            return {"success": False, "count": 0, "error": "Invalid result format"}
+            return {"success": False, "count": 0, "cleared_count": 0, "error": "Invalid result format"}
 
         data = outcome.result.get("data", {})
         friends = data.get("friends", [])
 
         if not friends:
             log.warning("No friends found in Steam bot's friend list")
-            return {"success": True, "count": 0, "error": None}
+            return {"success": True, "count": 0, "cleared_count": 0, "error": None}
 
         log.info("Found %d friends, syncing to database...", len(friends))
 
@@ -121,6 +124,7 @@ async def sync_all_friends(tasks: SteamTaskClient | None = None) -> dict:
 
         # Cleanup: is_steam_friend=0 für Steam-IDs die nicht mehr in der Freundesliste sind
         friend_steam_ids = [f.get("steam_id64") for f in friends if f.get("steam_id64")]
+        cleared = 0
         if friend_steam_ids:
             placeholders = ",".join("?" * len(friend_steam_ids))
             with db.get_conn() as conn:
@@ -132,11 +136,11 @@ async def sync_all_friends(tasks: SteamTaskClient | None = None) -> dict:
             if cleared:
                 log.info("Cleared is_steam_friend for %d removed friends", cleared)
 
-        return {"success": True, "count": synced, "error": None}
+        return {"success": True, "count": synced, "cleared_count": cleared, "error": None}
 
     except Exception as e:
         log.exception("Failed to sync friends")
-        return {"success": False, "count": 0, "error": str(e)}
+        return {"success": False, "count": 0, "cleared_count": 0, "error": str(e)}
 
 
 class SteamFriendsSync(commands.Cog):
@@ -148,6 +152,13 @@ class SteamFriendsSync(commands.Cog):
 
     async def cog_load(self) -> None:
         self.periodic_sync.start()
+        if settings.guild_id:
+            try:
+                guild_obj = discord.Object(id=settings.guild_id)
+                synced = await self.bot.tree.sync(guild=guild_obj)
+                log.info("SteamFriendsSync: Guild-Commands synchronisiert (%d)", len(synced))
+            except Exception as exc:
+                log.warning("SteamFriendsSync: Guild-Command-Sync fehlgeschlagen: %s", exc)
 
     def cog_unload(self) -> None:
         self.periodic_sync.cancel()
@@ -166,15 +177,45 @@ class SteamFriendsSync(commands.Cog):
     async def before_periodic_sync(self) -> None:
         await self.bot.wait_until_ready()
 
+    @app_commands.command(
+        name="sync_steam_friends",
+        description="(Admin) Synchronisiert Steam-Freundesliste und aktualisiert Verified-Rollen.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def slash_sync_friends(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # 1. Steam-Freunde syncen
+        result = await sync_all_friends(self.tasks)
+
+        if not result["success"]:
+            error = result.get("error", "Unbekannter Fehler")
+            await interaction.followup.send(f"❌ Steam-Sync fehlgeschlagen: `{error}`", ephemeral=True)
+            return
+
+        synced = result["count"]
+        cleared = result.get("cleared_count", 0)
+
+        # 2. Verified-Rollen sofort aktualisieren (add + remove)
+        role_changes = 0
+        try:
+            verified_cog = self.bot.get_cog("SteamVerifiedRole")
+            if verified_cog is not None:
+                role_changes = await verified_cog._run_once()
+        except Exception as exc:
+            log.warning("Rolle-Update nach Sync fehlgeschlagen: %s", exc)
+
+        lines = [f"**Steam-Freunde synchronisiert:** {synced}"]
+        if cleared:
+            lines.append(f"**Freundschaften beendet (is_steam_friend=0):** {cleared}")
+        lines.append(f"**Rollen-Updates:** {role_changes}")
+
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
     @commands.command(name="sync_steam_friends")
     @commands.has_permissions(administrator=True)
     async def cmd_sync_friends(self, ctx: commands.Context) -> None:
-        """
-        Synchronize all Steam bot friends to the database.
-
-        This command fetches all current friends of the Steam bot and saves them
-        to the steam_links table, ensuring all bot friends are tracked.
-        """
+        """Synchronize all Steam bot friends to the database."""
         async with ctx.typing():
             result = await sync_all_friends(self.tasks)
 
