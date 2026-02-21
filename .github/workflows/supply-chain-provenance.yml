@@ -15,7 +15,7 @@ jobs:
     name: "SBOM + Dependency Graph + Attestations"
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Needed for SBOM generation/submission
+      contents: read
       id-token: write
       attestations: write
       artifact-metadata: write
