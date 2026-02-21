@@ -7,13 +7,15 @@ on:
     - cron: "43 1 * * *"
   workflow_dispatch:
 
-permissions: read-all
+permissions:
+  contents: read
+
 jobs:
   sbom-and-attestations:
     name: "SBOM + Dependency Graph + Attestations"
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write # Needed for SBOM generation/submission
       id-token: write
       attestations: write
       artifact-metadata: write
