@@ -12,18 +12,18 @@ Funktionsweise:
 5. Opt-out Möglichkeit für User die keine DMs wollen
 """
 
-import discord
-from discord.ext import commands, tasks
-from discord import app_commands
 import logging
-import time
 import re
-from datetime import datetime
-from typing import Optional, List, Tuple
+import time
 from dataclasses import dataclass
+from datetime import datetime
 
-from service import db as central_db
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+
 from cogs import privacy_core as privacy
+from service import db as central_db
 
 logger = logging.getLogger(__name__)
 
@@ -41,20 +41,14 @@ class RetentionConfig:
 
     # Spam-Schutz
     min_days_between_messages: int = 30  # Frühestens nach 30 Tagen wieder
-    max_miss_you_per_user: int = (
-        1  # Max 1 "Vermissen dich"-Nachricht je User (nicht nerven!)
-    )
+    max_miss_you_per_user: int = 1  # Max 1 "Vermissen dich"-Nachricht je User (nicht nerven!)
 
     # Check-Intervall
     check_hour: int = 12  # Um 12 Uhr mittags checken
 
     # Direktlinks zu Channels (feste URLs)
-    server_link: Optional[str] = (
-        "https://discord.com/channels/1289721245281292288/1289721245281292291"
-    )
-    voice_link: Optional[str] = (
-        "https://discord.com/channels/1289721245281292288/1330278323145801758"
-    )
+    server_link: str | None = "https://discord.com/channels/1289721245281292288/1289721245281292291"
+    voice_link: str | None = "https://discord.com/channels/1289721245281292288/1330278323145801758"
 
     # Ausgeschlossene Rollen (bekommen keine Nachrichten)
     excluded_role_ids: tuple = (
@@ -99,9 +93,7 @@ class FeedbackModal(discord.ui.Modal, title="Feedback geben"):
             f"Danke für dein Feedback! Wir werden es uns anschauen und versuchen, **{self.guild_name}** für dich zu verbessern.",
             ephemeral=True,
         )
-        logger.info(
-            f"Feedback erhalten von {interaction.user.id}: {self.feedback.value[:100]}..."
-        )
+        logger.info(f"Feedback erhalten von {interaction.user.id}: {self.feedback.value[:100]}...")
 
 
 class MissYouView(discord.ui.View):
@@ -111,9 +103,9 @@ class MissYouView(discord.ui.View):
         self,
         guild_id: int,
         guild_name: str,
-        invite_url: Optional[str] = None,
-        server_link: Optional[str] = None,
-        voice_link: Optional[str] = None,
+        invite_url: str | None = None,
+        server_link: str | None = None,
+        voice_link: str | None = None,
     ):
         super().__init__(timeout=None)  # Persistent view
         self.guild_id = guild_id
@@ -158,13 +150,9 @@ class MissYouView(discord.ui.View):
         emoji="💬",
         custom_id="retention_feedback",
     )
-    async def feedback_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def feedback_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Öffnet das Feedback-Modal."""
-        await interaction.response.send_modal(
-            FeedbackModal(self.guild_id, self.guild_name)
-        )
+        await interaction.response.send_modal(FeedbackModal(self.guild_id, self.guild_name))
 
     # @discord.ui.button(label="Keine Nachrichten mehr", style=discord.ButtonStyle.secondary, emoji="🔕", custom_id="retention_optout_btn")
     # async def optout_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -193,7 +181,7 @@ class UserRetentionCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.config = RetentionConfig()
-        self._last_check_date: Optional[str] = None
+        self._last_check_date: str | None = None
         logger.info("UserRetention Cog initialisiert")
 
     async def cog_load(self):
@@ -206,9 +194,7 @@ class UserRetentionCog(commands.Cog):
             raise
 
         # Registriere persistent View für Buttons (funktioniert nach Bot-Restart)
-        self.bot.add_view(
-            MissYouView(0, "", None, self.config.server_link, self.config.voice_link)
-        )
+        self.bot.add_view(MissYouView(0, "", None, self.config.server_link, self.config.voice_link))
 
         # Automatischer Check wieder aktiv
         self.daily_retention_check.start()
@@ -259,9 +245,7 @@ class UserRetentionCog(commands.Cog):
 
             if row:
                 last_active_ts = row[0]
-                last_active_date = datetime.utcfromtimestamp(last_active_ts).strftime(
-                    "%Y-%m-%d"
-                )
+                last_active_date = datetime.utcfromtimestamp(last_active_ts).strftime("%Y-%m-%d")
                 total_days = row[1]
 
                 # Nur wenn es ein neuer Tag ist, erhöhe total_active_days
@@ -386,15 +370,11 @@ class UserRetentionCog(commands.Cog):
 
             sent_count = 0
             for user_id, guild_id, days_inactive, display_name in inactive_users:
-                success = await self._send_miss_you_message(
-                    user_id, guild_id, days_inactive
-                )
+                success = await self._send_miss_you_message(user_id, guild_id, days_inactive)
                 if success:
                     sent_count += 1
 
-            logger.info(
-                f"Retention-Check abgeschlossen: {sent_count} Nachrichten gesendet"
-            )
+            logger.info(f"Retention-Check abgeschlossen: {sent_count} Nachrichten gesendet")
 
         except Exception as e:
             logger.error(f"Fehler beim Retention-Check: {e}")
@@ -408,13 +388,9 @@ class UserRetentionCog(commands.Cog):
     async def get_retention_stats(self) -> dict:
         """Liefert Statistiken für das Dashboard."""
         now = int(time.time())
-        inactivity_threshold = now - (
-            self.config.inactivity_threshold_days * 24 * 60 * 60
-        )
+        inactivity_threshold = now - (self.config.inactivity_threshold_days * 24 * 60 * 60)
 
-        total_tracked = (
-            central_db.query_one("SELECT COUNT(*) FROM user_retention_tracking")[0] or 0
-        )
+        total_tracked = central_db.query_one("SELECT COUNT(*) FROM user_retention_tracking")[0] or 0
         opted_out = (
             central_db.query_one(
                 "SELECT COUNT(*) FROM user_retention_tracking WHERE opted_out = 1"
@@ -473,7 +449,7 @@ class UserRetentionCog(commands.Cog):
             },
         }
 
-    async def get_inactive_users_list(self, limit: int = 50) -> List[dict]:
+    async def get_inactive_users_list(self, limit: int = 50) -> list[dict]:
         """Liefert Liste der inaktiven User für das Dashboard."""
         users = await self._find_inactive_regular_users()
         result = []
@@ -509,9 +485,7 @@ class UserRetentionCog(commands.Cog):
         failed_count = 0
 
         for user_id, guild_id, days_inactive, display_name in inactive_users:
-            success = await self._send_miss_you_message(
-                user_id, guild_id, days_inactive
-            )
+            success = await self._send_miss_you_message(user_id, guild_id, days_inactive)
             if success:
                 sent_count += 1
             else:
@@ -526,7 +500,7 @@ class UserRetentionCog(commands.Cog):
             "failed": failed_count,
         }
 
-    async def get_feedback_list(self, limit: int = 20) -> List[dict]:
+    async def get_feedback_list(self, limit: int = 20) -> list[dict]:
         """Liefert die letzten Feedbacks für das Dashboard."""
         rows = central_db.query_all(
             """SELECT user_id, guild_id, sent_at, error_message
@@ -549,7 +523,7 @@ class UserRetentionCog(commands.Cog):
 
     # ========= Core Logic =========
 
-    async def _find_inactive_regular_users(self) -> List[Tuple[int, int, int, str]]:
+    async def _find_inactive_regular_users(self) -> list[tuple[int, int, int, str]]:
         """
         Findet User die:
         1. Regelmäßig aktiv waren (avg_weekly_sessions >= min_weekly_sessions)
@@ -561,9 +535,7 @@ class UserRetentionCog(commands.Cog):
         Returns: Liste von (user_id, guild_id, days_inactive, display_name)
         """
         now = int(time.time())
-        inactivity_threshold = now - (
-            self.config.inactivity_threshold_days * 24 * 60 * 60
-        )
+        inactivity_threshold = now - (self.config.inactivity_threshold_days * 24 * 60 * 60)
         min_time_between = self.config.min_days_between_messages * 24 * 60 * 60
 
         rows = central_db.query_all(
@@ -615,9 +587,7 @@ class UserRetentionCog(commands.Cog):
                         member_role_ids = {role.id for role in member.roles}
                         if member_role_ids & set(self.config.excluded_role_ids):
                             skip_user = True
-                            logger.debug(
-                                f"User {user_id} übersprungen (ausgeschlossene Rolle)"
-                            )
+                            logger.debug(f"User {user_id} übersprungen (ausgeschlossene Rolle)")
 
                 # Wenn kein Display-Name gefunden wurde, versuche User zu fetchen
                 if not display_name:
@@ -641,9 +611,7 @@ class UserRetentionCog(commands.Cog):
 
         return result
 
-    async def _send_miss_you_message(
-        self, user_id: int, guild_id: int, days_inactive: int
-    ) -> bool:
+    async def _send_miss_you_message(self, user_id: int, guild_id: int, days_inactive: int) -> bool:
         """
         Sendet eine freundliche "Wir vermissen dich"-Nachricht per DM.
         Returns: True wenn erfolgreich gesendet.
@@ -721,9 +689,7 @@ class UserRetentionCog(commands.Cog):
                 (user_id, guild_id, now),
             )
 
-            logger.info(
-                f"Miss-you Nachricht gesendet an {user_id} ({days_inactive} Tage inaktiv)"
-            )
+            logger.info(f"Miss-you Nachricht gesendet an {user_id} ({days_inactive} Tage inaktiv)")
             return True
 
         except discord.Forbidden:
@@ -803,9 +769,7 @@ class UserRetentionCog(commands.Cog):
         """Zeigt den Status des Retention-Systems."""
         try:
             # Statistiken sammeln
-            total_tracked = central_db.query_one(
-                "SELECT COUNT(*) FROM user_retention_tracking"
-            )[0]
+            total_tracked = central_db.query_one("SELECT COUNT(*) FROM user_retention_tracking")[0]
 
             opted_out = central_db.query_one(
                 "SELECT COUNT(*) FROM user_retention_tracking WHERE opted_out = 1"
@@ -820,9 +784,7 @@ class UserRetentionCog(commands.Cog):
             )[0]
 
             now = int(time.time())
-            inactivity_threshold = now - (
-                self.config.inactivity_threshold_days * 24 * 60 * 60
-            )
+            inactivity_threshold = now - (self.config.inactivity_threshold_days * 24 * 60 * 60)
 
             inactive_regular = central_db.query_one(
                 """
@@ -851,22 +813,12 @@ class UserRetentionCog(commands.Cog):
                 (now - 30 * 24 * 60 * 60,),
             )[0]
 
-            embed = discord.Embed(
-                title="📊 User Retention Status", color=discord.Color.blue()
-            )
-            embed.add_field(
-                name="👥 Getrackte User", value=str(total_tracked), inline=True
-            )
-            embed.add_field(
-                name="🔄 Reguläre User", value=str(regular_users), inline=True
-            )
-            embed.add_field(
-                name="😴 Davon inaktiv", value=str(inactive_regular), inline=True
-            )
+            embed = discord.Embed(title="📊 User Retention Status", color=discord.Color.blue())
+            embed.add_field(name="👥 Getrackte User", value=str(total_tracked), inline=True)
+            embed.add_field(name="🔄 Reguläre User", value=str(regular_users), inline=True)
+            embed.add_field(name="😴 Davon inaktiv", value=str(inactive_regular), inline=True)
             embed.add_field(name="🚫 Opted-out", value=str(opted_out), inline=True)
-            embed.add_field(
-                name="📨 Nachrichten (gesamt)", value=str(messages_sent), inline=True
-            )
+            embed.add_field(name="📨 Nachrichten (gesamt)", value=str(messages_sent), inline=True)
             embed.add_field(
                 name="📨 Nachrichten (30 Tage)",
                 value=str(messages_last_30d),
@@ -911,9 +863,7 @@ class UserRetentionCog(commands.Cog):
             for user_id, guild_id, days_inactive, display_name in users:
                 lines.append(f"• **{display_name}** - {days_inactive} Tage inaktiv")
 
-            embed.add_field(
-                name="User", value="\n".join(lines) or "Keine", inline=False
-            )
+            embed.add_field(name="User", value="\n".join(lines) or "Keine", inline=False)
             await ctx.send(embed=embed)
 
         except Exception as e:

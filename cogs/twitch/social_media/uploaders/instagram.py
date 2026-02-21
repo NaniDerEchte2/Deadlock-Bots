@@ -5,9 +5,9 @@ WICHTIG: Instagram benötigt eine öffentliche Video-URL (kein direkter Upload).
 Docs: https://developers.facebook.com/docs/instagram-api/guides/content-publishing
 """
 
-import aiohttp
 from pathlib import Path
-from typing import Dict, List
+
+import aiohttp
 
 from .base import PlatformUploader
 
@@ -26,7 +26,7 @@ class InstagramUploader(PlatformUploader):
         self.business_account_id = business_account_id
         self.api_base = "https://graph.facebook.com/v21.0"
 
-    async def authenticate(self, credentials: Dict) -> bool:
+    async def authenticate(self, credentials: dict) -> bool:
         """
         Verify access token.
 
@@ -48,9 +48,7 @@ class InstagramUploader(PlatformUploader):
                         return False
 
                     data = await resp.json()
-                    self.log.info(
-                        "Instagram authentication valid: %s", data.get("name")
-                    )
+                    self.log.info("Instagram authentication valid: %s", data.get("name"))
                     return True
 
         except Exception:
@@ -62,7 +60,7 @@ class InstagramUploader(PlatformUploader):
         video_path: str,
         title: str,
         description: str,
-        hashtags: List[str],
+        hashtags: list[str],
         **kwargs,
     ) -> str:
         """
@@ -92,9 +90,7 @@ class InstagramUploader(PlatformUploader):
 
             if not video_url:
                 # If video_path looks like URL, use it
-                if video_path.startswith("http://") or video_path.startswith(
-                    "https://"
-                ):
+                if video_path.startswith("http://") or video_path.startswith("https://"):
                     video_url = video_path
                 else:
                     raise ValueError(
@@ -175,7 +171,7 @@ class InstagramUploader(PlatformUploader):
 
                 return media_id
 
-    async def get_video_status(self, media_id: str) -> Dict:
+    async def get_video_status(self, media_id: str) -> dict:
         """
         Check Reel status.
 
@@ -237,9 +233,7 @@ class InstagramUploader(PlatformUploader):
         if file_size_mb > 1024:
             raise ValueError(f"Video too large: {file_size_mb:.1f}MB (max 1024MB)")
 
-        self.log.info(
-            "Instagram video validation passed: %s (%.1f MB)", video_path, file_size_mb
-        )
+        self.log.info("Instagram video validation passed: %s (%.1f MB)", video_path, file_size_mb)
         return True
 
     async def upload_to_temporary_host(self, video_path: str) -> str:

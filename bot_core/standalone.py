@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any
 
 try:
     from service.standalone_manager import StandaloneBotConfig, StandaloneBotManager
@@ -20,7 +20,7 @@ except Exception as _standalone_import_error:
 class StandaloneMixin:
     """Setup und Metriken für Standalone-Manager."""
 
-    def setup_standalone_manager(self: "MasterBot") -> None:
+    def setup_standalone_manager(self: MasterBot) -> None:
         self.standalone_manager = None
         if StandaloneBotManager is None or StandaloneBotConfig is None:
             logging.getLogger(__name__).info(
@@ -32,8 +32,8 @@ class StandaloneMixin:
             repo_root = self.root_dir
             standalone_dir = repo_root / "standalone"
             rank_script = standalone_dir / "rank_bot.py"
-            custom_env: Dict[str, str] = {}
-            pythonpath_entries: List[str] = []
+            custom_env: dict[str, str] = {}
+            pythonpath_entries: list[str] = []
             existing_pythonpath = os.environ.get("PYTHONPATH")
             if existing_pythonpath:
                 pythonpath_entries.append(existing_pythonpath)
@@ -63,7 +63,7 @@ class StandaloneMixin:
             steam_dir = repo_root / "cogs" / "steam" / "steam_presence"
             steam_script = steam_dir / "index.js"
             if steam_script.exists():
-                steam_env: Dict[str, str] = {}
+                steam_env: dict[str, str] = {}
                 try:
                     from service import db as _db
 
@@ -76,9 +76,7 @@ class StandaloneMixin:
 
                 default_data_dir = steam_dir / ".steam-data"
                 if os.getenv("STEAM_PRESENCE_DATA_DIR"):
-                    steam_env["STEAM_PRESENCE_DATA_DIR"] = os.getenv(
-                        "STEAM_PRESENCE_DATA_DIR", ""
-                    )
+                    steam_env["STEAM_PRESENCE_DATA_DIR"] = os.getenv("STEAM_PRESENCE_DATA_DIR", "")
                 else:
                     steam_env["STEAM_PRESENCE_DATA_DIR"] = str(default_data_dir)
 
@@ -133,21 +131,19 @@ class StandaloneMixin:
                 "Standalone Manager Autostart fehlgeschlagen: %s", exc
             )
 
-    async def _collect_rank_bot_metrics(self) -> Dict[str, Any]:
+    async def _collect_rank_bot_metrics(self) -> dict[str, Any]:
         try:
             from service import db
         except Exception as exc:  # defensive import
-            logging.getLogger(__name__).warning(
-                "DB module unavailable for rank metrics: %s", exc
-            )
+            logging.getLogger(__name__).warning("DB module unavailable for rank metrics: %s", exc)
             return {}
 
-        def _query() -> Dict[str, Any]:
+        def _query() -> dict[str, Any]:
             meta_row = db.query_one(
                 "SELECT heartbeat, payload, updated_at FROM standalone_bot_state WHERE bot=?",
                 ("rank",),
             )
-            payload: Dict[str, Any] = {}
+            payload: dict[str, Any] = {}
             if meta_row and meta_row["payload"]:
                 try:
                     payload = json.loads(meta_row["payload"])
@@ -209,21 +205,19 @@ class StandaloneMixin:
 
         return await asyncio.to_thread(_query)
 
-    async def _collect_steam_bridge_metrics(self) -> Dict[str, Any]:
+    async def _collect_steam_bridge_metrics(self) -> dict[str, Any]:
         try:
             from service import db
         except Exception as exc:  # defensive import
-            logging.getLogger(__name__).warning(
-                "DB module unavailable for steam metrics: %s", exc
-            )
+            logging.getLogger(__name__).warning("DB module unavailable for steam metrics: %s", exc)
             return {}
 
-        def _query() -> Dict[str, Any]:
+        def _query() -> dict[str, Any]:
             state_row = db.query_one(
                 "SELECT heartbeat, payload, updated_at FROM standalone_bot_state WHERE bot=?",
                 ("steam",),
             )
-            payload: Dict[str, Any] = {}
+            payload: dict[str, Any] = {}
             if state_row and state_row["payload"]:
                 try:
                     payload = json.loads(state_row["payload"])
@@ -295,9 +289,9 @@ class StandaloneMixin:
             )
 
             def _format_command_rows(
-                rows: List[Any], *, include_finished: bool
-            ) -> List[Dict[str, Any]]:
-                formatted: List[Dict[str, Any]] = []
+                rows: list[Any], *, include_finished: bool
+            ) -> list[dict[str, Any]]:
+                formatted: list[dict[str, Any]] = []
                 for row in rows:
                     keys = set(row.keys()) if hasattr(row, "keys") else set()
                     formatted.append(
@@ -309,15 +303,13 @@ class StandaloneMixin:
                             "finished_at": row["finished_at"]
                             if include_finished and "finished_at" in keys
                             else None,
-                            "error": row["error"]
-                            if include_finished and "error" in keys
-                            else None,
+                            "error": row["error"] if include_finished and "error" in keys else None,
                         }
                     )
                 return formatted
 
-            def _format_task_counts(rows: List[Any]) -> Dict[str, int]:
-                counts: Dict[str, int] = {}
+            def _format_task_counts(rows: list[Any]) -> dict[str, int]:
+                counts: dict[str, int] = {}
                 for row in rows:
                     status = str(row["status"] or "").upper()
                     try:
@@ -326,8 +318,8 @@ class StandaloneMixin:
                         counts[status] = 0
                 return counts
 
-            def _format_recent_tasks(rows: List[Any]) -> List[Dict[str, Any]]:
-                recent: List[Dict[str, Any]] = []
+            def _format_recent_tasks(rows: list[Any]) -> list[dict[str, Any]]:
+                recent: list[dict[str, Any]] = []
                 for row in rows:
                     recent.append(
                         {
@@ -340,8 +332,8 @@ class StandaloneMixin:
                     )
                 return recent
 
-            def _format_quick_counts(rows: List[Any]) -> Dict[str, int]:
-                result: Dict[str, int] = {}
+            def _format_quick_counts(rows: list[Any]) -> dict[str, int]:
+                result: dict[str, int] = {}
                 for row in rows:
                     status = str(row["status"] or "unknown")
                     try:
@@ -365,12 +357,8 @@ class StandaloneMixin:
             return {
                 "state": payload,
                 "runtime": payload.get("runtime", {}),
-                "pending_commands": _format_command_rows(
-                    pending_rows, include_finished=False
-                ),
-                "recent_commands": _format_command_rows(
-                    recent_rows, include_finished=True
-                ),
+                "pending_commands": _format_command_rows(pending_rows, include_finished=False),
+                "recent_commands": _format_command_rows(recent_rows, include_finished=True),
                 "tasks": {
                     "counts": task_counts,
                     "recent": _format_recent_tasks(recent_tasks),

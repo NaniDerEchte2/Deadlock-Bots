@@ -4,7 +4,7 @@ import json
 import logging
 import sqlite3
 import time
-from typing import Dict, Iterable, List, Tuple
+from collections.abc import Iterable
 
 from service import db
 
@@ -16,7 +16,7 @@ AI_ONBOARDING_VIEWS_NS = "ai_onboarding:persistent_views"
 VOICE_NUDGE_NAMESPACES = ("voice_nudge_first_seen", "voice_nudge_done")
 
 # Tables keyed by a single user column
-_USER_TABLES: Tuple[Tuple[str, str], ...] = (
+_USER_TABLES: tuple[tuple[str, str], ...] = (
     ("voice_stats", "user_id"),
     ("voice_session_log", "user_id"),
     ("voice_feedback_requests", "user_id"),
@@ -51,7 +51,7 @@ _USER_TABLES: Tuple[Tuple[str, str], ...] = (
     ("steam_quick_invites", "reserved_by"),
 )
 
-_STEAM_SIDE_TABLES: Tuple[Tuple[str, str], ...] = (
+_STEAM_SIDE_TABLES: tuple[tuple[str, str], ...] = (
     ("live_player_state", "steam_id"),
     ("deadlock_voice_watch", "steam_id"),
     ("steam_rich_presence", "steam_id"),
@@ -61,16 +61,16 @@ _STEAM_SIDE_TABLES: Tuple[Tuple[str, str], ...] = (
     ("beta_invite_audit", "steam_id64"),
 )
 
-_SINGLE_COLUMN_TARGETS: Tuple[Tuple[str, str], ...] = tuple(
+_SINGLE_COLUMN_TARGETS: tuple[tuple[str, str], ...] = tuple(
     dict.fromkeys(_USER_TABLES + _STEAM_SIDE_TABLES)
 )
 
-_DELETE_SQL_BY_TARGET: Dict[Tuple[str, str], str] = {
+_DELETE_SQL_BY_TARGET: dict[tuple[str, str], str] = {
     (table, column): "DELETE FROM " + table + " WHERE " + column + "=?"  # noqa: S608
     for table, column in _SINGLE_COLUMN_TARGETS
 }
 
-_SELECT_SQL_BY_TARGET: Dict[Tuple[str, str], str] = {
+_SELECT_SQL_BY_TARGET: dict[tuple[str, str], str] = {
     (table, column): "SELECT * FROM " + table + " WHERE " + column + "=?"  # noqa: S608
     for table, column in _SINGLE_COLUMN_TARGETS
 }
@@ -118,9 +118,7 @@ async def set_opt_in(user_id: int) -> None:
         )
 
 
-def _delete_where(
-    conn: sqlite3.Connection, table: str, column: str, value: object
-) -> int:
+def _delete_where(conn: sqlite3.Connection, table: str, column: str, value: object) -> int:
     sql = _DELETE_SQL_BY_TARGET.get((table, column))
     if not sql or not _table_exists(conn, table):
         return 0
@@ -147,7 +145,7 @@ def _delete_any_of(
 
 def _fetch_rows(
     conn: sqlite3.Connection, table: str, column: str, value: object
-) -> List[Dict[str, object]]:
+) -> list[dict[str, object]]:
     sql = _SELECT_SQL_BY_TARGET.get((table, column))
     if not sql or not _table_exists(conn, table):
         return []
@@ -159,7 +157,7 @@ def _fetch_rows(
 
 def _fetch_rows_any(
     conn: sqlite3.Connection, table: str, columns: Iterable[str], value: object
-) -> List[Dict[str, object]]:
+) -> list[dict[str, object]]:
     cols = list(columns)
     if not cols or not _table_exists(conn, table):
         return []
@@ -176,10 +174,8 @@ def _fetch_rows_any(
     return [{name: row[idx] for idx, name in enumerate(colnames)} for row in rows]
 
 
-def _redact_co_players(
-    rows: List[Dict[str, object]], uid: int
-) -> List[Dict[str, object]]:
-    sanitized: List[Dict[str, object]] = []
+def _redact_co_players(rows: list[dict[str, object]], uid: int) -> list[dict[str, object]]:
+    sanitized: list[dict[str, object]] = []
     for row in rows:
         user_id = row.get("user_id")
         co_player_id = row.get("co_player_id")
@@ -202,9 +198,9 @@ def _redact_co_players(
 
 
 def _redact_other_ids(
-    rows: List[Dict[str, object]], uid: int, keep: str, redact_fields: Iterable[str]
-) -> List[Dict[str, object]]:
-    cleaned: List[Dict[str, object]] = []
+    rows: list[dict[str, object]], uid: int, keep: str, redact_fields: Iterable[str]
+) -> list[dict[str, object]]:
+    cleaned: list[dict[str, object]] = []
     for row in rows:
         r = dict(row)
         for key in redact_fields:
@@ -216,9 +212,7 @@ def _redact_other_ids(
     return cleaned
 
 
-def _purge_kv_entries(
-    conn: sqlite3.Connection, user_id: int, summary: Dict[str, int]
-) -> None:
+def _purge_kv_entries(conn: sqlite3.Connection, user_id: int, summary: dict[str, int]) -> None:
     if not _table_exists(conn, "kv_store"):
         return
 
@@ -259,26 +253,24 @@ def _purge_kv_entries(
     summary["kv_voice_nudge"] = nudge_removed
 
 
-def _fetch_steam_ids(conn: sqlite3.Connection, user_id: int) -> List[str]:
+def _fetch_steam_ids(conn: sqlite3.Connection, user_id: int) -> list[str]:
     if not _table_exists(conn, "steam_links"):
         return []
     rows = conn.execute(
         "SELECT steam_id FROM steam_links WHERE user_id=?",
         (int(user_id),),
     ).fetchall()
-    steam_ids: List[str] = []
+    steam_ids: list[str] = []
     for row in rows:
         try:
-            steam_ids.append(
-                str(row["steam_id"] if isinstance(row, sqlite3.Row) else row[0])
-            )
+            steam_ids.append(str(row["steam_id"] if isinstance(row, sqlite3.Row) else row[0]))
         except Exception:  # noqa: S112
             continue
     return steam_ids
 
 
 def _purge_steam_side(
-    conn: sqlite3.Connection, steam_ids: Iterable[str], summary: Dict[str, int]
+    conn: sqlite3.Connection, steam_ids: Iterable[str], summary: dict[str, int]
 ) -> None:
     for sid in steam_ids:
         summary[f"live_player_state:{sid}"] = _delete_where(
@@ -304,12 +296,12 @@ def _purge_steam_side(
         )
 
 
-def export_user_data(user_id: int) -> Dict[str, object]:
+def export_user_data(user_id: int) -> dict[str, object]:
     """
     Build a JSON-friendly snapshot of all known user data (read-only).
     """
     uid = int(user_id)
-    snapshot: Dict[str, object] = {
+    snapshot: dict[str, object] = {
         "user_id": uid,
         "generated_at": int(time.time()),
         "tables": {},
@@ -317,14 +309,12 @@ def export_user_data(user_id: int) -> Dict[str, object]:
         "steam_ids": [],
     }
     with db.get_conn() as conn:
-        tables: Dict[str, List[Dict[str, object]]] = {}
+        tables: dict[str, list[dict[str, object]]] = {}
         for table, column in _USER_TABLES:
             key = f"{table}.{column}"
             tables[key] = _fetch_rows(conn, table, column, uid)
 
-        co_player_rows = _fetch_rows_any(
-            conn, "user_co_players", ("user_id", "co_player_id"), uid
-        )
+        co_player_rows = _fetch_rows_any(conn, "user_co_players", ("user_id", "co_player_id"), uid)
         tables["user_co_players"] = _redact_co_players(co_player_rows, uid)
 
         steam_ids = _fetch_steam_ids(conn, uid)
@@ -354,7 +344,7 @@ def export_user_data(user_id: int) -> Dict[str, object]:
 
         snapshot["tables"] = tables
 
-        kv_data: Dict[str, object] = {}
+        kv_data: dict[str, object] = {}
         if _table_exists(conn, "kv_store"):
             kv_data["ai_onboarding_sessions"] = (
                 db.get_kv(AI_ONBOARDING_SESSIONS_NS, str(uid)) or None
@@ -366,9 +356,7 @@ def export_user_data(user_id: int) -> Dict[str, object]:
             ).fetchall()
             for row in rows:
                 try:
-                    payload = json.loads(
-                        row["v"] if isinstance(row, sqlite3.Row) else row[1]
-                    )
+                    payload = json.loads(row["v"] if isinstance(row, sqlite3.Row) else row[1])
                 except Exception:  # noqa: S112
                     continue
                 target_uid = int(payload.get("user_id", 0) or 0)
@@ -423,16 +411,14 @@ def export_user_data(user_id: int) -> Dict[str, object]:
     return snapshot
 
 
-async def delete_user_data(
-    user_id: int, *, reason: str = "user_request"
-) -> Dict[str, int]:
+async def delete_user_data(user_id: int, *, reason: str = "user_request") -> dict[str, int]:
     """
     Delete user-related data from all known tables and mark an opt-out.
     Returns a summary of deleted rows per table key.
     """
     uid = int(user_id)
     ts = int(time.time())
-    summary: Dict[str, int] = {}
+    summary: dict[str, int] = {}
 
     async with db.transaction() as conn:
         steam_ids = _fetch_steam_ids(conn, uid)

@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import html
 import json
-from typing import List, Optional
 
 from aiohttp import web
 
 
 class DashboardStatsMixin:
-    async def _render_stats_page(
-        self, request: web.Request, *, partner_view: bool
-    ) -> web.Response:
+    async def _render_stats_page(self, request: web.Request, *, partner_view: bool) -> web.Response:
         view_mode = (request.query.get("view") or "top").lower()
         show_all = view_mode == "all"
         display_mode = (request.query.get("display") or "charts").lower()
@@ -26,7 +23,7 @@ class DashboardStatsMixin:
         show_discord_private = self._is_local_request(request)
 
         streamer_query = request.query.get("streamer") or ""
-        normalized_streamer: Optional[str] = None
+        normalized_streamer: str | None = None
         streamer_warning = ""
         if focus_mode == "user":
             query_clean = streamer_query.strip()
@@ -37,7 +34,7 @@ class DashboardStatsMixin:
             else:
                 normalized_streamer = None
 
-        def _parse_int(*names: str) -> Optional[int]:
+        def _parse_int(*names: str) -> int | None:
             for name in names:
                 raw = request.query.get(name)
                 if raw is None or raw == "":
@@ -49,7 +46,7 @@ class DashboardStatsMixin:
                 return max(0, value)
             return None
 
-        def _parse_float(*names: str) -> Optional[float]:
+        def _parse_float(*names: str) -> float | None:
             for name in names:
                 raw = request.query.get(name)
                 if raw is None or raw == "":
@@ -61,7 +58,7 @@ class DashboardStatsMixin:
                 return max(0.0, value)
             return None
 
-        def _clamp_hour(value: Optional[int]) -> Optional[int]:
+        def _clamp_hour(value: int | None) -> int | None:
             if value is None:
                 return None
             if value < 0:
@@ -122,9 +119,7 @@ class DashboardStatsMixin:
         def _build_url(**updates) -> str:
             params = {**preserved_params, **updates}
             merged = {k: v for k, v in params.items() if v not in {None, ""}}
-            query = "&".join(
-                f"{k}={html.escape(str(v), quote=True)}" for k, v in merged.items()
-            )
+            query = "&".join(f"{k}={html.escape(str(v), quote=True)}" for k, v in merged.items())
             if query:
                 return f"{base_path}?{query}"
             return base_path
@@ -159,7 +154,7 @@ class DashboardStatsMixin:
             tracked_items = tracked_items[:10]
             category_items = category_items[:10]
 
-        def render_table(items: List[dict]) -> str:
+        def render_table(items: list[dict]) -> str:
             column_count = 6 if show_discord_private else 5
             if not items:
                 return f"<tr><td colspan={column_count}><i>Keine Daten für die aktuellen Filter.</i></td></tr>"
@@ -178,18 +173,16 @@ class DashboardStatsMixin:
                 discord_value = "1" if discord_member else "0"
                 discord_text = "Ja" if discord_member else "Nein"
                 discord_user_id = str(item.get("discord_user_id") or "").strip()
-                discord_display_name = str(
-                    item.get("discord_display_name") or ""
-                ).strip()
+                discord_display_name = str(item.get("discord_display_name") or "").strip()
                 if not show_discord_private:
                     discord_user_id = ""
                     discord_display_name = ""
-                discord_meta_parts: List[str] = []
+                discord_meta_parts: list[str] = []
                 if show_discord_private and discord_display_name:
                     discord_meta_parts.append(html.escape(discord_display_name))
                 if show_discord_private and discord_user_id:
                     discord_meta_parts.append(f"ID: {html.escape(discord_user_id)}")
-                
+
                 if discord_meta_parts:
                     meta_text = " • ".join(discord_meta_parts)
                     discord_meta_html = f"<div class='status-meta'>{meta_text}</div>"
@@ -228,14 +221,9 @@ class DashboardStatsMixin:
                         "</div>"
                     )
                     discord_cell = (
-                        "<div class='discord-cell'>"
-                        f"  {discord_main}"
-                        f"  {discord_meta_html}"
-                        "</div>"
+                        f"<div class='discord-cell'>  {discord_main}  {discord_meta_html}</div>"
                     )
-                    row_parts.append(
-                        f'<td data-value="{discord_value}">{discord_cell}</td>'
-                    )
+                    row_parts.append(f'<td data-value="{discord_value}">{discord_cell}</td>')
                 row_parts.append("</tr>")
                 rows.append("".join(row_parts))
             return "".join(rows)
@@ -264,7 +252,7 @@ class DashboardStatsMixin:
             except (TypeError, ValueError):
                 return None
 
-        def render_hour_table(items: List[dict]) -> str:
+        def render_hour_table(items: list[dict]) -> str:
             if not items:
                 return "<tr><td colspan=4><i>Keine Daten verfügbar.</i></td></tr>"
             rows = []
@@ -294,7 +282,7 @@ class DashboardStatsMixin:
         }
         weekday_order = [1, 2, 3, 4, 5, 6, 0]
 
-        def render_weekday_table(items: List[dict]) -> str:
+        def render_weekday_table(items: list[dict]) -> str:
             if not items:
                 return "<tr><td colspan=4><i>Keine Daten verfügbar.</i></td></tr>"
             by_day = {int(d.get("weekday") or 0): d for d in items}
@@ -325,14 +313,10 @@ class DashboardStatsMixin:
         tracked_weekday_rows = render_weekday_table(tracked_weekday)
 
         category_hour_map = {
-            int(item.get("hour") or 0): item
-            for item in category_hourly
-            if isinstance(item, dict)
+            int(item.get("hour") or 0): item for item in category_hourly if isinstance(item, dict)
         }
         tracked_hour_map = {
-            int(item.get("hour") or 0): item
-            for item in tracked_hourly
-            if isinstance(item, dict)
+            int(item.get("hour") or 0): item for item in tracked_hourly if isinstance(item, dict)
         }
 
         def _build_dataset(
@@ -343,9 +327,9 @@ class DashboardStatsMixin:
             background: str,
             axis: str = "yAvg",
             fill: bool = True,
-            dash: Optional[List[int]] = None,
+            dash: list[int] | None = None,
             tension: float = 0.35,
-        ) -> Optional[dict]:
+        ) -> dict | None:
             if not data_points or not any(value is not None for value in data_points):
                 return None
             dataset = {
@@ -433,9 +417,7 @@ class DashboardStatsMixin:
             if isinstance(item, dict)
         }
 
-        weekday_labels_list = [
-            weekday_labels.get(idx, str(idx)) for idx in weekday_order
-        ]
+        weekday_labels_list = [weekday_labels.get(idx, str(idx)) for idx in weekday_order]
         category_weekday_avg = [
             _float_or_none((category_weekday_map.get(idx) or {}).get("avg_viewers"))
             for idx in weekday_order
@@ -607,9 +589,7 @@ class DashboardStatsMixin:
             user_weekday_data = []
 
         user_hour_map = {
-            int(item.get("hour") or 0): item
-            for item in user_hour_data
-            if isinstance(item, dict)
+            int(item.get("hour") or 0): item for item in user_hour_data if isinstance(item, dict)
         }
         user_weekday_map = {
             int(item.get("weekday") or 0): item
@@ -618,12 +598,10 @@ class DashboardStatsMixin:
         }
 
         user_hour_avg = [
-            _float_or_none((user_hour_map.get(hour) or {}).get("avg_viewers"))
-            for hour in range(24)
+            _float_or_none((user_hour_map.get(hour) or {}).get("avg_viewers")) for hour in range(24)
         ]
         user_hour_peak = [
-            _int_or_none((user_hour_map.get(hour) or {}).get("max_viewers"))
-            for hour in range(24)
+            _int_or_none((user_hour_map.get(hour) or {}).get("max_viewers")) for hour in range(24)
         ]
         user_hour_datasets = []
         if streamer_has_data:
@@ -701,9 +679,7 @@ class DashboardStatsMixin:
 
         streamer_is_tracked = bool(streamer_stats.get("is_tracked"))
         streamer_is_on_discord = bool(streamer_stats.get("is_on_discord"))
-        streamer_discord_name = str(
-            streamer_stats.get("discord_display_name") or ""
-        ).strip()
+        streamer_discord_name = str(streamer_stats.get("discord_display_name") or "").strip()
         streamer_discord_id = str(streamer_stats.get("discord_user_id") or "").strip()
         if not show_discord_private:
             streamer_discord_name = ""
@@ -725,9 +701,7 @@ class DashboardStatsMixin:
         )
         analysis_controls_html = ""
         if focus_mode in {"time", "weekday"}:
-            analysis_controls_html = (
-                f"<div class='analysis-controls'>{display_toggle_html}</div>"
-            )
+            analysis_controls_html = f"<div class='analysis-controls'>{display_toggle_html}</div>"
 
         hidden_inputs = []
         for key, value in request.query.items():
@@ -792,13 +766,13 @@ class DashboardStatsMixin:
 
         user_hint_html = ""
         if focus_mode == "user":
-            user_hint_html = "<div class='user-hint'>Suche nach einem Twitch-Login (z. B. streamername).</div>"
+            user_hint_html = (
+                "<div class='user-hint'>Suche nach einem Twitch-Login (z. B. streamername).</div>"
+            )
 
         user_notice_html = ""
         if streamer_warning:
-            user_notice_html = (
-                f"<div class='user-warning'>{html.escape(streamer_warning)}</div>"
-            )
+            user_notice_html = f"<div class='user-warning'>{html.escape(streamer_warning)}</div>"
 
         user_summary_html = ""
         if streamer_has_data:
@@ -838,25 +812,14 @@ class DashboardStatsMixin:
                 )
                 shared_html = f"<div class='status-meta' style='margin-top:0.8rem;'><strong>Shared Audience (Top 5):</strong><ul style='margin:0.2rem 0 0 1.2rem; padding:0;'>{shared_rows}</ul></div>"
 
-            user_summary_html = (
-                f"<div class='user-summary'>{summary_cells}</div>{shared_html}"
-            )
+            user_summary_html = f"<div class='user-summary'>{summary_cells}</div>{shared_html}"
 
         user_meta_html = ""
-        if (
-            streamer_has_data
-            or streamer_is_tracked
-            or streamer_discord_name
-            or streamer_discord_id
-        ):
+        if streamer_has_data or streamer_is_tracked or streamer_discord_name or streamer_discord_id:
             meta_parts = []
             if streamer_source:
-                source_label = (
-                    "Tracked" if streamer_source == "tracked" else "Kategorie"
-                )
-                meta_parts.append(
-                    f"<strong>Datenbasis:</strong> {html.escape(source_label)}"
-                )
+                source_label = "Tracked" if streamer_source == "tracked" else "Kategorie"
+                meta_parts.append(f"<strong>Datenbasis:</strong> {html.escape(source_label)}")
             tracked_text = "Ja" if streamer_is_tracked else "Nein"
             meta_parts.append(f"<strong>Partnerliste:</strong> {tracked_text}")
             if show_discord_private and (streamer_discord_name or streamer_discord_id):
@@ -865,13 +828,9 @@ class DashboardStatsMixin:
                     discord_bits.append(html.escape(streamer_discord_name))
                 if streamer_discord_id:
                     discord_bits.append(f"ID: {html.escape(streamer_discord_id)}")
-                meta_parts.append(
-                    "<strong>Discord:</strong> " + " • ".join(discord_bits)
-                )
+                meta_parts.append("<strong>Discord:</strong> " + " • ".join(discord_bits))
             if meta_parts:
-                user_meta_html = (
-                    "<div class='user-meta'>" + "<br>".join(meta_parts) + "</div>"
-                )
+                user_meta_html = "<div class='user-meta'>" + "<br>".join(meta_parts) + "</div>"
 
         user_charts_html = ""
         if streamer_has_data:
@@ -898,7 +857,9 @@ class DashboardStatsMixin:
         user_empty_html = ""
         if focus_mode == "user" and not streamer_warning:
             if not streamer_query.strip():
-                user_empty_html = "<div class='user-section-empty'>Bitte oben einen Streamer auswählen.</div>"
+                user_empty_html = (
+                    "<div class='user-section-empty'>Bitte oben einen Streamer auswählen.</div>"
+                )
             elif normalized_streamer and not streamer_has_data:
                 user_empty_html = "<div class='user-section-empty'>Keine Daten für diesen Streamer in den letzten 30 Tagen.</div>"
 
@@ -1154,9 +1115,7 @@ class DashboardStatsMixin:
                 filter_descriptions.append(f"Stunde {start:02d} UTC")
             else:
                 wrap_hint = " (über Mitternacht)" if start > end else ""
-                filter_descriptions.append(
-                    f"Stunden {start:02d}–{end:02d} UTC{wrap_hint}"
-                )
+                filter_descriptions.append(f"Stunden {start:02d}–{end:02d} UTC{wrap_hint}")
         if not filter_descriptions:
             filter_descriptions.append("Keine Filter aktiv")
 
@@ -1216,9 +1175,7 @@ class DashboardStatsMixin:
             analysis_content = user_section
 
         discord_header_html = (
-            '<th data-sort-type="number">Auf Discord?</th>'
-            if show_discord_private
-            else ""
+            '<th data-sort-type="number">Auf Discord?</th>' if show_discord_private else ""
         )
 
         insights_html = ""
@@ -1330,7 +1287,7 @@ class DashboardStatsMixin:
 {script}
 """
 
-        nav_html: Optional[str] = None
+        nav_html: str | None = None
         if not show_discord_private:
             nav_html = '<nav class="tabs"><span class="tab active">Stats</span></nav>'
         if partner_view:

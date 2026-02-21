@@ -7,15 +7,14 @@ Klare Trennung zwischen:
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set
+from datetime import UTC, datetime
 
 from .storage import get_conn
 
 log = logging.getLogger("TwitchStreams.PartnerUtils")
 
 
-def _parse_db_datetime(value: Optional[str]) -> Optional[datetime]:
+def _parse_db_datetime(value: str | None) -> datetime | None:
     """Parse ISO datetime from DB."""
     if not value:
         return None
@@ -24,11 +23,11 @@ def _parse_db_datetime(value: Optional[str]) -> Optional[datetime]:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
-def is_partner(row: Dict[str, any], now_utc: Optional[datetime] = None) -> bool:
+def is_partner(row: dict[str, any], now_utc: datetime | None = None) -> bool:
     """
     Prüft ob ein Streamer ein verifizierter Partner ist.
 
@@ -42,7 +41,7 @@ def is_partner(row: Dict[str, any], now_utc: Optional[datetime] = None) -> bool:
     - is_monitored_only != 1
     """
     if now_utc is None:
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
 
     # Opt-out prüfen
     if bool(row.get("manual_partner_opt_out")):
@@ -70,7 +69,7 @@ def is_partner(row: Dict[str, any], now_utc: Optional[datetime] = None) -> bool:
     return False
 
 
-def get_all_partners(include_archived: bool = False) -> List[Dict]:
+def get_all_partners(include_archived: bool = False) -> list[dict]:
     """
     Gibt alle verifizierten Partner zurück.
 
@@ -106,7 +105,7 @@ def get_all_partners(include_archived: bool = False) -> List[Dict]:
         return [dict(row) for row in rows]
 
 
-def get_live_partners() -> List[Dict]:
+def get_live_partners() -> list[dict]:
     """
     Gibt alle aktuell live Partner zurück.
 
@@ -138,7 +137,7 @@ def get_live_partners() -> List[Dict]:
         return [dict(row) for row in rows]
 
 
-def get_monitored_only() -> Set[str]:
+def get_monitored_only() -> set[str]:
     """
     Gibt alle Monitored-Only Streamer zurück (nur Logins).
 
@@ -186,7 +185,7 @@ def is_partner_channel_for_chat_tracking(login: str) -> bool:
         return bool(row["is_partner_active"] if hasattr(row, "keys") else row[0])
 
 
-def get_partner_stats() -> Dict:
+def get_partner_stats() -> dict:
     """
     Gibt Statistiken über Partner und Monitored-Only Streamer zurück.
 

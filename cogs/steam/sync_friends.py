@@ -8,17 +8,16 @@ into the steam_links table, ensuring all bot friends are tracked in the database
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from discord.ext import commands
 
-from service import db
 from cogs.steam.steam_master import SteamTaskClient
+from service import db
 
 log = logging.getLogger(__name__)
 
 
-def _save_steam_friend_to_db(steam_id64: str, discord_id: Optional[int] = None) -> None:
+def _save_steam_friend_to_db(steam_id64: str, discord_id: int | None = None) -> None:
     """
     Save a Steam friend to the database.
 
@@ -65,7 +64,7 @@ def _save_steam_friend_to_db(steam_id64: str, discord_id: Optional[int] = None) 
             log.info("Saved new steam_link: steam=%s, discord=%s", steam_id64, uid)
 
 
-async def sync_all_friends(tasks: Optional[SteamTaskClient] = None) -> dict:
+async def sync_all_friends(tasks: SteamTaskClient | None = None) -> dict:
     """
     Synchronize all current Steam bot friends to the database.
 

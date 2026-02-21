@@ -12,7 +12,6 @@ import asyncio
 import json
 import logging
 import time
-from typing import Dict, Optional
 
 from discord.ext import commands
 
@@ -33,14 +32,12 @@ class BuildPublisher(commands.Cog):
         self.batch_size = 5  # Process max 5 builds per run
         self.wait_for_gc_ready = True  # Wait for GC instead of skipping
 
-        self._publisher_task: Optional[asyncio.Task] = None
-        self._monitor_task: Optional[asyncio.Task] = None
+        self._publisher_task: asyncio.Task | None = None
+        self._monitor_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
-        self.last_run_ts: Optional[int] = None
-        self.last_error: Optional[str] = None
-        self.consecutive_skips = (
-            0  # Track how many times we skipped due to GC not ready
-        )
+        self.last_run_ts: int | None = None
+        self.last_error: str | None = None
+        self.consecutive_skips = 0  # Track how many times we skipped due to GC not ready
 
         if self.enabled:
             self._publisher_task = bot.loop.create_task(self._publisher_loop())
@@ -85,7 +82,7 @@ class BuildPublisher(commands.Cog):
                 log.exception("Build monitor run failed")
             await asyncio.sleep(self.monitor_interval_seconds)
 
-    async def process_queue(self, *, triggered_by: str = "manual") -> Dict[str, int]:
+    async def process_queue(self, *, triggered_by: str = "manual") -> dict[str, int]:
         """Process pending builds in the queue."""
         if not self.enabled:
             return {"skipped": 1}
@@ -107,9 +104,7 @@ class BuildPublisher(commands.Cog):
             state_row = cursor.fetchone()
 
             if state_row:
-                payload = (
-                    json.loads(state_row["payload"]) if state_row["payload"] else {}
-                )
+                payload = json.loads(state_row["payload"]) if state_row["payload"] else {}
                 # Extract runtime state from nested payload structure
                 runtime = payload.get("runtime", {})
                 logged_in = runtime.get("logged_on", False)
@@ -126,9 +121,7 @@ class BuildPublisher(commands.Cog):
 
                 if not gc_ready:
                     self.consecutive_skips += 1
-                    skip_duration_min = self.consecutive_skips * (
-                        self.interval_seconds / 60
-                    )
+                    skip_duration_min = self.consecutive_skips * (self.interval_seconds / 60)
                     log.warning(
                         "Build publisher skipped: Deadlock GC not ready (skip #%s, total: %.0f min, waiting for handshake)",
                         self.consecutive_skips,
@@ -309,7 +302,7 @@ class BuildPublisher(commands.Cog):
 
             return stats
 
-    async def monitor_tasks(self) -> Dict[str, int]:
+    async def monitor_tasks(self) -> dict[str, int]:
         """Monitor running BUILD_PUBLISH tasks and update clone status."""
         stats = {"checked": 0, "completed": 0, "failed": 0, "reset_stale": 0}
 
@@ -331,9 +324,7 @@ class BuildPublisher(commands.Cog):
         )
         stats["reset_stale"] = stale_cursor.rowcount
         if stats["reset_stale"] > 0:
-            log.warning(
-                "Reset %s stale builds stuck in processing state", stats["reset_stale"]
-            )
+            log.warning("Reset %s stale builds stuck in processing state", stats["reset_stale"])
             # Autocommit mode - no explicit commit needed
 
         # Find processing clones with completed tasks
@@ -385,9 +376,7 @@ class BuildPublisher(commands.Cog):
                     ),
                 )
                 stats["completed"] += 1
-                log.info(
-                    "Build %s published successfully as #%s", origin_id, uploaded_id
-                )
+                log.info("Build %s published successfully as #%s", origin_id, uploaded_id)
 
             elif task_status == "FAILED":
                 error_msg = row["error"] or "Unknown error"
@@ -408,9 +397,7 @@ class BuildPublisher(commands.Cog):
                     ),
                 )
                 stats["failed"] += 1
-                log.warning(
-                    "Build %s publishing failed: %s", origin_id, error_msg[:100]
-                )
+                log.warning("Build %s publishing failed: %s", origin_id, error_msg[:100])
 
         # conn.commit() removed - db.py uses autocommit mode (isolation_level=None)
         # NOTE: Do NOT close the connection - it's the global shared connection

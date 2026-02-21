@@ -5,7 +5,6 @@ import asyncio
 import contextlib
 import logging
 import time
-from typing import Dict, Optional
 
 import discord
 from discord.ext import commands
@@ -25,16 +24,14 @@ MAX_RETRIES = 5
 class RenameManagerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._rename_task: Optional[asyncio.Task[None]] = None
-        self._last_rename_attempt_by_channel: Dict[int, float] = {}
+        self._rename_task: asyncio.Task[None] | None = None
+        self._last_rename_attempt_by_channel: dict[int, float] = {}
 
     async def cog_load(self):
         await self._ensure_db_schema()
         await self._recover_stuck_requests()
         if settings.use_db_rename_worker:
-            logger.info(
-                "RenameManagerCog loaded in enqueue-only mode (USE_DB_RENAME_WORKER=1)."
-            )
+            logger.info("RenameManagerCog loaded in enqueue-only mode (USE_DB_RENAME_WORKER=1).")
             return
         logger.info("RenameManagerCog loaded. Starting rename queue processor.")
         self._start_rename_processor()
@@ -87,9 +84,7 @@ class RenameManagerCog(commands.Cog):
             )
             """
         )
-        await db.execute_async(
-            "INSERT OR IGNORE INTO rename_global_state(id) VALUES (1)"
-        )
+        await db.execute_async("INSERT OR IGNORE INTO rename_global_state(id) VALUES (1)")
         await db.execute_async(
             "CREATE INDEX IF NOT EXISTS idx_rename_requests_status_created ON rename_requests(status, created_at, id)"
         )
@@ -109,9 +104,7 @@ class RenameManagerCog(commands.Cog):
             """
         )
 
-    async def _enqueue_request(
-        self, channel_id: int, new_name: str, reason: str
-    ) -> None:
+    async def _enqueue_request(self, channel_id: int, new_name: str, reason: str) -> None:
         channel_id = int(channel_id)
         new_name = str(new_name).strip()
         reason = str(reason or "Automated Rename").strip()
@@ -134,7 +127,7 @@ class RenameManagerCog(commands.Cog):
                 (channel_id, new_name, reason),
             )
 
-    async def _claim_next_request(self) -> Optional[Dict[str, object]]:
+    async def _claim_next_request(self) -> dict[str, object] | None:
         async with db.transaction() as conn:
             row = conn.execute(
                 """
@@ -170,7 +163,7 @@ class RenameManagerCog(commands.Cog):
             }
 
     async def _set_request_pending(
-        self, request_id: int, *, last_error: Optional[str], increment_retry: bool
+        self, request_id: int, *, last_error: str | None, increment_retry: bool
     ) -> None:
         if increment_retry:
             await db.execute_async(
@@ -289,9 +282,7 @@ class RenameManagerCog(commands.Cog):
                             channel.name,
                             retry_after,
                         )
-                        self._last_rename_attempt_by_channel[channel_id] = (
-                            time.monotonic()
-                        )
+                        self._last_rename_attempt_by_channel[channel_id] = time.monotonic()
                         await self._set_request_pending(
                             req_id,
                             last_error=f"HTTP 429 (retry_after={retry_after})",
@@ -311,9 +302,7 @@ class RenameManagerCog(commands.Cog):
                             )
                 except Exception as e:
                     if retry_count + 1 >= MAX_RETRIES:
-                        await self._set_request_failed(
-                            req_id, last_error=f"Unexpected error: {e}"
-                        )
+                        await self._set_request_failed(req_id, last_error=f"Unexpected error: {e}")
                     else:
                         await self._set_request_pending(
                             req_id,
@@ -324,9 +313,7 @@ class RenameManagerCog(commands.Cog):
                 logger.info("Rename queue processor (DB) cancelled.")
                 break
             except Exception as e:
-                logger.error(
-                    "Rename queue processor (DB) crashed: %s", e, exc_info=True
-                )
+                logger.error("Rename queue processor (DB) crashed: %s", e, exc_info=True)
                 await asyncio.sleep(ERROR_BACKOFF_SECONDS)
 
         logger.info("Rename queue processor (DB) stopped.")

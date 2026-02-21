@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Steam-Account-Verknüpfen Panel Cog.
 
@@ -30,6 +29,7 @@ _PANEL_CUSTOM_ID = "steam_link_panel:open"
 # Persistente Panel-View
 # ---------------------------------------------------------------------------
 
+
 class SteamLinkPanelView(discord.ui.View):
     """Persistente View die in der Panel-Message sitzt."""
 
@@ -43,10 +43,10 @@ class SteamLinkPanelView(discord.ui.View):
     )
     async def open_link(self, interaction: discord.Interaction, _button: discord.ui.Button):
         from cogs.steam.steam_link_oauth import (
-            PUBLIC_BASE_URL,
+            LINK_BUTTON_LABEL,
             LINK_COVER_IMAGE,
             LINK_COVER_LABEL,
-            LINK_BUTTON_LABEL,
+            PUBLIC_BASE_URL,
             STEAM_BUTTON_LABEL,
         )
 
@@ -63,28 +63,35 @@ class SteamLinkPanelView(discord.ui.View):
             "- **Steam**: direkter OpenID-Login bei Steam.\n\n"
             "Nach erfolgreicher Verknüpfung bekommst du automatisch eine Steam-Freundschaftsanfrage vom Bot."
         )
-        embed = discord.Embed(title="Account verknüpfen", description=desc, color=discord.Color.green())
+        embed = discord.Embed(
+            title="Account verknüpfen", description=desc, color=discord.Color.green()
+        )
         if LINK_COVER_IMAGE:
             embed.set_image(url=LINK_COVER_IMAGE)
         embed.set_author(name=LINK_COVER_LABEL)
 
         view = discord.ui.View()
-        view.add_item(discord.ui.Button(
-            style=discord.ButtonStyle.link,
-            label=LINK_BUTTON_LABEL,
-            url=f"{PUBLIC_BASE_URL}/discord/login?uid={uid}",
-        ))
-        view.add_item(discord.ui.Button(
-            style=discord.ButtonStyle.link,
-            label=STEAM_BUTTON_LABEL,
-            url=f"{PUBLIC_BASE_URL}/steam/login?uid={uid}",
-        ))
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label=LINK_BUTTON_LABEL,
+                url=f"{PUBLIC_BASE_URL}/discord/login?uid={uid}",
+            )
+        )
+        view.add_item(
+            discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label=STEAM_BUTTON_LABEL,
+                url=f"{PUBLIC_BASE_URL}/steam/login?uid={uid}",
+            )
+        )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
 # Cog
 # ---------------------------------------------------------------------------
+
 
 class SteamLinkPanel(commands.Cog):
     """Verwaltet das persistente Steam-Account-Verknüpfen-Panel."""
@@ -106,7 +113,9 @@ class SteamLinkPanel(commands.Cog):
     )
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(message_id="ID einer bestehenden Message die editiert werden soll (optional)")
+    @app_commands.describe(
+        message_id="ID einer bestehenden Message die editiert werden soll (optional)"
+    )
     async def publish_steam_panel(
         self,
         interaction: discord.Interaction,

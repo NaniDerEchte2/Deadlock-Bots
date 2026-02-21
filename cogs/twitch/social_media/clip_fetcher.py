@@ -8,7 +8,6 @@ Fetch-History in der Datenbank.
 import asyncio
 import logging
 import time
-from typing import Optional
 
 from discord.ext import commands
 
@@ -227,7 +226,7 @@ class ClipFetcher(commands.Cog):
 
     def get_fetch_history(
         self,
-        streamer_login: Optional[str] = None,
+        streamer_login: str | None = None,
         limit: int = 50,
     ) -> list:
         """

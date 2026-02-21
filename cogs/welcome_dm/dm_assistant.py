@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Optional
 
 import discord
 from discord.ext import commands
@@ -55,7 +54,7 @@ Discord Auto-Post (#🎥twitch), Chat-Promos alle ~30 Min. → Start mit /stream
 """
 
 
-def _check_cooldown(user_id: int) -> Optional[str]:
+def _check_cooldown(user_id: int) -> str | None:
     """Gibt eine Fehlermeldung zurück wenn der User im Cooldown ist, sonst None."""
     now = time.monotonic()
     timestamps = _COOLDOWNS.get(user_id, [])
@@ -63,9 +62,7 @@ def _check_cooldown(user_id: int) -> Optional[str]:
 
     if timestamps and (now - timestamps[-1]) < MIN_INTERVAL_SECONDS:
         wait = int(MIN_INTERVAL_SECONDS - (now - timestamps[-1])) + 1
-        return (
-            f"Bitte warte noch **{wait} Sekunden**, bevor du mir erneut schreibst. 😊"
-        )
+        return f"Bitte warte noch **{wait} Sekunden**, bevor du mir erneut schreibst. 😊"
 
     if len(timestamps) >= MAX_CALLS_PER_WINDOW:
         return (
@@ -111,9 +108,7 @@ class FallbackView(discord.ui.View):
         style=discord.ButtonStyle.primary,
         custom_id="dma:fallback:streamer",
     )
-    async def btn_streamer(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def btn_streamer(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
             "Nutze **/streamer** im Server, um den Streamer-Partner-Prozess zu starten!\n"
             "Als Partner bekommst du: Auto-Raid, Chat Guard, Analytics und mehr.",
@@ -125,9 +120,7 @@ class FallbackView(discord.ui.View):
         style=discord.ButtonStyle.secondary,
         custom_id="dma:fallback:beta",
     )
-    async def btn_beta(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def btn_beta(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
             "Für einen Deadlock Beta-Invite nutze **/betainvite** im Server.\n"
             "Alternativ schau im <#1428745737323155679> Channel vorbei.",
@@ -139,9 +132,7 @@ class FallbackView(discord.ui.View):
         style=discord.ButtonStyle.secondary,
         custom_id="dma:fallback:steam",
     )
-    async def btn_steam(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def btn_steam(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
             "Verknüpfe deinen Steam-Account mit **/steamlink** im Server.\n"
             'So erhältst du die Rolle **"Steam Verifiziert"**.',
@@ -153,9 +144,7 @@ class FallbackView(discord.ui.View):
         style=discord.ButtonStyle.secondary,
         custom_id="dma:fallback:faq",
     )
-    async def btn_faq(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def btn_faq(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
             "Nutze **/faq** oder **/serverfaq <frage>** im Server für häufig gestellte Fragen.\n"
             "Du kannst mir hier auch direkt deine Frage stellen!",

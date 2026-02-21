@@ -4,9 +4,9 @@ Aktiviert automatisch beim Bot-Start, ohne manuelle Intervention
 Windows-kompatibel mit .cmd/.bat Hooks
 """
 
-import sys
-import stat
 import logging
+import stat
+import sys
 from pathlib import Path
 
 logger = logging.getLogger("HookAutoSetup")
@@ -100,7 +100,7 @@ def _configure_git_hooks_path(git_root: Path) -> None:
             ["git", "config", "core.hooksPath", ".git/hooks"],  # noqa: S607
             cwd=str(git_root),
             capture_output=True,
-            universal_newlines=True,
+            text=True,
             timeout=5,
         )
 
@@ -110,9 +110,7 @@ def _configure_git_hooks_path(git_root: Path) -> None:
             logger.debug("Git hooks path bereits konfiguriert")
 
     except Exception as exc:
-        logger.debug(
-            "Git config für hooks path fehlgeschlagen (nicht kritisch): %s", exc
-        )
+        logger.debug("Git config für hooks path fehlgeschlagen (nicht kritisch): %s", exc)
 
 
 # Auto-Run beim Import

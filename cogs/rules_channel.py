@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Rules Panel Cog - startet das statische Multi-Step Onboarding im privaten Thread.
 - Persistente Panel-View (nur custom_id-Buttons, kein Link-Button)
@@ -8,16 +7,17 @@ Rules Panel Cog - startet das statische Multi-Step Onboarding im privaten Thread
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import discord
-from discord.ext import commands
 from discord import app_commands
+from discord.ext import commands
 
 # ========== Konfiguration ==========
 MAIN_GUILD_ID = 1289721245281292288
 RULES_CHANNEL_ID = 1315684135175716975
-PANEL_MESSAGE_ID = 1413481216509874207  # Bestehende Panel-Message – wird editiert statt neu gepostet
+PANEL_MESSAGE_ID = (
+    1413481216509874207  # Bestehende Panel-Message – wird editiert statt neu gepostet
+)
 
 log = logging.getLogger("RulesPanel")
 
@@ -25,7 +25,7 @@ log = logging.getLogger("RulesPanel")
 # ------------------------------ Helpers ------------------------------ #
 async def _create_user_thread(
     interaction: discord.Interaction,
-) -> Optional[discord.Thread]:
+) -> discord.Thread | None:
     """Erstellt einen (bevorzugt) privaten Thread im Regelkanal und fügt den Nutzer hinzu."""
     guild = interaction.guild
     if not guild:
@@ -74,7 +74,7 @@ async def _create_user_thread(
 
 # ------------------------------ Panel-View (persistent) ------------------------------ #
 class RulesPanelView(discord.ui.View):
-    def __init__(self, cog: "RulesPanel"):
+    def __init__(self, cog: RulesPanel):
         super().__init__(timeout=None)  # PERSISTENT
         self.cog = cog
 
@@ -97,9 +97,7 @@ class RulesPanel(commands.Cog):
         self.bot.add_view(RulesPanelView(self))
         log.info("✅ Rules Panel geladen (Panel-View aktiv)")
 
-    @app_commands.command(
-        name="publish_rules_panel", description="(Admin) Regelwerk-Panel posten"
-    )
+    @app_commands.command(name="publish_rules_panel", description="(Admin) Regelwerk-Panel posten")
     @app_commands.checks.has_permissions(administrator=True)
     async def publish_rules_panel(self, interaction: discord.Interaction):
         guild = self.bot.get_guild(MAIN_GUILD_ID)
@@ -120,7 +118,7 @@ class RulesPanel(commands.Cog):
         emb = discord.Embed(
             title="\U0001f4dc Regelwerk \u00b7 Deutsche Deadlock Community",
             description=(
-                "### Neu hier? Klick auf **Hier starten \u27a4**\n" 
+                "### Neu hier? Klick auf **Hier starten \u27a4**\n"
                 "und wir erkl\u00e4ren dir alles in 5 Minuten.\n\n\n"
                 "**Verhalten**\n"
                 "- Respekt gegen\u00fcber allen \u2013 keine Beleidigungen, Diskriminierung oder pers\u00f6nlichen Angriffe\n"
@@ -146,7 +144,9 @@ class RulesPanel(commands.Cog):
             await interaction.response.send_message("✅ Panel aktualisiert.", ephemeral=True)
         except discord.NotFound:
             await ch.send(embed=emb, view=view)
-            await interaction.response.send_message("✅ Panel neu gesendet (alte Message nicht gefunden).", ephemeral=True)
+            await interaction.response.send_message(
+                "✅ Panel neu gesendet (alte Message nicht gefunden).", ephemeral=True
+            )
         except Exception as e:
             log.error("Panel-Edit fehlgeschlagen: %s", e)
             await interaction.response.send_message(f"❌ Fehler: {e}", ephemeral=True)
@@ -166,7 +166,8 @@ class RulesPanel(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             log.warning(
                 "Regelkanal %s nicht gefunden beim Auto-Onboarding für %s",
-                RULES_CHANNEL_ID, member.id,
+                RULES_CHANNEL_ID,
+                member.id,
             )
             return
 

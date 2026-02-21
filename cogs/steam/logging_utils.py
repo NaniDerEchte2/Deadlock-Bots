@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
-
+from collections.abc import Mapping
+from typing import Any
 
 _CONTROL_REPLACEMENTS = {
     ord("\r"): "\\r",
@@ -44,10 +44,7 @@ def sanitize_log_value(value: Any) -> Any:
 
 def safe_log_extra(data: Mapping[str, Any]) -> dict:
     """Return a dict that is safe to use with logging's ``extra`` parameter."""
-    return {
-        _sanitize_str(str(key)): sanitize_log_value(value)
-        for key, value in data.items()
-    }
+    return {_sanitize_str(str(key)): sanitize_log_value(value) for key, value in data.items()}
 
 
 __all__ = ["sanitize_log_value", "safe_log_extra"]

@@ -16,11 +16,11 @@ def _load_submodule(name: str, *, required: Literal[True]) -> ModuleType:
 
 
 @overload
-def _load_submodule(name: str, *, required: bool = False) -> Optional[ModuleType]:
+def _load_submodule(name: str, *, required: bool = False) -> ModuleType | None:
     pass
 
 
-def _load_submodule(name: str, *, required: bool = False) -> Optional[ModuleType]:
+def _load_submodule(name: str, *, required: bool = False) -> ModuleType | None:
     """Import a submodule defensively, treating some imports as optional."""
     try:
         if name == "db":

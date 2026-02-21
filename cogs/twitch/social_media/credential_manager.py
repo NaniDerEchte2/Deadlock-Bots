@@ -14,16 +14,16 @@ Features:
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Dict, Optional
+from datetime import UTC, datetime
+
+from service.field_crypto import DecryptFailed, get_crypto
 
 from ..storage import get_conn
-from service.field_crypto import get_crypto, DecryptFailed
 
 log = logging.getLogger("TwitchStreams.CredentialManager")
 
 
-def _sanitize_log_value(value: Optional[str]) -> str:
+def _sanitize_log_value(value: str | None) -> str:
     """Prevent CRLF log-forging via untrusted values."""
     if value is None:
         return "<none>"
@@ -37,9 +37,7 @@ class SocialMediaCredentialManager:
         """Initialize credential manager with crypto."""
         self.crypto = get_crypto()
 
-    def get_credentials(
-        self, platform: str, streamer_login: Optional[str] = None
-    ) -> Optional[Dict]:
+    def get_credentials(self, platform: str, streamer_login: str | None = None) -> dict | None:
         """
         Fetch and decrypt credentials for a platform.
 
@@ -91,26 +89,26 @@ class SocialMediaCredentialManager:
 
             try:
                 # Decrypt access token
-                aad_access = f"social_media_platform_auth|access_token|{row_id}|{row['enc_version']}"
-                access_token = self.crypto.decrypt_field(
-                    row["access_token_enc"], aad_access
+                aad_access = (
+                    f"social_media_platform_auth|access_token|{row_id}|{row['enc_version']}"
                 )
+                access_token = self.crypto.decrypt_field(row["access_token_enc"], aad_access)
 
                 # Decrypt refresh token (if exists)
                 refresh_token = None
                 if row["refresh_token_enc"]:
-                    aad_refresh = f"social_media_platform_auth|refresh_token|{row_id}|{row['enc_version']}"
-                    refresh_token = self.crypto.decrypt_field(
-                        row["refresh_token_enc"], aad_refresh
+                    aad_refresh = (
+                        f"social_media_platform_auth|refresh_token|{row_id}|{row['enc_version']}"
                     )
+                    refresh_token = self.crypto.decrypt_field(row["refresh_token_enc"], aad_refresh)
 
                 # Decrypt client secret (if exists)
                 client_secret = None
                 if row["client_secret_enc"]:
-                    aad_secret = f"social_media_platform_auth|client_secret|{row_id}|{row['enc_version']}"
-                    client_secret = self.crypto.decrypt_field(
-                        row["client_secret_enc"], aad_secret
+                    aad_secret = (
+                        f"social_media_platform_auth|client_secret|{row_id}|{row['enc_version']}"
                     )
+                    client_secret = self.crypto.decrypt_field(row["client_secret_enc"], aad_secret)
 
                 # Return decrypted credentials
                 return {
@@ -146,7 +144,7 @@ class SocialMediaCredentialManager:
                 )
                 return None
 
-    def is_token_expired(self, credentials: Dict) -> bool:
+    def is_token_expired(self, credentials: dict) -> bool:
         """
         Check if token is expired or near expiry.
 
@@ -160,10 +158,8 @@ class SocialMediaCredentialManager:
             return True
 
         try:
-            expires_at = datetime.fromisoformat(
-                credentials["expires_at"].replace("Z", "+00:00")
-            )
-            now = datetime.now(timezone.utc)
+            expires_at = datetime.fromisoformat(credentials["expires_at"].replace("Z", "+00:00"))
+            now = datetime.now(UTC)
 
             # Consider expired if less than 1 hour remaining
             time_remaining = (expires_at - now).total_seconds()
@@ -172,9 +168,7 @@ class SocialMediaCredentialManager:
             log.exception("Failed to parse expiry time")
             return True
 
-    def get_all_platforms_status(
-        self, streamer_login: Optional[str] = None
-    ) -> Dict[str, Dict]:
+    def get_all_platforms_status(self, streamer_login: str | None = None) -> dict[str, dict]:
         """
         Get connection status for all platforms.
 

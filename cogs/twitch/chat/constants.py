@@ -1,6 +1,5 @@
 import logging
 import re
-from typing import List, Set
 
 # ---------------------------------------------------------------------------
 # Optional twitchio dependency
@@ -98,7 +97,7 @@ SPAM_MIN_MATCHES = 3
 # ---------------------------------------------------------------------------
 # Periodische Chat-Promos
 # ---------------------------------------------------------------------------
-PROMO_MESSAGES: List[str] = [
+PROMO_MESSAGES: list[str] = [
     "heyo! Falls ihr bock habt auf Deadlock und noch eine deutsche Community sucht – schau gerne mal vorbei: {invite}",
     "Hey! Noch eine deutsche Deadlock-Community am suchen? Wir sind hier: {invite} 🎮",
     "Falls du noch eine deutsche Deadlock-Community sucht – schau doch mal vorbei: {invite}",
@@ -109,7 +108,7 @@ _PROMO_INTERVAL_MIN: int = 30
 
 # Promo-Activity (ohne ENV; hier direkt konfigurieren)
 _PROMO_ACTIVITY_ENABLED: bool = True
-PROMO_CHANNEL_ALLOWLIST: Set[str] = set()
+PROMO_CHANNEL_ALLOWLIST: set[str] = set()
 PROMO_ACTIVITY_WINDOW_MIN: int = 8
 PROMO_ACTIVITY_MIN_MSGS: int = 5
 PROMO_ACTIVITY_MIN_CHATTERS: int = 1
@@ -148,18 +147,12 @@ PROMO_IGNORE_COMMANDS = bool(PROMO_IGNORE_COMMANDS)
 PROMO_LOOP_INTERVAL_SEC = max(1, int(PROMO_LOOP_INTERVAL_SEC))
 PROMO_VIEWER_SPIKE_ENABLED = bool(PROMO_VIEWER_SPIKE_ENABLED)
 PROMO_VIEWER_SPIKE_COOLDOWN_MIN = max(0, int(PROMO_VIEWER_SPIKE_COOLDOWN_MIN))
-PROMO_VIEWER_SPIKE_MIN_CHAT_SILENCE_SEC = max(
-    0, int(PROMO_VIEWER_SPIKE_MIN_CHAT_SILENCE_SEC)
-)
+PROMO_VIEWER_SPIKE_MIN_CHAT_SILENCE_SEC = max(0, int(PROMO_VIEWER_SPIKE_MIN_CHAT_SILENCE_SEC))
 PROMO_VIEWER_SPIKE_MIN_RATIO = max(1.0, float(PROMO_VIEWER_SPIKE_MIN_RATIO))
 PROMO_VIEWER_SPIKE_MIN_DELTA = max(0, int(PROMO_VIEWER_SPIKE_MIN_DELTA))
 PROMO_VIEWER_SPIKE_MIN_SESSIONS = max(1, int(PROMO_VIEWER_SPIKE_MIN_SESSIONS))
-PROMO_VIEWER_SPIKE_SESSION_SAMPLE_LIMIT = max(
-    1, int(PROMO_VIEWER_SPIKE_SESSION_SAMPLE_LIMIT)
-)
-PROMO_VIEWER_SPIKE_STATS_SAMPLE_LIMIT = max(
-    1, int(PROMO_VIEWER_SPIKE_STATS_SAMPLE_LIMIT)
-)
+PROMO_VIEWER_SPIKE_SESSION_SAMPLE_LIMIT = max(1, int(PROMO_VIEWER_SPIKE_SESSION_SAMPLE_LIMIT))
+PROMO_VIEWER_SPIKE_STATS_SAMPLE_LIMIT = max(1, int(PROMO_VIEWER_SPIKE_STATS_SAMPLE_LIMIT))
 PROMO_VIEWER_SPIKE_MIN_STATS_SAMPLES = max(1, int(PROMO_VIEWER_SPIKE_MIN_STATS_SAMPLES))
 if _PROMO_ACTIVITY_ENABLED and not PROMO_MESSAGES:
     _PROMO_ACTIVITY_ENABLED = False

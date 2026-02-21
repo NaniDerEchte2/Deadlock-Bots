@@ -5,13 +5,13 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Tuple, Optional
+from typing import Any
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from service import faq_logs, changelogs
+from service import changelogs, faq_logs
 
 log = logging.getLogger(__name__)
 
@@ -180,10 +180,10 @@ class FAQModal(discord.ui.Modal):
 
     def __init__(
         self,
-        faq_cog: "ServerFAQ",
+        faq_cog: ServerFAQ,
         *,
         title: str = "Server FAQ",
-        default_question: Optional[str] = None,
+        default_question: str | None = None,
     ) -> None:
         super().__init__(title=title, timeout=None)
         self.faq_cog = faq_cog
@@ -208,7 +208,7 @@ class FAQModal(discord.ui.Modal):
 class FAQAskView(discord.ui.View):
     """View mit Button, um das FAQ-Modal aufzurufen."""
 
-    def __init__(self, faq_cog: "ServerFAQ") -> None:
+    def __init__(self, faq_cog: ServerFAQ) -> None:
         super().__init__(timeout=120)
         self.faq_cog = faq_cog
 
@@ -220,7 +220,7 @@ class FAQAskView(discord.ui.View):
     async def ask_button(
         self,
         interaction: discord.Interaction,
-        button: discord.ui.Button["FAQAskView"],
+        button: discord.ui.Button[FAQAskView],
     ) -> None:  # pragma: no cover
         if interaction.response.is_done():
             await interaction.followup.send(
@@ -249,10 +249,10 @@ class ServerFAQ(commands.Cog):
         question: str,
         user: discord.abc.User | discord.Member | None,
         channel: discord.abc.GuildChannel | discord.Thread | None,
-    ) -> Tuple[str, Dict[str, Any]]:
+    ) -> tuple[str, dict[str, Any]]:
         """Fragt das Sprachmodell an und gibt Antwort + Metadaten zurück."""
 
-        metadata: Dict[str, Any] = {
+        metadata: dict[str, Any] = {
             "user_id": getattr(user, "id", None),
             "channel_id": getattr(channel, "id", None),
             "guild_id": getattr(getattr(channel, "guild", None), "id", None)
@@ -267,9 +267,7 @@ class ServerFAQ(commands.Cog):
             context_parts.append(f"Patchnotes:\n{patchnote_context}")
 
         composed_user_prompt = (
-            "Kontext:\n"
-            + "\n\n".join(context_parts)
-            + f"\n\nFrage:\n{question.strip()}"
+            "Kontext:\n" + "\n\n".join(context_parts) + f"\n\nFrage:\n{question.strip()}"
         )
 
         ai = getattr(self.bot, "get_cog", lambda name: None)("AIConnector")

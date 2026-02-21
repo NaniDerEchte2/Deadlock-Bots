@@ -1,11 +1,12 @@
-import discord
-from discord.ext import commands
 import asyncio
-import sys
 import json
 import logging
+import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
+
+import discord
+from discord.ext import commands
 
 from service import db as central_db
 
@@ -76,12 +77,8 @@ class ClaimView(discord.ui.View):
         style=discord.ButtonStyle.primary,
         custom_id="claim_button",
     )
-    async def claim_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
-        has_staff_role = any(
-            role.id == STAFF_ROLE_ID for role in interaction.user.roles
-        )
+    async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        has_staff_role = any(role.id == STAFF_ROLE_ID for role in interaction.user.roles)
         if not has_staff_role:
             await interaction.response.send_message(
                 "Du hast nicht die Berechtigung, das Coaching zu übernehmen.",
@@ -108,9 +105,7 @@ class ClaimView(discord.ui.View):
         self.cog.mark_thread_claimed(self.thread_id, interaction.user.id)
         button.disabled = True
         await interaction.message.edit(view=self)
-        await interaction.channel.send(
-            f"<@{interaction.user.id}> hat dieses Coaching übernommen."
-        )
+        await interaction.channel.send(f"<@{interaction.user.id}> hat dieses Coaching übernommen.")
         await interaction.response.send_message(
             "Du hast dieses Coaching erfolgreich übernommen.", ephemeral=True
         )
@@ -120,12 +115,8 @@ class ClaimView(discord.ui.View):
         style=discord.ButtonStyle.secondary,
         custom_id="release_button",
     )
-    async def release_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
-        has_staff_role = any(
-            role.id == STAFF_ROLE_ID for role in interaction.user.roles
-        )
+    async def release_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        has_staff_role = any(role.id == STAFF_ROLE_ID for role in interaction.user.roles)
         if not has_staff_role:
             await interaction.response.send_message(
                 "Du hast nicht die Berechtigung, dieses Coaching freizugeben.",
@@ -148,9 +139,9 @@ class ClaimView(discord.ui.View):
 class ClaimSystem(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.claimed_threads: Dict[str, Optional[int]] = {}
-        self._server: Optional[asyncio.AbstractServer] = None
-        self._server_task: Optional[asyncio.Task] = None
+        self.claimed_threads: dict[str, int | None] = {}
+        self._server: asyncio.AbstractServer | None = None
+        self._server_task: asyncio.Task | None = None
         self._init_db()
         self.load_claimed_threads()
 
@@ -167,12 +158,8 @@ class ClaimSystem(commands.Cog):
 
     def load_claimed_threads(self):
         with central_db.get_conn() as conn:
-            rows = conn.execute(
-                "SELECT thread_id, claimed_by_id FROM claimed_threads"
-            ).fetchall()
-        self.claimed_threads = {
-            str(r[0]): (int(r[1]) if r[1] is not None else None) for r in rows
-        }
+            rows = conn.execute("SELECT thread_id, claimed_by_id FROM claimed_threads").fetchall()
+        self.claimed_threads = {str(r[0]): (int(r[1]) if r[1] is not None else None) for r in rows}
 
     def mark_thread_processed(self, thread_id: int, assigned_user_id: int):
         with central_db.get_conn() as conn:
@@ -223,9 +210,7 @@ class ClaimSystem(commands.Cog):
                 self._server = await asyncio.start_server(
                     self._handle_client, SOCKET_HOST, SOCKET_PORT
                 )
-                log.info(
-                    f"ClaimSystem: Socket-Server gestartet auf {SOCKET_HOST}:{SOCKET_PORT}"
-                )
+                log.info(f"ClaimSystem: Socket-Server gestartet auf {SOCKET_HOST}:{SOCKET_PORT}")
                 async with self._server:
                     await self._server.serve_forever()
                 return
@@ -246,9 +231,7 @@ class ClaimSystem(commands.Cog):
                 log.exception("ClaimSystem: Unerwarteter Fehler im Socket-Server")
                 break
 
-    async def _handle_client(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ):
+    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         addr = writer.get_extra_info("peername")
         log.debug(f"ClaimSystem: Verbindung von {addr}")
         try:
@@ -264,7 +247,7 @@ class ClaimSystem(commands.Cog):
             writer.close()
             await writer.wait_closed()
 
-    async def process_notification_data(self, data: Dict[str, Any]):
+    async def process_notification_data(self, data: dict[str, Any]):
         try:
             thread_id = data.get("thread_id")
             if not thread_id:

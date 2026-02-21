@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """AI-gestütztes Onboarding mit kurzen Fragen und personalisierter Tour."""
 
 from __future__ import annotations
@@ -8,13 +7,13 @@ import logging
 import os
 from dataclasses import dataclass
 from textwrap import dedent
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import discord
 from discord.ext import commands
 
-from service import db as service_db
 from cogs import privacy_core as privacy
+from service import db as service_db
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +37,7 @@ ROLE_PATCHNOTES_PING_ID = 1330994309524357140
 ROLE_RANKED_ID = 1420466763262591120
 ROLE_CASUAL_ID = 1420466468746690621
 
-ROLE_LABELS: Dict[int, str] = {
+ROLE_LABELS: dict[int, str] = {
     ROLE_STREAMER_ONBOARD_ID: "Streamer Onboarding Rolle",
     ROLE_STREAMER_PARTNER_ID: "Streamer Partner Rolle",
     ROLE_LFG_PING_ID: "Spieler-Suche Ping Rolle",
@@ -200,15 +199,11 @@ def _build_role_context_block(user: discord.abc.User, answers: UserAnswers) -> s
     if lfg_ping:
         hint_lines.append("- Spieler-Suche Ping: #🎮spieler-suche erwähnen.")
     if custom_games_ping:
-        hint_lines.append(
-            "- Custom Games Ping: #🧩custom-games-chat und #📍Sammelpunkt erwähnen."
-        )
+        hint_lines.append("- Custom Games Ping: #🧩custom-games-chat und #📍Sammelpunkt erwähnen.")
     if patchnotes_ping:
         hint_lines.append("- Patchnotes Ping: #📝patchnotes erwähnen.")
     if ranked_role:
-        hint_lines.append(
-            "- Ranked/Rang: #🏆rang-auswahl und Ranked/Competitiv Lane erwähnen."
-        )
+        hint_lines.append("- Ranked/Rang: #🏆rang-auswahl und Ranked/Competitiv Lane erwähnen.")
     if casual_role:
         hint_lines.append("- Casual/Spaß: Spaß Lane erwähnen.")
 
@@ -221,7 +216,7 @@ def _build_role_context_block(user: discord.abc.User, answers: UserAnswers) -> s
 
 
 class QuickActionsView(discord.ui.View):
-    def __init__(self, *, allowed_user_id: Optional[int]):
+    def __init__(self, *, allowed_user_id: int | None):
         super().__init__(timeout=1200)
         self.allowed_user_id = allowed_user_id
 
@@ -265,9 +260,7 @@ class QuickActionsView(discord.ui.View):
         custom_id="aiob:rules_confirm",
         row=2,
     )
-    async def confirm_rules(
-        self, interaction: discord.Interaction, _button: discord.ui.Button
-    ):
+    async def confirm_rules(self, interaction: discord.Interaction, _button: discord.ui.Button):
         if self.allowed_user_id and interaction.user.id != self.allowed_user_id:
             await interaction.response.send_message(
                 "Dieses Onboarding gehört jemand anderem – bitte den eigenen Button nutzen.",
@@ -276,9 +269,7 @@ class QuickActionsView(discord.ui.View):
             return
 
         guild = interaction.guild or getattr(interaction.channel, "guild", None)
-        member = (
-            interaction.user if isinstance(interaction.user, discord.Member) else None
-        )
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
         if not guild or not member:
             await interaction.response.send_message(
                 "Ich konnte dich gerade nicht als Server-Mitglied zuordnen. Probier es kurz später erneut.",
@@ -301,9 +292,7 @@ class QuickActionsView(discord.ui.View):
             try:
                 await member.add_roles(role, reason="AI Onboarding: Regeln bestätigt")
             except Exception as exc:  # pragma: no cover - defensive logging
-                log.warning(
-                    "Konnte ONBOARD-Rolle nicht setzen (%s): %s", member.id, exc
-                )
+                log.warning("Konnte ONBOARD-Rolle nicht setzen (%s): %s", member.id, exc)
                 await interaction.response.send_message(
                     "Ich konnte die Onboarding-Rolle nicht setzen. Bitte kurz dem Team Bescheid geben.",
                     ephemeral=True,
@@ -315,9 +304,7 @@ class QuickActionsView(discord.ui.View):
                 "Danke! Viel Spaß auf dem Server. 😊", ephemeral=True
             )
         else:
-            await interaction.followup.send(
-                "Danke! Viel Spaß auf dem Server. 😊", ephemeral=True
-            )
+            await interaction.followup.send("Danke! Viel Spaß auf dem Server. 😊", ephemeral=True)
 
 
 class OnboardingQuestionsModal(discord.ui.Modal):
@@ -325,10 +312,10 @@ class OnboardingQuestionsModal(discord.ui.Modal):
 
     def __init__(
         self,
-        cog: "AIOnboarding",
+        cog: AIOnboarding,
         *,
-        allowed_user_id: Optional[int],
-        thread_id: Optional[int],
+        allowed_user_id: int | None,
+        thread_id: int | None,
     ):
         super().__init__(title="Dein Start auf dem Server", timeout=None)
         self.cog = cog
@@ -405,11 +392,11 @@ class StartOnboardingView(discord.ui.View):
 
     def __init__(
         self,
-        cog: "AIOnboarding",
+        cog: AIOnboarding,
         *,
-        allowed_user_id: Optional[int],
-        thread_id: Optional[int],
-        message_id: Optional[int] = None,
+        allowed_user_id: int | None,
+        thread_id: int | None,
+        message_id: int | None = None,
     ):
         super().__init__(timeout=None)
         self.cog = cog
@@ -452,9 +439,7 @@ class AIOnboarding(commands.Cog):
         log.info("AI Onboarding geladen (persistente Start-Buttons aktiv).")
 
     # ---------- Persistence ----------
-    def _persist_view(
-        self, message_id: int, user_id: Optional[int], thread_id: Optional[int]
-    ) -> None:
+    def _persist_view(self, message_id: int, user_id: int | None, thread_id: int | None) -> None:
         payload = {"user_id": user_id, "thread_id": thread_id}
         try:
             encoded = json.dumps(payload)
@@ -468,9 +453,7 @@ class AIOnboarding(commands.Cog):
                     (NS_PERSIST_VIEWS, str(message_id), encoded),
                 )
         except Exception:
-            log.exception(
-                "Konnte persistente View nicht speichern (message_id=%s)", message_id
-            )
+            log.exception("Konnte persistente View nicht speichern (message_id=%s)", message_id)
 
     def _clear_persisted_view(self, message_id: int) -> None:
         try:
@@ -494,9 +477,7 @@ class AIOnboarding(commands.Cog):
                     (NS_PERSIST_VIEWS,),
                 ).fetchall()
         except Exception:
-            log.exception(
-                "Persistente AI-Onboarding-Views konnten nicht geladen werden"
-            )
+            log.exception("Persistente AI-Onboarding-Views konnten nicht geladen werden")
             return
 
         restored = 0
@@ -533,8 +514,8 @@ class AIOnboarding(commands.Cog):
         *,
         answers: UserAnswers,
         user: discord.abc.User,
-    ) -> Tuple[str, Dict[str, Any]]:
-        meta: Dict[str, Any] = {}
+    ) -> tuple[str, dict[str, Any]]:
+        meta: dict[str, Any] = {}
         role_context = _build_role_context_block(user, answers)
 
         prompt = dedent(
@@ -631,9 +612,9 @@ class AIOnboarding(commands.Cog):
         self,
         *,
         user_id: int,
-        thread_id: Optional[int],
+        thread_id: int | None,
         answers: UserAnswers,
-        llm_meta: Dict[str, Any],
+        llm_meta: dict[str, Any],
     ) -> None:
         if privacy.is_opted_out(user_id):
             return

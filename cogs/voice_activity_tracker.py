@@ -1,18 +1,19 @@
-import discord
-from discord.ext import commands, tasks
 import asyncio
-import logging
 import json
+import logging
 import os
 import time
-from datetime import datetime, timedelta
-from typing import Dict, Optional, Union
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+import discord
+from discord.ext import commands, tasks
+
+from cogs import privacy_core as privacy
 
 # zentrale DB-API (synchron, mit internem Lock), KEINE eigenen Tabellen-Anlagen hier!
 from service import db as central_db
-from cogs import privacy_core as privacy
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +25,7 @@ def central_db_path() -> str:
         return central_db._db_file()
     except Exception:
         # Fallback NUR für Anzeige, nicht für Zugriff
-        return os.path.expandvars(
-            r"%USERPROFILE%\Documents\Deadlock\service\deadlock.sqlite3"
-        )
+        return os.path.expandvars(r"%USERPROFILE%\Documents\Deadlock\service\deadlock.sqlite3")
 
 
 # ========= Defaults (werden pro Guild via kv_store überschrieben) =========
@@ -40,13 +39,13 @@ class VoiceTrackerConfig:
     max_sessions_per_user: int = 100
 
 
-VOICE_FEEDBACK_ENABLED = str(
-    os.getenv("VOICE_FEEDBACK_ENABLED", "1")
-).strip().lower() not in ("0", "false", "no")
-VOICE_FEEDBACK_MIN_SECONDS = int(os.getenv("VOICE_FEEDBACK_MIN_SECONDS", "300"))
-VOICE_FEEDBACK_RESPONSE_WINDOW = int(
-    os.getenv("VOICE_FEEDBACK_RESPONSE_WINDOW", str(72 * 3600))
+VOICE_FEEDBACK_ENABLED = str(os.getenv("VOICE_FEEDBACK_ENABLED", "1")).strip().lower() not in (
+    "0",
+    "false",
+    "no",
 )
+VOICE_FEEDBACK_MIN_SECONDS = int(os.getenv("VOICE_FEEDBACK_MIN_SECONDS", "300"))
+VOICE_FEEDBACK_RESPONSE_WINDOW = int(os.getenv("VOICE_FEEDBACK_RESPONSE_WINDOW", str(72 * 3600)))
 VOICE_FEEDBACK_MAX_NAMES = 10
 VOICE_FEEDBACK_FORWARD_USER_ID = int(
     os.getenv("VOICE_FEEDBACK_FORWARD_USER_ID", "662995601738170389")
@@ -60,7 +59,7 @@ class VoiceFeedbackModal(discord.ui.Modal):
         self,
         cog: "VoiceActivityTrackerCog",
         request_id: int,
-        forward_user_id: Optional[int],
+        forward_user_id: int | None,
     ):
         super().__init__(title="Kurzes Voice-Feedback")
         self.cog = cog
@@ -130,9 +129,7 @@ class VoiceFeedbackModal(discord.ui.Modal):
                 ephemeral=True,
             )
         except Exception as exc:
-            logger.debug(
-                "Konnte Feedback-Modal-Antwort nicht senden: %s", exc, exc_info=True
-            )
+            logger.debug("Konnte Feedback-Modal-Antwort nicht senden: %s", exc, exc_info=True)
 
         try:
             req_row = central_db.query_one(
@@ -175,7 +172,7 @@ class VoiceFeedbackView(discord.ui.View):
         self,
         cog: "VoiceActivityTrackerCog",
         request_id: int,
-        forward_user_id: Optional[int],
+        forward_user_id: int | None,
     ):
         # persistent view (restored on cog_load)
         super().__init__(timeout=None)
@@ -189,9 +186,7 @@ class VoiceFeedbackView(discord.ui.View):
         emoji="📝",
         custom_id="voice_feedback:start",
     )
-    async def start_feedback(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def start_feedback(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.request_id:
             try:
                 row = central_db.query_one(
@@ -264,9 +259,9 @@ class ConfigManager:
 
     def __init__(self, defaults: VoiceTrackerConfig):
         self.defaults = defaults
-        self._cache: Dict[int, VoiceTrackerConfig] = {}
+        self._cache: dict[int, VoiceTrackerConfig] = {}
 
-    def _load_from_db(self, guild_id: int) -> Optional[VoiceTrackerConfig]:
+    def _load_from_db(self, guild_id: int) -> VoiceTrackerConfig | None:
         raw = central_db.get_kv(self.NS, str(guild_id))
         if not raw:
             return None
@@ -274,20 +269,14 @@ class ConfigManager:
             d = json.loads(raw)
             return VoiceTrackerConfig(
                 min_users_for_tracking=int(
-                    d.get(
-                        "min_users_for_tracking", self.defaults.min_users_for_tracking
-                    )
+                    d.get("min_users_for_tracking", self.defaults.min_users_for_tracking)
                 ),
                 grace_period_duration=int(
                     d.get("grace_period_duration", self.defaults.grace_period_duration)
                 ),
-                session_timeout=int(
-                    d.get("session_timeout", self.defaults.session_timeout)
-                ),
+                session_timeout=int(d.get("session_timeout", self.defaults.session_timeout)),
                 afk_timeout=int(d.get("afk_timeout", self.defaults.afk_timeout)),
-                special_role_id=int(
-                    d.get("special_role_id", self.defaults.special_role_id)
-                ),
+                special_role_id=int(d.get("special_role_id", self.defaults.special_role_id)),
                 max_sessions_per_user=int(
                     d.get("max_sessions_per_user", self.defaults.max_sessions_per_user)
                 ),
@@ -304,9 +293,7 @@ class ConfigManager:
             "special_role_id": cfg.special_role_id,
             "max_sessions_per_user": cfg.max_sessions_per_user,
         }
-        central_db.set_kv(
-            self.NS, str(guild_id), json.dumps(payload, separators=(",", ":"))
-        )
+        central_db.set_kv(self.NS, str(guild_id), json.dumps(payload, separators=(",", ":")))
 
     async def get(self, guild_id: int) -> VoiceTrackerConfig:
         if guild_id in self._cache:
@@ -343,16 +330,12 @@ class VoiceActivityTrackerCog(commands.Cog):
         self._feedback_forward_user_id = VOICE_FEEDBACK_FORWARD_USER_ID or None
 
         # runtime state
-        self.voice_sessions: Dict[
-            str, Dict
-        ] = {}  # key=f"{user_id}:{guild_id}" → session dict
-        self.grace_period_users: Dict[str, Dict] = {}
+        self.voice_sessions: dict[str, dict] = {}  # key=f"{user_id}:{guild_id}" → session dict
+        self.grace_period_users: dict[str, dict] = {}
         self.rate_limiter = RateLimiter(max_requests=5, time_window=30)
 
         # Performance: Display Name Cache (TTL 5min, max 512 entries)
-        self._display_name_cache: Dict[
-            int, tuple[str, float]
-        ] = {}  # user_id -> (name, timestamp)
+        self._display_name_cache: dict[int, tuple[str, float]] = {}  # user_id -> (name, timestamp)
         self._display_name_cache_ttl = 300  # 5 minutes
 
         self.session_stats = {
@@ -411,9 +394,7 @@ class VoiceActivityTrackerCog(commands.Cog):
         # Warte auf sauberen Task-Shutdown (Race-Safe!)
         await asyncio.gather(
             *[
-                task.wait_for_cancel()
-                if hasattr(task, "wait_for_cancel")
-                else asyncio.sleep(0)
+                task.wait_for_cancel() if hasattr(task, "wait_for_cancel") else asyncio.sleep(0)
                 for task in tasks_to_cancel
                 if task.is_running()
             ],
@@ -469,16 +450,12 @@ class VoiceActivityTrackerCog(commands.Cog):
             user_id = int(row[4] or 0)
             try:
                 if message_id:
-                    view = VoiceFeedbackView(
-                        self, req_id, self._feedback_forward_user_id
-                    )
+                    view = VoiceFeedbackView(self, req_id, self._feedback_forward_user_id)
                     self.bot.add_view(view, message_id=int(message_id))
                     restored += 1
                     continue
             except Exception as exc:
-                logger.debug(
-                    f"Could not restore voice feedback view for req {req_id}: {exc}"
-                )
+                logger.debug(f"Could not restore voice feedback view for req {req_id}: {exc}")
                 await self._delete_old_prompt(user_id, message_id)
             # Fallback: resend a fresh prompt to the user
             try:
@@ -568,13 +545,11 @@ class VoiceActivityTrackerCog(commands.Cog):
                 (status, error_message, prompt_message_id, req_id),
             )
         except Exception as exc:
-            logger.debug(
-                f"Failed to update voice feedback request {req_id} after resend: {exc}"
-            )
+            logger.debug(f"Failed to update voice feedback request {req_id} after resend: {exc}")
 
         return status == "sent"
 
-    async def _delete_old_prompt(self, user_id: int, message_id: Optional[int]) -> None:
+    async def _delete_old_prompt(self, user_id: int, message_id: int | None) -> None:
         """Best-effort removal of an outdated DM prompt to avoid stale buttons."""
         if not message_id:
             return
@@ -607,7 +582,7 @@ class VoiceActivityTrackerCog(commands.Cog):
                 base_points += max(1, base_points // 20)
         return max(0, base_points)
 
-    def _finalize_session(self, session: Dict, end_time: datetime):
+    def _finalize_session(self, session: dict, end_time: datetime):
         seconds = max(0, int((end_time - session["start_time"]).total_seconds()))
         if seconds <= 0:
             return 0, 0, False
@@ -655,9 +630,7 @@ class VoiceActivityTrackerCog(commands.Cog):
             display_name = session.get("display_name")
             if not display_name:
                 user_obj = self.bot.get_user(session.get("user_id"))
-                display_name = (
-                    getattr(user_obj, "display_name", None) if user_obj else None
-                )
+                display_name = getattr(user_obj, "display_name", None) if user_obj else None
             display_name = display_name or f"User {session.get('user_id')}"
             central_db.execute(
                 """
@@ -688,7 +661,7 @@ class VoiceActivityTrackerCog(commands.Cog):
         return seconds, points, was_first_session
 
     async def _resolve_co_player_names(
-        self, guild: Optional[discord.Guild], co_player_ids
+        self, guild: discord.Guild | None, co_player_ids
     ) -> list[str]:
         if not co_player_ids:
             return []
@@ -703,15 +676,13 @@ class VoiceActivityTrackerCog(commands.Cog):
             if uid_int in seen:
                 continue
             seen.add(uid_int)
-            name: Optional[str] = None
-            user_obj: Optional[Union[discord.User, discord.Member]] = None
+            name: str | None = None
+            user_obj: discord.User | discord.Member | None = None
             if guild:
                 try:
                     name = await self._resolve_display_name(guild, uid_int)
                 except Exception as exc:
-                    logger.debug(
-                        f"Failed to resolve co-player display name for {uid_int}: {exc}"
-                    )
+                    logger.debug(f"Failed to resolve co-player display name for {uid_int}: {exc}")
             if not name:
                 user_obj = self.bot.get_user(uid_int)
                 if not user_obj:
@@ -724,9 +695,7 @@ class VoiceActivityTrackerCog(commands.Cog):
             names.append(name or f"User {uid_int}")
         return names
 
-    def _build_feedback_test_session(
-        self, ctx: commands.Context, target: discord.Member
-    ) -> Dict:
+    def _build_feedback_test_session(self, ctx: commands.Context, target: discord.Member) -> dict:
         """
         Build a minimal session dict for manual feedback triggers.
         Uses the target's voice channel if available, otherwise falls back to the invoker.
@@ -750,9 +719,7 @@ class VoiceActivityTrackerCog(commands.Cog):
                     continue
                 co_player_ids.add(m.id)
         # Wenn niemand sonst da ist, fuer Tests wenigstens den Aufrufer eintragen
-        if not co_player_ids and isinstance(
-            getattr(ctx, "author", None), discord.Member
-        ):
+        if not co_player_ids and isinstance(getattr(ctx, "author", None), discord.Member):
             if ctx.author.id != target.id:
                 co_player_ids.add(ctx.author.id)
 
@@ -778,9 +745,7 @@ class VoiceActivityTrackerCog(commands.Cog):
                 (user_id,),
             )
         except Exception as exc:
-            logger.debug(
-                f"Could not load feedback requests for purge user {user_id}: {exc}"
-            )
+            logger.debug(f"Could not load feedback requests for purge user {user_id}: {exc}")
             return
 
         for rid, msg_id in rows or []:
@@ -797,17 +762,11 @@ class VoiceActivityTrackerCog(commands.Cog):
                 central_db.execute(
                     "DELETE FROM voice_feedback_responses WHERE request_id=?", (rid,)
                 )
-                central_db.execute(
-                    "DELETE FROM voice_feedback_requests WHERE id=?", (rid,)
-                )
+                central_db.execute("DELETE FROM voice_feedback_requests WHERE id=?", (rid,))
             except Exception as exc:
-                logger.debug(
-                    f"Could not purge feedback request {rid} for user {user_id}: {exc}"
-                )
+                logger.debug(f"Could not purge feedback request {rid} for user {user_id}: {exc}")
 
-    async def _send_voice_feedback(
-        self, session: Dict, seconds: int, request_type: str = "first"
-    ):
+    async def _send_voice_feedback(self, session: dict, seconds: int, request_type: str = "first"):
         user_id = session.get("user_id")
         guild_id = session.get("guild_id")
         if not user_id:
@@ -857,7 +816,7 @@ class VoiceActivityTrackerCog(commands.Cog):
             lines.append(f"Mit im Call waren u.a.: {co_player_text}")
         message_text = "\n\n".join(lines)
 
-        req_id: Optional[int] = None
+        req_id: int | None = None
         try:
             await self._purge_all_feedback_requests(user_id)
             central_db.execute(
@@ -888,9 +847,7 @@ class VoiceActivityTrackerCog(commands.Cog):
             if row:
                 req_id = int(row[0])
         except Exception as exc:
-            logger.error(
-                f"Failed to persist voice feedback request for {user_id}: {exc}"
-            )
+            logger.error(f"Failed to persist voice feedback request for {user_id}: {exc}")
             req_id = None
 
         status = "error"
@@ -899,9 +856,7 @@ class VoiceActivityTrackerCog(commands.Cog):
         try:
             dm = user.dm_channel or await user.create_dm()
             view = (
-                VoiceFeedbackView(self, req_id, self._feedback_forward_user_id)
-                if req_id
-                else None
+                VoiceFeedbackView(self, req_id, self._feedback_forward_user_id) if req_id else None
             )
             msg = await dm.send(message_text, view=view)
             prompt_message_id = msg.id
@@ -927,7 +882,7 @@ class VoiceActivityTrackerCog(commands.Cog):
             except Exception as exc:
                 logger.error(f"Failed to update voice feedback request {req_id}: {exc}")
 
-    async def _maybe_send_second_feedback(self, session: Dict, seconds: int):
+    async def _maybe_send_second_feedback(self, session: dict, seconds: int):
         if not VOICE_FEEDBACK_ENABLED:
             return
         user_id = session.get("user_id")
@@ -1007,9 +962,9 @@ class VoiceActivityTrackerCog(commands.Cog):
                     exc_info=True,
                 )
         try:
-            target = self.bot.get_user(
+            target = self.bot.get_user(self._feedback_forward_user_id) or await self.bot.fetch_user(
                 self._feedback_forward_user_id
-            ) or await self.bot.fetch_user(self._feedback_forward_user_id)
+            )
         except Exception as exc:
             logger.debug(f"Feedback forward target fetch failed: {exc}")
             return
@@ -1039,10 +994,7 @@ class VoiceActivityTrackerCog(commands.Cog):
         if getattr(voice_state, "afk", False):
             return False
         is_muted_or_deaf = (
-            voice_state.mute
-            or voice_state.deaf
-            or voice_state.self_mute
-            or voice_state.self_deaf
+            voice_state.mute or voice_state.deaf or voice_state.self_mute or voice_state.self_deaf
         )
         return not is_muted_or_deaf
 
@@ -1078,9 +1030,7 @@ class VoiceActivityTrackerCog(commands.Cog):
         self.session_stats["total_grace_periods"] += 1
         # logger.info(f"Grace period started for {member.display_name} ({member.id})")
 
-    async def end_grace_period(
-        self, member_id: int, guild_id: int, reason: str = "timeout"
-    ):
+    async def end_grace_period(self, member_id: int, guild_id: int, reason: str = "timeout"):
         grace_key = f"{member_id}:{guild_id}"
         if grace_key in self.grace_period_users:
             del self.grace_period_users[grace_key]
@@ -1136,18 +1086,14 @@ class VoiceActivityTrackerCog(commands.Cog):
         # Cache-Größenlimit: Behalte nur neueste 512 Einträge
         if len(self._display_name_cache) > 512:
             # Entferne älteste 25%
-            sorted_entries = sorted(
-                self._display_name_cache.items(), key=lambda x: x[1][1]
-            )
+            sorted_entries = sorted(self._display_name_cache.items(), key=lambda x: x[1][1])
             to_remove = sorted_entries[:128]
             for uid, _ in to_remove:
                 del self._display_name_cache[uid]
 
         return name
 
-    async def start_voice_session(
-        self, member: discord.Member, channel: discord.VoiceChannel
-    ):
+    async def start_voice_session(self, member: discord.Member, channel: discord.VoiceChannel):
         key = f"{member.id}:{channel.guild.id}"
         if key not in self.voice_sessions:
             self.voice_sessions[key] = {
@@ -1177,14 +1123,8 @@ class VoiceActivityTrackerCog(commands.Cog):
         end_time = datetime.utcnow()
         seconds, points, was_first_session = self._finalize_session(session, end_time)
         await self.end_grace_period(member.id, guild_id, "voice_leave")
-        if (
-            VOICE_FEEDBACK_ENABLED
-            and was_first_session
-            and seconds >= VOICE_FEEDBACK_MIN_SECONDS
-        ):
-            asyncio.create_task(
-                self._send_voice_feedback(dict(session), seconds, "first")
-            )
+        if VOICE_FEEDBACK_ENABLED and was_first_session and seconds >= VOICE_FEEDBACK_MIN_SECONDS:
+            asyncio.create_task(self._send_voice_feedback(dict(session), seconds, "first"))
         asyncio.create_task(self._maybe_send_second_feedback(dict(session), seconds))
 
     # ===== Discord Events =====
@@ -1204,17 +1144,9 @@ class VoiceActivityTrackerCog(commands.Cog):
 
             # Logik für Grace-Start/-Ende bei (Un)Mute
             if before.channel and after.channel and before.channel == after.channel:
-                was_muted = (
-                    before.mute or before.self_mute or before.deaf or before.self_deaf
-                )
-                is_muted = (
-                    after.mute or after.self_mute or after.deaf or after.self_deaf
-                )
-                if (
-                    not was_muted
-                    and is_muted
-                    and await self.has_grace_period_role(member)
-                ):
+                was_muted = before.mute or before.self_mute or before.deaf or before.self_deaf
+                is_muted = after.mute or after.self_mute or after.deaf or after.self_deaf
+                if not was_muted and is_muted and await self.has_grace_period_role(member):
                     await self.start_grace_period(member)
                 elif was_muted and not is_muted:
                     await self.end_grace_period(member.id, member.guild.id, "unmuted")
@@ -1231,14 +1163,10 @@ class VoiceActivityTrackerCog(commands.Cog):
         except Exception as e:
             logger.error(f"Error in voice state update: {e}")
 
-    async def handle_voice_join(
-        self, member: discord.Member, channel: discord.VoiceChannel
-    ):
+    async def handle_voice_join(self, member: discord.Member, channel: discord.VoiceChannel):
         await self.update_channel_sessions(channel)
 
-    async def handle_voice_leave(
-        self, member: discord.Member, channel: discord.VoiceChannel
-    ):
+    async def handle_voice_leave(self, member: discord.Member, channel: discord.VoiceChannel):
         await self.end_voice_session(member, channel.guild.id)
         await self.update_channel_sessions(channel)
 
@@ -1317,10 +1245,7 @@ class VoiceActivityTrackerCog(commands.Cog):
             co_player_names = row[4] or ""
             channel_name = row[5] or "Voice"
             duration_seconds = int(row[6] or 0)
-            if (
-                sent_at_ts
-                and (time.time() - sent_at_ts) > VOICE_FEEDBACK_RESPONSE_WINDOW
-            ):
+            if sent_at_ts and (time.time() - sent_at_ts) > VOICE_FEEDBACK_RESPONSE_WINDOW:
                 return
             should_ack = status != "responded"
             central_db.execute(
@@ -1431,9 +1356,7 @@ class VoiceActivityTrackerCog(commands.Cog):
                 and was_first_session
                 and seconds >= VOICE_FEEDBACK_MIN_SECONDS
             ):
-                asyncio.create_task(
-                    self._send_voice_feedback(session_copy, seconds, "first")
-                )
+                asyncio.create_task(self._send_voice_feedback(session_copy, seconds, "first"))
             asyncio.create_task(self._maybe_send_second_feedback(session_copy, seconds))
 
     @cleanup_sessions.before_loop
@@ -1460,7 +1383,7 @@ class VoiceActivityTrackerCog(commands.Cog):
     # ===== COMMANDS =====
     @commands.command(name="vstats")
     @commands.cooldown(1, 10, commands.BucketType.user)
-    async def voice_stats_command(self, ctx, user: Optional[discord.Member] = None):
+    async def voice_stats_command(self, ctx, user: discord.Member | None = None):
         if not self.rate_limiter.is_allowed(ctx.author.id):
             remaining = self.rate_limiter.get_remaining_time(ctx.author.id)
             await ctx.send(f"⏰ Rate limit reached. Try again in {remaining} seconds.")
@@ -1474,9 +1397,7 @@ class VoiceActivityTrackerCog(commands.Cog):
                 (target_user.id,),
             )
             total_seconds = int(row[0]) if row and row[0] else 0
-            total_points = (
-                int(row[1]) if row and len(row) > 1 and row[1] is not None else 0
-            )
+            total_points = int(row[1]) if row and len(row) > 1 and row[1] is not None else 0
 
             # Live-Session addieren (nur Anzeige)
             session_key = f"{target_user.id}:{ctx.guild.id}"
@@ -1503,9 +1424,7 @@ class VoiceActivityTrackerCog(commands.Cog):
                 value=f"{total_hours}h {total_minutes}m",
                 inline=True,
             )
-            embed.add_field(
-                name="⭐ Punkte", value=str(total_points_display), inline=True
-            )
+            embed.add_field(name="⭐ Punkte", value=str(total_points_display), inline=True)
             if live_info:
                 embed.add_field(name="Status", value=live_info, inline=True)
 
@@ -1560,9 +1479,7 @@ class VoiceActivityTrackerCog(commands.Cog):
                 name = await self._resolve_display_name(ctx.guild, uid)
                 hours = (secs or 0) // 3600
                 minutes = ((secs or 0) % 3600) // 60
-                medal = (
-                    "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-                )
+                medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
                 points_display = int(pts or 0)
                 desc += f"{medal} **{name}** — {hours}h {minutes}m · {points_display} Punkte\n"
             embed.description = desc
@@ -1585,20 +1502,12 @@ class VoiceActivityTrackerCog(commands.Cog):
             value="✅ Verbunden" if db_ok else "❌ Fehler",
             inline=True,
         )
-        embed.add_field(
-            name="🔴 Live Sessions", value=len(self.voice_sessions), inline=True
-        )
+        embed.add_field(name="🔴 Live Sessions", value=len(self.voice_sessions), inline=True)
 
         cfg = await self.cfg(ctx.guild.id)
-        embed.add_field(
-            name="⏱️ Grace Duration", value=f"{cfg.grace_period_duration}s", inline=True
-        )
-        embed.add_field(
-            name="🎖️ Special Role", value=f"<@&{cfg.special_role_id}>", inline=True
-        )
-        embed.add_field(
-            name="👥 Min Users", value=cfg.min_users_for_tracking, inline=True
-        )
+        embed.add_field(name="⏱️ Grace Duration", value=f"{cfg.grace_period_duration}s", inline=True)
+        embed.add_field(name="🎖️ Special Role", value=f"<@&{cfg.special_role_id}>", inline=True)
+        embed.add_field(name="👥 Min Users", value=cfg.min_users_for_tracking, inline=True)
 
         session_key = f"{ctx.author.id}:{ctx.guild.id}"
         if session_key in self.voice_sessions:
@@ -1632,23 +1541,17 @@ class VoiceActivityTrackerCog(commands.Cog):
         )
         embed.add_field(name="📊 System Stats", value=stats_info, inline=True)
 
-        embed.add_field(
-            name="📁 DB Path", value=f"...{central_db_path()[-40:]}", inline=False
-        )
+        embed.add_field(name="📁 DB Path", value=f"...{central_db_path()[-40:]}", inline=False)
         embed.set_footer(text="Enhanced Voice Activity Tracker (Central DB)")
         await ctx.send(embed=embed)
 
     # ===== ADMIN COMMANDS (Konfig nur über kv_store) =====
     @commands.command(name="vf1")
     @commands.has_permissions(administrator=True)
-    async def voice_feedback_day1_test(
-        self, ctx, target: Optional[discord.Member] = None
-    ):
+    async def voice_feedback_day1_test(self, ctx, target: discord.Member | None = None):
         """Admin test: send the first-day voice feedback prompt to yourself or a mentioned user."""
         if not VOICE_FEEDBACK_ENABLED:
-            await ctx.send(
-                "Voice feedback ist aktuell deaktiviert (VOICE_FEEDBACK_ENABLED=0)."
-            )
+            await ctx.send("Voice feedback ist aktuell deaktiviert (VOICE_FEEDBACK_ENABLED=0).")
             return
         if not ctx.guild:
             await ctx.send("Dieser Testbefehl funktioniert nur im Server.")
@@ -1661,9 +1564,7 @@ class VoiceActivityTrackerCog(commands.Cog):
 
         try:
             session = self._build_feedback_test_session(ctx, target_user)
-            await self._send_voice_feedback(
-                session, max(VOICE_FEEDBACK_MIN_SECONDS, 300), "first"
-            )
+            await self._send_voice_feedback(session, max(VOICE_FEEDBACK_MIN_SECONDS, 300), "first")
             await ctx.send(
                 f"Feedback-Test (Tag 1) an {target_user.mention} geschickt. Bitte DMs pruefen."
             )
@@ -1673,14 +1574,10 @@ class VoiceActivityTrackerCog(commands.Cog):
 
     @commands.command(name="vf4")
     @commands.has_permissions(administrator=True)
-    async def voice_feedback_day4_test(
-        self, ctx, target: Optional[discord.Member] = None
-    ):
+    async def voice_feedback_day4_test(self, ctx, target: discord.Member | None = None):
         """Admin test: send the fourth-day voice feedback prompt to yourself or a mentioned user."""
         if not VOICE_FEEDBACK_ENABLED:
-            await ctx.send(
-                "Voice feedback ist aktuell deaktiviert (VOICE_FEEDBACK_ENABLED=0)."
-            )
+            await ctx.send("Voice feedback ist aktuell deaktiviert (VOICE_FEEDBACK_ENABLED=0).")
             return
         if not ctx.guild:
             await ctx.send("Dieser Testbefehl funktioniert nur im Server.")
@@ -1693,9 +1590,7 @@ class VoiceActivityTrackerCog(commands.Cog):
 
         try:
             session = self._build_feedback_test_session(ctx, target_user)
-            await self._send_voice_feedback(
-                session, max(VOICE_FEEDBACK_MIN_SECONDS, 300), "second"
-            )
+            await self._send_voice_feedback(session, max(VOICE_FEEDBACK_MIN_SECONDS, 300), "second")
             await ctx.send(
                 f"Feedback-Test (Tag 4) an {target_user.mention} geschickt. Bitte DMs pruefen."
             )
@@ -1708,15 +1603,9 @@ class VoiceActivityTrackerCog(commands.Cog):
     async def voice_status_command(self, ctx):
         try:
             cfg = await self.cfg(ctx.guild.id)
-            embed = discord.Embed(
-                title="🔧 Voice System Admin Status (Central DB)", color=0x00FF99
-            )
-            embed.add_field(
-                name="🔴 Live Sessions", value=len(self.voice_sessions), inline=True
-            )
-            embed.add_field(
-                name="🛡️ Grace Periods", value=len(self.grace_period_users), inline=True
-            )
+            embed = discord.Embed(title="🔧 Voice System Admin Status (Central DB)", color=0x00FF99)
+            embed.add_field(name="🔴 Live Sessions", value=len(self.voice_sessions), inline=True)
+            embed.add_field(name="🛡️ Grace Periods", value=len(self.grace_period_users), inline=True)
             try:
                 _ = central_db.query_one("SELECT 1")
                 db_state = "Connected"
@@ -1724,9 +1613,7 @@ class VoiceActivityTrackerCog(commands.Cog):
                 db_state = "Disconnected"
             embed.add_field(name="🗄️ Database", value=db_state, inline=True)
 
-            embed.add_field(
-                name="👥 Min Users", value=cfg.min_users_for_tracking, inline=True
-            )
+            embed.add_field(name="👥 Min Users", value=cfg.min_users_for_tracking, inline=True)
             embed.add_field(
                 name="⏱️ Grace Duration",
                 value=f"{cfg.grace_period_duration}s",
@@ -1740,9 +1627,7 @@ class VoiceActivityTrackerCog(commands.Cog):
                 value=f"{uptime.days}d {uptime.seconds // 3600}h",
                 inline=True,
             )
-            embed.add_field(
-                name="📁 DB Path", value=f"...{central_db_path()[-40:]}", inline=True
-            )
+            embed.add_field(name="📁 DB Path", value=f"...{central_db_path()[-40:]}", inline=True)
             await ctx.send(embed=embed)
         except Exception as e:
             await ctx.send(f"❌ Fehler beim Abrufen des Status: {e}")
@@ -1752,26 +1637,16 @@ class VoiceActivityTrackerCog(commands.Cog):
     async def voice_config_command(self, ctx, setting=None, value=None):
         cfg = await self.cfg(ctx.guild.id)
         if not setting:
-            embed = discord.Embed(
-                title="⚙️ Voice Tracker Config (Central DB)", color=0x0099FF
-            )
-            embed.add_field(
-                name="👥 Min Users", value=cfg.min_users_for_tracking, inline=True
-            )
+            embed = discord.Embed(title="⚙️ Voice Tracker Config (Central DB)", color=0x0099FF)
+            embed.add_field(name="👥 Min Users", value=cfg.min_users_for_tracking, inline=True)
             embed.add_field(
                 name="⏱️ Grace Duration",
                 value=f"{cfg.grace_period_duration}s",
                 inline=True,
             )
-            embed.add_field(
-                name="🎖️ Special Role", value=cfg.special_role_id, inline=True
-            )
-            embed.add_field(
-                name="🔄 Session Timeout", value=f"{cfg.session_timeout}s", inline=True
-            )
-            embed.add_field(
-                name="📊 Max Sessions", value=cfg.max_sessions_per_user, inline=True
-            )
+            embed.add_field(name="🎖️ Special Role", value=cfg.special_role_id, inline=True)
+            embed.add_field(name="🔄 Session Timeout", value=f"{cfg.session_timeout}s", inline=True)
+            embed.add_field(name="📊 Max Sessions", value=cfg.max_sessions_per_user, inline=True)
             embed.add_field(
                 name="Available Settings",
                 value="```\n!voice_config grace_duration <seconds>\n!voice_config grace_role <role_id>\n!voice_config min_users <2-10>\n!voice_config session_timeout <seconds>\n!voice_config max_sessions <number>\n```",
@@ -1785,50 +1660,34 @@ class VoiceActivityTrackerCog(commands.Cog):
             if s == "grace_duration":
                 duration = int(value)
                 if 60 <= duration <= 600:
-                    await self.config_manager.set(
-                        ctx.guild.id, "grace_period_duration", duration
-                    )
+                    await self.config_manager.set(ctx.guild.id, "grace_period_duration", duration)
                     await ctx.send(
                         f"✅ Grace period duration set to {duration} seconds (zentral gespeichert)"
                     )
                 else:
-                    await ctx.send(
-                        "❌ Grace duration must be between 60 and 600 seconds"
-                    )
+                    await ctx.send("❌ Grace duration must be between 60 and 600 seconds")
             elif s == "grace_role":
                 role_id = int(value)
                 await self.config_manager.set(ctx.guild.id, "special_role_id", role_id)
-                await ctx.send(
-                    f"✅ Grace period role set to <@&{role_id}> (zentral gespeichert)"
-                )
+                await ctx.send(f"✅ Grace period role set to <@&{role_id}> (zentral gespeichert)")
             elif s == "min_users":
                 min_users = int(value)
                 if 2 <= min_users <= 10:
-                    await self.config_manager.set(
-                        ctx.guild.id, "min_users_for_tracking", min_users
-                    )
-                    await ctx.send(
-                        f"✅ Minimum users set to {min_users} (zentral gespeichert)"
-                    )
+                    await self.config_manager.set(ctx.guild.id, "min_users_for_tracking", min_users)
+                    await ctx.send(f"✅ Minimum users set to {min_users} (zentral gespeichert)")
                 else:
                     await ctx.send("❌ Minimum users must be between 2 and 10")
             elif s == "session_timeout":
                 to = int(value)
                 if 60 <= to <= 3600:
                     await self.config_manager.set(ctx.guild.id, "session_timeout", to)
-                    await ctx.send(
-                        f"✅ Session timeout set to {to}s (zentral gespeichert)"
-                    )
+                    await ctx.send(f"✅ Session timeout set to {to}s (zentral gespeichert)")
                 else:
-                    await ctx.send(
-                        "❌ Session timeout must be between 60 and 3600 seconds"
-                    )
+                    await ctx.send("❌ Session timeout must be between 60 and 3600 seconds")
             elif s == "max_sessions":
                 mx = int(value)
                 if 10 <= mx <= 10000:
-                    await self.config_manager.set(
-                        ctx.guild.id, "max_sessions_per_user", mx
-                    )
+                    await self.config_manager.set(ctx.guild.id, "max_sessions_per_user", mx)
                     await ctx.send(f"✅ Max sessions set to {mx} (zentral gespeichert)")
                 else:
                     await ctx.send("❌ Max sessions must be between 10 and 10000")

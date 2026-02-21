@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from discord.ext import commands
 
@@ -72,13 +72,9 @@ class CogLoaderMixin:
                 e,
             )
 
-    def is_namespace_blocked(
-        self, namespace: str, *, assume_normalized: bool = False
-    ) -> bool:
+    def is_namespace_blocked(self, namespace: str, *, assume_normalized: bool = False) -> bool:
         try:
-            target = (
-                namespace if assume_normalized else self.normalize_namespace(namespace)
-            )
+            target = namespace if assume_normalized else self.normalize_namespace(namespace)
         except ValueError:
             return False
         for blocked in self.blocked_namespaces:
@@ -86,7 +82,7 @@ class CogLoaderMixin:
                 return True
         return False
 
-    async def block_namespace(self, namespace: str) -> Dict[str, Any]:
+    async def block_namespace(self, namespace: str) -> dict[str, Any]:
         normalized = self.normalize_namespace(namespace)
         if normalized in self.blocked_namespaces:
             return {"namespace": normalized, "changed": False, "unloaded": {}}
@@ -94,10 +90,8 @@ class CogLoaderMixin:
         self.blocked_namespaces.add(normalized)
         self._save_blocklist()
 
-        to_unload = [
-            ext for ext in list(self.extensions.keys()) if ext.startswith(normalized)
-        ]
-        unload_results: Dict[str, str] = {}
+        to_unload = [ext for ext in list(self.extensions.keys()) if ext.startswith(normalized)]
+        unload_results: dict[str, str] = {}
         if to_unload:
             unload_results = await self.unload_many(to_unload)
 
@@ -110,7 +104,7 @@ class CogLoaderMixin:
         self.auto_discover_cogs()
         return {"namespace": normalized, "changed": True, "unloaded": unload_results}
 
-    async def unblock_namespace(self, namespace: str) -> Dict[str, Any]:
+    async def unblock_namespace(self, namespace: str) -> dict[str, Any]:
         normalized = self.normalize_namespace(namespace)
         if normalized not in self.blocked_namespaces:
             return {"namespace": normalized, "changed": False}
@@ -132,9 +126,7 @@ class CogLoaderMixin:
         env_ex = (os.getenv("COG_EXCLUDE") or "").strip()
         for item in [x.strip() for x in env_ex.split(",") if x.strip()]:
             default_excludes.add(item)
-        only = {
-            x.strip() for x in (os.getenv("COG_ONLY") or "").split(",") if x.strip()
-        }
+        only = {x.strip() for x in (os.getenv("COG_ONLY") or "").split(",") if x.strip()}
         if only:
             return module_path not in only
         if module_path in default_excludes:
@@ -150,8 +142,8 @@ class CogLoaderMixin:
                 logging.warning(f"Cogs directory not found: {self.cogs_dir}")
                 return
 
-            discovered: List[str] = []
-            pkg_dirs_with_setup: List[Path] = []
+            discovered: list[str] = []
+            pkg_dirs_with_setup: list[Path] = []
 
             # Pass 1: Paket-Cogs mit setup() in __init__.py
             for init_file in self.cogs_dir.rglob("__init__.py"):
@@ -180,9 +172,7 @@ class CogLoaderMixin:
                     continue
                 if any(part == "__pycache__" for part in cog_file.parts):
                     continue
-                if any(
-                    cog_file.is_relative_to(pkg_dir) for pkg_dir in pkg_dirs_with_setup
-                ):
+                if any(cog_file.is_relative_to(pkg_dir) for pkg_dir in pkg_dirs_with_setup):
                     continue
                 try:
                     content = cog_file.read_text(encoding="utf-8", errors="ignore")
@@ -202,9 +192,7 @@ class CogLoaderMixin:
                 logging.debug(f"🔍 Auto-discovered cog: {module_path}")
 
             self.cogs_list = sorted(set(discovered))
-            logging.info(
-                f"✅ Auto-discovery complete: {len(self.cogs_list)} cogs found"
-            )
+            logging.info(f"✅ Auto-discovery complete: {len(self.cogs_list)} cogs found")
 
             for key in list(self.cog_status.keys()):
                 if self.is_namespace_blocked(key, assume_normalized=True):
@@ -215,9 +203,7 @@ class CogLoaderMixin:
             logging.error("❌ CRITICAL: No cogs will be loaded! Check cogs/ directory")
             self.cogs_list = []
 
-    def resolve_cog_identifier(
-        self, identifier: str | None
-    ) -> Tuple[Optional[str], List[str]]:
+    def resolve_cog_identifier(self, identifier: str | None) -> tuple[str | None, list[str]]:
         if not identifier:
             return None, []
 
@@ -269,9 +255,7 @@ class CogLoaderMixin:
             elif isinstance(r, Exception):
                 logging.error(f"❌ Unexpected error during cog loading: {r}")
 
-        logging.info(
-            f"Parallel cog loading completed: {ok}/{len(self.cogs_list)} successful"
-        )
+        logging.info(f"Parallel cog loading completed: {ok}/{len(self.cogs_list)} successful")
         await self.update_presence()
 
     async def reload_all_cogs_with_discovery(self):
@@ -291,13 +275,11 @@ class CogLoaderMixin:
                     unload_results.append(f"✅ Unloaded: {ext_name}")
                     self.cog_status[ext_name] = "unloaded"
                     logging.info(f"Unloaded extension: {ext_name}")
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     unload_results.append(f"⏱️ Timeout unloading {ext_name}")
                     logging.error(f"Timeout unloading extension {ext_name}")
                 except Exception as e:
-                    unload_results.append(
-                        f"❌ Error unloading {ext_name}: {str(e)[:50]}"
-                    )
+                    unload_results.append(f"❌ Error unloading {ext_name}: {str(e)[:50]}")
                     logging.error(f"Error unloading {ext_name}: {e}")
 
             old_count = len(self.cogs_list)
@@ -344,7 +326,7 @@ class CogLoaderMixin:
         if removed:
             logging.debug("Cold reload purge for %s: %s", trimmed, removed)
 
-    async def reload_cog(self, cog_name: str) -> Tuple[bool, str]:
+    async def reload_cog(self, cog_name: str) -> tuple[bool, str]:
         try:
             self._purge_namespace_modules(cog_name)
             await self.reload_extension(cog_name)
@@ -373,7 +355,7 @@ class CogLoaderMixin:
             logging.error(err)
             return False, err
 
-    async def reload_namespace(self, namespace: str) -> Dict[str, str]:
+    async def reload_namespace(self, namespace: str) -> dict[str, str]:
         try:
             target_ns = self.normalize_namespace(namespace)
         except ValueError:
@@ -394,7 +376,7 @@ class CogLoaderMixin:
             logging.info("Keine Cogs für Namespace %s gefunden", target_ns)
             return {}
 
-        results: Dict[str, str] = {}
+        results: dict[str, str] = {}
         for mod in targets:
             try:
                 self._purge_namespace_modules(mod)
@@ -416,37 +398,29 @@ class CogLoaderMixin:
         await self.update_presence()
         return results
 
-    async def reload_steam_folder(self) -> Dict[str, str]:
+    async def reload_steam_folder(self) -> dict[str, str]:
         return await self.reload_namespace("cogs.steam")
 
-    def _match_extensions(self, query: str) -> List[str]:
+    def _match_extensions(self, query: str) -> list[str]:
         q = query.strip().lower()
         loaded = [ext for ext in self.extensions.keys() if ext.startswith("cogs.")]
         if q.startswith("cogs."):
             return [ext for ext in loaded if ext.lower().startswith(q)]
         # erlaub Substring und Ordnerkurznamen
-        return [
-            ext
-            for ext in loaded
-            if q in ext.lower() or ext.lower().startswith(f"cogs.{q}.")
-        ]
+        return [ext for ext in loaded if q in ext.lower() or ext.lower().startswith(f"cogs.{q}.")]
 
-    async def unload_many(
-        self, targets: List[str], timeout: float | None = None
-    ) -> Dict[str, str]:
+    async def unload_many(self, targets: list[str], timeout: float | None = None) -> dict[str, str]:
         timeout = float(timeout) if timeout is not None else self.per_cog_unload_timeout
-        results: Dict[str, str] = {}
+        results: dict[str, str] = {}
         for ext_name in targets:
             try:
                 await asyncio.wait_for(self.unload_extension(ext_name), timeout=timeout)
                 results[ext_name] = "unloaded"
                 self.cog_status[ext_name] = "unloaded"
                 logging.info(f"Unloaded extension: {ext_name}")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 results[ext_name] = "timeout"
-                logging.error(
-                    f"Timeout unloading extension {ext_name} (>{timeout:.1f}s)"
-                )
+                logging.error(f"Timeout unloading extension {ext_name} (>{timeout:.1f}s)")
             except Exception as e:
                 results[ext_name] = f"error: {str(e)[:200]}"
                 logging.error(f"Error unloading extension {ext_name}: {e}")

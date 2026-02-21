@@ -1,18 +1,17 @@
 import logging
 import re
 import time
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from ..storage import get_conn
 from .constants import (
+    _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC,
+    _INVITE_QUESTION_RE,
+    _INVITE_QUESTION_USER_COOLDOWN_SEC,
     DEADLOCK_INVITE_REPLY,
     INVITE_ACCESS_RE,
     INVITE_GAME_CONTEXT_RE,
-    _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC,
-    _INVITE_QUESTION_RE,
     INVITE_STRONG_ACCESS_RE,
-    _INVITE_QUESTION_USER_COOLDOWN_SEC,
     SPAM_FRAGMENTS,
     SPAM_PHRASES,
 )
@@ -29,9 +28,7 @@ class ModerationMixin:
         channel = getattr(message, "channel", None)
         if channel is not None:
             return channel
-        return getattr(message, "source_broadcaster", None) or getattr(
-            message, "broadcaster", None
-        )
+        return getattr(message, "source_broadcaster", None) or getattr(message, "broadcaster", None)
 
     @staticmethod
     def _extract_mentions(content: str) -> list[str]:
@@ -68,7 +65,7 @@ class ModerationMixin:
         cache = getattr(self, "_mention_chatter_cache", None)
         if not isinstance(cache, dict):
             cache = {}
-            setattr(self, "_mention_chatter_cache", cache)
+            self._mention_chatter_cache = cache
 
         cache_key = (streamer, mention)
         cached = cache.get(cache_key)
@@ -123,9 +120,7 @@ class ModerationMixin:
 
         return known
 
-    async def _resolve_existing_twitch_users(
-        self, logins: list[str]
-    ) -> tuple[set[str], bool]:
+    async def _resolve_existing_twitch_users(self, logins: list[str]) -> tuple[set[str], bool]:
         """Löst Logins via Twitch auf. Rückgabe: (gefunden, lookup_ok)."""
         normalized = []
         seen = set()
@@ -142,7 +137,7 @@ class ModerationMixin:
         cache = getattr(self, "_mention_user_exists_cache", None)
         if not isinstance(cache, dict):
             cache = {}
-            setattr(self, "_mention_user_exists_cache", cache)
+            self._mention_user_exists_cache = cache
 
         found = set()
         to_lookup = []
@@ -233,9 +228,7 @@ class ModerationMixin:
         if not maybe_random:
             return hits, reasons
 
-        existing_users, lookup_ok = await self._resolve_existing_twitch_users(
-            maybe_random
-        )
+        existing_users, lookup_ok = await self._resolve_existing_twitch_users(maybe_random)
         unresolved = [m for m in maybe_random if m not in existing_users]
         if not unresolved:
             return hits, reasons
@@ -343,9 +336,7 @@ class ModerationMixin:
             return False
 
         channel = self._resolve_message_channel(message)
-        channel_name = (
-            getattr(channel, "name", "") or getattr(channel, "login", "") or ""
-        )
+        channel_name = getattr(channel, "name", "") or getattr(channel, "login", "") or ""
         login = channel_name.lstrip("#").lower()
         if not login:
             return False
@@ -358,10 +349,7 @@ class ModerationMixin:
 
         now = time.monotonic()
         last_channel = self._last_invite_reply.get(login)
-        if (
-            last_channel
-            and (now - last_channel) < _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC
-        ):
+        if last_channel and (now - last_channel) < _INVITE_QUESTION_CHANNEL_COOLDOWN_SEC:
             return False
 
         author = getattr(message, "author", None)
@@ -381,9 +369,7 @@ class ModerationMixin:
         if channel is None:
             return False
 
-        mention = (
-            f"@{getattr(author, 'name', '')} " if getattr(author, "name", None) else ""
-        )
+        mention = f"@{getattr(author, 'name', '')} " if getattr(author, "name", None) else ""
         msg = mention + DEADLOCK_INVITE_REPLY.format(invite=invite)
         ok = await self._send_chat_message(channel, msg)
         if ok:
@@ -400,20 +386,14 @@ class ModerationMixin:
 
     async def _get_moderation_context(
         self, twitch_user_id: str
-    ) -> tuple[Optional[object], Optional[dict]]:
+    ) -> tuple[object | None, dict | None]:
         """Holt Session + Auth-Header für Moderationscalls."""
-        auth_mgr = (
-            getattr(self._raid_bot, "auth_manager", None) if self._raid_bot else None
-        )
-        http_session = (
-            getattr(self._raid_bot, "session", None) if self._raid_bot else None
-        )
+        auth_mgr = getattr(self._raid_bot, "auth_manager", None) if self._raid_bot else None
+        http_session = getattr(self._raid_bot, "session", None) if self._raid_bot else None
         if not auth_mgr or not http_session:
             return None, None
         try:
-            tokens = await auth_mgr.get_tokens_for_user(
-                str(twitch_user_id), http_session
-            )
+            tokens = await auth_mgr.get_tokens_for_user(str(twitch_user_id), http_session)
             if not tokens:
                 return None, None
             access_token = tokens[0]
@@ -448,7 +428,7 @@ class ModerationMixin:
                 target_log = getattr(self, "_suspicious_log", self._autoban_log)
 
             target_log.parent.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now(timezone.utc).isoformat()
+            ts = datetime.now(UTC).isoformat()
             safe_content = content.replace("\n", " ")[:500]
             line = f"{ts}\t[{status}]\t{channel_name}\t{chatter_login or '-'}\t{chatter_id}\t{reason or '-'}\t{safe_content}\n"
             with target_log.open("a", encoding="utf-8") as f:
@@ -467,7 +447,7 @@ class ModerationMixin:
         return name.lower().lstrip("#")
 
     @staticmethod
-    def _looks_like_ban_error(status: Optional[int], text: str) -> bool:
+    def _looks_like_ban_error(status: int | None, text: str) -> bool:
         if not text:
             return False
         lowered = text.lower()
@@ -479,7 +459,7 @@ class ModerationMixin:
         return False
 
     @staticmethod
-    def _should_blacklist_for_source(source: Optional[str]) -> bool:
+    def _should_blacklist_for_source(source: str | None) -> bool:
         if not source:
             return False
         return source.strip().lower() in {"promo", "recruitment", "partner_raid"}
@@ -487,9 +467,9 @@ class ModerationMixin:
     def _blacklist_streamer_for_source(
         self,
         channel,
-        status: Optional[int],
+        status: int | None,
         text: str,
-        source: Optional[str],
+        source: str | None,
     ) -> None:
         """Blacklist a streamer when outbound bot messages indicate the bot is banned."""
         source_tag = str(source or "").strip().lower()
@@ -550,14 +530,12 @@ class ModerationMixin:
             login,
         )
 
-    def _blacklist_streamer_for_promo(
-        self, channel, status: Optional[int], text: str
-    ) -> None:
+    def _blacklist_streamer_for_promo(self, channel, status: int | None, text: str) -> None:
         """Backward-compatible wrapper for promo ban blacklisting."""
         self._blacklist_streamer_for_source(channel, status, text, source="promo")
 
     async def _send_announcement(
-        self, channel, text: str, color: str = "purple", source: Optional[str] = None
+        self, channel, text: str, color: str = "purple", source: str | None = None
     ) -> bool:
         """Sendet eine Announcement (hervorgehobene Nachricht) via Helix API.
 
@@ -614,25 +592,19 @@ class ModerationMixin:
                             return True
                         if r.status == 401 and attempt == 0:
                             log.debug("_send_announcement: 401, triggere Token-Refresh")
-                            await self._token_manager.get_valid_token(
-                                force_refresh=True
-                            )
+                            await self._token_manager.get_valid_token(force_refresh=True)
                             continue
                         txt = await r.text()
-                        if self._should_blacklist_for_source(
-                            source
-                        ) and self._looks_like_ban_error(r.status, txt):
-                            self._blacklist_streamer_for_source(
-                                channel, r.status, txt, source
-                            )
+                        if self._should_blacklist_for_source(source) and self._looks_like_ban_error(
+                            r.status, txt
+                        ):
+                            self._blacklist_streamer_for_source(channel, r.status, txt, source)
                         log.warning(
                             "_send_announcement fehlgeschlagen: HTTP %s - %s, Fallback auf normale Nachricht",
                             r.status,
                             txt,
                         )
-                        return await self._send_chat_message(
-                            channel, text, source=source
-                        )
+                        return await self._send_chat_message(channel, text, source=source)
             except Exception as e:
                 log.error(
                     "Fehler bei _send_announcement: %s, Fallback auf normale Nachricht",
@@ -642,9 +614,7 @@ class ModerationMixin:
 
         return await self._send_chat_message(channel, text, source=source)
 
-    async def _send_chat_message(
-        self, channel, text: str, source: Optional[str] = None
-    ) -> bool:
+    async def _send_chat_message(self, channel, text: str, source: str | None = None) -> bool:
         """Best-effort Chat-Nachricht senden (EventSub-kompatibel)."""
         try:
             # 1. Direktes .send() (z.B. Context, 2.x Channel oder 3.x Broadcaster)
@@ -653,12 +623,10 @@ class ModerationMixin:
                     await channel.send(text)
                     return True
                 except Exception as exc:
-                    if self._should_blacklist_for_source(
-                        source
-                    ) and self._looks_like_ban_error(None, str(exc)):
-                        self._blacklist_streamer_for_source(
-                            channel, None, str(exc), source
-                        )
+                    if self._should_blacklist_for_source(source) and self._looks_like_ban_error(
+                        None, str(exc)
+                    ):
+                        self._blacklist_streamer_for_source(channel, None, str(exc), source)
                     raise
 
             # 2. Fallback: Direkte Helix API Call (TwitchIO 3.x kompatibel)
@@ -701,9 +669,7 @@ class ModerationMixin:
                         }
 
                         async with aiohttp.ClientSession() as session:
-                            async with session.post(
-                                url, headers=headers, json=payload
-                            ) as r:
+                            async with session.post(url, headers=headers, json=payload) as r:
                                 if r.status in {200, 204}:
                                     return True
                                 if r.status == 401 and attempt == 0:
@@ -711,9 +677,7 @@ class ModerationMixin:
                                         "_send_chat_message: 401 in %s, triggere Token-Refresh",
                                         b_id,
                                     )
-                                    await self._token_manager.get_valid_token(
-                                        force_refresh=True
-                                    )
+                                    await self._token_manager.get_valid_token(force_refresh=True)
                                     continue
                                 txt = await r.text()
                                 if self._should_blacklist_for_source(
@@ -737,7 +701,7 @@ class ModerationMixin:
         return False
 
     @staticmethod
-    def _extract_message_id(message) -> Optional[str]:
+    def _extract_message_id(message) -> str | None:
         """Best-effort message_id Extraktion für Moderations-APIs."""
         for attr in ("id", "message_id"):
             msg_id = str(getattr(message, attr, "") or "").strip()
@@ -756,9 +720,7 @@ class ModerationMixin:
     async def _auto_ban_and_cleanup(self, message) -> bool:
         """Bannt erkannte Spam-Bots und löscht die Nachricht (als Bot)."""
         channel = self._resolve_message_channel(message)
-        channel_name = (
-            getattr(channel, "name", "") or getattr(channel, "login", "") or ""
-        )
+        channel_name = getattr(channel, "name", "") or getattr(channel, "login", "") or ""
         channel_key = self._normalize_channel_login(channel_name)
         if not self._is_partner_channel_for_chat_tracking(channel_key):
             return False
@@ -827,9 +789,7 @@ class ModerationMixin:
                                         "Delete message 401 in %s, triggering refresh...",
                                         channel_name,
                                     )
-                                    await self._token_manager.get_valid_token(
-                                        force_refresh=True
-                                    )
+                                    await self._token_manager.get_valid_token(force_refresh=True)
                                     continue  # Retry outer loop
 
                                 if resp.status not in {200, 204}:
@@ -875,7 +835,7 @@ class ModerationMixin:
                                     "user_id": chatter_id,
                                     "login": chatter_login,
                                     "content": original_content,
-                                    "ts": datetime.now(timezone.utc).isoformat(),
+                                    "ts": datetime.now(UTC).isoformat(),
                                 }
                                 self._record_autoban(
                                     channel_name=channel_name,
@@ -892,9 +852,7 @@ class ModerationMixin:
                                             "SELECT silent_ban FROM twitch_streamers WHERE twitch_user_id = ?",
                                             (twitch_user_id,),
                                         ).fetchone()
-                                        silent = bool(
-                                            int((_sb_row[0] if _sb_row else 0) or 0)
-                                        )
+                                        silent = bool(int((_sb_row[0] if _sb_row else 0) or 0))
                                 except Exception as exc:
                                     log.debug(
                                         "Konnte silent_ban nicht ermitteln fuer %s",
@@ -913,9 +871,7 @@ class ModerationMixin:
                                     "Ban user 401 in %s, triggering refresh...",
                                     channel_name,
                                 )
-                                await self._token_manager.get_valid_token(
-                                    force_refresh=True
-                                )
+                                await self._token_manager.get_valid_token(force_refresh=True)
                                 continue  # Retry outer loop
 
                             txt = await resp.text()
@@ -929,7 +885,7 @@ class ModerationMixin:
                                     "user_id": chatter_id,
                                     "login": chatter_login,
                                     "content": original_content,
-                                    "ts": datetime.now(timezone.utc).isoformat(),
+                                    "ts": datetime.now(UTC).isoformat(),
                                 }
                                 self._record_autoban(
                                     channel_name=channel_name,
@@ -960,9 +916,7 @@ class ModerationMixin:
                                     txt[:180].replace("\n", " "),
                                 )
                     except Exception:
-                        log.debug(
-                            "Auto-Ban Exception in %s", channel_name, exc_info=True
-                        )
+                        log.debug("Auto-Ban Exception in %s", channel_name, exc_info=True)
 
                 # Wenn wir hier sind ohne return True, ist der Ban fehlgeschlagen (und kein 401 Retry möglich)
                 break
@@ -1025,12 +979,8 @@ class ModerationMixin:
                             return True
 
                         if resp.status == 401 and attempt == 0:
-                            log.warning(
-                                "Unban 401 in %s, triggering refresh...", channel_name
-                            )
-                            await self._token_manager.get_valid_token(
-                                force_refresh=True
-                            )
+                            log.warning("Unban 401 in %s, triggering refresh...", channel_name)
+                            await self._token_manager.get_valid_token(force_refresh=True)
                             continue
 
                         txt = await resp.text()
@@ -1062,7 +1012,7 @@ class ModerationMixin:
         cache = getattr(self, "_chat_partner_cache", None)
         if not isinstance(cache, dict):
             cache = {}
-            setattr(self, "_chat_partner_cache", cache)
+            self._chat_partner_cache = cache
         cache_ttl = float(getattr(self, "_chat_partner_cache_ttl_sec", 60.0) or 60.0)
 
         cached = cache.get(login)
@@ -1072,9 +1022,7 @@ class ModerationMixin:
                 if now_mono - float(cached_ts) <= cache_ttl:
                     return bool(cached_value)
             except (TypeError, ValueError) as exc:
-                log.debug(
-                    "Partner-Cache-Eintrag ungueltig fuer %s", login, exc_info=exc
-                )
+                log.debug("Partner-Cache-Eintrag ungueltig fuer %s", login, exc_info=exc)
 
         is_partner = False
         try:
@@ -1090,9 +1038,7 @@ class ModerationMixin:
                 ).fetchone()
 
             if row:
-                is_partner = bool(
-                    row["is_partner_active"] if hasattr(row, "keys") else row[0]
-                )
+                is_partner = bool(row["is_partner_active"] if hasattr(row, "keys") else row[0])
         except Exception:
             log.debug(
                 "Konnte Partner-Status für Chat-Tracking nicht prüfen (%s)",
@@ -1107,22 +1053,16 @@ class ModerationMixin:
             stale_keys = [
                 key
                 for key, value in cache.items()
-                if not isinstance(value, tuple)
-                or len(value) != 2
-                or float(value[0]) < stale_before
+                if not isinstance(value, tuple) or len(value) != 2 or float(value[0]) < stale_before
             ]
             for key in stale_keys:
                 cache.pop(key, None)
 
         return is_partner
 
-    def _is_target_game_live_for_chat(
-        self, login: str, session_id: Optional[int]
-    ) -> bool:
+    def _is_target_game_live_for_chat(self, login: str, session_id: int | None) -> bool:
         """Returns True when chat persistence should run for the channel."""
-        target_game_lower = (
-            (getattr(self, "_target_game_lower", "") or "").strip().lower()
-        )
+        target_game_lower = (getattr(self, "_target_game_lower", "") or "").strip().lower()
         if not target_game_lower:
             return True
 
@@ -1150,21 +1090,13 @@ class ModerationMixin:
                 if state_row:
                     is_live = bool(
                         int(
-                            (
-                                state_row["is_live"]
-                                if hasattr(state_row, "keys")
-                                else state_row[0]
-                            )
+                            (state_row["is_live"] if hasattr(state_row, "keys") else state_row[0])
                             or 0
                         )
                     )
                     last_game = (
                         str(
-                            (
-                                state_row["last_game"]
-                                if hasattr(state_row, "keys")
-                                else state_row[1]
-                            )
+                            (state_row["last_game"] if hasattr(state_row, "keys") else state_row[1])
                             or ""
                         )
                         .strip()
@@ -1221,9 +1153,7 @@ class ModerationMixin:
     async def _track_chat_health(self, message) -> None:
         """Loggt Chat-Events für Chat-Gesundheit und Retention-Metriken."""
         channel = self._resolve_message_channel(message)
-        channel_name = (
-            getattr(channel, "name", "") or getattr(channel, "login", "") or ""
-        )
+        channel_name = getattr(channel, "name", "") or getattr(channel, "login", "") or ""
         login = channel_name.lstrip("#").lower()
         if not login:
             return
@@ -1249,7 +1179,7 @@ class ModerationMixin:
         if not self._is_target_game_live_for_chat(login, session_id):
             return
 
-        ts_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        ts_iso = datetime.now(UTC).isoformat(timespec="seconds")
 
         with get_conn() as conn:
             # Rohes Chat-Event inkl. Klartext-Nachricht

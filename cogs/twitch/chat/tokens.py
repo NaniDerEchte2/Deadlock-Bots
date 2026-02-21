@@ -3,14 +3,13 @@ import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Tuple
 
 log = logging.getLogger("TwitchStreams.ChatBot")
 
 _KEYRING_SERVICE = "DeadlockBot"
 
 
-def _read_keyring_secret(key: str) -> Optional[str]:
+def _read_keyring_secret(key: str) -> str | None:
     """Read a secret from Windows Credential Manager."""
     try:
         import keyring  # type: ignore
@@ -27,9 +26,7 @@ def _read_keyring_secret(key: str) -> Optional[str]:
     return None
 
 
-async def _save_bot_tokens_to_keyring(
-    *, access_token: str, refresh_token: Optional[str]
-) -> None:
+async def _save_bot_tokens_to_keyring(*, access_token: str, refresh_token: str | None) -> None:
     """Persist access/refresh tokens to Windows Credential Manager."""
     try:
         import keyring  # type: ignore
@@ -46,9 +43,7 @@ async def _save_bot_tokens_to_keyring(
         tasks.append(_save_one(_KEYRING_SERVICE, "TWITCH_BOT_TOKEN", access_token))
         saved_types.append("ACCESS_TOKEN")
     if refresh_token:
-        tasks.append(
-            _save_one(_KEYRING_SERVICE, "TWITCH_BOT_REFRESH_TOKEN", refresh_token)
-        )
+        tasks.append(_save_one(_KEYRING_SERVICE, "TWITCH_BOT_REFRESH_TOKEN", refresh_token))
         saved_types.append("REFRESH_TOKEN")
 
     if tasks:
@@ -60,9 +55,7 @@ async def _save_bot_tokens_to_keyring(
         )
 
 
-def load_bot_tokens(
-    *, log_missing: bool = True
-) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+def load_bot_tokens(*, log_missing: bool = True) -> tuple[str | None, str | None, int | None]:
     """
     Load the Twitch bot OAuth token and refresh token from env/file/Windows keyring.
 
@@ -73,7 +66,7 @@ def load_bot_tokens(
     raw_refresh = os.getenv("TWITCH_BOT_REFRESH_TOKEN", "") or ""
     token = raw_env.strip()
     refresh = raw_refresh.strip() or None
-    expiry_ts: Optional[int] = None
+    expiry_ts: int | None = None
 
     if token:
         return token, refresh, expiry_ts
@@ -108,7 +101,7 @@ def load_bot_tokens(
     return None, None, None
 
 
-def load_bot_token(*, log_missing: bool = True) -> Optional[str]:
+def load_bot_token(*, log_missing: bool = True) -> str | None:
     token, _, _ = load_bot_tokens(log_missing=log_missing)
     return token
 
@@ -118,10 +111,10 @@ class TokenPersistenceMixin:
         self,
         *,
         access_token: str,
-        refresh_token: Optional[str],
-        expires_in: Optional[int],
-        scopes: Optional[list] = None,
-        user_id: Optional[str] = None,
+        refresh_token: str | None,
+        expires_in: int | None,
+        scopes: list | None = None,
+        user_id: str | None = None,
     ) -> None:
         """Persist bot tokens in Windows Credential Manager (keyring)."""
         if not access_token:
@@ -134,9 +127,7 @@ class TokenPersistenceMixin:
             if user_id:
                 self._token_manager.bot_id = str(user_id)
             if expires_in:
-                self._token_manager.expires_at = datetime.now() + timedelta(
-                    seconds=int(expires_in)
-                )
+                self._token_manager.expires_at = datetime.now() + timedelta(seconds=int(expires_in))
             await self._token_manager._save_tokens()
             return
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import sys
-from typing import List
 
 from bot_core.bootstrap import _RedactSecretsFilter
 
@@ -16,7 +15,7 @@ class LoggingMixin:
         log_dir.mkdir(exist_ok=True)
 
         # Default output: INFO. Still capture DEBUG to a dedicated log file.
-        root_handlers: List[logging.Handler] = []
+        root_handlers: list[logging.Handler] = []
 
         info_file = logging.handlers.RotatingFileHandler(
             log_dir / "master_bot.log",

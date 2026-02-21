@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from discord.ext import tasks
 
@@ -77,14 +76,10 @@ class TwitchAnalyticsMixin:
             token = await self._raid_bot.auth_manager.get_valid_token(user_id, session)
 
             if not token:
-                log.debug(
-                    "Skipping analytics collection: no valid authorization available."
-                )
+                log.debug("Skipping analytics collection: no valid authorization available.")
                 continue
 
-            scopes = {
-                s.lower() for s in self._raid_bot.auth_manager.get_scopes(user_id)
-            }
+            scopes = {s.lower() for s in self._raid_bot.auth_manager.get_scopes(user_id)}
             did_collect_for_user = False
 
             try:
@@ -117,9 +112,7 @@ class TwitchAnalyticsMixin:
             ads_snapshots,
         )
 
-    async def _collect_subs_for_user(
-        self, user_id: str, login: str, token: str
-    ) -> bool:
+    async def _collect_subs_for_user(self, user_id: str, login: str, token: str) -> bool:
         """Fetch and store subscription data."""
         data = await self.api.get_broadcaster_subscriptions(user_id, token)
         if not data:
@@ -139,7 +132,7 @@ class TwitchAnalyticsMixin:
 
         # We can try to approximate tiers if we only fetch the first page, but 'total' is exact.
 
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
 
         with storage.get_conn() as conn:
             conn.execute(
@@ -152,9 +145,7 @@ class TwitchAnalyticsMixin:
             )
         return True
 
-    async def _collect_ads_schedule_for_user(
-        self, user_id: str, login: str, token: str
-    ) -> bool:
+    async def _collect_ads_schedule_for_user(self, user_id: str, login: str, token: str) -> bool:
         """Fetch and store ad schedule data."""
         data = await self.api.get_ad_schedule(user_id, token)
         if not data:
@@ -181,13 +172,13 @@ class TwitchAnalyticsMixin:
                 if ts > 10_000_000_000:
                     ts = ts / 1000.0
                 try:
-                    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                    return datetime.fromtimestamp(ts, tz=UTC).isoformat()
                 except (OverflowError, OSError, ValueError):
                     return str(int(ts))
             text = str(value).strip()
             return text or None
 
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
         next_ad_at = _safe_time_text(data.get("next_ad_at"))
         last_ad_at = _safe_time_text(data.get("last_ad_at"))
         duration = _safe_int(data.get("duration"))
@@ -234,8 +225,8 @@ class TwitchAnalyticsMixin:
         login: str,
         session_id: int,
         now_iso: str,
-        token: Optional[str] = None,
-    ) -> "tuple[int, str, list[dict]] | None":
+        token: str | None = None,
+    ) -> tuple[int, str, list[dict]] | None:
         """Pollt Chatters für einen Streamer via Helix API (nur wenn Token + moderator:read:chatters Scope vorhanden)."""
         chatters = []
 
@@ -317,7 +308,7 @@ class TwitchAnalyticsMixin:
         if not rows:
             return
 
-        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now_iso = datetime.now(UTC).isoformat(timespec="seconds")
         tasks_list = []
 
         # Token-Resolution vorbereiten (nur für Partner)
@@ -385,14 +376,10 @@ class TwitchAnalyticsMixin:
             )
             await handler(broadcaster_user_id, broadcaster_login)
 
-    async def _handle_channel_update(
-        self, broadcaster_user_id: str, event: dict
-    ) -> None:
+    async def _handle_channel_update(self, broadcaster_user_id: str, event: dict) -> None:
         """Speichert eine channel.update Notification (Titel/Game-Änderung) in der DB."""
         title = (event.get("title") or "").strip() or None
-        game_name = (
-            event.get("category_name") or event.get("game_name") or ""
-        ).strip() or None
+        game_name = (event.get("category_name") or event.get("game_name") or "").strip() or None
         language = (event.get("broadcaster_language") or "").strip() or None
         try:
             with storage.get_conn() as c:
@@ -406,7 +393,7 @@ class TwitchAnalyticsMixin:
                         title,
                         game_name,
                         language,
-                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        datetime.now(UTC).isoformat(timespec="seconds"),
                     ),
                 )
                 # Auch twitch_live_state aktualisieren, falls Stream gerade läuft
@@ -434,9 +421,7 @@ class TwitchAnalyticsMixin:
         gifter_login = (
             event.get("gifter_login") or event.get("gifter_user_login") or ""
         ).strip().lower() or None
-        cumulative_months = (
-            int(event.get("cumulative_months") or event.get("months") or 0) or None
-        )
+        cumulative_months = int(event.get("cumulative_months") or event.get("months") or 0) or None
         streak_months = int(event.get("streak_months") or 0) or None
         message_data = event.get("message") or {}
         if isinstance(message_data, dict):
@@ -469,7 +454,7 @@ class TwitchAnalyticsMixin:
                         streak_months,
                         message,
                         total_gifted,
-                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        datetime.now(UTC).isoformat(timespec="seconds"),
                     ),
                 )
         except Exception:
@@ -479,9 +464,7 @@ class TwitchAnalyticsMixin:
                 event_type,
             )
 
-    def _get_active_session_id_by_user_id(
-        self, broadcaster_user_id: str
-    ) -> "int | None":
+    def _get_active_session_id_by_user_id(self, broadcaster_user_id: str) -> int | None:
         """Gibt die aktive session_id für einen Broadcaster zurück (über twitch_live_state).
 
         twitch_stream_sessions hat keine twitch_user_id-Spalte – deshalb über
@@ -494,9 +477,7 @@ class TwitchAnalyticsMixin:
                     (broadcaster_user_id,),
                 ).fetchone()
             if row and row[0] is not None:
-                return int(
-                    row[0] if not hasattr(row, "keys") else row["active_session_id"]
-                )
+                return int(row[0] if not hasattr(row, "keys") else row["active_session_id"])
         except Exception:
             log.debug(
                 "_get_active_session_id_by_user_id: Fehler für %s",
@@ -505,9 +486,7 @@ class TwitchAnalyticsMixin:
             )
         return None
 
-    async def _store_ad_break_event(
-        self, broadcaster_user_id: str, event: dict
-    ) -> None:
+    async def _store_ad_break_event(self, broadcaster_user_id: str, event: dict) -> None:
         """Speichert ein channel.ad_break.begin Event."""
         duration_seconds = int(event.get("duration_seconds") or 0) or None
         is_automatic = int(bool(event.get("is_automatic")))
@@ -527,7 +506,7 @@ class TwitchAnalyticsMixin:
                         broadcaster_user_id,
                         duration_seconds,
                         is_automatic,
-                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        datetime.now(UTC).isoformat(timespec="seconds"),
                     ),
                 )
         except Exception:
@@ -559,31 +538,25 @@ class TwitchAnalyticsMixin:
                         donor_login,
                         amount,
                         message,
-                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        datetime.now(UTC).isoformat(timespec="seconds"),
                     ),
                 )
         except Exception:
-            log.exception(
-                "_store_bits_event: Fehler beim Speichern für %s", broadcaster_user_id
-            )
+            log.exception("_store_bits_event: Fehler beim Speichern für %s", broadcaster_user_id)
 
-    async def _store_channel_points_event(
-        self, broadcaster_user_id: str, event: dict
-    ) -> None:
+    async def _store_channel_points_event(self, broadcaster_user_id: str, event: dict) -> None:
         """Speichert ein channel.channel_points_*_reward_redemption.add Event."""
         user_login = (
             event.get("user_login") or event.get("user_name") or ""
         ).strip().lower() or None
         reward = event.get("reward") or {}
         reward_id = (reward.get("id") or event.get("reward_id") or "").strip() or None
-        reward_title = (
-            reward.get("title") or event.get("reward_title") or ""
-        ).strip() or None
+        reward_title = (reward.get("title") or event.get("reward_title") or "").strip() or None
         reward_cost = int(reward.get("cost") or event.get("reward_cost") or 0) or None
         user_input = (event.get("user_input") or "").strip() or None
-        redeemed_at = (event.get("redeemed_at") or "").strip() or datetime.now(
-            timezone.utc
-        ).isoformat(timespec="seconds")
+        redeemed_at = (event.get("redeemed_at") or "").strip() or datetime.now(UTC).isoformat(
+            timespec="seconds"
+        )
 
         session_id = self._get_active_session_id_by_user_id(broadcaster_user_id)
 
@@ -624,9 +597,7 @@ class TwitchAnalyticsMixin:
         started_at = (event.get("started_at") or "").strip() or None
         ended_at = (event.get("ended_at") or "").strip() or None if ended else None
         level = int(event.get("level") or 0) or None
-        total_progress = (
-            int(event.get("total") or event.get("total_progress") or 0) or None
-        )
+        total_progress = int(event.get("total") or event.get("total_progress") or 0) or None
         duration_seconds: int | None = None
         if started_at and ended_at:
             try:
@@ -704,9 +675,7 @@ class TwitchAnalyticsMixin:
             event.get("user_login") or event.get("user_name") or ""
         ).strip().lower() or None
         target_id = str(event.get("user_id") or "").strip() or None
-        moderator_login = (
-            event.get("moderator_user_login") or ""
-        ).strip().lower() or None
+        moderator_login = (event.get("moderator_user_login") or "").strip().lower() or None
         reason = (event.get("reason") or "").strip() or None
         ends_at = (event.get("ends_at") or "").strip() or None  # None = permanent
 
@@ -730,13 +699,11 @@ class TwitchAnalyticsMixin:
                         moderator_login,
                         reason,
                         ends_at,
-                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        datetime.now(UTC).isoformat(timespec="seconds"),
                     ),
                 )
         except Exception:
-            log.exception(
-                "_store_ban_event: Fehler für %s (%s)", broadcaster_user_id, event_type
-            )
+            log.exception("_store_ban_event: Fehler für %s (%s)", broadcaster_user_id, event_type)
 
     async def _store_shoutout_event(
         self, broadcaster_user_id: str, event: dict, *, direction: str
@@ -746,18 +713,12 @@ class TwitchAnalyticsMixin:
         """
         if direction == "sent":
             other_id = str(event.get("to_broadcaster_user_id") or "").strip() or None
-            other_login = (
-                event.get("to_broadcaster_user_login") or ""
-            ).strip().lower() or None
-            moderator_login = (
-                event.get("moderator_user_login") or ""
-            ).strip().lower() or None
+            other_login = (event.get("to_broadcaster_user_login") or "").strip().lower() or None
+            moderator_login = (event.get("moderator_user_login") or "").strip().lower() or None
             viewer_count = int(event.get("viewer_count") or 0)
         else:
             other_id = str(event.get("from_broadcaster_user_id") or "").strip() or None
-            other_login = (
-                event.get("from_broadcaster_user_login") or ""
-            ).strip().lower() or None
+            other_login = (event.get("from_broadcaster_user_login") or "").strip().lower() or None
             moderator_login = None
             viewer_count = int(event.get("viewer_count") or 0)
 
@@ -777,7 +738,7 @@ class TwitchAnalyticsMixin:
                         other_login,
                         moderator_login,
                         viewer_count,
-                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        datetime.now(UTC).isoformat(timespec="seconds"),
                     ),
                 )
         except Exception:

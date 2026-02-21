@@ -4,7 +4,8 @@ import asyncio
 import importlib
 import logging
 import time
-from typing import Callable, Optional, TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from bot_core.master_bot import MasterBot
@@ -19,16 +20,14 @@ class BotLifecycle:
     Kleiner Supervisor, der den Bot-Prozess im selben Interpreter neustarten kann.
     """
 
-    def __init__(
-        self, token: str | None = None, token_loader: Callable[[], str] | None = None
-    ):
+    def __init__(self, token: str | None = None, token_loader: Callable[[], str] | None = None):
         if token_loader is None and not token:
             raise ValueError("BotLifecycle benötigt entweder token oder token_loader")
         self.token = token
         self._token_loader = token_loader
         self._restart_event = asyncio.Event()
         self._stop_event = asyncio.Event()
-        self._current_bot: Optional["MasterBot"] = None
+        self._current_bot: MasterBot | None = None
         self._restart_requested_at: float | None = None
         self._last_restart_at: float | None = None
         self._restart_reason: str | None = None
@@ -85,7 +84,7 @@ class BotLifecycle:
         }
 
     # ------------------ Internals -------------------
-    def _build_bot(self) -> tuple["MasterBot", object]:
+    def _build_bot(self) -> tuple[MasterBot, object]:
         """
         Lädt die relevanten Module neu, damit Code-Änderungen beim Restart greifen.
         """
@@ -110,8 +109,8 @@ class BotLifecycle:
         except Exception as exc:  # pragma: no cover - defensive reload
             logger.warning("Module reload skipped for service.dashboard: %s", exc)
 
-        import bot_core.master_bot as master_module_ref
         import bot_core.control as control_module_ref
+        import bot_core.master_bot as master_module_ref
 
         master_module = importlib.reload(master_module_ref)
         control_module = importlib.reload(control_module_ref)  # nosemgrep

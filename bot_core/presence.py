@@ -5,10 +5,8 @@ import json
 import logging
 import os
 import time
-from typing import List, Optional
 
 import discord
-
 
 _STEAM_LOG_CHANNEL_ID = 1374364800817303632
 
@@ -16,11 +14,9 @@ _STEAM_LOG_CHANNEL_ID = 1374364800817303632
 class PresenceMixin:
     """Presence, Ready-Tasks und Voice-Routing."""
 
-    def active_cogs(self) -> List[str]:
+    def active_cogs(self) -> list[str]:
         """Aktuell geladene Extensions (runtime), nur 'cogs.'-Namespace."""
-        return sorted(
-            [ext for ext in self.extensions.keys() if ext.startswith("cogs.")]
-        )
+        return sorted([ext for ext in self.extensions.keys() if ext.startswith("cogs.")])
 
     async def update_presence(self):
         """Presence immer anhand der echten Runtime-Anzahl setzen."""
@@ -65,7 +61,7 @@ class PresenceMixin:
         handler_info = []
         for cog_name, cog in self.cogs.items():
             if hasattr(cog, "on_voice_state_update"):
-                handler = getattr(cog, "on_voice_state_update")
+                handler = cog.on_voice_state_update
                 if callable(handler):
                     handler_info.append((cog_name, handler))
 
@@ -73,20 +69,13 @@ class PresenceMixin:
             return
 
         # Führe alle Handler PARALLEL aus (nicht sequenziell wie discord.py Default!)
-        tasks = [
-            (cog_name, handler(member, before, after))
-            for cog_name, handler in handler_info
-        ]
-        results = await asyncio.gather(
-            *[task for _, task in tasks], return_exceptions=True
-        )
+        tasks = [(cog_name, handler(member, before, after)) for cog_name, handler in handler_info]
+        results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
 
         # Log Fehler mit korrektem Cog-Namen (Race-Safe!)
-        for (cog_name, _), result in zip(tasks, results):
+        for (cog_name, _), result in zip(tasks, results, strict=False):
             if isinstance(result, Exception):
-                logging.error(
-                    f"Voice handler error in {cog_name}: {result}", exc_info=result
-                )
+                logging.error(f"Voice handler error in {cog_name}: {result}", exc_info=result)
 
     async def on_ready(self):
         logging.info(f"Bot logged in as {self.user} (ID: {self.user.id})")
@@ -108,18 +97,14 @@ class PresenceMixin:
             if tv_if:
                 logging.info("TempVoiceInterface bereit • Interface-View registriert")
         except Exception as e:
-            logging.getLogger().debug(
-                "TempVoice Ready-Log fehlgeschlagen (ignoriert): %r", e
-            )
+            logging.getLogger().debug("TempVoice Ready-Log fehlgeschlagen (ignoriert): %r", e)
 
         # Performance-Info loggen
         voice_handlers = sum(
             1 for cog in self.cogs.values() if hasattr(cog, "on_voice_state_update")
         )
         if voice_handlers > 0:
-            logging.info(
-                f"Voice Event Router aktiv: {voice_handlers} Handler (parallel)"
-            )
+            logging.info(f"Voice Event Router aktiv: {voice_handlers} Handler (parallel)")
 
         asyncio.create_task(self.hourly_health_check())
         if self.standalone_manager:
@@ -139,7 +124,7 @@ class PresenceMixin:
             )
 
     # State für Steam Bridge Login-Check
-    _steam_not_logged_in_since: Optional[float] = None
+    _steam_not_logged_in_since: float | None = None
     _steam_login_alert_at: float = 0.0
 
     async def _check_steam_bridge_login_health(self) -> None:
@@ -273,9 +258,7 @@ class PresenceMixin:
                         issues.append("SteamLinkOAuth (module) not loaded")
 
                     if issues:
-                        logging.warning(
-                            f"Critical Health Check: Issues found: {issues}"
-                        )
+                        logging.warning(f"Critical Health Check: Issues found: {issues}")
                     else:
                         logging.debug("Critical Health Check: Core cogs operational")
 

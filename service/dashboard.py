@@ -6,15 +6,16 @@ import errno
 import html
 import ipaddress
 import json
-import math
 import logging
+import math
 import os
 import secrets
 import sqlite3
 import subprocess
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from aiohttp import ClientSession, ClientTimeout, web
@@ -45,9 +46,7 @@ MASTER_DASHBOARD_DISCORD_REDIRECT_URI = (
 MASTER_DASHBOARD_STEAM_PUBLIC_URL = (
     os.getenv("MASTER_DASHBOARD_STEAM_PUBLIC_URL") or os.getenv("PUBLIC_BASE_URL") or ""
 ).strip()
-MASTER_DASHBOARD_STEAM_RETURN_URL = (
-    os.getenv("MASTER_DASHBOARD_STEAM_RETURN_URL") or ""
-).strip()
+MASTER_DASHBOARD_STEAM_RETURN_URL = (os.getenv("MASTER_DASHBOARD_STEAM_RETURN_URL") or "").strip()
 MASTER_DASHBOARD_STEAM_RETURN_PATH = (
     os.getenv("STEAM_RETURN_PATH") or "/steam/return"
 ).strip() or "/steam/return"
@@ -63,9 +62,7 @@ NSSM_PATH_CANDIDATES = (
     r"C:\nssm\win64\nssm.exe",
     r"C:\nssm\nssm.exe",
 )
-POWERSHELL_PATH_CANDIDATES = (
-    r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-)
+POWERSHELL_PATH_CANDIDATES = (r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",)
 SC_PATH_CANDIDATES = (r"C:\Windows\System32\sc.exe",)
 
 try:
@@ -107,7 +104,7 @@ class DashboardServer:
 
     def __init__(
         self,
-        bot: "MasterBot",
+        bot: MasterBot,
         *,
         host: str = "127.0.0.1",
         port: int = 8766,
@@ -115,22 +112,20 @@ class DashboardServer:
         self.bot = bot
         self.host = host
         self.port = port
-        self._runner: Optional[web.AppRunner] = None
-        self._site: Optional[web.TCPSite] = None
+        self._runner: web.AppRunner | None = None
+        self._site: web.TCPSite | None = None
         self._lock = asyncio.Lock()
         self._started = False
         self._restart_lock = asyncio.Lock()
-        self._restart_task: Optional[asyncio.Task] = None
-        self._last_restart: Dict[str, Any] = {"at": None, "ok": None, "error": None}
+        self._restart_task: asyncio.Task | None = None
+        self._last_restart: dict[str, Any] = {"at": None, "ok": None, "error": None}
         self._lifecycle = getattr(bot, "lifecycle", None)
         self._nssm_service_name = (
             os.getenv("MASTER_NSSM_SERVICE_NAME") or DEFAULT_NSSM_SERVICE_NAME
         ).strip()
         self._nssm_executable = (os.getenv("MASTER_NSSM_EXE") or "").strip()
         self._powershell_executable = (os.getenv("MASTER_POWERSHELL_EXE") or "").strip()
-        nssm_enabled_raw = (
-            (os.getenv("MASTER_NSSM_RESTART_ENABLED") or "1").strip().lower()
-        )
+        nssm_enabled_raw = (os.getenv("MASTER_NSSM_RESTART_ENABLED") or "1").strip().lower()
         self._nssm_service_restart_enabled = nssm_enabled_raw not in {
             "0",
             "false",
@@ -165,10 +160,10 @@ class DashboardServer:
         self._discord_auth_enabled = True
         self._discord_owner_user_id = DEFAULT_DASHBOARD_OWNER_USER_ID
         self._discord_moderator_role_id = DEFAULT_DASHBOARD_MODERATOR_ROLE_ID
-        self._discord_auth_guild_ids: Tuple[int, ...] = ()
+        self._discord_auth_guild_ids: tuple[int, ...] = ()
         self._discord_session_cookie = "master_dash_session"
-        self._discord_sessions: Dict[str, Dict[str, Any]] = {}
-        self._discord_oauth_states: Dict[str, Dict[str, Any]] = {}
+        self._discord_sessions: dict[str, dict[str, Any]] = {}
+        self._discord_oauth_states: dict[str, dict[str, Any]] = {}
         self._discord_oauth_state_ttl = 600
         self._discord_session_ttl = 12 * 3600
         self._discord_auth_required = (
@@ -176,9 +171,7 @@ class DashboardServer:
         )
         self._auth_misconfigured = False
         self._scheme = MASTER_DASHBOARD_DEFAULT_SCHEME
-        self._listen_base_url = self._format_base_url(
-            self.host, self.port, self._scheme
-        )
+        self._listen_base_url = self._format_base_url(self.host, self.port, self._scheme)
         try:
             self._public_base_url = self._normalize_public_url(
                 MASTER_DASHBOARD_PUBLIC_URL,
@@ -196,7 +189,7 @@ class DashboardServer:
         self._twitch_dashboard_href = self._resolve_twitch_dashboard_href()
         self._steam_return_url = self._derive_steam_return_url()
         self._raid_health_url = self._derive_raid_health_url()
-        self._health_cache: List[Dict[str, Any]] = []
+        self._health_cache: list[dict[str, Any]] = []
         self._health_cache_expiry = 0.0
         self._health_cache_lock = asyncio.Lock()
         self._health_cache_ttl = self._parse_positive_float(
@@ -260,16 +253,12 @@ class DashboardServer:
                 return
 
             @web.middleware
-            async def _security_headers(
-                request: web.Request, handler: Any
-            ) -> web.StreamResponse:
+            async def _security_headers(request: web.Request, handler: Any) -> web.StreamResponse:
                 response = await handler(request)
                 response.headers.setdefault("X-Frame-Options", "DENY")
                 response.headers.setdefault("X-Content-Type-Options", "nosniff")
                 response.headers.setdefault("X-XSS-Protection", "1; mode=block")
-                response.headers.setdefault(
-                    "Referrer-Policy", "strict-origin-when-cross-origin"
-                )
+                response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
                 response.headers.setdefault(
                     "Permissions-Policy",
                     "geolocation=(), microphone=(), camera=(), payment=()",
@@ -296,9 +285,7 @@ class DashboardServer:
                     web.post("/api/cogs/load", self._handle_load),
                     web.post("/api/cogs/unload", self._handle_unload),
                     web.post("/api/cogs/reload-all", self._handle_reload_all),
-                    web.post(
-                        "/api/cogs/reload-namespace", self._handle_reload_namespace
-                    ),
+                    web.post("/api/cogs/reload-namespace", self._handle_reload_namespace),
                     web.post("/api/cogs/block", self._handle_block),
                     web.post("/api/cogs/unblock", self._handle_unblock),
                     web.get("/api/voice-stats", self._handle_voice_stats),
@@ -309,12 +296,8 @@ class DashboardServer:
                     web.get("/api/co-player-network", self._handle_co_player_network),
                     web.get("/api/co-player-network/", self._handle_co_player_network),
                     web.get("/api/server-stats", self._handle_server_stats),
-                    web.get(
-                        "/api/tournament/overview", self._handle_tournament_overview
-                    ),
-                    web.post(
-                        "/api/tournament/team", self._handle_tournament_team_create
-                    ),
+                    web.get("/api/tournament/overview", self._handle_tournament_overview),
+                    web.post("/api/tournament/team", self._handle_tournament_team_create),
                     web.post("/api/tournament/assign", self._handle_tournament_assign),
                     web.post("/api/tournament/remove", self._handle_tournament_remove),
                     # Turnier-Seite (Community-Mods + Admins)
@@ -333,33 +316,25 @@ class DashboardServer:
                     web.get("/api/logs/{name}", self._handle_log_read),
                     web.get("/api/standalone", self._handle_standalone_list),
                     web.get("/api/standalone/{key}/logs", self._handle_standalone_logs),
-                    web.post(
-                        "/api/standalone/{key}/start", self._handle_standalone_start
-                    ),
-                    web.post(
-                        "/api/standalone/{key}/stop", self._handle_standalone_stop
-                    ),
-                    web.post(
-                        "/api/standalone/{key}/restart", self._handle_standalone_restart
-                    ),
+                    web.post("/api/standalone/{key}/start", self._handle_standalone_start),
+                    web.post("/api/standalone/{key}/stop", self._handle_standalone_stop),
+                    web.post("/api/standalone/{key}/restart", self._handle_standalone_restart),
                     web.post(
                         "/api/standalone/{key}/autostart",
                         self._handle_standalone_autostart,
                     ),
-                    web.post(
-                        "/api/standalone/{key}/command", self._handle_standalone_command
-                    ),
+                    web.post("/api/standalone/{key}/command", self._handle_standalone_command),
                 ]
             )
 
             addr_in_use = {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", 10048)}
             win_access = {getattr(errno, "WSAEACCES", 10013), errno.EACCES}
 
-            async def _start_with(reuse_address: Optional[bool]) -> str:
+            async def _start_with(reuse_address: bool | None) -> str:
                 runner = web.AppRunner(app)
                 await runner.setup()
 
-                site_kwargs: Dict[str, Any] = {}
+                site_kwargs: dict[str, Any] = {}
                 if reuse_address:
                     site_kwargs["reuse_address"] = True
 
@@ -404,9 +379,7 @@ class DashboardServer:
             if os.name != "nt":
                 result = await _start_with(reuse_address=True)
                 if result == "addr_in_use":
-                    raise RuntimeError(
-                        f"Dashboard-Port {self.host}:{self.port} ist bereits belegt"
-                    )
+                    raise RuntimeError(f"Dashboard-Port {self.host}:{self.port} ist bereits belegt")
                 if result != "started":
                     raise RuntimeError("Dashboard konnte nicht gestartet werden")
             else:
@@ -431,9 +404,7 @@ class DashboardServer:
                 admin_path = base_no_slash + "/admin"
             logging.info("Master dashboard listening on %s", self._listen_base_url)
             if self._public_base_url != self._listen_base_url:
-                logging.info(
-                    "Master dashboard public URL set to %s", self._public_base_url
-                )
+                logging.info("Master dashboard public URL set to %s", self._public_base_url)
             logging.info("Master dashboard admin UI: %s", admin_path)
 
     async def stop(self) -> None:
@@ -446,10 +417,10 @@ class DashboardServer:
                 self._started = False
                 logging.info("Master dashboard stopped")
 
-    async def _restart_dashboard(self) -> Dict[str, Any]:
+    async def _restart_dashboard(self) -> dict[str, Any]:
         # Allow the response to be flushed before we tear the server down.
         await asyncio.sleep(0.25)
-        stop_error: Optional[str] = None
+        stop_error: str | None = None
         try:
             await self.stop()
         except Exception as exc:  # pragma: no cover - defensive restart path
@@ -460,7 +431,7 @@ class DashboardServer:
 
         try:
             await self.start()
-            result: Dict[str, Any] = {
+            result: dict[str, Any] = {
                 "ok": stop_error is None,
                 "listen_url": self._listen_base_url,
                 "public_url": self._public_base_url,
@@ -482,9 +453,7 @@ class DashboardServer:
         try:
             result = task.result()
             if isinstance(result, dict) and not result.get("ok", True):
-                logging.warning(
-                    "Dashboard restart finished with errors: %s", result.get("error")
-                )
+                logging.warning("Dashboard restart finished with errors: %s", result.get("error"))
             else:
                 logging.info("Dashboard restart completed")
         except Exception:  # pragma: no cover - defensive restart path
@@ -507,25 +476,21 @@ class DashboardServer:
         try:
             value = keyring.get_password(KEYRING_SERVICE_NAME, secret_key)
             if not value:
-                value = keyring.get_password(
-                    f"{secret_key}@{KEYRING_SERVICE_NAME}", secret_key
-                )
+                value = keyring.get_password(f"{secret_key}@{KEYRING_SERVICE_NAME}", secret_key)
         except Exception:
             return ""
         return str(value or "").strip()
 
     def _is_discord_oauth_configured(self) -> bool:
         return bool(
-            self._discord_client_id
-            and self._discord_client_secret
-            and self._discord_redirect_uri
+            self._discord_client_id and self._discord_client_secret and self._discord_redirect_uri
         )
 
     def _is_auth_enforced(self) -> bool:
         return bool(self._discord_auth_required or self._auth_misconfigured)
 
     @staticmethod
-    def _host_without_port(raw: Optional[str]) -> str:
+    def _host_without_port(raw: str | None) -> str:
         if not raw:
             return ""
         value = raw.split(",")[0].strip()
@@ -542,7 +507,7 @@ class DashboardServer:
         return value.lower()
 
     @staticmethod
-    def _is_loopback_host(raw: Optional[str]) -> bool:
+    def _is_loopback_host(raw: str | None) -> bool:
         host = DashboardServer._host_without_port(raw)
         if not host:
             return False
@@ -572,17 +537,14 @@ class DashboardServer:
         peer = self._peer_host(request)
         if self._is_loopback_host(peer):
             forwarded_proto = (
-                (request.headers.get("X-Forwarded-Proto") or "")
-                .split(",")[0]
-                .strip()
-                .lower()
+                (request.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
             )
             if forwarded_proto:
                 return forwarded_proto == "https"
         return bool(request.secure)
 
     @staticmethod
-    def _normalize_auth_next_path(raw: Optional[str]) -> str:
+    def _normalize_auth_next_path(raw: str | None) -> str:
         fallback = "/admin"
         candidate = (raw or "").strip()
         if not candidate:
@@ -617,14 +579,14 @@ class DashboardServer:
                 continue
             else:
                 path_parts.append(p)
-        
+
         norm_path = "/" + "/".join(path_parts)
         if parsed.path.endswith("/") and norm_path != "/":
             norm_path += "/"
 
         # Final check for double slash after normalization
         if norm_path.startswith("//"):
-             return fallback
+            return fallback
 
         # Allowed destination prefixes
         allowed = ("/admin", "/api/", "/turnier", "/auth/")
@@ -640,15 +602,13 @@ class DashboardServer:
         return fallback
 
     @staticmethod
-    def _safe_internal_redirect(
-        location: Optional[str], *, fallback: str = "/admin"
-    ) -> str:
+    def _safe_internal_redirect(location: str | None, *, fallback: str = "/admin") -> str:
         candidate = (location or "").strip()
         if not candidate:
             return fallback
         if "\r" in candidate or "\n" in candidate:
             return fallback
-        
+
         # Normalize backslashes
         candidate = candidate.replace("\\", "/")
 
@@ -656,7 +616,7 @@ class DashboardServer:
             parsed = urlparse(candidate)
         except Exception:
             return fallback
-        
+
         # CodeQL: URL redirection from remote source.
         if parsed.scheme or parsed.netloc:
             return fallback
@@ -675,9 +635,7 @@ class DashboardServer:
         return candidate
 
     @staticmethod
-    def _safe_template_href(
-        location: Optional[str], *, fallback: str = "/admin"
-    ) -> str:
+    def _safe_template_href(location: str | None, *, fallback: str = "/admin") -> str:
         candidate = (location or "").strip()
         if not candidate:
             return fallback
@@ -707,27 +665,27 @@ class DashboardServer:
         return candidate
 
     def _build_discord_login_url(
-        self, request: web.Request, *, next_path: Optional[str] = None
+        self, request: web.Request, *, next_path: str | None = None
     ) -> str:
         if not self._discord_auth_required:
             return "/admin"
-        
+
         # Use provided next_path OR extract from current request
         if next_path:
             raw_target = next_path
         else:
-            raw_target = (request.rel_url.path_qs if (request and request.rel_url) else "/admin")
+            raw_target = request.rel_url.path_qs if (request and request.rel_url) else "/admin"
 
         # Strict validation of the next parameter
         normalized = self._normalize_auth_next_path(raw_target)
-        
+
         # CodeQL: URL redirection from remote source.
         # Ensure we only return a path relative to our own /auth/discord/login
-        query = urlencode({'next': normalized})
+        query = urlencode({"next": normalized})
         return f"/auth/discord/login?{query}"
 
     @staticmethod
-    def _normalize_origin(raw: Optional[str]) -> Optional[str]:
+    def _normalize_origin(raw: str | None) -> str | None:
         value = (raw or "").strip()
         if not value:
             return None
@@ -741,8 +699,8 @@ class DashboardServer:
             return None
         return f"{scheme}://{netloc}"
 
-    def _build_allowed_request_origins(self) -> Set[str]:
-        origins: Set[str] = set()
+    def _build_allowed_request_origins(self) -> set[str]:
+        origins: set[str] = set()
         for base_url in (self._public_base_url, self._listen_base_url):
             normalized = self._normalize_origin(base_url)
             if normalized:
@@ -757,7 +715,7 @@ class DashboardServer:
 
         return origins
 
-    def _request_origin(self, request: web.Request) -> Optional[str]:
+    def _request_origin(self, request: web.Request) -> str | None:
         origin = self._normalize_origin(request.headers.get("Origin"))
         if origin:
             return origin
@@ -779,7 +737,7 @@ class DashboardServer:
     def _requires_csrf_check(request: web.Request) -> bool:
         return request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
 
-    def _ensure_session_csrf_token(self, session: Dict[str, Any]) -> str:
+    def _ensure_session_csrf_token(self, session: dict[str, Any]) -> str:
         token = str(session.get("csrf_token") or "").strip()
         if token:
             return token
@@ -787,7 +745,7 @@ class DashboardServer:
         session["csrf_token"] = token
         return token
 
-    def _check_csrf(self, request: web.Request, session: Dict[str, Any]) -> bool:
+    def _check_csrf(self, request: web.Request, session: dict[str, Any]) -> bool:
         expected = self._ensure_session_csrf_token(session)
         provided = (request.headers.get("X-CSRF-Token") or "").strip()
         if not provided:
@@ -830,9 +788,7 @@ class DashboardServer:
                 self._discord_sessions.items(),
                 key=lambda item: float(item[1].get("created_at", 0.0)),
             )
-            for session_key, _ in oldest_sessions[
-                : len(self._discord_sessions) - max_sessions
-            ]:
+            for session_key, _ in oldest_sessions[: len(self._discord_sessions) - max_sessions]:
                 self._discord_sessions.pop(session_key, None)
 
     def _set_discord_session_cookie(
@@ -851,9 +807,7 @@ class DashboardServer:
     def _clear_discord_session_cookie(self, response: web.StreamResponse) -> None:
         response.del_cookie(self._discord_session_cookie, path="/")
 
-    def _get_discord_auth_session(
-        self, request: web.Request
-    ) -> Optional[Dict[str, Any]]:
+    def _get_discord_auth_session(self, request: web.Request) -> dict[str, Any] | None:
         if not self._discord_auth_required:
             return None
         self._cleanup_discord_auth_state()
@@ -872,18 +826,14 @@ class DashboardServer:
         self._ensure_session_csrf_token(session)
         return session
 
-    def _auth_session_for_request(
-        self, request: web.Request
-    ) -> Optional[Dict[str, Any]]:
+    def _auth_session_for_request(self, request: web.Request) -> dict[str, Any] | None:
         return self._get_discord_auth_session(request)
 
-    async def _check_discord_member_access(
-        self, discord_user_id: int
-    ) -> Tuple[bool, str]:
+    async def _check_discord_member_access(self, discord_user_id: int) -> tuple[bool, str]:
         if discord_user_id == self._discord_owner_user_id:
             return True, "owner_override"
 
-        guilds: List[Any] = []
+        guilds: list[Any] = []
         seen: set[int] = set()
         for guild_id in self._discord_auth_guild_ids:
             guild = self.bot.get_guild(guild_id)
@@ -915,9 +865,7 @@ class DashboardServer:
                 )
             try:
                 role_ids = {
-                    int(r.id)
-                    for r in getattr(member, "roles", [])
-                    if getattr(r, "id", None)
+                    int(r.id) for r in getattr(member, "roles", []) if getattr(r, "id", None)
                 }
             except Exception:
                 role_ids = set()
@@ -925,9 +873,7 @@ class DashboardServer:
                 return True, f"moderator_role:{guild.id}"
         return False, "missing_admin_or_moderator_role"
 
-    async def _check_discord_turnier_only_access(
-        self, discord_user_id: int
-    ) -> Tuple[bool, str]:
+    async def _check_discord_turnier_only_access(self, discord_user_id: int) -> tuple[bool, str]:
         """Check if user has the Community-Moderator (turnier-only) role."""
         guilds = []
         seen: set[int] = set()
@@ -950,9 +896,7 @@ class DashboardServer:
                 continue
             try:
                 role_ids = {
-                    int(r.id)
-                    for r in getattr(member, "roles", [])
-                    if getattr(r, "id", None)
+                    int(r.id) for r in getattr(member, "roles", []) if getattr(r, "id", None)
                 }
             except Exception:
                 role_ids = set()
@@ -965,14 +909,8 @@ class DashboardServer:
         if not self._is_auth_enforced():
             return
         if self._auth_misconfigured:
-            raise web.HTTPServiceUnavailable(
-                text="Dashboard Auth nicht korrekt konfiguriert."
-            )
-        session = (
-            self._get_discord_auth_session(request)
-            if self._discord_auth_required
-            else None
-        )
+            raise web.HTTPServiceUnavailable(text="Dashboard Auth nicht korrekt konfiguriert.")
+        session = self._get_discord_auth_session(request) if self._discord_auth_required else None
         if session:
             if self._requires_csrf_check(request):
                 if not self._is_allowed_request_origin(request):
@@ -981,12 +919,10 @@ class DashboardServer:
                     raise web.HTTPForbidden(text="CSRF validation failed")
             return
         login_url = self._build_discord_login_url(request, next_path="/turnier")
-        headers: Dict[str, str] = {"X-Auth-Login": login_url}
+        headers: dict[str, str] = {"X-Auth-Login": login_url}
         raise web.HTTPUnauthorized(text="Authentication required", headers=headers)
 
-    async def _exchange_discord_code(
-        self, code: str, redirect_uri: str
-    ) -> Optional[Dict[str, Any]]:
+    async def _exchange_discord_code(self, code: str, redirect_uri: str) -> dict[str, Any] | None:
         payload = {
             "client_id": self._discord_client_id,
             "client_secret": self._discord_client_secret,
@@ -1013,7 +949,7 @@ class DashboardServer:
                 data = await response.json()
         return data if isinstance(data, dict) else None
 
-    async def _fetch_discord_user(self, access_token: str) -> Optional[Dict[str, Any]]:
+    async def _fetch_discord_user(self, access_token: str) -> dict[str, Any] | None:
         if not access_token:
             return None
         timeout = ClientTimeout(total=20)
@@ -1034,9 +970,7 @@ class DashboardServer:
         return data if isinstance(data, dict) else None
 
     def _has_valid_auth(self, request: web.Request) -> bool:
-        return bool(
-            self._discord_auth_required and self._get_discord_auth_session(request)
-        )
+        return bool(self._discord_auth_required and self._get_discord_auth_session(request))
 
     def _check_auth(self, request: web.Request, *, required: bool = False) -> None:
         enforce = required or self._is_auth_enforced()
@@ -1049,11 +983,7 @@ class DashboardServer:
                     "Discord OAuth Client-ID/Secret fehlen im Windows-Tresor (DeadlockBot)."
                 )
             )
-        session = (
-            self._get_discord_auth_session(request)
-            if self._discord_auth_required
-            else None
-        )
+        session = self._get_discord_auth_session(request) if self._discord_auth_required else None
         if session:
             if self._requires_csrf_check(request):
                 if not self._is_allowed_request_origin(request):
@@ -1064,14 +994,14 @@ class DashboardServer:
 
         next_path = "/admin" if request.path.startswith("/api/") else None
         login_url = self._build_discord_login_url(request, next_path=next_path)
-        headers: Dict[str, str] = {"X-Auth-Login": login_url}
+        headers: dict[str, str] = {"X-Auth-Login": login_url}
         raise web.HTTPUnauthorized(text="Authentication required", headers=headers)
 
-    def _list_log_files(self) -> List[Dict[str, Any]]:
+    def _list_log_files(self) -> list[dict[str, Any]]:
         log_dir = self._log_dir
         if not log_dir.exists() or not log_dir.is_dir():
             return []
-        entries: List[Dict[str, Any]] = []
+        entries: list[dict[str, Any]] = []
         for path in log_dir.iterdir():
             if not path.is_file():
                 continue
@@ -1084,7 +1014,7 @@ class DashboardServer:
                 continue
             modified = _dt.datetime.fromtimestamp(
                 stat.st_mtime,
-                tz=_dt.timezone.utc,
+                tz=_dt.UTC,
             ).isoformat()
             entries.append(
                 {
@@ -1119,18 +1049,16 @@ class DashboardServer:
         return path
 
     @staticmethod
-    def _tail_log_lines(path: Path, limit: int) -> List[str]:
+    def _tail_log_lines(path: Path, limit: int) -> list[str]:
         if limit <= 0:
             return []
         block_size = 8192
         data = b""
-        lines: List[bytes] = []
+        lines: list[bytes] = []
         with path.open("rb") as handle:
             handle.seek(0, os.SEEK_END)
             position = handle.tell()
-            while (
-                position > 0 and len(lines) <= limit and len(data) < LOG_TAIL_MAX_BYTES
-            ):
+            while position > 0 and len(lines) <= limit and len(data) < LOG_TAIL_MAX_BYTES:
                 read_size = min(block_size, position)
                 position -= read_size
                 handle.seek(position)
@@ -1140,8 +1068,8 @@ class DashboardServer:
             lines = lines[-limit:]
         return [line.decode("utf-8", errors="replace") for line in lines]
 
-    def _normalize_names(self, items: Iterable[str]) -> List[str]:
-        normalized: List[str] = []
+    def _normalize_names(self, items: Iterable[str]) -> list[str]:
+        normalized: list[str] = []
         for raw in items:
             resolved, matches = self.bot.resolve_cog_identifier(raw)
             if resolved:
@@ -1155,11 +1083,9 @@ class DashboardServer:
         return normalized
 
     @staticmethod
-    def _format_netloc(host: str, port: Optional[int], scheme: str) -> str:
+    def _format_netloc(host: str, port: int | None, scheme: str) -> str:
         safe_host = host.strip() or "127.0.0.1"
-        if ":" in safe_host and not (
-            safe_host.startswith("[") and safe_host.endswith("]")
-        ):
+        if ":" in safe_host and not (safe_host.startswith("[") and safe_host.endswith("]")):
             safe_host = f"[{safe_host}]"
         default_ports = {"http": 80, "https": 443}
         default_port = default_ports.get(scheme, None)
@@ -1168,7 +1094,7 @@ class DashboardServer:
         return f"{safe_host}:{port}"
 
     @staticmethod
-    def _format_base_url(host: str, port: Optional[int], scheme: str) -> str:
+    def _format_base_url(host: str, port: int | None, scheme: str) -> str:
         netloc = DashboardServer._format_netloc(host, port, scheme)
         return urlunparse((scheme, netloc, "", "", "", ""))
 
@@ -1180,7 +1106,7 @@ class DashboardServer:
         parsed = urlparse(raw)
         if parsed.scheme and parsed.netloc:
             try:
-                parsed_port: Optional[int] = parsed.port
+                parsed_port: int | None = parsed.port
             except ValueError:
                 parsed_port = None
             netloc = DashboardServer._format_netloc(
@@ -1210,9 +1136,7 @@ class DashboardServer:
                 parsed.hostname or parsed.netloc, parsed_port, scheme
             )
             path = parsed.path.rstrip("/")
-            return urlunparse(
-                (scheme, netloc, path, parsed.params, parsed.query, parsed.fragment)
-            )
+            return urlunparse((scheme, netloc, path, parsed.params, parsed.query, parsed.fragment))
 
         fallback = urlparse(f"{default_scheme}://{raw}")
         try:
@@ -1236,7 +1160,7 @@ class DashboardServer:
             )
         )
 
-    def _resolve_nssm_executable_path(self) -> Optional[str]:
+    def _resolve_nssm_executable_path(self) -> str | None:
         configured = (self._nssm_executable or "").strip()
         if configured:
             configured_path = Path(configured).expanduser()
@@ -1249,7 +1173,7 @@ class DashboardServer:
                 return candidate
         return None
 
-    def _resolve_powershell_executable_path(self) -> Optional[str]:
+    def _resolve_powershell_executable_path(self) -> str | None:
         configured = (self._powershell_executable or "").strip()
         if configured:
             configured_path = Path(configured).expanduser()
@@ -1263,13 +1187,13 @@ class DashboardServer:
         return None
 
     @staticmethod
-    def _resolve_sc_executable_path() -> Optional[str]:
+    def _resolve_sc_executable_path() -> str | None:
         for candidate in SC_PATH_CANDIDATES:
             if Path(candidate).is_file():
                 return candidate
         return None
 
-    def _query_windows_service_pid(self, service_name: str) -> Optional[int]:
+    def _query_windows_service_pid(self, service_name: str) -> int | None:
         if os.name != "nt":
             return None
         normalized_name = (service_name or "").strip()
@@ -1286,7 +1210,7 @@ class DashboardServer:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                universal_newlines=True,
+                text=True,
                 timeout=3.0,
                 check=False,
             )
@@ -1300,9 +1224,7 @@ class DashboardServer:
 
         if process.returncode != 0:
             detail_lines = (process.stderr or process.stdout or "").strip().splitlines()
-            detail = (
-                detail_lines[0] if detail_lines else f"exit code {process.returncode}"
-            )
+            detail = detail_lines[0] if detail_lines else f"exit code {process.returncode}"
             logger.debug(
                 "SC queryex returned non-zero for service '%s': %s",
                 self._safe_log_value(normalized_name),
@@ -1338,7 +1260,7 @@ class DashboardServer:
             f"& {self._powershell_literal(nssm_executable)} restart {self._powershell_literal(self._nssm_service_name)}"
         )
 
-    def _schedule_nssm_service_restart(self) -> Tuple[bool, str]:
+    def _schedule_nssm_service_restart(self) -> tuple[bool, str]:
         if not self._nssm_service_restart_enabled:
             return False, "NSSM restart disabled (MASTER_NSSM_RESTART_ENABLED=0)"
         if os.name != "nt":
@@ -1350,8 +1272,7 @@ class DashboardServer:
         if not nssm_executable:
             if self._nssm_executable:
                 return False, (
-                    "NSSM executable not found or not absolute file path: "
-                    f"{self._nssm_executable}"
+                    f"NSSM executable not found or not absolute file path: {self._nssm_executable}"
                 )
             return (
                 False,
@@ -1417,11 +1338,7 @@ class DashboardServer:
         else:
             if process.returncode != 0:
                 detail_lines = (stderr or stdout or "").strip().splitlines()
-                detail = (
-                    detail_lines[0]
-                    if detail_lines
-                    else f"exit code {process.returncode}"
-                )
+                detail = detail_lines[0] if detail_lines else f"exit code {process.returncode}"
                 safe_detail = self._safe_log_value(detail)
                 logger.warning(
                     "NSSM restart command failed for service '%s' (exit=%s, detail=%s)",
@@ -1446,9 +1363,7 @@ class DashboardServer:
         return True, f"Service restart requested ({self._nssm_service_name})"
 
     @staticmethod
-    def _parse_positive_float(
-        raw: Optional[str], *, default: float, env_name: str
-    ) -> float:
+    def _parse_positive_float(raw: str | None, *, default: float, env_name: str) -> float:
         if raw is None:
             return default
         value = raw.strip()
@@ -1457,19 +1372,15 @@ class DashboardServer:
         try:
             parsed = float(value)
         except ValueError:
-            logging.warning(
-                "%s '%s' invalid – using default %.1fs", env_name, raw, default
-            )
+            logging.warning("%s '%s' invalid – using default %.1fs", env_name, raw, default)
             return default
         if parsed <= 0:
-            logging.warning(
-                "%s '%s' must be > 0 – using default %.1fs", env_name, raw, default
-            )
+            logging.warning("%s '%s' must be > 0 – using default %.1fs", env_name, raw, default)
             return default
         return parsed
 
     @staticmethod
-    def _coerce_bool(value: Any) -> Optional[bool]:
+    def _coerce_bool(value: Any) -> bool | None:
         if isinstance(value, bool):
             return value
         if isinstance(value, str):
@@ -1481,7 +1392,7 @@ class DashboardServer:
         return None
 
     @staticmethod
-    def _coerce_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+    def _coerce_int(value: Any, default: int | None = None) -> int | None:
         try:
             if value is None:
                 return default
@@ -1498,16 +1409,21 @@ class DashboardServer:
             new_dict = {}
             for k, v in data.items():
                 # Discord IDs and other large numbers need to be strings in JSON
-                if k in (
-                    "id",
-                    "guild_id",
-                    "user_id",
-                    "created_by",
-                    "team_id",
-                    "period_id",
-                    "message_id",
-                    "channel_id",
-                ) and isinstance(v, int) and v > 1000000:
+                if (
+                    k
+                    in (
+                        "id",
+                        "guild_id",
+                        "user_id",
+                        "created_by",
+                        "team_id",
+                        "period_id",
+                        "message_id",
+                        "channel_id",
+                    )
+                    and isinstance(v, int)
+                    and v > 1000000
+                ):
                     new_dict[k] = str(v)
                 else:
                     new_dict[k] = DashboardServer._stringify_ids(v)
@@ -1515,7 +1431,7 @@ class DashboardServer:
         return data
 
     @staticmethod
-    def _parse_metadata_json(raw: Any) -> Dict[str, Any]:
+    def _parse_metadata_json(raw: Any) -> dict[str, Any]:
         if isinstance(raw, dict):
             return raw
         if raw is None:
@@ -1540,15 +1456,13 @@ class DashboardServer:
         public_base = (self._public_base_url or "").rstrip("/")
         if public_base.lower().endswith("/admin"):
             public_base = public_base[:-6]
-        if public_base and not self._is_loopback_host(
-            urlparse(public_base).hostname or ""
-        ):
+        if public_base and not self._is_loopback_host(urlparse(public_base).hostname or ""):
             return f"{public_base}/twitch/admin"
 
         base = self._format_base_url("127.0.0.1", 8765, self._scheme)
         return f"{base.rstrip('/')}/twitch/admin"
 
-    def _derive_steam_return_url(self) -> Optional[str]:
+    def _derive_steam_return_url(self) -> str | None:
         if MASTER_DASHBOARD_STEAM_RETURN_URL:
             try:
                 return self._normalize_public_url(
@@ -1563,20 +1477,18 @@ class DashboardServer:
                 )
 
         base = (
-            (MASTER_DASHBOARD_STEAM_PUBLIC_URL or (self._public_base_url or ""))
-            .strip()
-            .rstrip("/")
+            (MASTER_DASHBOARD_STEAM_PUBLIC_URL or (self._public_base_url or "")).strip().rstrip("/")
         )
         if not base:
             return None
         path = "/" + MASTER_DASHBOARD_STEAM_RETURN_PATH.lstrip("/")
         return f"{base}{path}"
 
-    def _derive_raid_health_url(self) -> Optional[str]:
+    def _derive_raid_health_url(self) -> str | None:
         return "https://raid.earlysalty.com/health"
 
-    def _build_health_targets(self) -> List[Dict[str, Any]]:
-        targets: List[Dict[str, Any]] = []
+    def _build_health_targets(self) -> list[dict[str, Any]]:
+        targets: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
 
         def _append_query_param(url: str, key: str, value: str) -> str:
@@ -1594,7 +1506,7 @@ class DashboardServer:
             label: str,
             url: str,
             *,
-            key: Optional[str] = None,
+            key: str | None = None,
             method: str = "GET",
         ) -> None:
             safe_url = (url or "").strip()
@@ -1602,13 +1514,9 @@ class DashboardServer:
                 return
             if safe_url.startswith("http://") or safe_url.startswith("https://"):
                 try:
-                    safe_url = self._normalize_public_url(
-                        safe_url, default_scheme=self._scheme
-                    )
+                    safe_url = self._normalize_public_url(safe_url, default_scheme=self._scheme)
                 except Exception as exc:
-                    logging.warning(
-                        "Healthcheck URL '%s' invalid (%s) – skipping entry", url, exc
-                    )
+                    logging.warning("Healthcheck URL '%s' invalid (%s) – skipping entry", url, exc)
                     return
             safe_label = (label or safe_url).strip() or safe_url
             safe_method = (method or "GET").strip().upper() or "GET"
@@ -1620,7 +1528,7 @@ class DashboardServer:
                 suffix += 1
             seen_keys.add(unique_key)
 
-            entry: Dict[str, Any] = {
+            entry: dict[str, Any] = {
                 "key": unique_key,
                 "label": safe_label,
                 "url": safe_url,
@@ -1629,20 +1537,12 @@ class DashboardServer:
             targets.append(entry)
 
         if self._twitch_dashboard_href:
-            _add_target(
-                "Twitch Dashboard", self._twitch_dashboard_href, key="twitch-dashboard"
-            )
+            _add_target("Twitch Dashboard", self._twitch_dashboard_href, key="twitch-dashboard")
         if self._steam_return_url:
-            steam_health_url = _append_query_param(
-                self._steam_return_url, "healthcheck", "1"
-            )
-            _add_target(
-                "Steam OAuth Callback", steam_health_url, key="steam-oauth-callback"
-            )
+            steam_health_url = _append_query_param(self._steam_return_url, "healthcheck", "1")
+            _add_target("Steam OAuth Callback", steam_health_url, key="steam-oauth-callback")
         if self._raid_health_url:
-            _add_target(
-                "Raid Callback Host", self._raid_health_url, key="raid-callback-host"
-            )
+            _add_target("Raid Callback Host", self._raid_health_url, key="raid-callback-host")
 
         # Explicit Health Checks for Core Domains
         _add_target("Main Site", "https://earlysalty.de/health", key="main-site")
@@ -1651,9 +1551,7 @@ class DashboardServer:
             "https://link.earlysalty.com/health",
             key="steam-link-service",
         )
-        _add_target(
-            "Raid Service", "https://raid.earlysalty.com/health", key="raid-service"
-        )
+        _add_target("Raid Service", "https://raid.earlysalty.com/health", key="raid-service")
         # /twitch/stats requires auth; use a public endpoint to avoid false 401 alarms.
         _add_target(
             "Twitch Stats",
@@ -1669,7 +1567,7 @@ class DashboardServer:
         pieces = [part for part in slug.split("-") if part]
         return "-".join(pieces) or "health"
 
-    def _normalized_discord_redirect_uri(self) -> Optional[str]:
+    def _normalized_discord_redirect_uri(self) -> str | None:
         raw = (self._discord_redirect_uri or "").strip()
         if not raw:
             return None
@@ -1737,9 +1635,7 @@ class DashboardServer:
         )
         raise web.HTTPFound(f"{DISCORD_API_BASE_URL}/oauth2/authorize?{query}")
 
-    async def _handle_discord_callback(
-        self, request: web.Request
-    ) -> web.StreamResponse:
+    async def _handle_discord_callback(self, request: web.Request) -> web.StreamResponse:
         if not self._discord_auth_required:
             raise web.HTTPFound("/admin")
 
@@ -1755,9 +1651,7 @@ class DashboardServer:
         self._cleanup_discord_auth_state()
         state_data = self._discord_oauth_states.pop(state, None)
         if not state_data:
-            return web.Response(
-                text="OAuth state ungültig oder abgelaufen.", status=400
-            )
+            return web.Response(text="OAuth state ungültig oder abgelaufen.", status=400)
 
         token_data = await self._exchange_discord_code(
             code, str(state_data.get("redirect_uri") or "")
@@ -1768,9 +1662,7 @@ class DashboardServer:
 
         user = await self._fetch_discord_user(access_token)
         if not user:
-            return web.Response(
-                text="Discord-User konnte nicht geladen werden.", status=401
-            )
+            return web.Response(text="Discord-User konnte nicht geladen werden.", status=401)
 
         user_id = self._coerce_int(user.get("id"), None)
         if not user_id:
@@ -1842,9 +1734,7 @@ class DashboardServer:
         session_id = (request.cookies.get(self._discord_session_cookie) or "").strip()
         if session_id:
             self._discord_sessions.pop(session_id, None)
-        login_url = (
-            MASTER_DISCORD_ADMIN_LOGIN_URL if self._discord_auth_required else "/admin"
-        )
+        login_url = MASTER_DISCORD_ADMIN_LOGIN_URL if self._discord_auth_required else "/admin"
         response = web.HTTPFound(login_url)
         self._clear_discord_session_cookie(response)
         raise response
@@ -1899,9 +1789,7 @@ class DashboardServer:
             raise web.HTTPFound("/turnier")
         display_name = str((session or {}).get("display_name") or "Nicht angemeldet")
         safe_twitch_url = html.escape(
-            self._safe_template_href(
-                self._twitch_dashboard_href or "", fallback="/twitch/admin"
-            ),
+            self._safe_template_href(self._twitch_dashboard_href or "", fallback="/twitch/admin"),
             quote=True,
         )
         safe_discord_login_url = html.escape(
@@ -1943,10 +1831,10 @@ class DashboardServer:
                 return cog
         return None
 
-    def _resolve_display_names(self, user_ids: Iterable[int]) -> Dict[int, str]:
-        names: Dict[int, str] = {}
+    def _resolve_display_names(self, user_ids: Iterable[int]) -> dict[int, str]:
+        names: dict[int, str] = {}
         for uid in {u for u in user_ids if u}:
-            display_name: Optional[str] = None
+            display_name: str | None = None
             for guild in self.bot.guilds:
                 try:
                     member = guild.get_member(uid)
@@ -1975,21 +1863,19 @@ class DashboardServer:
             if resolved:
                 return resolved
         except Exception:  # pragma: no cover - defensive
-            logger.debug(
-                "Could not resolve retention exclusion roles from cog", exc_info=True
-            )
+            logger.debug("Could not resolve retention exclusion roles from cog", exc_info=True)
         return set(DEFAULT_RETENTION_EXCLUDED_ROLE_IDS)
 
     def _has_retention_excluded_role(
         self,
-        user_id: Optional[int],
-        guild_id: Optional[int],
+        user_id: int | None,
+        guild_id: int | None,
         excluded: set[int],
     ) -> bool:
         if not user_id or not excluded:
             return False
 
-        guilds: List[Any] = []
+        guilds: list[Any] = []
         if guild_id:
             try:
                 guild = self.bot.get_guild(int(guild_id))
@@ -2015,7 +1901,7 @@ class DashboardServer:
                 return True
         return False
 
-    async def _collect_live_voice_sessions(self) -> List[Dict[str, Any]]:
+    async def _collect_live_voice_sessions(self) -> list[dict[str, Any]]:
         cog = self._voice_cog()
         if not cog:
             return []
@@ -2024,7 +1910,7 @@ class DashboardServer:
         except Exception:
             voice_sessions = {}
         now = _dt.datetime.utcnow()
-        sessions: List[Dict[str, Any]] = []
+        sessions: list[dict[str, Any]] = []
         for session in voice_sessions.values():
             user_id = session.get("user_id")
             start_time = session.get("start_time")
@@ -2037,10 +1923,10 @@ class DashboardServer:
                     channel = guild.get_channel(channel_id)
                     if channel:
                         channel_name = getattr(channel, "name", None) or channel_name
-            started_at: Optional[str]
+            started_at: str | None
             if isinstance(start_time, _dt.datetime):
                 try:
-                    started_at = start_time.replace(tzinfo=_dt.timezone.utc).isoformat()
+                    started_at = start_time.replace(tzinfo=_dt.UTC).isoformat()
                 except Exception:
                     started_at = start_time.isoformat()
                 duration_seconds = max(0, int((now - start_time).total_seconds()))
@@ -2096,7 +1982,7 @@ class DashboardServer:
 
         cutoff = f"-{hours} hours"
 
-        def _safe_query_all(query: str, params: Tuple[Any, ...] = ()) -> List[Any]:
+        def _safe_query_all(query: str, params: tuple[Any, ...] = ()) -> list[Any]:
             try:
                 return db.query_all(query, params)
             except sqlite3.OperationalError as exc:
@@ -2105,7 +1991,7 @@ class DashboardServer:
                     return []
                 raise
 
-        def _safe_query_one(query: str, params: Tuple[Any, ...] = ()) -> Optional[Any]:
+        def _safe_query_one(query: str, params: tuple[Any, ...] = ()) -> Any | None:
             try:
                 return db.query_one(query, params)
             except sqlite3.OperationalError as exc:
@@ -2256,36 +2142,28 @@ class DashboardServer:
             )
         except Exception as exc:
             logging.exception("Failed to load twitch metrics: %s", exc)
-            raise web.HTTPInternalServerError(
-                text="Twitch metrics unavailable"
-            ) from exc
+            raise web.HTTPInternalServerError(text="Twitch metrics unavailable") from exc
 
-        now_utc = _dt.datetime.now(tz=_dt.timezone.utc).replace(
-            minute=0, second=0, microsecond=0
-        )
+        now_utc = _dt.datetime.now(tz=_dt.UTC).replace(minute=0, second=0, microsecond=0)
         start_utc = now_utc - _dt.timedelta(hours=max(0, hours - 1))
-        bucket_keys: List[str] = []
-        labels: List[str] = []
+        bucket_keys: list[str] = []
+        labels: list[str] = []
         for i in range(hours):
             bucket_dt = start_utc + _dt.timedelta(hours=i)
             bucket_keys.append(bucket_dt.strftime("%Y-%m-%d %H:00:00"))
             labels.append(bucket_dt.strftime("%d.%m %H:%M"))
 
-        raids_map: Dict[str, Dict[str, float]] = {}
+        raids_map: dict[str, dict[str, float]] = {}
         for row in raids_hourly_rows:
             key = str(row["bucket_hour"] if hasattr(row, "keys") else row[0] or "")
             if not key:
                 continue
             raids_map[key] = {
-                "raid_count": float(
-                    row["raid_count"] if hasattr(row, "keys") else row[1] or 0
-                ),
-                "raid_viewers": float(
-                    row["raid_viewers"] if hasattr(row, "keys") else row[2] or 0
-                ),
+                "raid_count": float(row["raid_count"] if hasattr(row, "keys") else row[1] or 0),
+                "raid_viewers": float(row["raid_viewers"] if hasattr(row, "keys") else row[2] or 0),
             }
 
-        active_map: Dict[str, float] = {}
+        active_map: dict[str, float] = {}
         for row in active_hourly_rows:
             key = str(row["bucket_hour"] if hasattr(row, "keys") else row[0] or "")
             if not key:
@@ -2294,21 +2172,17 @@ class DashboardServer:
                 row["active_streamers"] if hasattr(row, "keys") else row[1] or 0
             )
 
-        eventsub_map: Dict[str, Dict[str, float]] = {}
+        eventsub_map: dict[str, dict[str, float]] = {}
         for row in eventsub_hourly_rows:
             key = str(row["bucket_hour"] if hasattr(row, "keys") else row[0] or "")
             if not key:
                 continue
             eventsub_map[key] = {
                 "avg_utilization_pct": float(
-                    row["avg_utilization_pct"]
-                    if hasattr(row, "keys")
-                    else row[1] or 0.0
+                    row["avg_utilization_pct"] if hasattr(row, "keys") else row[1] or 0.0
                 ),
                 "peak_utilization_pct": float(
-                    row["peak_utilization_pct"]
-                    if hasattr(row, "keys")
-                    else row[2] or 0.0
+                    row["peak_utilization_pct"] if hasattr(row, "keys") else row[2] or 0.0
                 ),
                 "avg_used_slots": float(
                     row["avg_used_slots"] if hasattr(row, "keys") else row[3] or 0.0
@@ -2319,18 +2193,16 @@ class DashboardServer:
                 "avg_listener_count": float(
                     row["avg_listener_count"] if hasattr(row, "keys") else row[5] or 0.0
                 ),
-                "samples": float(
-                    row["samples"] if hasattr(row, "keys") else row[6] or 0
-                ),
+                "samples": float(row["samples"] if hasattr(row, "keys") else row[6] or 0),
             }
 
-        raids_series: List[int] = []
-        raid_viewers_series: List[int] = []
-        active_streamers_series: List[int] = []
-        eventsub_avg_util_series: List[Optional[float]] = []
-        eventsub_peak_util_series: List[Optional[float]] = []
-        eventsub_used_slots_series: List[Optional[float]] = []
-        eventsub_listener_series: List[Optional[float]] = []
+        raids_series: list[int] = []
+        raid_viewers_series: list[int] = []
+        active_streamers_series: list[int] = []
+        eventsub_avg_util_series: list[float | None] = []
+        eventsub_peak_util_series: list[float | None] = []
+        eventsub_used_slots_series: list[float | None] = []
+        eventsub_listener_series: list[float | None] = []
 
         for key in bucket_keys:
             raid_row = raids_map.get(key, {})
@@ -2338,9 +2210,7 @@ class DashboardServer:
             event_row = eventsub_map.get(key)
 
             raids_series.append(int(round(float(raid_row.get("raid_count", 0.0)))))
-            raid_viewers_series.append(
-                int(round(float(raid_row.get("raid_viewers", 0.0))))
-            )
+            raid_viewers_series.append(int(round(float(raid_row.get("raid_viewers", 0.0)))))
             active_streamers_series.append(int(round(float(active_row or 0.0))))
 
             if event_row:
@@ -2379,9 +2249,7 @@ class DashboardServer:
         eventsub_peak = _as_float(eventsub_summary_row, "peak_utilization_pct", 0.0)
         eventsub_avg_slots = _as_float(eventsub_summary_row, "avg_used_slots", 0.0)
         eventsub_peak_slots = _as_float(eventsub_summary_row, "peak_used_slots", 0.0)
-        eventsub_avg_listeners = _as_float(
-            eventsub_summary_row, "avg_listener_count", 0.0
-        )
+        eventsub_avg_listeners = _as_float(eventsub_summary_row, "avg_listener_count", 0.0)
         eventsub_max_listeners = _as_int(eventsub_summary_row, "max_listener_count", 0)
         eventsub_samples = _as_int(eventsub_summary_row, "samples", 0)
 
@@ -2406,25 +2274,17 @@ class DashboardServer:
         for row in eventsub_reason_rows:
             reason_top.append(
                 {
-                    "reason": str(
-                        row["trigger_reason"] if hasattr(row, "keys") else row[0] or ""
-                    ),
-                    "samples": int(
-                        row["samples"] if hasattr(row, "keys") else row[1] or 0
-                    ),
+                    "reason": str(row["trigger_reason"] if hasattr(row, "keys") else row[0] or ""),
+                    "samples": int(row["samples"] if hasattr(row, "keys") else row[1] or 0),
                     "peak_utilization_pct": float(
-                        row["peak_utilization_pct"]
-                        if hasattr(row, "keys")
-                        else row[2] or 0.0
+                        row["peak_utilization_pct"] if hasattr(row, "keys") else row[2] or 0.0
                     ),
                 }
             )
 
         payload = {
             "window_hours": hours,
-            "generated_at": _dt.datetime.now(tz=_dt.timezone.utc).isoformat(
-                timespec="seconds"
-            ),
+            "generated_at": _dt.datetime.now(tz=_dt.UTC).isoformat(timespec="seconds"),
             "summary": {
                 "raids_total": raids_total,
                 "raid_viewers_total": raid_viewers_total,
@@ -2514,7 +2374,7 @@ class DashboardServer:
                 user_ids.add(uid)
         name_map = self._resolve_display_names(user_ids)
 
-        def _map_row(row: Any) -> Dict[str, Any]:
+        def _map_row(row: Any) -> dict[str, Any]:
             uid = row["user_id"]
             return {
                 "user_id": uid,
@@ -2526,24 +2386,18 @@ class DashboardServer:
 
         summary = {
             "tracked_users": int(summary_row["user_count"] or 0) if summary_row else 0,
-            "total_seconds": int(summary_row["total_seconds"] or 0)
-            if summary_row
-            else 0,
+            "total_seconds": int(summary_row["total_seconds"] or 0) if summary_row else 0,
             "total_points": int(summary_row["total_points"] or 0) if summary_row else 0,
             "last_update": summary_row["last_update"] if summary_row else None,
         }
         if summary["tracked_users"] > 0:
-            summary["avg_seconds_per_user"] = (
-                summary["total_seconds"] / summary["tracked_users"]
-            )
+            summary["avg_seconds_per_user"] = summary["total_seconds"] / summary["tracked_users"]
         else:
             summary["avg_seconds_per_user"] = 0
 
         live_summary = {
             "active_sessions": len(live_sessions),
-            "total_seconds": sum(
-                sess.get("duration_seconds", 0) for sess in live_sessions
-            ),
+            "total_seconds": sum(sess.get("duration_seconds", 0) for sess in live_sessions),
         }
         for sess in live_sessions:
             uid = sess.get("user_id")
@@ -2573,9 +2427,7 @@ class DashboardServer:
                 raise ValueError
             days = min(days, 90)
         except ValueError:
-            raise web.HTTPBadRequest(
-                text="range must be a positive integer (days, max 90)"
-            )
+            raise web.HTTPBadRequest(text="range must be a positive integer (days, max 90)")
         try:
             top_limit = int(top_raw) if top_raw else 10
             if top_limit <= 0:
@@ -2586,7 +2438,7 @@ class DashboardServer:
         mode = mode_raw.strip().lower()
         if mode not in {"hour", "day", "week", "month"}:
             raise web.HTTPBadRequest(text="mode must be one of hour, day, week, month")
-        user_id: Optional[int] = None
+        user_id: int | None = None
         if user_raw:
             try:
                 user_id = int(user_raw)
@@ -2668,7 +2520,7 @@ class DashboardServer:
             user_ids.add(user_id)
         name_map = self._resolve_display_names(user_ids)
 
-        def _map_top_user(row: Any) -> Dict[str, Any]:
+        def _map_top_user(row: Any) -> dict[str, Any]:
             uid = row["user_id"]
             return {
                 "user_id": uid,
@@ -2697,9 +2549,7 @@ class DashboardServer:
                     "total_seconds": int(row["total_seconds"] or 0),
                     "sessions": sessions_count,
                     "avg_peak": (
-                        (int(row["sum_peak"] or 0) / sessions_count)
-                        if sessions_count > 0
-                        else 0
+                        (int(row["sum_peak"] or 0) / sessions_count) if sessions_count > 0 else 0
                     ),
                 }
             )
@@ -2745,7 +2595,7 @@ class DashboardServer:
                     }
                 )
 
-        user_summary: Optional[Dict[str, Any]] = None
+        user_summary: dict[str, Any] | None = None
         if user_id is not None:
             try:
                 range_stats = db.query_one(
@@ -2780,36 +2630,22 @@ class DashboardServer:
                 )
             except Exception as exc:  # noqa: BLE001
                 logging.exception("Failed to build user voice summary: %s", exc)
-                raise web.HTTPInternalServerError(
-                    text="Voice history unavailable"
-                ) from exc
+                raise web.HTTPInternalServerError(text="Voice history unavailable") from exc
 
             range_seconds = int(range_stats["total_seconds"] or 0) if range_stats else 0
             range_points = int(range_stats["total_points"] or 0) if range_stats else 0
             range_sessions = int(range_stats["sessions"] or 0) if range_stats else 0
-            range_avg_session = (
-                (range_seconds / range_sessions) if range_sessions else 0
-            )
+            range_avg_session = (range_seconds / range_sessions) if range_sessions else 0
             range_avg_peak = (
-                (int(range_stats["sum_peak"] or 0) / range_sessions)
-                if range_sessions
-                else 0
+                (int(range_stats["sum_peak"] or 0) / range_sessions) if range_sessions else 0
             )
             range_days = int(range_stats["active_days"] or 0) if range_stats else 0
 
-            lifetime_seconds = (
-                int(lifetime_stats["total_seconds"] or 0) if lifetime_stats else 0
-            )
-            lifetime_points = (
-                int(lifetime_stats["total_points"] or 0) if lifetime_stats else 0
-            )
-            lifetime_last_update = (
-                lifetime_stats["last_update"] if lifetime_stats else None
-            )
+            lifetime_seconds = int(lifetime_stats["total_seconds"] or 0) if lifetime_stats else 0
+            lifetime_points = int(lifetime_stats["total_points"] or 0) if lifetime_stats else 0
+            lifetime_last_update = lifetime_stats["last_update"] if lifetime_stats else None
             lifetime_sessions = (
-                int(lifetime_sessions_row["sessions"] or 0)
-                if lifetime_sessions_row
-                else 0
+                int(lifetime_sessions_row["sessions"] or 0) if lifetime_sessions_row else 0
             )
             last_session = None
             if range_stats:
@@ -2878,9 +2714,7 @@ class DashboardServer:
             except Exception:  # pragma: no cover - defensive
                 retention_columns = set()
 
-            total_tracked_row = db.query_one(
-                "SELECT COUNT(*) FROM user_retention_tracking"
-            )
+            total_tracked_row = db.query_one("SELECT COUNT(*) FROM user_retention_tracking")
             total_tracked = total_tracked_row[0] if total_tracked_row else 0
 
             opted_out_row = db.query_one(
@@ -2915,8 +2749,7 @@ class DashboardServer:
                 or "last_miss_you_at" in retention_columns
             )
             has_miss_count = (
-                "miss_you_count" in retention_columns
-                or "miss_you_sent" in retention_columns
+                "miss_you_count" in retention_columns or "miss_you_sent" in retention_columns
             )
 
             if has_last_sent:
@@ -3008,9 +2841,7 @@ class DashboardServer:
             inactive_candidates = len(filtered_rows)
             candidate_rows = filtered_rows[:50]
 
-            user_ids = [
-                row["user_id"] for row in candidate_rows if row and row["user_id"]
-            ]
+            user_ids = [row["user_id"] for row in candidate_rows if row and row["user_id"]]
             name_map = self._resolve_display_names(user_ids)
 
             payload = {
@@ -3086,7 +2917,7 @@ class DashboardServer:
         except ValueError:
             raise web.HTTPBadRequest(text="limit must be a positive integer (max 200)")
 
-        guild_id: Optional[int] = None
+        guild_id: int | None = None
         if guild_id_raw:
             try:
                 guild_id = int(guild_id_raw)
@@ -3196,7 +3027,7 @@ class DashboardServer:
         except ValueError:
             raise web.HTTPBadRequest(text="limit must be a positive integer (max 100)")
 
-        guild_id: Optional[int] = None
+        guild_id: int | None = None
         if guild_id_raw:
             try:
                 guild_id = int(guild_id_raw)
@@ -3256,18 +3087,14 @@ class DashboardServer:
                 "summary": {
                     "total_users": summary[0] if summary else 0,
                     "total_messages": summary[1] if summary else 0,
-                    "avg_per_user": round(summary[2], 1)
-                    if summary and summary[2]
-                    else 0,
+                    "avg_per_user": round(summary[2], 1) if summary and summary[2] else 0,
                 },
             }
             return self._json(payload)
 
         except Exception as exc:
             logging.exception("Failed to load message activity: %s", exc)
-            raise web.HTTPInternalServerError(
-                text="Message activity unavailable"
-            ) from exc
+            raise web.HTTPInternalServerError(text="Message activity unavailable") from exc
 
     async def _handle_co_player_network(self, request: web.Request) -> web.Response:
         """Aggregiertes Co-Player-Netzwerk mit persistierten Anzeigenamen."""
@@ -3306,9 +3133,7 @@ class DashboardServer:
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to load co-player network: %s", exc)
-            raise web.HTTPInternalServerError(
-                text="Co-player network unavailable"
-            ) from exc
+            raise web.HTTPInternalServerError(text="Co-player network unavailable") from exc
 
         def _ts(value: Any) -> float:
             if value is None:
@@ -3321,9 +3146,9 @@ class DashboardServer:
             except Exception:
                 return 0.0
 
-        edges: Dict[Tuple[int, int], Dict[str, Any]] = {}
-        name_map: Dict[int, str] = {}
-        missing_names: Set[int] = set()
+        edges: dict[tuple[int, int], dict[str, Any]] = {}
+        name_map: dict[int, str] = {}
+        missing_names: set[int] = set()
 
         for row in rows:
             try:
@@ -3372,7 +3197,7 @@ class DashboardServer:
                 if name:
                     name_map[uid] = name
 
-        updates: List[Tuple[Optional[str], Optional[str], int, int]] = []
+        updates: list[tuple[str | None, str | None, int, int]] = []
         for row in rows:
             try:
                 uid = int(row["user_id"])
@@ -3405,7 +3230,7 @@ class DashboardServer:
         )
         trimmed_edges = edge_values[:limit]
 
-        nodes: Dict[int, Dict[str, Any]] = {}
+        nodes: dict[int, dict[str, Any]] = {}
         for edge in trimmed_edges:
             source = edge["source"]
             target = edge["target"]
@@ -3452,10 +3277,8 @@ class DashboardServer:
         }
         return self._json(payload)
 
-    def _collect_public_vanity_links(
-        self, guild_filter: Optional[int]
-    ) -> List[Dict[str, Any]]:
-        links: List[Dict[str, Any]] = []
+    def _collect_public_vanity_links(self, guild_filter: int | None) -> list[dict[str, Any]]:
+        links: list[dict[str, Any]] = []
         for guild in self.bot.guilds:
             if guild_filter is not None and int(guild.id) != int(guild_filter):
                 continue
@@ -3477,10 +3300,10 @@ class DashboardServer:
 
     def _build_member_source_analytics(
         self,
-        guild_filter: Optional[int],
+        guild_filter: int | None,
         *,
         days: int = 30,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         window_days = max(1, min(int(days), 365))
         cutoff_expr = f"-{window_days} days"
 
@@ -3496,8 +3319,8 @@ class DashboardServer:
             (cutoff_expr, guild_filter, guild_filter),
         )
 
-        twitch_invite_lookup: Dict[str, str] = {}
-        twitch_assigned_links: List[Dict[str, Any]] = []
+        twitch_invite_lookup: dict[str, str] = {}
+        twitch_assigned_links: list[dict[str, Any]] = []
         try:
             twitch_rows = db.query_all(
                 """
@@ -3528,11 +3351,7 @@ class DashboardServer:
                             "streamer_login": streamer_login or None,
                             "invite_code": invite_code or None,
                             "invite_url": invite_url
-                            or (
-                                f"https://discord.gg/{invite_code}"
-                                if invite_code
-                                else None
-                            ),
+                            or (f"https://discord.gg/{invite_code}" if invite_code else None),
                             "created_at": created_at,
                             "last_sent_at": last_sent_at,
                         }
@@ -3543,13 +3362,13 @@ class DashboardServer:
         except Exception:
             logger.debug("Failed to load twitch invite assignments", exc_info=True)
 
-        bucket_counts: Dict[str, int] = {
+        bucket_counts: dict[str, int] = {
             "public": 0,
             "twitch": 0,
             "personal": 0,
             "unknown": 0,
         }
-        public_groups: Dict[str, Dict[str, Any]] = {
+        public_groups: dict[str, dict[str, Any]] = {
             "server_discovery": {
                 "kind": "server_discovery",
                 "label": "Server entdecken",
@@ -3558,10 +3377,10 @@ class DashboardServer:
             "vanity": {"kind": "vanity", "label": "Vanity-Link", "count": 0},
             "other": {"kind": "other", "label": "Public (Sonstige)", "count": 0},
         }
-        twitch_groups: Dict[str, Dict[str, Any]] = {}
-        personal_groups: Dict[str, Dict[str, Any]] = {}
-        recent: List[Dict[str, Any]] = []
-        backfill_updates: List[Tuple[str, int]] = []
+        twitch_groups: dict[str, dict[str, Any]] = {}
+        personal_groups: dict[str, dict[str, Any]] = {}
+        recent: list[dict[str, Any]] = []
+        backfill_updates: list[tuple[str, int]] = []
 
         for row in join_rows:
             event_id = self._coerce_int(row[0], None)
@@ -3573,11 +3392,7 @@ class DashboardServer:
 
             bucket_raw = str(metadata.get("join_source_bucket") or "").strip().lower()
             kind_raw = (
-                str(
-                    metadata.get("join_source_kind")
-                    or metadata.get("join_source_type")
-                    or ""
-                )
+                str(metadata.get("join_source_kind") or metadata.get("join_source_type") or "")
                 .strip()
                 .lower()
             )
@@ -3588,9 +3403,7 @@ class DashboardServer:
                 invite_url = f"https://discord.gg/{invite_code}"
                 metadata["invite_url"] = invite_url
                 metadata_changed = True
-            twitch_login = (
-                str(metadata.get("twitch_streamer_login") or "").strip().lower()
-            )
+            twitch_login = str(metadata.get("twitch_streamer_login") or "").strip().lower()
             if not twitch_login and invite_code:
                 twitch_login = twitch_invite_lookup.get(invite_code.lower(), "")
                 if twitch_login:
@@ -3622,8 +3435,8 @@ class DashboardServer:
 
             bucket_counts[bucket] += 1
 
-            public_kind: Optional[str] = None
-            personal_label: Optional[str] = None
+            public_kind: str | None = None
+            personal_label: str | None = None
             if bucket == "public":
                 if kind_raw in {"server_discovery", "discovery", "public_discovery"}:
                     public_kind = "server_discovery"
@@ -3652,9 +3465,7 @@ class DashboardServer:
 
             if bucket == "twitch":
                 key = twitch_login or invite_code.lower() or "unknown"
-                label = twitch_login or (
-                    f"Invite {invite_code}" if invite_code else "Unbekannt"
-                )
+                label = twitch_login or (f"Invite {invite_code}" if invite_code else "Unbekannt")
                 entry = twitch_groups.get(key)
                 if entry is None:
                     entry = {
@@ -3713,9 +3524,7 @@ class DashboardServer:
                     else:
                         source_label = "Public"
                 elif bucket == "twitch":
-                    source_label = (
-                        f"Twitch: {twitch_login}" if twitch_login else "Twitch"
-                    )
+                    source_label = f"Twitch: {twitch_login}" if twitch_login else "Twitch"
                 elif bucket == "personal":
                     source_label = f"Persoenlich: {personal_label or 'Invite-Link'}"
                 else:
@@ -3739,8 +3548,8 @@ class DashboardServer:
                 metadata_changed = True
 
             if not str(metadata.get("join_source_detected_at") or "").strip():
-                metadata["join_source_detected_at"] = (
-                    timestamp or _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                metadata["join_source_detected_at"] = timestamp or _dt.datetime.utcnow().strftime(
+                    "%Y-%m-%d %H:%M:%S"
                 )
                 metadata_changed = True
 
@@ -3773,9 +3582,7 @@ class DashboardServer:
                     len(backfill_updates),
                 )
             except Exception:
-                logger.debug(
-                    "Failed to persist member-source metadata backfill", exc_info=True
-                )
+                logger.debug("Failed to persist member-source metadata backfill", exc_info=True)
 
         public_breakdown = [
             entry for entry in public_groups.values() if int(entry.get("count", 0)) > 0
@@ -3802,11 +3609,7 @@ class DashboardServer:
             ),
         )
 
-        known_joins = (
-            bucket_counts["public"]
-            + bucket_counts["twitch"]
-            + bucket_counts["personal"]
-        )
+        known_joins = bucket_counts["public"] + bucket_counts["twitch"] + bucket_counts["personal"]
         unknown_joins = bucket_counts["unknown"]
 
         return {
@@ -3835,7 +3638,7 @@ class DashboardServer:
 
         guild_id_raw = request.query.get("guild_id")
 
-        guild_id: Optional[int] = None
+        guild_id: int | None = None
         if guild_id_raw:
             try:
                 guild_id = int(guild_id_raw)
@@ -3900,9 +3703,7 @@ class DashboardServer:
                 (guild_filter, guild_filter),
             )
 
-            member_sources_30d = self._build_member_source_analytics(
-                guild_filter, days=30
-            )
+            member_sources_30d = self._build_member_source_analytics(guild_filter, days=30)
 
             payload = {
                 "member_events": {row[0]: row[1] for row in member_events_summary},
@@ -3934,12 +3735,12 @@ class DashboardServer:
             return int(self.bot.guilds[0].id)
         raise web.HTTPBadRequest(text="guild_id is required")
 
-    async def _tournament_guilds_payload(self) -> List[Dict[str, Any]]:
+    async def _tournament_guilds_payload(self) -> list[dict[str, Any]]:
         from cogs.customgames import tournament_store as tstore
 
         counts = await tstore.guild_signup_counts_async()
-        payload: List[Dict[str, Any]] = []
-        known_ids: Set[int] = set()
+        payload: list[dict[str, Any]] = []
+        known_ids: set[int] = set()
         for guild in sorted(self.bot.guilds, key=lambda g: (g.name or "").lower()):
             guild_id = int(guild.id)
             known_ids.add(guild_id)
@@ -3966,10 +3767,10 @@ class DashboardServer:
     def _decorate_tournament_signups(
         self,
         guild_id: int,
-        signups: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        signups: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         guild = self.bot.get_guild(int(guild_id))
-        decorated: List[Dict[str, Any]] = []
+        decorated: list[dict[str, Any]] = []
         for row in signups:
             item = dict(row)
             user_id = int(item.get("user_id") or 0)
@@ -4002,9 +3803,7 @@ class DashboardServer:
         }
         return self._json(payload)
 
-    async def _handle_tournament_team_create(
-        self, request: web.Request
-    ) -> web.Response:
+    async def _handle_tournament_team_create(self, request: web.Request) -> web.Response:
         self._check_auth(request)
         from cogs.customgames import tournament_store as tstore
 
@@ -4022,9 +3821,7 @@ class DashboardServer:
         created_by = self._coerce_int(payload.get("created_by"), None)
 
         try:
-            team = await tstore.get_or_create_team_async(
-                guild_id, name, created_by=created_by
-            )
+            team = await tstore.get_or_create_team_async(guild_id, name, created_by=created_by)
         except ValueError as exc:
             logger.warning(
                 "Tournament team creation rejected: %s",
@@ -4059,7 +3856,7 @@ class DashboardServer:
 
         team_raw = payload.get("team_id")
         if team_raw in (None, ""):
-            team_id: Optional[int] = None
+            team_id: int | None = None
         else:
             team_id = self._coerce_int(team_raw, None)
             if team_id is None:
@@ -4082,9 +3879,7 @@ class DashboardServer:
             raise web.HTTPNotFound(text="Signup not found")
 
         signup = await tstore.get_signup_async(guild_id, int(user_id))
-        decorated = (
-            self._decorate_tournament_signups(guild_id, [signup]) if signup else []
-        )
+        decorated = self._decorate_tournament_signups(guild_id, [signup]) if signup else []
         return self._json({"ok": True, "signup": decorated[0] if decorated else signup})
 
     async def _handle_tournament_remove(self, request: web.Request) -> web.Response:
@@ -4120,9 +3915,7 @@ class DashboardServer:
             raise web.HTTPServiceUnavailable(text="Auth nicht konfiguriert.")
         if self._is_auth_enforced() and not self._has_valid_auth(request):
             if self._discord_auth_required:
-                raise web.HTTPFound(
-                    self._build_discord_login_url(request, next_path="/turnier")
-                )
+                raise web.HTTPFound(self._build_discord_login_url(request, next_path="/turnier"))
             self._check_turnier_auth(request)
         session = self._get_discord_auth_session(request)
         display_name = str((session or {}).get("display_name") or "Nicht angemeldet")
@@ -4141,13 +3934,13 @@ class DashboardServer:
 
     @staticmethod
     def _generate_bracket(
-        signups: List[Dict[str, Any]], teams: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+        signups: list[dict[str, Any]], teams: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         import math
 
         team_map = {int(t["id"]): t for t in teams}
-        team_scores: Dict[int, List[int]] = {}
-        solo_entries: List[Dict[str, Any]] = []
+        team_scores: dict[int, list[int]] = {}
+        solo_entries: list[dict[str, Any]] = []
 
         for s in signups:
             rv = int(s.get("rank_value") or 1)
@@ -4167,7 +3960,7 @@ class DashboardServer:
                     }
                 )
 
-        entries: List[Dict[str, Any]] = []
+        entries: list[dict[str, Any]] = []
         for tid, scores in team_scores.items():
             team = team_map.get(tid, {})
             avg = sum(scores) / len(scores) if scores else 0
@@ -4213,8 +4006,8 @@ class DashboardServer:
                 return "⚔️ Viertelfinale"
             return f"Runde {r}"
 
-        rounds: List[Dict[str, Any]] = []
-        current: List[Dict[str, Any]] = []
+        rounds: list[dict[str, Any]] = []
+        current: list[dict[str, Any]] = []
         for i, (a, b) in enumerate(seeded_matches):
             auto_winner = None
             if a is None and b is not None:
@@ -4370,9 +4163,7 @@ class DashboardServer:
             raise web.HTTPBadRequest(text="Ungültiger Team-Name oder Daten.") from exc
 
         return self._json(
-            self._stringify_ids(
-                {"ok": True, "team": team, "created": bool(team.get("created"))}
-            ),
+            self._stringify_ids({"ok": True, "team": team, "created": bool(team.get("created"))}),
             status=201 if team.get("created") else 200,
         )
 
@@ -4413,7 +4204,7 @@ class DashboardServer:
         if user_id is None:
             raise web.HTTPBadRequest(text="'user_id' is required")
         team_raw = payload.get("team_id")
-        team_id: Optional[int] = None if team_raw in (None, "") else self._coerce_int(team_raw, None)
+        team_id: int | None = None if team_raw in (None, "") else self._coerce_int(team_raw, None)
 
         try:
             updated = await tstore.assign_signup_team_async(guild_id, int(user_id), team_id=team_id)
@@ -4477,7 +4268,7 @@ class DashboardServer:
         status_map = bot.cog_status.copy()
         active = set(bot.active_cogs())
 
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
         for cog in discovered:
             status = status_map.get(cog, "loaded" if cog in active else "unloaded")
             items.append(
@@ -4497,22 +4288,18 @@ class DashboardServer:
         else:
             latency_ms = None
 
-        lifecycle_state: Dict[str, Any] | None = None
+        lifecycle_state: dict[str, Any] | None = None
         lifecycle = self._lifecycle or getattr(bot, "lifecycle", None)
         if lifecycle:
             try:
                 lifecycle_state = lifecycle.snapshot()
             except Exception as exc:
-                logging.getLogger(__name__).warning(
-                    "Lifecycle snapshot fehlgeschlagen: %s", exc
-                )
+                logging.getLogger(__name__).warning("Lifecycle snapshot fehlgeschlagen: %s", exc)
                 lifecycle_state = {"enabled": True, "error": str(exc)}
 
         restart_in_progress = bool(self._restart_task and not self._restart_task.done())
         last_restart = self._last_restart if any(self._last_restart.values()) else None
-        csrf_token = (
-            self._ensure_session_csrf_token(auth_session) if auth_session else None
-        )
+        csrf_token = self._ensure_session_csrf_token(auth_session) if auth_session else None
 
         payload = {
             "bot": {
@@ -4574,9 +4361,7 @@ class DashboardServer:
     async def _handle_bot_restart(self, request: web.Request) -> web.Response:
         self._check_auth(request)
         safe_remote = self._safe_log_value(request.remote)
-        logger.warning(
-            "AUDIT master-dashboard bot_restart requested from %s", safe_remote
-        )
+        logger.warning("AUDIT master-dashboard bot_restart requested from %s", safe_remote)
         async with self._bot_restart_lock:
             now = time.monotonic()
             since_last = now - self._last_bot_restart_request_monotonic
@@ -4584,9 +4369,7 @@ class DashboardServer:
                 self._last_bot_restart_request_monotonic > 0
                 and since_last < self._bot_restart_min_interval_seconds
             ):
-                retry_after = max(
-                    0.0, self._bot_restart_min_interval_seconds - since_last
-                )
+                retry_after = max(0.0, self._bot_restart_min_interval_seconds - since_last)
                 return self._json(
                     {
                         "ok": False,
@@ -4663,9 +4446,7 @@ class DashboardServer:
                     }
                 )
 
-            scheduled = await lifecycle.request_restart(
-                reason="dashboard_lifecycle_fallback"
-            )
+            scheduled = await lifecycle.request_restart(reason="dashboard_lifecycle_fallback")
             if scheduled:
                 self._last_bot_restart_request_monotonic = now
                 return self._json(
@@ -4689,15 +4470,13 @@ class DashboardServer:
     async def _handle_dashboard_restart(self, request: web.Request) -> web.Response:
         self._check_auth(request)
         if self._restart_task and not self._restart_task.done():
-            return self._json(
-                {"ok": True, "message": "Dashboard restart already running"}
-            )
+            return self._json({"ok": True, "message": "Dashboard restart already running"})
 
         self._restart_task = asyncio.create_task(self._restart_dashboard())
         self._restart_task.add_done_callback(self._on_restart_finished)
         return self._json({"ok": True, "message": "Dashboard restart scheduled"})
 
-    async def _collect_health_checks(self) -> List[Dict[str, Any]]:
+    async def _collect_health_checks(self) -> list[dict[str, Any]]:
         if not self._health_targets:
             return []
         now = asyncio.get_running_loop().time()
@@ -4711,20 +4490,17 @@ class DashboardServer:
             self._health_cache_expiry = now + self._health_cache_ttl
             return data
 
-    async def _refresh_health_checks(self) -> List[Dict[str, Any]]:
+    async def _refresh_health_checks(self) -> list[dict[str, Any]]:
         timeout = ClientTimeout(total=self._health_timeout)
         async with ClientSession(timeout=timeout) as session:
-            tasks = [
-                self._probe_health_target(session, target)
-                for target in self._health_targets
-            ]
+            tasks = [self._probe_health_target(session, target) for target in self._health_targets]
             return await asyncio.gather(*tasks)
 
     async def _probe_health_target(
         self,
         session: ClientSession,
-        target: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        target: dict[str, Any],
+    ) -> dict[str, Any]:
         url = target.get("url") or ""
         method = (target.get("method") or "GET").strip().upper() or "GET"
         allow_redirects_value = target.get("allow_redirects")
@@ -4773,14 +4549,14 @@ class DashboardServer:
             return 200 <= status_code < 400
 
         start = time.perf_counter()
-        status: Optional[int] = None
-        reason: Optional[str] = None
+        status: int | None = None
+        reason: str | None = None
         ok = False
-        error: Optional[str] = None
+        error: str | None = None
         resolved_url = url
-        body_excerpt: Optional[str] = None
+        body_excerpt: str | None = None
 
-        request_kwargs: Dict[str, Any] = {"allow_redirects": allow_redirects}
+        request_kwargs: dict[str, Any] = {"allow_redirects": allow_redirects}
         if ssl_param is not None:
             request_kwargs["ssl"] = ssl_param
         if request_timeout:
@@ -4803,7 +4579,7 @@ class DashboardServer:
             error = f"{exc.__class__.__name__}: {exc}"
 
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "key": target.get("key"),
             "label": target.get("label") or target.get("key") or url,
             "url": url,
@@ -4822,7 +4598,7 @@ class DashboardServer:
             result["body_excerpt"] = body_excerpt
         return result
 
-    async def _collect_standalone_snapshot(self) -> List[Dict[str, Any]]:
+    async def _collect_standalone_snapshot(self) -> list[dict[str, Any]]:
         manager = getattr(self.bot, "standalone_manager", None)
         if not manager:
             return []
@@ -4846,16 +4622,14 @@ class DashboardServer:
             return ".".join(parts[:2])
         return module
 
-    def _namespace_summary(self, modules: Iterable[str]) -> List[Dict[str, Any]]:
-        counter: Dict[str, int] = {}
+    def _namespace_summary(self, modules: Iterable[str]) -> list[dict[str, Any]]:
+        counter: dict[str, int] = {}
         for mod in modules:
             ns = self._namespace_for(mod)
             counter[ns] = counter.get(ns, 0) + 1
-        return [
-            {"namespace": ns, "count": counter[ns]} for ns in sorted(counter.keys())
-        ]
+        return [{"namespace": ns, "count": counter[ns]} for ns in sorted(counter.keys())]
 
-    def _build_tree(self) -> Dict[str, Any]:
+    def _build_tree(self) -> dict[str, Any]:
         bot = self.bot
         root_dir = bot.cogs_dir
         active = set(bot.active_cogs())
@@ -4867,7 +4641,7 @@ class DashboardServer:
                 return False
             return path in active or path in discovered or path in status_map
 
-        def node_status(path: str, *, blocked: bool) -> Optional[str]:
+        def node_status(path: str, *, blocked: bool) -> str | None:
             status = status_map.get(path)
             if status:
                 return status
@@ -4879,7 +4653,7 @@ class DashboardServer:
                 return "unloaded"
             return None
 
-        def walk(directory: Path, parts: List[str]) -> Dict[str, Any]:
+        def walk(directory: Path, parts: list[str]) -> dict[str, Any]:
             module_path = "cogs"
             if parts:
                 module_path = "cogs." + ".".join(parts)
@@ -4890,20 +4664,16 @@ class DashboardServer:
             loaded_dir = module_path in active
             discovered_dir = module_path in discovered
             is_package = (
-                module_path in discovered
-                or module_path in status_map
-                or module_path in active
+                module_path in discovered or module_path in status_map or module_path in active
             ) and module_path != "cogs"
 
             module_count = 1 if is_package else 0
             loaded_count = 1 if is_package and loaded_dir else 0
             discovered_count = 1 if is_package and discovered_dir else 0
 
-            children: List[Dict[str, Any]] = []
+            children: list[dict[str, Any]] = []
             try:
-                entries = sorted(
-                    directory.iterdir(), key=lambda p: (p.is_file(), p.name)
-                )
+                entries = sorted(directory.iterdir(), key=lambda p: (p.is_file(), p.name))
             except FileNotFoundError:
                 entries = []
 
@@ -4923,15 +4693,11 @@ class DashboardServer:
                     mod_path = "cogs." + ".".join(parts + [entry.stem])
                 else:
                     mod_path = f"cogs.{entry.stem}"
-                blocked_child = bot.is_namespace_blocked(
-                    mod_path, assume_normalized=True
-                )
+                blocked_child = bot.is_namespace_blocked(mod_path, assume_normalized=True)
                 loaded_child = mod_path in active
                 discovered_child = mod_path in discovered
                 manageable_child = is_manageable(mod_path)
-                status_child = (
-                    node_status(mod_path, blocked=blocked_child) or "not_discovered"
-                )
+                status_child = node_status(mod_path, blocked=blocked_child) or "not_discovered"
                 child = {
                     "type": "module",
                     "name": entry.stem,
@@ -4999,7 +4765,7 @@ class DashboardServer:
             safe_remote,
         )
 
-        results: Dict[str, Dict[str, Any]] = {}
+        results: dict[str, dict[str, Any]] = {}
         async with self._lock:
             for name in normalized:
                 if self.bot.is_namespace_blocked(name, assume_normalized=True):
@@ -5027,7 +4793,7 @@ class DashboardServer:
         self.bot.auto_discover_cogs()
         normalized = self._normalize_names(names)
 
-        results: Dict[str, Dict[str, Any]] = {}
+        results: dict[str, dict[str, Any]] = {}
         async with self._lock:
             for name in normalized:
                 if self.bot.is_namespace_blocked(name, assume_normalized=True):
@@ -5055,7 +4821,7 @@ class DashboardServer:
             safe_remote,
         )
 
-        results: Dict[str, Dict[str, Any]] = {}
+        results: dict[str, dict[str, Any]] = {}
         async with self._lock:
             unload_result = await self.bot.unload_many(normalized)
             for name in normalized:
@@ -5127,9 +4893,7 @@ class DashboardServer:
             raise web.HTTPBadRequest(text="'path' is required")
         safe_path = self._safe_log_value(path)
         safe_remote = self._safe_log_value(request.remote)
-        logger.warning(
-            "AUDIT master-dashboard cog_block: path=%s from %s", safe_path, safe_remote
-        )
+        logger.warning("AUDIT master-dashboard cog_block: path=%s from %s", safe_path, safe_remote)
         async with self._lock:
             try:
                 result = await self.bot.block_namespace(path)
@@ -5138,11 +4902,7 @@ class DashboardServer:
         namespace = result.get("namespace", path)
         changed = result.get("changed", False)
         unloaded = result.get("unloaded", {})
-        message = (
-            f"🚫 {namespace} blockiert"
-            if changed
-            else f"{namespace} war bereits blockiert"
-        )
+        message = f"🚫 {namespace} blockiert" if changed else f"{namespace} war bereits blockiert"
         return self._json(
             {
                 "ok": True,
@@ -5173,11 +4933,7 @@ class DashboardServer:
                 raise web.HTTPBadRequest(text="Invalid namespace")
         namespace = result.get("namespace", path)
         changed = result.get("changed", False)
-        message = (
-            f"✅ {namespace} freigegeben"
-            if changed
-            else f"{namespace} war nicht blockiert"
-        )
+        message = f"✅ {namespace} freigegeben" if changed else f"{namespace} war nicht blockiert"
         return self._json(
             {
                 "ok": True,
@@ -5216,7 +4972,7 @@ class DashboardServer:
             raise web.HTTPInternalServerError(text="Failed to read log file") from exc
         modified = _dt.datetime.fromtimestamp(
             stat.st_mtime,
-            tz=_dt.timezone.utc,
+            tz=_dt.UTC,
         ).isoformat()
         return self._json(
             {
@@ -5268,16 +5024,12 @@ class DashboardServer:
                 logging.getLogger(__name__).exception(
                     "Error when starting standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(
-                    text="An internal error has occurred."
-                ) from exc
+                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
             else:
                 logging.getLogger(__name__).exception(
                     "Unexpected error when starting standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(
-                    text="An internal error has occurred."
-                ) from exc
+                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
         return self._json({"standalone": status})
 
     async def _handle_standalone_stop(self, request: web.Request) -> web.Response:
@@ -5296,16 +5048,12 @@ class DashboardServer:
                 logging.getLogger(__name__).exception(
                     "Error when stopping standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(
-                    text="An internal error has occurred."
-                ) from exc
+                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
             else:
                 logging.getLogger(__name__).exception(
                     "Unexpected error when stopping standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(
-                    text="An internal error has occurred."
-                ) from exc
+                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
         return self._json({"standalone": status})
 
     async def _handle_standalone_restart(self, request: web.Request) -> web.Response:
@@ -5322,15 +5070,11 @@ class DashboardServer:
                 logging.getLogger(__name__).exception(
                     "Error when restarting standalone bot (key=%s)", safe_key
                 )
-                raise web.HTTPInternalServerError(
-                    text="An internal error has occurred."
-                ) from exc
+                raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
             logging.getLogger(__name__).exception(
                 "Unexpected error when restarting standalone bot (key=%s)", safe_key
             )
-            raise web.HTTPInternalServerError(
-                text="An internal error has occurred."
-            ) from exc
+            raise web.HTTPInternalServerError(text="An internal error has occurred.") from exc
         return self._json({"standalone": status})
 
     async def _handle_standalone_autostart(self, request: web.Request) -> web.Response:
@@ -5355,7 +5099,7 @@ class DashboardServer:
             raise web.HTTPBadRequest(text="Payload must be a JSON object")
 
         enabled_raw = payload.get("enabled")
-        enabled: Optional[bool]
+        enabled: bool | None
         if isinstance(enabled_raw, bool):
             enabled = enabled_raw
         elif isinstance(enabled_raw, (int, float)):

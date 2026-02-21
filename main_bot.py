@@ -6,7 +6,7 @@ import logging
 import os
 import signal
 import threading
-from typing import Callable
+from collections.abc import Callable
 
 from bot_core.bootstrap import _load_env_robust, bootstrap_runtime
 
@@ -47,18 +47,14 @@ def _install_signal_handlers(
             kill_timer = threading.Timer(
                 kill_after,
                 lambda: (
-                    logging.error(
-                        f"Kill watchdog fired after {kill_after:.1f}s -> os._exit(2)"
-                    ),
+                    logging.error(f"Kill watchdog fired after {kill_after:.1f}s -> os._exit(2)"),
                     os._exit(2),
                 ),
             )
             kill_timer.daemon = True
             kill_timer.start()
         except Exception as exc:  # pragma: no cover - defensive
-            logging.getLogger(__name__).debug(
-                "Kill-Timer konnte nicht gestartet werden: %r", exc
-            )
+            logging.getLogger(__name__).debug("Kill-Timer konnte nicht gestartet werden: %r", exc)
 
     def _cancel_kill_timer() -> None:
         nonlocal kill_timer
@@ -67,9 +63,7 @@ def _install_signal_handlers(
         try:
             kill_timer.cancel()
         except Exception as exc:  # pragma: no cover - defensive
-            logging.getLogger(__name__).debug(
-                "Kill-Timer konnte nicht gestoppt werden: %r", exc
-            )
+            logging.getLogger(__name__).debug("Kill-Timer konnte nicht gestoppt werden: %r", exc)
         kill_timer = None
 
     def _handle(signum, frame) -> None:  # pragma: no cover - system dependent

@@ -3,7 +3,6 @@ from __future__ import annotations
 import io
 import json
 import logging
-from typing import Dict
 
 import discord
 from discord import app_commands
@@ -15,7 +14,7 @@ log = logging.getLogger(__name__)
 
 
 class PrivacyConfirmView(discord.ui.View):
-    def __init__(self, cog: "PrivacyControls", user_id: int):
+    def __init__(self, cog: PrivacyControls, user_id: int):
         super().__init__(timeout=600)
         self.cog = cog
         self.user_id = int(user_id)
@@ -75,9 +74,7 @@ class PrivacyConfirmView(discord.ui.View):
         style=discord.ButtonStyle.secondary,
         custom_id="privacy:step1",
     )
-    async def step_one(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def step_one(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.final_confirm.disabled = False
         button.disabled = True
         await interaction.response.edit_message(
@@ -104,9 +101,7 @@ class PrivacyConfirmView(discord.ui.View):
             log.debug("Konnte Bestätigungs-Response nicht deferen", exc_info=exc)
 
         try:
-            summary = await privacy.delete_user_data(
-                self.user_id, reason="slash_datenschutz"
-            )
+            summary = await privacy.delete_user_data(self.user_id, reason="slash_datenschutz")
             self.cog._clear_runtime_state(self.user_id)
             msg = self.cog._format_summary(self.user_id, summary)
         except Exception as exc:
@@ -127,7 +122,7 @@ class PrivacyControls(commands.Cog):
         self.bot = bot
 
     @staticmethod
-    def _summary_value(summary: Dict[str, int], key: str) -> int:
+    def _summary_value(summary: dict[str, int], key: str) -> int:
         val = summary.get(key, 0)
         try:
             return int(val)
@@ -141,9 +136,7 @@ class PrivacyControls(commands.Cog):
             if vat and hasattr(vat, "_drop_runtime_state"):
                 vat._drop_runtime_state(user_id)
         except Exception:
-            log.debug(
-                "Konnte VoiceActivityTracker state nicht bereinigen", exc_info=True
-            )
+            log.debug("Konnte VoiceActivityTracker state nicht bereinigen", exc_info=True)
 
         try:
             nudge = self.bot.get_cog("SteamLinkVoiceNudge")
@@ -155,7 +148,7 @@ class PrivacyControls(commands.Cog):
         except Exception:
             log.debug("Konnte Nudge-Tasks nicht bereinigen", exc_info=True)
 
-    def _format_summary(self, user_id: int, summary: Dict[str, int]) -> str:
+    def _format_summary(self, user_id: int, summary: dict[str, int]) -> str:
         voice_sessions = self._summary_value(summary, "voice_session_log.user_id")
         voice_stats = self._summary_value(summary, "voice_stats.user_id")
         steam_links = self._summary_value(summary, "steam_links.user_id")

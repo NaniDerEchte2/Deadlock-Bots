@@ -1,9 +1,9 @@
 import asyncio
-import time
 import logging
-from typing import Dict, List, Optional, Tuple, Union
+import time
 
 import aiohttp
+
 from service.http_client import build_resilient_connector
 
 TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"  # noqa: S105
@@ -23,24 +23,22 @@ class TwitchAPI:
         self,
         client_id: str,
         client_secret: str,
-        session: Optional[aiohttp.ClientSession] = None,
+        session: aiohttp.ClientSession | None = None,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
         self._session = session
         self._own_session = False
-        self._token: Optional[str] = None
+        self._token: str | None = None
         self._token_expiry: float = 0.0
         self._lock = asyncio.Lock()
-        self._category_cache: Dict[str, str] = {}  # name_lower -> id
+        self._category_cache: dict[str, str] = {}  # name_lower -> id
         self._log = logging.getLogger("TwitchStreams")
 
     # ---- Session lifecycle -------------------------------------------------
     def _ensure_session(self) -> None:
         if self._session is not None and self._session.closed:
-            self._log.warning(
-                "Detected closed TwitchAPI HTTP session; creating a new session"
-            )
+            self._log.warning("Detected closed TwitchAPI HTTP session; creating a new session")
             self._session = None
             self._own_session = False
 
@@ -119,19 +117,19 @@ class TwitchAPI:
                         continue
                     raise
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         return {"Client-ID": self.client_id, "Authorization": f"Bearer {self._token}"}
 
     async def _post(
         self,
         path: str,
-        json: Optional[dict] = None,
+        json: dict | None = None,
         *,
         log_on_error: bool = True,
-        oauth_token: Optional[str] = None,
+        oauth_token: str | None = None,
         max_attempts: int = 3,
-        request_timeout_total: Optional[float] = None,
-    ) -> Dict:
+        request_timeout_total: float | None = None,
+    ) -> dict:
         # Allow caller to override the auth token (e.g. EventSub with user tokens)
         token_override = (oauth_token or "").strip()
         if token_override.lower().startswith("oauth:"):
@@ -142,13 +140,11 @@ class TwitchAPI:
             token_override = self._token or ""
 
         url = f"{TWITCH_API_BASE}{path}"
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
         attempts = max(1, min(int(max_attempts or 1), 5))
         request_timeout = None
         if request_timeout_total is not None:
-            request_timeout = aiohttp.ClientTimeout(
-                total=max(0.1, float(request_timeout_total))
-            )
+            request_timeout = aiohttp.ClientTimeout(total=max(0.1, float(request_timeout_total)))
 
         for attempt in range(attempts):
             self._ensure_session()
@@ -204,13 +200,11 @@ class TwitchAPI:
                     self._own_session = False
                     await asyncio.sleep(delay)
                     continue
-                self._log.error(
-                    "POST %s failed after retries: closed HTTP session", path
-                )
+                self._log.error("POST %s failed after retries: closed HTTP session", path)
                 raise last_exc
             except aiohttp.ClientResponseError:
                 raise
-            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+            except (TimeoutError, aiohttp.ClientError, OSError) as exc:
                 last_exc = exc
                 if attempt < attempts - 1:
                     delay = 0.5 * (attempt + 1)
@@ -233,20 +227,18 @@ class TwitchAPI:
     async def _get(
         self,
         path: str,
-        params: Optional[Union[Dict[str, str], List[Tuple[str, str]]]] = None,
+        params: dict[str, str] | list[tuple[str, str]] | None = None,
         *,
         log_on_error: bool = True,
-    ) -> Dict:
+    ) -> dict:
         await self._ensure_token()
         url = f"{TWITCH_API_BASE}{path}"
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
         for attempt in range(3):
             self._ensure_session()
             assert self._session is not None
             try:
-                async with self._session.get(
-                    url, headers=self._headers(), params=params
-                ) as r:
+                async with self._session.get(url, headers=self._headers(), params=params) as r:
                     if r.status != 200:
                         txt = await r.text()
                         if log_on_error:
@@ -292,13 +284,11 @@ class TwitchAPI:
                     self._own_session = False
                     await asyncio.sleep(delay)
                     continue
-                self._log.error(
-                    "GET %s failed after retries: closed HTTP session", path
-                )
+                self._log.error("GET %s failed after retries: closed HTTP session", path)
                 raise last_exc
             except aiohttp.ClientResponseError:
                 raise
-            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+            except (TimeoutError, aiohttp.ClientError, OSError) as exc:
                 last_exc = exc
                 if attempt < 2:
                     delay = 0.5 * (attempt + 1)
@@ -317,16 +307,14 @@ class TwitchAPI:
         raise last_exc or RuntimeError(f"GET {path} failed without raising")
 
     # ---- Categories --------------------------------------------------------
-    async def search_category_id(self, query: str) -> Optional[str]:
+    async def search_category_id(self, query: str) -> str | None:
         if not query:
             return None
         ql = query.lower()
         if ql in self._category_cache:
             return self._category_cache[ql]
-        js = await self._get(
-            "/search/categories", params={"query": query, "first": "25"}
-        )
-        best: Optional[str] = None
+        js = await self._get("/search/categories", params={"query": query, "first": "25"})
+        best: str | None = None
         for item in js.get("data", []) or []:
             name = (item.get("name") or "").strip()
             if name.lower() == ql:
@@ -338,24 +326,24 @@ class TwitchAPI:
             self._category_cache[ql] = best
         return best
 
-    async def get_category_id(self, name: str) -> Optional[str]:
+    async def get_category_id(self, name: str) -> str | None:
         return await self.search_category_id(name)
 
     # ---- Users & Streams ---------------------------------------------------
-    async def get_users(self, logins: List[str]) -> Dict[str, Dict]:
-        out: Dict[str, Dict] = {}
+    async def get_users(self, logins: list[str]) -> dict[str, dict]:
+        out: dict[str, dict] = {}
         if not logins:
             return out
         for i in range(0, len(logins), 100):
             chunk = logins[i : i + 100]
-            params: List[Tuple[str, str]] = [("login", x) for x in chunk]
+            params: list[tuple[str, str]] = [("login", x) for x in chunk]
             js = await self._get("/users", params=params)
             for u in js.get("data", []) or []:
                 login = (u.get("login") or "").lower()
                 out[login] = u
         return out
 
-    async def get_user_info(self, login: str) -> Optional[Dict]:
+    async def get_user_info(self, login: str) -> dict | None:
         """Liefert detaillierte Informationen für einen einzelnen User (inkl. Bio/Description)."""
         users = await self.get_users([login])
         return users.get(login.lower())
@@ -363,13 +351,13 @@ class TwitchAPI:
     async def _fetch_stream_page(
         self,
         *,
-        game_id: Optional[str] = None,
-        language: Optional[str] = None,
+        game_id: str | None = None,
+        language: str | None = None,
         first: int = 100,
-        after: Optional[str] = None,
-        logins: Optional[List[str]] = None,
-    ) -> Tuple[List[Dict], Optional[str]]:
-        params: List[Tuple[str, str]] = []
+        after: str | None = None,
+        logins: list[str] | None = None,
+    ) -> tuple[list[dict], str | None]:
+        params: list[tuple[str, str]] = []
         if game_id:
             params.append(("game_id", game_id))
         if language:
@@ -389,18 +377,18 @@ class TwitchAPI:
     async def get_streams_for_game(
         self,
         *,
-        game_id: Optional[str],
+        game_id: str | None,
         game_name: str,
-        language: Optional[str] = None,
+        language: str | None = None,
         limit: int = 500,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Fetch up to ``limit`` live streams for the given game.
 
         Falls die Game-ID unbekannt ist, wird nach ``game_name`` gefiltert.
         """
         limit = max(1, min(limit, 1200))  # hard cap to protect API limits
-        out: List[Dict] = []
-        after: Optional[str] = None
+        out: list[dict] = []
+        after: str | None = None
 
         if game_id:
             while len(out) < limit:
@@ -436,20 +424,20 @@ class TwitchAPI:
         return out
 
     async def get_streams_by_logins(
-        self, logins: List[str], language: Optional[str] = None
-    ) -> List[Dict]:
+        self, logins: list[str], language: str | None = None
+    ) -> list[dict]:
         """Return live streams for the given user logins.
         Wrapper around Helix /streams with user_login filters (batched).
         """
         if not logins:
             return []
         await self._ensure_token()
-        out: List[Dict] = []
+        out: list[dict] = []
         for i in range(0, len(logins), 100):
             chunk = [x for x in logins[i : i + 100] if x]
             if not chunk:
                 continue
-            params: List[Tuple[str, str]] = []
+            params: list[tuple[str, str]] = []
             for lg in chunk:
                 params.append(("user_login", lg))
             if language:
@@ -459,8 +447,8 @@ class TwitchAPI:
         return out
 
     async def get_streams_by_category(
-        self, category_id: str, language: Optional[str] = None, limit: int = 500
-    ) -> List[Dict]:
+        self, category_id: str, language: str | None = None, limit: int = 500
+    ) -> list[dict]:
         """Return live streams for a given category/game id.
         Convenience wrapper that delegates to get_streams_for_game.
         """
@@ -474,7 +462,7 @@ class TwitchAPI:
         *,
         user_token: str,
         has_delay: bool = False,
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """Create a clip for a broadcaster using a user OAuth token.
 
         Note: Twitch determines the final segment from the stream buffer
@@ -514,9 +502,7 @@ class TwitchAPI:
                     return None
                 js = await r.json()
         except Exception:
-            self._log.debug(
-                "create_clip failed for broadcaster=%s", broadcaster_id, exc_info=True
-            )
+            self._log.debug("create_clip failed for broadcaster=%s", broadcaster_id, exc_info=True)
             return None
 
         data = js.get("data", []) if isinstance(js, dict) else []
@@ -525,8 +511,8 @@ class TwitchAPI:
         return data[0]
 
     async def get_latest_vod_thumbnail(
-        self, *, user_id: Optional[str] = None, login: Optional[str] = None
-    ) -> Optional[str]:
+        self, *, user_id: str | None = None, login: str | None = None
+    ) -> str | None:
         """Best-effort: Thumbnail des neuesten VOD (type=archive) als 1280x720-URL."""
         target_user_id = (user_id or "").strip()
         login_normalized = (login or "").strip().lower()
@@ -542,9 +528,7 @@ class TwitchAPI:
             try:
                 users = await self.get_users([login_normalized])
                 if login_normalized in users:
-                    target_user_id = str(
-                        users[login_normalized].get("id") or ""
-                    ).strip()
+                    target_user_id = str(users[login_normalized].get("id") or "").strip()
             except Exception:
                 self._log.exception(
                     "get_latest_vod_thumbnail: konnte user-id nicht ermitteln (%s)",
@@ -576,9 +560,7 @@ class TwitchAPI:
         thumb = thumb.replace("{width}", "1280").replace("{height}", "720")
         return f"{thumb}?rand={int(time.time())}"
 
-    async def get_followers_total(
-        self, user_id: str, user_token: Optional[str] = None
-    ) -> Optional[int]:
+    async def get_followers_total(self, user_id: str, user_token: str | None = None) -> int | None:
         """Liefert die Follower-Gesamtzahl für einen Broadcaster (best-effort, via /channels/followers)."""
         if not user_id:
             return None
@@ -616,9 +598,7 @@ class TwitchAPI:
             return int(total) if total is not None else None
         except aiohttp.ClientResponseError as exc:
             if exc.status in {401, 403, 404, 410}:
-                self._log.debug(
-                    "Follower-API nicht verfuegbar (%s) fuer %s", exc.status, user_id
-                )
+                self._log.debug("Follower-API nicht verfuegbar (%s) fuer %s", exc.status, user_id)
                 return None
             self._log.debug("Follower-API Fehler fuer %s: %s", user_id, exc)
             return None
@@ -626,9 +606,7 @@ class TwitchAPI:
             self._log.debug("get_followers_total failed for %s", user_id, exc_info=True)
             return None
 
-    async def get_broadcaster_subscriptions(
-        self, user_id: str, user_token: str
-    ) -> Optional[Dict]:
+    async def get_broadcaster_subscriptions(self, user_id: str, user_token: str) -> dict | None:
         """
         Liefert Subscription-Daten für einen Broadcaster.
         Benötigt Scope: channel:read:subscriptions
@@ -658,12 +636,10 @@ class TwitchAPI:
                 js = await r.json()
                 return js
         except Exception:
-            self._log.debug(
-                "get_broadcaster_subscriptions failed for %s", user_id, exc_info=True
-            )
+            self._log.debug("get_broadcaster_subscriptions failed for %s", user_id, exc_info=True)
             return None
 
-    async def get_ad_schedule(self, user_id: str, user_token: str) -> Optional[Dict]:
+    async def get_ad_schedule(self, user_id: str, user_token: str) -> dict | None:
         """
         Liefert den aktuellen Ads-Schedule eines Broadcasters.
         Benötigt Scope: channel:read:ads
@@ -709,7 +685,7 @@ class TwitchAPI:
         moderator_id: str,
         user_token: str,
         first: int = 1000,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Gibt alle aktuell verbundenen Chatters zurück (inkl. stille Lurker).
         Benötigt Scope: moderator:read:chatters
@@ -717,14 +693,14 @@ class TwitchAPI:
         """
         if not broadcaster_id or not moderator_id or not user_token:
             return []
-        all_chatters: List[Dict] = []
-        cursor: Optional[str] = None
+        all_chatters: list[dict] = []
+        cursor: str | None = None
         try:
             self._ensure_session()
             assert self._session is not None
             url = f"{TWITCH_API_BASE}/chat/chatters"
             while True:
-                params: Dict[str, str] = {
+                params: dict[str, str] = {
                     "broadcaster_id": broadcaster_id,
                     "moderator_id": moderator_id,
                     "first": str(min(first, 1000)),
@@ -754,9 +730,7 @@ class TwitchAPI:
                     if not cursor or not page:
                         break
         except Exception:
-            self._log.debug(
-                "get_chatters failed for broadcaster %s", broadcaster_id, exc_info=True
-            )
+            self._log.debug("get_chatters failed for broadcaster %s", broadcaster_id, exc_info=True)
         return all_chatters
 
     async def subscribe_eventsub_websocket(
@@ -764,10 +738,10 @@ class TwitchAPI:
         *,
         session_id: str,
         sub_type: str,
-        condition: Dict[str, str],
+        condition: dict[str, str],
         version: str = "1",
-        oauth_token: Optional[str] = None,
-    ) -> Dict:
+        oauth_token: str | None = None,
+    ) -> dict:
         """Register a WebSocket EventSub subscription (e.g. stream.offline)."""
         payload = {
             "type": sub_type,
@@ -787,12 +761,12 @@ class TwitchAPI:
         self,
         *,
         sub_type: str,
-        condition: Dict[str, str],
+        condition: dict[str, str],
         webhook_url: str,
         secret: str,
         version: str = "1",
-        oauth_token: Optional[str] = None,
-    ) -> Dict:
+        oauth_token: str | None = None,
+    ) -> dict:
         """Registriert eine Webhook-basierte EventSub Subscription."""
         payload = {
             "type": sub_type,
@@ -822,7 +796,7 @@ class TwitchAPI:
             raise
 
     async def delete_eventsub_subscription(
-        self, subscription_id: str, oauth_token: Optional[str] = None
+        self, subscription_id: str, oauth_token: str | None = None
     ) -> bool:
         """Löscht eine EventSub Subscription per ID."""
         await self._ensure_token()
@@ -866,8 +840,8 @@ class TwitchAPI:
         self,
         *,
         status: str = "enabled",
-        oauth_token: Optional[str] = None,
-    ) -> List[Dict]:
+        oauth_token: str | None = None,
+    ) -> list[dict]:
         """Listet aktive EventSub Subscriptions (paginiert)."""
         await self._ensure_token()
         self._ensure_session()
@@ -884,19 +858,17 @@ class TwitchAPI:
             "Authorization": f"Bearer {token_override}",
         }
         url = f"{TWITCH_API_BASE}/eventsub/subscriptions"
-        results: List[Dict] = []
-        cursor: Optional[str] = None
+        results: list[dict] = []
+        cursor: str | None = None
 
         for _ in range(20):  # Max 20 Seiten (Schutz vor Endlosschleife)
-            params: List[Tuple[str, str]] = []
+            params: list[tuple[str, str]] = []
             if status:
                 params.append(("status", status))
             if cursor:
                 params.append(("after", cursor))
             try:
-                async with self._session.get(
-                    url, headers=headers, params=params or None
-                ) as r:
+                async with self._session.get(url, headers=headers, params=params or None) as r:
                     if r.status != 200:
                         txt = await r.text()
                         self._log.warning(

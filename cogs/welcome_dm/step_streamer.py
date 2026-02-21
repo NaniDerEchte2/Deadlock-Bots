@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Zwei-Schritt-Streamer-Onboarding für Deadlock:
 
@@ -29,24 +28,21 @@ Konfiguration (ENV optional):
 
 from __future__ import annotations
 
-import os
 import logging
+import os
 import textwrap
-from typing import Optional, Tuple
 
 log = logging.getLogger("StreamerOnboarding")
 
 try:
     from cogs.twitch import storage as twitch_storage
 except Exception as exc:  # pragma: no cover - optional dependency
-    log.warning(
-        "StreamerOnboarding: Twitch-Module nicht verfügbar: %s", exc, exc_info=True
-    )
+    log.warning("StreamerOnboarding: Twitch-Module nicht verfügbar: %s", exc, exc_info=True)
     twitch_storage = None  # type: ignore[assignment]
 
 import discord
-from discord.ext import commands
 from discord import app_commands
+from discord.ext import commands
 
 # Bestehende StepView aus dem Projekt nutzen
 from .base import (
@@ -55,12 +51,8 @@ from .base import (
 
 # --- IDs (optional via ENV überschreibbar) ---
 STREAMER_ROLE_ID = int(os.getenv("STREAMER_ROLE_ID", "1313624729466441769"))
-STREAMER_NOTIFY_CHANNEL_ID = int(
-    os.getenv("STREAMER_NOTIFY_CHANNEL_ID", "1374364800817303632")
-)
-MAIN_GUILD_ID = int(
-    os.getenv("MAIN_GUILD_ID", "0")
-)  # DM-Fallback, falls interaction.guild None
+STREAMER_NOTIFY_CHANNEL_ID = int(os.getenv("STREAMER_NOTIFY_CHANNEL_ID", "1374364800817303632"))
+MAIN_GUILD_ID = int(os.getenv("MAIN_GUILD_ID", "0"))  # DM-Fallback, falls interaction.guild None
 
 # Demo-Dashboard URL (öffentlich, kein Login nötig)
 ANALYTICS_DEMO_URL = "https://demo.earlysalty.com/"
@@ -69,7 +61,7 @@ ANALYTICS_DEMO_URL = "https://demo.earlysalty.com/"
 # ------------------------------
 # Utilities
 # ------------------------------
-def _find_raid_bot(client: discord.Client) -> Optional[object]:
+def _find_raid_bot(client: discord.Client) -> object | None:
     """
     Versucht den Raid-Bot aus den geladenen Cogs zu ermitteln.
     Nutzt bekannte Cog-Namen und fällt auf eine generische Suche zurück.
@@ -107,15 +99,15 @@ def _find_raid_bot(client: discord.Client) -> Optional[object]:
 
 async def _resolve_guild_and_member(
     interaction: discord.Interaction,
-) -> Tuple[Optional[discord.Guild], Optional[discord.Member]]:
+) -> tuple[discord.Guild | None, discord.Member | None]:
     """
     Liefert (Guild, Member) – robust auch in DMs (via MAIN_GUILD_ID) und bei leerem Cache.
     Nutzt fetch_member() als Fallback (braucht Members-Intent).
     """
 
     async def _try(
-        g: Optional[discord.Guild],
-    ) -> Tuple[Optional[discord.Guild], Optional[discord.Member]]:
+        g: discord.Guild | None,
+    ) -> tuple[discord.Guild | None, discord.Member | None]:
         if not g:
             return None, None
 
@@ -184,9 +176,9 @@ def _is_truthy_flag(value: object) -> bool:
 
 def _check_partner_onboarding_blacklist(
     *,
-    discord_user_id: Optional[int] = None,
-    twitch_login: Optional[str] = None,
-) -> Tuple[bool, Optional[str]]:
+    discord_user_id: int | None = None,
+    twitch_login: str | None = None,
+) -> tuple[bool, str | None]:
     """
     Prüft, ob ein Streamer beim Partner-Onboarding zwingend abgelehnt werden muss.
 
@@ -235,22 +227,14 @@ def _check_partner_onboarding_blacklist(
                 ).fetchall()
                 for row in rows:
                     row_login = (
-                        str(
-                            row["twitch_login"]
-                            if hasattr(row, "keys")
-                            else row[0] or ""
-                        )
+                        str(row["twitch_login"] if hasattr(row, "keys") else row[0] or "")
                         .strip()
                         .lower()
                     )
                     if row_login:
                         candidate_logins.add(row_login)
 
-                    opt_out_raw = (
-                        row["manual_partner_opt_out"]
-                        if hasattr(row, "keys")
-                        else row[1]
-                    )
+                    opt_out_raw = row["manual_partner_opt_out"] if hasattr(row, "keys") else row[1]
                     if _is_truthy_flag(opt_out_raw):
                         blocked_login = row_login or normalized_login or "unbekannt"
                         return True, f"manual_partner_opt_out=1 fuer {blocked_login}"
@@ -271,16 +255,10 @@ def _check_partner_onboarding_blacklist(
                         if hasattr(blacklist_row, "keys")
                         else blacklist_row[0]
                     )
-                    reason = (
-                        str(reason_raw).strip()
-                        if reason_raw
-                        else "kein Grund hinterlegt"
-                    )
+                    reason = str(reason_raw).strip() if reason_raw else "kein Grund hinterlegt"
                     return True, f"twitch_raid_blacklist fuer {login} ({reason})"
     except Exception:
-        log.exception(
-            "Blacklist-/Opt-out-Pruefung im Streamer-Onboarding fehlgeschlagen"
-        )
+        log.exception("Blacklist-/Opt-out-Pruefung im Streamer-Onboarding fehlgeschlagen")
         return False, None
 
     return False, None
@@ -296,8 +274,8 @@ def _blacklist_rejection_message() -> str:
 
 
 async def _assign_role_and_notify(
-    interaction: discord.Interaction, twitch_login: Optional[str] = None
-) -> Tuple[bool, str]:
+    interaction: discord.Interaction, twitch_login: str | None = None
+) -> tuple[bool, str]:
     """
     Vergibt die Streamer-Rolle und pingt den Kontrollkanal.
     Gibt (ok, msg) zurück.
@@ -420,8 +398,8 @@ async def _assign_role_and_notify(
 async def _safe_send(
     interaction: discord.Interaction,
     *,
-    content: Optional[str] = None,
-    embed: Optional[discord.Embed] = None,
+    content: str | None = None,
+    embed: discord.Embed | None = None,
     ephemeral: bool = False,
 ) -> None:
     """
@@ -429,9 +407,7 @@ async def _safe_send(
     """
     try:
         if interaction.response.is_done():
-            await interaction.followup.send(
-                content=content, embed=embed, ephemeral=ephemeral
-            )
+            await interaction.followup.send(content=content, embed=embed, ephemeral=ephemeral)
         else:
             await interaction.response.send_message(
                 content=content, embed=embed, ephemeral=ephemeral
@@ -444,8 +420,8 @@ async def _disable_all_and_edit(
     view: discord.ui.View,
     interaction: discord.Interaction,
     *,
-    new_embed: Optional[discord.Embed] = None,
-    new_content: Optional[str] = None,
+    new_embed: discord.Embed | None = None,
+    new_content: str | None = None,
 ) -> None:
     """
     Deaktiviert alle Buttons und editiert die ursprüngliche Nachricht (falls möglich).
@@ -463,9 +439,7 @@ async def _disable_all_and_edit(
 
     try:
         if interaction.message:
-            await interaction.message.edit(
-                embed=new_embed, content=new_content, view=view
-            )
+            await interaction.message.edit(embed=new_embed, content=new_content, view=view)
             return
     except Exception as e:
         log.debug("message.edit failed: %r", e)
@@ -476,9 +450,7 @@ async def _disable_all_and_edit(
                 embed=new_embed, content=new_content, view=view
             )
         else:
-            await interaction.response.edit_message(
-                embed=new_embed, content=new_content, view=view
-            )
+            await interaction.response.edit_message(embed=new_embed, content=new_content, view=view)
     except Exception as e:
         log.debug("response edit failed: %r", e)
 
@@ -536,9 +508,7 @@ class StreamerIntroView(StepView):
             ),
             color=0x9146FF,  # Twitch-Lila
         )
-        e.set_footer(
-            text="Schritt 1/2 • Streamer-Partner werden • Demo-Dashboard verfügbar"
-        )
+        e.set_footer(text="Schritt 1/2 • Streamer-Partner werden • Demo-Dashboard verfügbar")
         return e
 
     @discord.ui.button(
@@ -546,18 +516,14 @@ class StreamerIntroView(StepView):
         style=discord.ButtonStyle.success,
         custom_id="wdm:streamer:intro_yes",
     )
-    async def btn_yes(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def btn_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.response.is_done():
             try:
                 await interaction.response.defer(thinking=False)
             except Exception:
                 log.debug("Intro defer failed", exc_info=True)
 
-        blocked, reason = _check_partner_onboarding_blacklist(
-            discord_user_id=interaction.user.id
-        )
+        blocked, reason = _check_partner_onboarding_blacklist(discord_user_id=interaction.user.id)
         if blocked:
             log.info(
                 "Streamer-Onboarding abgelehnt (Intro): user=%s reason=%s",
@@ -575,7 +541,7 @@ class StreamerIntroView(StepView):
         requirements_view = StreamerRequirementsView()
         requirements_embed = StreamerRequirementsView.build_embed()
 
-        sent_message: Optional[discord.Message] = None
+        sent_message: discord.Message | None = None
 
         # Entferne die ursprüngliche Intro-Nachricht, damit nur noch die Anforderungen sichtbar sind.
         try:
@@ -591,9 +557,7 @@ class StreamerIntroView(StepView):
                     channel = await interaction.user.create_dm()
 
             if channel is not None:
-                sent_message = await channel.send(
-                    embed=requirements_embed, view=requirements_view
-                )
+                sent_message = await channel.send(embed=requirements_embed, view=requirements_view)
             else:
                 sent_message = await interaction.followup.send(
                     embed=requirements_embed,
@@ -643,23 +607,21 @@ class StreamerRequirementsView(StepView):
 
     def __init__(self):
         super().__init__()
-        self.twitch_login: Optional[str] = None
+        self.twitch_login: str | None = None
         self.raid_bot_authorized = False
         self.verification_started = False
-        self.verification_message: Optional[str] = None
+        self.verification_message: str | None = None
         self._sync_button_states()
 
     @staticmethod
     def build_embed(
         *,
-        twitch_login: Optional[str] = None,
+        twitch_login: str | None = None,
         raid_bot_authorized: bool = False,
         verification_started: bool = False,
-        verification_message: Optional[str] = None,
+        verification_message: str | None = None,
     ) -> discord.Embed:
-        raid_entry = (
-            f"{'✅' if raid_bot_authorized else '⬜'} Twitch-Bot autorisiert (Pflicht)"
-        )
+        raid_entry = f"{'✅' if raid_bot_authorized else '⬜'} Twitch-Bot autorisiert (Pflicht)"
         if twitch_login:
             raid_entry += f" (**{twitch_login}**)"
         else:
@@ -703,14 +665,11 @@ class StreamerRequirementsView(StepView):
                 f"{requirement_text}"
             )
 
-        embed_description = (
-            f"**📊 Fortschritt:**\n{checklist_text}\n\n{requirement_text}"
-        )
+        embed_description = f"**📊 Fortschritt:**\n{checklist_text}\n\n{requirement_text}"
 
         if verification_started:
             followup = (
-                verification_message
-                or "✅ **Fertig!** Dein Setup wurde automatisch verifiziert."
+                verification_message or "✅ **Fertig!** Dein Setup wurde automatisch verifiziert."
             )
             embed_description += f"\n\n{followup}"
         else:
@@ -768,9 +727,7 @@ class StreamerRequirementsView(StepView):
         style=discord.ButtonStyle.primary,
         custom_id="wdm:streamer:req_raid_bot",
     )
-    async def btn_raid_bot(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def btn_raid_bot(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.raid_bot_authorized:
             await _safe_send(
                 interaction,
@@ -870,9 +827,7 @@ class StreamerRequirementsView(StepView):
                         ).fetchone()
                         twitch_login = None
                         if row:
-                            twitch_login = (
-                                row["twitch_login"] if hasattr(row, "keys") else row[0]
-                            )
+                            twitch_login = row["twitch_login"] if hasattr(row, "keys") else row[0]
 
                         if not twitch_login:
                             await btn_interaction.followup.send(
@@ -913,9 +868,7 @@ class StreamerRequirementsView(StepView):
                                 ephemeral=True,
                             )
                             confirm_button.disabled = True
-                            await btn_interaction.edit_original_response(
-                                view=confirm_view
-                            )
+                            await btn_interaction.edit_original_response(view=confirm_view)
                             await self._finish(interaction)
                             return
 
@@ -923,9 +876,7 @@ class StreamerRequirementsView(StepView):
                             btn_interaction, twitch_login
                         )
                         if not assign_ok:
-                            await btn_interaction.followup.send(
-                                f"⚠️ {assign_msg}", ephemeral=True
-                            )
+                            await btn_interaction.followup.send(f"⚠️ {assign_msg}", ephemeral=True)
                             return
 
                         self.twitch_login = twitch_login
@@ -981,15 +932,12 @@ class StreamerRequirementsView(StepView):
         style=discord.ButtonStyle.danger,
         custom_id="wdm:streamer:req_cancel",
     )
-    async def btn_cancel(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         await _safe_send(
             interaction,
             content=(
-                "Setup abgebrochen.\n\n"
-                "Du kannst es jederzeit mit **/streamer** erneut starten."
+                "Setup abgebrochen.\n\nDu kannst es jederzeit mit **/streamer** erneut starten."
             ),
             ephemeral=True,
         )
@@ -1022,9 +970,7 @@ class StreamerOnboarding(commands.Cog):
         # Sicherstellen, dass der Slash-Command in der Haupt-Guild sofort verfügbar ist
         await self._sync_slash_commands()
 
-    @app_commands.command(
-        name="streamer", description="Streamer-Partner werden (2 Schritte)."
-    )
+    @app_commands.command(name="streamer", description="Streamer-Partner werden (2 Schritte).")
     async def streamer_cmd(self, interaction: discord.Interaction):
         """Startet Schritt 1 direkt per DM und bestätigt hier nur kurz."""
         try:
@@ -1032,9 +978,7 @@ class StreamerOnboarding(commands.Cog):
         except Exception:
             log.debug("streamer_cmd defer failed", exc_info=True)
 
-        blocked, reason = _check_partner_onboarding_blacklist(
-            discord_user_id=interaction.user.id
-        )
+        blocked, reason = _check_partner_onboarding_blacklist(discord_user_id=interaction.user.id)
         if blocked:
             log.info(
                 "Streamer-Onboarding abgelehnt (/streamer): user=%s reason=%s",

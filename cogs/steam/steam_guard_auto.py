@@ -14,7 +14,6 @@ import os
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 from discord.ext import commands, tasks
 
@@ -55,9 +54,7 @@ class SteamGuardAutoConfig:
         try:
             import keyring
 
-            password = keyring.get_password(
-                "DeadlockBot", "STEAM_EMAIL_ACCOUNT_PASSWORD"
-            )
+            password = keyring.get_password("DeadlockBot", "STEAM_EMAIL_ACCOUNT_PASSWORD")
             if password:
                 cls.EMAIL_PASSWORD = password
                 return password
@@ -104,9 +101,9 @@ class SteamGuardEmailMonitor:
 
     def __init__(self, config: SteamGuardAutoConfig):
         self.config = config
-        self._last_processed_uid: Optional[str] = None
+        self._last_processed_uid: str | None = None
 
-    def fetch_latest_steam_code(self) -> Optional[str]:
+    def fetch_latest_steam_code(self) -> str | None:
         """
         Connect to IMAP, search for recent Steam Guard emails,
         extract and return the code.
@@ -122,29 +119,21 @@ class SteamGuardEmailMonitor:
             # Get password (from keyring or env)
             email_password = self.config._load_email_password()
             if not email_password:
-                log.error(
-                    "Email password not found in Credential Manager or environment"
-                )
+                log.error("Email password not found in Credential Manager or environment")
                 return None
 
             # Connect to IMAP server
-            log.debug(
-                f"Connecting to {self.config.IMAP_SERVER}:{self.config.IMAP_PORT}"
-            )
+            log.debug(f"Connecting to {self.config.IMAP_SERVER}:{self.config.IMAP_PORT}")
             mail = imaplib.IMAP4_SSL(self.config.IMAP_SERVER, self.config.IMAP_PORT)
             mail.login(self.config.EMAIL_ADDRESS, email_password)
             mail.select("INBOX")
 
             # Search for Steam emails from last N minutes
-            cutoff_time = datetime.now() - timedelta(
-                minutes=self.config.MAX_EMAIL_AGE_MINUTES
-            )
+            cutoff_time = datetime.now() - timedelta(minutes=self.config.MAX_EMAIL_AGE_MINUTES)
             date_str = cutoff_time.strftime("%d-%b-%Y")
 
             # Search criteria: from Steam, recent, unseen
-            search_criteria = (
-                f'(FROM "noreply@steampowered.com" SINCE {date_str} UNSEEN)'
-            )
+            search_criteria = f'(FROM "noreply@steampowered.com" SINCE {date_str} UNSEEN)'
             log.debug(f"Searching with criteria: {search_criteria}")
 
             status, messages = mail.search(None, search_criteria)
@@ -212,9 +201,7 @@ class SteamGuardEmailMonitor:
             log.error(f"IMAP authentication failed: {e}")
             return None
         except Exception as e:
-            log.error(
-                f"Failed to fetch Steam Guard code from email: {e}", exc_info=True
-            )
+            log.error(f"Failed to fetch Steam Guard code from email: {e}", exc_info=True)
             return None
 
     def _extract_email_body(self, email_message) -> str:
@@ -226,17 +213,13 @@ class SteamGuardEmailMonitor:
                 content_type = part.get_content_type()
                 if content_type == "text/plain":
                     try:
-                        body = part.get_payload(decode=True).decode(
-                            "utf-8", errors="ignore"
-                        )
+                        body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
                         break
                     except Exception:
                         continue
         else:
             try:
-                body = email_message.get_payload(decode=True).decode(
-                    "utf-8", errors="ignore"
-                )
+                body = email_message.get_payload(decode=True).decode("utf-8", errors="ignore")
             except Exception:
                 log.debug("Failed to decode non-multipart email body", exc_info=True)
 
@@ -254,9 +237,7 @@ class SteamGuardAuto(commands.Cog):
         self._refresh_in_progress = False
 
         if self.config.is_configured():
-            log.info(
-                f"Steam Guard automation configured for {self.config.EMAIL_ADDRESS}"
-            )
+            log.info(f"Steam Guard automation configured for {self.config.EMAIL_ADDRESS}")
             log.info(
                 f"Token refresh scheduled every {self.config.TOKEN_REFRESH_INTERVAL_DAYS} days"
             )
@@ -274,7 +255,7 @@ class SteamGuardAuto(commands.Cog):
         if hasattr(self, "schedule_token_refresh"):
             self.schedule_token_refresh.cancel()
 
-    def _get_token_age_days(self) -> Optional[int]:
+    def _get_token_age_days(self) -> int | None:
         """Get age of current refresh token in days."""
         return get_refresh_token_age_days(_refresh_token_path())
 
@@ -286,9 +267,7 @@ class SteamGuardAuto(commands.Cog):
         try:
             # Get Steam account credentials from environment
             steam_account = os.getenv("STEAM_BOT_USERNAME") or os.getenv("STEAM_LOGIN")
-            steam_password = os.getenv("STEAM_BOT_PASSWORD") or os.getenv(
-                "STEAM_PASSWORD"
-            )
+            steam_password = os.getenv("STEAM_BOT_PASSWORD") or os.getenv("STEAM_PASSWORD")
 
             if not steam_account or not steam_password:
                 log.error("Cannot refresh token: STEAM_BOT_USERNAME/PASSWORD not set")
@@ -441,9 +420,7 @@ class SteamGuardAuto(commands.Cog):
                 return
 
             if not self._guard_check_active:
-                log.info(
-                    "🔍 Steam Guard (email) is pending - starting email monitoring"
-                )
+                log.info("🔍 Steam Guard (email) is pending - starting email monitoring")
                 self._guard_check_active = True
 
             # Fetch code from email
@@ -480,9 +457,7 @@ class SteamGuardAuto(commands.Cog):
             if result_row:
                 status, error = result_row
                 if status == "DONE":
-                    log.info(
-                        "✅ Steam Guard code accepted! Login should complete soon."
-                    )
+                    log.info("✅ Steam Guard code accepted! Login should complete soon.")
                     self._guard_check_active = False
                 elif status == "FAILED":
                     log.error(f"❌ Steam Guard code rejected: {error}")

@@ -9,7 +9,8 @@ import os
 import re
 import secrets
 import time
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from collections.abc import Awaitable, Callable
+from typing import Any
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlsplit, urlunsplit
 
 import aiohttp
@@ -18,11 +19,11 @@ from aiohttp import web
 
 from .. import storage
 from ..analytics.api_v2 import AnalyticsV2Mixin
+from ..constants import log
+from ..raid.views import RaidAuthGenerateView, build_raid_requirements_embed
 from .live import DashboardLiveMixin
 from .stats import DashboardStatsMixin
 from .templates import DashboardTemplateMixin
-from ..constants import log
-from ..raid.views import RaidAuthGenerateView, build_raid_requirements_embed
 
 TWITCH_OAUTH_AUTHORIZE_URL = "https://id.twitch.tv/oauth2/authorize"
 TWITCH_OAUTH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"  # noqa: S105
@@ -31,9 +32,7 @@ DISCORD_API_BASE_URL = "https://discord.com/api/v10"
 TWITCH_DASHBOARDS_LOGIN_URL = "/twitch/auth/login?next=%2Ftwitch%2Fdashboards"
 TWITCH_DASHBOARD_V2_LOGIN_URL = "/twitch/auth/login?next=%2Ftwitch%2Fdashboard-v2"
 TWITCH_ADMIN_DISCORD_LOGIN_URL = "/twitch/auth/discord/login?next=%2Ftwitch%2Fadmin"
-TWITCH_DASHBOARDS_DISCORD_LOGIN_URL = (
-    "/twitch/auth/discord/login?next=%2Ftwitch%2Fdashboards"
-)
+TWITCH_DASHBOARDS_DISCORD_LOGIN_URL = "/twitch/auth/discord/login?next=%2Ftwitch%2Fdashboards"
 LOGIN_RE = re.compile(r"^[A-Za-z0-9_]{3,25}$")
 DEFAULT_DASHBOARD_MODERATOR_ROLE_ID = 1337518124647579661
 DEFAULT_DASHBOARD_OWNER_USER_ID = 662995601738170389
@@ -57,27 +56,26 @@ class DashboardV2Server(
     def __init__(
         self,
         *,
-        app_token: Optional[str],
+        app_token: str | None,
         noauth: bool,
-        partner_token: Optional[str],
-        oauth_client_id: Optional[str] = None,
-        oauth_client_secret: Optional[str] = None,
-        oauth_redirect_uri: Optional[str] = None,
+        partner_token: str | None,
+        oauth_client_id: str | None = None,
+        oauth_client_secret: str | None = None,
+        oauth_redirect_uri: str | None = None,
         session_ttl_seconds: int = 12 * 3600,
-        legacy_stats_url: Optional[str] = None,
-        add_cb: Optional[Callable[[str, bool], Awaitable[str]]] = None,
-        remove_cb: Optional[Callable[[str], Awaitable[str]]] = None,
-        list_cb: Optional[Callable[[], Awaitable[List[dict]]]] = None,
-        stats_cb: Optional[Callable[..., Awaitable[dict]]] = None,
-        verify_cb: Optional[Callable[[str, str], Awaitable[str]]] = None,
-        archive_cb: Optional[Callable[[str, str], Awaitable[str]]] = None,
-        discord_flag_cb: Optional[Callable[[str, bool], Awaitable[str]]] = None,
-        discord_profile_cb: Optional[
-            Callable[[str, Optional[str], Optional[str], bool], Awaitable[str]]
-        ] = None,
-        raid_history_cb: Optional[Callable[..., Awaitable[List[dict]]]] = None,
-        raid_bot: Optional[Any] = None,
-        reload_cb: Optional[Callable[[], Awaitable[str]]] = None,
+        legacy_stats_url: str | None = None,
+        add_cb: Callable[[str, bool], Awaitable[str]] | None = None,
+        remove_cb: Callable[[str], Awaitable[str]] | None = None,
+        list_cb: Callable[[], Awaitable[list[dict]]] | None = None,
+        stats_cb: Callable[..., Awaitable[dict]] | None = None,
+        verify_cb: Callable[[str, str], Awaitable[str]] | None = None,
+        archive_cb: Callable[[str, str], Awaitable[str]] | None = None,
+        discord_flag_cb: Callable[[str, bool], Awaitable[str]] | None = None,
+        discord_profile_cb: Callable[[str, str | None, str | None, bool], Awaitable[str]]
+        | None = None,
+        raid_history_cb: Callable[..., Awaitable[list[dict]]] | None = None,
+        raid_bot: Any | None = None,
+        reload_cb: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
         self._token = app_token
         self._noauth = noauth
@@ -89,10 +87,10 @@ class DashboardV2Server(
         self._legacy_stats_url = (legacy_stats_url or "").strip() or None
         self._reload_cb = reload_cb
         self._session_cookie_name = "twitch_dash_session"
-        self._oauth_states: Dict[str, Dict[str, Any]] = {}
-        self._auth_sessions: Dict[str, Dict[str, Any]] = {}
+        self._oauth_states: dict[str, dict[str, Any]] = {}
+        self._auth_sessions: dict[str, dict[str, Any]] = {}
         self._oauth_state_ttl_seconds = 600
-        self._rate_limits: Dict[str, List[float]] = {}
+        self._rate_limits: dict[str, list[float]] = {}
         self._add = add_cb if callable(add_cb) else self._empty_add
         self._remove = remove_cb if callable(remove_cb) else self._empty_remove
         self._list = list_cb if callable(list_cb) else self._empty_list
@@ -127,12 +125,12 @@ class DashboardV2Server(
         self._discord_admin_enabled = True
         self._discord_admin_owner_user_id = DEFAULT_DASHBOARD_OWNER_USER_ID
         self._discord_admin_moderator_role_id = DEFAULT_DASHBOARD_MODERATOR_ROLE_ID
-        self._discord_admin_guild_ids: Tuple[int, ...] = ()
+        self._discord_admin_guild_ids: tuple[int, ...] = ()
         self._discord_admin_cookie_name = "twitch_admin_session"
         self._discord_admin_session_ttl = 12 * 3600
         self._discord_admin_state_ttl = 600
-        self._discord_admin_oauth_states: Dict[str, Dict[str, Any]] = {}
-        self._discord_admin_sessions: Dict[str, Dict[str, Any]] = {}
+        self._discord_admin_oauth_states: dict[str, dict[str, Any]] = {}
+        self._discord_admin_sessions: dict[str, dict[str, Any]] = {}
         self._discord_admin_required = self._discord_admin_enabled and bool(
             self._discord_admin_client_id
             and self._discord_admin_client_secret
@@ -150,7 +148,7 @@ class DashboardV2Server(
     async def _empty_remove(self, _: str) -> str:
         return "Remove-Funktion ist aktuell nicht verfügbar"
 
-    async def _empty_list(self) -> List[dict]:
+    async def _empty_list(self) -> list[dict]:
         return []
 
     async def _empty_stats(self, **_: Any) -> dict:
@@ -165,7 +163,7 @@ class DashboardV2Server(
     async def _empty_discord_flag(self, _: str, __: bool) -> str:
         return "Discord-Flag-Funktion ist aktuell nicht verfügbar"
 
-    async def _empty_raid_history(self, **_: Any) -> List[dict]:
+    async def _empty_raid_history(self, **_: Any) -> list[dict]:
         return []
 
     @staticmethod
@@ -180,14 +178,12 @@ class DashboardV2Server(
         try:
             value = keyring.get_password(KEYRING_SERVICE_NAME, secret_key)
             if not value:
-                value = keyring.get_password(
-                    f"{secret_key}@{KEYRING_SERVICE_NAME}", secret_key
-                )
+                value = keyring.get_password(f"{secret_key}@{KEYRING_SERVICE_NAME}", secret_key)
         except Exception:
             return ""
         return str(value or "").strip()
 
-    def _check_admin_token(self, token: Optional[str]) -> bool:
+    def _check_admin_token(self, token: str | None) -> bool:
         if self._noauth:
             return True
         if not token or not self._token:
@@ -195,7 +191,7 @@ class DashboardV2Server(
         return token == self._token
 
     @staticmethod
-    def _host_without_port(raw: Optional[str]) -> str:
+    def _host_without_port(raw: str | None) -> str:
         if not raw:
             return ""
         host = raw.split(",")[0].strip()
@@ -210,7 +206,7 @@ class DashboardV2Server(
         return host.lower()
 
     @staticmethod
-    def _is_loopback_host(raw: Optional[str]) -> bool:
+    def _is_loopback_host(raw: str | None) -> bool:
         host = DashboardV2Server._host_without_port(raw)
         if not host:
             return False
@@ -258,7 +254,7 @@ class DashboardV2Server(
         return self._is_loopback_host(client_host)
 
     @staticmethod
-    def _normalize_login(value: str) -> Optional[str]:
+    def _normalize_login(value: str) -> str | None:
         if not value:
             return None
         s = unquote(value).strip()
@@ -287,7 +283,7 @@ class DashboardV2Server(
         return text.replace("\r", "\\r").replace("\n", "\\n")
 
     @staticmethod
-    def _normalize_discord_admin_next_path(raw: Optional[str]) -> str:
+    def _normalize_discord_admin_next_path(raw: str | None) -> str:
         fallback = "/twitch/admin"
         candidate = (raw or "").strip()
         if not candidate:
@@ -303,25 +299,24 @@ class DashboardV2Server(
         return candidate
 
     def _build_discord_admin_login_url(
-        self, request: web.Request, *, next_path: Optional[str] = None
+        self, request: web.Request, *, next_path: str | None = None
     ) -> str:
         if not self._discord_admin_required:
             return "/twitch/admin"
         normalized_next = self._normalize_discord_admin_next_path(
-            next_path
-            or (request.rel_url.path_qs if request.rel_url else "/twitch/admin")
+            next_path or (request.rel_url.path_qs if request.rel_url else "/twitch/admin")
         )
         return f"/twitch/auth/discord/login?{urlencode({'next': normalized_next})}"
 
     @staticmethod
-    def _canonical_discord_admin_post_login_path(raw: Optional[str]) -> str:
+    def _canonical_discord_admin_post_login_path(raw: str | None) -> str:
         normalized = DashboardV2Server._normalize_discord_admin_next_path(raw)
         normalized_path = (urlsplit(normalized).path or "").rstrip("/") or "/"
         if normalized_path == "/twitch/dashboards":
             return "/twitch/dashboards"
         return "/twitch/admin"
 
-    def _normalized_discord_admin_redirect_uri(self) -> Optional[str]:
+    def _normalized_discord_admin_redirect_uri(self) -> str | None:
         raw = (self._discord_admin_redirect_uri or "").strip()
         if not raw:
             return None
@@ -340,9 +335,7 @@ class DashboardV2Server(
             return None
         if (parsed.path or "").rstrip("/") != "/twitch/auth/discord/callback":
             return None
-        return urlunsplit(
-            (scheme, parsed.netloc, "/twitch/auth/discord/callback", "", "")
-        )
+        return urlunsplit((scheme, parsed.netloc, "/twitch/auth/discord/callback", "", ""))
 
     def _cleanup_discord_admin_state(self) -> None:
         now = time.time()
@@ -368,9 +361,7 @@ class DashboardV2Server(
                 self._discord_admin_oauth_states.items(),
                 key=lambda item: float(item[1].get("created_at", 0.0)),
             )
-            for key, _ in oldest_states[
-                : len(self._discord_admin_oauth_states) - max_states
-            ]:
+            for key, _ in oldest_states[: len(self._discord_admin_oauth_states) - max_states]:
                 self._discord_admin_oauth_states.pop(key, None)
 
         max_sessions = 5000
@@ -379,9 +370,7 @@ class DashboardV2Server(
                 self._discord_admin_sessions.items(),
                 key=lambda item: float(item[1].get("created_at", 0.0)),
             )
-            for key, _ in oldest_sessions[
-                : len(self._discord_admin_sessions) - max_sessions
-            ]:
+            for key, _ in oldest_sessions[: len(self._discord_admin_sessions) - max_sessions]:
                 self._discord_admin_sessions.pop(key, None)
 
     def _set_discord_admin_cookie(
@@ -403,15 +392,11 @@ class DashboardV2Server(
     def _clear_discord_admin_cookie(self, response: web.StreamResponse) -> None:
         response.del_cookie(self._discord_admin_cookie_name, path="/")
 
-    def _get_discord_admin_session(
-        self, request: web.Request
-    ) -> Optional[Dict[str, Any]]:
+    def _get_discord_admin_session(self, request: web.Request) -> dict[str, Any] | None:
         if not self._discord_admin_required:
             return None
         self._cleanup_discord_admin_state()
-        session_id = (
-            request.cookies.get(self._discord_admin_cookie_name) or ""
-        ).strip()
+        session_id = (request.cookies.get(self._discord_admin_cookie_name) or "").strip()
         if not session_id:
             return None
         session = self._discord_admin_sessions.get(session_id)
@@ -433,7 +418,7 @@ class DashboardV2Server(
         self,
         code: str,
         redirect_uri: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         payload = {
             "client_id": self._discord_admin_client_id,
             "client_secret": self._discord_admin_client_secret,
@@ -460,9 +445,7 @@ class DashboardV2Server(
                 data = await response.json()
         return data if isinstance(data, dict) else None
 
-    async def _fetch_discord_admin_user(
-        self, access_token: str
-    ) -> Optional[Dict[str, Any]]:
+    async def _fetch_discord_admin_user(self, access_token: str) -> dict[str, Any] | None:
         if not access_token:
             return None
         timeout = aiohttp.ClientTimeout(total=20)
@@ -482,7 +465,7 @@ class DashboardV2Server(
                 data = await response.json()
         return data if isinstance(data, dict) else None
 
-    async def _check_discord_admin_membership(self, user_id: int) -> Tuple[bool, str]:
+    async def _check_discord_admin_membership(self, user_id: int) -> tuple[bool, str]:
         if user_id == self._discord_admin_owner_user_id:
             return True, "owner_override"
 
@@ -490,13 +473,11 @@ class DashboardV2Server(
         raid_bot = getattr(self, "_raid_bot", None)
         if raid_bot is not None:
             auth_manager = getattr(raid_bot, "auth_manager", None)
-            discord_bot = (
-                getattr(auth_manager, "_discord_bot", None) if auth_manager else None
-            )
+            discord_bot = getattr(auth_manager, "_discord_bot", None) if auth_manager else None
             if discord_bot is None:
                 discord_bot = getattr(raid_bot, "_discord_bot", None)
 
-        guilds: List[Any] = []
+        guilds: list[Any] = []
         seen: set[int] = set()
         for guild_id in self._discord_admin_guild_ids:
             guild = discord_bot.get_guild(guild_id) if discord_bot else None
@@ -519,9 +500,7 @@ class DashboardV2Server(
             if perms and bool(getattr(perms, "administrator", False)):
                 return True, f"guild_admin:{guild.id}"
             role_ids = {
-                int(role.id)
-                for role in getattr(member, "roles", [])
-                if getattr(role, "id", None)
+                int(role.id) for role in getattr(member, "roles", []) if getattr(role, "id", None)
             }
             if self._discord_admin_moderator_role_id in role_ids:
                 return True, f"moderator_role:{guild.id}"
@@ -584,9 +563,7 @@ class DashboardV2Server(
         self._cleanup_discord_admin_state()
         state_data = self._discord_admin_oauth_states.pop(state, None)
         if not state_data:
-            return web.Response(
-                text="OAuth state ungültig oder abgelaufen.", status=400
-            )
+            return web.Response(text="OAuth state ungültig oder abgelaufen.", status=400)
 
         token_data = await self._exchange_discord_admin_code(
             code,
@@ -598,9 +575,7 @@ class DashboardV2Server(
 
         user = await self._fetch_discord_admin_user(access_token)
         if not user:
-            return web.Response(
-                text="Discord User konnte nicht geladen werden.", status=401
-            )
+            return web.Response(text="Discord User konnte nicht geladen werden.", status=401)
 
         user_id_raw = str(user.get("id") or "").strip()
         if not user_id_raw.isdigit():
@@ -651,23 +626,17 @@ class DashboardV2Server(
             self._sanitize_log_value(self._peer_host(request)),
         )
 
-        destination = self._canonical_discord_admin_post_login_path(
-            state_data.get("next_path")
-        )
+        destination = self._canonical_discord_admin_post_login_path(state_data.get("next_path"))
         response = web.HTTPFound(destination)
         self._set_discord_admin_cookie(response, request, session_id)
         raise response
 
     async def discord_auth_logout(self, request: web.Request) -> web.StreamResponse:
-        session_id = (
-            request.cookies.get(self._discord_admin_cookie_name) or ""
-        ).strip()
+        session_id = (request.cookies.get(self._discord_admin_cookie_name) or "").strip()
         if session_id:
             self._discord_admin_sessions.pop(session_id, None)
         login_url = (
-            TWITCH_ADMIN_DISCORD_LOGIN_URL
-            if self._discord_admin_required
-            else "/twitch/admin"
+            TWITCH_ADMIN_DISCORD_LOGIN_URL if self._discord_admin_required else "/twitch/admin"
         )
         response = web.HTTPFound(login_url)
         self._clear_discord_admin_cookie(response)
@@ -709,9 +678,7 @@ class DashboardV2Server(
             if self._check_admin_token(token):
                 return
             login_url = (
-                TWITCH_ADMIN_DISCORD_LOGIN_URL
-                if self._discord_admin_required
-                else "/twitch/admin"
+                TWITCH_ADMIN_DISCORD_LOGIN_URL if self._discord_admin_required else "/twitch/admin"
             )
             if request.method in {"GET", "HEAD"}:
                 raise web.HTTPFound(login_url)
@@ -738,10 +705,7 @@ class DashboardV2Server(
         admin_query = request.query.get("token")
 
         if self._partner_token:
-            if (
-                partner_header == self._partner_token
-                or partner_query == self._partner_token
-            ):
+            if partner_header == self._partner_token or partner_query == self._partner_token:
                 return
             if admin_header == self._token or admin_query == self._token:
                 return
@@ -752,8 +716,8 @@ class DashboardV2Server(
         self,
         request: web.Request,
         *,
-        ok: Optional[str] = None,
-        err: Optional[str] = None,
+        ok: str | None = None,
+        err: str | None = None,
         default_path: str = "/twitch/stats",
     ) -> str:
         if default_path == "/twitch/stats":
@@ -788,14 +752,11 @@ class DashboardV2Server(
                         params["ok"] = ok
                     if err:
                         params["err"] = err
-                    return (
-                        urlunsplit(("", "", parts.path, urlencode(params), ""))
-                        or default_path
-                    )
+                    return urlunsplit(("", "", parts.path, urlencode(params), "")) or default_path
             except Exception:
                 log.debug("Could not construct redirect from referer", exc_info=True)
 
-        params: Dict[str, str] = {}
+        params: dict[str, str] = {}
         if ok:
             params["ok"] = ok
         if err:
@@ -873,16 +834,13 @@ class DashboardV2Server(
         peer = self._peer_host(request)
         if self._is_loopback_host(peer):
             forwarded_proto = (
-                (request.headers.get("X-Forwarded-Proto") or "")
-                .split(",")[0]
-                .strip()
-                .lower()
+                (request.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
             )
             if forwarded_proto:
                 return forwarded_proto == "https"
         return bool(request.secure)
 
-    def _build_oauth_redirect_uri(self) -> Optional[str]:
+    def _build_oauth_redirect_uri(self) -> str | None:
         configured = (self._oauth_redirect_uri or "").strip()
         if not configured:
             return None
@@ -891,9 +849,7 @@ class DashboardV2Server(
         try:
             parsed = urlparse(candidate)
         except Exception:
-            log.warning(
-                "TWITCH_DASHBOARD_AUTH_REDIRECT_URI is invalid and cannot be parsed"
-            )
+            log.warning("TWITCH_DASHBOARD_AUTH_REDIRECT_URI is invalid and cannot be parsed")
             return None
 
         scheme = (parsed.scheme or "").strip().lower()
@@ -920,9 +876,7 @@ class DashboardV2Server(
             )
             return None
         if path != "/twitch/auth/callback":
-            log.warning(
-                "TWITCH_DASHBOARD_AUTH_REDIRECT_URI must point to /twitch/auth/callback"
-            )
+            log.warning("TWITCH_DASHBOARD_AUTH_REDIRECT_URI must point to /twitch/auth/callback")
             return None
 
         return urlunsplit((scheme, parsed.netloc, "/twitch/auth/callback", "", ""))
@@ -945,7 +899,7 @@ class DashboardV2Server(
             f"<h1>{html.escape(title)}</h1>{body_html}</div></div></body></html>"
         )
 
-    def _normalize_next_path(self, raw_path: Optional[str]) -> str:
+    def _normalize_next_path(self, raw_path: str | None) -> str:
         fallback = "/twitch/dashboard-v2"
         candidate = (raw_path or "").strip()
         if not candidate:
@@ -961,7 +915,7 @@ class DashboardV2Server(
 
     @staticmethod
     def _safe_internal_redirect(
-        location: Optional[str], *, fallback: str = "/twitch/dashboard-v2"
+        location: str | None, *, fallback: str = "/twitch/dashboard-v2"
     ) -> str:
         candidate = (location or "").strip()
         if not candidate:
@@ -977,7 +931,7 @@ class DashboardV2Server(
         return candidate
 
     @staticmethod
-    def _safe_oauth_authorize_redirect(location: Optional[str]) -> str:
+    def _safe_oauth_authorize_redirect(location: str | None) -> str:
         candidate = (location or "").strip()
         if not candidate:
             return TWITCH_OAUTH_AUTHORIZE_URL
@@ -986,16 +940,12 @@ class DashboardV2Server(
         except Exception:
             return TWITCH_OAUTH_AUTHORIZE_URL
         host = (parts.netloc or "").split("@")[-1].split(":", 1)[0].strip().lower()
-        if (
-            parts.scheme != "https"
-            or host != "id.twitch.tv"
-            or parts.path != "/oauth2/authorize"
-        ):
+        if parts.scheme != "https" or host != "id.twitch.tv" or parts.path != "/oauth2/authorize":
             return TWITCH_OAUTH_AUTHORIZE_URL
         return candidate
 
     @staticmethod
-    def _canonical_post_login_destination(next_path: Optional[str]) -> str:
+    def _canonical_post_login_destination(next_path: str | None) -> str:
         fallback = "/twitch/dashboard-v2"
         candidate = (next_path or "").strip()
         if not candidate:
@@ -1052,9 +1002,7 @@ class DashboardV2Server(
         # The legacy stats dashboard is now always served locally.
         return "/twitch/stats"
 
-    def _get_dashboard_auth_session(
-        self, request: web.Request
-    ) -> Optional[Dict[str, Any]]:
+    def _get_dashboard_auth_session(self, request: web.Request) -> dict[str, Any] | None:
         self._cleanup_auth_state()
         session_id = (request.cookies.get(self._session_cookie_name) or "").strip()
         if not session_id:
@@ -1106,7 +1054,7 @@ class DashboardV2Server(
 
     def _is_partner_allowed(
         self, *, twitch_login: str, twitch_user_id: str
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         login = (twitch_login or "").strip().lower()
         user_id = (twitch_user_id or "").strip()
         if not login and not user_id:
@@ -1140,9 +1088,7 @@ class DashboardV2Server(
             "twitch_user_id": str(row[1] or ""),
         }
 
-    async def _exchange_code_for_user(
-        self, code: str, redirect_uri: str
-    ) -> Optional[Dict[str, str]]:
+    async def _exchange_code_for_user(self, code: str, redirect_uri: str) -> dict[str, str] | None:
         if not self._is_oauth_configured():
             return None
 
@@ -1192,9 +1138,7 @@ class DashboardV2Server(
         return {
             "twitch_login": str(user.get("login") or "").strip().lower(),
             "twitch_user_id": str(user.get("id") or "").strip(),
-            "display_name": str(
-                user.get("display_name") or user.get("login") or ""
-            ).strip(),
+            "display_name": str(user.get("display_name") or user.get("login") or "").strip(),
         }
 
     async def index(self, request: web.Request) -> web.StreamResponse:
@@ -1313,8 +1257,8 @@ class DashboardV2Server(
         )
 
     @staticmethod
-    def _build_raid_history_rows(history: List[dict]) -> str:
-        rows: List[str] = []
+    def _build_raid_history_rows(history: list[dict]) -> str:
+        rows: list[str] = []
         for entry in history:
             success_icon = "OK" if entry.get("success") else "X"
             executed_at = str(entry.get("executed_at") or "")[:19]
@@ -1334,14 +1278,10 @@ class DashboardV2Server(
                         html.escape(executed_at, quote=True),
                         "</td>",
                         "<td><strong>",
-                        html.escape(
-                            str(entry.get("from_broadcaster_login") or ""), quote=True
-                        ),
+                        html.escape(str(entry.get("from_broadcaster_login") or ""), quote=True),
                         "</strong></td>",
                         "<td><strong>",
-                        html.escape(
-                            str(entry.get("to_broadcaster_login") or ""), quote=True
-                        ),
+                        html.escape(str(entry.get("to_broadcaster_login") or ""), quote=True),
                         "</strong></td>",
                         "<td>",
                         html.escape(str(entry.get("viewer_count") or 0), quote=True),
@@ -1350,9 +1290,7 @@ class DashboardV2Server(
                         html.escape(str(stream_duration_min), quote=True),
                         " min</td>",
                         "<td>",
-                        html.escape(
-                            str(entry.get("candidates_count") or 0), quote=True
-                        ),
+                        html.escape(str(entry.get("candidates_count") or 0), quote=True),
                         "</td>",
                         "<td style='color: red; font-size: 0.85em;'>",
                         html.escape(str(entry.get("error_message") or ""), quote=True),
@@ -1468,9 +1406,7 @@ class DashboardV2Server(
             row["discord_user_id"] if hasattr(row, "keys") else row[0] or ""
         ).strip()
         if not discord_user_id:
-            return web.Response(
-                text="No Discord user linked for this streamer", status=404
-            )
+            return web.Response(text="No Discord user linked for this streamer", status=404)
 
         try:
             user_id_int = int(discord_user_id)
@@ -1519,9 +1455,7 @@ class DashboardV2Server(
             return web.Response(text="Failed to send Discord DM", status=502)
 
         ok_message = f"Anforderungen per Discord an @{login} gesendet"
-        location = self._redirect_location(
-            request, ok=ok_message, default_path="/twitch/admin"
-        )
+        location = self._redirect_location(request, ok=ok_message, default_path="/twitch/admin")
         safe_location = self._safe_internal_redirect(location, fallback="/twitch/admin")
         raise web.HTTPFound(location=safe_location)
 
@@ -1536,9 +1470,7 @@ class DashboardV2Server(
         limit = max(1, min(limit, 500))
         from_broadcaster = (request.query.get("from") or "").strip().lower()
 
-        history = await self._raid_history_cb(
-            limit=limit, from_broadcaster=from_broadcaster
-        )
+        history = await self._raid_history_cb(limit=limit, from_broadcaster=from_broadcaster)
         rows_html = self._build_raid_history_rows(history)
         page_html = self._build_raid_history_page(rows_html)
         return web.Response(text=page_html, content_type="text/html")
@@ -1599,14 +1531,16 @@ class DashboardV2Server(
             r = recv_map.get(login, {}).get("cnt", 0)
             sv = sent_map.get(login, {}).get("viewers", 0)
             rv = recv_map.get(login, {}).get("viewers", 0)
-            partner_stats.append({
-                "login": login,
-                "sent": s,
-                "received": r,
-                "balance": s - r,
-                "viewers_sent": sv,
-                "viewers_recv": rv,
-            })
+            partner_stats.append(
+                {
+                    "login": login,
+                    "sent": s,
+                    "received": r,
+                    "balance": s - r,
+                    "viewers_sent": sv,
+                    "viewers_recv": rv,
+                }
+            )
         partner_stats.sort(key=lambda x: x["balance"], reverse=True)
 
         leechers = [p for p in partner_stats if p["sent"] == 0 and p["received"] > 0]
@@ -1616,13 +1550,15 @@ class DashboardV2Server(
         for row in manual_rows:
             raider = (row[0] or "").lower()
             target = (row[1] or "").lower()
-            manual_list.append({
-                "from": raider,
-                "to": target,
-                "viewers": row[2] or 0,
-                "at": str(row[3] or "")[:16],
-                "is_partner": target in partners,
-            })
+            manual_list.append(
+                {
+                    "from": raider,
+                    "to": target,
+                    "viewers": row[2] or 0,
+                    "at": str(row[3] or "")[:16],
+                    "is_partner": target in partners,
+                }
+            )
 
         date_min = str(date_row[0] or "")[:10]
         date_max = str(date_row[1] or "")[:10]
@@ -1691,7 +1627,11 @@ class DashboardV2Server(
         if manual_list:
             manual_rows = []
             for m in manual_list:
-                status_badge = '<span class="badge badge-ok">Partner</span>' if m['is_partner'] else '<span class="badge badge-warn">Extern</span>'
+                status_badge = (
+                    '<span class="badge badge-ok">Partner</span>'
+                    if m["is_partner"]
+                    else '<span class="badge badge-warn">Extern</span>'
+                )
                 manual_rows.append(
                     f"<tr>"
                     f"<td><strong>{html.escape(m['from'])}</strong></td>"
@@ -1987,13 +1927,9 @@ new Chart(ctx, {{
 
         state_data = self._oauth_states.pop(state, None)
         if not state_data:
-            return web.Response(
-                text="OAuth state ungültig oder abgelaufen.", status=400
-            )
+            return web.Response(text="OAuth state ungültig oder abgelaufen.", status=400)
 
-        user = await self._exchange_code_for_user(
-            code, str(state_data.get("redirect_uri") or "")
-        )
+        user = await self._exchange_code_for_user(code, str(state_data.get("redirect_uri") or ""))
         if not user:
             return web.Response(
                 text="OAuth-Austausch fehlgeschlagen. Bitte erneut versuchen.",
@@ -2020,9 +1956,7 @@ new Chart(ctx, {{
 
         session_id = self._create_dashboard_session(
             twitch_login=partner.get("twitch_login") or user.get("twitch_login") or "",
-            twitch_user_id=partner.get("twitch_user_id")
-            or user.get("twitch_user_id")
-            or "",
+            twitch_user_id=partner.get("twitch_user_id") or user.get("twitch_user_id") or "",
             display_name=user.get("display_name") or "",
         )
         log.info(
@@ -2102,7 +2036,7 @@ new Chart(ctx, {{
                 status=400,
                 content_type="text/html",
             )
-        state_discord_user_id: Optional[str] = None
+        state_discord_user_id: str | None = None
         if login.lower().startswith("discord:"):
             candidate_discord_id = login.split(":", 1)[1].strip()
             if candidate_discord_id.isdigit():
@@ -2128,9 +2062,7 @@ new Chart(ctx, {{
                 "Client-ID": str(auth_manager.client_id),
                 "Authorization": f"Bearer {access_token}",
             }
-            async with session.get(
-                TWITCH_HELIX_USERS_URL, headers=headers
-            ) as user_resp:
+            async with session.get(TWITCH_HELIX_USERS_URL, headers=headers) as user_resp:
                 if user_resp.status != 200:
                     body = await user_resp.text()
                     raise RuntimeError(
@@ -2152,9 +2084,7 @@ new Chart(ctx, {{
             if isinstance(scopes_raw, str):
                 scopes = [scope for scope in scopes_raw.split() if scope]
             elif isinstance(scopes_raw, list):
-                scopes = [
-                    str(scope).strip() for scope in scopes_raw if str(scope).strip()
-                ]
+                scopes = [str(scope).strip() for scope in scopes_raw if str(scope).strip()]
             else:
                 scopes = []
 
@@ -2207,9 +2137,7 @@ new Chart(ctx, {{
         session_id = (request.cookies.get(self._session_cookie_name) or "").strip()
         if session_id:
             session = self._auth_sessions.pop(session_id, None)
-            twitch_login = (
-                (session or {}).get("twitch_login", "unknown") if session else "unknown"
-            )
+            twitch_login = (session or {}).get("twitch_login", "unknown") if session else "unknown"
             log.info(
                 "AUDIT dashboard logout: twitch=%s peer=%s",
                 self._sanitize_log_value(twitch_login),
@@ -2227,9 +2155,7 @@ new Chart(ctx, {{
             location = self._redirect_location(
                 request, err="Discord-Link ist aktuell nicht verfügbar"
             )
-            safe_location = self._safe_internal_redirect(
-                location, fallback="/twitch/stats"
-            )
+            safe_location = self._safe_internal_redirect(location, fallback="/twitch/stats")
             raise web.HTTPFound(location=safe_location)
 
         data = await request.post()
@@ -2566,9 +2492,7 @@ new Chart(ctx, {{
                             "login": login,
                             "viewers": viewers,
                             "is_live": viewers > 0,
-                            "chat_health": min(
-                                100, (active_chatters / max(1, viewers)) * 100
-                            )
+                            "chat_health": min(100, (active_chatters / max(1, viewers)) * 100)
                             if viewers > 0
                             else 0,
                             "lurker_ratio": (lurkers / max(1, total_connected)) * 100,
@@ -2578,12 +2502,8 @@ new Chart(ctx, {{
                     )
 
                 channels.sort(key=lambda x: x["viewers"], reverse=True)
-                avg_health = sum(c["chat_health"] for c in channels) / max(
-                    1, len(channels)
-                )
-                avg_lurker = sum(c["lurker_ratio"] for c in channels) / max(
-                    1, len(channels)
-                )
+                avg_health = sum(c["chat_health"] for c in channels) / max(1, len(channels))
+                avg_lurker = sum(c["lurker_ratio"] for c in channels) / max(1, len(channels))
 
                 # --- 2. Market History (24h) ---
                 history_rows = conn.execute("""
@@ -2608,10 +2528,7 @@ new Chart(ctx, {{
                     ORDER BY message_ts DESC
                     LIMIT 20
                 """).fetchall()
-                questions = [
-                    {"content": r[0], "streamer": r[1], "ts": r[2]}
-                    for r in question_rows
-                ]
+                questions = [{"content": r[0], "streamer": r[1], "ts": r[2]} for r in question_rows]
 
                 # --- 4. Meta Snapshot & Sentiment (1h) ---
                 deadlock_terms = [
@@ -2719,9 +2636,7 @@ new Chart(ctx, {{
                     """,
                         login_slots + login_slots,
                     ).fetchall()
-                    overlap = [
-                        {"a": ro[0], "b": ro[1], "shared": ro[2]} for ro in rows_overlap
-                    ]
+                    overlap = [{"a": ro[0], "b": ro[1], "shared": ro[2]} for ro in rows_overlap]
 
                 return web.json_response(
                     {
@@ -2830,9 +2745,7 @@ new Chart(ctx, {{
 
 
 @web.middleware
-async def _security_headers_middleware(
-    request: web.Request, handler: Any
-) -> web.StreamResponse:
+async def _security_headers_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
     """Attach minimal security headers to every response."""
     response = await handler(request)
     response.headers.setdefault("X-Frame-Options", "DENY")
@@ -2844,27 +2757,25 @@ async def _security_headers_middleware(
 def build_v2_app(
     *,
     noauth: bool,
-    token: Optional[str],
-    partner_token: Optional[str] = None,
-    oauth_client_id: Optional[str] = None,
-    oauth_client_secret: Optional[str] = None,
-    oauth_redirect_uri: Optional[str] = None,
+    token: str | None,
+    partner_token: str | None = None,
+    oauth_client_id: str | None = None,
+    oauth_client_secret: str | None = None,
+    oauth_redirect_uri: str | None = None,
     session_ttl_seconds: int = 12 * 3600,
-    legacy_stats_url: Optional[str] = None,
-    add_cb: Optional[Callable[[str, bool], Awaitable[str]]] = None,
-    remove_cb: Optional[Callable[[str], Awaitable[str]]] = None,
-    list_cb: Optional[Callable[[], Awaitable[List[dict]]]] = None,
-    stats_cb: Optional[Callable[..., Awaitable[dict]]] = None,
-    verify_cb: Optional[Callable[[str, str], Awaitable[str]]] = None,
-    archive_cb: Optional[Callable[[str, str], Awaitable[str]]] = None,
-    discord_flag_cb: Optional[Callable[[str, bool], Awaitable[str]]] = None,
-    discord_profile_cb: Optional[
-        Callable[[str, Optional[str], Optional[str], bool], Awaitable[str]]
-    ] = None,
-    raid_history_cb: Optional[Callable[..., Awaitable[List[dict]]]] = None,
-    raid_bot: Optional[Any] = None,
-    reload_cb: Optional[Callable[[], Awaitable[str]]] = None,
-    eventsub_webhook_handler: Optional[Any] = None,
+    legacy_stats_url: str | None = None,
+    add_cb: Callable[[str, bool], Awaitable[str]] | None = None,
+    remove_cb: Callable[[str], Awaitable[str]] | None = None,
+    list_cb: Callable[[], Awaitable[list[dict]]] | None = None,
+    stats_cb: Callable[..., Awaitable[dict]] | None = None,
+    verify_cb: Callable[[str, str], Awaitable[str]] | None = None,
+    archive_cb: Callable[[str, str], Awaitable[str]] | None = None,
+    discord_flag_cb: Callable[[str, bool], Awaitable[str]] | None = None,
+    discord_profile_cb: Callable[[str, str | None, str | None, bool], Awaitable[str]] | None = None,
+    raid_history_cb: Callable[..., Awaitable[list[dict]]] | None = None,
+    raid_bot: Any | None = None,
+    reload_cb: Callable[[], Awaitable[str]] | None = None,
+    eventsub_webhook_handler: Any | None = None,
 ) -> web.Application:
     app = web.Application(middlewares=[_security_headers_middleware])
     DashboardV2Server(

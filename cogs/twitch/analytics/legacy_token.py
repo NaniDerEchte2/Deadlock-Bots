@@ -9,15 +9,11 @@ legacy_access_token Felder für Analytics-EventSubs verwendet, bis sie re-authen
 
 from __future__ import annotations
 
-from typing import Optional
-
-from ..constants import log
 from .. import storage
+from ..constants import log
 
 
-def _mask_log_identifier(
-    value: object, *, visible_prefix: int = 3, visible_suffix: int = 2
-) -> str:
+def _mask_log_identifier(value: object, *, visible_prefix: int = 3, visible_suffix: int = 2) -> str:
     text = str(value or "").strip()
     if not text:
         return "<empty>"
@@ -102,9 +98,7 @@ class LegacyTokenAnalyticsMixin:
             )
             return False
 
-    async def _resolve_broadcaster_token_with_legacy(
-        self, twitch_user_id: str
-    ) -> Optional[str]:
+    async def _resolve_broadcaster_token_with_legacy(self, twitch_user_id: str) -> str | None:
         """
         Gibt den Token zurück, der für broadcaster-spezifische EventSub-Subscriptions
         genutzt werden soll:
@@ -112,7 +106,7 @@ class LegacyTokenAnalyticsMixin:
         - needs_reauth=1 → kein Token (Klartext-Legacy wird nicht mehr geladen)
         """
 
-        def _sanitize_token(raw_value: object) -> Optional[str]:
+        def _sanitize_token(raw_value: object) -> str | None:
             token = str(raw_value or "").strip()
             if not token:
                 return None
@@ -120,7 +114,7 @@ class LegacyTokenAnalyticsMixin:
                 token = token[6:]
             return token or None
 
-        async def _resolve_current_access_token() -> Optional[str]:
+        async def _resolve_current_access_token() -> str | None:
             raid_bot = getattr(self, "_raid_bot", None)
             auth_manager = getattr(raid_bot, "auth_manager", None) if raid_bot else None
             session = getattr(raid_bot, "session", None) if raid_bot else None
@@ -150,9 +144,7 @@ class LegacyTokenAnalyticsMixin:
             if not row:
                 return None
             needs_reauth = row["needs_reauth"] if hasattr(row, "keys") else row[0]
-            legacy_present = bool(
-                row["legacy_present"] if hasattr(row, "keys") else row[1]
-            )
+            legacy_present = bool(row["legacy_present"] if hasattr(row, "keys") else row[1])
             if needs_reauth == 0:
                 if legacy_present:
                     self._clear_legacy_snapshot_for_user(
@@ -209,7 +201,5 @@ class LegacyTokenAnalyticsMixin:
                     "SELECT COUNT(*) FROM twitch_raid_auth WHERE needs_reauth=1"
                 ).fetchone()[0]
         except Exception:
-            log.debug(
-                "LegacyToken: Konnte pending reauth count nicht lesen", exc_info=True
-            )
+            log.debug("LegacyToken: Konnte pending reauth count nicht lesen", exc_info=True)
             return 0

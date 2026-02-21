@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-from typing import Optional
 
 
 class DashboardTemplateMixin:
@@ -27,7 +26,7 @@ class DashboardTemplateMixin:
         active: str,
         msg: str = "",
         err: str = "",
-        nav: Optional[str] = None,
+        nav: str | None = None,
     ) -> str:
         flash = ""
         if msg:

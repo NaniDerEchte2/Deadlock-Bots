@@ -8,7 +8,6 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Dict
 
 log = logging.getLogger("TwitchStreams.VideoProcessor")
 
@@ -25,7 +24,7 @@ class VideoProcessor:
         self.ffmpeg = ffmpeg_path
         self.ffprobe = ffprobe_path
 
-    async def get_video_info(self, video_path: str) -> Dict:
+    async def get_video_info(self, video_path: str) -> dict:
         """
         Get video metadata (duration, resolution, aspect ratio).
 

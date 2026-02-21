@@ -42,9 +42,7 @@ def _build_add_column_statement(table_ident: str, name_ident: str, spec: str) ->
     return "".join(["ALTER TABLE ", table_ident, " ADD COLUMN ", name_ident, " ", spec])
 
 
-def _add_column_if_missing(
-    conn: sqlite3.Connection, table: str, name: str, spec: str
-) -> None:
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, name: str, spec: str) -> None:
     table_ident = _quote_identifier(table)
     name_ident = _quote_identifier(name)
     if not _COLUMN_SPEC_RE.match(spec):
@@ -171,9 +169,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     # Neue/zusätzliche Spalten für neuere Cog-Versionen:
     _add_column_if_missing(conn, "twitch_live_state", "last_seen_at", "TEXT")
     _add_column_if_missing(conn, "twitch_live_state", "last_game", "TEXT")
-    _add_column_if_missing(
-        conn, "twitch_live_state", "last_viewer_count", "INTEGER DEFAULT 0"
-    )
+    _add_column_if_missing(conn, "twitch_live_state", "last_viewer_count", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_live_state", "last_tracking_token", "TEXT")
     _add_column_if_missing(conn, "twitch_live_state", "active_session_id", "INTEGER")
     _add_column_if_missing(
@@ -202,15 +198,11 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    _add_column_if_missing(
-        conn, "twitch_stats_tracked", "is_partner", "INTEGER DEFAULT 0"
-    )
+    _add_column_if_missing(conn, "twitch_stats_tracked", "is_partner", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_stats_tracked", "game_name", "TEXT")
     _add_column_if_missing(conn, "twitch_stats_tracked", "stream_title", "TEXT")
     _add_column_if_missing(conn, "twitch_stats_tracked", "tags", "TEXT")
-    _add_column_if_missing(
-        conn, "twitch_stats_category", "is_partner", "INTEGER DEFAULT 0"
-    )
+    _add_column_if_missing(conn, "twitch_stats_category", "is_partner", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_stats_category", "game_name", "TEXT")
     _add_column_if_missing(conn, "twitch_stats_category", "stream_title", "TEXT")
     _add_column_if_missing(conn, "twitch_stats_category", "tags", "TEXT")
@@ -290,9 +282,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "twitch_stream_sessions", "stream_title", "TEXT")
     _add_column_if_missing(conn, "twitch_stream_sessions", "notification_text", "TEXT")
     _add_column_if_missing(conn, "twitch_stream_sessions", "language", "TEXT")
-    _add_column_if_missing(
-        conn, "twitch_stream_sessions", "is_mature", "INTEGER DEFAULT 0"
-    )
+    _add_column_if_missing(conn, "twitch_stream_sessions", "is_mature", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_stream_sessions", "tags", "TEXT")
     _add_column_if_missing(
         conn, "twitch_stream_sessions", "had_deadlock_in_session", "INTEGER DEFAULT 0"
@@ -417,9 +407,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "twitch_raid_auth", "legacy_refresh_token", "TEXT")
     _add_column_if_missing(conn, "twitch_raid_auth", "legacy_scopes", "TEXT")
     _add_column_if_missing(conn, "twitch_raid_auth", "legacy_saved_at", "TEXT")
-    _add_column_if_missing(
-        conn, "twitch_raid_auth", "needs_reauth", "INTEGER DEFAULT 0"
-    )
+    _add_column_if_missing(conn, "twitch_raid_auth", "needs_reauth", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "twitch_raid_auth", "reauth_notified_at", "TEXT")
     # Encrypted token storage (Phase 0: Encryption Foundation)
     _add_column_if_missing(conn, "twitch_raid_auth", "access_token_enc", "BLOB")
@@ -721,9 +709,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    _add_column_if_missing(
-        conn, "twitch_hype_train_events", "event_phase", "TEXT DEFAULT 'end'"
-    )
+    _add_column_if_missing(conn, "twitch_hype_train_events", "event_phase", "TEXT DEFAULT 'end'")
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_twitch_hype_train_events_session
@@ -1188,12 +1174,8 @@ def delete_streamer(conn: sqlite3.Connection, login: str) -> int:
         (login,),
     )
     # Child tables (reference twitch_streamers.twitch_login)
-    conn.execute(
-        "DELETE FROM twitch_clips_social_media WHERE streamer_login = ?", (login,)
-    )
-    conn.execute(
-        "DELETE FROM clip_templates_streamer WHERE streamer_login = ?", (login,)
-    )
+    conn.execute("DELETE FROM twitch_clips_social_media WHERE streamer_login = ?", (login,))
+    conn.execute("DELETE FROM clip_templates_streamer WHERE streamer_login = ?", (login,))
     conn.execute("DELETE FROM clip_last_hashtags WHERE streamer_login = ?", (login,))
     conn.execute("DELETE FROM clip_fetch_history WHERE streamer_login = ?", (login,))
     # The streamer itself

@@ -5,9 +5,9 @@ Verwendet TikTok Content Posting API (Business Account erforderlich).
 Docs: https://developers.tiktok.com/doc/content-posting-api-overview/
 """
 
-import aiohttp
 from pathlib import Path
-from typing import Dict, List, Optional
+
+import aiohttp
 
 from .base import PlatformUploader
 
@@ -24,10 +24,10 @@ class TikTokUploader(PlatformUploader):
         super().__init__("tiktok")
         self.client_key = client_key
         self.client_secret = client_secret
-        self.access_token: Optional[str] = None
+        self.access_token: str | None = None
         self.api_base = "https://open.tiktokapis.com/v2"
 
-    async def authenticate(self, credentials: Dict) -> bool:
+    async def authenticate(self, credentials: dict) -> bool:
         """
         OAuth 2.0 authentication.
 
@@ -84,7 +84,7 @@ class TikTokUploader(PlatformUploader):
         video_path: str,
         title: str,
         description: str,
-        hashtags: List[str],
+        hashtags: list[str],
         **kwargs,
     ) -> str:
         """
@@ -225,7 +225,7 @@ class TikTokUploader(PlatformUploader):
 
                 return publish_id
 
-    async def get_video_status(self, video_id: str) -> Dict:
+    async def get_video_status(self, video_id: str) -> dict:
         """
         Check video processing status.
 
@@ -286,7 +286,5 @@ class TikTokUploader(PlatformUploader):
 
         # Note: Duration and aspect ratio checks require ffprobe
         # These are performed by VideoProcessor before upload
-        self.log.info(
-            "TikTok video validation passed: %s (%.1f MB)", video_path, file_size_mb
-        )
+        self.log.info("TikTok video validation passed: %s (%.1f MB)", video_path, file_size_mb)
         return True

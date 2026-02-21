@@ -1,15 +1,14 @@
 # cogs/welcome_dm/step_rules.py
 import asyncio
+from contextlib import suppress  # ⬅️ neu
 from datetime import datetime
-from typing import Optional
 
 import discord
-from contextlib import suppress  # ⬅️ neu
 
 from .base import (
-    StepView,
     ONBOARD_COMPLETE_ROLE_ID,
     THANK_YOU_DELETE_AFTER_SECONDS,
+    StepView,
     logger,
 )
 
@@ -20,8 +19,8 @@ class RulesView(StepView):
     def __init__(
         self,
         *,
-        allowed_user_id: Optional[int] = None,
-        created_at: Optional[datetime] = None,
+        allowed_user_id: int | None = None,
+        created_at: datetime | None = None,
     ):
         super().__init__(allowed_user_id=allowed_user_id, created_at=created_at)
 
@@ -37,9 +36,7 @@ class RulesView(StepView):
         style=discord.ButtonStyle.success,
         custom_id="wdm:q4:confirm",
     )
-    async def confirm(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._enforce_min_wait(interaction):
             return
 
@@ -67,8 +64,6 @@ class RulesView(StepView):
             except (discord.Forbidden, discord.HTTPException) as e:
                 logger.debug("Could not send thank-you message: %s", e)
             else:
-                asyncio.create_task(
-                    self._delete_later(thank_msg, THANK_YOU_DELETE_AFTER_SECONDS)
-                )
+                asyncio.create_task(self._delete_later(thank_msg, THANK_YOU_DELETE_AFTER_SECONDS))
 
         await self._finish(interaction)

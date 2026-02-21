@@ -5,12 +5,12 @@ Exportiert alle Platform-Uploader und Utilities.
 """
 
 from .base import PlatformUploader
-from .video_processor import VideoProcessor
+from .instagram import InstagramUploader
 
 # Platform-specific uploaders
 from .tiktok import TikTokUploader
+from .video_processor import VideoProcessor
 from .youtube import YouTubeUploader
-from .instagram import InstagramUploader
 
 __all__ = [
     "PlatformUploader",

@@ -8,7 +8,6 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List
 
 
 class PlatformUploader(ABC):
@@ -23,7 +22,7 @@ class PlatformUploader(ABC):
         self.log = logging.getLogger(f"Uploader.{platform_name}")
 
     @abstractmethod
-    async def authenticate(self, credentials: Dict) -> bool:
+    async def authenticate(self, credentials: dict) -> bool:
         """
         Authenticate with platform OAuth.
 
@@ -41,7 +40,7 @@ class PlatformUploader(ABC):
         video_path: str,
         title: str,
         description: str,
-        hashtags: List[str],
+        hashtags: list[str],
         **kwargs,
     ) -> str:
         """
@@ -63,7 +62,7 @@ class PlatformUploader(ABC):
         pass
 
     @abstractmethod
-    async def get_video_status(self, video_id: str) -> Dict:
+    async def get_video_status(self, video_id: str) -> dict:
         """
         Check upload/processing status.
 
@@ -91,7 +90,7 @@ class PlatformUploader(ABC):
         """
         pass
 
-    def format_hashtags(self, hashtags: List[str]) -> str:
+    def format_hashtags(self, hashtags: list[str]) -> str:
         """
         Format hashtags for platform.
 

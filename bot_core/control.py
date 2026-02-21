@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import os
-import datetime as _dt
-import pytz
-import discord
-from discord.ext import commands
 from typing import TYPE_CHECKING
+
+import discord
+import pytz
+from discord.ext import commands
 
 if TYPE_CHECKING:
     from bot_core.lifecycle import BotLifecycle
@@ -161,9 +162,7 @@ class MasterControlCog(commands.Cog):
             final = discord.Embed(
                 title="🔄 Auto-Reload Abgeschlossen",
                 description=f"**{summary['loaded']}/{summary['discovered']}** Cogs erfolgreich geladen",
-                color=0x00FF00
-                if summary["loaded"] == summary["discovered"]
-                else 0xFFAA00,
+                color=0x00FF00 if summary["loaded"] == summary["discovered"] else 0xFFAA00,
             )
             if summary["new_cogs"] > 0:
                 final.add_field(
@@ -249,9 +248,7 @@ class MasterControlCog(commands.Cog):
             )
             embed.color = 0x00FF00
         else:
-            embed.add_field(
-                name="ℹ️ Status", value="Keine neuen Cogs gefunden", inline=True
-            )
+            embed.add_field(name="ℹ️ Status", value="Keine neuen Cogs gefunden", inline=True)
 
         embed.add_field(
             name="📋 Alle entdeckten Cogs",
@@ -281,16 +278,10 @@ class MasterControlCog(commands.Cog):
 
         embed = discord.Embed(
             title=f"🧹 Unload Resultate ({pattern})",
-            color=0x00FF00
-            if ok and not timeouts and not errs
-            else 0xFFAA00
-            if ok
-            else 0xFF0000,
+            color=0x00FF00 if ok and not timeouts and not errs else 0xFFAA00 if ok else 0xFF0000,
         )
         if ok:
-            embed.add_field(
-                name="✅ Entladen", value="\n".join(f"• {x}" for x in ok), inline=False
-            )
+            embed.add_field(name="✅ Entladen", value="\n".join(f"• {x}" for x in ok), inline=False)
         if timeouts:
             embed.add_field(
                 name="⏱️ Timeouts",
@@ -329,16 +320,10 @@ class MasterControlCog(commands.Cog):
 
         embed = discord.Embed(
             title=f"🌲 Unload-Tree Resultate ({pref})",
-            color=0x00FF00
-            if ok and not timeouts and not errs
-            else 0xFFAA00
-            if ok
-            else 0xFF0000,
+            color=0x00FF00 if ok and not timeouts and not errs else 0xFFAA00 if ok else 0xFF0000,
         )
         if ok:
-            embed.add_field(
-                name="✅ Entladen", value="\n".join(f"• {x}" for x in ok), inline=False
-            )
+            embed.add_field(name="✅ Entladen", value="\n".join(f"• {x}" for x in ok), inline=False)
         if timeouts:
             embed.add_field(
                 name="⏱️ Timeouts",
@@ -372,12 +357,12 @@ class MasterControlCog(commands.Cog):
 
         scheduled = await lifecycle.request_restart(reason=f"command:{ctx.author.id}")
         if scheduled:
-            embed.description = "Restart angefordert. Der Bot trennt gleich die Verbindung und startet neu."
+            embed.description = (
+                "Restart angefordert. Der Bot trennt gleich die Verbindung und startet neu."
+            )
             embed.color = 0x00FF00
         else:
-            embed.description = (
-                "Restart konnte nicht geplant werden (evtl. läuft bereits einer)."
-            )
+            embed.description = "Restart konnte nicht geplant werden (evtl. läuft bereits einer)."
             embed.color = 0xFF0000
         await msg.edit(embed=embed)
 

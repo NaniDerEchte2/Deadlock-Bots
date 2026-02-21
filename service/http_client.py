@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
-from typing import Iterable, List, Optional, Sequence
+from collections.abc import Iterable, Sequence
 
 import aiohttp
 from aiohttp import resolver as aiohttp_resolver
@@ -23,7 +23,7 @@ _log = logging.getLogger("http_client")
 _DEFAULT_DNS_SERVERS: Sequence[str] = ("1.1.1.1", "8.8.8.8", "9.9.9.9")
 
 
-def _parse_env_dns() -> List[str]:
+def _parse_env_dns() -> list[str]:
     """Parse comma/semicolon separated DNS servers from env, if provided."""
     raw = os.getenv("HTTP_DNS_SERVERS") or os.getenv("PREFERRED_DNS") or ""
     if not raw:
@@ -34,7 +34,7 @@ def _parse_env_dns() -> List[str]:
 
 def build_resilient_connector(
     *,
-    dns_servers: Optional[Iterable[str]] = None,
+    dns_servers: Iterable[str] | None = None,
     ttl_dns_cache: int = 300,
     family: socket.AddressFamily = socket.AF_INET,
     limit: int = 500,
@@ -47,9 +47,7 @@ def build_resilient_connector(
     - Caches DNS results for ``ttl_dns_cache`` seconds to avoid repeated lookups
     - Prefers IPv4 (common cause of timeouts on some consumer networks)
     """
-    nameservers = (
-        list(dns_servers or []) or _parse_env_dns() or list(_DEFAULT_DNS_SERVERS)
-    )
+    nameservers = list(dns_servers or []) or _parse_env_dns() or list(_DEFAULT_DNS_SERVERS)
     resolver = None
 
     # Prefer async resolver with explicit nameservers; gracefully fall back.

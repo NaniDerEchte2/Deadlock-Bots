@@ -6,8 +6,8 @@ Provides comprehensive data aggregation and insights generation
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from .. import storage
 
@@ -19,8 +19,8 @@ class AnalyticsBackendExtended:
 
     @staticmethod
     async def get_comprehensive_analytics(
-        streamer_login: Optional[str] = None, days: int = 30
-    ) -> Dict[str, Any]:
+        streamer_login: str | None = None, days: int = 30
+    ) -> dict[str, Any]:
         """
         Get comprehensive analytics including metrics, timelines, insights, and sessions.
 
@@ -28,9 +28,7 @@ class AnalyticsBackendExtended:
         """
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
                 # Check for data
                 if streamer_login:
@@ -98,15 +96,13 @@ class AnalyticsBackendExtended:
                     "days": days,
                 }
         except Exception:
-            log.exception(
-                "Failed to get comprehensive analytics for %s", streamer_login
-            )
+            log.exception("Failed to get comprehensive analytics for %s", streamer_login)
             return {"error": "Internal error", "empty": True}
 
     @staticmethod
     def _calculate_comprehensive_metrics(
-        conn, since_date: str, streamer_login: Optional[str]
-    ) -> Dict[str, Any]:
+        conn, since_date: str, streamer_login: str | None
+    ) -> dict[str, Any]:
         """Calculate all metrics needed for the dashboard."""
         normalized_login = streamer_login.lower().strip() if streamer_login else None
 
@@ -234,17 +230,14 @@ class AnalyticsBackendExtended:
         avg_avg_viewers = float(row[12]) if row[12] else 0.0
 
         # Calculate derived metrics
-        followers_per_session = (
-            total_followers / session_count if session_count > 0 else 0.0
-        )
+        followers_per_session = total_followers / session_count if session_count > 0 else 0.0
         followers_per_hour = (
             total_followers / total_duration_hours if total_duration_hours > 0 else 0.0
         )
 
         # Calculate trends (compare to previous period)
         prev_since = (
-            datetime.fromisoformat(since_date.replace("Z", "+00:00"))
-            - timedelta(days=30)
+            datetime.fromisoformat(since_date.replace("Z", "+00:00")) - timedelta(days=30)
         ).isoformat()
         if has_follower_delta:
             if normalized_login:
@@ -313,20 +306,14 @@ class AnalyticsBackendExtended:
         prev_chat = float(prev_row[3]) if prev_row and prev_row[3] else 0.0
 
         # Calculate percentage changes
-        retention_trend = (
-            ((ret_5m - prev_ret_5m) / prev_ret_5m * 100) if prev_ret_5m > 0 else 0.0
-        )
-        peak_trend = (
-            ((avg_peak - prev_peak) / prev_peak * 100) if prev_peak > 0 else 0.0
-        )
+        retention_trend = ((ret_5m - prev_ret_5m) / prev_ret_5m * 100) if prev_ret_5m > 0 else 0.0
+        peak_trend = ((avg_peak - prev_peak) / prev_peak * 100) if prev_peak > 0 else 0.0
         followers_trend = (
             ((total_followers - prev_followers) / prev_followers * 100)
             if prev_followers > 0
             else 0.0
         )
-        chat_trend = (
-            ((chat_per_100 - prev_chat) / prev_chat * 100) if prev_chat > 0 else 0.0
-        )
+        chat_trend = ((chat_per_100 - prev_chat) / prev_chat * 100) if prev_chat > 0 else 0.0
 
         return {
             # Retention
@@ -356,8 +343,8 @@ class AnalyticsBackendExtended:
 
     @staticmethod
     def _get_retention_timeline(
-        conn, since_date: str, streamer_login: Optional[str]
-    ) -> List[Dict[str, Any]]:
+        conn, since_date: str, streamer_login: str | None
+    ) -> list[dict[str, Any]]:
         """Get daily retention metrics."""
         if streamer_login:
             rows = conn.execute(
@@ -410,8 +397,8 @@ class AnalyticsBackendExtended:
 
     @staticmethod
     def _get_discovery_timeline(
-        conn, since_date: str, streamer_login: Optional[str]
-    ) -> List[Dict[str, Any]]:
+        conn, since_date: str, streamer_login: str | None
+    ) -> list[dict[str, Any]]:
         """Get daily discovery/growth metrics."""
         # BUGFIX: Handle missing follower_delta column
         has_follower_delta = False
@@ -505,8 +492,8 @@ class AnalyticsBackendExtended:
 
     @staticmethod
     def _get_chat_timeline(
-        conn, since_date: str, streamer_login: Optional[str]
-    ) -> List[Dict[str, Any]]:
+        conn, since_date: str, streamer_login: str | None
+    ) -> list[dict[str, Any]]:
         """Get daily chat health metrics."""
         if streamer_login:
             rows = conn.execute(
@@ -559,8 +546,8 @@ class AnalyticsBackendExtended:
 
     @staticmethod
     def _get_session_list(
-        conn, since_date: str, streamer_login: Optional[str], limit: int = 50
-    ) -> List[Dict[str, Any]]:
+        conn, since_date: str, streamer_login: str | None, limit: int = 50
+    ) -> list[dict[str, Any]]:
         """Get list of recent sessions with key metrics."""
         normalized_login = streamer_login.lower().strip() if streamer_login else None
         safe_limit = max(1, min(int(limit), 200))
@@ -727,11 +714,11 @@ class AnalyticsBackendExtended:
 
     @staticmethod
     def _generate_comprehensive_insights(
-        metrics: Dict[str, Any],
-        retention_timeline: List[Dict[str, Any]],
-        discovery_timeline: List[Dict[str, Any]],
-        chat_timeline: List[Dict[str, Any]],
-    ) -> List[Dict[str, str]]:
+        metrics: dict[str, Any],
+        retention_timeline: list[dict[str, Any]],
+        discovery_timeline: list[dict[str, Any]],
+        chat_timeline: list[dict[str, Any]],
+    ) -> list[dict[str, str]]:
         """Generate actionable insights based on all metrics."""
         insights = []
 
@@ -800,9 +787,7 @@ class AnalyticsBackendExtended:
             recent_ret = sum(t["retention_10m"] for t in retention_timeline[-7:]) / 7
             older_ret_list = retention_timeline[:-7]
             if older_ret_list:
-                older_ret = sum(t["retention_10m"] for t in older_ret_list) / len(
-                    older_ret_list
-                )
+                older_ret = sum(t["retention_10m"] for t in older_ret_list) / len(older_ret_list)
 
                 if recent_ret > older_ret * 1.10:
                     insights.append(
@@ -824,9 +809,7 @@ class AnalyticsBackendExtended:
         return insights
 
     @staticmethod
-    def _get_comparison_data(
-        conn, since_date: str, streamer_login: Optional[str]
-    ) -> Dict[str, Any]:
+    def _get_comparison_data(conn, since_date: str, streamer_login: str | None) -> dict[str, Any]:
         """Get comparison data for benchmarking."""
         # Category averages
         category_query = """

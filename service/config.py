@@ -1,7 +1,7 @@
 import logging
 import os
-from typing import Optional
 from pathlib import Path
+
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -56,13 +56,13 @@ class Settings(BaseSettings):
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
     # --- Database ---
-    deadlock_db_path: Optional[Path] = Field(None, alias="DEADLOCK_DB_PATH")
-    deadlock_db_dir: Optional[Path] = Field(None, alias="DEADLOCK_DB_DIR")
+    deadlock_db_path: Path | None = Field(None, alias="DEADLOCK_DB_PATH")
+    deadlock_db_dir: Path | None = Field(None, alias="DEADLOCK_DB_DIR")
     deadlock_db_busy_timeout_ms: int = Field(15000, alias="DEADLOCK_DB_BUSY_TIMEOUT_MS")
 
     # --- Steam / Deadlock Integration ---
-    steam_api_key: Optional[SecretStr] = Field(None, alias="STEAM_API_KEY")
-    steam_web_api_key: Optional[SecretStr] = Field(None, alias="STEAM_WEB_API_KEY")
+    steam_api_key: SecretStr | None = Field(None, alias="STEAM_API_KEY")
+    steam_web_api_key: SecretStr | None = Field(None, alias="STEAM_WEB_API_KEY")
     public_base_url: str = Field("https://link.earlysalty.com", alias="PUBLIC_BASE_URL")
 
     # --- TempVoice IDs ---
@@ -71,9 +71,7 @@ class Settings(BaseSettings):
 
     # --- Deadlock Voice Status ---
     match_minute_offset: int = Field(3, alias="DEADLOCK_MATCH_MINUTE_OFFSET")
-    rank_vs_rename_cooldown_seconds: int = Field(
-        360, alias="RANK_VS_RENAME_COOLDOWN_SECONDS"
-    )
+    rank_vs_rename_cooldown_seconds: int = Field(360, alias="RANK_VS_RENAME_COOLDOWN_SECONDS")
 
     # --- Feature Flags & Toggles ---
     master_dashboard_enabled: bool = Field(True, alias="MASTER_DASHBOARD_ENABLED")
@@ -81,9 +79,7 @@ class Settings(BaseSettings):
     # --- External Worker Config ---
     # rename_worker_url: Optional[str] = Field(None, alias="RENAME_WORKER_URL") # Not used with DB communication
     use_db_rename_worker: bool = Field(False, alias="USE_DB_RENAME_WORKER")
-    rename_worker_bot_token: Optional[SecretStr] = Field(
-        None, alias="RENAME_WORKER_BOT_TOKEN"
-    )
+    rename_worker_bot_token: SecretStr | None = Field(None, alias="RENAME_WORKER_BOT_TOKEN")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -107,9 +103,7 @@ except Exception as e:
     settings = DummySettings()
 
 # Touch the singleton once locally so static analysis knows it is intentional.
-log.debug(
-    "Config loaded; dashboard=%s", getattr(settings, "master_dashboard_enabled", None)
-)
+log.debug("Config loaded; dashboard=%s", getattr(settings, "master_dashboard_enabled", None))
 
 
 def get_settings() -> Settings:

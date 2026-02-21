@@ -8,8 +8,8 @@ import collections
 import ipaddress
 import json
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 from aiohttp import web
@@ -19,9 +19,7 @@ from .coaching_engine import CoachingEngine
 
 log = logging.getLogger("TwitchStreams.AnalyticsV2")
 DASHBOARD_V2_LOGIN_URL = "/twitch/auth/login?next=%2Ftwitch%2Fdashboard-v2"
-DASHBOARD_V2_DISCORD_LOGIN_URL = (
-    "/twitch/auth/discord/login?next=%2Ftwitch%2Fdashboard-v2"
-)
+DASHBOARD_V2_DISCORD_LOGIN_URL = "/twitch/auth/discord/login?next=%2Ftwitch%2Fdashboard-v2"
 
 
 def _is_loopback_host(raw_value: str) -> bool:
@@ -182,15 +180,13 @@ class AnalyticsV2Mixin:
 
         return "Other"
 
-    def _get_dashboard_session(self, request: web.Request) -> Optional[Dict[str, Any]]:
+    def _get_dashboard_session(self, request: web.Request) -> dict[str, Any] | None:
         admin_getter = getattr(self, "_get_discord_admin_session", None)
         if callable(admin_getter):
             try:
                 admin_session = admin_getter(request)
             except Exception:
-                log.debug(
-                    "Could not resolve Discord admin dashboard session", exc_info=True
-                )
+                log.debug("Could not resolve Discord admin dashboard session", exc_info=True)
                 admin_session = None
             if isinstance(admin_session, dict):
                 session_copy = dict(admin_session)
@@ -208,7 +204,7 @@ class AnalyticsV2Mixin:
         return session if isinstance(session, dict) else None
 
     @staticmethod
-    def _normalize_dashboard_next_path(raw_path: Optional[str]) -> str:
+    def _normalize_dashboard_next_path(raw_path: str | None) -> str:
         fallback = "/twitch/dashboard-v2"
         candidate = (raw_path or "").strip()
         if not candidate:
@@ -224,7 +220,7 @@ class AnalyticsV2Mixin:
         return candidate
 
     @staticmethod
-    def _safe_internal_login_redirect(candidate: Optional[str]) -> str:
+    def _safe_internal_login_redirect(candidate: str | None) -> str:
         fallback = DASHBOARD_V2_LOGIN_URL
         value = (candidate or "").strip()
         if not value:
@@ -247,9 +243,7 @@ class AnalyticsV2Mixin:
                 if url:
                     return self._safe_internal_login_redirect(str(url))
             except Exception:
-                log.debug(
-                    "Could not build dashboard login URL via host class", exc_info=True
-                )
+                log.debug("Could not build dashboard login URL via host class", exc_info=True)
         next_path = self._normalize_dashboard_next_path(
             request.rel_url.path_qs if request.rel_url else "/twitch/dashboard-v2"
         )
@@ -304,13 +298,9 @@ class AnalyticsV2Mixin:
         if not self._check_v2_auth(request):
             login_url = self._get_dashboard_login_url(request)
             if request.path.startswith("/twitch/api/"):
-                should_use_discord = getattr(
-                    self, "_should_use_discord_admin_login", None
-                )
+                should_use_discord = getattr(self, "_should_use_discord_admin_login", None)
                 if callable(should_use_discord) and bool(should_use_discord(request)):
-                    login_url = (
-                        "/twitch/auth/discord/login?next=%2Ftwitch%2Fdashboard-v2"
-                    )
+                    login_url = "/twitch/auth/discord/login?next=%2Ftwitch%2Fdashboard-v2"
                 else:
                     login_url = "/twitch/auth/login?next=%2Ftwitch%2Fdashboard-v2"
             payload = {
@@ -360,9 +350,7 @@ class AnalyticsV2Mixin:
             return "admin"
 
         # Partner token
-        if partner_token and (
-            partner_header == partner_token or partner_query == partner_token
-        ):
+        if partner_token and (partner_header == partner_token or partner_query == partner_token):
             return "partner"
 
         return "none"
@@ -378,9 +366,7 @@ class AnalyticsV2Mixin:
         router.add_get("/twitch/api/v2/viewer-overlap", self._api_v2_viewer_overlap)
         router.add_get("/twitch/api/v2/tag-analysis", self._api_v2_tag_analysis)
         router.add_get("/twitch/api/v2/rankings", self._api_v2_rankings)
-        router.add_get(
-            "/twitch/api/v2/category-comparison", self._api_v2_category_comparison
-        )
+        router.add_get("/twitch/api/v2/category-comparison", self._api_v2_category_comparison)
         router.add_get("/twitch/api/v2/streamers", self._api_v2_streamers)
         router.add_get("/twitch/api/v2/session/{id}", self._api_v2_session_detail)
         router.add_get("/twitch/api/v2/auth-status", self._api_v2_auth_status)
@@ -390,23 +376,13 @@ class AnalyticsV2Mixin:
             self._api_v2_watch_time_distribution,
         )
         router.add_get("/twitch/api/v2/follower-funnel", self._api_v2_follower_funnel)
-        router.add_get(
-            "/twitch/api/v2/tag-analysis-extended", self._api_v2_tag_analysis_extended
-        )
-        router.add_get(
-            "/twitch/api/v2/title-performance", self._api_v2_title_performance
-        )
-        router.add_get(
-            "/twitch/api/v2/audience-insights", self._api_v2_audience_insights
-        )
-        router.add_get(
-            "/twitch/api/v2/audience-demographics", self._api_v2_audience_demographics
-        )
+        router.add_get("/twitch/api/v2/tag-analysis-extended", self._api_v2_tag_analysis_extended)
+        router.add_get("/twitch/api/v2/title-performance", self._api_v2_title_performance)
+        router.add_get("/twitch/api/v2/audience-insights", self._api_v2_audience_insights)
+        router.add_get("/twitch/api/v2/audience-demographics", self._api_v2_audience_demographics)
         # Stats-Data Endpoints (from twitch_stats_tracked / twitch_stats_category)
         router.add_get("/twitch/api/v2/viewer-timeline", self._api_v2_viewer_timeline)
-        router.add_get(
-            "/twitch/api/v2/category-leaderboard", self._api_v2_category_leaderboard
-        )
+        router.add_get("/twitch/api/v2/category-leaderboard", self._api_v2_category_leaderboard)
         router.add_get("/twitch/api/v2/coaching", self._api_v2_coaching)
         router.add_get("/twitch/api/v2/monetization", self._api_v2_monetization)
         router.add_get("/twitch/api/v2/category-timings", self._api_v2_category_timings)
@@ -416,39 +392,37 @@ class AnalyticsV2Mixin:
         )
         # Serve the dashboard
         router.add_get("/twitch/dashboard-v2", self._serve_dashboard_v2)
-        router.add_get(
-            "/twitch/dashboard-v2/{path:.*}", self._serve_dashboard_v2_assets
-        )
+        router.add_get("/twitch/dashboard-v2/{path:.*}", self._serve_dashboard_v2_assets)
         # Public demo (no auth required)
         self._register_demo_routes(router)
 
     def _register_demo_routes(self, router: web.UrlDispatcher) -> None:
         """Register public demo endpoints – no authentication required."""
         from .demo_data import (
+            get_audience_demographics,
+            get_audience_insights,
             get_auth_status,
-            get_streamers,
-            get_overview,
-            get_monthly_stats,
-            get_weekday_stats,
-            get_hourly_heatmap,
             get_calendar_heatmap,
+            get_category_activity_series,
+            get_category_comparison,
+            get_category_leaderboard,
+            get_category_timings,
             get_chat_analytics,
-            get_viewer_overlap,
+            get_coaching,
+            get_follower_funnel,
+            get_hourly_heatmap,
+            get_monetization,
+            get_monthly_stats,
+            get_overview,
+            get_rankings,
+            get_streamers,
             get_tag_analysis,
             get_tag_analysis_extended,
             get_title_performance,
-            get_rankings,
-            get_category_comparison,
-            get_watch_time_distribution,
-            get_follower_funnel,
-            get_audience_insights,
-            get_audience_demographics,
+            get_viewer_overlap,
             get_viewer_timeline,
-            get_category_leaderboard,
-            get_coaching,
-            get_monetization,
-            get_category_timings,
-            get_category_activity_series,
+            get_watch_time_distribution,
+            get_weekday_stats,
         )
 
         def _j(data):
@@ -489,9 +463,7 @@ class AnalyticsV2Mixin:
         router.add_get(f"{base}/title-performance", _j(get_title_performance))
         router.add_get(f"{base}/rankings", _metric_j(get_rankings))
         router.add_get(f"{base}/category-comparison", _j(get_category_comparison))
-        router.add_get(
-            f"{base}/watch-time-distribution", _j(get_watch_time_distribution)
-        )
+        router.add_get(f"{base}/watch-time-distribution", _j(get_watch_time_distribution))
         router.add_get(f"{base}/follower-funnel", _j(get_follower_funnel))
         router.add_get(f"{base}/audience-insights", _j(get_audience_insights))
         router.add_get(f"{base}/audience-demographics", _j(get_audience_demographics))
@@ -500,9 +472,7 @@ class AnalyticsV2Mixin:
         router.add_get(f"{base}/coaching", _j(get_coaching))
         router.add_get(f"{base}/monetization", _j(get_monetization))
         router.add_get(f"{base}/category-timings", _j(get_category_timings))
-        router.add_get(
-            f"{base}/category-activity-series", _j(get_category_activity_series)
-        )
+        router.add_get(f"{base}/category-activity-series", _j(get_category_activity_series))
         # Demo dashboard HTML
         router.add_get("/twitch/demo/", self._serve_demo_dashboard)
         router.add_get("/twitch/demo", self._serve_demo_dashboard)
@@ -511,9 +481,7 @@ class AnalyticsV2Mixin:
         """Serve the demo dashboard HTML without authentication."""
         import pathlib
 
-        dist_path = (
-            pathlib.Path(__file__).parent / "dashboard_v2" / "dist" / "index.html"
-        )
+        dist_path = pathlib.Path(__file__).parent / "dashboard_v2" / "dist" / "index.html"
         if not dist_path.exists():
             return web.Response(
                 text="Dashboard not built. Run npm run build in dashboard_v2/",
@@ -553,9 +521,7 @@ class AnalyticsV2Mixin:
             raise web.HTTPFound(login_url)
         import pathlib
 
-        dist_path = (
-            pathlib.Path(__file__).parent / "dashboard_v2" / "dist" / "index.html"
-        )
+        dist_path = pathlib.Path(__file__).parent / "dashboard_v2" / "dist" / "index.html"
         if dist_path.exists():
             return web.FileResponse(dist_path)
         return web.Response(
@@ -570,9 +536,7 @@ class AnalyticsV2Mixin:
         if not raw_path:
             return web.Response(text="Not found", status=404)
 
-        dist_root = (
-            pathlib.Path(__file__).resolve().parent / "dashboard_v2" / "dist"
-        ).resolve()
+        dist_root = (pathlib.Path(__file__).resolve().parent / "dashboard_v2" / "dist").resolve()
         candidate: pathlib.Path = dist_root
 
         # Resolve each path segment against actual directory entries to avoid
@@ -615,15 +579,11 @@ class AnalyticsV2Mixin:
             log.exception("Error in overview API")
             return web.json_response({"error": str(exc)}, status=500)
 
-    async def _get_overview_data(
-        self, streamer: Optional[str], days: int
-    ) -> Dict[str, Any]:
+    async def _get_overview_data(self, streamer: str | None, days: int) -> dict[str, Any]:
         """Get comprehensive overview data for the dashboard."""
         with storage.get_conn() as conn:
-            since_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-            prev_since_date = (
-                datetime.now(timezone.utc) - timedelta(days=days * 2)
-            ).isoformat()
+            since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+            prev_since_date = (datetime.now(UTC) - timedelta(days=days * 2)).isoformat()
 
             streamer_login = streamer.lower() if streamer else None
 
@@ -677,9 +637,7 @@ class AnalyticsV2Mixin:
 
             prev_avg = float(prev_metrics[0]) if prev_metrics and prev_metrics[0] else 0
             prev_fol = int(prev_metrics[1]) if prev_metrics and prev_metrics[1] else 0
-            prev_ret = (
-                float(prev_metrics[2]) * 100 if prev_metrics and prev_metrics[2] else 0
-            )
+            prev_ret = float(prev_metrics[2]) * 100 if prev_metrics and prev_metrics[2] else 0
 
             avg_viewers_trend = calc_trend(metrics.get("avg_avg_viewers", 0), prev_avg)
             # Follower trend: use abs(prev) to avoid inversion with negative base
@@ -700,9 +658,7 @@ class AnalyticsV2Mixin:
                         )
                         category_total = cat_data["total"]
                         # Rank = total - position (1 = best)
-                        category_rank = category_total - int(
-                            category_percentile * category_total
-                        )
+                        category_rank = category_total - int(category_percentile * category_total)
 
             # Calculate scores
             scores = self._calculate_health_scores(metrics, category_percentile)
@@ -717,7 +673,7 @@ class AnalyticsV2Mixin:
             # Correlations
             correlations = self._calculate_correlations(sessions)
 
-            result: Dict[str, Any] = {
+            result: dict[str, Any] = {
                 "streamer": streamer,
                 "days": days,
                 "scores": scores,
@@ -729,9 +685,7 @@ class AnalyticsV2Mixin:
                     "followersDelta": metrics.get("total_followers", 0),
                     "followersGained": metrics.get("gained_followers", 0),
                     "followersPerHour": metrics.get("followers_per_hour", 0),
-                    "followersGainedPerHour": metrics.get(
-                        "gained_followers_per_hour", 0
-                    ),
+                    "followersGainedPerHour": metrics.get("gained_followers_per_hour", 0),
                     "retention10m": metrics.get("avg_retention_10m", 0),
                     "retentionReliable": metrics.get("retention_sample_count", 0) >= 3,
                     "uniqueChatters": metrics.get("total_unique_chatters", 0),
@@ -753,8 +707,8 @@ class AnalyticsV2Mixin:
             return result
 
     def _get_sessions(
-        self, conn, since_date: str, streamer: Optional[str], limit: int = 50
-    ) -> List[Dict]:
+        self, conn, since_date: str, streamer: str | None, limit: int = 50
+    ) -> list[dict]:
         """Get list of sessions with metrics."""
         streamer_login = streamer.lower() if streamer else None
         rows = conn.execute(
@@ -777,14 +731,12 @@ class AnalyticsV2Mixin:
             [since_date, streamer_login, streamer_login, limit],
         ).fetchall()
 
-        sessions: List[Dict[str, Any]] = []
+        sessions: list[dict[str, Any]] = []
         for r in rows:
             peak_viewers = int(r[5]) if r[5] else 0
             avg_viewers = float(r[7]) if r[7] else 0.0
             retention_cap = (
-                min(1.0, max(0.0, (avg_viewers / peak_viewers)))
-                if peak_viewers > 0
-                else 1.0
+                min(1.0, max(0.0, (avg_viewers / peak_viewers))) if peak_viewers > 0 else 1.0
             )
 
             raw_ret_5m = float(r[8]) if r[8] else 0.0
@@ -820,8 +772,8 @@ class AnalyticsV2Mixin:
         return sessions
 
     def _calculate_overview_metrics(
-        self, conn, since_date: str, streamer: Optional[str]
-    ) -> Dict[str, Any]:
+        self, conn, since_date: str, streamer: str | None
+    ) -> dict[str, Any]:
         """Calculate all overview metrics."""
         streamer_login = streamer.lower() if streamer else None
 
@@ -895,9 +847,7 @@ class AnalyticsV2Mixin:
                 [streamer.lower()],
             ).fetchone()
             unique_chatters = (
-                int(true_unique[0])
-                if true_unique and true_unique[0]
-                else unique_chatters_sum
+                int(true_unique[0]) if true_unique and true_unique[0] else unique_chatters_sum
             )
         else:
             unique_chatters = unique_chatters_sum
@@ -939,15 +889,11 @@ class AnalyticsV2Mixin:
             [since_date, streamer_login, streamer_login],
         ).fetchone()
         active_chatters = (
-            int(active_chatters_row[0])
-            if active_chatters_row and active_chatters_row[0]
-            else 0
+            int(active_chatters_row[0]) if active_chatters_row and active_chatters_row[0] else 0
         )
 
         avg_viewers = float(row[0]) if row[0] else 0
-        engagement_rate = (
-            (active_chatters / avg_viewers * 100) if avg_viewers > 0 else 0
-        )
+        engagement_rate = (active_chatters / avg_viewers * 100) if avg_viewers > 0 else 0
 
         return {
             "avg_avg_viewers": avg_viewers,
@@ -956,9 +902,7 @@ class AnalyticsV2Mixin:
             "total_airtime_hours": total_airtime,
             "total_followers": total_followers,
             "gained_followers": gained_followers,
-            "followers_per_hour": total_followers / total_airtime
-            if total_airtime > 0
-            else 0,
+            "followers_per_hour": total_followers / total_airtime if total_airtime > 0 else 0,
             "gained_followers_per_hour": gained_followers / total_airtime
             if total_airtime > 0
             else 0,
@@ -975,7 +919,7 @@ class AnalyticsV2Mixin:
             "follower_valid_count": follower_valid_count,
         }
 
-    def _get_category_percentiles(self, conn, since_date: str) -> Dict[str, Any]:
+    def _get_category_percentiles(self, conn, since_date: str) -> dict[str, Any]:
         """Get per-streamer AVG viewer_count from stats_category and compute percentiles."""
         rows = conn.execute(
             """
@@ -999,7 +943,7 @@ class AnalyticsV2Mixin:
             "total": len(rows),
         }
 
-    def _percentile_of(self, sorted_avgs: List[float], value: float) -> float:
+    def _percentile_of(self, sorted_avgs: list[float], value: float) -> float:
         """Return the percentile (0-1) of value within sorted_avgs."""
         if not sorted_avgs:
             return 0.5
@@ -1007,8 +951,8 @@ class AnalyticsV2Mixin:
         return below / len(sorted_avgs)
 
     def _calculate_health_scores(
-        self, metrics: Dict[str, Any], category_percentile: Optional[float] = None
-    ) -> Dict[str, int]:
+        self, metrics: dict[str, Any], category_percentile: float | None = None
+    ) -> dict[str, int]:
         """Calculate health scores from metrics."""
         avg_viewers = metrics.get("avg_avg_viewers", 0)
 
@@ -1062,7 +1006,7 @@ class AnalyticsV2Mixin:
             "network": network,
         }
 
-    def _generate_insights(self, metrics: Dict[str, Any]) -> List[Dict[str, str]]:
+    def _generate_insights(self, metrics: dict[str, Any]) -> list[dict[str, str]]:
         """Generate findings/insights from metrics."""
         insights = []
 
@@ -1154,7 +1098,7 @@ class AnalyticsV2Mixin:
 
         return insights
 
-    def _generate_actions(self, metrics: Dict[str, Any]) -> List[Dict[str, str]]:
+    def _generate_actions(self, metrics: dict[str, Any]) -> list[dict[str, str]]:
         """Generate action recommendations."""
         actions = []
 
@@ -1199,9 +1143,7 @@ class AnalyticsV2Mixin:
 
         return actions
 
-    def _get_network_stats(
-        self, conn, since_date: str, streamer: Optional[str]
-    ) -> Dict[str, int]:
+    def _get_network_stats(self, conn, since_date: str, streamer: str | None) -> dict[str, int]:
         """Get raid network statistics."""
         if not streamer:
             return {"sent": 0, "received": 0, "sentViewers": 0}
@@ -1230,7 +1172,7 @@ class AnalyticsV2Mixin:
             "received": received[0] if received else 0,
         }
 
-    def _calculate_correlations(self, sessions: List[Dict]) -> Dict[str, float]:
+    def _calculate_correlations(self, sessions: list[dict]) -> dict[str, float]:
         """Calculate metric correlations."""
         if len(sessions) < 3:
             return {"durationVsViewers": 0, "chatVsRetention": 0}
@@ -1246,7 +1188,7 @@ class AnalyticsV2Mixin:
                 return 0
             mean_a = sum(a) / len(a)
             mean_b = sum(b) / len(b)
-            num = sum((x - mean_a) * (y - mean_b) for x, y in zip(a, b))
+            num = sum((x - mean_a) * (y - mean_b) for x, y in zip(a, b, strict=False))
             den_a = sum((x - mean_a) ** 2 for x in a) ** 0.5
             den_b = sum((y - mean_b) ** 2 for y in b) ** 0.5
             if den_a == 0 or den_b == 0:
@@ -1267,9 +1209,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
                 streamer_login = streamer.lower() if streamer else None
                 rows = conn.execute(
                     """
@@ -1313,9 +1253,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
                 streamer_login = streamer.lower() if streamer else None
                 rows = conn.execute(
                     """
@@ -1356,9 +1294,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=months * 30)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=months * 30)).isoformat()
                 streamer_login = streamer.lower() if streamer else None
                 rows = conn.execute(
                     """
@@ -1429,9 +1365,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
                 streamer_login = streamer.lower() if streamer else None
                 rows = conn.execute(
                     """
@@ -1482,9 +1416,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
                 if not streamer:
                     return web.json_response({"error": "Streamer required"}, status=400)
@@ -1503,13 +1435,9 @@ class AnalyticsV2Mixin:
                     """,
                     [since_date, streamer_login],
                 ).fetchone()
-                session_count = (
-                    int(session_stats[0]) if session_stats and session_stats[0] else 0
-                )
+                session_count = int(session_stats[0]) if session_stats and session_stats[0] else 0
                 total_duration_seconds = (
-                    float(session_stats[1])
-                    if session_stats and session_stats[1]
-                    else 0.0
+                    float(session_stats[1]) if session_stats and session_stats[1] else 0.0
                 )
 
                 # True message counts from raw chat events in the selected time range.
@@ -1590,30 +1518,22 @@ class AnalyticsV2Mixin:
                     """,
                     [since_date, streamer_login],
                 ).fetchone()
-                unique_chatters = (
-                    int(cohort_stats[0]) if cohort_stats and cohort_stats[0] else 0
-                )
+                unique_chatters = int(cohort_stats[0]) if cohort_stats and cohort_stats[0] else 0
                 first_time_chatters = (
                     int(cohort_stats[1]) if cohort_stats and cohort_stats[1] else 0
                 )
-                sessions_with_chat = (
-                    int(cohort_stats[2]) if cohort_stats and cohort_stats[2] else 0
-                )
+                sessions_with_chat = int(cohort_stats[2]) if cohort_stats and cohort_stats[2] else 0
                 total_unique_viewers = (
                     int(cohort_stats[3]) if cohort_stats and cohort_stats[3] else 0
                 )
-                lurker_count = (
-                    int(cohort_stats[4]) if cohort_stats and cohort_stats[4] else 0
-                )
+                lurker_count = int(cohort_stats[4]) if cohort_stats and cohort_stats[4] else 0
                 active_chatters_count = (
                     int(cohort_stats[5]) if cohort_stats and cohort_stats[5] else 0
                 )
                 avg_messages_per_chatter = (
                     float(cohort_stats[6]) if cohort_stats and cohort_stats[6] else 0.0
                 )
-                chatters_api_seen = (
-                    int(cohort_stats[7]) if cohort_stats and cohort_stats[7] else 0
-                )
+                chatters_api_seen = int(cohort_stats[7]) if cohort_stats and cohort_stats[7] else 0
                 lurker_ratio = (
                     round(lurker_count / total_unique_viewers, 3)
                     if total_unique_viewers > 0
@@ -1636,16 +1556,10 @@ class AnalyticsV2Mixin:
                     first_time_chatters = 0
 
                 returning_chatters = max(0, unique_chatters - first_time_chatters)
-                total_minutes = (
-                    total_duration_seconds / 60.0 if total_duration_seconds > 0 else 0.0
-                )
-                messages_per_minute = (
-                    (total_messages / total_minutes) if total_minutes > 0 else 0.0
-                )
+                total_minutes = total_duration_seconds / 60.0 if total_duration_seconds > 0 else 0.0
+                messages_per_minute = (total_messages / total_minutes) if total_minutes > 0 else 0.0
                 chatter_return_rate = (
-                    (returning_chatters / unique_chatters) * 100.0
-                    if unique_chatters > 0
-                    else 0.0
+                    (returning_chatters / unique_chatters) * 100.0 if unique_chatters > 0 else 0.0
                 )
 
                 # Top chatters in selected period (not all-time rollup).
@@ -1692,10 +1606,7 @@ class AnalyticsV2Mixin:
                                 "loyaltyScore": round(
                                     min(
                                         100.0,
-                                        (
-                                            (int(r[2]) if r[2] else 0)
-                                            / max(1, session_count)
-                                        )
+                                        ((int(r[2]) if r[2] else 0) / max(1, session_count))
                                         * 100.0,
                                     ),
                                     1,
@@ -1714,8 +1625,7 @@ class AnalyticsV2Mixin:
                             for k, v in type_counts.most_common()
                         ],
                         "hourlyActivity": [
-                            {"hour": h, "count": hour_counts.get(h, 0)}
-                            for h in range(24)
+                            {"hour": h, "count": hour_counts.get(h, 0)} for h in range(24)
                         ],
                         "dataQuality": {
                             "sessions": session_count,
@@ -1814,9 +1724,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
                 if metric == "retention":
                     ranking_sql = """
@@ -1864,9 +1772,7 @@ class AnalyticsV2Mixin:
                     {
                         "rank": i + 1,
                         "login": r[0],
-                        "value": (
-                            float(r[1]) * 100 if metric == "retention" else float(r[1])
-                        )
+                        "value": (float(r[1]) * 100 if metric == "retention" else float(r[1]))
                         if r[1]
                         else 0,
                         "trend": "same",
@@ -1892,9 +1798,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
                 # Your stats from stats_tracked (higher accuracy for tracked streamers)
                 your_tracked = conn.execute(
@@ -1924,27 +1828,15 @@ class AnalyticsV2Mixin:
                 your_avg = (
                     float(your_tracked[0])
                     if your_tracked and your_tracked[0]
-                    else (
-                        float(your_session[0])
-                        if your_session and your_session[0]
-                        else 0
-                    )
+                    else (float(your_session[0]) if your_session and your_session[0] else 0)
                 )
                 your_peak = (
                     int(your_tracked[1])
                     if your_tracked and your_tracked[1]
-                    else (
-                        int(your_session[1]) if your_session and your_session[1] else 0
-                    )
+                    else (int(your_session[1]) if your_session and your_session[1] else 0)
                 )
-                your_ret = (
-                    float(your_session[2]) * 100
-                    if your_session and your_session[2]
-                    else 0
-                )
-                your_chat = (
-                    float(your_session[3]) if your_session and your_session[3] else 0
-                )
+                your_ret = float(your_session[2]) * 100 if your_session and your_session[2] else 0
+                your_chat = float(your_session[3]) if your_session and your_session[3] else 0
 
                 # Category stats from stats_category (per-streamer aggregates)
                 cat_data = self._get_category_percentiles(conn, since_date)
@@ -1952,9 +1844,7 @@ class AnalyticsV2Mixin:
                 category_total = cat_data["total"]
 
                 # Category averages
-                cat_avg_viewers = (
-                    sum(sorted_avgs) / len(sorted_avgs) if sorted_avgs else 0
-                )
+                cat_avg_viewers = sum(sorted_avgs) / len(sorted_avgs) if sorted_avgs else 0
 
                 # Peak viewers per streamer from category
                 cat_peak = conn.execute(
@@ -1987,9 +1877,7 @@ class AnalyticsV2Mixin:
                     else 0
                 )
                 cat_avg_chat = (
-                    float(cat_session_avgs[1])
-                    if cat_session_avgs and cat_session_avgs[1]
-                    else 0
+                    float(cat_session_avgs[1]) if cat_session_avgs and cat_session_avgs[1] else 0
                 )
 
                 # Per-streamer retention and chat for percentile ranking
@@ -2003,9 +1891,7 @@ class AnalyticsV2Mixin:
                 """,
                     [since_date],
                 ).fetchall()
-                ret_sorted = [
-                    float(r[0]) * 100 for r in per_streamer_ret if r[0] is not None
-                ]
+                ret_sorted = [float(r[0]) * 100 for r in per_streamer_ret if r[0] is not None]
 
                 per_streamer_chat = conn.execute(
                     """
@@ -2017,15 +1903,11 @@ class AnalyticsV2Mixin:
                 """,
                     [since_date],
                 ).fetchall()
-                chat_sorted = [
-                    float(r[0]) for r in per_streamer_chat if r[0] is not None
-                ]
+                chat_sorted = [float(r[0]) for r in per_streamer_chat if r[0] is not None]
 
                 # Percentiles for avgViewers
                 avg_percentile = (
-                    int(self._percentile_of(sorted_avgs, your_avg) * 100)
-                    if sorted_avgs
-                    else 0
+                    int(self._percentile_of(sorted_avgs, your_avg) * 100) if sorted_avgs else 0
                 )
 
                 # Percentile for peakViewers
@@ -2041,21 +1923,15 @@ class AnalyticsV2Mixin:
                 ).fetchall()
                 peak_sorted = [float(r[0]) for r in peak_avgs] if peak_avgs else []
                 peak_percentile = (
-                    int(self._percentile_of(peak_sorted, your_peak) * 100)
-                    if peak_sorted
-                    else 50
+                    int(self._percentile_of(peak_sorted, your_peak) * 100) if peak_sorted else 50
                 )
 
                 # Percentiles for retention and chat
                 ret_percentile = (
-                    int(self._percentile_of(ret_sorted, your_ret) * 100)
-                    if ret_sorted
-                    else 50
+                    int(self._percentile_of(ret_sorted, your_ret) * 100) if ret_sorted else 50
                 )
                 chat_percentile = (
-                    int(self._percentile_of(chat_sorted, your_chat) * 100)
-                    if chat_sorted
-                    else 50
+                    int(self._percentile_of(chat_sorted, your_chat) * 100) if chat_sorted else 50
                 )
 
                 # Category rank (1 = best)
@@ -2201,12 +2077,8 @@ class AnalyticsV2Mixin:
                         "firstTimeChatters": row[14] or 0,
                         "returningChatters": row[15] or 0,
                         "title": row[16] or "",
-                        "timeline": [
-                            {"minute": t[0], "viewers": t[1]} for t in timeline
-                        ],
-                        "chatters": [
-                            {"login": c[0], "messages": c[1]} for c in chatters
-                        ],
+                        "timeline": [{"minute": t[0], "viewers": t[1]} for t in timeline],
+                        "chatters": [{"login": c[0], "messages": c[1]} for c in chatters],
                     }
                 )
         except Exception as exc:
@@ -2242,7 +2114,7 @@ class AnalyticsV2Mixin:
 
     def _calc_watch_distribution(
         self, sessions, conn=None, session_ids: list = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Calculate watch time distribution.
 
         Tries to use real per-viewer watch-time from chatters-API snapshots
@@ -2282,9 +2154,7 @@ class AnalyticsV2Mixin:
                     """,
                     (session_ids_json,),
                 ).fetchall()
-                real_minutes = [
-                    float(r[0]) for r in rows if r[0] is not None and r[0] >= 0
-                ]
+                real_minutes = [float(r[0]) for r in rows if r[0] is not None and r[0] >= 0]
 
         # Decide whether real data is sufficient (≥30% coverage vs session count)
         use_real = len(real_minutes) >= total_sessions * 0.3 and len(real_minutes) >= 3
@@ -2292,29 +2162,19 @@ class AnalyticsV2Mixin:
         if use_real:
             total_viewers = len(real_minutes)
             under_5min = sum(1 for m in real_minutes if m < 5) / total_viewers * 100
-            min_5_to_15 = (
-                sum(1 for m in real_minutes if 5 <= m < 15) / total_viewers * 100
-            )
-            min_15_to_30 = (
-                sum(1 for m in real_minutes if 15 <= m < 30) / total_viewers * 100
-            )
-            min_30_to_60 = (
-                sum(1 for m in real_minutes if 30 <= m < 60) / total_viewers * 100
-            )
+            min_5_to_15 = sum(1 for m in real_minutes if 5 <= m < 15) / total_viewers * 100
+            min_15_to_30 = sum(1 for m in real_minutes if 15 <= m < 30) / total_viewers * 100
+            min_30_to_60 = sum(1 for m in real_minutes if 30 <= m < 60) / total_viewers * 100
             over_60min = sum(1 for m in real_minutes if m >= 60) / total_viewers * 100
             avg_watch_time = sum(real_minutes) / total_viewers
             # Median
             sorted_m = sorted(real_minutes)
             mid = len(sorted_m) // 2
             median_watch_time = (
-                sorted_m[mid]
-                if len(sorted_m) % 2 == 1
-                else (sorted_m[mid - 1] + sorted_m[mid]) / 2
+                sorted_m[mid] if len(sorted_m) % 2 == 1 else (sorted_m[mid - 1] + sorted_m[mid]) / 2
             )
             # Approximate total-session coverage ratio
-            total_viewers_in_sessions = sum(
-                int(s[4] or 0) for s in sessions
-            )  # avg_viewers col
+            total_viewers_in_sessions = sum(int(s[4] or 0) for s in sessions)  # avg_viewers col
             coverage = (
                 min(1.0, total_viewers / max(1, total_viewers_in_sessions))
                 if total_viewers_in_sessions > 0
@@ -2345,9 +2205,7 @@ class AnalyticsV2Mixin:
                 over_60min = (over_60min / total) * 100
 
             avg_durations = [s[0] or 0 for s in sessions]
-            avg_duration_mins = (
-                sum(avg_durations) / len(avg_durations) / 60 if avg_durations else 0
-            )
+            avg_duration_mins = sum(avg_durations) / len(avg_durations) / 60 if avg_durations else 0
             avg_watch_time = (
                 (under_5min / 100) * 2.5
                 + (min_5_to_15 / 100) * 10
@@ -2373,9 +2231,7 @@ class AnalyticsV2Mixin:
             "dataQuality": data_quality,
         }
 
-    async def _api_v2_watch_time_distribution(
-        self, request: web.Request
-    ) -> web.Response:
+    async def _api_v2_watch_time_distribution(self, request: web.Request) -> web.Response:
         """Get watch time distribution with previous period comparison."""
         self._require_v2_auth(request)
 
@@ -2387,12 +2243,8 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
-                prev_since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days * 2)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+                prev_since_date = (datetime.now(UTC) - timedelta(days=days * 2)).isoformat()
 
                 # Current period
                 current_sessions = conn.execute(
@@ -2421,9 +2273,7 @@ class AnalyticsV2Mixin:
                 """,
                     [prev_since_date, since_date, streamer.lower()],
                 ).fetchall()
-                prev_sessions_remapped = [
-                    (r[7], r[1], r[2], r[3], r[4]) for r in prev_sessions
-                ]
+                prev_sessions_remapped = [(r[7], r[1], r[2], r[3], r[4]) for r in prev_sessions]
 
                 current_ids = [r[0] for r in current_sessions]
                 prev_ids = [r[0] for r in prev_sessions]
@@ -2489,9 +2339,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
                 streamer_login = streamer.lower()
 
                 # Base session and follower stats.
@@ -2573,9 +2421,7 @@ class AnalyticsV2Mixin:
                     """,
                     [since_date, streamer_login],
                 ).fetchone()
-                unique_chatters = (
-                    int(chatter_stats[0]) if chatter_stats and chatter_stats[0] else 0
-                )
+                unique_chatters = int(chatter_stats[0]) if chatter_stats and chatter_stats[0] else 0
                 returning_chatters = (
                     int(chatter_stats[1]) if chatter_stats and chatter_stats[1] else 0
                 )
@@ -2599,9 +2445,7 @@ class AnalyticsV2Mixin:
                     [streamer_login, since_date],
                 ).fetchone()
                 follows_during_stream = (
-                    int(follow_events_row[0])
-                    if follow_events_row and follow_events_row[0]
-                    else 0
+                    int(follow_events_row[0]) if follow_events_row and follow_events_row[0] else 0
                 )
 
                 # Use chatters-API total_viewers_tracked as unique viewer count when available
@@ -2619,9 +2463,7 @@ class AnalyticsV2Mixin:
                         avg_viewers
                         * max(
                             1.5,
-                            min(
-                                4.0, (total_duration / 3600.0) / max(1.0, session_count)
-                            ),
+                            min(4.0, (total_duration / 3600.0) / max(1.0, session_count)),
                         )
                     )
                     unique_viewers = max(
@@ -2644,9 +2486,7 @@ class AnalyticsV2Mixin:
 
                 # Estimated time-to-follow: scaled to session length, bounded to practical range.
                 avg_session_mins = (
-                    (total_duration / max(1, session_count) / 60.0)
-                    if total_duration > 0
-                    else 0.0
+                    (total_duration / max(1, session_count) / 60.0) if total_duration > 0 else 0.0
                 )
                 avg_time_to_follow = max(5.0, min(45.0, avg_session_mins * 0.4))
 
@@ -2661,24 +2501,12 @@ class AnalyticsV2Mixin:
                     """,
                     [streamer_login, since_date],
                 ).fetchone()
-                raid_count = (
-                    int(raids_received[0])
-                    if raids_received and raids_received[0]
-                    else 0
-                )
-                raid_viewers = (
-                    int(raids_received[1])
-                    if raids_received and raids_received[1]
-                    else 0
-                )
+                raid_count = int(raids_received[0]) if raids_received and raids_received[0] else 0
+                raid_viewers = int(raids_received[1]) if raids_received and raids_received[1] else 0
 
                 # Conservative conversion assumption for raid-origin follows.
-                raid_followers = min(
-                    int(raid_viewers * 0.05), gained_followers_for_conversion
-                )
-                organic_followers = max(
-                    0, gained_followers_for_conversion - raid_followers
-                )
+                raid_followers = min(int(raid_viewers * 0.05), gained_followers_for_conversion)
+                organic_followers = max(0, gained_followers_for_conversion - raid_followers)
 
                 if follower_valid_samples >= max(3, int(session_count * 0.6)):
                     confidence = "high"
@@ -2728,9 +2556,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
                 streamer_login = streamer.lower() if streamer else None
 
                 # Get tags from sessions (tags stored as JSON or comma-separated in tags column)
@@ -2759,7 +2585,7 @@ class AnalyticsV2Mixin:
                 ).fetchall()
 
                 # Parse and aggregate tags
-                tag_stats: Dict[str, Dict[str, Any]] = {}
+                tag_stats: dict[str, dict[str, Any]] = {}
                 for row in rows:
                     tags_str = row[0] or ""
                     # Handle JSON array or comma-separated
@@ -2782,16 +2608,10 @@ class AnalyticsV2Mixin:
                                 "hours": [],
                             }
                         tag_stats[tag]["viewers"].append(float(row[1]) if row[1] else 0)
-                        tag_stats[tag]["retention"].append(
-                            float(row[2]) * 100 if row[2] else 0
-                        )
-                        tag_stats[tag]["followers"].append(
-                            float(row[3]) if row[3] else 0
-                        )
+                        tag_stats[tag]["retention"].append(float(row[2]) * 100 if row[2] else 0)
+                        tag_stats[tag]["followers"].append(float(row[3]) if row[3] else 0)
                         tag_stats[tag]["count"] += row[4] or 1
-                        tag_stats[tag]["durations"].append(
-                            float(row[5]) if row[5] else 0
-                        )
+                        tag_stats[tag]["durations"].append(float(row[5]) if row[5] else 0)
                         if row[6]:
                             tag_stats[tag]["hours"].append(int(row[6]))
 
@@ -2800,33 +2620,21 @@ class AnalyticsV2Mixin:
                 sorted_tags = sorted(
                     tag_stats.items(),
                     key=lambda x: (
-                        sum(x[1]["viewers"]) / len(x[1]["viewers"])
-                        if x[1]["viewers"]
-                        else 0
+                        sum(x[1]["viewers"]) / len(x[1]["viewers"]) if x[1]["viewers"] else 0
                     ),
                     reverse=True,
                 )
 
                 for rank, (tag, data) in enumerate(sorted_tags[:limit], 1):
-                    avg_v = (
-                        sum(data["viewers"]) / len(data["viewers"])
-                        if data["viewers"]
-                        else 0
-                    )
+                    avg_v = sum(data["viewers"]) / len(data["viewers"]) if data["viewers"] else 0
                     avg_r = (
-                        sum(data["retention"]) / len(data["retention"])
-                        if data["retention"]
-                        else 0
+                        sum(data["retention"]) / len(data["retention"]) if data["retention"] else 0
                     )
                     avg_f = (
-                        sum(data["followers"]) / len(data["followers"])
-                        if data["followers"]
-                        else 0
+                        sum(data["followers"]) / len(data["followers"]) if data["followers"] else 0
                     )
                     avg_d = (
-                        sum(data["durations"]) / len(data["durations"])
-                        if data["durations"]
-                        else 0
+                        sum(data["durations"]) / len(data["durations"]) if data["durations"] else 0
                     )
 
                     # Best time slot
@@ -2870,9 +2678,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
                 rows = conn.execute(
                     """
@@ -2895,7 +2701,7 @@ class AnalyticsV2Mixin:
                     [since_date, streamer.lower(), limit],
                 ).fetchall()
 
-                def extract_keywords(title: str) -> List[str]:
+                def extract_keywords(title: str) -> list[str]:
                     """Extract meaningful keywords from title."""
                     import re
 
@@ -2926,9 +2732,7 @@ class AnalyticsV2Mixin:
                         "title": row[0] or "",
                         "usageCount": row[1],
                         "avgViewers": round(float(row[2]), 1) if row[2] else 0,
-                        "avgRetention10m": round(float(row[3]) * 100, 1)
-                        if row[3]
-                        else 0,
+                        "avgRetention10m": round(float(row[3]) * 100, 1) if row[3] else 0,
                         "avgFollowerGain": round(float(row[4]), 1) if row[4] else 0,
                         "peakViewers": int(row[5]) if row[5] else 0,
                         "keywords": extract_keywords(row[0] or ""),
@@ -2957,9 +2761,7 @@ class AnalyticsV2Mixin:
                 "Request", (), {"query": {"streamer": streamer, "days": str(days)}}
             )()
             watch_time_req.headers = request.headers
-            funnel_req = type(
-                "Request", (), {"query": {"streamer": streamer, "days": str(days)}}
-            )()
+            funnel_req = type("Request", (), {"query": {"streamer": streamer, "days": str(days)}})()
             funnel_req.headers = request.headers
             tags_req = type(
                 "Request",
@@ -2976,12 +2778,8 @@ class AnalyticsV2Mixin:
 
             # Call internal methods directly
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
-                prev_since = (
-                    datetime.now(timezone.utc) - timedelta(days=days * 2)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+                prev_since = (datetime.now(UTC) - timedelta(days=days * 2)).isoformat()
 
                 # Current period metrics
                 current = conn.execute(
@@ -3021,33 +2819,23 @@ class AnalyticsV2Mixin:
                         return 0
                     return round(((curr - prev) / prev) * 100, 1)
 
-                curr_retention = (
-                    float(current[0]) * 100 if current and current[0] else 0
-                )
+                curr_retention = float(current[0]) * 100 if current and current[0] else 0
                 prev_retention = float(prev[0]) * 100 if prev and prev[0] else 0
                 curr_unique = int(current[3]) if current and current[3] else 0
                 prev_unique = int(prev[3]) if prev and prev[3] else 0
                 curr_returning = int(current[2]) if current and current[2] else 0
                 prev_returning = int(prev[2]) if prev and prev[2] else 0
 
-                return_rate = (
-                    (curr_returning / curr_unique * 100) if curr_unique > 0 else 0
-                )
-                prev_return_rate = (
-                    (prev_returning / prev_unique * 100) if prev_unique > 0 else 0
-                )
+                return_rate = (curr_returning / curr_unique * 100) if curr_unique > 0 else 0
+                prev_return_rate = (prev_returning / prev_unique * 100) if prev_unique > 0 else 0
 
                 return web.json_response(
                     {
                         "trends": {
-                            "watchTimeChange": calc_trend(
-                                curr_retention, prev_retention
-                            ),
+                            "watchTimeChange": calc_trend(curr_retention, prev_retention),
                             "conversionChange": 0,  # Would need follower tracking improvement
                             "viewerReturnRate": round(return_rate, 1),
-                            "viewerReturnChange": calc_trend(
-                                return_rate, prev_return_rate
-                            ),
+                            "viewerReturnChange": calc_trend(return_rate, prev_return_rate),
                         }
                     }
                 )
@@ -3067,9 +2855,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
                 # Analyze stream times to estimate audience timezone/region
                 time_stats = conn.execute(
@@ -3087,9 +2873,7 @@ class AnalyticsV2Mixin:
                 ).fetchall()
 
                 # Peak hours analysis for region estimation
-                peak_hours = (
-                    [r[0] for r in time_stats[:3]] if time_stats else [20, 21, 19]
-                )
+                peak_hours = [r[0] for r in time_stats[:3]] if time_stats else [20, 21, 19]
 
                 # German stream = DACH region primarily (UTC+1/+2)
                 # If peak is 18-23 UTC, likely European audience
@@ -3126,9 +2910,7 @@ class AnalyticsV2Mixin:
 
                 chatters = float(chat_stats[0]) if chat_stats and chat_stats[0] else 0
                 viewers = float(chat_stats[1]) if chat_stats and chat_stats[1] else 1
-                return_rate = (
-                    float(chat_stats[2]) if chat_stats and chat_stats[2] else 0
-                )
+                return_rate = float(chat_stats[2]) if chat_stats and chat_stats[2] else 0
 
                 chat_rate = chatters / viewers if viewers > 0 else 0
 
@@ -3224,9 +3006,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
                 # Determine bucket size based on range
                 if days <= 7:
@@ -3277,9 +3057,7 @@ class AnalyticsV2Mixin:
                     ORDER BY bucket
                     """
 
-                rows = conn.execute(
-                    timeline_sql, [since_date, streamer.lower()]
-                ).fetchall()
+                rows = conn.execute(timeline_sql, [since_date, streamer.lower()]).fetchall()
 
                 data = [
                     {
@@ -3308,9 +3086,7 @@ class AnalyticsV2Mixin:
 
         try:
             with storage.get_conn() as conn:
-                since_date = (
-                    datetime.now(timezone.utc) - timedelta(days=days)
-                ).isoformat()
+                since_date = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
                 if sort_mode == "peak":
                     leaderboard_sql = """
@@ -3406,10 +3182,10 @@ class AnalyticsV2Mixin:
         days = min(max(int(request.query.get("days", "30")), 7), 90)
         source = request.query.get("source", "category")  # 'category' | 'tracked'
 
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         from statistics import median, quantiles
 
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         try:
             with storage.get_conn() as c:
                 if source == "tracked":
@@ -3447,9 +3223,7 @@ class AnalyticsV2Mixin:
         # --- Stunde: Streamer → Stunde → Liste Viewerzahlen ---
         # hour_data[hour][streamer] = [viewer_counts...]
         hour_data: dict = collections.defaultdict(lambda: collections.defaultdict(list))
-        weekday_data: dict = collections.defaultdict(
-            lambda: collections.defaultdict(list)
-        )
+        weekday_data: dict = collections.defaultdict(lambda: collections.defaultdict(list))
 
         for row in rows:
             streamer = row[0]
@@ -3529,19 +3303,17 @@ class AnalyticsV2Mixin:
             }
         )
 
-    async def _api_v2_category_activity_series(
-        self, request: web.Request
-    ) -> web.Response:
+    async def _api_v2_category_activity_series(self, request: web.Request) -> web.Response:
         """
         Legacy stats-style comparison series for category vs tracked.
         Provides hourly and weekday rows with average and peak values.
         """
         self._require_v2_auth(request)
         days = min(max(int(request.query.get("days", "30")), 7), 365)
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
-        hourly_rows: List[Any] = []
-        weekday_rows: List[Any] = []
+        hourly_rows: list[Any] = []
+        weekday_rows: list[Any] = []
 
         try:
             with storage.get_conn() as conn:
@@ -3592,7 +3364,7 @@ class AnalyticsV2Mixin:
             log.exception("category-activity-series query failed")
             return web.json_response({"error": str(exc)}, status=500)
 
-        def _float_or_none(value: Any, *, digits: int = 1) -> Optional[float]:
+        def _float_or_none(value: Any, *, digits: int = 1) -> float | None:
             if value is None:
                 return None
             try:
@@ -3600,7 +3372,7 @@ class AnalyticsV2Mixin:
             except (TypeError, ValueError):
                 return None
 
-        def _int_or_none(value: Any) -> Optional[int]:
+        def _int_or_none(value: Any) -> int | None:
             if value is None:
                 return None
             try:
@@ -3608,11 +3380,11 @@ class AnalyticsV2Mixin:
             except (TypeError, ValueError):
                 return None
 
-        hourly_map: Dict[str, Dict[int, Dict[str, Any]]] = {
+        hourly_map: dict[str, dict[int, dict[str, Any]]] = {
             "category": {},
             "tracked": {},
         }
-        weekday_map: Dict[str, Dict[int, Dict[str, Any]]] = {
+        weekday_map: dict[str, dict[int, dict[str, Any]]] = {
             "category": {},
             "tracked": {},
         }
@@ -3639,7 +3411,7 @@ class AnalyticsV2Mixin:
                 "samples": _int_or_none(row[4]) or 0,
             }
 
-        hourly: List[Dict[str, Any]] = []
+        hourly: list[dict[str, Any]] = []
         for hour in range(24):
             category_point = hourly_map["category"].get(hour, {})
             tracked_point = hourly_map["tracked"].get(hour, {})
@@ -3667,7 +3439,7 @@ class AnalyticsV2Mixin:
         }
         weekday_order = [1, 2, 3, 4, 5, 6, 0]  # Mo-So
 
-        weekly: List[Dict[str, Any]] = []
+        weekly: list[dict[str, Any]] = []
         for weekday in weekday_order:
             category_point = weekday_map["category"].get(weekday, {})
             tracked_point = weekday_map["tracked"].get(weekday, {})
@@ -3699,9 +3471,9 @@ class AnalyticsV2Mixin:
         streamer = request.query.get("streamer", "").strip().lower()
         days = min(max(int(request.query.get("days", "30")), 7), 90)
 
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
         ads: dict = {
             "total": 0,
@@ -3744,9 +3516,7 @@ class AnalyticsV2Mixin:
                     ads["auto"] = auto
                     ads["manual"] = total - auto
                     ads["sessions_with_ads"] = int(ad_agg["sessions_with_ads"] or 0)
-                    ads["avg_duration_s"] = round(
-                        float(ad_agg["avg_duration"] or 0.0), 1
-                    )
+                    ads["avg_duration_s"] = round(float(ad_agg["avg_duration"] or 0.0), 1)
 
                 # --- Viewer impact ---
                 ad_rows = c.execute(
@@ -3766,9 +3536,7 @@ class AnalyticsV2Mixin:
 
                 timeline_map: dict = {}
                 if ad_rows:
-                    session_ids = list(
-                        {int(r["session_id"]) for r in ad_rows if r["session_id"]}
-                    )
+                    session_ids = list({int(r["session_id"]) for r in ad_rows if r["session_id"]})
                     if session_ids:
                         session_ids_json = json.dumps(session_ids)
                         vrows = c.execute(
@@ -3797,9 +3565,7 @@ class AnalyticsV2Mixin:
                     sid = int(ad["session_id"] or 0)
                     dur_s = float(ad["duration_seconds"] or 30)
                     try:
-                        ad_dt = datetime.fromisoformat(
-                            str(ad["started_at"]).replace("Z", "+00:00")
-                        )
+                        ad_dt = datetime.fromisoformat(str(ad["started_at"]).replace("Z", "+00:00"))
                         sess_dt = datetime.fromisoformat(
                             str(ad["session_start"]).replace("Z", "+00:00")
                         )
@@ -3830,9 +3596,7 @@ class AnalyticsV2Mixin:
                     )
 
                 if drop_pcts:
-                    ads["avg_viewer_drop_pct"] = round(
-                        sum(drop_pcts) / len(drop_pcts), 1
-                    )
+                    ads["avg_viewer_drop_pct"] = round(sum(drop_pcts) / len(drop_pcts), 1)
                 worst_ads.sort(key=lambda x: x["drop_pct"])
                 ads["worst_ads"] = worst_ads[:5]
 

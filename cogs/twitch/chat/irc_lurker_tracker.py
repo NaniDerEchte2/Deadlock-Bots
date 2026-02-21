@@ -12,8 +12,7 @@ Twitch IRC: irc.chat.twitch.tv:6667 (oder SSL auf :443)
 import asyncio
 import logging
 import re
-from datetime import datetime, timezone
-from typing import Dict, Optional, Set
+from datetime import UTC, datetime
 
 from ..storage import get_conn
 
@@ -39,22 +38,20 @@ class IRCLurkerTracker:
         self.nick = "justinfan12345"  # Anonymous Twitch IRC nick
 
         # Connection State
-        self.reader: Optional[asyncio.StreamReader] = None
-        self.writer: Optional[asyncio.StreamWriter] = None
+        self.reader: asyncio.StreamReader | None = None
+        self.writer: asyncio.StreamWriter | None = None
         self.connected = False
         self.running = False
 
         # Tracked Channels
-        self.partner_channels: Set[str] = set()  # Partner: Volle Lurker-Tracking
-        self.category_channels: Set[str] = set()  # Category: Nur Messages
-        self.channel_chatters: Dict[
-            str, Set[str]
-        ] = {}  # channel -> set of nicks (nur Partner!)
+        self.partner_channels: set[str] = set()  # Partner: Volle Lurker-Tracking
+        self.category_channels: set[str] = set()  # Category: Nur Messages
+        self.channel_chatters: dict[str, set[str]] = {}  # channel -> set of nicks (nur Partner!)
 
         # Tasks
-        self.connect_task: Optional[asyncio.Task] = None
-        self.read_task: Optional[asyncio.Task] = None
-        self.poll_task: Optional[asyncio.Task] = None
+        self.connect_task: asyncio.Task | None = None
+        self.read_task: asyncio.Task | None = None
+        self.poll_task: asyncio.Task | None = None
 
     async def start(self):
         """Start IRC connection and background tasks."""
@@ -99,9 +96,7 @@ class IRCLurkerTracker:
         """Establish IRC connection to Twitch."""
         try:
             # Connect to Twitch IRC (non-SSL)
-            self.reader, self.writer = await asyncio.open_connection(
-                "irc.chat.twitch.tv", 6667
-            )
+            self.reader, self.writer = await asyncio.open_connection("irc.chat.twitch.tv", 6667)
 
             # Authenticate
             # Twitch IRC accepts "oauth:token" or anonymous (justinfan...)
@@ -268,7 +263,7 @@ class IRCLurkerTracker:
         log.info("IRC: NAMES for #%s: %d chatters", channel, len(nicks_lower))
 
         # Update DB for all chatters
-        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now_iso = datetime.now(UTC).isoformat(timespec="seconds")
 
         try:
             with get_conn() as conn:
@@ -279,9 +274,7 @@ class IRCLurkerTracker:
                 ).fetchone()
 
                 if not session_row or not session_row[0]:
-                    log.debug(
-                        "IRC: No active session for #%s, skipping DB update", channel
-                    )
+                    log.debug("IRC: No active session for #%s, skipping DB update", channel)
                     return
 
                 session_id = session_row[0]
@@ -302,9 +295,7 @@ class IRCLurkerTracker:
                     if nick in existing:
                         to_update.append((now_iso, session_id, nick))
                     else:
-                        to_insert.append(
-                            (session_id, channel, nick, None, now_iso, now_iso)
-                        )
+                        to_insert.append((session_id, channel, nick, None, now_iso, now_iso))
 
                 if to_update:
                     conn.executemany(
@@ -336,7 +327,7 @@ class IRCLurkerTracker:
 
     async def _update_chatter_seen(self, channel: str, nick: str):
         """Update last_seen timestamp for a chatter."""
-        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now_iso = datetime.now(UTC).isoformat(timespec="seconds")
 
         try:
             with get_conn() as conn:
@@ -365,9 +356,7 @@ class IRCLurkerTracker:
                 )
 
         except Exception:
-            log.debug(
-                "IRC: Failed to update chatter %s in #%s", nick, channel, exc_info=True
-            )
+            log.debug("IRC: Failed to update chatter %s in #%s", nick, channel, exc_info=True)
 
     async def _join_channel(self, channel: str):
         """Join IRC channel."""
@@ -451,7 +440,7 @@ class IRCLurkerTracker:
 
         log.info("IRC: Stopped tracking #%s", channel)
 
-    def get_chatters(self, channel: str) -> Set[str]:
+    def get_chatters(self, channel: str) -> set[str]:
         """Get current chatters for a channel."""
         channel = channel.lower().lstrip("#")
         return self.channel_chatters.get(channel, set()).copy()

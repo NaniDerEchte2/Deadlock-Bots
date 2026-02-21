@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +33,7 @@ def _vault_enabled() -> bool:
     return os.name == "nt" and _flag_enabled("STEAM_USE_WINDOWS_VAULT", True)
 
 
-def _keyring_targets(secret_key: str) -> Tuple[Tuple[str, str], Tuple[str, str]]:
+def _keyring_targets(secret_key: str) -> tuple[tuple[str, str], tuple[str, str]]:
     return (
         (KEYRING_SERVICE, secret_key),
         (f"{secret_key}@{KEYRING_SERVICE}", secret_key),
@@ -77,7 +76,7 @@ def machine_auth_token_path() -> Path:
     return _presence_data_dir() / "machine_auth_token.txt"
 
 
-def _normalize_token(value: Optional[str]) -> str:
+def _normalize_token(value: str | None) -> str:
     return str(value).strip() if value else ""
 
 
@@ -106,15 +105,15 @@ def _remove_file(path: Path) -> None:
         log.exception("Failed to remove Steam token file", extra={"path": str(path)})
 
 
-def _file_mtime_iso(path: Path) -> Optional[str]:
+def _file_mtime_iso(path: Path) -> str | None:
     try:
-        ts = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        ts = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
     except Exception:
         return None
     return ts.isoformat()
 
 
-def _parse_iso_timestamp(value: Optional[str]) -> Optional[datetime]:
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
     text = str(value).strip()
@@ -127,15 +126,15 @@ def _parse_iso_timestamp(value: Optional[str]) -> Optional[datetime]:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
-def _vault_get(secret_key: str) -> Optional[str]:
+def _vault_get(secret_key: str) -> str | None:
     keyring = _get_keyring()
     if keyring is None:
         return None
@@ -206,11 +205,11 @@ def _read_token(
 
 def _write_token(
     *,
-    value: Optional[str],
+    value: str | None,
     token_key: str,
     saved_at_key: str,
     file_path: Path,
-    saved_at_iso: Optional[str] = None,
+    saved_at_iso: str | None = None,
 ) -> str:
     token = _normalize_token(value)
 
@@ -233,7 +232,7 @@ def _write_token(
     return "file"
 
 
-def read_refresh_token(file_path: Optional[Path] = None) -> str:
+def read_refresh_token(file_path: Path | None = None) -> str:
     return _read_token(
         token_key=TOKEN_REFRESH_KEY,
         saved_at_key=TOKEN_REFRESH_SAVED_AT_KEY,
@@ -241,7 +240,7 @@ def read_refresh_token(file_path: Optional[Path] = None) -> str:
     )
 
 
-def read_machine_auth_token(file_path: Optional[Path] = None) -> str:
+def read_machine_auth_token(file_path: Path | None = None) -> str:
     return _read_token(
         token_key=TOKEN_MACHINE_KEY,
         saved_at_key=TOKEN_MACHINE_SAVED_AT_KEY,
@@ -250,10 +249,10 @@ def read_machine_auth_token(file_path: Optional[Path] = None) -> str:
 
 
 def write_refresh_token(
-    value: Optional[str],
-    file_path: Optional[Path] = None,
+    value: str | None,
+    file_path: Path | None = None,
     *,
-    saved_at_iso: Optional[str] = None,
+    saved_at_iso: str | None = None,
 ) -> str:
     return _write_token(
         value=value,
@@ -265,10 +264,10 @@ def write_refresh_token(
 
 
 def write_machine_auth_token(
-    value: Optional[str],
-    file_path: Optional[Path] = None,
+    value: str | None,
+    file_path: Path | None = None,
     *,
-    saved_at_iso: Optional[str] = None,
+    saved_at_iso: str | None = None,
 ) -> str:
     return _write_token(
         value=value,
@@ -279,22 +278,22 @@ def write_machine_auth_token(
     )
 
 
-def refresh_token_exists(file_path: Optional[Path] = None) -> bool:
+def refresh_token_exists(file_path: Path | None = None) -> bool:
     if _vault_get(TOKEN_REFRESH_KEY):
         return True
     return bool(_read_token_file(file_path or refresh_token_path()))
 
 
-def machine_auth_token_exists(file_path: Optional[Path] = None) -> bool:
+def machine_auth_token_exists(file_path: Path | None = None) -> bool:
     if _vault_get(TOKEN_MACHINE_KEY):
         return True
     return bool(_read_token_file(file_path or machine_auth_token_path()))
 
 
-def get_refresh_token_age_days(file_path: Optional[Path] = None) -> Optional[int]:
+def get_refresh_token_age_days(file_path: Path | None = None) -> int | None:
     saved_at = _parse_iso_timestamp(_vault_get(TOKEN_REFRESH_SAVED_AT_KEY))
     if saved_at is not None:
-        return max(0, (datetime.now(timezone.utc) - saved_at).days)
+        return max(0, (datetime.now(UTC) - saved_at).days)
 
     if _vault_get(TOKEN_REFRESH_KEY):
         return 0
@@ -304,16 +303,16 @@ def get_refresh_token_age_days(file_path: Optional[Path] = None) -> Optional[int
     if not token:
         return None
     try:
-        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
     except Exception:
         return None
-    return max(0, (datetime.now(timezone.utc) - mtime).days)
+    return max(0, (datetime.now(UTC) - mtime).days)
 
 
 def clear_tokens(
     *,
-    refresh_file_path: Optional[Path] = None,
-    machine_file_path: Optional[Path] = None,
+    refresh_file_path: Path | None = None,
+    machine_file_path: Path | None = None,
 ) -> list[str]:
     removed: list[str] = []
     refresh_path = refresh_file_path or refresh_token_path()

@@ -9,8 +9,7 @@ Verwaltet:
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 import discord
 
@@ -40,9 +39,7 @@ STREAMER_GUILD_ID = _parse_env_int("STREAMER_GUILD_ID", 0)
 FALLBACK_MAIN_GUILD_ID = _parse_env_int("MAIN_GUILD_ID", 0)
 
 
-def _mask_log_identifier(
-    value: object, *, visible_prefix: int = 3, visible_suffix: int = 2
-) -> str:
+def _mask_log_identifier(value: object, *, visible_prefix: int = 3, visible_suffix: int = 2) -> str:
     text = str(value or "").strip()
     if not text:
         return "<empty>"
@@ -54,7 +51,7 @@ def _mask_log_identifier(
 class TokenErrorHandler:
     """Verwaltet Token-Fehler und verhindert endlose Refresh-Versuche."""
 
-    def __init__(self, discord_bot: Optional[discord.Client] = None):
+    def __init__(self, discord_bot: discord.Client | None = None):
         """
         Args:
             discord_bot: Discord Bot-Instanz für Benachrichtigungen
@@ -74,8 +71,7 @@ class TokenErrorHandler:
         try:
             with get_conn() as conn:
                 existing = {
-                    row[1]
-                    for row in conn.execute("PRAGMA table_info(twitch_token_blacklist)")
+                    row[1] for row in conn.execute("PRAGMA table_info(twitch_token_blacklist)")
                 }
                 for col_name, statement in column_add_statements.items():
                     if col_name not in existing:
@@ -88,7 +84,7 @@ class TokenErrorHandler:
             )
 
     @staticmethod
-    def _normalize_discord_user_id(raw: Optional[str]) -> Optional[str]:
+    def _normalize_discord_user_id(raw: str | None) -> str | None:
         value = str(raw or "").strip()
         if value and value.isdigit():
             return value
@@ -158,9 +154,7 @@ class TokenErrorHandler:
                         guild.id,
                     )
             except discord.Forbidden:
-                log.warning(
-                    "Missing permission to sync streamer role in guild %s", guild.id
-                )
+                log.warning("Missing permission to sync streamer role in guild %s", guild.id)
             except discord.HTTPException:
                 log.warning(
                     "Discord API error while syncing streamer role in guild %s",
@@ -169,7 +163,7 @@ class TokenErrorHandler:
 
     def schedule_streamer_role_sync(
         self,
-        discord_user_id: Optional[str],
+        discord_user_id: str | None,
         *,
         should_have_role: bool,
         reason: str,
@@ -233,7 +227,7 @@ class TokenErrorHandler:
             twitch_login: Twitch Login Name
             error_message: Fehlermeldung vom Token-Refresh
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         try:
             with get_conn() as conn:
@@ -254,12 +248,10 @@ class TokenErrorHandler:
                                 str(last_error_raw).replace("Z", "+00:00")
                             )
                             if last_error_dt.tzinfo is None:
-                                last_error_dt = last_error_dt.replace(
-                                    tzinfo=timezone.utc
-                                )
-                            reset_counter = (
-                                datetime.now(timezone.utc) - last_error_dt
-                            ) > timedelta(hours=self.CONSECUTIVE_FAILURE_WINDOW_HOURS)
+                                last_error_dt = last_error_dt.replace(tzinfo=UTC)
+                            reset_counter = (datetime.now(UTC) - last_error_dt) > timedelta(
+                                hours=self.CONSECUTIVE_FAILURE_WINDOW_HOURS
+                            )
                         except Exception:
                             reset_counter = False
 
@@ -293,7 +285,7 @@ class TokenErrorHandler:
                 else:
                     # Neuer Eintrag – Grace-Period ab jetzt
                     grace_expires = (
-                        datetime.now(timezone.utc) + timedelta(days=GRACE_PERIOD_DAYS)
+                        datetime.now(UTC) + timedelta(days=GRACE_PERIOD_DAYS)
                     ).isoformat()
                     conn.execute(
                         """
@@ -400,8 +392,7 @@ class TokenErrorHandler:
                     ).fetchone()
                     if row and not row[0]:
                         grace_expires = (
-                            datetime.now(timezone.utc)
-                            + timedelta(days=GRACE_PERIOD_DAYS)
+                            datetime.now(UTC) + timedelta(days=GRACE_PERIOD_DAYS)
                         ).isoformat()
                         conn.execute(
                             "UPDATE twitch_token_blacklist SET grace_expires_at = ? WHERE twitch_user_id = ?",
@@ -440,18 +431,14 @@ class TokenErrorHandler:
                 if error_count >= self.BLACKLIST_DISABLE_THRESHOLD:
                     return False
                 last_error_raw = str(row[1])
-                last_error_dt = datetime.fromisoformat(
-                    last_error_raw.replace("Z", "+00:00")
-                )
+                last_error_dt = datetime.fromisoformat(last_error_raw.replace("Z", "+00:00"))
                 if last_error_dt.tzinfo is None:
-                    last_error_dt = last_error_dt.replace(tzinfo=timezone.utc)
-                return (datetime.now(timezone.utc) - last_error_dt) < timedelta(
+                    last_error_dt = last_error_dt.replace(tzinfo=UTC)
+                return (datetime.now(UTC) - last_error_dt) < timedelta(
                     hours=self.RETRY_COOLDOWN_HOURS
                 )
         except Exception:
-            log.error(
-                "Error in has_recent_failure for %s", twitch_user_id, exc_info=True
-            )
+            log.error("Error in has_recent_failure for %s", twitch_user_id, exc_info=True)
             return False
 
     def clear_failure_count(self, twitch_user_id: str) -> None:
@@ -467,9 +454,7 @@ class TokenErrorHandler:
                 )
                 conn.commit()
         except Exception:
-            log.error(
-                "Error clearing failure count for %s", twitch_user_id, exc_info=True
-            )
+            log.error("Error clearing failure count for %s", twitch_user_id, exc_info=True)
 
     def remove_from_blacklist(self, twitch_user_id: str):
         """
@@ -540,7 +525,7 @@ class TokenErrorHandler:
                 title="⚠️ Twitch Token Error",
                 description=f"Der Refresh-Token für **{twitch_login}** ist ungültig.",
                 color=discord.Color.red(),
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             )
 
             embed.add_field(
@@ -581,9 +566,7 @@ class TokenErrorHandler:
             await channel.send(embed=embed)
 
             # User-DM senden
-            await self._send_user_dm_token_error(
-                twitch_user_id, twitch_login, error_message
-            )
+            await self._send_user_dm_token_error(twitch_user_id, twitch_login, error_message)
 
             # Markiere als benachrichtigt
             with get_conn() as conn:
@@ -629,7 +612,7 @@ class TokenErrorHandler:
             log.debug("Could not fetch Discord user %s for DM", discord_user_id)
             return False
 
-        grace_dt = datetime.now(timezone.utc) + timedelta(days=GRACE_PERIOD_DAYS)
+        grace_dt = datetime.now(UTC) + timedelta(days=GRACE_PERIOD_DAYS)
         deadline_ts = int(grace_dt.timestamp())
 
         if is_reminder:
@@ -637,7 +620,7 @@ class TokenErrorHandler:
                 title="⚠️ Twitch Bot – Autorisierung weiterhin fehlgeschlagen",
                 description=f"Die Autorisierung für den Twitch Bot ist für **{twitch_login}** seit {GRACE_PERIOD_DAYS} Tagen nicht erneuert worden.",
                 color=discord.Color.dark_red(),
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             )
             embed.add_field(
                 name="Streamer",
@@ -671,7 +654,7 @@ class TokenErrorHandler:
                 title="⚠️ Twitch Bot – Autorisierung fehlgeschlagen",
                 description=f"Die Autorisierung für den Twitch Bot ist für **{twitch_login}** fehlgeschlagen und muss erneuert werden.",
                 color=discord.Color.orange(),
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             )
             embed.add_field(
                 name="Streamer",
@@ -752,9 +735,7 @@ class TokenErrorHandler:
                 )
             return True
         except discord.Forbidden:
-            log.info(
-                "Cannot DM Discord user %s (DMs closed), skipping", discord_user_id
-            )
+            log.info("Cannot DM Discord user %s (DMs closed), skipping", discord_user_id)
             return False
         except Exception:
             log.warning(
@@ -764,9 +745,7 @@ class TokenErrorHandler:
             )
             return False
 
-    def _get_discord_user_id(
-        self, twitch_user_id: str, twitch_login: str
-    ) -> Optional[str]:
+    def _get_discord_user_id(self, twitch_user_id: str, twitch_login: str) -> str | None:
         """Holt die Discord User ID eines Streamers aus der DB."""
         try:
             with get_conn() as conn:
@@ -781,15 +760,11 @@ class TokenErrorHandler:
                 ).fetchone()
                 if row:
                     val = str(
-                        row[0]
-                        if not hasattr(row, "keys")
-                        else row["discord_user_id"] or ""
+                        row[0] if not hasattr(row, "keys") else row["discord_user_id"] or ""
                     ).strip()
                     return val if val.isdigit() else None
         except Exception:
-            log.warning(
-                "Could not fetch discord_user_id for %s", twitch_login, exc_info=True
-            )
+            log.warning("Could not fetch discord_user_id for %s", twitch_login, exc_info=True)
         return None
 
     async def check_grace_periods(self) -> None:
@@ -798,7 +773,7 @@ class TokenErrorHandler:
         - Sendet Erinnerungs-DM an User + Admin-Channel-Notification
         - Entfernt die Streamer-Rolle nach Ablauf der Frist
         """
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
         try:
             with get_conn() as conn:
                 expired = conn.execute(
@@ -823,9 +798,7 @@ class TokenErrorHandler:
 
             # 1. Erinnerungs-DM an User
             if not reminder_sent:
-                await self._send_user_dm_token_error(
-                    uid, login, err_msg or "", is_reminder=True
-                )
+                await self._send_user_dm_token_error(uid, login, err_msg or "", is_reminder=True)
                 # Admin-Channel benachrichtigen damit Admin selbst auch schreiben kann
                 await self._notify_admin_grace_expired(uid, login, discord_user_id)
                 try:
@@ -836,9 +809,7 @@ class TokenErrorHandler:
                         )
                         conn.commit()
                 except Exception:
-                    log.warning(
-                        "Could not set reminder_sent for %s", login, exc_info=True
-                    )
+                    log.warning("Could not set reminder_sent for %s", login, exc_info=True)
 
             # 2. Streamer-Rolle entfernen
             if discord_user_id:
@@ -867,7 +838,7 @@ class TokenErrorHandler:
         self,
         twitch_user_id: str,
         twitch_login: str,
-        discord_user_id: Optional[str],
+        discord_user_id: str | None,
     ) -> None:
         """Benachrichtigt den Admin-Channel wenn eine Grace-Period abgelaufen ist."""
         if not self.discord_bot:
@@ -877,9 +848,7 @@ class TokenErrorHandler:
             if not channel:
                 return
 
-            mention = (
-                f"<@{discord_user_id}>" if discord_user_id else f"`{twitch_login}`"
-            )
+            mention = f"<@{discord_user_id}>" if discord_user_id else f"`{twitch_login}`"
             embed = discord.Embed(
                 title="🚨 Grace-Period abgelaufen – Streamer-Rolle entzogen",
                 description=(
@@ -888,7 +857,7 @@ class TokenErrorHandler:
                     f"Die Streamer-Rolle wurde automatisch entzogen."
                 ),
                 color=discord.Color.dark_red(),
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             )
             embed.add_field(
                 name="Streamer",
@@ -922,8 +891,8 @@ class TokenErrorHandler:
             days: Einträge älter als diese Anzahl Tage werden gelöscht
         """
         try:
-            cutoff = datetime.now(timezone.utc).timestamp() - (days * 86400)
-            cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+            cutoff = datetime.now(UTC).timestamp() - (days * 86400)
+            cutoff_iso = datetime.fromtimestamp(cutoff, UTC).isoformat()
 
             with get_conn() as conn:
                 result = conn.execute(

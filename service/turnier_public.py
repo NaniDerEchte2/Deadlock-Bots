@@ -18,12 +18,12 @@ import os
 import secrets
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
-from service import db
 from cogs.customgames import tournament_store as tstore
+from service import db
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot
@@ -34,9 +34,7 @@ TURNIER_PUBLIC_PORT = int(os.getenv("TURNIER_PUBLIC_PORT", "8767"))
 TURNIER_PUBLIC_HOST = os.getenv("TURNIER_PUBLIC_HOST", "127.0.0.1")
 TURNIER_PUBLIC_GUILD_ID = int(os.getenv("TURNIER_PUBLIC_GUILD_ID", "0"))
 
-STEAM_LINK_BASE_URL = (
-    os.getenv("PUBLIC_BASE_URL") or "https://link.earlysalty.com"
-).rstrip("/")
+STEAM_LINK_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "https://link.earlysalty.com").rstrip("/")
 
 SESSION_COOKIE = "turnier_pub_session"
 SESSION_TTL = 6 * 3600  # 6 hours
@@ -64,12 +62,10 @@ def _rank_display(rank: str, subrank: int) -> str:
     return label
 
 
-def _generate_bracket(
-    signups: List[Dict[str, Any]], teams: List[Dict[str, Any]]
-) -> Dict[str, Any]:
+def _generate_bracket(signups: list[dict[str, Any]], teams: list[dict[str, Any]]) -> dict[str, Any]:
     team_map = {int(t["id"]): t for t in teams}
-    team_scores: Dict[int, List[int]] = {}
-    solo_entries: List[Dict[str, Any]] = []
+    team_scores: dict[int, list[int]] = {}
+    solo_entries: list[dict[str, Any]] = []
 
     for s in signups:
         rv = int(s.get("rank_value") or 1)
@@ -90,7 +86,7 @@ def _generate_bracket(
                 }
             )
 
-    entries: List[Dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     for tid, scores in team_scores.items():
         team = team_map.get(tid, {})
         avg = sum(scores) / len(scores) if scores else 0
@@ -135,8 +131,8 @@ def _generate_bracket(
             return "\u2694\ufe0f Viertelfinale"
         return f"Runde {r}"
 
-    rounds: List[Dict[str, Any]] = []
-    current: List[Dict[str, Any]] = []
+    rounds: list[dict[str, Any]] = []
+    current: list[dict[str, Any]] = []
     for i, (a, b) in enumerate(seeded_matches):
         auto_winner = None
         if a is None and b is not None:
@@ -182,12 +178,16 @@ def _generate_bracket(
 
 
 class TurnierPublicServer:
-    def __init__(self, bot: "Bot", *, host: str = TURNIER_PUBLIC_HOST, port: int = TURNIER_PUBLIC_PORT) -> None:
+    def __init__(
+        self, bot: Bot, *, host: str = TURNIER_PUBLIC_HOST, port: int = TURNIER_PUBLIC_PORT
+    ) -> None:
         self.bot = bot
         self.host = host
         self.port = port
-        self._sessions: Dict[str, Dict[str, Any]] = {}  # token -> {user_id, display_name, csrf_token, expires_at}
-        self._runner: Optional[web.AppRunner] = None
+        self._sessions: dict[
+            str, dict[str, Any]
+        ] = {}  # token -> {user_id, display_name, csrf_token, expires_at}
+        self._runner: web.AppRunner | None = None
 
         self.app = web.Application(middlewares=[self._security_headers_mw])
         self.app.router.add_get("/", self.handle_index)
@@ -213,7 +213,9 @@ class TurnierPublicServer:
             resp = ex
         except Exception:
             log.exception("Unhandled error in turnier public server")
-            resp = web.Response(text='{"error":"internal"}', content_type="application/json", status=500)
+            resp = web.Response(
+                text='{"error":"internal"}', content_type="application/json", status=500
+            )
 
         if not isinstance(resp, web.Response) and isinstance(resp, web.HTTPException):
             return resp
@@ -225,7 +227,7 @@ class TurnierPublicServer:
 
     # ── Session management ────────────────────────────────────────────────────
 
-    def _create_session(self, user_id: int, display_name: str) -> Tuple[str, str]:
+    def _create_session(self, user_id: int, display_name: str) -> tuple[str, str]:
         """Returns (session_token, csrf_token)."""
         self._purge_expired_sessions()
         session_token = secrets.token_hex(32)
@@ -238,7 +240,7 @@ class TurnierPublicServer:
         }
         return session_token, csrf_token
 
-    def _get_session(self, request: web.Request) -> Optional[Dict[str, Any]]:
+    def _get_session(self, request: web.Request) -> dict[str, Any] | None:
         token = request.cookies.get(SESSION_COOKIE)
         if not token:
             return None
@@ -261,7 +263,7 @@ class TurnierPublicServer:
         for k in expired:
             del self._sessions[k]
 
-    def _check_csrf(self, request: web.Request, session: Dict[str, Any]) -> bool:
+    def _check_csrf(self, request: web.Request, session: dict[str, Any]) -> bool:
         header_token = request.headers.get("X-CSRF-Token", "")
         return header_token == session.get("csrf_token", "")
 
@@ -344,7 +346,7 @@ class TurnierPublicServer:
         signup_by_user = {int(s["user_id"]): s for s in signups_raw}
 
         # Build member lists per team
-        members_by_team: Dict[int, List[Dict[str, Any]]] = {}
+        members_by_team: dict[int, list[dict[str, Any]]] = {}
         solo_signups = []
         for s in signups_raw:
             uid = int(s["user_id"])
@@ -436,6 +438,7 @@ class TurnierPublicServer:
             return web.json_response({"error": "Kein aktiver Anmeldezeitraum."}, status=400)
 
         from datetime import datetime
+
         try:
             now = datetime.now()
             start = datetime.fromisoformat(str(period["registration_start"]))
@@ -453,7 +456,8 @@ class TurnierPublicServer:
                 has_role = any(r.id == TURNIER_ROLE_ID for r in member.roles)
                 if not has_role:
                     return web.json_response(
-                        {"error": f"Du benötigst die Turnier-Rolle ({TURNIER_ROLE_ID})."}, status=403
+                        {"error": f"Du benötigst die Turnier-Rolle ({TURNIER_ROLE_ID})."},
+                        status=403,
                     )
 
         # Check steam link + rank
@@ -469,7 +473,8 @@ class TurnierPublicServer:
         )
         if not steam_row:
             return web.json_response(
-                {"error": "Kein verifizierter Steam-Account verknüpft. Nutze /account_verknüpfen."}, status=400
+                {"error": "Kein verifizierter Steam-Account verknüpft. Nutze /account_verknüpfen."},
+                status=400,
             )
 
         rank_tier = int(steam_row.get("deadlock_rank") or 0)
@@ -485,7 +490,7 @@ class TurnierPublicServer:
         if mode not in ("solo", "team"):
             mode = "solo"
 
-        team_id: Optional[int] = None
+        team_id: int | None = None
         if mode == "team":
             team_id_raw = body.get("team_id")
             if team_id_raw is not None:
@@ -497,9 +502,13 @@ class TurnierPublicServer:
                 # Auto-create team
                 team_name = str(body.get("team_name", "")).strip()
                 if not team_name:
-                    return web.json_response({"error": "team_name fehlt für Team-Anmeldung."}, status=400)
+                    return web.json_response(
+                        {"error": "team_name fehlt für Team-Anmeldung."}, status=400
+                    )
                 try:
-                    team = await tstore.get_or_create_team_async(guild_id, team_name, created_by=user_id)
+                    team = await tstore.get_or_create_team_async(
+                        guild_id, team_name, created_by=user_id
+                    )
                     team_id = int(team["id"])
                 except ValueError as exc:
                     return web.json_response({"error": str(exc)}, status=400)
@@ -609,7 +618,9 @@ class TurnierPublicServer:
         if not team:
             return web.json_response({"error": "Team nicht gefunden."}, status=404)
         if team.get("created_by") != user_id:
-            return web.json_response({"error": "Nur der Ersteller kann das Team umbenennen."}, status=403)
+            return web.json_response(
+                {"error": "Nur der Ersteller kann das Team umbenennen."}, status=403
+            )
 
         try:
             renamed = await tstore.rename_team_async(guild_id, team_id, new_name)
@@ -652,11 +663,15 @@ class TurnierPublicServer:
         if not team:
             return web.json_response({"error": "Team nicht gefunden."}, status=404)
         if team.get("created_by") != user_id:
-            return web.json_response({"error": "Nur der Ersteller kann Mitglieder entfernen."}, status=403)
+            return web.json_response(
+                {"error": "Nur der Ersteller kann Mitglieder entfernen."}, status=403
+            )
 
         # Can't kick yourself via kick endpoint; use withdraw
         if target_id == user_id:
-            return web.json_response({"error": "Nutze /api/withdraw um dich selbst abzumelden."}, status=400)
+            return web.json_response(
+                {"error": "Nutze /api/withdraw um dich selbst abzumelden."}, status=400
+            )
 
         # Unassign target from team (don't delete their signup entirely)
         removed = await tstore.assign_signup_team_async(guild_id, target_id, team_id=None)
@@ -674,6 +689,7 @@ class TurnierPublicServer:
         for attempt in range(max_retries):
             try:
                 import errno
+
                 site = web.TCPSite(self._runner, host=self.host, port=self.port)
                 await site.start()
                 log.info(

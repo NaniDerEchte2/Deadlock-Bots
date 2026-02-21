@@ -1,10 +1,9 @@
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
-from ..storage import get_conn
 from ..partner_utils import is_partner_channel_for_chat_tracking
+from ..storage import get_conn
 from .constants import eventsub
 
 log = logging.getLogger("TwitchStreams.ChatBot")
@@ -12,7 +11,7 @@ log = logging.getLogger("TwitchStreams.ChatBot")
 
 class ConnectionMixin:
     @staticmethod
-    def _looks_like_bot_banned_error(status: Optional[int], text: str) -> bool:
+    def _looks_like_bot_banned_error(status: int | None, text: str) -> bool:
         if not text:
             return False
         lowered = text.lower()
@@ -31,9 +30,9 @@ class ConnectionMixin:
 
     def _blacklist_streamer_for_bot_ban(
         self,
-        broadcaster_id: Optional[str],
+        broadcaster_id: str | None,
         broadcaster_login: str,
-        status: Optional[int],
+        status: int | None,
         text: str,
     ) -> None:
         login = str(broadcaster_login or "").strip().lower().lstrip("#")
@@ -84,9 +83,7 @@ class ConnectionMixin:
 
         log.warning("Bot-Ban erkannt: %s auf Raid-Blacklist gesetzt.", login)
 
-    async def _ensure_bot_is_mod(
-        self, broadcaster_id: str, broadcaster_login: str
-    ) -> bool:
+    async def _ensure_bot_is_mod(self, broadcaster_id: str, broadcaster_login: str) -> bool:
         """
         Setzt den Bot als Moderator im Ziel-Channel über den Streamer-Token.
         Wird aufgerufen wenn ein join() mit 403 fehlschlägt.
@@ -111,9 +108,7 @@ class ConnectionMixin:
             log.debug("_ensure_bot_is_mod: Keine HTTP-Session im RaidManager")
             return False
 
-        tokens = await raid_bot.auth_manager.get_tokens_for_user(
-            broadcaster_id, session
-        )
+        tokens = await raid_bot.auth_manager.get_tokens_for_user(broadcaster_id, session)
         if not tokens:
             log.warning(
                 "_ensure_bot_is_mod: Keine gültige Autorisierung für %s verfügbar.",
@@ -189,20 +184,16 @@ class ConnectionMixin:
         try:
             await self.add_token(api_token, self._bot_refresh_token)
         except Exception:
-            log.debug(
-                "_ensure_bot_token_registered: add_token fehlgeschlagen", exc_info=True
-            )
+            log.debug("_ensure_bot_token_registered: add_token fehlgeschlagen", exc_info=True)
 
-    async def join(self, channel_login: str, channel_id: Optional[str] = None):
+    async def join(self, channel_login: str, channel_id: str | None = None):
         """Joint einen Channel via EventSub (TwitchIO 3.x)."""
         try:
             normalized_login = channel_login.lower().lstrip("#")
 
             # Prüfe ZUERST, ob wir bereits subscribed sind
             if normalized_login in self._monitored_streamers:
-                log.debug(
-                    "Channel %s already monitored, skipping subscribe", channel_login
-                )
+                log.debug("Channel %s already monitored, skipping subscribe", channel_login)
                 return True
 
             if not channel_id:
@@ -279,7 +270,7 @@ class ConnectionMixin:
                 # Cooldown-Prüfung: Bei gebannen Bots nicht wiederholt versuchen
                 cd_key = normalized_login
                 cd_until = self._mod_retry_cooldown.get(cd_key)
-                if cd_until and datetime.now(timezone.utc) < cd_until:
+                if cd_until and datetime.now(UTC) < cd_until:
                     log.debug(
                         "join(): Mod-Retry für %s auf Cooldown bis %s – überspringe",
                         channel_login,
@@ -317,9 +308,7 @@ class ConnectionMixin:
                         )
                 else:
                     # Cooldown setzen: Nächster Retry erst nach 10 Minuten
-                    self._mod_retry_cooldown[cd_key] = datetime.now(
-                        timezone.utc
-                    ) + timedelta(minutes=10)
+                    self._mod_retry_cooldown[cd_key] = datetime.now(UTC) + timedelta(minutes=10)
                     log.warning(
                         "join(): Konnte Bot nicht als Mod in %s setzen. "
                         "Falls der Bot im Channel gebannt ist, muss er dort zuerst "
@@ -338,9 +327,7 @@ class ConnectionMixin:
                 log.error("Failed to join channel %s: %s", channel_login, e)
             return False
 
-    async def join_channels(
-        self, channels: list[str], rate_limit_delay: float = 0.2
-    ) -> int:
+    async def join_channels(self, channels: list[str], rate_limit_delay: float = 0.2) -> int:
         """Kompatibilitäts-Helper für Bulk-Joins (z.B. Scout-Task)."""
         if not channels:
             return 0
@@ -410,9 +397,7 @@ class ConnectionMixin:
                     ) as r:
                         if r.status == 200:
                             data = await r.json(content_type=None)
-                            follows = (
-                                data.get("data", []) if isinstance(data, dict) else []
-                            )
+                            follows = data.get("data", []) if isinstance(data, dict) else []
                             if follows:
                                 log.info(
                                     "follow_channel: Bot folgt bereits %s",
@@ -420,9 +405,7 @@ class ConnectionMixin:
                                 )
                                 return True
 
-                            if not getattr(
-                                self, "_follow_api_create_removed_logged", False
-                            ):
+                            if not getattr(self, "_follow_api_create_removed_logged", False):
                                 log.info(
                                     "follow_channel: Twitch-API kann keine Follows mehr erstellen "
                                     "(abgeschaltet am 28.07.2021). Manual Follow erforderlich."
@@ -436,13 +419,8 @@ class ConnectionMixin:
                         txt = await r.text()
                         if r.status == 401:
                             txt_l = txt.lower()
-                            if (
-                                "user:read:follows" in txt_l
-                                or "missing required scope" in txt_l
-                            ):
-                                if not getattr(
-                                    self, "_follow_scope_missing_logged", False
-                                ):
+                            if "user:read:follows" in txt_l or "missing required scope" in txt_l:
+                                if not getattr(self, "_follow_scope_missing_logged", False):
                                     log.warning(
                                         "follow_channel: Bot-Token ohne Scope user:read:follows; "
                                         "Follow-Status kann nicht geprüft werden."
@@ -454,9 +432,7 @@ class ConnectionMixin:
                                     "follow_channel: 401 für %s, triggere Token-Refresh",
                                     broadcaster_id,
                                 )
-                                await self._token_manager.get_valid_token(
-                                    force_refresh=True
-                                )
+                                await self._token_manager.get_valid_token(force_refresh=True)
                                 continue
                         log.debug(
                             "follow_channel: Follow-Check HTTP %s – %s",
@@ -495,12 +471,9 @@ class ConnectionMixin:
             login_norm = (login or "").strip()
             if not login_norm:
                 continue
-            scopes = [
-                s.strip().lower() for s in (scopes_raw or "").split() if s.strip()
-            ]
+            scopes = [s.strip().lower() for s in (scopes_raw or "").split() if s.strip()]
             has_chat_scope = any(
-                s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"}
-                for s in scopes
+                s in {"user:read:chat", "user:write:chat", "chat:read", "chat:edit"} for s in scopes
             )
             if not has_chat_scope:
                 continue
