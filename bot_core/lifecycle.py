@@ -4,7 +4,10 @@ import asyncio
 import importlib
 import logging
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from bot_core.master_bot import MasterBot
 
 from bot_core.bootstrap import _load_env_robust
 

@@ -1547,7 +1547,7 @@ class DashboardV2Server(
         """Raid analytics: sent/received balance, leechers, manual raids."""
         self._require_token(request)
 
-        with get_conn() as conn:
+        with storage.get_conn() as conn:
             # Active partners set
             partner_rows = conn.execute(
                 "SELECT twitch_login FROM twitch_streamers_partner_state WHERE is_partner_active = 1"

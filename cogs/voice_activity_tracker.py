@@ -6,7 +6,7 @@ import json
 import os
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
