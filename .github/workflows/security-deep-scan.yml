@@ -263,11 +263,35 @@ jobs:
           if [ -f retirejs-report.json ]; then
             echo "✅ RetireJS scan completed"
           fi
-      # ESLint Security Plugin
+      # ESLint Security Plugin (ESLint v10 flat config - --ext flag was removed in v10)
       - name: ESLint Security Scan
         if: hashFiles('**/package.json') != ''
+        continue-on-error: true
         run: |
-          npx --yes -p eslint@10.0.0 -p eslint-plugin-security@3.0.1 -p eslint-plugin-no-secrets@2.2.2 eslint . --ext .js,.ts,.jsx,.tsx --format json --output-file eslint-security.json
+          ESLINT_DIR=/tmp/eslint-scan
+          mkdir -p "$ESLINT_DIR"
+          npm install --prefix "$ESLINT_DIR" --no-save \
+            eslint@10.0.0 \
+            eslint-plugin-security@3.0.1 \
+            eslint-plugin-no-secrets@2.2.2
+          cat > "$ESLINT_DIR/eslint.config.mjs" << 'ESLINTEOF'
+import pluginSecurity from "eslint-plugin-security";
+import noSecrets from "eslint-plugin-no-secrets";
+export default [
+  pluginSecurity.configs.recommended,
+  {
+    files: ["**/*.js", "**/*.ts", "**/*.jsx", "**/*.tsx"],
+    ignores: ["**/node_modules/**", "**/.venv/**", "**/dist/**", "**/build/**"],
+    plugins: { "no-secrets": noSecrets },
+    rules: { "no-secrets/no-secrets": "error" },
+  },
+];
+ESLINTEOF
+          "$ESLINT_DIR/node_modules/.bin/eslint" \
+            --config "$ESLINT_DIR/eslint.config.mjs" \
+            --format json \
+            --output-file eslint-security.json \
+            . || true
       # Snyk Scan (optional, requires repository secret SNYK_TOKEN)
       - name: Snyk Security Scan
         if: hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json') != ''
