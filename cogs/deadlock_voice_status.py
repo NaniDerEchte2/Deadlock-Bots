@@ -21,9 +21,9 @@ log = logging.getLogger("DeadlockVoiceStatus")
 trace_log = logging.getLogger("DeadlockVoiceStatus.trace")
 
 TARGET_CATEGORY_IDS: set[int] = {
-    1289721245281292290,
-    1412804540994162789,
-    1357422957017698478,
+    1289721245281292290,  # Chill Lanes
+    1412804540994162789,  # Comp/Ranked Lanes
+    1357422957017698478,  # Street Brawl
 }
 
 POLL_INTERVAL_SECONDS = 60

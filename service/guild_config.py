@@ -1,6 +1,11 @@
 """
 Zentrale Guild-spezifische Konfiguration.
 Verschiebt hardcoded IDs aus verschiedenen Cogs in eine Config.
+
+Neue Lane-Struktur (kein Ranked/Grind Split mehr):
+  Chill Lanes   → Kategorie 1289721245281292290 | Staging 1330278323145801758
+  Comp/Ranked   → Kategorie 1412804540994162789 | Staging 1412804671432818890
+  Street Brawl  → Kategorie 1357422957017698478 | Staging 1357422958544420944
 """
 
 from dataclasses import dataclass
@@ -10,15 +15,21 @@ from dataclasses import dataclass
 class GuildIDs:
     """Hardcoded Guild/Channel/Role IDs - zentral verwaltet."""
 
-    # TempVoice
+    # TempVoice Staging Channels
     TEMPVOICE_STAGING_CASUAL: int = 1330278323145801758
     TEMPVOICE_STAGING_STREET_BRAWL: int = 1357422958544420944
-    TEMPVOICE_STAGING_RANKED: int = TEMPVOICE_STAGING_STREET_BRAWL  # Alias fr Altcode
-    TEMPVOICE_STAGING_SPECIAL: int = 1412804671432818890
+    TEMPVOICE_STAGING_COMP: int = 1412804671432818890
+    TEMPVOICE_STAGING_RANKED: int = TEMPVOICE_STAGING_COMP  # Alias für Altcode
 
-    TEMPVOICE_CATEGORY_GRIND: int = 1412804540994162789
-    TEMPVOICE_CATEGORY_NORMAL: int = 1289721245281292290
-    TEMPVOICE_CATEGORY_RANKED: int = 1357422957017698478
+    # TempVoice Kategorien
+    TEMPVOICE_CATEGORY_CHILL: int = 1289721245281292290
+    TEMPVOICE_CATEGORY_COMP: int = 1412804540994162789   # Comp/Ranked (war: Grind)
+    TEMPVOICE_CATEGORY_STREET_BRAWL: int = 1357422957017698478
+
+    # Legacy-Aliases (Altcode-Kompatibilität)
+    TEMPVOICE_CATEGORY_GRIND: int = TEMPVOICE_CATEGORY_COMP
+    TEMPVOICE_CATEGORY_NORMAL: int = TEMPVOICE_CATEGORY_CHILL
+    TEMPVOICE_CATEGORY_RANKED: int = TEMPVOICE_CATEGORY_COMP
 
     TEMPVOICE_INTERFACE_CHANNEL: int = 1371927143537315890
     ENGLISH_ONLY_ROLE: int = 1309741866098491479
@@ -30,9 +41,14 @@ class GuildIDs:
     RANK_CATEGORY_RANKED_2: int = 1332065944548712560
 
     # Deadlock Voice Status
-    VOICE_STATUS_CATEGORY_GRIND: int = 1412804540994162789
-    VOICE_STATUS_CATEGORY_CASUAL: int = 1289721245281292290
-    VOICE_STATUS_CATEGORY_RANKED: int = 1357422957017698478
+    VOICE_STATUS_CATEGORY_COMP: int = 1412804540994162789
+    VOICE_STATUS_CATEGORY_CHILL: int = 1289721245281292290
+    VOICE_STATUS_CATEGORY_STREET_BRAWL: int = 1357422957017698478
+
+    # Legacy-Aliases Voice Status
+    VOICE_STATUS_CATEGORY_GRIND: int = VOICE_STATUS_CATEGORY_COMP
+    VOICE_STATUS_CATEGORY_CASUAL: int = VOICE_STATUS_CATEGORY_CHILL
+    VOICE_STATUS_CATEGORY_RANKED: int = VOICE_STATUS_CATEGORY_COMP
 
     # Steam Verified Role
     STEAM_VERIFIED_GUILD_ID: int = 1075099396802904185
@@ -44,18 +60,14 @@ class GuildIDs:
         """Alle TempVoice Staging Channel IDs."""
         return {
             self.TEMPVOICE_STAGING_CASUAL,
-            self.TEMPVOICE_STAGING_RANKED,
-            self.TEMPVOICE_STAGING_SPECIAL,
+            self.TEMPVOICE_STAGING_STREET_BRAWL,
+            self.TEMPVOICE_STAGING_COMP,
         }
 
     @property
     def tempvoice_minrank_categories(self) -> set[int]:
-        """Alle TempVoice MinRank Category IDs."""
-        return {
-            self.TEMPVOICE_CATEGORY_GRIND,
-            self.TEMPVOICE_CATEGORY_NORMAL,
-            self.TEMPVOICE_CATEGORY_RANKED,
-        }
+        """Kategorie-IDs wo MinRank aktiv ist (nur Comp/Ranked)."""
+        return {self.TEMPVOICE_CATEGORY_COMP}
 
     @property
     def rank_voice_categories(self) -> set[int]:
@@ -65,18 +77,16 @@ class GuildIDs:
             self.RANK_CATEGORY_CASUAL_2,
             self.RANK_CATEGORY_RANKED_1,
             self.RANK_CATEGORY_RANKED_2,
-            self.TEMPVOICE_CATEGORY_GRIND,
-            self.TEMPVOICE_CATEGORY_NORMAL,
-            self.TEMPVOICE_CATEGORY_RANKED,
+            self.TEMPVOICE_CATEGORY_COMP,
         }
 
     @property
     def voice_status_categories(self) -> set[int]:
         """Alle Voice Status Category IDs."""
         return {
-            self.VOICE_STATUS_CATEGORY_GRIND,
-            self.VOICE_STATUS_CATEGORY_CASUAL,
-            self.VOICE_STATUS_CATEGORY_RANKED,
+            self.VOICE_STATUS_CATEGORY_COMP,
+            self.VOICE_STATUS_CATEGORY_CHILL,
+            self.VOICE_STATUS_CATEGORY_STREET_BRAWL,
         }
 
 

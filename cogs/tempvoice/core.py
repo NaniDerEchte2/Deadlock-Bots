@@ -17,22 +17,24 @@ from service import db
 log = logging.getLogger("TempVoiceCore")
 
 # --------- IDs / Konfiguration ---------
-CASUAL_STAGING_ID = 1330278323145801758  # Chill/ Casual Staging
+# Neue Struktur (kein Ranked/Grind Split mehr):
+#   Chill Lanes    → Kategorie 1289721245281292290 | Staging 1330278323145801758
+#   Comp/Ranked    → Kategorie 1412804540994162789 | Staging 1412804671432818890
+#   Street Brawl   → Kategorie 1357422957017698478 | Staging 1357422958544420944
+CASUAL_STAGING_ID = 1330278323145801758  # Chill Staging
 STAGING_CHANNEL_IDS: set[int] = {
-    CASUAL_STAGING_ID,  # Casual Staging
-    1357422958544420944,  # Street Brawl Staging
-    1412804671432818890,  # Spezial Staging
+    CASUAL_STAGING_ID,          # Chill Staging
+    1357422958544420944,        # Street Brawl Staging
+    1412804671432818890,        # Comp/Ranked Staging
 }
 FIXED_LANE_IDS: set[int] = {
     1411391356278018245,  # Dauerhafter Voice-Channel (nicht von TempVoice verwalten)
     1470126503252721845,  # Ausgenommen: nie von TempVoice verwalten/loeschen
 }
 MINRANK_CATEGORY_IDS: set[int] = {
-    1412804540994162789,  # Grind Lanes
-    1289721245281292290,  # Normal Lanes (MinRank freigeschaltet)
-    1357422957017698478,  # Ranked Lanes
+    1412804540994162789,  # Comp/Ranked Lanes
 }
-# Per-Staging-Speziallogik
+# Per-Staging-Speziallogik (nur Lanes die vom Standard abweichen)
 STAGING_RULES: dict[int, dict[str, Any]] = {
     1357422958544420944: {  # Street Brawl
         "prefix": "Street Brawl",
@@ -41,17 +43,14 @@ STAGING_RULES: dict[int, dict[str, Any]] = {
         "disable_rank_caps": True,
         "disable_min_rank": True,
     },
-    CASUAL_STAGING_ID: {  # Chill Lanes: Prefix primär aus Owner-Rang
+    CASUAL_STAGING_ID: {  # Chill Lanes: kein Rang-System, Name aus Owner-Rang
         "prefix_from_rank": True,
     },
-    1412804671432818890: {  # Spezial Staging
-        "prefix_from_rank": True,
-    },
+    # 1412804671432818890 (Comp/Ranked) hat keine Sonderregel → normales Rang-System
 }
 CASUAL_RANK_FALLBACK = "Chill"
-# Legacy-Alias für ältere Imports, zeigt weiterhin auf die ursprüngliche Grind-ID
-MINRANK_CATEGORY_ID: int = 1412804540994162789
-RANKED_CATEGORY_ID: int = 1357422957017698478
+MINRANK_CATEGORY_ID: int = 1412804540994162789  # Comp/Ranked Kategorie
+RANKED_CATEGORY_ID: int = 1412804540994162789  # Comp/Ranked Kategorie (war: Grind)
 INTERFACE_TEXT_CHANNEL_ID: int = 1371927143537315890  # exportiert (wird vom Interface genutzt)
 ENGLISH_ONLY_ROLE_ID: int = 1309741866098491479
 

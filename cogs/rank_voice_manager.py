@@ -14,7 +14,7 @@ from service.db import db_path
 try:
     from cogs.tempvoice.core import MINRANK_CATEGORY_IDS
 except Exception:  # Fallback, falls TempVoice nicht geladen ist
-    MINRANK_CATEGORY_IDS: set[int] = {1412804540994162789}
+    MINRANK_CATEGORY_IDS: set[int] = {1412804540994162789}  # Comp/Ranked
 
 DB_PATH = Path(db_path())  # alias, damit alter Code weiterläuft
 
@@ -71,9 +71,9 @@ class RolePermissionVoiceManager(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        # Nur Comp/Ranked wird überwacht (kein Ranked/Grind Split mehr)
         self.monitored_categories = {
-            1357422957017698478: "ranked",
-            1412804540994162789: "grind",
+            1412804540994162789: "lane",  # Comp/Ranked Lanes
         }
 
         # Ausnahme-Kanäle die NICHT überwacht werden sollen
@@ -714,7 +714,7 @@ class RolePermissionVoiceManager(commands.Cog):
 
             # TempVoice lanes only get renamed when we manage them via the rank system (ranked/grind).
             # Regular lanes keep their TempVoice naming.
-            if self._is_tempvoice_lane(channel) and mode not in {"ranked", "grind"}:
+            if self._is_tempvoice_lane(channel) and mode != "lane":
                 return
 
             members_ranks = await self.get_channel_members_ranks(channel)
@@ -866,12 +866,7 @@ class RolePermissionVoiceManager(commands.Cog):
     ):
         mode = self.get_channel_mode(channel)
 
-        if mode == "grind":
-            tolerance = GRIND_SUBRANK_TOLERANCE
-        elif mode == "ranked":
-            tolerance = RANKED_SUBRANK_TOLERANCE
-        else:
-            tolerance = RANKED_SUBRANK_TOLERANCE
+        tolerance = RANKED_SUBRANK_TOLERANCE
 
         anchor_score = rank_value * 6 + anchor_subrank
         score_min = max(SCORE_MIN_ABSOLUTE, anchor_score - tolerance)
