@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     owner_id: int = Field(0, alias="OWNER_ID")
     command_prefix: str = Field("!", alias="COMMAND_PREFIX")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
+    guild_id: int = Field(1289721245281292288, alias="GUILD_ID")
 
     # --- Database ---
     deadlock_db_path: Path | None = Field(None, alias="DEADLOCK_DB_PATH")
@@ -64,6 +65,21 @@ class Settings(BaseSettings):
     steam_api_key: SecretStr | None = Field(None, alias="STEAM_API_KEY")
     steam_web_api_key: SecretStr | None = Field(None, alias="STEAM_WEB_API_KEY")
     public_base_url: str = Field("https://link.earlysalty.com", alias="PUBLIC_BASE_URL")
+    
+    # --- Roles & Channels ---
+    verified_role_id: int = Field(1419608095533043774, alias="VERIFIED_ROLE_ID")
+    verified_log_channel_id: int = Field(1374364800817303632, alias="VERIFIED_LOG_CHANNEL_ID")
+    streamer_role_id: int = Field(1313624729466441769, alias="STREAMER_ROLE_ID")
+    streamer_notify_channel_id: int = Field(1374364800817303632, alias="STREAMER_NOTIFY_CHANNEL_ID")
+
+    # --- Steam Link UI & OAuth ---
+    steam_return_path: str = Field("/steam/return", alias="STEAM_RETURN_PATH")
+    http_host: str = Field("0.0.0.0", alias="HTTP_HOST")
+    http_port: int = Field(8888, alias="STEAM_OAUTH_PORT")
+    link_cover_image: str = Field("", alias="LINK_COVER_IMAGE")
+    link_cover_label: str = Field("link.earlysalty.com", alias="LINK_COVER_LABEL")
+    link_button_label: str = Field("Via Discord verknüpfen", alias="LINK_BUTTON_LABEL")
+    steam_button_label: str = Field("Direkt bei Steam anmelden", alias="STEAM_BUTTON_LABEL")
 
     # --- TempVoice IDs ---
     # TODO: Move hardcoded sets from cogs/tempvoice/core.py here eventually

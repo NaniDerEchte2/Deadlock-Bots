@@ -17,6 +17,7 @@ from discord.ext import commands
 from cogs.steam.friend_requests import queue_friend_request, queue_friend_requests
 from cogs.steam.logging_utils import sanitize_log_value
 from service import db
+from service.config import settings
 
 log = logging.getLogger("SteamLink")
 
@@ -26,24 +27,25 @@ STEAM_OPENID_ENDPOINT = "https://steamcommunity.com/openid/login"
 OPENID_NS = "http://specs.openid.net/auth/2.0"
 IDENTIFIER_SELECT = "http://specs.openid.net/auth/2.0/identifier_select"
 
-PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "https://link.earlysalty.com").rstrip("/")
-STEAM_RETURN_PATH = os.getenv("STEAM_RETURN_PATH", "/steam/return")
-STEAM_RETURN_URL = (
-    urljoin(PUBLIC_BASE_URL + "/", STEAM_RETURN_PATH.lstrip("/")) if PUBLIC_BASE_URL else ""
-)
+# Centralized config via service.config.settings
+PUBLIC_BASE_URL = settings.public_base_url.rstrip("/")
+STEAM_RETURN_PATH = settings.steam_return_path
+STEAM_RETURN_URL = urljoin(PUBLIC_BASE_URL + "/", STEAM_RETURN_PATH.lstrip("/"))
 
-HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")  # noqa: S104
-HTTP_PORT = int(os.getenv("STEAM_OAUTH_PORT", os.getenv("HTTP_PORT", "8888")))
+HTTP_HOST = settings.http_host
+HTTP_PORT = settings.http_port
+# CLIENT_SECRET is sensitive, keep it as env/secret handled by settings if possible, 
+# but for now we follow the user's wish to reduce logic-level os.getenv.
 CLIENT_SECRET = (os.getenv("DISCORD_OAUTH_CLIENT_SECRET") or "").strip()
 
 # State TTL
 STATE_TTL_SEC = 600  # 10 min
 
 # UI (deutsche Labels)
-LINK_COVER_IMAGE = (os.getenv("LINK_COVER_IMAGE") or "").strip()
-LINK_COVER_LABEL = (os.getenv("LINK_COVER_LABEL") or "link.earlysalty.com").strip()
-LINK_BUTTON_LABEL = (os.getenv("LINK_BUTTON_LABEL") or "Via Discord verknüpfen").strip()
-STEAM_BUTTON_LABEL = (os.getenv("STEAM_BUTTON_LABEL") or "Direkt bei Steam anmelden").strip()
+LINK_COVER_IMAGE = settings.link_cover_image
+LINK_COVER_LABEL = settings.link_cover_label
+LINK_BUTTON_LABEL = settings.link_button_label
+STEAM_BUTTON_LABEL = settings.steam_button_label
 
 # ---------------------------------------------------------------------------
 # Öffentliche Schnittstelle für andere Cogs (Welcome-DM, Rules-Panel, etc.)

@@ -6,11 +6,12 @@ import logging
 
 import discord
 from discord.ext import commands
+from service.config import settings
 
 log = logging.getLogger(__name__)
 
-GUILD_ID = 1289721245281292288
-VERIFIED_ROLE_ID = 1419608095533043774  # Rolle die nach Steam-Verifizierung vergeben wird
+GUILD_ID = settings.guild_id
+VERIFIED_ROLE_ID = settings.verified_role_id  # Rolle die nach Steam-Verifizierung vergeben wird
 
 # Channel-IDs für klickbare Mentions in Embeds (<#ID>)
 CH_LFG = 1376335502919335936  # #spieler-suche
@@ -217,18 +218,19 @@ class NextStepView(discord.ui.View):
 
         if next_index == _ACCOUNT_STEP_INDEX:
             # Schritt 6: Account verknüpfen
-            # Wenn der User SCHON verifiziert ist: Direkt zum letzten Schritt (7) springen
             already_verified = any(r.id == VERIFIED_ROLE_ID for r in interaction.user.roles)
-            if already_verified:
-                next_index = len(STEPS) - 1
-            else:
-                # Spezial-View ohne "Weiter" Button – Onboarding geht automatisch weiter
-                view = OnboardingAccountLinkView(self.cog, next_index, self.user_id)
-                self.cog._pending_verify[self.user_id] = interaction.channel
-                embed = _build_embed(next_index)
-                await interaction.response.send_message(embed=embed, view=view)
-                self.stop()
-                return
+            
+            # Immer OnboardingAccountLinkView nutzen (damit die Link-Buttons da sind)
+            # Aber: "Weiter" Button nur zeigen wenn schon verifiziert
+            view = OnboardingAccountLinkView(self.cog, next_index, self.user_id, show_next=already_verified)
+            
+            if not already_verified:
+                self.cog._register_pending_verify(self.user_id, interaction.channel.id)
+            
+            embed = _build_embed(next_index)
+            await interaction.response.send_message(embed=embed, view=view)
+            self.stop()
+            return
 
         embed = _build_embed(next_index)
         if next_index >= len(STEPS) - 1:
@@ -243,41 +245,84 @@ class NextStepView(discord.ui.View):
 class OnboardingAccountLinkView(discord.ui.View):
     """
     Spezialisierte View für Schritt 6:
-    Enthält NUR die Steam-Link-Buttons (URL-Buttons).
-    Das Onboarding geht automatisch weiter sobald der User verifiziert ist.
+    Enthält die Steam-Link-Buttons (URL-Buttons).
+    'Weiter' Button wird nur gezeigt, wenn der User bereits verifiziert ist.
     """
 
-    def __init__(self, cog: StaticOnboarding, step_index: int, user_id: int):
+    def __init__(self, cog: StaticOnboarding, step_index: int, user_id: int, show_next: bool = False):
         super().__init__(timeout=3600)
         self.cog = cog
         self.step_index = step_index
         self.user_id = user_id
 
-        # URLs für Steam-Link holen
-        from cogs.steam.account_link_ui import _get_urls
+        # URLs für Steam-Link holen (mit Fallback auf Standard-Domain aus Config)
+        from service.config import settings
+        base = settings.public_base_url.rstrip("/")
+        uid = int(user_id)
+        discord_url = f"{base}/discord/login?uid={uid}"
+        steam_url = f"{base}/steam/login?uid={uid}"
 
-        discord_url, steam_url = _get_urls(user_id)
+        self.add_item(
+            discord.ui.Button(
+                label="Via Discord verknüpfen",
+                style=discord.ButtonStyle.link,
+                url=discord_url,
+                emoji="🔗",
+                row=0,
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Via Steam verknüpfen",
+                style=discord.ButtonStyle.link,
+                url=steam_url,
+                emoji="🎮",
+                row=0,
+            )
+        )
 
-        if discord_url:
-            self.add_item(
-                discord.ui.Button(
-                    label="Via Discord bei Steam anmelden",
-                    style=discord.ButtonStyle.link,
-                    url=discord_url,
-                    emoji="🔗",
-                    row=0,
-                )
+        if show_next:
+            btn = discord.ui.Button(label="Weiter ➜", style=discord.ButtonStyle.primary, row=1)
+            btn.callback = self.next_step
+            self.add_item(btn)
+        else:
+            # Fallback: Manueller Refresh-Button falls automatische Erkennung klemmt
+            btn = discord.ui.Button(label="Status prüfen 🔄", style=discord.ButtonStyle.secondary, row=1)
+            btn.callback = self.refresh_status
+            self.add_item(btn)
+
+    async def refresh_status(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Das ist nicht dein Onboarding.", ephemeral=True)
+            return
+            
+        already_verified = any(r.id == VERIFIED_ROLE_ID for r in interaction.user.roles)
+        if already_verified:
+            await self.next_step(interaction)
+        else:
+            await interaction.response.send_message(
+                "Du hast die **Verified**-Rolle noch nicht. Bitte stelle sicher, dass du deinen Account verknüpft hast "
+                "und die Freundschaftsanfrage vom Steam-Bot angenommen hast. (Es kann ein paar Minuten dauern)",
+                ephemeral=True
             )
-        if steam_url:
-            self.add_item(
-                discord.ui.Button(
-                    label="Direkt bei Steam anmelden",
-                    style=discord.ButtonStyle.link,
-                    url=steam_url,
-                    emoji="🎮",
-                    row=0,
-                )
+
+    async def next_step(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "Dieses Onboarding gehört jemand anderem.", ephemeral=True
             )
+            return
+
+        next_index = self.step_index + 1
+        embed = _build_embed(next_index)
+
+        if next_index >= len(STEPS) - 1:
+            view = DoneView(self.user_id)
+        else:
+            view = NextStepView(self.cog, next_index, self.user_id)
+
+        await interaction.response.send_message(embed=embed, view=view)
+        self.stop()
 
 
 class DoneView(discord.ui.View):
@@ -329,11 +374,44 @@ class StaticOnboarding(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # user_id → channel: wartet auf Verified-Rolle um Schritt 7 automatisch zu senden
-        self._pending_verify: dict[int, discord.abc.Messageable] = {}
+        # In-Memory Cache (wird bei Start aus DB befüllt)
+        self._pending_verify: dict[int, int] = {}
 
     async def cog_load(self):
-        log.info("StaticOnboarding geladen (%d Schritte).", len(STEPS))
+        self._db_ensure_schema()
+        self._db_load_pending()
+        log.info("StaticOnboarding geladen (%d Schritte, %d wartende Verifizierungen).", len(STEPS), len(self._pending_verify))
+
+    def _db_ensure_schema(self):
+        from service import db
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS onboarding_pending_verify (
+                user_id INTEGER PRIMARY KEY,
+                channel_id INTEGER NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+    def _db_load_pending(self):
+        from service import db
+        rows = db.query_all("SELECT user_id, channel_id FROM onboarding_pending_verify")
+        self._pending_verify = {r["user_id"]: r["channel_id"] for r in rows}
+
+    def _register_pending_verify(self, user_id: int, channel_id: int):
+        from service import db
+        self._pending_verify[user_id] = channel_id
+        db.execute(
+            "INSERT INTO onboarding_pending_verify(user_id, channel_id) VALUES(?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET channel_id=excluded.channel_id, updated_at=CURRENT_TIMESTAMP",
+            (user_id, channel_id)
+        )
+
+    def _pop_pending_verify(self, user_id: int) -> int | None:
+        from service import db
+        channel_id = self._pending_verify.pop(user_id, None)
+        if channel_id:
+            db.execute("DELETE FROM onboarding_pending_verify WHERE user_id=?", (user_id,))
+        return channel_id
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
@@ -343,15 +421,25 @@ class StaticOnboarding(commands.Cog):
         had_role = any(r.id == VERIFIED_ROLE_ID for r in before.roles)
         has_role = any(r.id == VERIFIED_ROLE_ID for r in after.roles)
         if not had_role and has_role:
-            channel = self._pending_verify.pop(after.id, None)
-            if channel:
-                embed = _build_embed(len(STEPS) - 1)
-                try:
-                    await channel.send(embed=embed, view=DoneView(after.id))
-                except Exception:
-                    log.exception(
-                        "Konnte Schritt 7 nach Verifizierung nicht senden für User %s", after.id
-                    )
+            channel_id = self._pop_pending_verify(after.id)
+            if channel_id:
+                channel = self.bot.get_channel(channel_id)
+                if not channel:
+                    try:
+                        channel = await self.bot.fetch_channel(channel_id)
+                    except Exception:
+                        log.warning("Konnte Onboarding-Channel %s nicht finden für User %s", channel_id, after.id)
+                        return
+                
+                if channel:
+                    embed = _build_embed(len(STEPS) - 1)
+                    try:
+                        await channel.send(content=f"<@{after.id}>", embed=embed, view=DoneView(after.id))
+                    except Exception:
+                        log.exception(
+                            "Konnte Schritt 7 nach Verifizierung nicht senden für User %s in Channel %s", 
+                            after.id, channel_id
+                        )
 
     # Öffentliche API – kompatibel mit rules_channel.py
     async def start_in_channel(

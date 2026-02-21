@@ -16,9 +16,11 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from service.config import settings
+
 log = logging.getLogger(__name__)
 
-GUILD_ID = int(os.getenv("GUILD_ID", "1289721245281292288"))
+GUILD_ID = settings.guild_id
 
 # Wird nach dem ersten /publish_steam_panel gesetzt und beim Bot-Restart
 # aus dem kv_store geladen (optional – Panel funktioniert auch ohne Persist).

@@ -9,6 +9,7 @@ import discord
 from discord.ext import commands, tasks
 
 from service import db as central_db
+from service.config import settings
 
 log = logging.getLogger(__name__)
 
@@ -16,13 +17,12 @@ log = logging.getLogger(__name__)
 class SteamVerifiedRole(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.guild_id = int(os.getenv("GUILD_ID", "1289721245281292288"))
-        self.verified_role_id = int(os.getenv("VERIFIED_ROLE_ID", "1419608095533043774"))
-        self.log_channel_id = int(os.getenv("VERIFIED_LOG_CHANNEL_ID", "1374364800817303632"))
+        self.guild_id = settings.guild_id
+        self.verified_role_id = settings.verified_role_id
+        self.log_channel_id = settings.verified_log_channel_id
         self.db_path = central_db.db_path()
         self.dry_run = os.getenv("DRY_RUN", "0") == "1"
-        interval_min = int(os.getenv("POLL_INTERVAL_MINUTES", "15"))
-        self._interval_seconds = max(60, interval_min * 60)
+        self._interval_seconds = 900  # Default 15 min
         self._member_fetch_min_interval = max(
             0.0, float(os.getenv("VERIFIED_MEMBER_FETCH_DELAY_SECONDS", "1.0"))
         )
